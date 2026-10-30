@@ -38,6 +38,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _background_tasks  # noqa: E402
+import _msys  # noqa: E402
 from _win_path import native_path  # noqa: E402
 
 # Killing any of these takes down work that cannot be resumed from where it stopped: a billed
@@ -282,7 +283,7 @@ def _cim_commandline(pid):
 def _ps_winpid(pid):
     """The WINPID Git Bash's `ps -p` reports for an MSYS pid, else None."""
     try:
-        r = subprocess.run(["ps", "-p", str(pid)], capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_S)
+        r = subprocess.run([_msys.tool("ps"), "-p", str(pid)], capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT_S)
     except Exception:
         return None
     return _winpid_from_ps(r.stdout, pid) if r.returncode == 0 else None

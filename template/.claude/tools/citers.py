@@ -356,7 +356,8 @@ class Matcher:
 
 
 def ignored_tests(repo):
-    """[(path, text)] of the gitignored `.claude/tests` files present on disk: they cite surfaces too (K6)."""
+    """[(path, text)] of the gitignored `.claude/tests` files present on disk, which `scan_files` skips: they cite
+    surfaces too (K6)."""
     code, out, err = git(repo, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--", f"{SCOPE}/tests")
     if code:
         raise RuntimeError(f"git ls-files failed: {err.strip()}")

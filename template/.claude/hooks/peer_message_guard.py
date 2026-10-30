@@ -4,7 +4,7 @@
 Home: CLAUDE.core.md §Core Principles. The recipient resolves through the runtime's local
 registry in every declared login (`model_registry.login_dirs`; <login>/sessions/<pid>.json: name, sessionId,
 messagingSocketPath, status) by name, `name [ref]` sessionId prefix, or socket path. A single match passes while
-it is `busy` or its transcript (<login>/projects/*/<sessionId>.jsonl) was written within WARM_SEC; any
+it is `busy` or its transcript's (<login>/projects/*/<sessionId>.jsonl) newest stamped entry is within WARM_SEC; any
 other single match is denied. A recipient that is this session's subagent id passes while its transcript
 (<login>/projects/*/<session_id>/subagents/agent-<id>.jsonl) was written within SUBAGENT_WARM_SEC.
 Any other recipient (a subagent addressed by name, a remote session) or an ambiguous name passes.
@@ -88,11 +88,30 @@ def resolve(to, rows):
     return hits[0] if len(hits) == 1 else None
 
 
+_STAMP = re.compile(rb'"timestamp":\s*"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)')
+_TAIL_BYTES = 1 << 20
+
+
+def _last_entry_time(path):
+    """Epoch of the newest stamped entry in the transcript's tail; the file's mtime when the tail holds none.
+
+    The client rewrites unstamped session metadata (title, mode, bridge) with no turn, so mtime alone can
+    read a session idle for hours as warm."""
+    stat = path.stat()
+    with open(path, "rb") as f:
+        f.seek(max(0, stat.st_size - _TAIL_BYTES))
+        stamps = _STAMP.findall(f.read())
+    if not stamps:
+        return stat.st_mtime
+    import calendar
+    return calendar.timegm(time.strptime(max(stamps).decode(), "%Y-%m-%dT%H:%M:%S"))
+
+
 def idle_seconds(session_id):
-    """Seconds since the peer's transcript was last written; None when no transcript is found."""
+    """Seconds since the peer's last stamped transcript entry; None when no transcript is found."""
     if not session_id:
         return None
-    stamps = [p.stat().st_mtime for login in _logins()
+    stamps = [_last_entry_time(p) for login in _logins()
               for p in login.glob(f"projects/*/{glob.escape(session_id)}.jsonl")]
     return time.time() - max(stamps) if stamps else None
 

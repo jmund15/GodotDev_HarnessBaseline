@@ -168,6 +168,35 @@ if ($restoreMatch.Success) {
     $cases += @{ label = 'retry-only: no state file keeps none'; ok = ($r -match 'RETRY_ONLY_IGNORED reason=no-state') }
 }
 
+# --- a RED batch with no failed test (the engine exited nonzero after every test passed) is named, so the gate
+# cannot read the run as incomplete or green
+$verdictMatch = [regex]::Match($ibSrc, '(?s)function Get-IntegrationVerdict \{.*?
+\}
+?
+')
+$cases += @{ label = 'verdict: Get-IntegrationVerdict is extractable from IntegrationBatches.ps1'; ok = $verdictMatch.Success }
+if ($verdictMatch.Success) {
+    $vWrap = Join-Path ([System.IO.Path]::GetTempPath()) ("ribv_" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8) + ".ps1")
+    Set-Content -Path $vWrap -Encoding utf8 -Value @"
+Set-StrictMode -Version Latest
+`$script:IncompleteStatuses = @('NO_OUTPUT', 'NO_TRX', 'BAD_TRX')
+$($verdictMatch.Value)
+function Show(`$plan) { `$v = Get-IntegrationVerdict -Plan `$plan -Baseline 8 -Sentinel 1 -ElapsedSec 1 -LockWaitMs 0 -RunsRoot 'r'; (`$v.Lines + "EXIT=`$(`$v.Exit)") -join '|' }
+Write-Output ('CRASH=' + (Show @([pscustomobject]@{ label = 'B1'; status = 'GREEN'; passed = 5; failed = 0 }, [pscustomobject]@{ label = 'B2'; status = 'RED'; passed = 3; failed = 0 })))
+Write-Output ('FAILED=' + (Show @([pscustomobject]@{ label = 'B1'; status = 'GREEN'; passed = 5; failed = 0 }, [pscustomobject]@{ label = 'B2'; status = 'RED'; passed = 2; failed = 1 })))
+"@
+    try { $vOut = (& pwsh -NoProfile -File $vWrap) -join "`n" } finally { Remove-Item -Force $vWrap -ErrorAction SilentlyContinue }
+    $crashLine = ($vOut -split "`n" | Where-Object { $_ -like 'CRASH=*' }) -join ''
+    $failedLine = ($vOut -split "`n" | Where-Object { $_ -like 'FAILED=*' }) -join ''
+    $cases += @{ label = "verdict: a RED batch with failed=0 is named RED_NO_FAILED_TEST and exits 1 ($crashLine)"
+                 ok = ($crashLine -match '\|RED_NO_FAILED_TEST=B2\|' -and $crashLine -match 'STATUS=FAIL red_batches=B2' -and $crashLine -match 'EXIT=1$') }
+    $cases += @{ label = "verdict: a RED batch with a failed test is not named RED_NO_FAILED_TEST ($failedLine)"
+                 ok = ($failedLine -notmatch 'RED_NO_FAILED_TEST' -and $failedLine -match 'EXIT=1$') }
+}
+$gateSrc = Get-Content -Raw (Join-Path $here '..\scripts\regression_gate.ps1')
+$cases += @{ label = 'gate: a RED_NO_FAILED_TEST line tiers Integration HARDFAIL before the INCOMPLETE downgrade'
+             ok = ($gateSrc -match "(?s)RED_NO_FAILED_TEST=.*?tier = 'HARDFAIL'.*?elseif \(\`$intComplete -in @\('INCOMPLETE', 'UNKNOWN'\)") }
+
 # --- run dirs: New-RunDir / Remove-OldRunDirs, extracted verbatim from RunPool.ps1 ----------
 $poolPath = Join-Path $here '..\scripts\RunPool.ps1'
 $poolSrc = if (Test-Path $poolPath) { Get-Content $poolPath -Raw } else { '' }
@@ -180,8 +209,9 @@ if ($newDirMatch.Success -and $oldDirsMatch.Success) {
     $wrapper = Join-Path ([System.IO.Path]::GetTempPath()) ("ribrd_" + [System.Guid]::NewGuid().ToString('N').Substring(0, 8) + '.ps1')
     # -WindowStyle exists only on Windows; Start-Process on Linux rejects it.
     $hide = if ([System.Environment]::OSVersion.Platform -eq 'Win32NT') { @{ WindowStyle = 'Hidden' } } else { @{} }
-    $foreign = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 120') -PassThru @hide
-    $gone = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile', '-Command', 'exit 0') -PassThru @hide
+    $pw = & { . (Join-Path $here '..\scripts\GodotProcess.ps1'); Get-PwshStart }
+    $foreign = Start-Process -FilePath $pw.FilePath -ArgumentList (@($pw.Lead) + @('-NoProfile', '-Command', 'Start-Sleep -Seconds 120')) -PassThru @hide
+    $gone = Start-Process -FilePath $pw.FilePath -ArgumentList (@($pw.Lead) + @('-NoProfile', '-Command', 'exit 0')) -PassThru @hide
     $gone.WaitForExit()
     try {
         Set-Content -Path $wrapper -Encoding utf8 -Value @"

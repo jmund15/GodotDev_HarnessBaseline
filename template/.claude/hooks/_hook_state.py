@@ -169,11 +169,11 @@ def state_path(session_id):
     return os.path.join(state_dir(), f"{(session_id or 'default')[:8]}.json")
 
 
-def _fire_once_under(session_id, key, bucket):
+def _fire_once_under(session_id, key, bucket, on_failure=True):
     """True the first time `key` is asked for under `bucket`, False afterwards.
 
-    Fail-open toward firing: a state file that cannot be read or written yields True, so a
-    broken state layer costs a repeated advisory rather than a silent one that never fires.
+    Fail-open toward firing: a state file that cannot be read or written yields `on_failure`
+    (True), so a broken state layer costs a repeated advisory rather than a silent one that never fires.
     """
     path = state_path(session_id)
 
@@ -188,12 +188,15 @@ def _fire_once_under(session_id, key, bucket):
         return True
 
     written, first = update_json_locked(path, update)
-    return bool(first) if written else True
+    return bool(first) if written else on_failure
 
 
-def fire_once(session_id, key):
-    """True on the first ask for `key` this session — nothing clears it."""
-    return _fire_once_under(session_id, key, _ONCE_KEY)
+def fire_once(session_id, key, on_failure=True):
+    """True on the first ask for `key` this session — nothing clears it.
+
+    `on_failure` is the answer when the state cannot be written; a caller whose firing denies passes None.
+    """
+    return _fire_once_under(session_id, key, _ONCE_KEY, on_failure)
 
 
 def fire_once_machine(key):

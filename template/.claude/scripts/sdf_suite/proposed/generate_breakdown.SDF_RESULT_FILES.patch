@@ -1,0 +1,23 @@
+Proposed, NOT applied.
+
+harness-bounds-v1.2 is sealed reference material for this driver, so this one-line
+registration is written here instead of into the tree. Nothing else in the battery needs
+to change: `results/sdf-opencode.jsonl` already carries the sealed row schema, so
+generate_breakdown.py reads it correctly the moment its explicit file list names it. Until
+then the three Z-* arms are invisible to FULL-BREAKDOWN.md — which is the correct default,
+because the list is explicit precisely so a new file is admitted by a decision rather than
+by a glob.
+
+--- a/scripts/generate_breakdown.py
++++ b/scripts/generate_breakdown.py
+@@
+     # The clean single-process rerun. Supersedes fab13-offaxis-CONCURRENT-CONTAMINATED, which is
+     # excluded above and kept only so the quarantine has a visible reason.
+     "fab13-offaxis-clean.jsonl",
++    # OpenCode Zen free tier (Z-MIMO / Z-MUSE / Z-PICKLE), collected by .claude/scripts/sdf_suite.
++    # DIFFERENT TRANSPORT from every row above: the rendered prompt is INLINED as the dispatch
++    # prompt with the tool surface removed, where the cloud rows had an agent Read the same file
++    # inside a tool loop. Each row carries `transport` so the distinction survives; treat these
++    # as extending the S/D/F columns, not as pooling with the C-* rows.
++    "sdf-opencode.jsonl",
+ ]

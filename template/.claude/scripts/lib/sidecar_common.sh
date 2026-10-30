@@ -282,16 +282,15 @@ SC_UNSUSPEND=0
 SC_PEAK_AUTHORIZED=0   # -W: the user explicitly authorized a peak-window dispatch
 SC_PRICE_WINDOW=""; SC_PRICE_MULT=""; SC_PRICE_CHANGES=""; SC_PRICE_AT_START=""; SC_PRICE_SUMMARY=""
 SC_EFFORT=""
-# Empty means the caller asserted no tool list, so the shape's row in guards/tool_profiles.json
-# applies (sc_resolve_tools). `-t` is a DELTA when every entry carries a sign
-# (`+Bash,-Grep,+mcp:godot`), the old absolute `--allowedTools` list when none does, and an arm's
-# task row when the shape is `arm`. A caller that wants read-only explicitly writes `-t Read,Glob,Grep`.
+# Empty means the caller asserted no tool change, so the kind's row in guards/tool_profiles.json
+# applies (sc_resolve_tools). `-t` is a signed DELTA (`+Bash,-Grep,+mcp:godot`); an unsigned list
+# refuses on every kind but `arm`, whose unsigned `-t` is its task row.
 SC_TOOLS=""
-# -B: the `arm` shape's task built-ins. The arm row carries no built-ins of its own
+# -B: the `arm` kind's task built-ins. The arm row carries no built-ins of its own
 # (guards/tool_profiles.json), so its task row supplies them -- normally as the unsigned `-t`. An
 # arm that also wants a DELTA (`+mcp:ai-worker`) cannot put both grammars in one CSV, and the
 # resolver refuses a task-base `-t` beside a structured delta, so the base gets its own flag.
-# Empty means "not asserted". Without a value and without a `-t` task row, shape `arm` refuses.
+# Empty means "not asserted". Without a value and without a `-t` task row, kind `arm` refuses.
 SC_BASE_BUILTINS=""
 SC_MAX_TURNS=""   # empty = NO turn cap (user directive 2026-08-03: a cap discards completed
                   # work; -T wall-clock is the runaway guard). Pass -n N to cap explicitly.
@@ -340,7 +339,7 @@ esac
 SC_LEDGER="__default__"
 SC_LABEL=""
 SC_SHAPE=""
-SC_TIER=""   # -Q: the job's written tier; empty takes the -G shape row's tier
+SC_TIER=""   # -Q: the job's written tier; empty takes the -G kind row's tier
 SC_PIN_BASIS=""
 SC_ADD_DIRS=()
 SC_DISCLOSURE=""
@@ -502,10 +501,9 @@ sc_parse_flags() {
       *) sc_die 2 "-K / SIDECAR_COMPACT_AT_TOKENS is supported only by the Anthropic Claude-client launchers; ${SC_TRANSPORT:-unset} has no compact-point override contract" ;;
     esac
   fi
-  # An omitted -D takes the lowest tier the shape needs (reference/sidecar_dispatch.md §Agent type).
-  if [ -z "$SC_DISCLOSURE" ]; then
-    if [ "$SC_SHAPE" = "survey" ]; then SC_DISCLOSURE="pointer"; else SC_DISCLOSURE="full"; fi
-  fi
+  # -G names the job's kind; the kind's row sets built-ins, MCP servers, disclosure and guard text.
+  # A launch without -G refuses in sc_validate_common, not here, so a flag-only parse still answers.
+  sc_apply_kind
   # The daemon driver's drift guard (sc_settings_with_bench_guard) rewrites its Workflow args; two hooks' updatedInput
   # never merge, so this marker tells hooks/workflow_provider_guard.py to inject nothing into that call.
   if sc_drift_guard_active; then
@@ -564,12 +562,7 @@ sc_validate_enums() {
       *) sc_die 2 "invalid permission mode '$SC_PERM_MODE' (auto|acceptEdits|dontAsk|manual|plan|bypassPermissions)" ;;
     esac
   fi
-  if [ -n "$SC_SHAPE" ]; then
-    case "$SC_SHAPE" in
-      any|survey|review|author|arm|bench-score) ;;
-      *) sc_die 2 "invalid guard shape '$SC_SHAPE' (any|survey|review|author|arm|bench-score)" ;;
-    esac
-  fi
+  sc_apply_kind
   if [ -n "$SC_DISCLOSURE" ]; then
     case "$SC_DISCLOSURE" in
       bare|pointer|full) ;;
@@ -591,6 +584,32 @@ sc_validate_enums() {
       *) sc_die 2 "invalid pin basis '$SC_PIN_BASIS' (pick in cell|room|owner|default, spec in tight|judged; e.g. -Y cell,tight)" ;;
     esac
   fi
+}
+
+# The launcher's -G value is a kind in guards/tool_profiles.json whose routes include `launcher`.
+# Its row sets the disclosure tier, so -D refuses; the one exception is `arm`, whose row carries none
+# and whose caller states the experiment's disclosure. Idempotent: the parser and the shared enum check
+# both call it.
+sc_apply_kind() {
+  [ -n "${SC_SHAPE:-}" ] || return 0
+  [ "${SC_KIND_APPLIED:-}" = "$SC_SHAPE" ] && return 0
+  local row
+  row="$(python3 "$SC_ROOT/tools/tool_profiles.py" kind-row --kind="$SC_SHAPE" 2>&1)" ||
+    sc_die 2 "${row#tool_profiles: }"
+  row="${row%$'\r'}"
+  if [ -n "$row" ]; then
+    [ -z "$SC_DISCLOSURE" ] ||
+      sc_die 2 "-D $SC_DISCLOSURE refused: disclosure follows the kind: pass -G <kind> and drop -D (only -G arm takes -D)"
+    SC_DISCLOSURE="$row"
+  else
+    [ -n "$SC_DISCLOSURE" ] || sc_die 2 "-G $SC_SHAPE needs -D <bare|pointer|full>: its row carries no disclosure"
+  fi
+  SC_KIND_APPLIED="$SC_SHAPE"
+}
+
+# The guard name a kind's row carries (survey|review|author|any|arm), for the registry's --shape.
+sc_kind_guard() {
+  python3 "$SC_ROOT/tools/tool_profiles.py" kind-row --kind="$1" --field=guard 2>/dev/null | tr -d '\r'
 }
 
 sc_validate_common() {
@@ -623,6 +642,11 @@ sc_validate_common() {
     sc_die 2 "schema file not found: $SC_SCHEMA_FILE"
   fi
   sc_validate_enums
+  if [ -z "${SC_SHAPE:-}" ]; then
+    local kinds_msg
+    kinds_msg="$(python3 "$SC_ROOT/tools/tool_profiles.py" kind-row --kind= 2>&1)"
+    sc_die 2 "-G <kind> is required: ${kinds_msg#tool_profiles: }"
+  fi
   local _cf
   for _cf in ${SC_CONTEXT_FILES[@]+"${SC_CONTEXT_FILES[@]}"}; do
     [ -f "$_cf" ] || sc_die 2 "context file not found: $_cf"
@@ -631,11 +655,12 @@ sc_validate_common() {
 }
 
 # ----------------------------------------------------------------- tool profile resolution
-# One resolved profile per job, before any model spend: the shape's row in
+# One resolved profile per job, before any model spend: the kind's row in
 # guards/tool_profiles.json with `-t` applied, and every logical server name looked up in the
-# active config. An unregistered server, an unknown shape, a removal the shape does not carry or a
-# mixed signed/unsigned `-t` fails HERE with the resolver's own message: a strict config that
-# quietly dropped a server would run the job on an inventory nobody chose.
+# active config. An unregistered server, an unknown kind, a removal the kind does not carry, an
+# unsigned `-t` or a mixed signed/unsigned `-t` fails HERE with the resolver's own message: a strict
+# config that quietly dropped a server would run the job on an inventory nobody chose. The launcher
+# reads no brief: a job that needs a shell writes `-t +Bash`.
 #
 # SC_RESOLVED_BUILTINS  -> `--tools` (the child's built-in availability list)
 # SC_RESOLVED_TOOL_SPEC -> built-ins plus `mcp__<registered key>`, the form sc_mcp_config reads
@@ -648,30 +673,14 @@ sc_resolve_tools() {
   # next option.
   local base_arg=()
   [ -n "${SC_BASE_BUILTINS:-}" ] && base_arg=(--base-builtins="${SC_BASE_BUILTINS}")
-  # The profile must cover what the caller's brief tells the child to run: the -f file (or the
-  # positional prompt, written to a file) and every -C file go to the resolver's --brief check.
-  local brief_arg=() _bf
-  if [ -n "${SC_PROMPT_FILE:-}" ]; then
-    brief_arg+=(--brief="$SC_PROMPT_FILE")
-  elif [ -n "${SC_PROMPT:-}" ]; then
-    _bf="$(mktemp)"
-    sc_on_exit "rm -f \"$_bf\" 2>/dev/null || :"
-    printf '%s' "$SC_PROMPT" > "$_bf"
-    brief_arg+=(--brief="$_bf")
-  fi
-  for _bf in ${SC_CONTEXT_FILES[@]+"${SC_CONTEXT_FILES[@]}"}; do
-    brief_arg+=(--context="$_bf")
-  done
-  out="$(python3 "$SC_ROOT/tools/tool_profiles.py" resolve --widen \
-      --shape="${SC_SHAPE:-any}" --tier="${SC_TIER:-}" --tools="${SC_TOOLS:-}" \
-      ${base_arg[@]+"${base_arg[@]}"} ${brief_arg[@]+"${brief_arg[@]}"} \
+  out="$(python3 "$SC_ROOT/tools/tool_profiles.py" resolve-kind \
+      --kind="${SC_SHAPE:-}" --tier="${SC_TIER:-}" --tools="${SC_TOOLS:-}" \
+      ${base_arg[@]+"${base_arg[@]}"} \
       --config-dir="${SC_MCP_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-}}" \
       --workdir="${SC_WORKDIR:-}" 2>"$err")" || {
     cat "$err" >&2
-    sc_die 2 "[sidecar] refusing to dispatch: the tool profile is invalid or does not cover the brief (resolver text above)"
+    sc_die 2 "[sidecar] refusing to dispatch: the tool profile is invalid (resolver text above)"
   }
-  # Success still forwards the resolver's one-line "profile widened by +X" notice.
-  [ -s "$err" ] && cat "$err" >&2
   rm -f "$err" 2>/dev/null || :
   packed="$(printf '%s' "$out" | SC_ROOT="$SC_ROOT" python3 -c 'import json, sys, os
 sys.path.insert(0, os.path.join(os.environ["SC_ROOT"], "tools"))
@@ -1276,17 +1285,35 @@ sc_write_durable_files() {
 #     sc_resume_loop run_claude "$SC_PROGRESS"
 # Reads and rewrites OUTPUT and rc in the caller's scope; exports SC_RESUME_SID for run_claude.
 # ------------------------------------------------------------------ stall watchdog
-# The stall watchdog SIGNALS; it never ends a run. A paid run silent for SC_STALL_SEC seconds is
+# A paid run with no work events and no CPU work in its process tree for SC_STALL_SEC seconds is
 # suspected dead (an upstream that never answers, a classifier that never returns, a child wedged
-# on a socket), so it writes `<record>.stall` (idle seconds and a UTC stamp) and keeps watching;
+# on a socket). A session dispatch gets `<record>.stall` (idle seconds and a UTC stamp) and keeps running;
 # the next work event deletes the marker, and the session decides — inspect the progress stream and
-# the process, then re-arm the watcher or stop the job through tools/reap.py. The watch is on the
+# the process, then re-arm the watcher or stop the job through tools/reap.py. A bench arm (BENCH_ARM)
+# runs unattended, so its stall ends the child tree with rc 124 and a STALLED line the grid voids as a
+# resumable timeout. Duration alone never ends a run. The watch is on the
 # -P progress stream (stream-json only: `-o json` emits nothing until the end, so there is nothing
 # to watch and the watchdog stays off with a notice). Silence counts from the last WORK event:
 # api_retry and other system lines are not progress (measured 2026-09-14: ten 429 retries kept six
 # lanes "live"). -Z <sec> / SIDECAR_STALL_SEC override; 0 disables.
 SC_STALL_SEC="${SIDECAR_STALL_SEC:-900}"
 SC_WATCH_POLL_SEC="${SIDECAR_WATCH_POLL_SEC:-10}"
+# Stream silence alone is not a stall: a child whose process tree used SC_CPU_ALIVE_SEC CPU seconds in the last
+# SC_CPU_WINDOW_SEC is working (a tool running tests). An idle Claude tree with its MCP servers uses about
+# 1.5 CPU s/min; a below-normal index build starved by a full test gate still used about 24. 6 s/min sits 4x from each.
+SC_CPU_WINDOW_SEC="${SIDECAR_CPU_WINDOW_SEC:-60}"
+SC_CPU_ALIVE_SEC="${SIDECAR_CPU_ALIVE_SEC:-6}"
+
+sc_tree_working() { # msys-pid -> 0 iff its process tree used SC_CPU_ALIVE_SEC CPU seconds since the last reading
+  local winpid now
+  winpid="$(cat "/proc/$1/winpid" 2>/dev/null || printf '%s' "$1")"
+  now="$(python3 "$SC_ROOT/tools/tree_cpu.py" "$winpid" 2>/dev/null)" || return 1
+  local prev="${_sc_cpu:-}"
+  _sc_cpu="$now"
+  [ -n "$prev" ] || return 1
+  # A descendant that exited drops out of the sum; a falling total is a process finishing, which is work.
+  awk -v a="$prev" -v b="$now" -v t="$SC_CPU_ALIVE_SEC" 'BEGIN { exit !((b - a) >= t || b < a) }'
+}
 # Consecutive 429 api_retry lines, with no work between them, that end a run as a provider usage
 # limit. 10 is the CLI's own max_retries (both 2026-09-14 streams), so a 429 the child could still
 # clear inside its own retry budget is never cut short; a child retrying past it is stopped.
@@ -1543,6 +1570,7 @@ sc_run_watched() {
   fi
   tmp="$(mktemp)"
   _sc_last=$(date +%s)
+  local _sc_cpu="" _sc_cpu_at="$_sc_last" _sc_stalled=0
   # Watch only this run's bytes: a resumed run appends to the previous segment's -P file.
   _sc_off=$(stat -c %s "$progress" 2>/dev/null || echo 0)
   ( "$run_fn" | tee -a "$progress" > "$tmp" ) &
@@ -1555,12 +1583,25 @@ sc_run_watched() {
       sc_kill_tree "$w"
       break
     fi
-    now=$(date +%s); idle=$((now - _sc_last))
+    now=$(date +%s)
+    # A stream-silent child whose process tree burns CPU (a long test run inside a tool) is working.
+    if [ $((now - _sc_last)) -ge "${SC_WATCH_POLL_SEC:-10}" ] && [ $((now - _sc_cpu_at)) -ge "$SC_CPU_WINDOW_SEC" ]; then
+      sc_tree_working "$w" && _sc_last=$now
+      _sc_cpu_at=$now
+    fi
+    idle=$((now - _sc_last))
     if [ -n "$_sc_result_at" ] && [ "${SC_RESULT_GRACE_SEC:-0}" -gt 0 ] \
         && [ $((now - _sc_result_at)) -ge "$SC_RESULT_GRACE_SEC" ] && kill -0 "$w" 2>/dev/null; then
       echo "[sidecar] the child wrote its terminal result $((now - _sc_result_at))s ago and is still running (a background task would re-wake it for another billed turn): ending the child tree" >&2
       sc_kill_tree "$w"
       _sc_ended=1
+      break
+    fi
+    if [ -n "${BENCH_ARM:-}" ] && [ "${SC_STALL_SEC:-0}" -gt 0 ] && [ "$idle" -ge "$SC_STALL_SEC" ]; then
+      # A bench arm runs unattended: no session reads a marker, so a stall ends the cell as a resumable void.
+      echo "[sidecar] STALLED: the sidecar watchdog saw no work events and no CPU work for ${idle}s; ending the child tree" >&2
+      sc_kill_tree "$w"
+      _sc_stalled=1
       break
     fi
     if [ -n "$SC_RECORD" ] && [ "${SC_STALL_SEC:-0}" -gt 0 ]; then
@@ -1573,6 +1614,7 @@ sc_run_watched() {
   done
   wait "$w" 2>/dev/null; rc=$?
   [ "$_sc_ended" = 1 ] && rc="$_sc_result_err"
+  [ "$_sc_stalled" = 1 ] && rc=124
   SC_RUN_FINISHED=1
   OUTPUT="$(cat "$tmp")"; rm -f "$tmp"
   if [ -n "$SC_RECORD" ]; then rm -f "${SC_RECORD}.stall"; fi  # the run ended; no stall stands
@@ -1750,9 +1792,8 @@ SC_AUTONOMY
       # The child (a Windows process) may still hold SC_RUN_CWD when EXIT fires;
       # a busy-dir rm must not fail the script.
       sc_on_exit 'rm -rf "$SC_RUN_CWD" 2>/dev/null || :'
-      # An omitted -G is `any` on the hook route; use the same default here.
-      local shape="${SC_SHAPE:-any}"
-      # Assemble exactly what the SessionStart hook would inline — any.md plus the shape
+      local shape="${SC_SHAPE:-}"
+      # Assemble exactly what the SessionStart hook would inline — any.md plus the kind's guard
       # file at one tier, followed by this child model's registry driver notes. The raw
       # shape file ships BOTH tiers and omits any.md, and no hook fires in the isolated
       # tiers to correct it. SC_MODEL is already resolved by sc_resolve_model to the id
@@ -1761,7 +1802,7 @@ SC_AUTONOMY
       guard_tmp="$(mktemp)"
       python3 "$SC_ROOT/tools/guard_text.py" "$shape" detailed "$SC_MODEL" > "$guard_tmp" || {
         rm -f "$guard_tmp" 2>/dev/null || :
-        sc_die 2 "could not assemble guards for shape '$shape' — refusing to dispatch unguarded"
+        sc_die 2 "could not assemble guards for kind '$shape' — refusing to dispatch unguarded"
       }
       _sc_append_part "$guard_tmp"
       rm -f "$guard_tmp" 2>/dev/null || :
@@ -1836,12 +1877,13 @@ import os, sys
 from pathlib import Path
 root = Path(os.environ['SC_FACT_ROOT'])
 sys.path[:0] = [str(root / 'tools'), str(root / 'hooks')]
-import sidecar_argv, dispatch_size, model_registry, orchestration_metrics, _dispatch_checks
+import sidecar_argv, dispatch_size, model_registry, orchestration_metrics, tool_profiles, _dispatch_checks
 args = sys.argv[1:]
 flags = sidecar_argv.sidecar_flags(args[1:] if args[:1] == ['--check'] else args)
 model = flags.get('m') or os.environ['SC_FACT_MODEL']
 effort = flags.get('e') or 'unspecified'
-profile = flags.get('G') or 'any'
+profile = flags.get('G') or 'unspecified'
+kind_row = tool_profiles.load_table()['kinds'].get(profile) or {}
 print(f'requested pin: {model}·{effort}')
 brief = flags.get('f')
 if brief:
@@ -1875,7 +1917,7 @@ try:
             print(f"ladder row: {row['model']} ({row['strengths']}); rung: {row['effort']}")
         if not matched:
             print('ladder row: none for this tier and requested model')
-    rating = orchestration_metrics.latest_shape_rating(profile, model, data)
+    rating = orchestration_metrics.latest_shape_rating(tool_profiles.job_kind_shape({'kind': profile}) if kind_row else profile, model, data)
     print(f"shape rating: {rating['shape']}; note: {rating.get('note') or 'not recorded'}" if rating else 'shape rating: none exists')
 except (OSError, ValueError, model_registry.RegistryError) as exc:
     print(f'dispatch facts: unreadable ({exc})')
@@ -1940,7 +1982,13 @@ sc_scrub_env() {
   # The launch id rides the child too: tools/reap.py and watch_records.py find a seat that outlived its
   # launcher by it. The seat mark makes a launch nested in the child take its own id (see SC_LAUNCH_ID).
   [ -n "${SC_LAUNCH_ID:-}" ] && SC_SCRUB+=(SIDECAR_LAUNCH_ID="$SC_LAUNCH_ID" SIDECAR_SEAT_LAUNCH_ID="$SC_LAUNCH_ID")
+  # A bench arm's work (tools, hooks, MCP servers) runs below normal; the CLI and proxy keep their priority.
+  [ -n "${BENCH_ARM:-}" ] && { SC_SCRUB+=(CLAUDE_CODE_SHELL_PREFIX="$(sc_below_normal_prefix)"); SC_WORK_PRIORITY=tools; }
   return 0
+}
+
+sc_below_normal_prefix() {
+  printf '%s' "$SC_ROOT/scripts/lib/below_normal_shell.sh"
 }
 
 # ------------------------------------------------------------------------ run record
@@ -1986,7 +2034,7 @@ sc_write_record() {
     ATTEST_V="${SC_ATTESTED_MODEL:-}" PARSER_V="${SC_RECORD_PARSER:-claude}" \
     REGCLI_V="$SC_REGISTRY_CLI" PROGRESS_V="$(sc_to_native "${SC_PROGRESS:-}")" CTXWIN_V="${SC_CONTEXT_TOKENS:-}" CTXSOURCE_V="${SC_CONTEXT_WINDOW_SOURCE:-}" CTXOVERRIDE_V="${SIDECAR_COMPACT_AT_TOKENS:+${AC_AUTO_COMPACT_WINDOW:-}}" PRICE_AT_V="${SC_PRICE_AT_START:-}" \
     USAGE_LIMIT_V="${SC_USAGE_LIMITED:-0}" RESET_V="${SC_USAGE_LIMIT_RESET:-}" \
-    PERM_V="${SC_PERM_MODE:-}" MAXOUT_V="${SC_MAX_OUTPUT:-}" STALL_V="${SC_STALL_SEC:-}" \
+    PERM_V="${SC_PERM_MODE:-}" MAXOUT_V="${SC_MAX_OUTPUT:-}" STALL_V="${SC_STALL_SEC:-}" WORKPRI_V="${SC_WORK_PRIORITY:-}" \
     PINBASIS_V="${SC_PIN_BASIS:-}" TOOLFRAME_V="${SC_TOOL_FRAME:-}" \
     RESUMED_V="${SC_RESUMED_FROM:-}" PROF_V="${SC_TOOL_PROFILE:-}" PROMPT_V="${SC_PROMPT_FILE:-}" \
     python3 - <<'PYEOF' || publish_rc=$?
@@ -2245,6 +2293,9 @@ record = {
     "toolFrame": os.environ.get("TOOLFRAME_V") or None,
     "maxOutputTokens": int(os.environ["MAXOUT_V"]) if (os.environ.get("MAXOUT_V") or "").isdigit() else None,
     "stallSec": int(os.environ["STALL_V"]) if (os.environ.get("STALL_V") or "").isdigit() else None,
+    # Which processes ran below normal: "tools" (the model loop kept its priority, so apiDurationMs carries no
+    # machine load), "tree" (the whole child, API time included), null (nothing lowered).
+    "workPriority": os.environ.get("WORKPRI_V") or None,
     "resumedFrom": os.environ.get("RESUMED_V") or None,
     "toolVersions": _tool_versions(os.environ.get("TRANSPORT_V") or None),
     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

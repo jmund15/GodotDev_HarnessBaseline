@@ -7,6 +7,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 
 import _pwsh_drive
 from _pwsh_drive import check, run_proof
@@ -42,6 +44,39 @@ def main(tmp):
     process_tree(tmp)
     launch_seams(tmp)
     start_stamp(tmp)
+    project_manager(tmp)
+
+
+PM_BODY = r"""
+function Test-HasMainWindow { param([int] $ProcessId) $true }
+function Get-MainWindowTitle { param([int] $ProcessId) if ($ProcessId -in 501, 504) { 'Godot Engine - Project Manager' } else { '{{PROJECT_NAME}} - Godot Engine' } }
+$exe = Join-Path $env:PROOF_TMP 'Godot_v4.7.1-stable_mono_win64.exe'
+$other = Join-Path $env:PROOF_TMP 'other'
+$t = (Get-Date).AddHours(-1)
+function P($id, $cl) { [pscustomobject]@{ ProcessId = $id; ParentProcessId = 8948; Name = 'Godot_v4.7.1-stable_mono_win64.exe'; CommandLine = $cl; ExecutablePath = $exe; CreationDate = $t } }
+$map = @{
+    8948 = [pscustomobject]@{ ProcessId = 8948; ParentProcessId = 4; Name = 'explorer.exe'; CommandLine = 'C:\WINDOWS\Explorer.EXE'; ExecutablePath = 'C:\WINDOWS\explorer.exe'; CreationDate = $t.AddHours(-4) }
+    501 = (P 501 "`"$exe`"")
+    502 = (P 502 "`"$exe`"")
+    503 = (P 503 "`"$exe`" -e --path `"$other`"")
+    504 = (P 504 "`"$exe`" `"$(Join-Path $env:PROOF_TMP 'project.godot')`"")
+}
+'PM=' + (Get-GodotRole -Proc $map[501] -Map $map)
+'BARE=' + (Get-GodotRole -Proc $map[502] -Map $map)
+'ARGS=' + (Get-GodotRole -Proc $map[504] -Map $map)
+'LIVE=' + ((@(Get-LiveEditor -Checkout $env:PROOF_TMP -Map $map) | ForEach-Object { $_.ProcessId } | Sort-Object) -join ',')
+"""
+
+
+def project_manager(tmp):
+    """Godot's Project Manager holds no project: it is no editor on any checkout, so it blocks no gate."""
+    rc, out, err = drive(PM_BODY, tmp)
+    got = kv(out)
+    check("a bare-launched Project Manager window is role ProjectManager", rc == 0 and got.get("PM") == "ProjectManager", f"rc={rc} {out!r} {err!r}")
+    check("a bare-launched window with another title stays an Editor", got.get("BARE") == "Editor", f"{out!r}")
+    check("a Project Manager title on a launch that names a project stays an Editor", got.get("ARGS") == "Editor", f"{out!r}")
+    check("Get-LiveEditor skips the Project Manager and keeps the unknown-checkout editors",
+          got.get("LIVE") == "502,504", f"{out!r}")
 
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "agent_fixtures", "linux_proc", "dotnet_test_capture.json")
@@ -256,6 +291,12 @@ def start_stamp(tmp):
     check("on Windows the stamp is the process StartTime in UTC", rc == 0 and kv(out).get("SAME") == "True", f"rc={rc} {out!r}")
     rc, out, _ = drive("$s = Get-ProcessStartStamp -ProcessId 2147483000 -Platform linux -ProcRoot '%s' -ClkTck %d; 'NULL=' + ($null -eq $s)" % (root, clk), tmp)
     check("a process that is gone has no stamp", rc == 0 and kv(out).get("NULL") == "True", f"rc={rc} {out!r}")
+    def exited(stat, cmdline):
+        head, _, tail = stat.rpartition(")")
+        return head + ") Z " + tail.split(" ", 2)[2], cmdline
+    zombie = plant_proc_root(tmp, "procroot_zombie", fix, {"736": exited})
+    rc, out, _ = drive("$s = Get-ProcessStartStamp -ProcessId 736 -Platform linux -ProcRoot '%s' -ClkTck %d; 'NULL=' + ($null -eq $s)" % (zombie, clk), tmp)
+    check("an exited process nobody has reaped has no stamp", rc == 0 and kv(out).get("NULL") == "True", f"rc={rc} {out!r}")
     uses = code_leaks(r"\.StartTime\b")
     check("no script outside GodotProcess.ps1 reads a process StartTime as its identity", not uses, "; ".join(uses[:12]))
 
@@ -328,8 +369,60 @@ def process_tree(tmp):
         calls = [line.strip() for line in open(log, encoding="utf-8").read().splitlines()] if os.path.exists(log) else []
         check("on Linux a process whose kill failed is resumed, not left stopped",
               "-KILL 2147483000" in calls and "-CONT 2147483000" in calls, f"{calls!r}")
+    kill_waits(tmp)
     kills = code_leaks(r"\btaskkill\b")
     check("no script outside GodotProcess.ps1 calls taskkill", not kills, "; ".join(kills[:12]))
+
+
+def kill_waits(tmp):
+    """On Linux a SIGKILL lands later than kill returns: Stop-ProcessTree returns once the process reads gone, within its bound."""
+    root = os.path.join(tmp, "procroot_dying")
+    os.makedirs(os.path.join(root, "4242"), exist_ok=True)
+    with open(os.path.join(root, "stat"), "w", encoding="utf-8", newline="\n") as f:
+        f.write("cpu  1 2 3 4\nbtime 1700000000\n")
+    stat_path = os.path.join(root, "4242", "stat")
+
+    def plant(state):
+        with open(stat_path, "w", encoding="utf-8", newline="\n") as f:
+            f.write("4242 (sleep) " + " ".join([state, "1"] + ["0"] * 17 + ["5000"] + ["0"] * 5) + "\n")
+    plant("S")
+    with open(os.path.join(root, "4242", "cmdline"), "wb") as f:
+        f.write(b"sleep\x00600\x00")
+    fake = os.path.join(tmp, "killbin_ok")
+    os.makedirs(fake, exist_ok=True)
+    with open(os.path.join(fake, "kill"), "w", encoding="utf-8", newline="\n") as f:
+        f.write('#!/bin/sh\n[ "$1" = "-KILL" ] && echo x > "$PROOF_TMP/killed"\nexit 0\n')
+    os.chmod(os.path.join(fake, "kill"), 0o755)
+    with open(os.path.join(fake, "kill.cmd"), "w", encoding="utf-8", newline="\r\n") as f:
+        f.write('@if "%1"=="-KILL" echo x> "%PROOF_TMP%\\killed"\n@exit /b 0\n')
+    env = {"PATH": fake + os.pathsep + os.environ.get("PATH", "")}
+    marker = os.path.join(tmp, "killed")
+    proot = root.replace("\\", "/")
+    body = ("$sw = [Diagnostics.Stopwatch]::StartNew(); "
+            "$out = @(Stop-ProcessTree -ProcessId 4242 -Platform linux -ProcRoot '%s' %s); "
+            "'MS=' + $sw.ElapsedMilliseconds; 'EMITTED=' + $out.Count; "
+            "'STATE=' + ([IO.File]::ReadAllText('%s/4242/stat').Split(' ')[2])")
+
+    def die_later():
+        deadline = time.time() + 60
+        while not os.path.exists(marker) and time.time() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.8)
+        plant("Z")
+    flip = threading.Thread(target=die_later, daemon=True)
+    flip.start()
+    rc, out, _ = drive(body % (proot, "", proot), tmp, env)
+    flip.join(5)
+    got = kv(out)
+    check("on Linux Stop-ProcessTree returns only once the killed process reads gone",
+          rc == 0 and got.get("STATE") == "Z" and got.get("EMITTED") == "0", f"rc={rc} {out!r}")
+    if os.path.exists(marker):
+        os.remove(marker)
+    plant("S")
+    rc, out, _ = drive(body % (proot, "-WaitMs 1000", proot), tmp, env)
+    got = kv(out)
+    check("a process that never reads gone ends the wait at its bound, quietly",
+          rc == 0 and 900 <= int(got.get("MS", "0")) < 5000 and got.get("EMITTED") == "0", f"rc={rc} {out!r}")
 
 
 if __name__ == "__main__":

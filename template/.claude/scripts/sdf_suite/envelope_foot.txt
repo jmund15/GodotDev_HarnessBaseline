@@ -1,0 +1,5 @@
+===== END TASK =====
+
+Respond now with your complete answer to the task above, in the exact form the task asked for.
+If you are returning a structured object, that complete answer goes verbatim in its `answer` field,
+with `extra_files_read` = 0 and `computed_with_tools` = false unless you actually used a tool.

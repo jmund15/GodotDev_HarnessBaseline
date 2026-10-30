@@ -86,14 +86,17 @@
 #       -p bypassPermissions: grant the one path instead of disarming the
 #       whole permission system. VERIFY the read actually lands — a grant
 #       that silently misses turns a check into a false empty.
-#   -G  delegate guard shape: any|survey|review|author (default: unset ->
-#       hooks/session_model_rails.py falls back to `any`). Exported as
-#       CLAUDE_CODE_SIDECAR_SHAPE; the hook inlines .claude/guards/any.md PLUS
-#       .claude/guards/<shape>.md on the child's SessionStart, assembled by
+#   -G  job kind, required: scout|lens|reviewer|author|judge (guards/tool_profiles.json
+#       `kinds`; the internal arm|bench-score|bench-review too). Omitting -G refuses (exit 2). The
+#       kind's row sets built-ins, MCP servers, disclosure and guard text, so -D refuses (only
+#       -G arm takes it) and an unsigned -t refuses (a signed delta stays legal). Exported as
+#       CLAUDE_CODE_SIDECAR_KIND; the hook inlines .claude/guards/any.md PLUS
+#       the kind's guard file on the child's SessionStart, assembled by
 #       tools/guard_text.py. any.md carries the rules binding every delegate, so
 #       it is concatenated rather than left as a pointer the child may not follow.
 #       Tier is detailed unless CLAUDE_CODE_SIDECAR_TIER says otherwise.
-#   -D  disclosure tier       bare|pointer|full (default: full). `bare`: child
+#   -D  refused: disclosure follows the kind (scout bare, lens pointer, reviewer/author/judge full); only
+#       -G arm takes -D, bare|pointer|full. `bare`: child
 #       runs from an empty scratch run-cwd — vendor prompt + CLI only; user-level
 #       config is intentionally KEPT (isolating CLAUDE_CONFIG_DIR would drop
 #       marketplace MCP tools, and the dial is a token-disclosure lever, not a
@@ -284,7 +287,7 @@ run_claude() {
     CLAUDE_CODE_SIDECAR="$SC_TRANSPORT" \
     CLAUDE_CODE_MAX_CONTEXT_TOKENS="${MAX_CONTEXT_TOKENS:-$SC_CONTEXT_TOKENS}" \
     ${SC_MAX_OUTPUT:+CLAUDE_CODE_MAX_OUTPUT_TOKENS="$SC_MAX_OUTPUT"} \
-    ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_SHAPE="$SC_SHAPE"} \
+    ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_KIND="$SC_SHAPE"} \
     ${SC_TIMEOUT:+timeout} ${SC_TIMEOUT:+"$SC_TIMEOUT"} \
     "$SC_CLAUDE" -p \
       --model "$SC_MODEL" \

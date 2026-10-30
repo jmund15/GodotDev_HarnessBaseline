@@ -12,7 +12,7 @@ because that is what `--mcp-config` and a launcher's strict config must name. An
 server is an error, not a warning: a strict config that quietly drops a server runs the job on an
 inventory nobody chose.
 
-`--tier` is the job's written tier: it replaces the shape row's `tier` in the profile, which a sidecar
+`--tier` is the job's written tier: it replaces the shape or kind row's `tier` in the profile, which a sidecar
 record archives as the run's role tier. An unknown tier refuses with the known list.
 
 CLI:
@@ -101,7 +101,47 @@ def load_table(path=None):
             raise ValueError("table has no %s" % key)
     if table.get("defaultShape") not in shapes:
         raise ValueError("defaultShape %r is not a shape" % table.get("defaultShape"))
+    if "kinds" in table:
+        _validate_kinds(table["kinds"])
     return table
+
+
+KIND_ROUTES = ("launcher", "fanout", "engine", "agent")
+KIND_DISCLOSURES = ("bare", "pointer", "full")
+
+
+def _validate_kinds(kinds):
+    if not isinstance(kinds, dict) or not kinds:
+        raise ValueError("table has an empty kinds block")
+    by_agent = {}
+    for name, row in kinds.items():
+        if not isinstance(row, dict):
+            raise ValueError("kind %r is not an object" % name)
+        builtins = row.get("builtins")
+        if builtins is not None and not (isinstance(builtins, list) and builtins):
+            raise ValueError("kind %r: builtins must be a non-empty list or null" % name)
+        if not isinstance(row.get("mcpServers"), list):
+            raise ValueError("kind %r: mcpServers must be a list" % name)
+        if not isinstance(row.get("internal"), bool):
+            raise ValueError("kind %r: internal must be a bool" % name)
+        routes = row.get("routes")
+        if not (isinstance(routes, list) and routes and all(r in KIND_ROUTES for r in routes)):
+            raise ValueError("kind %r: routes must be a non-empty list of %s" % (name, "|".join(KIND_ROUTES)))
+        disclosure = row.get("disclosure")
+        if disclosure is not None and disclosure not in KIND_DISCLOSURES:
+            raise ValueError("kind %r: disclosure must be %s or null" % (name, "|".join(KIND_DISCLOSURES)))
+        agent_type = row.get("agentType")
+        if agent_type is not None:
+            first = by_agent.setdefault(agent_type, name)
+            if (kinds[first]["builtins"], kinds[first]["mcpServers"]) != (builtins, row["mcpServers"]):
+                raise ValueError("kinds %r and %r share agentType %r but carry different built-ins or "
+                                 "mcpServers: one agent file cannot serve both" % (first, name, agent_type))
+
+
+def public_kinds(table=None):
+    """The kinds a job may name, read from the table (rows with `internal: false`), in table order."""
+    table = table or load_table()
+    return [name for name, row in (table.get("kinds") or {}).items() if not row["internal"]]
 
 
 def split_csv(value):
@@ -358,7 +398,8 @@ def strict_mcp_config(keys, candidates):
 
 def resolve(shape, tools_csv="", add=(), remove=(), base_builtins=None,
             candidates=None, table=None, registered=None, walk_mcp=True, tier=None):
-    """The resolved profile of one job.
+    """The resolved profile of one job over a `shapes` row. Removed in S5 with `brief_requirements`;
+    launchers and the fan-out resolve through `resolve_kind`.
 
     `tier` is the job's written tier: it replaces the shape row's `tier` in the profile, canonicalized
     (`validation` folds onto `fanout`); an unknown one raises `model_registry.RegistryError`.
@@ -373,7 +414,13 @@ def resolve(shape, tools_csv="", add=(), remove=(), base_builtins=None,
     if shape not in shapes:
         raise ValueError("unknown shape %r (legal: %s)"
                          % (shape, ", ".join(sorted(shapes))))
-    row = shapes[shape]
+    return _resolve_row(shape, shapes[shape], tools_csv, add, remove, base_builtins, candidates, table,
+                        registered, walk_mcp, tier)
+
+
+def _resolve_row(shape, row, tools_csv, add, remove, base_builtins, candidates, table, registered, walk_mcp,
+                 tier=None):
+    """`resolve` over one row (a `shapes` row or a `kinds` row) named `shape`."""
     default_builtins = row["builtins"]
     default_servers = list(row["mcpServers"])
 
@@ -481,6 +528,69 @@ def resolve(shape, tools_csv="", add=(), remove=(), base_builtins=None,
     elif row.get("tier"):
         profile["tier"] = row["tier"]
     return profile, tool_spec(profile, keys), keys
+
+
+def resolve_kind(kind, add=(), remove=(), *, route, table=None, base_builtins=None, candidates=None,
+                 registered=None, walk_mcp=True, tools_csv="", tier=None):
+    """The resolved profile of one job by its `kind` row: built-ins, MCP servers, disclosure, guard,
+    agentType and tier. `tier` is the job's written tier: it replaces the row's, canonicalized
+    (`validation` folds onto `fanout`); an unknown one raises `model_registry.RegistryError`. `route` is the caller's route (launcher|fanout|engine|agent); an internal kind
+    is open only to the routes its row lists. An unsigned `tools_csv` (the retired absolute `-t` list)
+    and `base_builtins` are legal only on the internal `arm` kind, whose row carries its task's built-ins."""
+    table = table or load_table()
+    kinds = table.get("kinds") or {}
+    public = public_kinds(table)
+    if kind not in kinds:
+        raise ValueError("unknown kind %r: a job names one of: %s" % (kind, ", ".join(public)))
+    row = kinds[kind]
+    if route not in row["routes"]:
+        raise ValueError("kind %r is internal to %s; a %s job names one of: %s"
+                         % (kind, ", ".join(row["routes"]), route, ", ".join(public)))
+    if kind != "arm":
+        if parse_tools_csv(tools_csv)[0] == "legacy-replace":
+            raise ValueError("-t %s is an absolute tool list, which a kind does not take: pass -G <kind> "
+                             "(%s) and a signed delta (-t +Bash or -t -mcp:ai-worker)"
+                             % (tools_csv, ", ".join(public)))
+        if base_builtins is not None and route == "launcher":
+            raise ValueError("-B is the task row of -G arm, not a flag of -G %s" % kind)
+    profile, _spec, keys = _resolve_row(kind, row, tools_csv, add, remove, base_builtins, candidates, table,
+                                        registered, walk_mcp)
+    writes = [a for a in profile["add"] if a in ("Edit", "Write")]
+    if writes and kind not in ("author", "arm"):
+        raise ValueError("%s on kind %r: a job that writes is an author: use kind author"
+                         % (", ".join(writes), kind))
+    del profile["shape"]
+    profile["kind"] = kind
+    profile["disclosure"] = row.get("disclosure")
+    profile["guard"] = row.get("guard")
+    for key in ("agentType", "tier"):
+        if row.get(key):
+            profile[key] = row[key]
+        else:
+            profile.pop(key, None)
+    if tier:
+        import model_registry
+        profile["tier"] = model_registry.canonical_tier(tier)
+    return profile, tool_spec(profile, keys), keys
+
+
+def job_kind_shape(job, table=None):
+    """A job's old shape name, for readers outside the launcher contract that still compare
+    `any|survey|review|author|arm|bench-score|verify`: its kind row's guard name (else the kind itself
+    where the row has no guard text), or the job's own `shape` when it carries no `kind`. Removed in S5
+    with the readers it serves (`_dispatch_pins.py`, `workflow_provider_guard.py`, the JS engines).
+    Reads only the job dict's `kind` and `shape` keys, never an `inv` record."""
+    kind = job.get("kind")
+    if kind:
+        return (table or load_table())["kinds"][kind].get("guard") or kind
+    return job.get("shape")
+
+
+def kind_guard(kind, table=None):
+    """The guard file set a kind's row names (`survey`, `review`, `author`, `any`, `arm`), else the kind
+    itself (`bench-score` has no row guard). None for an unknown kind."""
+    row = (table or load_table())["kinds"].get(kind)
+    return None if row is None else (row.get("guard") or kind)
 
 
 def tool_spec(profile, keys):
@@ -1393,6 +1503,18 @@ def main(argv=None):
     res.add_argument("--widen", action="store_true",
                      help="a launcher's call: add the built-ins the brief runs instead of refusing; a lint "
                           "over authored briefs omits it and keeps the refusal")
+    rk = sub.add_parser("resolve-kind", help="the launcher's resolver: -G <kind> plus a signed -t delta")
+    rk.add_argument("--kind", required=True)
+    rk.add_argument("--tools", default="")
+    rk.add_argument("--tier", default="",
+                    help="the job's written tier; it replaces the kind row's tier in the profile")
+    rk.add_argument("--base-builtins", default=None)
+    rk.add_argument("--config-dir", default="")
+    rk.add_argument("--workdir", default="")
+    rk.add_argument("--field", default="profile", choices=FIELDS)
+    kr = sub.add_parser("kind-row", help="a launcher kind's disclosure (empty for arm) or guard, after the route check")
+    kr.add_argument("--kind", required=True)
+    kr.add_argument("--field", default="disclosure", choices=("disclosure", "guard"))
     mcp = sub.add_parser("mcp-config")
     mcp.add_argument("spec")
     mcp.add_argument("config_dir", nargs="?", default="")
@@ -1418,6 +1540,18 @@ def main(argv=None):
         if args.cmd == "agents":
             return sync_agents(write=args.write, check=args.check, table_path=args.table,
                                agents_dir=args.agents_dir)
+        if args.cmd == "kind-row":
+            table = load_table()
+            if args.kind not in (table.get("kinds") or {}) or "launcher" not in table["kinds"][args.kind]["routes"]:
+                resolve_kind(args.kind, route="launcher", table=table, walk_mcp=False)   # raises with the public kinds
+            print(table["kinds"][args.kind].get(args.field) or (args.kind if args.field == "guard" else ""))
+            return 0
+        if args.cmd == "resolve-kind":
+            base = split_csv(args.base_builtins) if args.base_builtins is not None else None
+            candidates = load_registrations(args.config_dir, args.workdir)
+            _report(resolve_kind(args.kind, route="launcher", tools_csv=args.tools, base_builtins=base,
+                                 candidates=candidates, tier=args.tier or None), args.field, candidates)
+            return 0
         if args.cmd == "mcp-config":
             print(json.dumps(mcp_config_for(args.spec, args.config_dir,
                                             os.environ.get("SC_WORKDIR", "")),

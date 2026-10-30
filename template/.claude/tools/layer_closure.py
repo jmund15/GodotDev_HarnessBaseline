@@ -608,11 +608,12 @@ def registration_findings(tree: Tree, check: set[str] | None = None) -> list[Fin
 
 
 def scan(root: Path, layers: dict[str, str], check: set[str] | None = None) -> list[Finding]:
-    """Findings for every file in `check` (default: every shipped file) that exists under `root`."""
+    """Findings for every file in `check` (default: every shipped file) that exists under `root`. A file under
+    a test fixture tree is a frozen copy a proof reads as data, so its citations are never checked."""
     tree = Tree(Path(root), layers)
     findings = []
     for source in sorted(check if check is not None else layers):
-        if source not in layers:
+        if source not in layers or FIXTURE_TREE in source:
             continue
         path = tree.root / source
         try:

@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -54,11 +55,12 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
             return ""
         return json.loads(run.stdout)["hookSpecificOutput"]["additionalContext"]
 
-    for notice in ("killed", "stopped"):
+    # A completed notice wakes the session too: any other sidecar still running without a watcher is advised then.
+    for notice in ("killed", "stopped", "completed"):
         output = dispatch(notice)
         check(WATCH_COMMAND in output and GROUP in output and str(record) in output,
               notice + " notice names the uncovered record and the wake route", output)
-    check("watch_records.py" not in dispatch("completed"), "completed notice is silent")
+    check("watch_records.py" not in dispatch("failed"), "a notice status outside the wake set is silent")
     check("watch_records.py" not in dispatch("", "Owner asks a question"), "owner prompt is silent")
 
     state_file.write_text(json.dumps({"dispatch_table_pending": []}))
@@ -139,5 +141,29 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
     check(str(record) in dispatch("killed"), "non-dict pending entries are skipped, the real one advised")
     state_file.write_text("{not json")
     check("watch_records.py" not in dispatch("killed"), "an unrecoverable state file stays silent")
+
+    launch = [json.loads(line) for line in (ROOT / "tests" / "fixtures" / "sidecar_watch_rearm"
+                                             / "workflow_launch.jsonl").read_text(encoding="utf-8").splitlines()]
+    result = next(block["content"] for row in launch for block in row["message"]["content"]
+                  if isinstance(block, dict) and block.get("type") == "tool_result")
+    result = result if isinstance(result, str) else result[0]["text"]
+    run_id = re.search(r"Run ID: (\S+)", result).group(1)
+    session_dir = root / "session"
+    run_dir = session_dir / "subagents" / "workflows" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "journal.jsonl").write_text("")
+    workflow_entry = {"kind": "workflow", "id": run_id, "name": "dispatch", "run_dir": str(run_dir),
+                      "launched_at": time.time(), "jobs": []}
+    state_file.write_text(json.dumps({"dispatch_table_pending": [workflow_entry]}))
+    output = dispatch("killed")
+    check(WATCH_COMMAND in output and GROUP in output and str(run_dir) in output,
+          "workflow-only session gets the re-arm reminder for its running run", output)
+    watched = {"process": process(os.getpid()), "records": [], "session": True}
+    state_file.write_text(json.dumps({"dispatch_table_pending": [workflow_entry], "sidecar_watchers": [watched]}))
+    check("watch_records.py" not in dispatch("killed"), "a live session watcher covers the running workflow")
+    state_file.write_text(json.dumps({"dispatch_table_pending": [workflow_entry]}))
+    (session_dir / "workflows").mkdir()
+    (session_dir / "workflows" / (run_id + ".json")).write_text(json.dumps({"status": "completed"}))
+    check("watch_records.py" not in dispatch("killed"), "a workflow with a terminal host record is silent")
 
 print("test_sidecar_watch_rearm: %d passed, 0 failed" % passed)

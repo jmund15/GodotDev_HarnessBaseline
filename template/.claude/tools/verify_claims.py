@@ -259,17 +259,43 @@ def resolve_path(root, value):
     return _resolve(_Context(root, None, None, None), value)
 
 
+# Process-wide, and prepared only when an exact hit misses: callers check one claim per check_claims call,
+# and cited sources include live transcripts of tens of MB (an explore journal took 21 minutes in normalize).
+_LOADED = {}
+BINARY = "binary"
+_BINARY_PROBE = 8000  # git's buffer_is_binary window: a NUL byte in it marks the file binary
+
+
 def _body(ctx, path):
+    """[prepared-or-None, text, blob sha] for a text file, BINARY, or None when unreadable."""
     key = str(path)
     if key not in ctx.bodies:
         try:
-            data = Path(path).read_bytes()
-            text = data.decode('utf-8', errors='replace').replace('\r\n', '\n').replace('\r', '\n')
-            ctx.hashes[key] = hashlib.sha1(b'blob ' + str(len(data)).encode('ascii') + b'\0' + data).hexdigest()
-            ctx.bodies[key] = (prepare(text), text)
+            stat = Path(path).stat()
+            stamp = (key, stat.st_size, stat.st_mtime_ns)
+            if stamp not in _LOADED:
+                with open(path, 'rb') as fh:
+                    binary = b'\0' in fh.read(_BINARY_PROBE)
+                if binary:
+                    _LOADED[stamp] = BINARY
+                else:
+                    data = Path(path).read_bytes()
+                    text = data.decode('utf-8', errors='replace').replace('\r\n', '\n').replace('\r', '\n')
+                    digest = hashlib.sha1(b'blob ' + str(len(data)).encode('ascii') + b'\0' + data).hexdigest()
+                    _LOADED[stamp] = [None, text, digest]
+            entry = _LOADED[stamp]
+            if entry != BINARY:
+                ctx.hashes[key] = entry[2]
+            ctx.bodies[key] = entry
         except OSError:
             ctx.bodies[key] = None
     return ctx.bodies[key]
+
+
+def _prepared(entry):
+    if entry[0] is None:
+        entry[0] = prepare(entry[1])
+    return entry[0]
 
 
 def _check_quote(kind, cited, quote, artifact, ctx, legacy):
@@ -290,7 +316,9 @@ def _check_quote(kind, cited, quote, artifact, ctx, legacy):
     held = _body(ctx, source)
     if held is None:
         return _result(kind, UNCHECKED, "unreadable", file=cited, **fingerprint)
-    prepared, text = held
+    if held == BINARY:
+        return _result(kind, UNCHECKED, "binary", file=cited, **fingerprint)
+    text = held[1]
     fingerprint['blobHash'] = ctx.hashes[str(source)]
     extra = {"file": cited, "rangeHit": None, "citedRange": span, **fingerprint}
     if not isinstance(quote, str) or not quote.strip():
@@ -298,10 +326,11 @@ def _check_quote(kind, cited, quote, artifact, ctx, legacy):
     if span:
         lines = text.splitlines()[span[0] - 1:span[1]]
         extra["rangeHit"] = _match(prepare("\n".join(lines)), quote)
-    if not _match(prepared, quote) and not _raw_hit(text, quote):
+    exact = quoted_text(quote).strip()
+    if not (exact and exact in text) and not _match(_prepared(held), quote) and not _raw_hit(text, quote):
         return _result(kind, UNVERIFIED, "quote-absent", **extra)
     if legacy:
-        needle, body = normalize(quoted_text(quote)).casefold(), prepared
+        needle, body = normalize(quoted_text(quote)).casefold(), _prepared(held)
         if not needle:
             needle = re.sub(r"\s+", " ", quoted_text(quote)).strip().casefold()
             body = re.sub(r"\s+", " ", text).casefold()

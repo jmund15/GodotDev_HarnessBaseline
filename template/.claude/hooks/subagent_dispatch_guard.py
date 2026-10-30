@@ -15,6 +15,11 @@ Two kinds of delegate, one rule, two detections:
                         `/subagents/` segment and the path check alone lets it dispatch
                         freely. Both launchers export the var.
 
+A sidecar whose job kind (CLAUDE_CODE_SIDECAR_KIND) has a `guards/tool_profiles.json` row listing the
+called tool passes: the kind table is the one authority on a child's tools, and a row grants a reserved
+dispatch tool only to a driver that pins its own jobs (bench-score's one score_cell.js call). An unknown
+kind or an unreadable table denies.
+
 Main-session calls carry neither signal and pass untouched. With no transcript_path and no
 env var this guard cannot classify, so it passes (fail open) — re-verify both inputs on
 harness upgrades.
@@ -30,6 +35,20 @@ import json
 import os
 import sys
 
+TABLE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "guards", "tool_profiles.json")
+
+
+def kind_grants(tool: str) -> bool:
+    kind = (os.environ.get("CLAUDE_CODE_SIDECAR_KIND") or "").strip().lower()
+    if not kind:
+        return False
+    try:
+        with open(TABLE, encoding="utf-8") as handle:
+            row = (json.load(handle).get("kinds") or {}).get(kind) or {}
+    except (OSError, ValueError):
+        return False
+    return tool in (row.get("builtins") or ())
+
 
 def main() -> None:
     try:
@@ -44,6 +63,8 @@ def main() -> None:
     is_subagent = "/subagents/" in transcript
     is_sidecar = bool(os.environ.get("CLAUDE_CODE_SIDECAR"))
     if not (is_subagent or is_sidecar):
+        sys.exit(0)
+    if not is_subagent and kind_grants(input_data["tool_name"]):
         sys.exit(0)
     role = "delegated agent" if is_subagent else "sidecar child"
 

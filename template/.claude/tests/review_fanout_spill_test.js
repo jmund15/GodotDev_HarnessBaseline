@@ -334,6 +334,7 @@ async function foldCases() {
     ['a non-object ledger', 'plan-check'],
     ['a ledger with no roster', { stage: 'plan-check', subject: LEDGER.subject }],
     ['a task with a space', { ...LEDGER, task: 'a b' }],
+    ['no reviewed file (no scopeJson, blobs or fold subject)', LEDGER],
   ]) {
     const bad = await run({ ...noFoldArgs('full'), ledger }, foldFixtureReply)
     check('args.ledger with ' + label + ' fails before any seat runs', !!bad.result.error && bad.calls.length === 0, JSON.stringify(bad.result.error))
@@ -342,12 +343,15 @@ async function foldCases() {
   const ledgerTuple = name => (ledgerSrc.match(new RegExp('^' + name + ' = \\(([^)]*)\\)', 'm')) || [, ''])[1].match(/"([^"]+)"/g).map(s => s.slice(1, -1))
   const engineStages = (src.match(/const LEDGER_STAGES = \[([^\]]*)\]/) || [, ''])[1].match(/'([^']+)'/g).map(s => s.slice(1, -1))
   check('the engine ledger stages equal review_ledger STAGES', JSON.stringify(engineStages) === JSON.stringify(ledgerTuple('STAGES')), JSON.stringify(engineStages))
+  const SCOPED = { ...LEDGER, scopeJson: '.claude/scratch/fold_fixture/scope.json' }
+  check('args.ledger accepts a blob map in place of a scope file',
+    !(await run({ ...noFoldArgs('full'), ledger: { ...LEDGER, blobs: '.claude/scratch/fold_fixture/blobs.json' } }, foldFixtureReply)).result.error)
   for (const stage of ledgerTuple('STAGES')) {
-    const good = await run({ ...noFoldArgs('full'), ledger: { ...LEDGER, stage } }, foldFixtureReply)
+    const good = await run({ ...noFoldArgs('full'), ledger: { ...SCOPED, stage } }, foldFixtureReply)
     check('args.ledger accepts the review_ledger stage ' + stage, !good.result.error, JSON.stringify(good.result.error))
   }
   for (const kind of ledgerTuple('SUBJECT_KINDS')) {
-    const good = await run({ ...noFoldArgs('full'), ledger: { ...LEDGER, subject: kind + ':x.md' } }, foldFixtureReply)
+    const good = await run({ ...noFoldArgs('full'), ledger: { ...SCOPED, subject: kind + ':x.md' } }, foldFixtureReply)
     check('args.ledger accepts the review_ledger subject kind ' + kind, !good.result.error, JSON.stringify(good.result.error))
   }
   const ledgered = await run({ ...noFoldArgs('full'), ledger: { ...LEDGER, noNewDecision: true, scopeJson: '.claude/scratch/fold_fixture/scope.json', task: 'urf-1' } }, foldFixtureReply)

@@ -98,8 +98,8 @@ function Get-TreeDigest {
     # never on how they were committed. The map starts from every `git ls-tree -r HEAD` blob
     # (path|blobsha), then each porcelain path overrides its entry with the WORKING file's
     # `git hash-object` (covers staged+unstaged identically; binaries hash raw bytes) or
-    # removes it when the file is gone. A gitlink (submodule) contributes its checked-out sha
-    # and recurses into that checkout's changed paths under the jm/ prefix. The digest is the
+    # removes it when the file is gone. A checked-out submodule contributes its own files the same
+    # way under its path, never its commit sha, so committing inside it keeps the digest. The digest is the
     # SHA-1 of the ordinally sorted `path|value` lines; HEAD is returned for reporting only.
     param([Parameter(Mandatory)][string] $Repo)
     $script:DigestGitFailed = $false
@@ -125,12 +125,18 @@ function Get-TreeDigest {
     foreach ($l in $links) {
         $full = Join-Path $Repo $l
         if (-not (Test-Path (Join-Path $full '.git'))) { continue }
-        $checked = (& git -C $full rev-parse HEAD 2>$null)
-        if ($checked) { $map[$l] = "gitlink|$checked" }
+        $subTree = @(& git -C $full -c core.quotepath=false ls-tree -r HEAD 2>$null)
+        if ($LASTEXITCODE -ne 0) { $script:DigestGitFailed = $true; continue }
+        [void]$map.Remove($l)
+        foreach ($line in $subTree) {
+            $tab = $line.IndexOf("`t")
+            if ($tab -lt 0) { continue }
+            $map["$l/$($line.Substring($tab + 1).Trim('"'))"] = ($line.Substring(0, $tab) -split ' ')[2]
+        }
         $subPaths = @(Get-DigestStatusPaths -Dir $full)
         $subShas  = Get-WorkingBlobShas -Dir $full -Paths $subPaths
         foreach ($p in $subPaths) {
-            $map["jm/$p"] = if ($subShas.ContainsKey($p)) { $subShas[$p] } else { 'DELETED' }
+            if ($subShas.ContainsKey($p)) { $map["$l/$p"] = $subShas[$p] } else { [void]$map.Remove("$l/$p") }
         }
     }
 

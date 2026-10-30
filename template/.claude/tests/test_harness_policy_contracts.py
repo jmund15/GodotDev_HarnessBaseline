@@ -46,7 +46,8 @@ class PolicyContracts(unittest.TestCase):
 
     def orchestration_doctrine(self):
         return '\n'.join(self.read('skills/orchestration/' + part)
-                         for part in ('SKILL.md', 'reference/checkpointing.md', 'reference/model_evidence.md'))
+                         for part in ('SKILL.md', 'reference/checkpointing.md', 'reference/model_evidence.md',
+                                      'reference/integration.md'))
 
     def test_metrics_candidates_are_advisory_in_all_consumers(self):
         for path in ('skills/orchestration/SKILL.md', 'commands/orchestration_metrics.md', 'commands/eval_dashboard.md'):

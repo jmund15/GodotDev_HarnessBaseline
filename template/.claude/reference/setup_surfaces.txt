@@ -1,0 +1,6 @@
+# Setup surfaces: files outside the harness directories whose change must run their bound proofs
+# (read by hooks/_hook_state.py as SETUP_SURFACE_FILES). One repository-relative path per line.
+.mcp.json
+.claude/cloud-setup.sh
+.claude/reference/project_stack.md
+.claude/skills/project_subsystems/adaptation.json

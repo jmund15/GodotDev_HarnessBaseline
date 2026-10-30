@@ -214,6 +214,10 @@
       {"id": "gpt-6-sol", "until": "2026-09-29", "evidence": "Served as `sol` from the O-alias remap (2026-09-22); the alias moved to gpt-6.1-sol on 2026-09-29 once the proxy build serving it passed a direct request. Codex records carry attestedModel, so the boundary labels none of them."},
       {"id": "gpt-6.1-sol"}
     ],
+    "terra": [
+      {"id": "gpt-5.6-terra", "since": "2026-09-04", "until": "2026-10-27", "evidence": "Registered as `terra` 2026-09-04 (probe2.sh proxy capture reached upstream as gpt-5.6-terra). The boundary is this registry's remap to gpt-6.1-terra on 2026-10-27; codex records carry attestedModel, so the boundary labels none of them."},
+      {"id": "gpt-6.1-terra"}
+    ],
     "muse": [
       {"id": "muse-spark-1.2-contributor-free", "since": "2026-08-22T16:37:33Z", "until": "2026-09-04T05:34:09Z", "evidence": "Registered as `muse` by commit 54f11f5f0 (2026-08-22T16:37:33Z); last 1.2 arm record 2026-08-26T08:33:34Z (requestedModel), first 1.3 arm record 2026-09-04T05:34:09Z (servedModel); the registry commit 437c2d695 later that day recorded the move."},
       {"id": "muse-spark-1.3-contributor-free"}
@@ -375,13 +379,39 @@
       }
     },
     {
-      "id": "gpt-5.6-terra",
+      "id": "gpt-6.1-terra",
       "alias": "terra",
       "transport": "codex",
-      "label": "GPT-5.6 Terra", "family": "terra", "version": "gpt-5.6-terra", "lifecycle": "current", "order": 75, "costRank": 1, "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
+      "label": "GPT-6.1 Terra", "family": "terra", "version": "gpt-6.1-terra", "lifecycle": "current", "order": 74, "costRank": 1, "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
+      "prior": "mid",
+      "_priorComment": "Owner's stated expectation 2026-09-14 for the terra family (terra ~ sonnet); intake input only, not a measurement.",
+      "_comment": "Replaces gpt-5.6-terra under alias `terra` (2026-10-27, owner request to ingest it). Listed in ~/.codex/models_cache.json (fetched 2026-10-27T16:06Z, client 0.159.0) as gpt-6.1-terra: context_window 500000, max_context_window 872000, reasoning low..ultra (default low). effortValues follow that catalog, the transport's own vocabulary; OpenAI's API page lists none..max instead. The predecessor held no roles and no measured effort, so there is nothing to inherit: roles [] and effort unmeasured until bench intake scores land.",
+      "roles": [],
+      "price": {"cacheMissPer1M": 1.0, "cacheHitPer1M": 0.05, "cacheWritePer1M": 1.25, "outputPer1M": 5.0, "currency": "USD", "asOf": "2026-10-27", "source": "https://developers.openai.com/api/docs/models/gpt-6.1-terra"},
+      "_limitsSource": "contextTokens 500000 and maxContextTokens 872000 from ~/.codex/models_cache.json (2026-10-27). The API page states 1,050,000 context and 128,000 max output; maxOutputTokens stays null like every codex row, since the proxied client reports its own default. No compactAtTokens: input past 272k bills at the long-context tier (2x input and cache, 1.5x output, API page), and lifting the step cap was an owner trade made for sol only.",
+      "limits": {
+        "contextTokens": 500000,
+        "maxContextTokens": 872000,
+        "effectiveContextPercent": 95,
+        "maxOutputTokens": null,
+        "concurrency": null
+      },
+      "effort": {
+        "avoid": [],
+        "evidence": "unmeasured",
+        "_evidenceComment": "No battery cell has run on this row, so it holds no rung and states UNMEASURED."
+      },
+      "authTier": "open",
+      "gate": {"minBand": "Surplus"}
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "alias": "terra56",
+      "transport": "codex",
+      "label": "GPT-5.6 Terra", "family": "terra", "version": "gpt-5.6-terra", "lifecycle": "superseded", "order": 75, "costRank": 1, "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
       "prior": "mid",
       "_priorComment": "Owner's stated expectation 2026-09-14 (terra ~ sonnet); intake input only, not a measurement.",
-      "_comment": "Registered 2026-09-04, deliberately UNROUTED. `roles: []` means dispatchable by explicit alias (-m terra) and never auto-selected to fill a role: a `roles` array is a routing claim requiring capability evidence or a dated owner statement, and neither supports a tier here. Upstream reachability IS measured: a request pinning this id reached upstream as gpt-5.6-terra (probe2.sh, 2026-09-04, proxy traffic capture). Effort is unmeasured, so any -e is a guess, not a pin you can defend.",
+      "_comment": "SUPERSEDED by gpt-6.1-terra (bare alias `terra`, 2026-10-27); reachable as `terra56`. Registered 2026-09-04, deliberately UNROUTED. `roles: []` means dispatchable by explicit alias (-m terra) and never auto-selected to fill a role: a `roles` array is a routing claim requiring capability evidence or a dated owner statement, and neither supports a tier here. Upstream reachability IS measured: a request pinning this id reached upstream as gpt-5.6-terra (probe2.sh, 2026-09-04, proxy traffic capture). Effort is unmeasured, so any -e is a guess, not a pin you can defend.",
       "roles": [],
       "priceGap": {"reason": "The OpenAI pricing page lists no gpt-5.6-terra row.", "checked": "https://developers.openai.com/api/docs/pricing", "asOf": "2026-09-30"},
       "limits": {

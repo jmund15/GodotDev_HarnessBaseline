@@ -29,8 +29,9 @@ the reading is past its long-context point. These are facts for the reader: no c
 `spare_plan_fact(tier, transport, data)` adds one fact when a row claiming `tier` on another plan projects
 quota unused at its reset: `<alias> on <plan>: ~N% unused at reset in Dd`, read from the capacity cache only.
 
-`shape_tiers()` reads each shape row's tier from `guards/tool_profiles.json` for both routes. `job_tier(shape,
-written)` is the sidecar route's one resolution: the job's written `tier`, else its shape row's.
+`shape_tiers()` reads each shape row's tier from `guards/tool_profiles.json` for both routes; `kind_tiers()` reads
+each kind row's, for a job that carries `kind`. `job_tier(kind, written)` is the sidecar route's one resolution:
+the job's written `tier`, else its kind row's.
 Capacity is read through `provider_bands.read_capacity`: the fresh cache, else one live read while
 the caller's deadline (`set_deadline`) leaves room for `provider_capacity.LIVE_BUDGET_SECONDS`.
 """
@@ -73,8 +74,20 @@ def shape_tiers():
     return {name: row["tier"] for name, row in rows.items() if isinstance(row.get("tier"), str)}
 
 
-def job_tier(shape, written=None):
-    """(tier, source) a sidecar job's pin must serve: its written `tier`, else its `shape` row's, else (None, None).
+def kind_tiers():
+    """{kind: tier} for every kind row of the tool-profile table that declares one, or {}. A job that
+    carries `kind` takes its tier from here; a `judge` is an executor-role job."""
+    try:
+        rows = _tp().load_table().get("kinds") or {}
+    except Exception:
+        return {}
+    return {name: row["tier"] for name, row in rows.items() if isinstance(row.get("tier"), str)}
+
+
+def job_tier(kind, written=None):
+    """(tier, source) a job's pin must serve: its written `tier`, else its `kind` row's, else (None, None). A job
+    that names a Workflow-args `shape` instead of a kind passes it as `kind`; with no kind row of that name, the
+    shape row's tier applies.
 
     A written tier is canonical (`validation` folds onto `fanout`); an unknown one raises ValueError naming the known tiers."""
     if written:
@@ -82,8 +95,11 @@ def job_tier(shape, written=None):
             return model_registry.canonical_tier(str(written)), "the job's `tier`"
         except model_registry.RegistryError as err:
             raise ValueError(str(err)) from None
-    tier = shape_tiers().get(shape)
-    return (tier, f"shape `{shape}`") if tier else (None, None)
+    tier = kind_tiers().get(kind)
+    if tier:
+        return tier, f"kind `{kind}`"
+    tier = shape_tiers().get(kind)
+    return (tier, f"shape `{kind}`") if tier else (None, None)
 
 
 def tier_fit(model, tier, transport, data, pin_name=None):
@@ -287,7 +303,7 @@ def spare_plan_fact(tier, transport, data=None, now=None, read=None):
             if plan == transport:
                 continue
             rows = tier_rows(tier, plan, data)
-            if not rows:
+            if plan == transport or not rows:
                 continue
             row = provider_bands.plan_room(plan, data, read, now)
             pct = provider_bands.spare_pct(row) if row.get("room") is not None else None

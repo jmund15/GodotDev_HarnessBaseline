@@ -13,10 +13,12 @@ HOOK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 FAILURES = []
 
 
-def run(payload, sidecar=False):
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SIDECAR"}
+def run(payload, sidecar=False, kind=None):
+    env = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_SIDECAR_KIND")}
     if sidecar:
         env["CLAUDE_CODE_SIDECAR"] = "1"
+    if kind:
+        env["CLAUDE_CODE_SIDECAR_KIND"] = kind
     r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
                        text=True, encoding="utf-8", timeout=30, env=env)
     return r.returncode, r.stdout, r.stderr
@@ -40,6 +42,24 @@ check("an Agent call from a delegate transcript is denied", rc == 0 and denied(o
 
 rc, out, err = run({"tool_name": "Workflow", "transcript_path": "/proof/root/projects/session/session.jsonl"}, sidecar=True)
 check("a Workflow call from a sidecar child is denied", rc == 0 and denied(out), out + err)
+
+MAIN = "/proof/root/projects/session/session.jsonl"
+rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="bench-score")
+check("a Workflow call from a sidecar whose kind row lists Workflow (bench-score) passes silently",
+      rc == 0 and out == "", out + err)
+
+rc, out, err = run({"tool_name": "Agent", "transcript_path": MAIN}, sidecar=True, kind="bench-score")
+check("an Agent call from a bench-score sidecar, whose row lists only Workflow, is denied", rc == 0 and denied(out), out + err)
+
+rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="judge")
+check("a Workflow call from a judge sidecar, whose row lists no Workflow, is denied", rc == 0 and denied(out), out + err)
+
+rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="no-such-kind")
+check("a Workflow call from a sidecar of an unknown kind is denied", rc == 0 and denied(out), out + err)
+
+rc, out, err = run({"tool_name": "Workflow", "transcript_path": "/proof/root/projects/session/subagents/agent-1.jsonl"},
+                   kind="bench-score")
+check("a delegate transcript is denied whatever kind its environment names", rc == 0 and denied(out), out + err)
 
 rc, out, err = run({"tool_name": "Agent", "transcript_path": "/proof/root/projects/session/session.jsonl"})
 check("an Agent call from the main session passes silently", rc == 0 and out == "", out + err)

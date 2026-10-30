@@ -115,7 +115,7 @@ def case(name, fn):
 
 
 # ---- 1. one job spec ---------------------------------------------------------------------------
-DJOB = {"label": "dj", "model": "fake-model-1", "promptPath": PROMPT, "contextPath": CTX, "shape": "survey"}
+DJOB = {"label": "dj", "model": "fake-model-1", "promptPath": PROMPT, "contextPath": CTX, "kind": "lens"}
 
 case("a job in dispatch.js field names plans",
      lambda: flag_values(plan(DJOB)[1], "-f") == [posix(PROMPT)]
@@ -134,8 +134,8 @@ case("a non-string dispatch.js field refuses",
      lambda: refuses(dict(DJOB, contextPath=[CTX]), "contextPath"))
 
 WRAP = {"contextPath": posix(CTX), "jobs": [
-    {"label": "w1", "model": "fakem", "promptPath": PROMPT, "shape": "author"},
-    {"label": "w2", "model": "fakem", "promptPath": PROMPT2, "shape": "survey"},
+    {"label": "w1", "model": "fakem", "promptPath": PROMPT, "kind": "author"},
+    {"label": "w2", "model": "fakem", "promptPath": PROMPT2, "kind": "lens"},
 ]}
 _wrap_code, _wrap_out = run_main(WRAP, "wrap", "--max-parallel", "2")
 case("a dispatch.js args object {jobs, contextPath} runs end to end",
@@ -152,7 +152,7 @@ case("every ended job writes <label>.md equal to its final message",
      lambda: open(os.path.join(_wrap_out, "w1.md"), encoding="utf-8").read() == "deliverable of w1\nsecond line"
      and open(os.path.join(_wrap_out, "w2.md"), encoding="utf-8").read() == "deliverable of w2\nsecond line")
 
-_mute_code, _mute_out = run_main([{"label": "mute", "alias": "fakem", "promptFile": PROMPT, "shape": "survey"}],
+_mute_code, _mute_out = run_main([{"label": "mute", "alias": "fakem", "promptFile": PROMPT, "kind": "lens"}],
                                  "mute")
 case("a job with no final message fails its close check and writes no <label>.md",
      lambda: _mute_code == 1 and not os.path.exists(os.path.join(_mute_out, "mute.md")))
@@ -197,8 +197,8 @@ case("a single job adds no guard",
 
 
 _fw_code, _fw_out = run_main({"jobs": [
-    {"label": "fw1", "alias": "fakem", "effort": "high", "promptFile": PROMPT, "window": "full"},
-    {"label": "fw2", "alias": "fakem", "effort": "high", "promptFile": PROMPT2}]}, "fullwin", "--max-parallel", "1")
+    {"label": "fw1", "alias": "fakem", "effort": "high", "kind": "scout", "promptFile": PROMPT, "window": "full"},
+    {"label": "fw2", "alias": "fakem", "effort": "high", "kind": "scout", "promptFile": PROMPT2}]}, "fullwin", "--max-parallel", "1")
 
 
 def _fw(label):
@@ -211,7 +211,7 @@ def _fw(label):
 case("a job with window full launches with SIDECAR_FULL_WINDOW=1; the default job's env does not carry it",
      lambda: _fw_code == 0 and _fw("fw1") == "1" and _fw("fw2") == "")
 case("a window value other than full is refused before launch",
-     lambda: refuses({"label": "fw3", "alias": "fakem", "effort": "high", "promptFile": PROMPT, "window": "huge"},
+     lambda: refuses({"label": "fw3", "alias": "fakem", "effort": "high", "kind": "scout", "promptFile": PROMPT, "window": "huge"},
                      "`window`"))
 
 

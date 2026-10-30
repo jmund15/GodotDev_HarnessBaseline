@@ -200,6 +200,8 @@ class Conformance(unittest.TestCase):
                     return "worktree " + str(target) + "\n\n"
                 if args[:2] == ["submodule", "status"]:
                     return " " + "a" * 40 + " child (heads/main)\n"
+                if args[:3] == ["symbolic-ref", "-q", "--short"]:
+                    return ""
                 if args[0] == "status":
                     return "!! secret.local\n" if cwd == sub and "--ignored=matching" in args else ""
                 if args[0] == "rev-list":

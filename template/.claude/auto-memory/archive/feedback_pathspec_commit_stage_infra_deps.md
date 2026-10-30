@@ -4,10 +4,12 @@ description: "Pathspec-committing tests must also stage their (often untracked) 
 metadata: 
   node_type: memory
   type: feedback
+retire_when:
+  - review-by: 2026-12-04
 ---
 
 A pathspec commit (`git commit -- <paths>`, the concurrent-safe idiom) silently excludes any unlisted path — including a test's own mock/builder/fixture dependencies. A dep you READ as if it existed but that's actually untracked WIP gets left out, so the commit doesn't build in a fresh checkout (a later commit / parallel session has to backfill it).
 
 **Why:** existence-on-disk ≠ tracked. A file your tests depend on can be untracked WIP (an interrupted prior session, or a parallel session's in-flight work).
 
-**How to apply:** before a pathspec commit of tests, confirm each test-infra dep (mock/builder/fixture) is tracked via `git ls-files <path>`; stage the untracked ones with your tests. Pairs with [[feedback_separate_preexisting_changes_before_commit]] (exclude foreign) + [[gotcha_concurrent_session_hazards]] (the WIP often comes from a parallel session).
+**How to apply:** before a pathspec commit of tests, confirm each test-infra dep (mock/builder/fixture) is tracked via `git ls-files <path>`; route the untracked ones through `index_commit.py stage` with your tests, as `environment_bootstrap` item 7 prescribes for files a pathspec commit cannot carry. Pairs with [[feedback_separate_preexisting_changes_before_commit]] (exclude foreign) + [[gotcha_concurrent_session_hazards]] (the WIP often comes from a parallel session).

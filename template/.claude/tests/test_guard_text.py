@@ -36,6 +36,12 @@ def planted_tool(tmp):
     os.makedirs(tools)
     os.makedirs(guards)
     shutil.copyfile(TOOL, os.path.join(tools, "guard_text.py"))
+    # guard_text reads the kind table (tool_profiles.py, with plugin_registry.py) from its own tree.
+    real_tools = os.path.dirname(TOOL)
+    for module in ("tool_profiles.py", "plugin_registry.py"):
+        shutil.copyfile(os.path.join(real_tools, module), os.path.join(tools, module))
+    shutil.copyfile(os.path.join(os.path.dirname(real_tools), "guards", "tool_profiles.json"),
+                    os.path.join(guards, "tool_profiles.json"))
     for name, text in PLANTED.items():
         with open(os.path.join(guards, name), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
@@ -84,7 +90,13 @@ def main():
         rc, out, err = run(tool, "survey", "condensed")
         cases.append(("a missing section exits 2 and names it", rc == 2 and out == "" and "no '## condensed' section" in err))
         rc, _, err = run(tool, "planner", "detailed")
-        cases.append(("an unknown shape exits 2 with the legal set", rc == 2 and "any, survey, review, author" in err))
+        cases.append(("an unknown kind exits 2 with the legal set", rc == 2 and "scout" in err and "reviewer" in err
+                      and "bench-score" in err))
+        for kind, guard in (("scout", "survey"), ("lens", "survey"), ("reviewer", "review"), ("judge", "any"),
+                            ("author", "author")):
+            rc, out, _ = run(tool, kind, "detailed")
+            cases.append(("kind %s delivers the %s guard through the table" % (kind, guard),
+                          rc == 0 and out.startswith("[delegate rails — shape '%s', detailed tier" % guard)))
         rc, _, err = run(tool, "review", "loud")
         cases.append(("an unknown tier exits 2 with the legal set", rc == 2 and "detailed, condensed, minimal, none" in err))
         rc, _, err = run(tool, "review", "strict")

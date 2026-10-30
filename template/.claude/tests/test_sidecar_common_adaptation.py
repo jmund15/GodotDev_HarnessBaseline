@@ -86,9 +86,9 @@ class RecordTierProof(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             return json.loads(proc.stdout).get("tier")
 
-        self.assertEqual(profile_tier("review", ""), "executor")
-        self.assertEqual(profile_tier("review", "architect"), "architect")
-        self.assertEqual(profile_tier("survey", "architect"), "architect")
+        self.assertEqual(profile_tier("reviewer", ""), "executor")
+        self.assertEqual(profile_tier("reviewer", "architect"), "architect")
+        self.assertEqual(profile_tier("scout", "validation"), "fanout")
 
 
 class AmendLineProof(unittest.TestCase):

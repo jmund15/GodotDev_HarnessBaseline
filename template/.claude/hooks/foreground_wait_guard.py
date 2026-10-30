@@ -60,6 +60,10 @@ a caller should use depends on whether a backgrounded job wakes it:
 9. Trailing background `&` (advises, never denies). A Bash call without `run_in_background` whose command ends a line
    in a single `&` (not `&&`, `2>&1`, `>&`) draws one advisory naming `run_in_background` (`DETACHED_ADVICE`).
    Rule home: CLAUDE.core.md §Shell Discipline. Class: process guard, advisory first.
+10. Covered session-watcher arm (denies, interactive orchestrator only). A `run_in_background` call whose segment
+   runs `watch_records.py --session` while the session's hook state (key `sidecar_watchers`) lists a live
+   session-wide watcher is denied (`COVERED_REASON`): the arm exits COVERED and its wake is waste. A gone watcher
+   or a record watcher passes. Rule home: reference/sidecar_dispatch.md step 6. Class: process guard.
 
 Matches the ACTION, never the noun: a command that only names `sleep` passes, and a Monitor (except item 7) or a
 backgrounded call is never counted. Class: process guard. State: the shared per-session file
@@ -148,6 +152,11 @@ WATCH_REASON = (
     "BLOCKED session-watcher arm outside run_in_background: a watcher started in a foreground call, or detached with "
     "&, nohup or disown, delivers its wake to no task notification, and while it lives every correct arm exits COVERED. "
     "Run `%s` %s (reference/sidecar_dispatch.md step 6)."
+)
+COVERED_REASON = (
+    "BLOCKED session-watcher arm: this session's watcher is already armed and live, and it covers every job this "
+    "session launches, so this arm would exit COVERED and spend a wake on nothing. Launch the job without an arm "
+    "(reference/sidecar_dispatch.md step 6)."
 )
 BATCH_ADVICE = (
     "[wait] This foreground proof batch is expected to take %s, past this call's %d s timeout. Run it with "
@@ -377,6 +386,12 @@ def _watch_records():
     finally:
         sys.path.remove(tools)
     return watch_records
+
+
+def _watcher_live(payload):
+    """True when this session's hook state lists a live session-wide watcher."""
+    path = _hook_state.state_path(payload.get("session_id"))
+    return os.path.exists(path) and _watch_records().session_watcher_live(_hook_state.read_json_salvage(path))
 
 
 def _runner():
@@ -727,6 +742,8 @@ def main():
         blind = blind_pipe(command)
         if blind:
             return _deny(BLIND_REASON % (blind[0], blind[1], blind[1]))
+        if not (unwoken or _caller(payload)) and foreground_watch_arm(command) and _watcher_live(payload):
+            return _deny(COVERED_REASON)
         if unwoken:
             _advise(NO_WAKE_ADVICE)
         elif _LOOP_SLEEP.search(shell_code(command)):

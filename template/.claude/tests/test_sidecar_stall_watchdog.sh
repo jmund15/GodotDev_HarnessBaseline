@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proof that the sidecar stall watchdog (lib/sidecar_common.sh sc_run_watched) SIGNALS and never kills:
+# Proof that the sidecar stall watchdog (lib/sidecar_common.sh sc_run_watched) judges liveness by work events and tree CPU:
 #   1. a child silent for longer than SC_STALL_SEC gets <record>.stall and is still alive; the next
 #      work event deletes the marker and the run reaches its own end with rc=0 (never 9);
 #   2. SC_STALL_SEC=0 writes no marker at all;
@@ -121,6 +121,40 @@ if [ "$seen4" = 1 ] && ! grep -q 'watchdog is OFF' "$err4"; then
 else
   say "FAIL -R without -P unwatched: marker_seen=$seen4 stderr=$(cat "$err4" 2>/dev/null)"; fail=1
 fi
+
+# --- case 5: a child silent on the stream but burning CPU (a long test run inside a tool) is alive: no marker
+busy_child() { printf '{"type":"system","subtype":"init"}\n'
+  python3 -c 'import time
+end = time.monotonic() + 7
+while time.monotonic() < end: pass'
+  printf '{"type":"result","subtype":"success","result":"busy-done"}\n'; }
+P5="$d/progress5.jsonl"; : > "$P5"; REC5="$d/busy.record.json"; seen5=0
+(
+  SC_RECORD="$REC5" SC_STALL_SEC=4 SC_WATCH_POLL_SEC=1 SC_CPU_WINDOW_SEC=1 SC_CPU_ALIVE_SEC=0.3 OUTPUT="" rc=""
+  sc_run_watched busy_child "$P5"
+  printf '%s' "$rc" > "$d/rc5"; printf '%s' "$OUTPUT" > "$d/out5"
+) &
+bg5=$!
+while kill -0 "$bg5" 2>/dev/null; do [ -f "$REC5.stall" ] && seen5=1; sleep 1; done
+wait "$bg5" 2>/dev/null || :
+if [ "$seen5" = 0 ] && [ "$(cat "$d/rc5" 2>/dev/null)" = 0 ] && grep -q busy-done "$d/out5"; then
+  say "OK   a stream-silent child burning CPU is alive: no stall marker, rc=0"
+else say "FAIL busy child: marker_seen=$seen5 rc=$(cat "$d/rc5" 2>/dev/null)"; fail=1; fi
+
+# --- case 6: a bench arm (unattended) silent AND idle for the stall window ends as a resumable stall void
+idle_child() { printf '{"type":"system","subtype":"init"}\n'; sleep 40; printf '{"type":"result","subtype":"success","result":"late"}\n'; }
+P6="$d/progress6.jsonl"; : > "$P6"; REC6="$d/idle.record.json"; start6=$(date +%s)
+(
+  BENCH_ARM=1 SC_RECORD="$REC6" SC_STALL_SEC=4 SC_WATCH_POLL_SEC=1 SC_CPU_WINDOW_SEC=1 SC_CPU_ALIVE_SEC=0.3 OUTPUT="" rc=""
+  sc_run_watched idle_child "$P6" 2> "$d/err6"
+  printf '%s' "$rc" > "$d/rc6"
+) &
+bg6=$!
+wait "$bg6" 2>/dev/null || :
+took6=$(( $(date +%s) - start6 ))
+if [ "$(cat "$d/rc6" 2>/dev/null)" = 124 ] && [ "$took6" -lt 30 ] && grep -q 'STALLED: the sidecar watchdog' "$d/err6"; then
+  say "OK   an idle silent bench arm ends after the stall window (${took6}s, rc 124, STALLED marker for the void)"
+else say "FAIL idle arm: rc=$(cat "$d/rc6" 2>/dev/null) took=${took6}s err=$(tail -c 200 "$d/err6" 2>/dev/null)"; fail=1; fi
 
 rm -rf "$d"
 exit $fail

@@ -499,6 +499,37 @@ def main():
         rc, out = run_final()
         check("...and passes once the branch is pushed",
               rc == 0 and "[completed]" in line_with(out, "commit_push"), detail=out[-500:])
+        # A land replayed onto the upstream from a scratch worktree (the route when the local branch diverged)
+        # carries the same patches under new shas: the local branch then holds no unpublished change.
+        replay_bare, replay_repo, replay_peer = (os.path.join(tmp, n) for n in ("replay.git", "replay", "replay-peer"))
+        git(tmp, "init", "-q", "--bare", replay_bare)
+        git(tmp, "clone", "-q", replay_bare, replay_repo)
+        Path(replay_repo, "a.txt").write_text("1")
+        git(replay_repo, "add", "a.txt"); git(replay_repo, "commit", "-q", "-m", "one")
+        git(replay_repo, "push", "-q", "-u", "origin", "HEAD")
+        Path(replay_repo, "a.txt").write_text("2")
+        git(replay_repo, "commit", "-q", "-am", "two")
+        git(tmp, "clone", "-q", replay_bare, replay_peer)
+        Path(replay_peer, "b.txt").write_text("peer")
+        git(replay_peer, "add", "b.txt"); git(replay_peer, "commit", "-q", "-m", "peer")
+        git(replay_peer, "fetch", "-q", replay_repo, "HEAD")
+        git(replay_peer, "cherry-pick", "FETCH_HEAD")
+        git(replay_peer, "push", "-q", "origin", "HEAD")
+        git(replay_repo, "fetch", "-q")
+        r = subprocess.run([sys.executable, '-B', "-X", "utf8", TOOL, "--transcript", final_path,
+                            "--session", final_sid, "--receipts", str(receipts_dir), "--repo", replay_repo,
+                            "--artifacts", "--archive", archive_hit, "--stage", "final"],
+                           capture_output=True, text=True, encoding="utf-8", timeout=60)
+        check("...and passes when the upstream carries every local commit as a replayed patch",
+              r.returncode == 0 and "[completed]" in line_with(r.stdout, "commit_push"), detail=r.stdout[-500:])
+        Path(replay_repo, "a.txt").write_text("3")
+        git(replay_repo, "commit", "-q", "-am", "three")
+        r = subprocess.run([sys.executable, '-B', "-X", "utf8", TOOL, "--transcript", final_path,
+                            "--session", final_sid, "--receipts", str(receipts_dir), "--repo", replay_repo,
+                            "--artifacts", "--archive", archive_hit, "--stage", "final"],
+                           capture_output=True, text=True, encoding="utf-8", timeout=60)
+        check("...but not when one local change has no replay upstream",
+              r.returncode == 1 and "[unpushed]" in line_with(r.stdout, "commit_push"), detail=r.stdout[-500:])
         # Phase 7a defers the push when it would publish another session's commits: a skipped commit_push
         # stands only while the unpushed range holds a commit whose Claude-Session trailer is not this session's.
         own, peer = "https://claude.ai/code/session_OWN", "https://claude.ai/code/session_PEER"

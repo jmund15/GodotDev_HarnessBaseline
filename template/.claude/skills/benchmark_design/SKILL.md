@@ -49,7 +49,7 @@ decided from the trace, never the pass rate.
 
 **One PASS is conclusive. N FAILURES are not.**
 
-Cite or campaign a task only when the TASK READINESS section of `bench doctor` reads it OK; `bench run` refuses any other task unless the campaign name starts `retest-`. OK measures signal over floor; it never shows what the rendered board prints or what the key leaves uncredited, and a plan check reads documents, not the instrument's behaviour. So before a new or edited task's key is frozen, pilot it: run two runs of one pin (the fewest that give a run-to-run band) through the real pipeline, build the board until its view check passes, and read the task as the owner would. For a recall key, also run an off-key review of a pilot cell's findings; true, relevant findings the key leaves uncredited are a key defect to fix before collection.
+Cite or campaign a task only when the TASK READINESS section of `bench doctor` reads it OK; `bench run` refuses any other task unless the campaign name starts `retest-`. OK measures signal over floor; it never shows what the rendered board prints or what the key leaves uncredited, and a plan check reads documents, not the instrument's behaviour. So before a new or edited task's key is frozen, pilot it: run two runs of one pin (the fewest that give a run-to-run band) through the real pipeline, build the board until its view check passes, and read the task as the owner would. For a recall key, also run a full-key review that classes each of a pilot cell's findings (`reference/scoring.md` §Judge tier and key freshness). Fix items the review classes `own` or `other` in the key before collection. A beyond-key finding a curator tiers MID or DEEP blocks the freeze. Report the rest as band-only yield.
 
 Before editing an instrument, classify the edit as view-only (re-render), score-only (re-score stored returns) or arm-invalidating (new cells), and state the class in the plan and the commit. Take the score-only form when one reaches the same fix, since only arm-invalidating edits spend arm runs.
 
@@ -93,8 +93,8 @@ Answer values, decoys and the join operator all have to defeat a blind guess. Re
 
 Read `reference/scoring.md` §A scorer that has only scored wrong answers is untested and §Scorer rules
 while writing or auditing the scorer, §Score-dict keys are a shared namespace when naming score
-fields, and §Judge tier and key freshness when choosing a panel, replacing a judge or refreshing a
-key. That section is the one home of judge succession: exact-id pins, Admit by correctness, Pool by
+fields, and §Judge tier and key freshness when choosing a panel, replacing a judge, refreshing a
+key, or changing a confidence threshold, vote weight or headline-credit policy. That section is the one home of judge succession: exact-id pins, Admit by correctness, Pool by
 agreement, the self-judge audit and the retirement warning.
 
 Before citing a task, read `bench doctor` §0 and every lettered subsection under it: unruled gate

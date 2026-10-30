@@ -39,10 +39,13 @@
 # CCP_TRAFFIC_LOG stays on; captures contain prompts under
 # ~/.local/state/claude-code-proxy/traffic and must be deleted periodically.
 #
-# DELEGATE RAILS + DRIVER NOTES. `-G <shape>` (any|survey|review|author) exports
-# CLAUDE_CODE_SIDECAR_SHAPE; omitting -G yields `any`. With `-D full`, the child runs
-# in the repo and hooks/session_model_rails.py inlines the shape rails and its resolved
-# model's registry driver notes on SessionStart. With `-D bare` or `-D pointer`, no
+# DELEGATE RAILS + DRIVER NOTES. `-G <kind>` (a launcher kind in guards/tool_profiles.json:
+# scout|lens|reviewer|author|judge, plus the internal arm|bench-score|bench-review) is required and
+# exports CLAUDE_CODE_SIDECAR_KIND; omitting -G refuses (exit 2). The kind's row sets built-ins, MCP
+# servers, disclosure and guard text, so `-D` refuses (only `-G arm` takes it) and an unsigned `-t`
+# refuses (a signed delta, `-t +Bash`, stays legal). With disclosure full (reviewer, author, judge), the
+# child runs in the repo and hooks/session_model_rails.py inlines the kind's guard rails and its resolved
+# model's registry driver notes on SessionStart. With bare (scout) or pointer (lens), no
 # project hook fires, so lib/sidecar_common.sh appends the same assembly itself.
 # Both routes key the rails and driver notes to the child's model, never the parent's.
 #
@@ -223,12 +226,12 @@ SC_OUTPUT_RESERVE="${SIDECAR_OUTPUT_RESERVE:-$SC_MAX_OUTPUT}"
 SC_CONTEXT_TOKENS="$(sc_declared_context_window)"
 [ -n "${SC_LONG_CONTEXT:-}" ] && echo "[proxy-sidecar] -M: requests past the codex longContextTier threshold (external_models.json) bill at its multipliers; cost: reference/codex_session_runbook.md §Launch" >&2
 [ -n "$SC_CONTEXT_TOKENS" ] &&   echo "[proxy-sidecar] declaring context window $SC_CONTEXT_TOKENS (registry effective window minus the ${SC_OUTPUT_RESERVE}-token output reserve; max output ${SC_MAX_OUTPUT}; auto-compaction expected near $((SC_CONTEXT_TOKENS - SC_MAX_OUTPUT - 3000)))" >&2
-# Window-relative harness cost (measured 2026-09-03 on gpt-5.6-luna: -D bare 22k, pointer 25k, full 37k tokens at turn 1).
-# Under 400k a survey/review child at -D full spends ~14% of its window before the brief; the shape table
-# (reference/sidecar_dispatch.md) pins lenses at pointer. Advisory only — an author/verdict child may need full.
+# Window-relative harness cost at turn 1 on gpt-5.6-luna: bare 22k, pointer 25k, full 37k tokens.
+# Under 400k a reviewer child (disclosure full) spends ~14% of its window before the brief; a lens (pointer)
+# costs 25k. Advisory only — keep reviewer when this child must APPLY doctrine.
 if [ -n "$SC_CONTEXT_TOKENS" ] && [ "$SC_CONTEXT_TOKENS" -lt 400000 ] && [ "${SC_DISCLOSURE:-}" = "full" ] \
-   && { [ "${SC_SHAPE:-}" = "survey" ] || [ "${SC_SHAPE:-}" = "review" ]; }; then
-  echo "[proxy-sidecar] -D full on a ${SC_CONTEXT_TOKENS}-token window costs ~37k (~$((3700000 / SC_CONTEXT_TOKENS))%) before the brief; lenses take -D pointer (25k) — keep full only if this child must APPLY doctrine" >&2
+   && [ "${SC_SHAPE:-}" = "reviewer" ]; then
+  echo "[proxy-sidecar] kind reviewer runs at disclosure full: on a ${SC_CONTEXT_TOKENS}-token window that costs ~37k (~$((3700000 / SC_CONTEXT_TOKENS))%) before the brief; kind lens (pointer, 25k) costs less — keep reviewer only if this child must APPLY doctrine" >&2
 fi
 
 # AFTER sc_build_disclosure so the port is never claimed for a run a validation gate rejects,
@@ -293,7 +296,7 @@ run_claude() {
     CLAUDE_CODE_TRANSPORT="$SC_TRANSPORT" \
     ${SC_CONTEXT_TOKENS:+CLAUDE_CODE_MAX_CONTEXT_TOKENS="$SC_CONTEXT_TOKENS"} \
     ${SC_MAX_OUTPUT:+CLAUDE_CODE_MAX_OUTPUT_TOKENS="$SC_MAX_OUTPUT"} \
-    ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_SHAPE="$SC_SHAPE"} \
+    ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_KIND="$SC_SHAPE"} \
     ${SC_TIMEOUT:+timeout} ${SC_TIMEOUT:+"$SC_TIMEOUT"} \
     "$SC_CLAUDE" -p \
       --model "$SC_MODEL" \

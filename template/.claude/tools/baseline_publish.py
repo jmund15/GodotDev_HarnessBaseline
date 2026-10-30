@@ -57,7 +57,7 @@ def _now() -> str:
 
 def _git(repo: Path, args: list[str], check: bool = True) -> subprocess.CompletedProcess[bytes]:
     try:
-        result = sync.run_git_network(["git", "-C", str(repo), *args], args)
+        result = sync.run_git_network(["git", "-C", str(repo), "-c", "core.longpaths=true", *args], args)
     except OSError as exc:
         raise PublishError(f"git {' '.join(args)} failed: {exc}") from exc
     if check and result.returncode != 0:

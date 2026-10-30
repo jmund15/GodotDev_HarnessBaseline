@@ -91,11 +91,11 @@ def _session_output(model, delegate=False, planted=None, extra=None):
     import json
     env = dict(os.environ)
     env.pop("CLAUDE_CODE_SIDECAR", None)
-    env.pop("CLAUDE_CODE_SIDECAR_SHAPE", None)
+    env.pop("CLAUDE_CODE_SIDECAR_KIND", None)
     env.pop("ANTHROPIC_BASE_URL", None)
     env["CLAUDE_CODE_TRANSPORT"] = "anthropic"
     if delegate:
-        env.update(CLAUDE_CODE_SIDECAR="1", CLAUDE_CODE_SIDECAR_SHAPE="any")
+        env.update(CLAUDE_CODE_SIDECAR="1", CLAUDE_CODE_SIDECAR_KIND="judge")
     if planted:
         env.update(planted)
     result = subprocess.run([sys.executable, MOD], input=json.dumps(dict({"model": model}, **(extra or {}))),
@@ -223,6 +223,15 @@ CASES = [
     ("every format placeholder is filled -- no stray braces reach the model",
      lambda: "{" not in CODEX and "}" not in CODEX
              and "{" not in BROKEN and "{" not in OPENCODE),
+    # CLAUDE_CODE_SIDECAR_KIND carries the launcher's -G kind; the table maps it to the guard file set.
+    ("a scout delegate gets the survey rails", lambda: "shape 'survey'" in _delegate_output(
+        "claude-opus-5-5", {"CLAUDE_CODE_SIDECAR_KIND": "scout"})),
+    ("a reviewer delegate gets the review rails", lambda: "shape 'review'" in _delegate_output(
+        "claude-opus-5-5", {"CLAUDE_CODE_SIDECAR_KIND": "reviewer"})),
+    ("an author delegate gets the author rails", lambda: "shape 'author'" in _delegate_output(
+        "claude-opus-5-5", {"CLAUDE_CODE_SIDECAR_KIND": "author"})),
+    ("the retired CLAUDE_CODE_SIDECAR_SHAPE is no longer read", lambda: "shape 'survey'" not in _delegate_output(
+        "claude-opus-5-5", {"CLAUDE_CODE_SIDECAR_SHAPE": "survey"})),
     # Delegates receive notes keyed to the child model, not the parent/orchestrator.
     ("a luna delegate receives its registry driver notes exactly once, through the rails",
      lambda: _delegate_output("gpt-6-luna").count("Work unattended: never stop to ask.") == 1

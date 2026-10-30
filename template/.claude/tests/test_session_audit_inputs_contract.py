@@ -70,7 +70,7 @@ def case_planted_checkout_freezes_inputs(directory):
     assert frozen.is_file(), "the frozen packet must be written"
 
 
-def case_must_read_holds_whole_copies_only_of_whole_judged_files(directory):
+def case_must_read_carries_each_admitted_diff_and_links_its_whole_copy(directory):
     repo, _, roster = planted_checkout(directory)
     edited = {".claude/commands/doc.md": "rule one\n", ".claude/hooks/guard.py": "'''doc'''\nA = 1\n",
               ".claude/tools/tool.py": "B = 1\n"}
@@ -90,13 +90,18 @@ def case_must_read_holds_whole_copies_only_of_whole_judged_files(directory):
                            "--files", *subjects], capture_output=True, text=True, encoding="utf-8", errors="replace",
                           env=env)
     assert done.returncode == 0, done.stdout + done.stderr
-    must = [Path(p).name for p in json.loads(done.stdout)["mustRead"]]
-    whole = {i for i, name in enumerate(subjects) if f"subject-{i}.txt" in must}
-    assert whole == {0, 1}, f"whole copies on must-read for {sorted(subjects[i] for i in whole)}; want the doc and the hook"
+    packet = json.loads(done.stdout)
+    must = [Path(p).name for p in packet["mustRead"]]
     assert all(f"subject-{i}.diff" in must for i in range(len(subjects))), must
-    assert "decisions.json" not in must, "decisions repeat inside doctrine-commits.md"
     folder = repo / ".claude" / "scratch" / "run"
-    assert all((folder / f"subject-{i}.txt").is_file() for i in range(3)), "each frozen copy stays on disk"
+    assert all((folder / f"subject-{i}.txt").is_file() for i in range(len(subjects))), "each frozen copy stays on disk"
+    for i in range(len(subjects)):
+        diff = next(a for a in packet["artifacts"] if a["artifact"].endswith(f"subject-{i}.diff"))
+        assert diff["source"].endswith(f"subject-{i}.txt"), "each subject diff links its whole frozen copy"
+    view = packet["views"]["harness-quality"]
+    sources = {a["artifact"] for a in packet["artifacts"] if a["kind"] == "source"}
+    assert not sources & set(view["mustRead"]), \
+        "the hunk-judging mandate's view carries the diff, never the whole source"
 
 
 def case_a_binary_left_on_disk_after_its_deletion_freezes(directory):
@@ -120,7 +125,7 @@ def case_a_binary_left_on_disk_after_its_deletion_freezes(directory):
 
 def main():
     cases = [case_unreadable_roster_exits_nonzero, case_out_path_outside_checkout_exits_nonzero,
-             case_planted_checkout_freezes_inputs, case_must_read_holds_whole_copies_only_of_whole_judged_files,
+             case_planted_checkout_freezes_inputs, case_must_read_carries_each_admitted_diff_and_links_its_whole_copy,
              case_a_binary_left_on_disk_after_its_deletion_freezes]
     failures = []
     for case in cases:

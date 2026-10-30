@@ -10,7 +10,7 @@ a legacy row without one is read under its `provider` (`plan_of`). Writers: hook
 appends the Anthropic windows at each UserPromptSubmit, from the statusline capture (`ts` is its
 `captured_at`); scripts/codex_quota_probe.py appends the Codex windows of each successful reading
 (`ts` is its `observedAt`); tools/provider_capacity.py appends every window of every plan-quota
-transport's fresh reading. Reader: tools/plan_usage_calc.py.
+transport's fresh reading. Readers: tools/plan_usage_calc.py, tools/provider_bands.py.
 
 Path: HARNESS_USAGE_SAMPLES when set, else ~/.claude/usage_samples.jsonl. User-level rather than a
 per-project log, because a plan window is account-wide. A proof sets the override; none writes the

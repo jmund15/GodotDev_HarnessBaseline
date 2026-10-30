@@ -40,5 +40,97 @@
       "builtins": null,
       "mcpServers": ["semantic-search"]
     }
+  },
+  "kinds": {
+    "scout": {
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker"],
+      "disclosure": "bare",
+      "guard": "survey",
+      "agentType": "lane-survey",
+      "tier": "fanout",
+      "internal": false,
+      "routes": ["launcher", "fanout", "engine", "agent"]
+    },
+    "lens": {
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker"],
+      "disclosure": "pointer",
+      "guard": "survey",
+      "agentType": "lane-survey",
+      "tier": "fanout",
+      "internal": false,
+      "routes": ["launcher", "fanout", "engine", "agent"]
+    },
+    "reviewer": {
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker"],
+      "disclosure": "full",
+      "guard": "review",
+      "agentType": "lane-review",
+      "tier": "executor",
+      "internal": false,
+      "routes": ["launcher", "fanout", "engine", "agent"]
+    },
+    "author": {
+      "builtins": ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
+      "mcpServers": ["semantic-search", "ai-worker"],
+      "disclosure": "full",
+      "guard": "author",
+      "agentType": "lane-author",
+      "tier": "executor",
+      "internal": false,
+      "routes": ["launcher", "fanout", "engine", "agent"]
+    },
+    "judge": {
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker"],
+      "disclosure": "full",
+      "guard": "any",
+      "agentType": "lane-review",
+      "tier": "executor",
+      "internal": false,
+      "routes": ["launcher", "fanout", "engine", "agent"]
+    },
+    "arm": {
+      "builtins": null,
+      "mcpServers": ["semantic-search"],
+      "disclosure": null,
+      "guard": "arm",
+      "agentType": null,
+      "tier": null,
+      "internal": true,
+      "routes": ["launcher", "fanout"]
+    },
+    "bench-score": {
+      "builtins": ["Workflow", "Read", "Glob", "Grep"],
+      "mcpServers": [],
+      "disclosure": "pointer",
+      "guard": null,
+      "agentType": null,
+      "tier": null,
+      "internal": true,
+      "routes": ["launcher"]
+    },
+    "verify": {
+      "builtins": ["Read", "Bash"],
+      "mcpServers": [],
+      "disclosure": null,
+      "guard": null,
+      "agentType": "lane-verify",
+      "tier": "fanout",
+      "internal": true,
+      "routes": ["engine"]
+    },
+    "bench-review": {
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker"],
+      "disclosure": "bare",
+      "guard": "review",
+      "agentType": null,
+      "tier": "executor",
+      "internal": true,
+      "routes": ["launcher", "fanout"]
+    }
   }
 }

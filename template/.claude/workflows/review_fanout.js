@@ -668,6 +668,9 @@ if (LEDGER !== null) {
   if (LEDGER.task !== undefined && (typeof LEDGER.task !== 'string' || !/^[\w.-]+$/.test(LEDGER.task))) {
     return { error: 'review-fanout: args.ledger.task must be a task id of word characters, dots and dashes. Received: ' + String(LEDGER.task) }
   }
+  if (!scope && LEDGER.blobs === undefined && !FOLD) {
+    return { error: 'review-fanout: args.ledger names no reviewed file, so its ledger row would cover nothing after the seats ran. Pass args.ledger.scopeJson (the scope file), args.ledger.blobs (the reviewed blob map) or args.fold with subjects.' }
+  }
 }
 const resolved = agents.map(a => ({
   ...a,

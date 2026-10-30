@@ -44,6 +44,7 @@ def make_repo(seed=None, tests_dir_name="Tests", write_tests_dir=True):
     shutil.copy(REAL_HOOK, os.path.join(hooks_dir, HOOK_NAME))
     shutil.copy(REAL_TOOLS_ADAPTATION, os.path.join(tools_dir, "adaptation.py"))
     shutil.copy(os.path.join(fx.REAL_HOOKS, "_checkout_root.py"), os.path.join(hooks_dir, "_checkout_root.py"))
+    shutil.copy(os.path.join(fx.REAL_HOOKS, "_cs_files.py"), os.path.join(hooks_dir, "_cs_files.py"))
     if seed is not None:
         with open(os.path.join(skill_dir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(seed if isinstance(seed, str) else json.dumps(seed))

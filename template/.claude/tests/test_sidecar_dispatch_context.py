@@ -12,7 +12,7 @@ CONTEXT: an admitted launch carries no `additionalContext` at all unless the doc
 read its state (a fault report): no recipe pointer, no launch card, no currency, probation,
 cheaper-claimant, long-context or size line.
 TIER FIT (hooks/_dispatch_checks.py, the check the Workflow route runs): a launch or fan-out job whose
-tier (its written `-Q`/`tier`, else its shape's) its alias's row does not serve on the alias's transport is DENIED.
+shape implies a tier its alias's row does not serve on the alias's transport is DENIED.
 
 Fake launchers stand in for the real ones so the proof spends nothing and needs no network.
 State is redirected with HARNESS_HOOK_STATE_DIR — this never touches ~/.claude/.routing_state/.
@@ -262,39 +262,23 @@ def currency_cases(tmp, ok, env):
         return run("python3 .claude/tools/sidecar_fanout.py .claude/scratch/cur_jobs.json "
                    "--out-dir .claude/scratch/cur_out", cenv, session=session, cwd=root)
 
-    denied = fanout([{"label": "wide", "alias": go_fan_only, "promptFile": prompt, "shape": "review"}],
+    denied = fanout([{"label": "wide", "alias": go_fan_only, "promptFile": prompt, "kind": "reviewer"}],
                     "sdcfan01")
     cases.append(("a fan-out job outside its shape's tier is DENIED naming the job",
                   denied.get("permissionDecision") == "deny"
                   and "wide" in denied.get("permissionDecisionReason", "")))
-    denied = fanout([{"label": "wide2", "model": go_fan_only, "promptPath": prompt, "shape": "review"}],
+    denied = fanout([{"label": "wide2", "model": go_fan_only, "promptPath": prompt, "kind": "reviewer"}],
                     "sdcfan02")
     cases.append(("a fan-out job written in dispatch.js field names is checked the same way",
                   denied.get("permissionDecision") == "deny"
                   and "wide2" in denied.get("permissionDecisionReason", "")))
-    advised = fanout([{"label": "scan", "alias": go_exec, "promptFile": prompt, "shape": "survey"}],
+    denied = fanout([{"label": "wide3", "alias": go_fan_only, "promptFile": prompt, "kind": "judge"}],
+                    "sdcfan11")
+    cases.append(("a kind judge job on a fanout-only row is DENIED: the kind row's tier binds, not its legacy shape",
+                  denied.get("permissionDecision") == "deny"
+                  and "wide3" in denied.get("permissionDecisionReason", "")))
+    advised = fanout([{"label": "scan", "alias": go_exec, "promptFile": prompt, "kind": "lens"}],
                      "sdcfan03")
-    dc = sidecar._dispatch_checks
-    survey_tier = dc.shape_tiers()["survey"]
-    arch_fit = next((a for a, m in sorted(rows.items()) if m["transport"] == "anthropic"
-                     and dc.tier_fit(a, "architect", "anthropic", data) is None
-                     and dc.tier_fit(a, survey_tier, "anthropic", data) is not None), None)
-    if arch_fit:
-        written_fit = fanout([{"label": "arch-read", "alias": arch_fit, "promptFile": prompt, "shape": "survey",
-                               "tier": "architect"}], "sdcfan21")
-        cases.append(("a survey fan-out job pinned to an architect row passes when it writes tier architect",
-                      written_fit.get("permissionDecision") != "deny"))
-        written_unfit = fanout([{"label": "fan-read", "alias": arch_fit, "promptFile": prompt, "shape": "survey",
-                                 "tier": "fanout"}], "sdcfan22")
-        cases.append(("...and is denied when it writes tier fanout, the deny naming the tier and its source",
-                      written_unfit.get("permissionDecision") == "deny"
-                      and "the job's `tier`" in written_unfit.get("permissionDecisionReason", "")))
-        direct_fit = launch(arch_fit, "survey", "sdcdir21").get("permissionDecision") != "deny"
-        direct_arch = run("bash %s -G survey -Q architect -m %s -f brief.md" % (ok, arch_fit), cenv, session="sdcdir22")
-        cases.append(("a direct launch's -Q binds its pin: an architect row passes -Q architect and is denied without it",
-                      not direct_fit and direct_arch.get("permissionDecision") != "deny"))
-    else:
-        cases.append(("the live registry has an anthropic row serving architect but not the survey shape's tier", False))
     cases.append(("a fitting Go fan-out job is admitted with no currency advisory and no size line",
                   advised.get("permissionDecision") != "deny" and late_advice(advised) == []))
 
@@ -302,26 +286,26 @@ def currency_cases(tmp, ok, env):
         return (result.get("permissionDecision"), result.get("permissionDecisionReason", "").replace("wide", "J"),
                 result.get("additionalContext", ""))
 
-    old_deny = fanout([{"label": "wide", "alias": go_fan_only, "promptFile": prompt, "shape": "review"}],
+    old_deny = fanout([{"label": "wide", "alias": go_fan_only, "promptFile": prompt, "kind": "reviewer"}],
                       "sdcfan04")
     new_deny = fanout({"jobs": [{"label": "wide", "model": go_fan_only, "promptPath": prompt,
-                                 "shape": "review"}], "contextPath": prompt}, "sdcfan05")
+                                 "kind": "reviewer"}], "contextPath": prompt}, "sdcfan05")
     cases.append(("a wrapper-object fan-out in dispatch.js names gets the old-name tier deny",
                   new_deny.get("permissionDecision") == "deny" and verdict(new_deny) == verdict(old_deny)))
-    old_adv = fanout([{"label": "scan", "alias": go_exec, "promptFile": prompt, "shape": "survey"}],
+    old_adv = fanout([{"label": "scan", "alias": go_exec, "promptFile": prompt, "kind": "lens"}],
                      "sdcfan06")
-    new_adv = fanout([{"label": "scan", "model": go_exec, "promptPath": prompt, "shape": "survey"}],
+    new_adv = fanout([{"label": "scan", "model": go_exec, "promptPath": prompt, "kind": "lens"}],
                      "sdcfan07")
     wrap_adv = fanout({"jobs": [{"label": "scan", "model": go_exec, "promptPath": prompt,
-                                 "shape": "survey"}]}, "sdcfan08")
+                                 "kind": "lens"}]}, "sdcfan08")
     cases.append(("a new-name list and a wrapper object get the old-name verdict",
                   verdict(new_adv) == verdict(old_adv) == verdict(wrap_adv)))
     same_pair = fanout([{"label": "scan", "alias": go_exec, "model": go_exec, "promptPath": prompt,
-                         "shape": "survey"}], "sdcfan09")
+                         "kind": "lens"}], "sdcfan09")
     cases.append(("an agreeing mixed pair is read as the old-name job",
                   verdict(same_pair) == verdict(old_adv)))
     clash = fanout([{"label": "wide", "alias": go_exec, "model": go_fan_only, "promptFile": prompt,
-                     "shape": "review"}], "sdcfan10")
+                     "kind": "reviewer"}], "sdcfan10")
     malformed = fanout({"jobs": "none"}, "sdcfan11")
     cases.append(("a conflicting mixed pair is treated as a malformed jobs file: no deny, no advisory",
                   verdict(clash) == verdict(malformed) and clash.get("permissionDecision") is None
@@ -350,7 +334,7 @@ def plan_cases(tmp):
         fh.write("survey\n")
     jobs_path = os.path.join(scratch, "plan_jobs.json")
     with open(jobs_path, "w", encoding="utf-8") as fh:
-        json.dump([{"label": "paid-b", "alias": host_exec, "promptFile": prompt, "shape": "survey",
+        json.dump([{"label": "paid-b", "alias": host_exec, "promptFile": prompt, "kind": "lens",
                     "plan": "anthropic-secondary"}], fh)
     env = {k: v for k, v in os.environ.items()
            if k not in ("CLAUDE_CODE_TRANSPORT", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL")}
@@ -362,11 +346,8 @@ def plan_cases(tmp):
         try:
             direct = sidecar.sidecar_launch("bash %s -G review -m %s -f brief.md -l wrap1" % (wrapper, host_exec))
             jobs = sidecar.launch_jobs(direct, None, root)
-            cases.append(("a direct wrapper launch carries its plan as the job's 4th element and no written tier",
-                          [j[3:] for j in jobs] == [("anthropic-secondary", None)]))
-            written = sidecar.launch_jobs(sidecar.sidecar_launch(
-                "bash %s -G review -Q architect -m %s -f brief.md -l wrap2" % (wrapper, host_exec)), None, root)
-            cases.append(("a direct launch's -Q is the job's 5th element", [j[4] for j in written] == ["architect"]))
+            cases.append(("a direct wrapper launch carries its plan as the job's 4th element",
+                          [j[3:] for j in jobs] == [("anthropic-secondary",)]))
             cases.append(("a wrapper launch whose shape implies no tier it fails is not refused, and builds no advisory",
                           sidecar.dispatch_checks(jobs) is None))
             with patch.dict(os.environ, {"PROVIDER_CAPACITY_CACHE": rooms_cache(
@@ -377,8 +358,8 @@ def plan_cases(tmp):
             fan = sidecar.fanout_launch("python3 .claude/tools/sidecar_fanout.py %s"
                                         % jobs_path.replace("\\", "/"))
             fjobs = sidecar.launch_jobs(None, fan, root)
-            cases.append(("a fan-out job carries its `plan` as the 4th element and no written tier",
-                          [j[3:] for j in fjobs] == [("anthropic-secondary", None)]))
+            cases.append(("a fan-out job carries its `plan` as the 4th element",
+                          [j[3:] for j in fjobs] == [("anthropic-secondary",)]))
             folder, name = os.path.split(jobs_path.replace("\\", "/"))
             for shape in ("S=%s && python3 .claude/tools/sidecar_fanout.py $S/%s",
                           "S=%s; cat > /dev/null <<'EOF'\n$S stays\nEOF\npython3 .claude/tools/sidecar_fanout.py ${S}/%s --detach"):
@@ -387,7 +368,7 @@ def plan_cases(tmp):
                               % shape.split(" ")[0][:12], vjobs == fjobs))
             bare_path = os.path.join(scratch, "plan_bare_jobs.json")
             with open(bare_path, "w", encoding="utf-8") as fh:
-                json.dump([{"label": "bare", "alias": host_exec, "promptFile": prompt, "shape": "review"}], fh)
+                json.dump([{"label": "bare", "alias": host_exec, "promptFile": prompt, "kind": "reviewer"}], fh)
             bare = sidecar.launch_jobs(None, sidecar.fanout_launch(
                 "python3 .claude/tools/sidecar_fanout.py %s" % bare_path.replace("\\", "/")), root)
             with patch.dict(os.environ, {"PROVIDER_CAPACITY_CACHE": rooms_cache(
@@ -398,7 +379,7 @@ def plan_cases(tmp):
             unset = sidecar.launch_jobs(None, sidecar.fanout_launch(
                 "python3 .claude/tools/sidecar_fanout.py $UNSET_DIR/%s" % name), root)
             cases.append(("an unassigned variable stays as written and reads no jobs", unset == []))
-            job = {"label": "paid-b", "alias": host_exec, "promptFile": prompt, "shape": "survey",
+            job = {"label": "paid-b", "alias": host_exec, "promptFile": prompt, "kind": "lens",
                    "workdir": ".", "transport": "anthropic", "plan": "anthropic-secondary"}
             with patch.object(sidecar, "_regular_project_file", lambda *_a: True):
                 cases.append(("a fan-out job with `plan` stays auto-approvable",
@@ -462,7 +443,7 @@ def test_first_launch_injects_no_recipe_card_or_pointer(tmp_path, monkeypatch):
                    encoding="utf-8")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
     monkeypatch.setattr(sidecar, "launch_jobs", lambda *args: [])
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("skipped", None))
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", lambda payload, tiers=None, embed_slice=False: (None, None), raising=False)
@@ -488,7 +469,7 @@ def test_the_recipe_carries_what_the_late_advisories_said():
 def test_a_doctrine_fault_is_the_only_context_an_admitted_launch_carries(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
     monkeypatch.setattr(sidecar, "launch_jobs", lambda *args: [])
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("skipped", None))
     fault = sidecar.model_ladder_gate.FAULT_NOTE
@@ -544,7 +525,7 @@ def test_a_fanout_drivers_child_launch_skips_the_doctrine_only_for_a_recorded_ad
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", doctrine, raising=False)
     monkeypatch.setattr(dispatch_table, "sidecar_entries", lambda payload: ([{"id": "x"}], []))
     monkeypatch.setattr(dispatch_table, "register_sidecars", lambda *args, **kwargs: None)
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("ok", None))
     monkeypatch.setattr(sidecar, "tracking_session", lambda: "child001")
     monkeypatch.setattr(sidecar, "take_checks", lambda *args: (False, True))
@@ -600,7 +581,7 @@ def test_the_launcher_checks_the_doctrine_for_a_launch_no_hook_checked(monkeypat
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", doctrine, raising=False)
     monkeypatch.setattr(dispatch_table, "sidecar_entries", lambda payload: ([{"id": "x"}], []))
     monkeypatch.setattr(dispatch_table, "register_sidecars", lambda *args, **kwargs: None)
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
     argv = ["-m", "fake", "-f", "brief.md", "-G", "author"]
     launcher = os.path.join(REPO, "scripts", "anthropic_sidecar.sh")
 
@@ -648,7 +629,7 @@ def checked_fanout(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_MODEL_REGISTRY", str(registry_path))
     monkeypatch.setenv("HARNESS_SIDECAR_PREFLIGHT", "0")
     jobs = [{"label": "pc-plc-test-readiness", "alias": "sonnet", "effort": "medium",
-             "shape": "review", "promptFile": str(tmp_path / "pc_plc-test-readiness.md")}]
+             "kind": "reviewer", "promptFile": str(tmp_path / "pc_plc-test-readiness.md")}]
     path = tmp_path / "jobs.json"
     path.write_text(json.dumps(jobs), encoding="utf-8")
     out = tmp_path / "run"
@@ -821,7 +802,7 @@ def test_refold_call_receipts_cover_authors_but_no_seat(checked_fanout, capsys):
 def test_fold_requires_executor_doctrine_even_with_only_survey_seats(checked_fanout):
     check, _compact, _launch, path, _out = checked_fanout
     jobs = json.loads(path.read_text())
-    jobs[0]["shape"] = "survey"
+    jobs[0]["kind"] = "lens"
     path.write_text(json.dumps(jobs), encoding="utf-8")
     arm_slice(dict(os.environ), "fold0001", ["fanout"])
     assert "ladder-slice executor" in check(loaded=False)
@@ -839,32 +820,6 @@ def test_fanout_attempt_receipt_cannot_be_consumed_twice(checked_fanout, capsys)
 def test_fold_pin_is_tier_checked_at_hook_time(checked_fanout):
     check, _compact, _launch, _path, _out = checked_fanout
     assert "review-fold-1" in (check(suffix=" --fold-alias haiku") or "")
-
-
-def test_a_receipted_fanout_job_whose_written_tier_changed_is_checked_again(tmp_path, monkeypatch):
-    import model_registry
-    data = model_registry.load()
-    aliases = sorted(row["alias"] for row in data["models"] if row.get("transport") == "anthropic" and row.get("alias")
-                     and model_registry.model_available(row["id"], data))
-    pair = next(((alias, tier) for alias in aliases for tier in ("architect", "executor", "fanout")
-                 if not sidecar.dispatch_checks([("probe", alias, "survey", "anthropic", None)])
-                 and sidecar.dispatch_checks([("probe", alias, "survey", "anthropic", tier)])), None)
-    assert pair, "the registry no longer has a pin that fits the survey tier and misses a written one"
-    alias, tier = pair
-    sid = "tierchg1"
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", sid)
-    prompt = tmp_path / "brief.md"
-    prompt.write_text("Read README.\n", encoding="utf-8")
-    jobs_path = tmp_path / "jobs.json"
-    job = {"label": "chg", "alias": alias, "effort": "high", "shape": "survey", "plan": "anthropic",
-           "promptFile": str(prompt)}
-    jobs_path.write_text(json.dumps([job]), encoding="utf-8")
-    args = [str(jobs_path), "--out-dir", str(tmp_path / "out")]
-    sidecar.remember_checks({"session_id": sid, "tool_use_id": "call-1", "cwd": str(tmp_path)},
-                            None, types.SimpleNamespace(args=args), str(tmp_path), "skipped")
-    assert sidecar.fanout_fit_refusal(args, str(tmp_path)) is None
-    jobs_path.write_text(json.dumps([dict(job, tier=tier)]), encoding="utf-8")
-    assert "chg" in (sidecar.fanout_fit_refusal(args, str(tmp_path)) or "")
 
 
 def main():
@@ -1034,13 +989,13 @@ def main():
                   session="sdc00964", ladder=False, skill=False)
     cases.append(("a dry-run fan-out dispatches nothing and is never denied for doctrine",
                   fan_dry.get("permissionDecision") != "deny"))
-    approved_launch = "bash .claude/scripts/ok_sidecar.sh -G survey -m fake"
+    approved_launch = "bash .claude/scripts/ok_sidecar.sh -G scout -m fake"
     approved = run(approved_launch, env, session="sdc01001")
     cases.append(("a tracked canonical direct launch with preflight and ladder is allowed",
                   approved.get("permissionDecision") == "allow"
                   and "canonical sidecar launch" in approved.get("permissionDecisionReason", "")))
     consent = (
-        "bash .claude/scripts/ok_sidecar.sh -m fake -e high -D full -G review "
+        "bash .claude/scripts/ok_sidecar.sh -m fake -e high -G reviewer "
         "-t +Bash -f .claude/reference/consent_brief.md "
         "-S .claude/reference/consent_schema.json "
         "-R .claude/scratch/consent.record.json -P .claude/scratch/consent.progress.jsonl "
@@ -1220,7 +1175,7 @@ def main():
         fh.write("review\n")
     jobs = os.path.join(scratch, "jobs.json")
     base_job = {"label": "audit", "alias": "muse", "promptFile": prompt,
-                "shape": "survey", "workdir": ".", "transport": "opencode"}
+                "kind": "lens", "workdir": ".", "transport": "opencode"}
 
     def write_jobs(**changes):
         job = dict(base_job)
@@ -1258,7 +1213,7 @@ def main():
             json.dump(spec, fh)
 
     new_job = {"label": "audit", "model": "muse", "promptPath": prompt,
-               "shape": "survey", "workdir": ".", "transport": "opencode"}
+               "kind": "lens", "workdir": ".", "transport": "opencode"}
     write_raw([new_job])
     new_list = run(fanout_cmd, fanout_env, session="sdcnew01")
     cases.append(("a fan-out file in dispatch.js field names is approved as the old-name file is",
@@ -1277,17 +1232,17 @@ def main():
     agreeing = run(fanout_cmd, fanout_env, session="sdcnew05")
     cases.append(("an agreeing alias/model pair is approved as the old-name file is",
                   (agreeing.get("permissionDecision"), agreeing.get("permissionDecisionReason")) == old_decision))
-    write_jobs(alias="opus", transport="anthropic", shape="review")
+    write_jobs(alias="opus", transport="anthropic", kind="reviewer")
     cases.append(("plan-quota jobs use the same approval path",
                   run(fanout_cmd, fanout_env, session="sdc00014").get("permissionDecision") == "allow"))
-    write_jobs(alias="opus", transport="anthropic", shape="author")
+    write_jobs(alias="opus", transport="anthropic", kind="author")
     cases.append(("author jobs retain the child auto-permission gate",
                   run(fanout_cmd, fanout_env, session="sdc00015").get("permissionDecision") == "allow"))
     write_jobs(effort="turbo")
     cases.append(("unknown effort pins fall through",
                   run(fanout_cmd, fanout_env, session="sdc00023").get("permissionDecision") is None))
     write_jobs(disclosure="everything")
-    cases.append(("unknown disclosure tiers fall through",
+    cases.append(("a retired disclosure key falls through",
                   run(fanout_cmd, fanout_env, session="sdc00024").get("permissionDecision") is None))
     write_jobs()
     cases.append(("--authorize falls through instead of bypassing a budget gate",

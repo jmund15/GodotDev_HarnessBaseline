@@ -31,7 +31,7 @@ clause renders as the route such a machine does have — bounded Read or a subag
 consumer above gets it for free, because this module is the one assembly they all deliver. A
 registration walk that cannot run is unknown, not absent, and keeps the authored text.
 
-CLI:  guard_text.py <shape> <tier> [model]   -> the text on stdout, exit 0; a model appends its
+CLI:  guard_text.py <kind> <tier> [model]   -> the text on stdout, exit 0; a model appends its
       registry driver notes, as the sidecar launcher's isolated tiers need (no hook fires there)
       bad arguments                  -> the legal set on stderr, exit 2
 """
@@ -39,7 +39,6 @@ import os
 import re
 import sys
 
-VALID_SHAPES = ("any", "survey", "review", "author", "arm", "bench-score")
 VALID_TIERS = ("detailed", "condensed", "minimal", "none")
 OVERLAY_LAYERS = ("coding", "godot")
 
@@ -113,14 +112,31 @@ def _section(path: str, tier: str) -> str:
     return body
 
 
+def _guard_name(name: str) -> str:
+    """The guard file set for a job `kind` (its table row's `guard`; `bench-score` has none and names
+    itself), or for a guard name a caller already holds (`survey`, `review`, `any`, ...). The legal set
+    is the table's: every kind, and every guard a kind row names. Anything else raises."""
+    tools_dir = os.path.dirname(os.path.abspath(__file__))
+    if tools_dir not in sys.path:
+        sys.path.insert(0, tools_dir)
+    import tool_profiles
+    kinds = tool_profiles.load_table()["kinds"]
+    if name in kinds:
+        return kinds[name].get("guard") or name
+    guards = {row["guard"] for row in kinds.values() if row.get("guard")}
+    if name in guards:
+        return name
+    legal = sorted(set(kinds) | guards)
+    raise ValueError("unknown kind %r (legal: %s)" % (name, ", ".join(legal)))
+
+
 def guard_text(shape: str, tier: str) -> str:
-    """Assemble the rails a delegate of this shape and tier receives.
+    """Assemble the rails a delegate of this kind (or guard name) and tier receives.
 
     Returns "" for tier `none` — an empty string is a valid delivery, distinct from the
     ValueError raised when a requested section is missing.
     """
-    if shape not in VALID_SHAPES:
-        raise ValueError("unknown shape %r (legal: %s)" % (shape, ", ".join(VALID_SHAPES)))
+    shape = _guard_name(shape)
     if tier not in VALID_TIERS:
         raise ValueError("unknown tier %r (legal: %s)" % (tier, ", ".join(VALID_TIERS)))
     if tier == "none":
@@ -149,8 +165,8 @@ def guard_text(shape: str, tier: str) -> str:
 
 def main() -> int:
     if len(sys.argv) not in (3, 4):
-        print("usage: guard_text.py <shape> <tier> [model]", file=sys.stderr)
-        print("  shape: %s" % ", ".join(VALID_SHAPES), file=sys.stderr)
+        print("usage: guard_text.py <kind> <tier> [model]", file=sys.stderr)
+        print("  kind:  a kind in guards/tool_profiles.json (its `guard` field names the files)", file=sys.stderr)
         print("  tier:  %s" % ", ".join(VALID_TIERS), file=sys.stderr)
         return 2
     try:
