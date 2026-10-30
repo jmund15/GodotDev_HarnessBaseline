@@ -137,6 +137,11 @@ _ADD_SKIPPERS = frozenset({'exit', 'return', 'exec', 'set', 'trap', 'eval', 'sou
                            'elif', 'while', 'until', 'for', 'case', 'function', '{', '(', 'cd', 'pushd', 'popd'})
 _TAIL_FILTER = re.compile(r'\s*tail(?:\s+-n\s*\d+|\s+-\d+)?\s*')
 _FAILURE_LINE = re.compile(r'(?m)^\s*(?:fatal|error):')
+_BACKGROUND_NOTICE = re.compile(r'Command running in background with ID: (\w+)\. Output is being written to: '
+                                r'(.+?)\. You will be notified when it completes\.')
+_TASK_NOTIFICATION = re.compile(r'<task-notification>\s*<task-id>(\w+)</task-id>.*?<output-file>(.+?)</output-file>'
+                                r'\s*<status>(\w+)</status>\s*<summary>(.*?)</summary>', re.S)
+_EXIT_CODE = re.compile(r'\(exit code (\d+)\)')
 
 
 def _visible_git_invocation(segment: str, cwd: str):
@@ -297,6 +302,37 @@ def _result_text(block: dict) -> str:
     return content if isinstance(content, str) else ''
 
 
+def _task_notices(row: dict) -> list[tuple[str, str, str, str]]:
+    """(task id, output file, status, summary) for each `<task-notification>` a harness row carries.
+
+    Assistant rows are skipped: a model can type a notice into its own text, and only the harness writes these rows.
+    A queued row keeps its text in `content`, an attachment in `attachment.prompt`, a user row in its text blocks."""
+    if row.get('type') not in ('user', 'queue-operation', 'attachment'):
+        return []
+    message = row.get('message')
+    body = message.get('content') if isinstance(message, dict) else None
+    attachment = row.get('attachment')
+    texts = []
+    for value in (row.get('content'), attachment.get('prompt') if isinstance(attachment, dict) else None, body):
+        if isinstance(value, str):
+            texts.append(value)
+        elif isinstance(value, list):
+            texts += [str(part.get('text', '')) for part in value if isinstance(part, dict)]
+    return [m.groups() for text in texts for m in _TASK_NOTIFICATION.finditer(text)]
+
+
+def _background_add_ran(visible: bool, output: str, summary: str) -> bool:
+    """Whether a backgrounded add succeeded: a visible add reads its output file, any other add the exit code."""
+    if visible:
+        try:
+            with open(output, encoding='utf-8', errors='replace') as handle:
+                return not _FAILURE_LINE.search(handle.read())
+        except OSError:
+            return False
+    code = _EXIT_CODE.search(summary)
+    return code is not None and code[1] == '0'
+
+
 def session_created_worktree(path: str, transcript_path: str | None) -> bool:
     """Prove ownership of this live linked worktree, not just its name (`orchestration` reference `worktrees.md`).
 
@@ -305,6 +341,8 @@ def session_created_worktree(path: str, transcript_path: str | None) -> bool:
     timestamp must lie inside that call; removal/recreation cannot inherit old ownership.
     A fully literal `for` loop counts as its unrolled adds, each proven as a visible add (`_unrolled_loops`).
     A literal `lane_worktree.py create <name>` call counts as a visible add of `<main>/.claude/worktrees/<name>`.
+    A backgrounded add's result is the background notice; its call ends at the completed `<task-notification>`
+    for that task id, and success reads the output file (visible add) or the notice's exit code (other add).
     Missing timestamps, results or provable control flow fail closed.
     """
     if not path or not transcript_path or _UNSAFE_PATH_CHARS.search(path):
@@ -329,6 +367,7 @@ def session_created_worktree(path: str, transcript_path: str | None) -> bool:
         paths.append(os.path.join(os.path.dirname(transcript_path), sid + '.jsonl'))
     for transcript in dict.fromkeys(paths):
         pending = {}
+        backgrounded = {}  # task id -> (start, visible, output file) of an add still awaiting its notification
         try:
             with open(transcript, encoding='utf-8', errors='replace') as handle:
                 for line in handle:
@@ -363,6 +402,11 @@ def session_created_worktree(path: str, transcript_path: str | None) -> bool:
                         elif block.get('type') == 'tool_result':
                             start, visible = pending.pop(block.get('tool_use_id'), (None, False))
                             text = _result_text(block)
+                            notice = _BACKGROUND_NOTICE.search(text)
+                            if notice and start is not None and not block.get('is_error'):
+                                # The notice is the result, not git's output: the call ends at its notification.
+                                backgrounded[notice[1]] = (start, visible, notice[2])
+                                continue
                             # A visible add's success is read from the text, so a later command's exit
                             # status cannot void it; a denial never ran and carries no `Exit code` line.
                             ran = not block.get('is_error') or (visible and text.startswith('Exit code '))
@@ -371,6 +415,12 @@ def session_created_worktree(path: str, transcript_path: str | None) -> bool:
                                     and not (isinstance(outcome, dict) and outcome.get('interrupted'))
                                     and not (visible and _FAILURE_LINE.search(text))
                                     and start <= born <= stamp):
+                                return True
+                    for task, output, status, summary in _task_notices(row):
+                        if task in backgrounded and stamp is not None and status == 'completed':
+                            start, visible, notice_output = backgrounded[task]
+                            if (start <= born <= stamp and _same_path(Path(output), Path(notice_output))
+                                    and _background_add_ran(visible, output, summary)):
                                 return True
         except (OSError, TypeError, ValueError):
             continue
@@ -473,14 +523,19 @@ def _first_loss(status: str, root: Path, allow_ignored: bool = False) -> str | N
 def _first_unstored_loss(status: str, root: Path) -> str | None:
     """`_first_loss` for a worktree this session created: a dirty path loses nothing when its working file is gone
     (an index blob is always in the store) or its content is already a blob in the object store, and a
-    submodule's gitlink is judged by that submodule's own checks."""
+    submodule's gitlink is judged by that submodule's own checks. A missing working file that git does not
+    report deleted (a path git quoted, say) is a loss: the check fails closed."""
     for line in status.splitlines():
         if _first_loss(line, root, allow_ignored=True) is None:
             continue
         entry = line[3:].split(" -> ")[-1].strip().strip('"')
         path = root / entry
-        if (path / ".git").exists() or not (path.is_file() or path.is_symlink()):
+        if (path / ".git").exists():
             continue
+        if not (path.is_file() or path.is_symlink()):
+            if "D" in line[:2]:
+                continue
+            return line
         unstored = worktree_unstored(str(root), [entry])
         if unstored is None or unstored:
             return line
@@ -536,6 +591,40 @@ def _registered_unlocked(listing: str, target: Path, reasons: list[str] | None =
     if reasons is not None:
         reasons.append('worktree is not registered')
     return False
+
+
+def _open_prs(root: Path) -> list[tuple[int, str]] | None:
+    """`(number, head branch)` per open PR of the project's GitHub remote, [] when origin is not on
+    GitHub, None when `gh` cannot answer (fail closed: the caller blocks)."""
+    origin = _git(["remote", "get-url", "origin"], root)
+    if origin is None or "github.com" not in origin:
+        return []
+    try:
+        proc = subprocess.run(["gh", "pr", "list", "--state", "open", "--limit", "200", "--json",
+                               "number,headRefName"], cwd=str(root), capture_output=True, text=True,
+                              timeout=_GIT_TIMEOUT_S)
+        return [(int(row["number"]), str(row["headRefName"])) for row in json.loads(proc.stdout)] \
+            if proc.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _open_pr_reason(target: Path, root: Path) -> str | None:
+    """Why `target` holds an open PR's branch (its head branch, or `sync/pr<N>` of open PR N): a PR under
+    test or review needs its checkout until the PR closes or merges."""
+    branch = (_git(["symbolic-ref", "-q", "--short", "HEAD"], target) or "").strip()
+    if not branch:
+        return None
+    prs = _open_prs(root)
+    if prs is None:
+        return 'cannot read open PRs (gh failed), so cannot tell whether branch ' + branch + \
+            ' heads one; fix gh and retry'
+    match = re.fullmatch(r"sync/pr(\d+)", branch)
+    for number, head in prs:
+        if branch == head or (match and int(match.group(1)) == number):
+            return 'branch ' + branch + ' belongs to open PR #' + str(number) + \
+                ', which still needs this checkout; remove it after the PR closes or merges'
+    return None
 
 
 # Under pre_bash_dispatch's 75 s hook budget: hashing a full orphaned checkout is the slow call.
@@ -730,7 +819,10 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
         return reject('cannot read worktree registration')
     if not _registered_unlocked(listing, target, reasons):
         return False
-    listed = _git(["config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"], target) \
+    pr_reason = _open_pr_reason(target, root)
+    if pr_reason:
+        return reject(pr_reason)
+    listed =_git(["config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"], target) \
         if (target / ".gitmodules").is_file() else ""
     declared = [line.split(" ", 1)[1].strip().strip("/") for line in (listed or "").splitlines() if " " in line]
     broken = [name for name in declared if (target / name / ".git").is_file() and _orphan_admin(target / name)]

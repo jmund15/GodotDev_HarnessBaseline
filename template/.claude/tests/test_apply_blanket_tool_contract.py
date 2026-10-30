@@ -29,7 +29,7 @@ class ApplyBlanketToolContract(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.temp, True)
         hooks = self.temp / ".claude" / "hooks"
         hooks.mkdir(parents=True)
-        for name in ("apply_blanket_tool.py", "tool_cascade_audit.py", "_cs_files.py"):
+        for name in ("apply_blanket_tool.py", "tool_cascade_audit.py", "_cs_files.py", "_checkout_root.py"):
             shutil.copy(ROOT / ".claude" / "hooks" / name, hooks / name)
         self.tool = hooks / "apply_blanket_tool.py"
         (self.temp / "project.godot").write_text("config_version=5\n", encoding="utf-8")

@@ -173,16 +173,11 @@ def room(window, now=None):
 
 
 def _samples():
-    """The plan-usage samples, read at most once per SAMPLES_TTL_S; [] when the reader cannot load."""
+    """The plan-usage samples, read at most once per SAMPLES_TTL_S."""
     now = time.time()
     if _SAMPLES_CACHE["at"] is not None and now - _SAMPLES_CACHE["at"] < SAMPLES_TTL_S:
         return _SAMPLES_CACHE["rows"]
-    rows = []
-    if usage_samples is not None:
-        try:
-            rows = usage_samples.read()
-        except Exception:
-            rows = []
+    rows = usage_samples.read()
     _SAMPLES_CACHE.update(at=now, rows=rows)
     return rows
 
@@ -194,13 +189,11 @@ def _recent_rate(transport, window, now, samples):
     The rate is the least-squares slope of `used` over time. The reset filter already confines the
     samples to one period, so a dip is two writers rounding one plan apart, never a roll."""
     reset = provider_capacity._epoch(window.get("resetsAt"))
-    plan_of = usage_samples.plan_of if usage_samples is not None else (
-        lambda s: s.get("plan") or s.get("provider"))
     rows = []
     for s in samples or []:
         if not isinstance(s, dict) or (window.get("name") and s.get("window") != window.get("name")):
             continue
-        if plan_of(s) != transport:
+        if usage_samples.plan_of(s) != transport:
             continue
         ts, used = s.get("ts"), s.get("used")
         if isinstance(ts, bool) or not isinstance(ts, (int, float)):
@@ -478,7 +471,8 @@ def ledger_job(row):
     span = duration / 1000.0 if isinstance(duration, (int, float)) and not isinstance(duration, bool) else 0.0
     model = next((row[k] for k in ("requestedModel", "servedModel") if isinstance(row.get(k), str)), None)
     return {"plan": row["transport"], "start": end - span, "end": end, "usd": float(usd), "model": model,
-            "effort": row.get("effort"), "shape": (row.get("toolProfile") or {}).get("shape"),
+            "effort": row.get("effort"),
+            "shape": (row.get("toolProfile") or {}).get("kind") or (row.get("toolProfile") or {}).get("shape"),
             "truncated": row.get("stopReason") == "provider-usage-limit"}
 
 

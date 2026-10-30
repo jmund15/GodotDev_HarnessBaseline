@@ -30,9 +30,10 @@ Per worktree, gather:
 | Merge state | `git branch --merged main` membership, or `git -C <path> log --oneline main..HEAD \| wc -l` for the unmerged-commit count |
 | Uncommitted | `git -C <path> status --porcelain` — count **tracked** modifications separately from untracked files |
 | Locked | `locked` in the porcelain output — a locked worktree is deliberately pinned; never recommend it |
+| Open PR | the worktree's branch is an open PR's head branch or `sync/pr<N>` of open PR N (`gh pr list --state open --json number,headRefName`) |
 | Guard | `python3 .claude/hooks/_regenerable_clone.py --retire-check <path>...`: the delete guard's own verdict for a worktree this session did not create (an ignored file that is no regenerable cache blocks), with every reason it would deny |
 
-Bucket into: `merged` (branch is in main, nothing uncommitted) · `wip:N` (N tracked uncommitted edits) · `unmerged:N` (N commits not in main) · `detached` · `locked` · `orphan`.
+Bucket into: `merged` (branch is in main, nothing uncommitted) · `wip:N` (N tracked uncommitted edits) · `unmerged:N` (N commits not in main) · `detached` · `locked` · `orphan` · `open-pr:N` (checked first; never recommended, because PR testing and review need its checkout until the PR closes or merges, and the delete guard denies it).
 
 A `*--twin` worktree is an agent twin, which a test runner builds in while an editor holds its source: harness-generated and regenerable. While its source worktree exists, its uncommitted state is a copy of the source's, so its `wip:N` is not unique work. With the source gone, judge it like any worktree. Recommend it removable once no run holds it (the twin's checkout lock, which this command does not read), and remove any submodule worktrees inside it first.
 

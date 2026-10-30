@@ -19,8 +19,11 @@ IGNORE_ENTRIES = ".claude/.cache/\n.claude/settings.local.json\n"
 GITIGNORE_BLOCK = "# >>> harness >>>\n" + IGNORE_ENTRIES + "# <<< harness <<<\n"
 WORKLOG = "DevProjects/Demo/Claude/TODO/Worklog.md"
 SEED_REL = ".claude/CLAUDE.md"
-ITEMS = ("substitutions", "seeds", "git-repo", "git-hooks-path", "gitignore-block", "worklog",
-         "user-scope", "lens-registry", "auto-memory-dir", "lane-agents")
+SEARCH_ENTRIES_REL = ".claude/searchignore.harness"
+SEARCH_ENTRIES = ".claude/tests/\n"
+SEARCH_BLOCK = "# >>> harness >>>\n" + SEARCH_ENTRIES + "# <<< harness <<<\n"
+ITEMS = ("substitutions", "seeds", "git-repo", "git-hooks-path", "gitignore-block", "searchignore-block",
+         "worklog", "user-scope", "lens-registry", "auto-memory-dir", "lane-agents")
 
 
 def _table(*agent_types: str) -> bytes:
@@ -181,6 +184,39 @@ def test_init_and_pull_write_the_ignore_block_and_keep_project_lines() -> None:
         assert (root / ".gitignore").read_text(encoding="utf-8") == text
 
 
+def test_doctor_fails_a_search_block_that_lags_the_shipped_entries() -> None:
+    with T._fixture() as path:
+        root = _fixed_consumer(path)
+        code, rows = _doctor(root)
+        assert rows["searchignore-block"]["status"] == "ok", rows["searchignore-block"]
+        T._write(root / SEARCH_ENTRIES_REL, SEARCH_ENTRIES.encode())
+        code, rows = _doctor(root)
+        row = rows["searchignore-block"]
+        assert code != 0 and row["status"] == "fail" and "# >>> harness >>>" in row["detail"], row
+        assert "pull" in row["fix"], row
+
+
+def test_init_and_pull_write_the_search_block_and_keep_project_lines() -> None:
+    with T._fixture() as path:
+        root, baseline, remote, _c = T._v2_fixture(path, {
+            IGNORE_ENTRIES_REL: {"upstream": IGNORE_ENTRIES.encode()},
+            SEARCH_ENTRIES_REL: {"upstream": SEARCH_ENTRIES.encode()},
+        })
+        T._write(root / ".searchignore", b"Tests/\n")
+        (root / ".claude" / "baseline.lock.json").unlink()
+        init = T._run(root, "init", "--baseline-dir", str(baseline), "--repo", str(remote).replace("\\", "/"),
+                      "--sub", "{{PROJECT_NAME}}=Demo", "--layers", "pure")
+        assert init.returncode == 0, T._out(init)
+        text = (root / ".searchignore").read_text(encoding="utf-8")
+        assert text == "Tests/\n\n" + SEARCH_BLOCK, repr(text)
+        T._write(root / ".searchignore", b"Tests/\n")
+        pull = T._run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, T._out(pull)
+        assert (root / ".searchignore").read_text(encoding="utf-8") == text, "pull did not restore the block"
+        again = T._run_baseline(root, baseline, "pull")
+        assert "harness block written" not in T._out(again), T._out(again)
+
+
 def test_pull_keeps_this_proofs_planted_tokens() -> None:
     sys.path.insert(0, str(T.ENGINE.parent))
     import baseline_sync
@@ -279,6 +315,8 @@ def main() -> int:
         test_doctor_names_a_wrong_auto_memory_directory,
         test_doctor_fails_a_block_that_lags_the_shipped_entries,
         test_init_and_pull_write_the_ignore_block_and_keep_project_lines,
+        test_doctor_fails_a_search_block_that_lags_the_shipped_entries,
+        test_init_and_pull_write_the_search_block_and_keep_project_lines,
         test_pull_keeps_this_proofs_planted_tokens,
         test_doctor_reports_an_untracked_ignored_delivered_row,
         test_doctor_allows_a_tracked_ignored_row_and_a_local_ignored_row,

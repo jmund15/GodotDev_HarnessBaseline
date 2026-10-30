@@ -101,6 +101,31 @@ def main():
     case("fit is judged on the named transport, not another's rows",
          dc.tier_fit("a-exec", "executor", "go", DATA) is not None)
 
+    # kind_tiers: the tier a job implies comes from its kind row; judge is an executor-role job.
+    kind_tiers = getattr(dc, "kind_tiers", None)
+    case("hooks/_dispatch_checks.py exposes kind_tiers", callable(kind_tiers))
+    ktiers = kind_tiers() if callable(kind_tiers) else {}
+    case("kind_tiers reads each kind row's tier",
+         (ktiers.get("scout"), ktiers.get("lens"), ktiers.get("reviewer"), ktiers.get("author"),
+          ktiers.get("judge")) == ("fanout", "fanout", "executor", "executor", "executor"), repr(ktiers))
+    why = dc.tier_fit("g-fan", ktiers.get("judge"), "go", DATA)
+    case("a kind judge job pinned to a fanout-only row is denied", isinstance(why, str) and "g-fan" in why, repr(why))
+    case("a kind judge job pinned to an executor row passes", dc.tier_fit("g-exec", ktiers.get("judge"), "go", DATA) is None)
+
+    # job_tier: the written `tier` wins over the kind row's; `validation` folds onto `fanout`.
+    case("job_tier takes the kind row's tier when none is written",
+         dc.job_tier("reviewer") == ("executor", "kind `reviewer`"), repr(dc.job_tier("reviewer")))
+    case("a written tier outranks the kind row's",
+         dc.job_tier("reviewer", "architect") == ("architect", "the job's `tier`"), repr(dc.job_tier("reviewer", "architect")))
+    case("a written validation tier folds onto fanout", dc.job_tier("author", "validation")[0] == "fanout")
+    try:
+        dc.job_tier("author", "bogus")
+        refused = False
+    except ValueError:
+        refused = True
+    case("an unknown written tier raises ValueError", refused)
+    case("a kind with no row and no written tier has no tier", dc.job_tier("nokind") == (None, None))
+
     # seat_fit: a row holding the tier in `supplementary` fills a review seat only beside a qualified seat.
     sdata = {"transports": DATA["transports"], "models": DATA["models"] + [
         {"transport": "anthropic", "id": "host-sup-1", "alias": "a-sup", "roles": ["fanout"],
@@ -190,11 +215,11 @@ def main():
         os.environ["CLAUDE_CONFIG_DIR"] = login
         try:
             held = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 200000, claude, ladder,
-                                        job={"shape": "review", "resident": True})
+                                        job={"kind": "reviewer"})
             wide = dc.cheaper_claimants("dear-1", "fanout", "anthropic", 300000,
                                         pricier_data(id="claude-cheap-1", longContextTier=None,
                                                      limits={"contextTokens": 1000000, "maxOutputTokens": 128000}),
-                                        ladder, job={"shape": "author"})
+                                        ladder, job={"kind": "author"})
         except TypeError as err:
             held = wide = repr(err)
         finally:
@@ -202,7 +227,7 @@ def main():
                 os.environ.pop("CLAUDE_CONFIG_DIR", None)
             else:
                 os.environ["CLAUDE_CONFIG_DIR"] = saved_login
-        case("a Haiku-like claimant keeps its own 217,000-token point whatever the job's shape or resident mark",
+        case("a Haiku-like claimant keeps its own 217,000-token point whatever the job's kind",
              isinstance(held, list) and held and held[0]["usable"] == 217000 and held[0]["fits"] is True
              and "217,000-token compaction point" in dc.claimant_text(held[0], 200000), repr(held))
         case("a claimant with no operating point is measured against the login's 500,000 window less the reserve, 467,000 tokens",

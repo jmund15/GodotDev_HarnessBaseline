@@ -143,7 +143,7 @@ launch() { # <launcher> <record>; the parent carries a leak of every kind the sc
     ANTHROPIC_CONSOLE_KEY_LEAK="parent-console-leak-sentinel" \
     ANTHROPIC_CONSOLE_WORKSPACE_ID_PRIMARY="$WORKSPACE_ID" \
     CLAUDE_CONFIG_DIR="$HOME_DIR/.claude" CLAUDE_CODE_TRANSPORT="codex" \
-    bash "$1" -m "$MODEL_ID" -e "$EFFORT" -G review -D bare -t Read -f "$NATIVE/prompt.md" \
+    bash "$1" -m "$MODEL_ID" -e "$EFFORT" -G bench-review -t "-Glob,-Grep,-mcp:semantic-search,-mcp:ai-worker" -f "$NATIVE/prompt.md" \
       -R "$2" -l console-creds -d "$ROOT" ) >"$NATIVE/launch.out" 2>"$NATIVE/launch.err"
 }
 

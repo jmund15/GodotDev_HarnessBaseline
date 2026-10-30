@@ -18,10 +18,15 @@ stopped did not finish its work, so repeating it is not a re-pay. A missing ledg
 ledger that exists but cannot be read exits 15 and says so, because spend that cannot be read is not proven new.
 A row without a `workKey` never matches.
 
+`void(key, launch_id, reason, ledger)` appends a row that cancels one launch's finished row, for an in-process caller
+that observed the launch return without its deliverable (the score daemon: exit 0 and no score file); it has no
+command line. A finished row for the same key under another launch still refuses.
+
 The decision rests on the ledger's recorded rows and the key, never on a reason a caller writes. Caller:
 scripts/lib/sidecar_common.sh sc_gate_repay, which refuses a launch with exit 15.
 """
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -57,10 +62,11 @@ def finished(row):
 
 
 def find_finished(key, ledger):
-    """The first finished ledger row holding this key, or None. A missing ledger holds nothing; OSError when
-    the ledger exists but cannot be read."""
+    """The first finished ledger row holding this key whose launch no void row cancels, or None. A missing ledger
+    holds nothing; OSError when the ledger exists but cannot be read."""
     if not os.path.exists(ledger):
         return None
+    done, voided = [], set()
     with open(ledger, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             if key not in line:
@@ -69,9 +75,21 @@ def find_finished(key, ledger):
                 row = json.loads(line)
             except ValueError:
                 continue  # a partial line from a concurrent append
-            if isinstance(row, dict) and row.get("workKey") == key and finished(row):
-                return row
-    return None
+            if not isinstance(row, dict) or row.get("workKey") != key:
+                continue
+            if row.get("voids"):
+                voided.add(row["voids"])
+            elif finished(row):
+                done.append(row)
+    return next((row for row in done if row.get("launchId") not in voided), None)
+
+
+def void(key, launch_id, reason, ledger):
+    """Append the row that cancels one launch's finished row: its caller saw the launch return no deliverable."""
+    row = {"timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "workKey": key, "voids": launch_id, "reason": reason}
+    with open(ledger, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row) + "\n")
 
 
 def main(argv=None):

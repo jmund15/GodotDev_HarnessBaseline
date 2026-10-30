@@ -25,20 +25,8 @@ function Get-CommentGateFiles {
     param([string] $Repo, $Tree)
     if (-not $Tree.digest -or (Get-CommentEntryDigest $Tree.entries) -ne $Tree.digest) { throw 'unreadable-tree' }
     $map = ConvertTo-CommentFileMap $Tree.entries
-    $gitlinkPrefix = 'gitlink|'
-    $links = @($map.Keys | Where-Object { $map[$_].StartsWith($gitlinkPrefix) })
-    # TreeDigest uses one jm/ namespace for dirty submodule overrides; flatten from each actual checkout instead.
-    $overrides = @($map.Keys | Where-Object { $_.StartsWith('jm/') })
-    if ($overrides.Count -and $links.Count -ne 1) { throw 'ambiguous-submodule-overrides' }
-    foreach ($p in $overrides) { [void]$map.Remove($p) }
-    foreach ($link in $links) {
-        $subRepo = Join-Path $Repo $link
-        $subTree = Get-TreeDigest -Repo $subRepo
-        if ($subTree.head -ne $map[$link].Substring($gitlinkPrefix.Length)) { throw 'submodule-tree-mismatch' }
-        $subMap = Get-CommentGateFiles -Repo $subRepo -Tree $subTree
-        $map[$link] = 'gitlink'
-        foreach ($p in $subMap.Keys) { $map.Add("$link/$p", $subMap[$p]) }
-    }
+    # A submodule that is not checked out leaves only its commit sha, so its files cannot be compared.
+    if (@($map.Values | Where-Object { $_.StartsWith('gitlink|') }).Count) { throw 'submodule-not-checked-out' }
     return ,$map
 }
 
@@ -162,7 +150,7 @@ function New-CommentGateSnapshot {
             }
         }
         if (-not (Test-DigestMatch (Get-TreeDigest -Repo $Repo).digest $Tree.digest)) { return $null }
-        [pscustomobject]@{ version = 1; lexer = $lexer; treeDigest = $Tree.digest; treeEntries = @($Tree.entries);
+        [pscustomobject]@{ version = 2; lexer = $lexer; treeDigest = $Tree.digest; treeEntries = @($Tree.entries);
             files = $files; tokens = $tokens }
     } catch {
         Write-Verbose "COMMENT_SNAPSHOT_UNAVAILABLE reason=$($_.Exception.Message)"
@@ -187,7 +175,7 @@ function Get-CommentOnlyRoute {
         $no.reason = 'unreadable-base'
         if (-not $best.PSObject.Properties['fullGreenSnapshot'] -or -not $best.fullGreenSnapshot) { return $no }
         $snap = $best.fullGreenSnapshot
-        if ($snap.version -ne 1 -or $snap.lexer -ne (Initialize-CommentLexer) -or
+        if ($snap.version -ne 2 -or $snap.lexer -ne (Initialize-CommentLexer) -or
             -not (Test-DigestMatch $snap.treeDigest $best.treeDigest) -or
             (Get-CommentEntryDigest $snap.treeEntries) -ne $snap.treeDigest) { return $no }
         $before = @{}

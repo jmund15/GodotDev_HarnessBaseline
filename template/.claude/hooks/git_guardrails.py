@@ -372,8 +372,8 @@ def _setup_surface(path):
 
 
 def _has_proof(tests_dir, name, git_env=None):
-    """A proof counts only when git tracks it: `.claude/tests/` is gitignored, so a file that
-    exists on disk but was never `git add -f`ed reaches no other checkout."""
+    """A proof counts only when git tracks it: a file that exists on disk but was never committed
+    reaches no other checkout."""
     import glob
     hits = (glob.glob(os.path.join(tests_dir, "test_%s*.py" % name))
             or glob.glob(os.path.join(tests_dir, "%s_test.*" % name)))
@@ -1028,10 +1028,10 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
     except Exception:
         land = ""
     if land:
-        next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %%s; this project has a land runner: prove this "
-                     "session's commits with `python3 .claude/scripts/harness_tests.py --for <their paths> --base <the "
-                     "revision before them>`, then `git push origin HEAD:%s<session id's first 8 chars>`; the runner "
-                     "runs the close and lands the branch."
+        next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %%s; this project has a land runner: "
+                     "`git push --recurse-submodules=check origin HEAD:%s<session id's first 8 chars>`; the runner "
+                     "runs the close and lands the branch. A direct push needs `python3 "
+                     ".claude/scripts/harness_tests.py --close` in the background first, then the commit it proves."
                      % land)
     else:
         next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %s; run `python3 "

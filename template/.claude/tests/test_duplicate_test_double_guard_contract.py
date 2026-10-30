@@ -32,7 +32,7 @@ class DuplicateTestDoubleGuardContract(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.temp, True)
         hooks = self.temp / ".claude" / "hooks"
         hooks.mkdir(parents=True)
-        for name in ("duplicate_test_double_guard.py", "_cs_files.py"):
+        for name in ("duplicate_test_double_guard.py", "_cs_files.py", "_checkout_root.py"):
             shutil.copy(ROOT / ".claude" / "hooks" / name, hooks / name)
         self.guard = hooks / "duplicate_test_double_guard.py"
         (self.temp / "Scripts").mkdir()

@@ -52,7 +52,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-from _checkout_root import main_checkout_root
+from _checkout_root import main_checkout_root, repo_arg
+from _cs_files import cs_files
 
 REPO = Path(__file__).resolve().parents[2]
 _CLAUDE_DIR = REPO / ".claude"
@@ -125,20 +126,12 @@ def _common_root():
     return Path(main_checkout_root(REPO))
 
 
-def _cs_files(root):
-    for dirpath, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in _SKIP_DIRS]
-        for fn in files:
-            if fn.endswith(".cs"):
-                yield Path(dirpath) / fn
-
-
 def _source_roots():
     roots = [REPO]
     common = _common_root()
     if common != REPO:
         for name in adaptation.get(_CLAUDE_DIR, "paired_repos"):
-            if not next(_cs_files(REPO / name), None):
+            if not cs_files(REPO / name, _SKIP_DIRS, skip_dot=True):
                 roots.append(common / name)
     return roots
 
@@ -174,7 +167,7 @@ def load_type_map():
     docs = _docs_dir()
     sources = [(p, True) for p in sorted(docs.glob("*.xml"))] if docs else []
     for root in _source_roots():
-        sources += [(p, False) for p in sorted(_cs_files(root))]
+        sources += [(p, False) for p, _rel in cs_files(root, _SKIP_DIRS, skip_dot=True)]
     for path, doc in sources:
         key = path.as_posix()
         try:
@@ -280,10 +273,9 @@ def scan():
 
 def main():
     global REPO, _CLAUDE_DIR, _TESTS_ROOT_REL, TESTS_ROOT
-    if "--repo" in sys.argv:
-        i = sys.argv.index("--repo")
-        REPO = Path(sys.argv.pop(i + 1)).resolve()
-        sys.argv.pop(i)
+    repo = repo_arg(sys.argv)
+    if repo:
+        REPO = repo
         _CLAUDE_DIR = REPO / ".claude"
         _TESTS_ROOT_REL = adaptation.get(_CLAUDE_DIR, "tests_root")
         TESTS_ROOT = REPO / _TESTS_ROOT_REL

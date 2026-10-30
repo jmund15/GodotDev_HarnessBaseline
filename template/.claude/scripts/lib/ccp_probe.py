@@ -94,8 +94,8 @@ def proxy_models_text(exe):
 
 
 def serves(models_text, model_id):
-    """The model list is compiled into each proxy build, so a registry remap to a newer id needs a
-    build that lists it; an unlisted id dies upstream on `400 Unknown model`."""
+    """A build's model list is its compiled list plus, in catalog-reading builds, every model
+    ~/.codex/models_cache.json lists; an unlisted id dies upstream on `400 Unknown model`."""
     return model_id in re.split(r"[\s,;:]+", models_text or "")
 
 
@@ -123,7 +123,8 @@ def serves_check(exe, model_id):
     if scoped and os.path.normcase(os.path.normpath(scoped)) != os.path.normcase(os.path.normpath(exe)):
         reason += f" The user-scope CCP_BIN is {scoped}; this process inherited an older value, so relaunch with CCP_BIN={scoped}."
     else:
-        reason += " Set CCP_BIN to a build whose `models` lists it."
+        reason += (" Run `codex` once so ~/.codex/models_cache.json lists it (a catalog-reading build serves every model"
+                   " listed there); if the catalog already lists it, set CCP_BIN to a catalog-reading build.")
     return 1, reason
 
 

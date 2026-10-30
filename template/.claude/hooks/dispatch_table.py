@@ -147,6 +147,8 @@ _STOP_STARTED = time.monotonic()
 AUDIT_RESERVE = 0.26
 CHECKED_ENGINES = {"explore_fanout", "review_fanout", "doc_architecture_audit",
                    "key_reachability", "worklog_relevance"}
+# A row carrying none of these is a result table row, never a claim or finding (evidence_contract.md).
+CLAIM_FIELDS = frozenset({"evidence", "claim", "subject", "quote", "polarity", "bearing", "description", "verdict"})
 
 
 def _stop_deadline():
@@ -233,6 +235,9 @@ def _audit_rows(value, label="", *, mode="claims"):
             for name, child in children.items():
                 if name in ("verification", "perLens", "counts", "perAgent", "perTask"):
                     continue
+                if isinstance(child, list) and child and all(
+                        isinstance(item, dict) and not CLAIM_FIELDS.intersection(item) for item in child):
+                    continue  # a result table (a probe's cells), not claims or findings
                 if isinstance(child, (dict, str, list)):
                     found, bad = _audit_rows(child, name, mode=mode)
                     rows.extend(found)
@@ -263,12 +268,13 @@ def _in_run_report(verification, payload):
     return _read_json(str(record))
 
 
-def _fold_subjects(specs, payload):
+def _fold_subjects(specs, payload, repo_root=None):
     """Fold subjects from `{root, snapshot, files, newPaths?}` specs: a sidecar's fold_jobs.json or a native
-    review's args.fold.subjects. A relative root or snapshot is the dispatching session's cwd."""
+    review's args.fold.subjects. A relative root or snapshot resolves against `repo_root` (a native review's
+    args.fold.repoRoot, recorded at dispatch), else the session's cwd when Stop fires."""
     from pathlib import Path
     import fold_check
-    base = Path(payload.get("cwd") or os.path.dirname(os.path.dirname(HERE)))
+    base = Path(repo_root or payload.get("cwd") or os.path.dirname(os.path.dirname(HERE)))
 
     def absolute(value):
         path = Path(str(value))
@@ -461,7 +467,8 @@ def _audit_source(entry, session, payload):
     if specs:
         import fold_check
         try:
-            original = _audit_snapshot_rows(original, _fold_subjects(specs, payload), report_path)
+            fold_root = (args.get("fold") or {}).get("repoRoot") if kind not in ("sidecar", "agent") else None
+            original = _audit_snapshot_rows(original, _fold_subjects(specs, payload, fold_root), report_path)
         except (OSError, ValueError, KeyError, TypeError, IndexError, fold_check.Unusable) as exc:
             errors.append("fold snapshot audit unavailable: %s" % exc)
     return original, applied, verification, report_path, errors

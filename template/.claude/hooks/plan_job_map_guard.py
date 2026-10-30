@@ -85,8 +85,20 @@ def _production_rel(abs_path, root):
     return rel
 
 
+def _owning_repo(rel, root):
+    """The innermost repository holding `rel` and the path inside it: a parent's check-ignore
+    refuses a path inside a submodule (exit 128)."""
+    parts = rel.split("/")
+    for cut in range(len(parts) - 1, 0, -1):
+        candidate = os.path.join(root, *parts[:cut])
+        if os.path.exists(os.path.join(candidate, ".git")):
+            return candidate, "/".join(parts[cut:])
+    return root, rel
+
+
 def _git_ignored(rel, root):
-    done = subprocess.run(["git", "-C", root, "check-ignore", "-q", "--", rel],
+    repo, inner = _owning_repo(rel, root)
+    done = subprocess.run(["git", "-C", repo, "check-ignore", "-q", "--", inner],
                           capture_output=True, timeout=10)
     if done.returncode not in (0, 1):
         raise RuntimeError("git check-ignore exited %d for %s" % (done.returncode, rel))

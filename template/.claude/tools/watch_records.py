@@ -42,16 +42,25 @@ client's request for that seat never returned, and no engine watchdog ends it. A
 another live session-wide watcher is registered prints `COVERED by <process>` and exits 0. A bare `--await-launch`
 (or `--await-launch=<seconds>`) makes an arm that finds nothing running wait that long for this session's launch entry
 before it exits `NONE`; the bare form waits `dispatch_table.launch_grace()`.
-A child no call of this session issued (a scoring daemon, a study's ruler, a delegate's own test launch: no `call` or `issued_at` on its entry, no fan-out, no bench campaign) ending cleanly wakes nobody: its parent reports its own end, and a failed child still wakes.
+A child no call of this session issued (a scoring daemon, a study's ruler, a delegate's own test launch: no `call` or `issued_at` on its entry, no fan-out, no bench campaign) ending cleanly wakes nobody: its parent reports its own end, and a failed child still wakes, except a memory-admission refusal (exit 12), which its caller retries.
+A zero-cost end before a result written while its transport's usage-limit marker was live (`refused_while_exhausted`) prints
+as context and wakes nobody: the job that hit the limit spent and woke, and the unit's end still wakes.
 A wake prints, under each ended job's `DONE`/`DONE workflow` line, the lines of `wake_digest.py`: the result head, the
 verification status with its counts and the report path of a sidecar, fan-out job or Workflow run. A background shell
 that ended since the transcript byte offset saved in session hook state (`sidecar_wake_shell_offset`; a session with none starts at the transcript's end) arrives as
 `SHELL <id> <status> exit=<n>` with its output path, failure-marker lines and tail; a shell that ran this watcher is skipped.
 Ended Workflow runs and shells never wake the watcher: they print with the next wake, once. The last lines before `STILL RUNNING`
 or `NONE` are `UNRATED <n>: <run:label>, ...` when the session has unrated dispatches.
+Usage: python3 .claude/tools/watch_records.py --pane. The owner's live view: a background shell that polls the session's
+`checkin_lines` every `PANE_SECONDS` (`WATCH_RECORDS_PANE_SEC` overrides it) and appends a frame, closed by a stamp line,
+when they change or every `PANE_HEARTBEAT_SECONDS`. It appends, never rewrites: the desktop client reads
+only the bytes past its saved offset of the output file. It never exits by itself and no wake reads it;
+the session's shells that ran this tool are not live work. It registers under `sidecar_pane`; a second pane beside a
+live one exits COVERED. While work is live and no pane runs, a session wake's last lines carry `PANE none: ...`.
 Any other flag is a usage error (exit 2), never a record path. A fan-out job that ends cleanly wakes the session on its own, once,
 unless another job of its `wakeWith` group (the group its inventory row records) still runs, or its fan-out still runs an
 after-seat stage; the group's last end wakes. A fan-out job with no group is its own unit.
+Any other successful job whose unit still has running jobs wakes nobody.
 A benchmark campaign's cells (direct launches labelled `<campaign>-<date>:<task>:<model>:r<n>`) are one unit: while
 `<logs>/<campaign>/grid.log` has a `CELL` line after its last terminal `GRID` line and `grid.pid` is alive, the grid
 has cells no pending entry names yet, so the cells that ended wake nobody and the watcher stays live. The unit
@@ -109,8 +118,20 @@ WORKFLOW_STALL_SECONDS = float(os.environ.get("WATCH_RECORDS_STALL_SEC", "600"))
 # window: the first window wakes the session with STALLED, the second presumes a crash that left no end record.
 DISCOVERED_RUN_SECONDS = 2 * WORKFLOW_STALL_SECONDS
 ENDED = "ended-before-result"
+# lib/sidecar_common.sh exit 12: memory admission refused before anything ran. A background child's caller (the
+# scoring daemon, the grid's bench_supervised_launch) retries it, so its end is context; a called launch still wakes.
+ADMISSION_REFUSED = "12"
+# Exit 15: the re-pay check refused finished work before anything ran; the scoring daemon holds the cell and reports it.
+REPAY_REFUSED = "15"
+CALLER_HANDLED = frozenset({ADMISSION_REFUSED, REPAY_REFUSED})
 ARM_COMMAND = "python3 .claude/tools/watch_records.py --session --wake"
 ARM_CALL = "as its own Bash call with run_in_background: true and timeout 7200000"
+PANE_COMMAND = "python3 .claude/tools/watch_records.py --pane"
+PANE_CALL = "as its own Bash call with run_in_background: true and timeout 86400000"
+PANE_KEY = "sidecar_pane"  # the live pane's process line, in session hook state
+PANE_TITLE = "sidecar pane"
+PANE_SECONDS = float(os.environ.get("WATCH_RECORDS_PANE_SEC", "20"))
+PANE_HEARTBEAT_SECONDS = 600  # an unchanged pane reprints so its stamp shows it is alive
 STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # the launch ids reap.py stopped for this session
 SHELL_OFFSET_KEY = "sidecar_wake_shell_offset"  # the transcript byte offset the last wake scanned to for ended shells
 REPORTED_ONCE_KINDS = ("end", "shell")  # a non-triggering line of these kinds prints once, then is acknowledged
@@ -437,6 +458,24 @@ def failed_finish(row):
     return row.get("outcome") == ENDED or str(row.get("exitCode")) != "0"
 
 
+def refused_while_exhausted(row):
+    """True for a zero-cost end before a result written while its transport's usage-limit marker
+    (sidecar_common.sh `sc_exhausted_marker`: <SIDECAR_EXHAUSTED_DIR or ~/.claude/sidecar-exhausted>/<transport>.json)
+    named an expiry past the row's time: a queued job the launcher refused because the plan was already out. The job
+    that hit the limit spent, so it still wakes; each refusal behind it repeats that fact and is context."""
+    if row.get("outcome") != ENDED or not row.get("transport"):
+        return False
+    try:
+        if float(row.get("costUSD") or 0) != 0:
+            return False
+        base = os.environ.get("SIDECAR_EXHAUSTED_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "sidecar-exhausted")
+        with open(os.path.join(base, "%s.json" % row["transport"]), encoding="utf-8") as fh:
+            expires = json.load(fh).get("expiresAt")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+    return isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires > epoch(row.get("timestamp"))
+
+
 def ended_identity(label, row):
     """The one event identity of a finish row, whichever reader finds it: the pending entry that still lists the job,
     or the ledger alone once the Stop hook consumed the entry. One identity is what keeps the second reader quiet."""
@@ -456,6 +495,9 @@ def unreported_ends(pending, rows, acknowledged, stale_seconds, now=None):
         label = row.get("label")
         if id(row) in carried or not label or not failed_finish(row) or now - epoch(row.get("timestamp")) > stale_seconds:
             continue
+        if str(row.get("exitCode")) in CALLER_HANDLED:
+            continue  # no entry carries it, so a child launch made it (a scoring daemon's seat), and its caller handles it
+
         if any(_entry_label(entry) == label and (attempt_start(entry) or 0.0) > epoch(row.get("timestamp"))
                for entry in pending):
             continue
@@ -1378,11 +1420,12 @@ def _wake(grouped, now=None):
                 elif state == "DONE" and not (finish and finish.get("outcome") == ENDED):
                     brief = next((j.get("brief") for j in _inventory(unit)[1] if j.get("label") == label), None)
                     text = "\n".join([text] + _digest().sidecar_lines(label, record, unit.get("fanout_dir"), brief))
+                retried = (_background_child(unit) and code in CALLER_HANDLED) or bool(finish and refused_while_exhausted(finish))
                 # A fan-out job's clean end wakes unless its fold stage is still to run or a member of its
                 # `wakeWith` group runs: its result is actionable alone.
                 alone = (state == "DONE" and not failed and not stopped and bool(unit.get("fanout_dir"))
                          and not unit.get("folding") and not group_holds(unit, label))
-                lines.append(("end", identity, text, "once" if alone else failed and not stopped))
+                lines.append(("end", identity, text, "once" if alone else failed and not stopped and not retried))
                 orphan = orphan_processes(label, record) if state == "DIED" else None
                 if orphan:
                     lines.append(("orphan-process", ("orphan-process", _norm_record(record)), orphan, "always"))
@@ -1424,7 +1467,8 @@ def _wake(grouped, now=None):
         for label, row in unit.get("finished") or []:
             ended += 1
             lines.append(("end", ended_identity(label, row), finish_text(label, row),
-                          failed_finish(row) and not unit.get("reported")))
+                          failed_finish(row) and not unit.get("reported") and not refused_while_exhausted(row)
+                          and not (_background_child(unit) and str(row.get("exitCode")) in CALLER_HANDLED)))
         settled = len(unit["records"]) + len(unit.get("finished") or [])
         if settled and ended == settled and not unit.get("unresolved"):
             if unit.get("folding"):
@@ -1481,6 +1525,10 @@ def checkin_lines(grouped, now=None):
             if row["state"] in ROSTER_LIVE_STATES:
                 out.append("RUNNING roster %s: %s" % (row["name"], row["last"]))
                 for cell, stream in unit.get("cells") or []:
+                    # A bench arm is judged like any job: its stream's progress clause, then its compaction.
+                    clause = progress_clause(stream, now)
+                    if clause:
+                        out.append("  %s: %s" % (cell, clause))
                     compaction = agent_compaction(stream)
                     if compaction["count"]:
                         out.append("  %s %s" % (cell, compaction_clause(compaction)))
@@ -1611,8 +1659,8 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
 
     An ended job's line carries its `wake_digest` lines (result head, verification counts, report path); an ended
     Workflow run and a background shell that ended since the saved transcript offset (`ShellEnds`) are
-    non-triggering lines of the same once-only kind. `closing()`, when given, returns the lines printed after the
-    held lines at every wake and before its terminal line (the session's unrated dispatches).
+    non-triggering lines of the same once-only kind. `closing(live)`, when given, returns the lines printed after the
+    held lines at every wake and before its terminal line (the session's unrated dispatches, the pane hint).
     """
     seen, standing_stalls, deferred, first = set(), set(), [], True
     armed, printed, said, reported = time.time(), [], [], _acknowledged(ack_path) if ack_path else set()
@@ -1630,11 +1678,11 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
             shells.persist()
         return code
 
-    def close():
-        for text in (closing() if closing else ()):
+    def close(live=0):
+        for text in (closing(live) if closing else ()):
             print(text, flush=True)
 
-    def release(held, lines, standing):
+    def release(held, lines, standing, live=0):
         """Print the held lines at a wake. A held reading of a standing condition (a memory wait, a stall,
         a usage retry) prints the condition's latest line, and one whose condition has cleared is dropped:
         the first sample of a wait that ended is a misreport."""
@@ -1644,8 +1692,9 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
                 say(kind, identity, latest.get(identity, text), triggers)
             elif kind not in ("memory", "stall", "usage"):
                 say(kind, identity, text, triggers)
-        close()
+        close(live)
     while True:
+        polled = time.time()
         grouped = source()
         lines, live, standing = _wake(grouped)
         cleared = standing_stalls - standing
@@ -1670,8 +1719,8 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
                     say(kind, identity, text, triggers)
                 else:
                     deferred.append((kind, identity, text, triggers))
-        if first and not woke and live == 0 and time.time() - armed < await_launch:
-            pass  # nothing runs yet: this session's launch entry may still be on its way
+        if first and not woke and live == 0 and polled - armed < await_launch:
+            pass  # a poll that began inside the grace re-polls, so a launch landing during a slow poll is still seen
         elif first and not woke:
             first = False
             if live == 0:
@@ -1680,11 +1729,11 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
                 print("NONE", flush=True)
                 return leave()
         elif woke:
-            release(deferred, lines, standing)
+            release(deferred, lines, standing, live)
             _still_running(live)
             return leave()
         elif live and time.time() - _idle_since(source, armed) >= CHECKIN_SECONDS:
-            release(deferred, lines, standing)
+            release(deferred, lines, standing, live)
             for text in checkin_lines(grouped):
                 print(text, flush=True)
             print("CHECKIN after %d min: %s" % ((time.time() - _idle_since(source, armed)) // 60, CHECKIN_RULE), flush=True)
@@ -1812,6 +1861,74 @@ def foreign_workflow(run_dir):
             "launched_at": getattr(stat, "st_birthtime", stat.st_ctime), "jobs": []}
 
 
+def pane_frame(lines, now=None):
+    """One frame: the check-in lines, or idle, closed by a stamp line counting the running jobs. The stamp closes the
+    frame because a viewer shows the output's tail."""
+    now = time.time() if now is None else now
+    lines = list(lines)
+    jobs = sum(1 for line in lines if line and not line[0].isspace())
+    stamp = "%s %s: %s" % (PANE_TITLE, time.strftime("%H:%M:%S", time.localtime(now)),
+                           "%d running" % jobs if lines else "idle")
+    return "\n" + "\n".join((lines or ["idle: no sidecar, Workflow, roster or shell running"]) + [stamp]) + "\n"
+
+
+def pane_due(key, last_key, last_at, now):
+    """True when a frame prints: its lines changed, or PANE_HEARTBEAT_SECONDS passed since the last frame."""
+    return key != last_key or now - last_at >= PANE_HEARTBEAT_SECONDS
+
+
+def _pane_live(state):
+    return _process_line_gone((state or {}).get(PANE_KEY)) is False
+
+
+def pane_hint(session_id, live):
+    """The wake line that asks for the pane: only while work is live and no live pane is registered."""
+    if not live or not session_id:
+        return None
+    if _pane_live(_hook_state.read_json_salvage(_hook_state.state_path(session_id))):
+        return None
+    return "PANE none: the owner has no live progress view. Start `%s` %s; never read its output." % (
+        PANE_COMMAND, PANE_CALL)
+
+
+def session_closing(session_id):
+    """The session wake's closing lines: the unrated dispatches and the pane hint, given the live count."""
+    return lambda live: [t for t in [_digest().unrated_line(session_id), pane_hint(session_id, live)] if t]
+
+
+def pane_main(session_id):
+    """Poll the check-in lines every PANE_SECONDS until killed, appending a frame when `pane_due`. Exits COVERED beside a
+    live pane."""
+    path, identity, covering = _hook_state.state_path(session_id), process_line(), []
+
+    def claim(state):
+        if _pane_live(state):
+            covering.append(state[PANE_KEY])
+        else:
+            state[PANE_KEY] = identity
+
+    _hook_state.update_json_locked(path, claim)
+    if covering:
+        print("COVERED by %s: a live pane is registered" % covering[0], flush=True)
+        return 0
+    source, last_key, last_at = _session_source(session_id), None, 0.0
+    try:
+        while True:
+            try:
+                lines = checkin_lines(source())
+            except Exception as exc:
+                lines = ["pane read failed: %s: %s" % (type(exc).__name__, exc)]
+            now = time.time()
+            if pane_due(tuple(lines), last_key, last_at, now):
+                sys.stdout.write(pane_frame(lines, now))
+                sys.stdout.flush()
+                last_key, last_at = tuple(lines), now
+            time.sleep(PANE_SECONDS)
+    finally:
+        _hook_state.update_json_locked(
+            path, lambda state: state.pop(PANE_KEY, None) if state.get(PANE_KEY) == identity else None)
+
+
 def _records_source(pending):
     runs = [path for path in pending if is_run_dir(path)]
     records = [path for path in pending if path not in runs]
@@ -1853,6 +1970,11 @@ def main(args=None):
             print("Usage: watch_records.py --digest <record|stream|transcript>", file=sys.stderr)
             return 2
         return digest_main(rest[0])
+    if "--pane" in argv:
+        if len(argv) != 1 or not os.environ.get("CLAUDE_CODE_SESSION_ID"):
+            print("Usage: watch_records.py --pane (alone, with CLAUDE_CODE_SESSION_ID set)", file=sys.stderr)
+            return 2
+        return pane_main(os.environ["CLAUDE_CODE_SESSION_ID"])
     unknown = [a for a in argv if a.startswith("-") and a not in ("--session", "--wake")
                and a != "--await-launch" and not a.startswith("--await-launch=")]
     if unknown:
@@ -1889,7 +2011,7 @@ def main(args=None):
     try:
         session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
         source = _session_source(session_id, path) if session_wide else _records_source(pending)
-        closing = (lambda: [t for t in [_digest().unrated_line(session_id)] if t]) if session_wide else None
+        closing = session_closing(session_id) if session_wide else None
         return wake_loop(source, ack_path=path, await_launch=await_launch, closing=closing) \
             if wake or any(is_run_dir(p) for p in pending) else _stream(pending)
     finally:

@@ -30,7 +30,7 @@ Run `python3 .claude/tools/lens.py shared explore` for selection and evidence-re
 ### 1e. Assemble context
 Put topic, questions, domains, exclusions, evidence handles and starting paths in one run-specific scratch file. For `exp-memory`, materialize and check the run's KFM index per the `kfm.py` docstring, and include the printed index path in the context. Push orientation, not conclusions. A seed is not a search boundary. Do not inline whole source sets or unrelated skills.
 
-Map each question to the selected lens whose mandate owns it, and write the map into the context file. For a question no selected mandate owns, answer it with a deterministic check before dispatch when one command or script enumerates the answer; otherwise return to §1d and add a bespoke lens (`commands/agents/explore_agents.md` *Extending the roster*). For a check, its output file is an evidence handle in the context, and its answer goes in the report.
+Map each question to the selected lens whose mandate owns it, and write the map into the context file. A question one command or script can enumerate (every call site, every file holding a field, every test naming a symbol) is answered by that script before dispatch, whichever lens owns it: the script also sorts each hit where a fact decides it (path class, declaration or use, test or production), and the owning lens receives the output file and judges only the hits the script could not sort. A question no selected mandate owns and no script answers returns to §1d for a bespoke lens (`commands/agents/explore_agents.md` *Extending the roster*). A script's output file is an evidence handle in the context, and its answer goes in the report.
 
 ## Phase 2: Dispatch
 

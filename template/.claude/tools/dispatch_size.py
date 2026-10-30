@@ -410,7 +410,7 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
     the tier projects unused quota; a `spare plan:` line carrying that fact alone for a job with no cheaper claimant;
     a `cheaper claimants: `label` (model) not compared: reason` line for a job it
     could not compare; and, once, `pin is the cheapest claimant: labels` naming the compared jobs with nothing cheaper.
-    A job's tier is `_dispatch_checks.job_tier`'s: its own `tier`, else its shape row's. Facts only: no check denies on
+    A job's tier is `_dispatch_checks.job_tier`'s: its own `tier`, else its kind row's (a Workflow-args job with no `kind` uses its `shape` row's). Facts only: no check denies on
     these lines, and `_dispatch_checks.cheaper_claimants` owns the filter and raises on what it cannot compare.
     `now`/`read` plant the clock and the capacity reader; both have production defaults."""
     try:
@@ -429,7 +429,7 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
     for job, sized in zip(jobs, size["perJob"]):
         label, model = sized["label"], sized["model"]
         try:
-            tier = _dispatch_checks.job_tier(job.get("shape"), job.get("tier"))[0]
+            tier = _dispatch_checks.job_tier(job.get("kind") or job.get("shape"), job.get("tier"))[0]
         except ValueError as err:
             out.append("cheaper claimants: `%s` (%s) not compared: %s" % (label, model, err))
             continue

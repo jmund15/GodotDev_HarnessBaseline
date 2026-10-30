@@ -64,6 +64,27 @@ class PeerMessageGuardTests(unittest.TestCase):
         self.assertEqual("deny", decision)
         self.assertIn("cache", reason)
 
+    def test_idle_peer_whose_transcript_was_touched_without_a_turn_is_denied(self):
+        # The client rewrites session metadata (title, mode, bridge) with no turn: the last stamped entry is the turn.
+        self.peer(1, "peer-d7", "idle")
+        path = self.home / ".claude" / "projects" / "C--repo" / "726084aa-0000-0000-0000-000000000000.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 10 * 3600))
+        path.write_text(json.dumps({"type": "system", "subtype": "turn_duration", "timestamp": stamp}) + "\n"
+                        + json.dumps({"type": "ai-title", "aiTitle": "x"}) + "\n", encoding="utf-8")
+        self.assertEqual("deny", self.decide("peer-d7")[0])
+
+    def test_idle_peer_with_a_recent_stamped_turn_is_allowed(self):
+        self.peer(1, "peer-d7", "idle")
+        path = self.home / ".claude" / "projects" / "C--repo" / "726084aa-0000-0000-0000-000000000000.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 10 * 60))
+        path.write_text(json.dumps({"type": "system", "subtype": "turn_duration", "timestamp": stamp}) + "\n",
+                        encoding="utf-8")
+        old = time.time() - 3 * 3600
+        os.utime(path, (old, old))
+        self.assertEqual("allow", self.decide("peer-d7")[0])
+
     def test_idle_peer_past_the_idle_compaction_point_is_denied(self):
         # Claude Code compacts an idle one-hour-cache session at about 54 min (_hook_state), so warmth ends at 50.
         self.peer(1, "peer-d7", "idle")

@@ -1,6 +1,6 @@
 # Lean spend
 
-Lean is an owner-set condition beside rigor. While it holds, the bar that picks a row is cost: each dispatch of a tier pins the cheapest row the floor admits for that tier on the plan the ladder's selection line picks, at the lowest effort level that row's cell names for the work shape. It changes pins only, never triage fields, admission, width, mandates or the cross-family requirement.
+Lean is an owner-set condition beside rigor. While it holds, the bar that picks a row is cost: each dispatch of a tier pins the cheapest row the floor admits for that tier on the plan the ladder's selection line picks, at the lowest effort level that row's cell names for the work shape. It changes pins only, never triage fields, admission, width, mandates or the cross-family requirement (the triage owner's §Boundary restates it where elements are admitted).
 
 ## Setting it
 

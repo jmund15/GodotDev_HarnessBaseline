@@ -57,12 +57,17 @@ def main():
             hso = {"unparseable": text}
         return result.returncode, hso
 
-    good = "bash .claude/scripts/codex_proxy_sidecar.sh -G survey -f .claude/reference/prompt.md"
+    good = "bash .claude/scripts/codex_proxy_sidecar.sh -G scout -f .claude/reference/prompt.md"
     cases = []
     ok, why = approving_gates.sidecar_launch_shape(good, str(root))
-    cases.append(("canonical tracked survey launch is approved", ok))
+    cases.append(("canonical tracked scout launch is approved", ok))
+    no_kind = "bash .claude/scripts/codex_proxy_sidecar.sh -f .claude/reference/prompt.md"
+    cases.append(("a launch missing `-G` is not approved",
+                  not approving_gates.sidecar_launch_shape(no_kind, str(root))[0]))
+    cases.append(("a launch carrying `-D` is not approved",
+                  not approving_gates.sidecar_launch_shape(good + " -D full", str(root))[0]))
     denied_l1 = ("cd C:/work/project && export CCP_BIN=x && "
-                 "bash .claude/scripts/codex_proxy_sidecar.sh -G survey -f .claude/reference/prompt.md > cap.json")
+                 "bash .claude/scripts/codex_proxy_sidecar.sh -G scout -f .claude/reference/prompt.md > cap.json")
     note = approving_gates.explain({"tool_name": "Bash", "cwd": str(root),
                                     "tool_input": {"command": denied_l1}})
     cases.append(("L1 classifier denial explains cd && and canonical shape",
@@ -238,7 +243,7 @@ def main():
     (root / ".claude" / "scratch").mkdir()
     (root / ".claude" / "scratch" / "msg.txt").write_text("feat: x\n", encoding="utf-8")
     consent_command = (
-        "bash .claude/scripts/codex_proxy_sidecar.sh -m fake -e high -D full -G review "
+        "bash .claude/scripts/codex_proxy_sidecar.sh -m fake -e high -G reviewer "
         "-t +Bash -f .claude/reference/prompt.md -S .claude/reference/prompt.md "
         "-R .claude/scratch/consent.record.json -P .claude/scratch/consent.progress.jsonl "
         "-l consent -d %s" % root.as_posix()
@@ -320,7 +325,7 @@ def main():
     cases.append(("explain names the git-commit gate for the 09-23 denied commit",
                   "git-commit gate" in (commit_note or "")))
 
-    base = "bash .claude/scripts/codex_proxy_sidecar.sh -G survey -f .claude/reference/prompt.md"
+    base = "bash .claude/scripts/codex_proxy_sidecar.sh -G scout -f .claude/reference/prompt.md"
     (root / ".claude" / "scratch" / "used.record.json").write_text("{}\n", encoding="utf-8")
     for letter in "RPL":
         ok, _ = approving_gates.sidecar_launch_shape(
@@ -532,6 +537,11 @@ def main():
         ("the -u spelling is approved", "git push -u origin %s:main" % proved),
         ("a full refs/heads target is approved", "git push origin %s:refs/heads/main" % proved),
         ("a feature-branch target is approved", "git push origin %s:fix/done" % proved),
+        # The submodule check /commit_push prescribes; without it the contract fell through to the classifier.
+        ("the --recurse-submodules=check spelling is approved",
+         "git push --recurse-submodules=check origin %s:main" % proved),
+        ("-u with --recurse-submodules=check is approved",
+         "git push -u --recurse-submodules=check origin %s:main" % proved),
     ):
         rc, hso = run_gate(command)
         cases.append((label, rc == 0 and hso.get("permissionDecision") == "allow"))

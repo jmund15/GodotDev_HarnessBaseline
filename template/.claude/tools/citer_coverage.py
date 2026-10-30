@@ -39,7 +39,8 @@ def coverage_reason(job, *, review=False, root=REPO, stage=None):
     for key in (job.get("key"), job.get("seat"), *(job.get("mandates") or [])):
         if isinstance(key, str):
             names.update(key.split("+"))
-    if not review and job.get("shape") != "review" and not names.intersection(citer_keys()):
+    import tool_profiles
+    if not review and tool_profiles.job_kind_shape(job) != "review" and not names.intersection(citer_keys()):
         return None
     subjects = []
     for entry in job.get("mustRead") or []:

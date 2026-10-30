@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Shared prompt-origin check for UserPromptSubmit hooks."""
+import os
 import re
+import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _owner_text import ENVELOPE_NOTICES, ENVELOPE_TAGS  # noqa: E402
 
 _RUNTIME_ENVELOPE_RE = re.compile(
-    r"^<(?P<tag>task-notification|local-command-stdout|cross-session-message|agent-message)"
-    r"(?:\s+[^>]*)?>.*</(?P=tag)>$",
+    r"^<(?P<tag>" + "|".join(ENVELOPE_TAGS) + r")(?:\s+[^>]*)?>.*</(?P=tag)>$",
     re.DOTALL,
 )
-_RUNTIME_NOTICE_RE = re.compile(r"^\[Cross-session \w[^\]]*\]")
+_RUNTIME_NOTICE_RE = re.compile(r"^\[(?:" + "|".join(ENVELOPE_NOTICES) + r") \w[^\]]*\]", re.I)
 
 
 def is_user_intent_prompt(prompt: str) -> bool:

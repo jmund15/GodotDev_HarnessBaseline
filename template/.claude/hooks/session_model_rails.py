@@ -172,11 +172,17 @@ def sidecar_delegate_shape() -> str | None:
     ORCHESTRATOR session by CLAUDE_CODE_SIDECAR, which deepseek_sidecar.sh sets on
     the child only. Returns the requested guard shape, or None when this is not a
     sidecar child. Unrecognized shape -> `any`, matching dispatch.js: a shape the
-    caller did not assert is not an error, it just means no shape applies."""
+    caller did not assert is not an error, it just means no shape applies. The launcher exports its
+    `-G` kind as CLAUDE_CODE_SIDECAR_KIND; guards/tool_profiles.json maps it to the guard file set."""
     if not os.environ.get("CLAUDE_CODE_SIDECAR"):
         return None
-    shape = (os.environ.get("CLAUDE_CODE_SIDECAR_SHAPE") or "").strip().lower()
-    return shape if shape in ("any", "survey", "review", "author") else "any"
+    kind = (os.environ.get("CLAUDE_CODE_SIDECAR_KIND") or "").strip().lower()
+    try:
+        import tool_profiles
+        guard = tool_profiles.kind_guard(kind)
+    except Exception:
+        guard = None
+    return guard if guard in ("any", "survey", "review", "author") else "any"
 
 
 def sidecar_delegate_tier() -> str:

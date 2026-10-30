@@ -47,6 +47,8 @@ names** rather than borrowing a neighbour's.
   choice the frame leaves open (which stage an adoption replaces, say), the score measures which reading the
   arm picked: name the choice in the frame and rerun the arms, never key both readings. A key item no record
   finds is the trigger to check it.
+- **A key split across runs credits a spanning fact in every slice it applies to.** Each run must establish
+  the shared fact on its own to reach its deeper items, so each slice keys it with a slice-specific MATCH.
 - **Normalise case and separators.** `caster-separation` must match "Caster separation". Fold
   separators; keep the word sequence exact so an omission still fails.
 - **Scope proximity rules to the sentence, not a character window** — a window wide enough to catch a
@@ -109,6 +111,12 @@ names** rather than borrowing a neighbour's.
     no band, the board ranks the two panels' records apart, and a comparator is re-judged at the new panel
     before any comparison with it is published. A one-seat panel takes its floor from the incumbent's stored
     multi-seat records at the latest generation that has them; with none it is SPLIT by rule.
+- **A confidence threshold, vote weight or headline-credit policy change is a correctness question, so it
+  takes Admit's test, never Pool's agreement figure alone.** Reliability across stored confidence tags is
+  free to compute and says nothing about accuracy. Before recommending a switch to another policy, inventory the live and
+  archived policies and each one's actual panel size. Before claiming an accuracy gain or none, rule a
+  blinded sample with controls against the recorded quote and the key. Report correctness and reliability
+  separately, each with its uncertainty: "no detectable gain" is not "no gain".
 - **An arm judged by its own model gets a self-judge audit.** One extra judge call from a different model
   (the tier's prior version while served, else the other tier's current row) writes its own `-j<tag>`
   record, never joins the headline, and flags the cell when the gap exceeds the task's band.
@@ -127,6 +135,12 @@ names** rather than borrowing a neighbour's.
   successor candidate.
 - **Beyond-key yield is the key's staleness signal.** Arms that keep returning valid claims outside the
   item list are measuring what the key knew, not what the arm can do. Assemble the beyond-key set as
-  its own score and refresh the key when it grows; a key that never grows was never checked.
+  its own score and refresh the key when it grows; a key that never grows was never checked. A full-key review classes each true, relevant finding `own` (an item of this run's add-on), `other` (an item of another add-on), `beyond` (substantive and held by no item) or `shallow` (a restatement of the survey, or visible without a chain of reads).
+- **A key refresh admits facts by rule.** The harvest reviews every stored cell's findings against the full
+  key, so no cell gains from having its own finds admitted; the refreshed key's gate runs on deliverables
+  outside that pool, and every row scored on it is labelled in-sample. At least two curators from different model
+  families rule each candidate, blind to its source cell; the owner adjudicates splits. A candidate at the
+  key's lowest tier (SURFACE, by hop depth) is admitted only as a hop of an admitted higher-tier chain, a
+  standalone shallow fact earns 0, and the key's no-credit section binds admission.
 - **A new task scores OUTCOMES, never opinions.** Every item is a claim the root can verify — a file, a
   line, a behaviour. A judge asked whether the arm "argued well" scores its own taste.

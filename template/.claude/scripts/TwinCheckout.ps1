@@ -86,7 +86,7 @@ function Get-TwinDigest {
 function Enter-TwinLock {
     param([Parameter(Mandatory)] [string] $Twin)
     $name = Get-CheckoutLockName -Repo $Twin
-    $mutex = [System.Threading.Mutex]::new($false, $name)
+    $mutex = New-RunLock $name
     try {
         if (-not $mutex.WaitOne($script:TwinLockWaitMs)) { throw "twin busy past $($script:TwinLockWaitMs) ms: $Twin" }
     } catch [System.Threading.AbandonedMutexException] { }

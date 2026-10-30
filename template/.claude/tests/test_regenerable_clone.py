@@ -190,6 +190,88 @@ def created_transcript(path, *worktrees):
     return path
 
 
+def backgrounded_worktree_cases():
+    """A `git worktree add` run with run_in_background: its tool_result is the background notice, so ownership
+    waits for the task's `<task-notification>` (the call's end) and reads its output file or exit code."""
+    from datetime import datetime
+    repo = os.path.join(FIX, "bg_repo")
+    git("init", "-q", "-b", "main", repo)
+    write(os.path.join(repo, "README.md"), "bg\n")
+    git("add", "README.md", cwd=repo)
+    git("commit", "-qm", "init", cwd=repo)
+    # The background command writes the worktree after its notice row (2 s) and before its notification (5 s).
+    START, NOTICE, BORN, DONE = ("2026-10-24T09:00:00.000Z", "2026-10-24T09:00:02.000Z",
+                                 "2026-10-24T09:00:03.000Z", "2026-10-24T09:00:05.000Z")
+    LATE = "2026-10-24T09:01:00.000Z"
+    VISIBLE = 'cd "{repo}" && git worktree add -q -b scratch/{name} .claude/worktrees/{name} HEAD && W=.claude/worktrees/{name} && git -C $W status --short'
+    PLAIN = 'cd "{repo}" && git worktree add -q -b scratch/{name} .claude/worktrees/{name} HEAD'
+    OK_OUTPUT = "Preparing worktree (new branch 'scratch/{name}')\nHEAD is now at 1234abc init\n"
+
+    def epoch(text):
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+    def notice(task, out):
+        # Cut from the live tool_result (session 0002a8e7, 2026-09-28T07:01:12Z).
+        return ("Command running in background with ID: %s. Output is being written to: %s. You will be notified "
+                "when it completes. To check interim output, use Read on that file path.\nSession cwd remains %s; "
+                "directory changes made by the backgrounded command do not apply to subsequent commands."
+                % (task, out, repo))
+
+    def run(name, command, output, notify=True, status="completed", exit_code=0, born=BORN, out_file=True):
+        task = "bg" + name
+        out = os.path.join(FIX, "bg_out_" + name, "tasks", task + ".output")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        if out_file:
+            write(out, output.replace("{name}", name))
+        wt = os.path.join(repo, ".claude", "worktrees", name)
+        git("worktree", "add", "-q", "-b", "scratch/" + name, wt, "HEAD", cwd=repo)
+        os.utime(os.path.join(wt, ".git"), (epoch(born), epoch(born)))
+        rows = [
+            {"type": "assistant", "isSidechain": False, "timestamp": START, "cwd": repo,
+             "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_" + name, "name": "Bash",
+                                                           "input": {"command": command.format(repo=repo.replace("\\", "/"), name=name)}}]}},
+            {"type": "user", "isSidechain": False, "timestamp": NOTICE,
+             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_" + name,
+                                                      "is_error": False, "content": notice(task, out)}]},
+             "toolUseResult": {"stdout": "", "stderr": "", "interrupted": False}},
+        ]
+        if notify:
+            # Cut from the live queue-operation enqueue row (session 0002a8e7, 2026-09-28T07:01:44Z).
+            rows.append({"type": "queue-operation", "operation": "enqueue", "timestamp": DONE, "sessionId": "bg-proof",
+                         "content": "<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>toolu_%s</tool-use-id>\n"
+                                    "<output-file>%s</output-file>\n<status>%s</status>\n<summary>Background command "
+                                    "\\\"add\\\" completed (exit code %d)</summary>\n</task-notification>"
+                                    % (task, name, out, status, exit_code)})
+        transcript = os.path.join(FIX, "bg_%s.jsonl" % name)
+        write(transcript, "".join(json.dumps(r) + "\n" for r in rows))
+        return rc.session_created_worktree(wt, transcript)
+
+    global fails, total
+    for label, want, got in [
+        ("backgrounded visible add, completed notice, clean output is owned", True,
+         run("a", VISIBLE, OK_OUTPUT)),
+        ("backgrounded visible add with no notice is not owned", False,
+         run("b", VISIBLE, OK_OUTPUT, notify=False)),
+        ("backgrounded visible add whose output holds fatal: is not owned", False,
+         run("c", VISIBLE, "fatal: a branch named 'scratch/c' already exists\n")),
+        ("backgrounded visible add born after its notice is not owned", False,
+         run("d", VISIBLE, OK_OUTPUT, born=LATE)),
+        ("backgrounded plain add with notice exit code 0 is owned", True,
+         run("e", PLAIN, OK_OUTPUT, exit_code=0)),
+        ("backgrounded plain add with notice exit code 1 is not owned", False,
+         run("f", PLAIN, OK_OUTPUT, exit_code=1)),
+        ("backgrounded add whose notice is not completed is not owned", False,
+         run("g", VISIBLE, OK_OUTPUT, status="killed")),
+        ("backgrounded visible add with an unreadable output file is not owned", False,
+         run("h", VISIBLE, OK_OUTPUT, out_file=False)),
+    ]:
+        total += 1
+        if got != want:
+            fails += 1
+            print(f"  FAIL {label}: expected {want}, got {got}")
+        else:
+            print(f"  ok   {label}: {'owned' if want else 'not owned'}")
+
 
 def peer_login(name, *rows):
     """A login directory whose `sessions/<pid>.json` registry holds one live session per `(name, sessionId, cwd)`
@@ -291,6 +373,25 @@ def retired_worktree_cases():
     git("commit", "-q", "-m", "local only", cwd=ahead)
     expect_wt("local-only HEAD commit", ahead, False, proj)
 
+    from unittest.mock import patch
+
+    def add_branch_wt(name, branch):
+        path = os.path.join(home, name)
+        git("worktree", "add", "-q", "-b", branch, path, cwd=proj)
+        return path
+
+    pr_sync = add_branch_wt("sync-pr7", "sync/pr7")
+    pr_head = add_branch_wt("pr_head", "feat/open-pr-head")
+    with patch.object(rc, "_open_prs", lambda root: [(7, "feat/seven")]):
+        expect_wt("sync/pr<N> branch of an open PR", pr_sync, False, proj)
+        expect_wt("sync/pr<N> branch of an open PR, owner approved", pr_sync, False, proj, allow_ignored=True)
+    with patch.object(rc, "_open_prs", lambda root: [(9, "feat/open-pr-head")]):
+        expect_wt("branch that is an open PR's head", pr_head, False, proj)
+    with patch.object(rc, "_open_prs", lambda root: [(8, "feat/eight")]):
+        expect_wt("pushed branches of no open PR", pr_sync, True, proj)
+    with patch.object(rc, "_open_prs", lambda root: None):
+        expect_wt("open PRs unreadable", pr_sync, False, proj)
+
     sub_dirty = add_wt("sub_dirty", submodule=True)
     write(os.path.join(sub_dirty, "Sub", "s.txt"), "changed\n")
     expect_wt("modified file inside the submodule", sub_dirty, False, proj)
@@ -343,7 +444,7 @@ def retired_worktree_cases():
                 key = {'status': 'sub_status', 'rev-list': 'sub_pushed'}.get(key, key)
             defaults = {'worktree': listing, 'status': '', 'rev-list': '',
                         'submodule': ' abc Sub (heads/main)\n', 'sub_status': '',
-                        'sub_pushed': '', 'rev-parse': 'abc\n', 'branch': '',
+                        'sub_pushed': '', 'rev-parse': 'abc\n', 'branch': '', 'symbolic-ref': '',
                         'config': 'submodule.Sub.path Sub\n'}
             return overrides.get(key, defaults[key])
         global total, fails
@@ -747,6 +848,7 @@ try:
         print("  skip retired worktree cases: the fixture path is too long for git's receiving side on Windows")
     else:
         retired_worktree_cases()
+        backgrounded_worktree_cases()
 finally:
     force_rmtree(FIX)
     force_rmtree(outside)
@@ -757,6 +859,25 @@ if os.path.exists(FIX) or os.path.exists(outside):
     print(f"  FAIL teardown left a fixture directory: {FIX if os.path.exists(FIX) else outside}")
 else:
     print("  ok   teardown removed this run's fixture directories")
+
+# The owner's removal pick: a dirty path whose working file is missing loses work unless git's status says it was deleted.
+# A quoted porcelain path (octal escapes) does not decode to a file, so it must fail closed, not read as a gone file.
+import pathlib  # noqa: E402
+
+print("_regenerable_clone — unstored loss of a missing working file")
+with tempfile.TemporaryDirectory() as empty_root:
+    for label, status, want in [
+        ("deleted working file loses nothing", " D gone.txt\n", None),
+        ("modified path missing from disk is a loss", " M missing.txt\n", " M missing.txt"),
+        ("quoted octal path missing from disk is a loss", ' M "caf\\303\\251.txt"\n', ' M "caf\\303\\251.txt"'),
+    ]:
+        total += 1
+        got = rc._first_unstored_loss(status, pathlib.Path(empty_root))
+        if got != want:
+            fails += 1
+            print(f"  FAIL {label}: got {got!r}, want {want!r}")
+        else:
+            print(f"  ok   {label}")
 
 # A non-integer timeout variable must not stop the module loading: pattern_enforcer imports it, and a crash exits 1, which never blocks.
 total += 1

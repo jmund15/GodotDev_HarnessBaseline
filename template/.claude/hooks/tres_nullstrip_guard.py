@@ -42,6 +42,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _git_commit import commit_invocations, bypass_declared, git_environ, run_git  # noqa: E402
 from _commit_scope import authored_paths, incoming_heads, publishes_index  # noqa: E402
+from _checkout_root import repo_arg  # noqa: E402
 
 # Windows pipes default to cp1252 through Python 3.14; git diff text now decodes as real
 # UTF-8, so a non-ASCII .tres string payload or path would raise UnicodeEncodeError on write.
@@ -455,10 +456,9 @@ def hook():
 
 
 def main():
-    if "--repo" in sys.argv:
-        i = sys.argv.index("--repo")
-        os.chdir(sys.argv.pop(i + 1))
-        sys.argv.pop(i)
+    repo = repo_arg(sys.argv)
+    if repo:
+        os.chdir(repo)
     args = sys.argv[1:]
     if args and args[0] == "--hook":
         return hook()

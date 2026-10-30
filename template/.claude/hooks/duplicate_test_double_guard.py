@@ -49,6 +49,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _cs_files import cs_files  # noqa: E402
+from _checkout_root import repo_arg  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -308,10 +309,9 @@ def standalone():
 
 def main():
     global REPO, TESTS_ROOT
-    if "--repo" in sys.argv:
-        i = sys.argv.index("--repo")
-        REPO = Path(sys.argv.pop(i + 1)).resolve()
-        sys.argv.pop(i)
+    repo = repo_arg(sys.argv)
+    if repo:
+        REPO = repo
         TESTS_ROOT = REPO / "Tests"
     args = sys.argv[1:]
     if args and args[0] == "--json":

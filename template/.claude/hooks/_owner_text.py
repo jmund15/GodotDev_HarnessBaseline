@@ -76,9 +76,11 @@ LEADING_INJECTION_RE = re.compile(
     r"(?:\s+[^>]*)?>.*?</(?P=tag)>\s*",
     re.I | re.S,
 )
+ENVELOPE_TAGS = ("agent-message", "cross-session-message", "task-notification", "local-command-stdout")
+ENVELOPE_NOTICES = ("cross-session",)
 ENVELOPE_RE = re.compile(
-    r"^(?:<(agent-message|cross-session-message|task-notification|local-command-stdout)\b"
-    r"|\[(cross-session)\s)", re.I)
+    r"^(?:<(" + "|".join(ENVELOPE_TAGS) + r")\b"
+    r"|\[(" + "|".join(ENVELOPE_NOTICES) + r")\s)", re.I)
 
 
 def _envelope_name(match):

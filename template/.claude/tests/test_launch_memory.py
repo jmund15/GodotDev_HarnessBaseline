@@ -609,7 +609,8 @@ exit "$rc"
         wr_spec = importlib.util.spec_from_file_location("watch_records", CLAUDE / "tools" / "watch_records.py")
         wr = importlib.util.module_from_spec(wr_spec)
         wr_spec.loader.exec_module(wr)
-        lines, live, _ = wr._wake({"u": {"records": [("mem-x", str(rec))], "fanout_dir": None}})
+        # This session's own launch (`called`): a background child's refusal is its retrying caller's context.
+        lines, live, _ = wr._wake({"u": {"records": [("mem-x", str(rec))], "fanout_dir": None, "called": True}})
         ends = [(text.split("\n", 1)[0], trig) for kind, _, text, trig in lines if kind == "end"]
         if ends == [("DONE mem-x exit=%s" % code, True)] and code == "12":
             ok("watch_records --wake treats the refused launch's .exit as a waking DONE exit=12")

@@ -283,8 +283,9 @@ def run_git_network(cmd: list[str], args: list[str], label: str | None = None) -
 
 
 def _git(repo: Path, args: list[str], check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    # core.longpaths: a baseline worktree under a consumer worktree's .cache passes Windows' 260-character limit.
     try:
-        result = run_git_network(["git", "-C", _repo_arg(repo), *args], args)
+        result = run_git_network(["git", "-C", _repo_arg(repo), "-c", "core.longpaths=true", *args], args)
     except OSError as exc:
         raise BaselineError(f"git {' '.join(args)} failed: {exc}") from exc
     if check and result.returncode != 0:
@@ -1319,19 +1320,28 @@ def _source_root_bytes(source: BaselineSource | Path, relpath: str) -> bytes | N
     return _lf(result.stdout) if result.returncode == 0 else None
 
 
+_MANIFEST_ITEMS: dict[tuple, dict[str, dict]] = {}
+
+
 def _manifest_items_v2(source: BaselineSource | Path) -> dict[str, dict]:
+    key = (id(source), getattr(source, "sha", None))
+    if key in _MANIFEST_ITEMS:
+        return _MANIFEST_ITEMS[key]
     raw = _source_root_bytes(source, MANIFEST_NAME)
-    if raw is None:
-        return {}
-    try:
-        value = json.loads(_lf(raw).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return {}
-    return {
-        item["path"]: item
-        for item in value.get("files", [])
-        if isinstance(item, dict) and isinstance(item.get("path"), str)
-    }
+    items: dict[str, dict] = {}
+    if raw is not None:
+        try:
+            value = json.loads(_lf(raw).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            value = {}
+        items = {
+            item["path"]: item
+            for item in value.get("files", [])
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+    if isinstance(source, BaselineSource):
+        _MANIFEST_ITEMS[key] = items
+    return items
 
 
 def _manifest_layers_v2(source: BaselineSource | Path, root: Path) -> dict[str, str]:
@@ -1440,16 +1450,37 @@ def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
 _UNREAD = object()
 
 
+RETRIAGE_LOCAL_PREFIXES = tuple(f".claude/{d}/" for d in (
+    "tools", "hooks", "scripts", "commands", "skills", "rules", "reference",
+    "agents", "workflows", "guards", "tests", "output-styles",
+))
+
+
+def _local_retriaged(source: BaselineSource | Path, relpath: str, entry: dict) -> bool:
+    """A keep-local verdict judged one content; harness source edited since may have turned universal.
+    Data logs (.jsonl), memories (shared through `offer`) and manifest seeds stay project-owned whatever
+    their edits. A .json under these dirs is often a proof fixture or shipped config, so it re-lists."""
+    if entry.get("absent") or not relpath.startswith(RETRIAGE_LOCAL_PREFIXES) or relpath.endswith(".jsonl"):
+        return False
+    return _manifest_items_v2(source).get(relpath, {}).get("sync") != "seed"
+
+
 def _triage_needed(root: Path, source: BaselineSource | Path, lock: dict,
                    relpath: str, entry: dict, current_sha: object = _UNREAD) -> bool:
     """`current_sha` is the row's content sha when the caller read many rows in one batch."""
     status = _entry_status(entry)
-    if status == "forked":
-        return entry.get("judged") is None
+    judged = entry.get("judged") or {}
+    if status == "forked" and not judged:
+        return True
+    if status in ("forked", "local"):
+        if status == "local" and not _local_retriaged(source, relpath, entry):
+            return False
+        current = _content_sha(root, relpath) if current_sha is _UNREAD else current_sha
+        return current is not None and current != judged.get("sha")
     if status != "tracked":
         return False
     current = _content_sha(root, relpath) if current_sha is _UNREAD else current_sha
-    return current is not None and current != entry.get("hash") and current != (entry.get("judged") or {}).get("sha")
+    return current is not None and current != entry.get("hash") and current != judged.get("sha")
 
 
 def _diff_text(root: Path, source: BaselineSource | Path, lock: dict, relpath: str) -> str:
@@ -1477,6 +1508,12 @@ def _check_results(root: Path, lock: dict, source: BaselineSource,
             continue
         results[relpath] = _v2_state(root, source, lock, relpath, entry)
     items = _manifest_items_v2(source)
+    for relpath, state in results.items():
+        item = items.get(relpath)
+        # A local row hides every upstream move of a file the baseline ships; a fork records its base.
+        if (state == "local" and item and item.get("sync") not in ("seed", "offer")
+                and not lock["files"][relpath].get("absent") and (root / relpath).is_file()):
+            results[relpath] = "local-shadows-upstream"
     for relpath in sorted(_manifest_paths_v2(source, root, layers) - set(lock.get("files", {}))):
         results[relpath] = "offered" if items[relpath].get("sync") == "offer" else "new-upstream"
     return results, outside
@@ -1492,8 +1529,8 @@ def _keep_local_current(entry: dict | None, current_sha: str | None) -> bool:
 def _strict_findings(root: Path, source: BaselineSource, lock: dict,
                      results: dict[str, str]) -> list[tuple[str, str]]:
     files = lock.get("files", {})
-    current = _content_shas(root, [relpath for relpath in results
-                                   if relpath in files and _entry_status(files[relpath]) == "tracked"])
+    current = _content_shas(root, [relpath for relpath in results if relpath in files
+                                   and _entry_status(files[relpath]) in ("tracked", "local", "forked")])
     findings = []
     for relpath, state in sorted(results.items()):
         entry = files.get(relpath)
@@ -1502,7 +1539,7 @@ def _strict_findings(root: Path, source: BaselineSource, lock: dict,
         if state in {
             "new-upstream", "forked-upstream-moved", "forked-base-unknown",
             "composed-drift", "watch", "removed-upstream", "missing-local",
-            "local-modified", "diverged", "unpublished",
+            "local-modified", "diverged", "unpublished", "local-shadows-upstream",
         }:
             findings.append((relpath, state))
         elif entry is not None and _triage_needed(root, source, lock, relpath, entry,
@@ -1822,7 +1859,8 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
             if status in ("local", "forked"):
                 entry.pop("hash", None)
             if status == "forked":
-                entry["base"] = None
+                already_forked = existing is not None and _entry_status(existing) == "forked"
+                entry["base"] = existing.get("base") if already_forked else None
             else:
                 entry.pop("base", None)
             if absent:
@@ -2156,7 +2194,8 @@ def v2_triage(root: Path, lock: dict, source: BaselineSource, batch: int, as_jso
     reverse-substituted file; the diff shows substituted text, so it cannot tell a judge which
     literals ship."""
     files = lock.get("files", {})
-    current = _content_shas(root, [relpath for relpath, entry in files.items() if _entry_status(entry) == "tracked"])
+    current = _content_shas(root, [relpath for relpath, entry in files.items()
+                                   if _entry_status(entry) in ("tracked", "local", "forked")])
     selected = []
     for relpath, entry in sorted(files.items()):
         if _triage_needed(root, source, lock, relpath, entry, current.get(relpath, _UNREAD)):
@@ -2959,8 +2998,7 @@ def v2_paths(lock: dict, status_filter: str | None, verdict_filter: str | None,
                           or current[relpath] == entry.get("hash")):
             if (judged.get("verdict") == "push" and current.get(relpath) is not None
                     and judged.get("sha") != current[relpath] and current[relpath] != entry.get("hash")):
-                print(f"stale verdict: {relpath} changed since it was judged push; "
-                      f"judge {relpath} --carry <base>..<head> to list it", file=sys.stderr)
+                print(f"stale verdict: {relpath} changed since it was judged push", file=sys.stderr)
             continue
         if since is not None:
             at = judged.get("at")
@@ -3293,10 +3331,16 @@ HARNESS_BLOCK_CLOSE = "# <<< harness <<<"
 HARNESS_BLOCK_RE = re.compile(re.escape(HARNESS_BLOCK_OPEN) + r"\n.*?" + re.escape(HARNESS_BLOCK_CLOSE) + r"\n?",
                               re.DOTALL)
 GITIGNORE_ENTRIES_RELPATH = ".claude/gitignore.harness"
+# (shipped entries, root target, doctor item, required). The search block is optional: a baseline that
+# ships no search entries leaves `.searchignore` untouched.
+HARNESS_IGNORE_BLOCKS = (
+    (GITIGNORE_ENTRIES_RELPATH, ".gitignore", "gitignore-block", True),
+    (".claude/searchignore.harness", ".searchignore", "searchignore-block", False),
+)
 HOOKS_PATH = ".claude/githooks"
 
 
-def gitignore_with_harness_block(text: str, entries: str) -> str:
+def with_harness_block(text: str, entries: str) -> str:
     """`text` with the harness block holding `entries`: replaced in place between its markers, else appended once."""
     entries = entries.replace("\r\n", "\n")
     block = HARNESS_BLOCK_OPEN + "\n" + entries + ("" if entries.endswith("\n") else "\n") + HARNESS_BLOCK_CLOSE + "\n"
@@ -3307,17 +3351,20 @@ def gitignore_with_harness_block(text: str, entries: str) -> str:
 
 
 def write_harness_ignore_block(root: Path) -> bool:
-    """Write the shipped `.claude/gitignore.harness` into the root .gitignore's harness block; True when it changed."""
-    entries = local_text(root, GITIGNORE_ENTRIES_RELPATH)
-    if entries is None:
-        return False
-    current = local_text(root, ".gitignore") or ""
-    updated = gitignore_with_harness_block(current, entries)
-    if updated == current:
-        return False
-    (root / ".gitignore").write_bytes(updated.encode("utf-8"))
-    print("root .gitignore: harness block written")
-    return True
+    """Write each shipped ignore-entries file into its root target's harness block; True when one changed."""
+    changed = False
+    for entries_rel, target, _item, _required in HARNESS_IGNORE_BLOCKS:
+        entries = local_text(root, entries_rel)
+        if entries is None:
+            continue
+        current = local_text(root, target) or ""
+        updated = with_harness_block(current, entries)
+        if updated == current:
+            continue
+        (root / target).write_bytes(updated.encode("utf-8"))
+        print(f"root {target}: harness block written")
+        changed = True
+    return changed
 SEED_TOKEN_RE = re.compile(r"\{\{[A-Z][A-Z0-9_]*\}\}|<[A-Za-z][^<>\n`]*[ :][^<>\n`]*>")
 WORKLOG_RE = re.compile(r"`([^`\s]*Worklog\.md)`")
 ABS_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|/|~)")
@@ -3369,20 +3416,26 @@ def _doctor_seeds(root: Path, lock: dict) -> dict:
     return _doctor_row("seeds", "ok", "no placeholder survives in a seed file")
 
 
-def _doctor_gitignore(root: Path) -> dict:
-    entries = local_text(root, GITIGNORE_ENTRIES_RELPATH)
-    if entries is None:
-        return _doctor_row("gitignore-block", "fail", f"{GITIGNORE_ENTRIES_RELPATH} is missing",
-                           "python3 .claude/tools/baseline_sync.py pull")
-    text = local_text(root, ".gitignore") or ""
-    if not HARNESS_BLOCK_RE.search(text):
-        detail = f"root .gitignore lacks the {HARNESS_BLOCK_OPEN} ... {HARNESS_BLOCK_CLOSE} block"
-    elif gitignore_with_harness_block(text, entries) != text:
-        detail = f"root .gitignore's harness block differs from {GITIGNORE_ENTRIES_RELPATH}"
-    else:
-        return _doctor_row("gitignore-block", "ok", "root .gitignore carries the current harness block")
-    return _doctor_row("gitignore-block", "fail", detail,
-                       "python3 .claude/tools/baseline_sync.py pull (rewrites the block)")
+def _doctor_ignore_blocks(root: Path) -> list[dict]:
+    rows = []
+    for entries_rel, target, item, required in HARNESS_IGNORE_BLOCKS:
+        entries = local_text(root, entries_rel)
+        if entries is None:
+            rows.append(_doctor_row(item, "fail", f"{entries_rel} is missing",
+                                    "python3 .claude/tools/baseline_sync.py pull") if required
+                        else _doctor_row(item, "ok", f"{entries_rel} not shipped in this baseline"))
+            continue
+        text = local_text(root, target) or ""
+        if not HARNESS_BLOCK_RE.search(text):
+            detail = f"root {target} lacks the {HARNESS_BLOCK_OPEN} ... {HARNESS_BLOCK_CLOSE} block"
+        elif with_harness_block(text, entries) != text:
+            detail = f"root {target}'s harness block differs from {entries_rel}"
+        else:
+            rows.append(_doctor_row(item, "ok", f"root {target} carries the current harness block"))
+            continue
+        rows.append(_doctor_row(item, "fail", detail,
+                                "python3 .claude/tools/baseline_sync.py pull (rewrites the block)"))
+    return rows
 
 
 def _doctor_git(root: Path) -> list[dict]:
@@ -3391,7 +3444,7 @@ def _doctor_git(root: Path) -> list[dict]:
     if rc != 0:
         return [_doctor_row("git-repo", "fail", "not a git repository", "git init"),
                 _doctor_row("git-hooks-path", "fail", "no repository", "git init, then " + hooks_fix),
-                _doctor_gitignore(root)]
+                *_doctor_ignore_blocks(root)]
     rows = [_doctor_row("git-repo", "ok", "repository present")]
     rc, value = _doctor_run(root, ["git", "config", "--get", "core.hooksPath"])
     if not (root / HOOKS_PATH).is_dir():
@@ -3400,7 +3453,7 @@ def _doctor_git(root: Path) -> list[dict]:
         rows.append(_doctor_row("git-hooks-path", "ok", f"core.hooksPath = {HOOKS_PATH}"))
     else:
         rows.append(_doctor_row("git-hooks-path", "fail", f"core.hooksPath is {value or 'unset'}", hooks_fix))
-    rows.append(_doctor_gitignore(root))
+    rows += _doctor_ignore_blocks(root)
     return rows
 
 

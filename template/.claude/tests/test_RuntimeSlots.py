@@ -5,6 +5,7 @@ Drives the tool through `pwsh -NoProfile` on planted input under its own temp ro
 """
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -44,8 +45,9 @@ def main(tmp):
     wait_run_lock(tmp)
 
 
-HOLDER = """param([string] $Name, [string] $Own)
-$m = [System.Threading.Mutex]::new($false, $Name)
+HOLDER = """param([string] $Name, [string] $Own, [string] $Backend, [string] $Tool)
+. $Tool
+$m = New-RunLock $Name -Backend $Backend
 if ($Own -eq '1' -and -not $m.WaitOne(0)) { 'BUSY'; exit 3 }
 'HELD'
 [Console]::Out.Flush()
@@ -53,51 +55,76 @@ Start-Sleep -Seconds 300
 """
 
 
-def hold(tmp, name, own=True):
+def hold(tmp, name, backend, own=True):
     """A child pwsh that owns the named mutex until it is killed (own=False: only keeps the named object open, as a
     waiting process does). Ownership is per process, so it cannot be planted."""
     script = os.path.join(tmp, "holder.ps1")
     with open(script, "w", encoding="utf-8", newline="\n") as f:
         f.write(HOLDER)
-    child = subprocess.Popen(["pwsh", "-NoProfile", "-File", script, name, "1" if own else "0"], stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True)
+    child = subprocess.Popen(["pwsh", "-NoProfile", "-File", script, name, "1" if own else "0", backend, TOOL], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True, start_new_session=sys.platform != "win32")
     line = child.stdout.readline().strip()
     return child if line == "HELD" else None
 
 
+def kill_holder(child):
+    """Kill the holder and anything it started: a launcher that does not exec leaves the lock owner alive."""
+    if sys.platform == "win32":
+        child.kill()
+    else:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    child.wait()
+
+
+def survivors():
+    """Holder processes still running, for a failure message."""
+    if sys.platform == "win32":
+        return ""
+    return subprocess.run(["ps", "-eo", "pid,ppid,args"], capture_output=True, text=True).stdout.count("holder.ps1")
+
+
 def wait_run_lock(tmp):
-    """Wait-RunLock over real cross-process holders: the first free handle by index, a timeout, and an abandoned holder."""
+    """Wait-RunLock over real cross-process holders, once per lock backend the host supports: a kernel mutex (Windows
+    only; a Linux .NET named mutex is not released when its owner is killed while another process has the name open)
+    and the file lock New-RunLock hands out on Linux."""
+    for backend in (("mutex", "file") if sys.platform == "win32" else ("file",)):
+        wait_run_lock_on(tmp, backend)
+
+
+def wait_run_lock_on(tmp, backend):
+    """The first free handle by index, a timeout, and an abandoned holder."""
     tag = uuid.uuid4().hex[:10]
     names = [f"Global\\harness-proof-{tag}-{n}" for n in "abc"]
-    env = {"NAME_A": names[0], "NAME_B": names[1], "NAME_C": names[2]}
-    body = ("$h = @('NAME_A', 'NAME_B', 'NAME_C' | ForEach-Object { [System.Threading.Mutex]::new($false, [Environment]::GetEnvironmentVariable($_)) }); "
+    env = {"NAME_A": names[0], "NAME_B": names[1], "NAME_C": names[2], "BACKEND": backend}
+    body = ("$h = @('NAME_A', 'NAME_B', 'NAME_C' | ForEach-Object { New-RunLock ([Environment]::GetEnvironmentVariable($_)) -Backend $env:BACKEND }); "
             "$sw = [Diagnostics.Stopwatch]::StartNew(); $r = Wait-RunLock -Handles $h -TimeoutMs %d; $sw.Stop(); "
             "'IDX=' + $r.Index; 'ABANDONED=' + $r.Abandoned; 'MS=' + $sw.ElapsedMilliseconds")
     holders = []
     try:
-        holders = [hold(tmp, names[0]), hold(tmp, names[1])]
-        check("the holder children own their mutexes", all(holders), f"{holders!r}")
+        holders = [hold(tmp, names[0], backend), hold(tmp, names[1], backend)]
+        check(f"the holder children own their mutexes [{backend}]", all(holders), f"{holders!r}")
         rc, out, _ = drive(body % 3000, tmp, env)
         got = kv(out)
-        check("Wait-RunLock grants the first free handle by index while others are held",
+        check(f"Wait-RunLock grants the first free handle by index while others are held [{backend}]",
               rc == 0 and got.get("IDX") == "2" and got.get("ABANDONED") == "False", f"rc={rc} {out!r}")
-        holders.append(hold(tmp, names[2]))
-        holders.append(hold(tmp, names[0], own=False))  # a waiter's open handle: it keeps the object alive past its owner
+        holders.append(hold(tmp, names[2], backend))
+        holders.append(hold(tmp, names[0], backend, own=False))  # a waiter's open handle: it keeps the object alive past its owner
         rc, out, _ = drive(body % 700, tmp, env)
         got = kv(out)
-        check("Wait-RunLock returns -1 after the timeout when every handle is held",
+        check(f"Wait-RunLock returns -1 after the timeout when every handle is held [{backend}]",
               rc == 0 and got.get("IDX") == "-1" and 600 <= int(got.get("MS", "0")) < 3000, f"rc={rc} {out!r}")
-        holders[0].kill()
-        holders[0].wait()
+        kill_holder(holders[0])
         rc, out, _ = drive(body % 3000, tmp, env)
         got = kv(out)
-        check("a killed holder's mutex is granted as abandoned, at its index",
-              rc == 0 and got.get("IDX") == "0" and got.get("ABANDONED") == "True", f"rc={rc} {out!r}")
+        check(f"a killed holder's mutex is granted as abandoned, at its index [{backend}]",
+              rc == 0 and got.get("IDX") == "0" and got.get("ABANDONED") == "True", f"rc={rc} {out!r} holder.ps1 processes still running: {survivors()}")
     finally:
         for child in holders:
             if child is not None:
-                child.kill()
-                child.wait()
+                kill_holder(child)
 
 
 def kv(out):

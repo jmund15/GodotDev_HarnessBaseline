@@ -617,6 +617,18 @@ def test_crash_is_advisory_and_other_entries_are_not_hidden():
     assert 'unreadable' in (text or '')
 
 
+def test_a_result_table_without_claim_fields_is_no_claims():
+    sys.path.insert(0, str(REPO / '.claude/hooks'))
+    import dispatch_table as dt
+    # Cut from agenttype_input_cost_probe run wf_99ae3898-08b: a probe returns measurement cells, not claims.
+    probe = {'cells': [{'label': 'explore-model-a-low', 'agentType': 'Explore', 'model': 'model-a',
+                        'effort': 'low', 'outcome': 'ok', 'answer': 'ok'}],
+             'note': 'input-token counts live in the transcript dir agent-*.jsonl, not here'}
+    assert dt._audit_rows(probe) == ([], []), dt._audit_rows(probe)
+    nested = {'lensA': [{'id': 'c1', 'evidence': [{'file': 'a.md', 'quote': 'b'}]}]}
+    assert len(dt._audit_rows(nested)[0]) == 1, dt._audit_rows(nested)
+
+
 def test_deadline_shared_by_commands_and_pathspec_probes():
     sys.path.insert(0, str(REPO / '.claude/hooks'))
     import dispatch_table as dt
@@ -740,7 +752,7 @@ NATIVE_FOLD_JOURNAL = HERE / 'fixtures/stop_audit/review_fold_native/journal.jso
 REJECTED_JOURNAL = HERE / 'fixtures/evidence/review_rejected/journal.jsonl'
 
 
-def native_fold_run(snapshot_text, live_text, *, relative=False):
+def native_fold_run(snapshot_text, live_text, *, relative=False, repo_root=False):
     """The captured native review whose fold already edited its subject: seats read `snapshot_text`, disk holds `live_text`."""
     import fold_check
     fixture = HERE / 'fixtures/stop_audit/review_fold_native'
@@ -755,7 +767,8 @@ def native_fold_run(snapshot_text, live_text, *, relative=False):
     subject = dict(root='.' if relative else str(root), snapshot='snapshot.json' if relative else str(manifest),
                    files=[PLAN_REL])
     e, run_dir = plant_review_run(
-        'review_fanout', 'wf_fold-native', args={'spillDir': str(root / 'spill'), 'fold': dict(subjects=[subject])},
+        'review_fanout', 'wf_fold-native', args={'spillDir': str(root / 'spill'),
+                                                 'fold': dict(subjects=[subject], **({'repoRoot': str(root)} if repo_root else {}))},
         result=json.loads((fixture / 'result.json').read_text(encoding='utf-8')),
         report=json.loads((fixture / 'in_run_report.json').read_text(encoding='utf-8')))
     (run_dir / 'journal.jsonl').write_bytes((fixture / 'journal.jsonl').read_bytes())
@@ -783,6 +796,20 @@ def test_native_fold_audit_resolves_relative_subject_against_the_payload_cwd():
         return
     e, run_dir, root = native_fold_run('before the fold: ' + QUOTE + '\n', 'after the fold: rewritten\n', relative=True)
     e.run(stop_in(root), '--complete')
+    audit = json.loads((run_dir / 'verification_audit.json').read_text())
+    assert audit['verdicts']['F1']['verdict'] == 'VERIFIED', (audit['verdicts']['F1'], audit['errors'])
+
+
+def test_native_fold_audit_resolves_relative_subject_against_the_fold_repo_root():
+    """The session's shell may sit in a subdirectory when Stop fires; args.fold.repoRoot, recorded at dispatch,
+    is the root a relative subject was written against."""
+    if not NATIVE_FOLD_JOURNAL.exists():
+        return
+    e, run_dir, root = native_fold_run('before the fold: ' + QUOTE + '\n', 'after the fold: rewritten\n',
+                                       relative=True, repo_root=True)
+    elsewhere = root / 'sub' / 'dir'
+    elsewhere.mkdir(parents=True)
+    e.run(stop_in(elsewhere), '--complete')
     audit = json.loads((run_dir / 'verification_audit.json').read_text())
     assert audit['verdicts']['F1']['verdict'] == 'VERIFIED', (audit['verdicts']['F1'], audit['errors'])
 

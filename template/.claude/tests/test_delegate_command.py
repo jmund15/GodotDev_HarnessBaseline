@@ -23,7 +23,7 @@ REQUIRED = {
     "proceed preflight": r"`PROCEED`:.*scope.*inputs.*pins.*currency",
     "hold preflight": r"`HOLD`:.*required.*missing",
     "abort preflight": r"`ABORT`:.*authorization.*forbids",
-    "route and guard shape stay separate": r"route[\s\S]+single\|parallel\|chain\|review[\s\S]+shape[\s\S]+any\|survey\|review\|author",
+    "route and job kind stay separate": r"route[\s\S]+single\|parallel\|chain\|review[\s\S]+kind[\s\S]+scout\|lens\|reviewer\|author\|judge",
     "native engine owner": r"Native `Workflow` runs only an engine the fan-out lacks: `review_fanout\.js`",
     "fan-out owner": r"`sidecar_fanout\.py` runs the file[^\n]+picks each job's paying plan",
     "specialized command refusal": r"own coverage contract[\s\S]+exploration, plan drafting or plan review",

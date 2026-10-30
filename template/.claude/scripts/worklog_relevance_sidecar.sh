@@ -109,7 +109,7 @@ PYEOF
 # `checked.obsidianOpened` field is the tripwire — treat false as a broken run, not a clean one.
 VAULT_DIR="$HOME/OneDrive/Documents/ObsidianVault/DevProjects/{{PROJECT_NAME}}"
 [ -d "$VAULT_DIR" ] || { echo "vault dir missing: $VAULT_DIR — the grant would not land and the check would return a false empty" >&2; exit 2; }
-ARGS=(-f "$PROMPT_TMP" -S "$SCHEMA" -t "Read,Glob,Grep" -a "$VAULT_DIR" -G survey
+ARGS=(-f "$PROMPT_TMP" -S "$SCHEMA" -t "-mcp:semantic-search,-mcp:ai-worker" -a "$VAULT_DIR" -G lens
       -l worklog:relevance -R "$RECORD" -d "$REPO" -e "$EFFORT" -o json)
 [ -n "$MODEL" ] && ARGS+=(-m "$MODEL")
 [ -n "$TIMEOUT" ] && ARGS+=(-T "$TIMEOUT")

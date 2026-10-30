@@ -47,7 +47,7 @@
 # The cache-lifetime memory note holds the replay and the reversal test.
 #
 # Usage:
-#   anthropic_sidecar.sh [-m MODEL] [-e EFFORT] [-D bare|pointer|full] [-G survey|review|author|any]
+#   anthropic_sidecar.sh [-m MODEL] [-e EFFORT] -G KIND   (KIND: a launcher kind in guards/tool_profiles.json)
 #                        [-t TOOLS] [-d DIR] [-R RECORD] [-l LABEL] -f prompt.md
 #   anthropic_sidecar.sh --check [--deep]      structural by default; --deep dispatches one
 #                                             real turn to prove the credential actually works
@@ -160,7 +160,7 @@ ac_export_key() {
 
 ac_resolve_window() {
   local config
-  config="$(SIDECAR_MAX_OUTPUT_TOKENS="${SC_MAX_OUTPUT:-}" python3 "$SC_REGISTRY_CLI" anthropic-window "$1" ${SC_LONG_CONTEXT:+--max} ${SC_SHAPE:+--shape "$SC_SHAPE"})" || sc_die 2 "cannot resolve Anthropic client window for $1"
+  config="$(SIDECAR_MAX_OUTPUT_TOKENS="${SC_MAX_OUTPUT:-}" python3 "$SC_REGISTRY_CLI" anthropic-window "$1" ${SC_LONG_CONTEXT:+--max} ${SC_SHAPE:+--shape "$(sc_kind_guard "$SC_SHAPE")"})" || sc_die 2 "cannot resolve Anthropic client window for $1"
   IFS='|' read -r AC_CLIENT_MODEL AC_AUTO_COMPACT_WINDOW AC_MAX_CONTEXT_TOKENS SC_CONTEXT_TOKENS SC_CONTEXT_WINDOW_SOURCE <<< "$(
     printf '%s' "$config" | python3 -c 'import json,sys; c=json.load(sys.stdin); print("|".join(str(c[k]) if c[k] is not None else "" for k in ("model","autoCompactWindow","maxContextTokens","contextWindow","contextWindowSource")))')"
 }
@@ -345,7 +345,7 @@ run_claude() {
     ${AC_AUTO_COMPACT_WINDOW:+CLAUDE_CODE_AUTO_COMPACT_WINDOW="$AC_AUTO_COMPACT_WINDOW"} \
     ${AC_MAX_CONTEXT_TOKENS:+CLAUDE_CODE_MAX_CONTEXT_TOKENS="$AC_MAX_CONTEXT_TOKENS"} \
     ${SC_MAX_OUTPUT:+CLAUDE_CODE_MAX_OUTPUT_TOKENS="$SC_MAX_OUTPUT"} \
-    ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_SHAPE="$SC_SHAPE"} \
+    ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_KIND="$SC_SHAPE"} \
     ${SC_TIMEOUT:+timeout} ${SC_TIMEOUT:+"$SC_TIMEOUT"} \
     "$SC_CLAUDE" -p \
       --model "$AC_CLIENT_MODEL" \

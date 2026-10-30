@@ -22,7 +22,7 @@ POWERSHELL_VERSION="7.5.12"
 # The script writes the value to ${PREFIX}/.cloud-setup.fingerprint below, which is how
 # SessionStart tells a snapshot built from an older paste (paste this file again) from one built
 # from the repo's copy. `.claude/tests/test_workstation_profile_godot.py` proves the check that reports a stale stored value.
-SETUP_FINGERPRINT="7a70af81f5b53c18e82fc0c519c9c75b8277f5246c9bf3a4ea7b53b77498d5df"
+SETUP_FINGERPRINT="ce99520bac904853b3957049a6c8141f01974eea65932736a6fb4ee94e2b9b20"
 
 if [ "$(id -u)" = "0" ]; then SUDO=""; PREFIX="/opt"
 elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then SUDO="sudo"; PREFIX="/opt"
@@ -48,6 +48,9 @@ command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 || missing_pkg
 for lib in libfontconfig.so.1 libXcursor.so.1 libXinerama.so.1 libXrandr.so.2 libXi.so.6 libGL.so.1; do
     ldconfig -p 2>/dev/null | grep -q "$lib" || { missing_pkgs+=(libfontconfig1 libxcursor1 libxinerama1 libxrandr2 libxi6 libgl1); break; }
 done
+# Xvfb has no GPU. Without a software Vulkan device (lavapipe) Godot falls back to OpenGL Compatibility on llvmpipe,
+# whose shading the Render tests do not match.
+ls /usr/share/vulkan/icd.d/lvp_icd*.json >/dev/null 2>&1 || missing_pkgs+=(mesa-vulkan-drivers)
 if [ ${#missing_pkgs[@]} -gt 0 ]; then
     if [ -n "${SUDO}" ] || [ "$(id -u)" = "0" ]; then
         echo "[cloud-setup] apt install ${missing_pkgs[*]}"

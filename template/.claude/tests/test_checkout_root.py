@@ -51,6 +51,39 @@ class CheckoutRootTests(unittest.TestCase):
         self.assertEqual(_checkout_root.linked_main_root(self.plain), "")
         self.assertEqual(Path(_checkout_root.linked_main_root(self.linked)), self.main)
 
+    def test_git_dirs_tells_main_linked_and_non_repo_apart(self):
+        import _checkout_root
+        git_dir, common = _checkout_root.git_dirs(self.main)
+        self.assertEqual(git_dir, common)
+        git_dir, common = _checkout_root.git_dirs(self.linked)
+        self.assertNotEqual(git_dir, common)
+        self.assertIsNone(_checkout_root.git_dirs(self.plain))
+
+    def test_session_loader_is_worktree_follows_the_linked_root(self):
+        import os
+        import session_context_loader
+        here = os.getcwd()
+        try:
+            answers = []
+            for path in (self.main, self.linked, self.plain):
+                os.chdir(path)
+                answers.append(session_context_loader.is_worktree())
+        finally:
+            os.chdir(here)
+        self.assertEqual(answers, [False, True, False])
+
+    def test_repo_arg_pops_the_flag_and_returns_the_resolved_checkout(self):
+        import _checkout_root
+        argv = ["guard.py", "--repo", str(self.linked / "sub" / ".."), "--quiet"]
+        self.assertEqual(_checkout_root.repo_arg(argv), self.linked.resolve())
+        self.assertEqual(argv, ["guard.py", "--quiet"])
+
+    def test_repo_arg_is_none_without_the_flag(self):
+        import _checkout_root
+        argv = ["guard.py", "--quiet"]
+        self.assertIsNone(_checkout_root.repo_arg(argv))
+        self.assertEqual(argv, ["guard.py", "--quiet"])
+
     def test_cli_prints_the_linked_main_root_in_posix_form(self):
         out = subprocess.run([sys.executable, str(HOOKS / "_checkout_root.py"), str(self.linked)],
                              capture_output=True, text=True, check=True).stdout.strip()

@@ -995,6 +995,71 @@ def main():
     ck("the same launch id stopped twice is listed once", stopped_of(path) == [L1], f"state={stopped_of(path)}")
     os.environ["HARNESS_HOOK_STATE_DIR"] = HOOK_STATE
 
+    # --- the read-only ownership report. A session may be named only where the target's own tags or
+    # the returned chain carry it; `unknown` is a result, and no case here may kill anything.
+    peer_sid = "11111111-2222-3333-4444-555555555555"
+    grandchild = (row(104, 100, "python.exe", "python scoring/index_build.py"),)
+
+    def inspect(extra=(), argv=None, environ=None, cpu=None, session=True):
+        seq = iter(cpu or [])
+        reap.cpu_tree_seconds = lambda pid: next(seq, None)
+        reap._cpu_sleep = lambda seconds: None
+        env = environ or (lambda pid: b"")
+        who = None if session else {"CLAUDE_PID": "", "CLAUDE_CODE_SESSION_ID": ""}
+        return run(argv or ["inspect", "104"], table(extra), env=who, environ=env, peb=env)
+
+    rc, killed, out = inspect(grandchild, cpu=[4.0, 5.0], argv=["inspect", "104", "--sample", "1"])
+    ck("inspect: a benchmark grandchild is MINE, by its chain to this session's host",
+       rc == 0 and killed == [] and "owner: MINE" in out and "43144 claude.exe" in out
+       and "104 python.exe" in out, f"rc={rc} killed={killed}\n{out[-600:]}")
+    ck("inspect: the sample reports CPU percent over the window", "100% of one core" in out, out[-300:])
+
+    rc, killed, out = inspect(argv=["inspect", str(SESSION_PID)])
+    ck("inspect: the caller's own session host is MINE, not a peer",
+       rc == 0 and "owner: MINE" in out and "PEER" not in out, out[-400:])
+
+    own_tag = {555: b"SIDECAR_PARENT_SESSION_ID=" + SID.encode() + b"\0SIDECAR_LAUNCH_ID=L555\0"}
+    rc, killed, out = inspect((row(555, 999, "python.exe", "python search_server.py"),),
+                              environ=lambda pid: own_tag.get(pid, b""), argv=["inspect", "555"])
+    ck("inspect: a dead launcher leaves its child MINE by the surviving sidecar tag",
+       rc == 0 and killed == [] and "owner: MINE" in out and "parent 999 is gone" in out, out[-600:])
+
+    peer_tag = {600: b"SIDECAR_PARENT_SESSION_ID=" + peer_sid.encode() + b"\0"}
+    rc, killed, out = inspect((row(600, 999, "python.exe", "python search_server.py"),),
+                              environ=lambda pid: peer_tag.get(pid, b""), argv=["inspect", "600"])
+    ck("inspect: a peer's own sidecar tag is PEER, naming that session",
+       rc == 0 and "owner: PEER" in out and peer_sid[:8] in out, out[-600:])
+
+    no_sid = {601: b"SIDECAR_PARENT_SESSION_ID=" + peer_sid.encode() + b"\0"}
+    rc, killed, out = inspect((row(601, 999, "python.exe", "python search_server.py"),),
+                              environ=lambda pid: no_sid.get(pid, b""), argv=["inspect", "601"],
+                              session=False)
+    ck("inspect: with no session id to compare, a tagged session stays UNKNOWN",
+       rc == 0 and "owner: UNKNOWN" in out and peer_sid[:8] in out and "owner: PEER" not in out,
+       out[-600:])
+
+    rc, killed, out = inspect((row(104, 900, "python.exe", "python scoring/index_build.py"),),
+                              argv=["inspect", "104"])
+    ck("inspect: a peer is named only together with its ancestry chain",
+       rc == 0 and "owner: PEER" in out and "pid 900" in out and peer_sid[:8] in out, out[-600:])
+
+    rc, killed, out = inspect((row(700, 999, "python.exe", "python mystery.py"),), argv=["inspect", "700"])
+    ck("inspect: insufficient evidence is UNKNOWN, never a peer label",
+       rc == 0 and "owner: UNKNOWN" in out and "PEER" not in out, out[-600:])
+
+    rc, killed, out = inspect(grandchild, cpu=[4.0, 5.0], argv=["inspect", "104", "--json", "--sample", "1"])
+    try:
+        report = json.loads(out.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        report = {}
+    ck("inspect --json returns the report a status surface can consume",
+       report.get("verdict") == "mine" and (report.get("chain") or [{}])[0].get("pid") == 100
+       and (report.get("cpu") or {}).get("percentOneCore") == 100.0, out[-600:])
+
+    rc, killed, out = inspect(argv=["inspect", "4242"])
+    ck("inspect: a pid absent from the table is reported, not crashed on",
+       rc == 3 and "not in the process table" in out, out[-300:])
+
     # taskkill /T exits nonzero when a tree member dies before its turn, though the target is gone.
     real_run = reap.subprocess.run
     for gone, want, name in ((True, True, "a nonzero taskkill whose target is gone is a kill"),

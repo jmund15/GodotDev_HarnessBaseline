@@ -20,6 +20,11 @@ Exemptions, each judged on the resolved target and never on the command's wordin
   only when this session created it), or a `NAME=$(mktemp -d)` variable the same command owns.
   Any chained second delete, glob in a directory part, `~`, `%` or unresolvable target disqualifies it, as
   does a target a live peer session works in, or a scratch target that is or holds another session's id folder.
+- A forced `rm` whose every target is a literal path proven ABSENT inside this project's
+  `.claude/scratch/`, with no glob, unresolved variable, `..` or link leaving scratch: it removes
+  nothing, so `main()` rewrites that segment to `true` through `hookSpecificOutput.updatedInput`
+  rather than approving it. No wildcard, unknown expansion, existing tree or path outside scratch
+  qualifies.
 
 Git history rewrites (reset --hard, clean -f, force-push, branch -D, stash drop) belong to
 `git_guardrails`, which parses git invocations; this file holds no second copy of them.
@@ -33,7 +38,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _command_text import executable_text, _REDIRECTION  # noqa: E402
+from _command_text import executable_text, executable_spans, command_words, _REDIRECTION  # noqa: E402
 from _regenerable_clone import (empty_leftover, is_regenerable_clone, is_retired_worktree,  # noqa: E402
                                 lossless_orphan_worktree, session_created_worktree)
 from _git_commit import literal_assignments, expand_literal, resolve_cd  # noqa: E402
@@ -373,6 +378,78 @@ def _is_safe_ephemeral_cleanup(scan: str, raw: str, cwd: str | None = None,
                                or _is_regenerable_target(p, cwd, transcript_path) for p in paths)
 
 
+def _forces_removal(args: list[str]) -> bool:
+    """True when a flag stops the delete reporting an absent operand, so deleting nothing exits 0
+    (`rm -f`, `-rf`, `-fr`, `--force`). Only then does `true` stand in for the segment."""
+    return any(a.lower() == '--force' or (re.fullmatch(r'-[A-Za-z]+', a) and 'f' in a.lower())
+               for a in args)
+
+
+def _absent_scratch_target(value: str | None, here: str | None) -> bool:
+    """True when `value` names a literal path strictly inside this project's `.claude/scratch/` that
+    does not exist, with no link escaping scratch: `realpath` resolves every existing ancestor, so a
+    symlinked or junctioned parent that leaves scratch fails the containment test."""
+    if not value or here is None or _UNSAFE_PATH_CHARS.search(value):
+        return False
+    parts = [p for p in value.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return False
+    literal = resolve_cd(here, value)
+    if os.path.lexists(literal):        # a file, a directory or a dangling link: real work
+        return False
+    return _strictly_under(_norm(literal), _norm(os.path.join(_project_root(), ".claude", "scratch")))
+
+
+def rewrite_absent_forced_deletes(command: str, cwd: str | None = None) -> str | None:
+    """`command` with every forced recursive delete whose targets are all proven-absent paths under
+    this project's `.claude/scratch/` replaced by `true`, or None when any delete is not provable.
+
+    `rm -rf <absent>` exits 0 and removes nothing, so the setup idiom `rm -rf target; mkdir target`
+    needs no owner approval for an absent target. The segment is rewritten rather than approved: a
+    bare allow would also cover whatever appears at that path between this check and the run. A
+    command with any other recursive delete -- an existing path, a glob, an unresolved variable, a
+    `..`, a non-`rm` delete, or a segment the parser cannot isolate -- returns None and keeps its
+    normal denial.
+    """
+    spans = list(executable_spans(command))
+    if not spans:
+        return None
+    assignments = literal_assignments(command)
+    here = cwd or _project_root()
+    elisions, found = [], False
+    for start, end, segment in spans:
+        delete_shape = any(re.search(p, _strip_quoted(segment), re.IGNORECASE)
+                           for p in _RECURSIVE_DELETE_PATTERNS)
+        parsed = command_words(segment)
+        if parsed is None:
+            if delete_shape:
+                return None
+            continue
+        words = [w.value for w in parsed[0]]
+        if not delete_shape:
+            if words and words[0] == "cd" and len(words) == 2:
+                moved = expand_literal(words[1], assignments)
+                here = resolve_cd(here, moved) if moved and not _GLOB_CHARS.search(moved) else None
+            continue
+        if here is None or words[0].lower() != "rm" or not _forces_removal(words[1:]):
+            return None
+        targets = [t for t in words[1:] if not t.startswith("-")]
+        if not targets or not all(_absent_scratch_target(expand_literal(t, assignments), here)
+                                  for t in targets):
+            return None
+        elisions.append((start, end))
+        found = True
+    if not found:
+        return None
+    out, cursor = [], 0
+    for start, end in elisions:
+        out.append(command[cursor:start])
+        out.append("true")
+        cursor = end
+    out.append(command[cursor:])
+    return "".join(out)
+
+
 # A4: `NAME=$(mktemp -d)` (or `-t <template>` with no `/` in the template) is ownership evidence a
 # literal path never carries. Everything else surrounding it — cd, a subshell pipeline that reads
 # the transcript, a printf | hook | grep | cut probe — is unrelated chaining and stays unrestricted;
@@ -657,9 +734,19 @@ def main():
     tool_input = input_data.get("tool_input") if isinstance(input_data, dict) else None
     if isinstance(input_data, dict) and input_data.get("tool_name") in ("Bash", "PowerShell") \
             and isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str):
-        blocked, message = check_bash_command(tool_input["command"], input_data.get("cwd"),
+        command = tool_input["command"]
+        blocked, message = check_bash_command(command, input_data.get("cwd"),
                                               input_data.get("transcript_path"))
         if blocked:
+            rewritten = None
+            if input_data.get("tool_name") == "Bash" and "recursive" in message.lower():
+                rewritten = rewrite_absent_forced_deletes(command, input_data.get("cwd"))
+            if rewritten is not None and not check_bash_command(
+                    rewritten, input_data.get("cwd"), input_data.get("transcript_path"))[0]:
+                print(json.dumps({"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": dict(tool_input, command=rewritten)}}))
+                sys.exit(0)
             print(message, file=sys.stderr)
             sys.exit(2)
 

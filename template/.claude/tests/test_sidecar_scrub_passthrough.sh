@@ -73,5 +73,26 @@ for l in codex_proxy deepseek opencode; do
   else echo "OK   ${l}_sidecar.sh leaves the cache TTL unset"; fi
 done
 
+# --- case 8: a bench arm's work runs below normal. CLAUDE_CODE_SHELL_PREFIX receives each command the CLI
+#     spawns (Bash tool, hooks, MCP servers) as ONE shell string; the CLI itself keeps its priority.
+unset CLAUDE_CODE_SHELL_PREFIX
+BENCH_ARM=1 sc_scrub_env; s="$(joined)"
+prefix="$(printf '%s\n' "${SC_SCRUB[@]}" | sed -n 's/^CLAUDE_CODE_SHELL_PREFIX=//p')"
+if [ -n "$prefix" ] && [ -f "$prefix" ]; then
+  echo "OK   arm prefix: $prefix"
+  out="$("$prefix" "printf 'a b' && echo ' c'; exit 3")"; rc=$?
+  if [ "$out" = "a b c" ] && [ "$rc" = 3 ]; then echo "OK   arm prefix runs its one string through bash and keeps the exit code"
+  else echo "FAIL arm prefix ran <$out> rc=$rc"; fail=1; fi
+  if [ "${OS:-}" = Windows_NT ]; then
+    pri="$("$prefix" "python3 -c 'import ctypes as c; k=c.windll.kernel32; k.GetCurrentProcess.restype=c.c_void_p; k.GetPriorityClass.argtypes=[c.c_void_p]; print(hex(k.GetPriorityClass(k.GetCurrentProcess())))'")"
+    [ "$pri" = 0x4000 ] && echo "OK   arm prefix child runs below normal" || { echo "FAIL arm prefix child priority $pri"; fail=1; }
+  fi
+else echo "FAIL arm prefix: none in <$s>"; fail=1; fi
+
+# --- case 9: a non-arm dispatch keeps its tools at the caller's priority
+BENCH_ARM="" sc_scrub_env; s="$(joined)"
+if [[ "$s" != *"CLAUDE_CODE_SHELL_PREFIX="* ]]; then echo "OK   non-arm: no shell prefix"
+else echo "FAIL non-arm prefix: $s"; fail=1; fi
+
 [ "$fail" = 0 ] && echo "PASS test_sidecar_scrub_passthrough" || echo "FAIL test_sidecar_scrub_passthrough"
 exit "$fail"

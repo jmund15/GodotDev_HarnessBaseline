@@ -18,13 +18,12 @@ For indexed file types and tool guidance, see CLAUDE.core.md §9.
 
 1. Verify the plugin is installed and the MCP tool is available. If `mcp__plugin_semantic-search_semantic-search__search` is not present in the deferred tool list, stop with a clear message — the command is a no-op when the plugin is uninstalled, do NOT error.
 
-2. Trigger a clean rebuild by issuing a no-op search call with `rebuild: true`:
-   - `query`: `"."`  (any non-empty string — content doesn't matter when rebuild is on)
+2. Refresh the index with one search call:
+   - `query`: `"."`  (any non-empty string; the results are not used)
    - `searchDir`: project root — derive from `$CLAUDE_PROJECT_DIR` (or the session's working directory / repo root); do NOT hardcode, the path differs per machine.
-   - `rebuild`: `true`
-   - `limit`: `1`  (we don't care about results, just the rebuild side effect)
+   - `limit`: `1`
 
-   The rebuild walks the working tree, drops the existing `.search-index/search.db`, and rebuilds AST chunks + embeddings + 6-signal scoring tables. Each rebuild is a full walk, not an incremental update.
+   Every search compares each file's mtime with its stored record, then re-chunks and re-embeds only new or changed files and drops deleted ones, so the refresh costs the files changed since the last search. Add `rebuild: true` only for a named cause: a plugin or C# hook upgrade, a corrupt db, or a `.gitignore` change that drops indexed paths. A rebuild drops `search.db` and re-embeds the whole corpus, which takes tens of minutes at this repo's size.
 
 3. Run the project's index prebuild commands — generated files that go stale on the same window as the index:
    ```bash
@@ -33,17 +32,17 @@ For indexed file types and tool guidance, see CLAUDE.core.md §9.
    Report the counts the commands print and any failing command; neither blocks the re-index.
 
 4. Report composition — what the corpus is now made of, top buckets by chunk count plus
-   `.claude/auto-memory`'s share, read straight from the rebuilt db:
+   `.claude/auto-memory`'s share, read straight from the refreshed db:
    ```bash
    python3 "$CLAUDE_PROJECT_DIR/.claude/tools/index_composition.py"
    ```
    Print the table as-is. It is the only routine signal that the corpus has drifted; recall
-   degrades silently otherwise, so a number every rebuild is what makes drift visible.
-   Flag a bucket that has become disproportionate against §Corpus hygiene below. On `no baseline set` and a corpus §Corpus hygiene judges healthy, run `python3 "$CLAUDE_PROJECT_DIR/.claude/tools/index_composition.py" --set-baseline`.
+   degrades silently otherwise, so a number every refresh is what makes drift visible.
+   Flag a bucket that has become disproportionate against §Corpus hygiene below. Run `python3 "$CLAUDE_PROJECT_DIR/.claude/tools/index_composition.py" --set-baseline` when it prints `no baseline set`, or when a flag traces to an intended scope change (a newly indexed file type), and the corpus passes §Corpus hygiene.
 
 5. Report:
    - Time elapsed
-   - Whether the index was actually **rebuilt** — `ls -la .search-index/` and confirm `search.db`'s mtime is *now*, not merely that the file exists. A failed rebuild leaves the stale db in place, so existence proves nothing. If the rebuild reports `EBUSY` but the mtime moved, report "incremental, not rebuilt" and skip the reap path below.
+   - Whether the index took the session's changes: the search response carries no error, and `search.db`'s mtime (`ls -la .search-index/`) is *now* when any indexed file changed since the last search. An unchanged mtime after changed files means the refresh failed and the stale db stands.
    - Any obvious errors from the search response
 
 ## Corpus hygiene — ranking is competitive
@@ -54,8 +53,10 @@ that objective regardless of relevance** — a thousand new junk chunks do not m
 they displace real answers.
 
 **The invariant:** a directory of generated, per-session, or duplicated artifacts gets its
-`.gitignore` entry when it is created, not after recall degrades. The indexer honors
-`.gitignore`, so that entry is the whole control surface. Anything genuinely worth searching
+`.gitignore` entry when it is created, not after recall degrades. A tracked path that git must
+keep but search should not (tests, frozen fixtures, vendored code) goes in `.searchignore` instead;
+a harness path goes in `.claude/searchignore.harness`, which `baseline_sync.py pull` writes into
+`.searchignore`'s harness block. The indexer honors `.gitignore` and `.searchignore`, and they are the whole control surface. Anything genuinely worth searching
 stays tracked — the test is whether a *future* session would want to find it, not whether it
 was expensive to produce.
 
@@ -66,18 +67,15 @@ is repaired — check composition first.
 
 - **Plugin uninstalled / tool not registered:** see Step 1.
 - **Re-index errors mid-walk:** report the error with the partial state. Do NOT block the calling command.
-- **`EBUSY: resource busy or locked, unlink '...search.db'`** — another semantic-search MCP server holds the db open (a stranded server keeps the project file locked). A server whose parent is alive belongs to a live session, regardless of the executable name. `tools/reap.py` refuses every semantic-search server as shared infrastructure, so no session kills one.
+- **`EBUSY: resource busy or locked, unlink '...search.db'`** — another semantic-search MCP server holds the db open (a stranded server keeps the project file locked). A `rebuild: true` call meets it when it unlinks the db; if the mtime moved anyway, report "incremental, not rebuilt" and skip the steps below. A server whose parent is alive belongs to a live session, regardless of the executable name. `tools/reap.py` refuses every semantic-search server as shared infrastructure, so no session kills one.
 
   1. Enumerate holders and their parents:
      `Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'semantic-search' } | ForEach-Object { $par = Get-Process -Id $_.ParentProcessId -ErrorAction SilentlyContinue; [PSCustomObject]@{ PID=$_.ProcessId; Started=$_.CreationDate; ParentAlive=[bool]$par; ParentName=$par.ProcessName } }`
-  2. Report the holders and the db's mtime, record the phase blocked, and continue. The next run after the holder's session exits rebuilds.
+  2. Report the holders and the db's mtime, record the phase blocked, and continue. The next run after the holder's session exits refreshes.
   3. A true orphan (`ParentAlive=False`) that keeps the lock across sessions is the owner's to stop; name its PID in the report.
 - **`FOREIGN KEY constraint failed`** — a stale rowid, not corruption: one indexer captured a file's id while another re-indexed that file (delete + re-insert allocates a new one). Retry; the next pass re-resolves it. `foreign_key_check` stays clean, and a genuine lock says `database is locked` instead. Repeats ⇒ enumerate holders as for EBUSY above. Report contention, never a broken capability.
 - **`.search-index/` permission errors:** check that `.search-index/` is in `.gitignore`. Distinguish from the EBUSY case above — a true ACL error names a denial, not a busy resource.
-
-## Why `rebuild: true` instead of letting incremental do its job?
-
-Incremental updates cover only changed files within the indexed scope. Use a full rebuild when the index needs a fresh state.
+- **The client aborts the call after its MCP idle timeout** (`sent no response or progress for <N>s`): the backend keeps indexing. Check `search.db`'s mtime later; a moved mtime with no error means the refresh finished, and an unmoved one after the backend exits is a failed refresh.
 
 ## Cross-references
 

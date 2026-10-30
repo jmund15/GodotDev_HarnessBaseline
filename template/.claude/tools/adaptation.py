@@ -44,6 +44,8 @@ read by `scripts/sync_plan_config.py`; an absent key means no project benchmark 
 `usage_reset` is the weekly quota reset ({weekday, hour}, machine-local), read by `tools/usage_report.py`.
 `land_prefix` is the branch prefix a project's land runner proves and fast-forwards onto the default branch
 (empty: no runner), read by `hooks/git_guardrails.py` and `/commit_push` step 6.
+`land_watch` is the command `/commit_push` step 6 starts after a land push to wait on the land and report it
+(`<land branch>` and `<pushed sha>` filled in; empty: no watcher).
 
 Unknown keys are ignored everywhere.
 """
@@ -90,6 +92,7 @@ DEFAULTS: dict = {
     "index_prebuild": [],
     "usage_reset": {"weekday": "sunday", "hour": 13},
     "land_prefix": "",
+    "land_watch": "",
     "rigor_defaults": {
         "harness": {"paths": [".claude/**"], "level": "normal"},
         "side-tools": {"paths": ["tools/**", "scripts/**", ".claude/tools/**", ".claude/scripts/**"], "level": "light"},
@@ -134,6 +137,7 @@ _TYPES: dict = {
     "index_prebuild": list,
     "usage_reset": dict,
     "land_prefix": str,
+    "land_watch": str,
     "rigor_defaults": dict,
 }
 

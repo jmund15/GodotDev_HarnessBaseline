@@ -107,6 +107,78 @@ def job_tier_checks():
           tiers.get("seat-b") == "fanout", repr(tiers))
 
 
+def packet_view_checks():
+    """A frozen session-audit packet's per-mandate views are a seat's must-read list, each artifact once."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        one, two = root / "one.diff", root / "two.diff"
+        one.write_text("diff one\n", encoding="utf-8")
+        two.write_text("diff two\n", encoding="utf-8")
+        packet = root / "inputs.json"
+        packet.write_text(json.dumps({"views": {
+            "harness-quality": {"mustRead": [str(one)]},
+            "cq.C": {"mustRead": [str(one), str(two)]}}}), encoding="utf-8")
+        views = lens_briefs.packet_views(str(packet))
+        check("a packet's views are keyed by mandate", sorted(views) == ["cq.C", "harness-quality"], repr(views))
+        entries = lens_briefs.packet_entries(views, ["harness-quality", "cq.C"])
+        check("a seat's mandates are unioned with each artifact listed once",
+              [entry["path"] for entry in entries] == [str(one), str(two)]
+              and entries[0]["lines"] == 1, repr(entries))
+        packet.write_text(json.dumps({"views": {"harness-quality": {"mustRead": [str(root / "gone.diff")]}}}),
+                          encoding="utf-8")
+        try:
+            lens_briefs.packet_views(str(packet))
+            refusal = None
+        except SystemExit as exc:
+            refusal = str(exc.code)
+        check("a view naming an artifact that is gone is refused, naming it",
+              refusal is not None and "gone.diff" in refusal, repr(refusal))
+        packet.write_text(json.dumps({"mustRead": [str(one)]}), encoding="utf-8")
+        try:
+            lens_briefs.packet_views(str(packet))
+            refusal = None
+        except SystemExit as exc:
+            refusal = str(exc.code)
+        check("a packet with no typed views is refused", refusal is not None and "views" in refusal, repr(refusal))
+
+
+def packet_seat_checks():
+    """--must-read-from takes each seat's list from the packet's view of its mandates, with no list file."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        context = root / "context.md"
+        context.write_text("context\n", encoding="utf-8")
+        artifact = root / "view.diff"
+        artifact.write_text("evidence\n", encoding="utf-8")
+        packet = root / "inputs.json"
+        packet.write_text(json.dumps({"views": {"harness-quality": {"mustRead": [artifact.as_posix()]}}}),
+                          encoding="utf-8")
+        plan = root / "plan.json"
+        plan.write_text(json.dumps({"roster": [{"key": "seat-a"}]}), encoding="utf-8")
+        found = {"seat-a": types.SimpleNamespace(registry="review", lines=["```\n", "prompt\n", "```\n"],
+                                                 kfm=False, citers=False, mandates=["harness-quality"])}
+        saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal, lens_briefs.seat_overage)
+        lens.catalog = lambda: ({"review": "preamble"}, found)
+        lens.doctrine = lambda lenses: ""
+        lens.seat_tier = lambda key: "fanout"
+        lens_briefs.lens_tier_refusal = lambda **kwargs: []
+        lens_briefs.seat_overage = lambda **kwargs: None
+        try:
+            outcome = run_main(["--plan", str(plan), "--out", str(root / "out"), "--prefix", "p",
+                                "--context-path", str(context), "--model", sorted(lens_briefs.NATIVE_PINS)[0],
+                                "--effort", sorted(lens_briefs.NATIVE_EFFORTS)[0],
+                                "--must-read-from", str(packet)])
+        finally:
+            (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal,
+             lens_briefs.seat_overage) = saved
+        jobs_file = root / "out" / "jobs_p.json"
+        entries = [job["mustRead"] for job in json.loads(jobs_file.read_text(encoding="utf-8"))] \
+            if jobs_file.exists() else []
+    check("a seat's must-read list comes from the packet's view of its mandates, with no list file",
+          outcome == "returned" and entries == [[{"path": artifact.as_posix(), "lines": 1}]],
+          repr(outcome) + repr(entries))
+
+
 def bar_checks():
     """A sidecar seat's brief carries the run's bar (the sidecar prompt has no engine contract); a native seat's
     brief never does, since the engine appends it to the native seat's contract."""
@@ -236,6 +308,8 @@ def main():
           "no such lens: no-such-key" in outcome, outcome)
     companion_checks()
     job_tier_checks()
+    packet_view_checks()
+    packet_seat_checks()
     merged_seat_checks()
     bar_checks()
     import contextlib

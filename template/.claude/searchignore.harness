@@ -1,0 +1,2 @@
+# Proofs stay in git and out of search, so a test never outranks the code it covers.
+.claude/tests/

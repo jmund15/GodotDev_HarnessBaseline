@@ -33,12 +33,13 @@ def git(repo, *args):
     return run.stdout
 
 
-def plant(name, tracked, ignored=None):
-    """A git repo holding `tracked` ({path: text}) at HEAD and, ignored by `.gitignore`, the `ignored` files."""
+def plant(name, tracked, ignored=None, ignore_tests=True):
+    """A git repo holding `tracked` ({path: text}) at HEAD and the untracked `ignored` files, which `.gitignore`
+    ignores when `ignore_tests` is set."""
     repo = TMP / name
     repo.mkdir()
     git(repo, "init", "-q")
-    (repo / ".gitignore").write_text(".claude/tests/\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".claude/tests/\n" if ignore_tests else "", encoding="utf-8")
     for rel, text in {**tracked}.items():
         path = repo / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,6 +196,10 @@ def kind_checks():
     check("a key never matches inside a longer key", ".claude/commands/k2.md" not in {p for p, _ in got}, got)
     check("coverage counts the ignored tests it read", (data or {}).get("coverage", {}).get("ignoredTests") == 2,
           (data or {}).get("coverage"))
+    open_repo = plant("kinds_unignored", KINDS_TREE, KINDS_IGNORED, ignore_tests=False)
+    proc, data = run(open_repo, json.dumps(key))
+    check("an untracked test fixture outside any ignore rule is a fixture citer",
+          (".claude/tests/fixture.json", "fixture") in kinds_of(data), kinds_of(data))
     proc, _ = run(repo, json.dumps({**key, "surface": "token-nobody-holds"}))
     check("a key held by no file exits 1", proc.returncode == 1 and "token-nobody-holds" in proc.stderr, proc.stderr[-200:])
 
