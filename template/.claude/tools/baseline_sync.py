@@ -352,6 +352,13 @@ def _has_linked_worktree(path: Path) -> bool:
     return len(entries) > 1
 
 
+def add_worktree(repo: Path, args: list[str]) -> None:
+    """`git worktree add <args>` in `repo`, with core.longpaths in the repo's own config: a publish battery's
+    tests run plain git in the worktree, past the `-c` every `_git` call carries."""
+    _git(repo, ["config", "core.longpaths", "true"])
+    _git(repo, ["worktree", "add", *args])
+
+
 def _clone_no_checkout(repo: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -3621,7 +3628,7 @@ def cmd_author_start(root: Path) -> int:
     finally:
         source.close()
     worktrees_dir.mkdir(parents=True, exist_ok=True)
-    _git(cache, ["worktree", "add", "-b", branch, str(worktree), pinned])
+    add_worktree(cache, ["-b", branch, str(worktree), pinned])
     _write_lf(owner_file, session + "\n")
     print(str(worktree))
     return 0

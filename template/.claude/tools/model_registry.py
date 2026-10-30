@@ -1138,6 +1138,17 @@ def resolve(name, data=None):
     raise UnknownModel(f"unknown model {name!r}; legal values: {', '.join(legal)}")
 
 
+def issuer(name, data=None):
+    """The lab that issues `name`'s model (`familyIssuers` by the row's family), whatever transport serves it;
+    None when the row is unknown or the table omits its family."""
+    data = data or load()
+    try:
+        entry = resolve(name, data)
+    except UnknownModel:
+        return None
+    return (data.get("familyIssuers") or {}).get(entry.get("family"))
+
+
 # ------------------------------------------------------------------ model identity (S1)
 #
 # A cell token is the dispatch alias, never identity: `opus` names a different model on each side

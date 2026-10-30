@@ -385,9 +385,9 @@ def _materialize(root: Path, source: dict, records: list[dict], lock: dict,
         cache, ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], check=False
     ).returncode == 0
     if branch_exists:
-        _git(cache, ["worktree", "add", str(worktree), branch])
+        sync.add_worktree(cache, [str(worktree), branch])
     else:
-        _git(cache, ["worktree", "add", "-b", branch, str(worktree), baseline_sha])
+        sync.add_worktree(cache, ["-b", branch, str(worktree), baseline_sha])
     for record in records:
         content = None
         if record["op"] != "D":

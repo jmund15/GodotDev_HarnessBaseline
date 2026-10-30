@@ -19,7 +19,7 @@ Single source of truth for regression verification. Called by `/session_end`, `/
 - Pure meta commits (`.claude/`, `skills/`, `CLAUDE.md`, docs) — harness pushes use the close gate in `rules/harness_tooling.md`.
 - Pure configuration/asset commits with no code coupling
 
-A cloud session (`CLAUDE_CODE_REMOTE=true`) cannot run this Windows-bound gate. It runs the filtered verify in `rules/cloud_dev.md` instead; its PR states the local gate is still owed.
+A cloud session runs this gate too: start `pwsh -NoProfile -File .claude/scripts/regression_gate.ps1` as a detached job (`rules/cloud_dev.md` §Works).
 
 ## Invocation
 

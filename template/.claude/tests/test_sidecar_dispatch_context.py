@@ -191,6 +191,23 @@ def currency_cases(tmp, ok, env):
 
     go_exec = serving("go", ["executor"])
     go_fan_only = serving("go", ["fanout"], refuse=["executor"])
+    planted_registry = None
+    if go_fan_only is None:
+        # The live Go plan may claim every tier on one row; plant a fanout-only Go row so the deny case runs.
+        # The guard reads a family's ladder row, so the family needs its own row and no claiming row may share it.
+        claimed = {m.get("family") for m in rows.values() if model_registry.entry_tiers(m)}
+        ladder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "reference", "model_ladder_evidence.md")
+        with open(ladder, encoding="utf-8") as fh:
+            laddered = {line.split("|")[1].strip() for line in fh if line.startswith("| ")}
+        spare = next((a for a, m in sorted(rows.items()) if m["transport"] == "go"
+                      and not model_registry.entry_tiers(m) and m.get("family") in laddered - claimed), None)
+        if spare:
+            data = json.loads(json.dumps(data))
+            next(m for m in data["models"] if m["alias"] == spare)["roles"] = ["fanout"]
+            planted_registry = os.path.join(tmp, "fanout_only_registry.json")
+            with open(planted_registry, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump(data, fh)
+            go_fan_only = spare
     host_exec = serving("anthropic", ["executor"])
     paid_exec = next((a for a, m in sorted(rows.items()) if "executor" in model_registry.entry_tiers(m)
                       and model_registry.cost_model_for(m["transport"], data) == "marginal-usd"), None)
@@ -201,6 +218,8 @@ def currency_cases(tmp, ok, env):
     cache = rooms_cache(tmp, {"anthropic": (22, 6.1 / 7), "anthropic-secondary": (60, 6.1 / 7), "go": (30, 6.3 / 7),
                                "codex": (77, 5.1 / 7)})
     cenv = dict(env, PROVIDER_CAPACITY_CACHE=cache, CLAUDE_CODE_TRANSPORT="anthropic")
+    if planted_registry:
+        cenv["HARNESS_MODEL_REGISTRY"] = planted_registry
 
     def launch(alias, shape, session):
         return run("bash %s -G %s -m %s -f brief.md" % (ok, shape, alias), cenv, session=session)
