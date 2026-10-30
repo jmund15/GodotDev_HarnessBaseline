@@ -24,6 +24,7 @@ METRICS_PATH = os.path.join(os.path.dirname(HERE), "orchestration_metrics.jsonl"
 
 WRITE_TOOLS = {"edit", "write", "multiedit", "notebookedit", "patch", "apply_patch"}
 READ_TOOLS = {"read", "view"}
+HEARTBEAT = re.compile(rb'"subtype":\s*"thinking_tokens"')
 # A p90 over fewer runs is the maximum itself: nearest-rank p90 first differs from the maximum at ten.
 MIN_P90_SAMPLE = 10
 SERIES_BUCKETS = 6  # the clause shows at most this many windows, newest last
@@ -274,8 +275,9 @@ def read(path):
         except ValueError:
             pass
     for raw in data[:end].splitlines():
-        # The thinking_tokens heartbeat rows are nearly every row of a long run and carry no progress.
-        if not raw.strip() or b'"thinking_tokens"' in raw:
+        # The thinking_tokens heartbeat rows are nearly every row of a long run and carry no progress. Match the
+        # subtype, not the word: an assistant row's usage carries `output_tokens_details.thinking_tokens` too.
+        if not raw.strip() or HEARTBEAT.search(raw):
             continue
         try:
             row = json.loads(raw)

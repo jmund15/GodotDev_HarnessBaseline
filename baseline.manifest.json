@@ -3927,6 +3927,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_agent_progress.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_aggregate_routing_audit.py",
       "layer": "pure",
       "sync": "auto"
@@ -4443,6 +4448,11 @@
     },
     {
       "path": ".claude/tests/test_fold_check_reuse.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_fold_check_subject_path.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5007,6 +5017,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_post_check_explore_label_prefix.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_post_check_out_of_subject.py",
       "layer": "pure",
       "sync": "auto"
@@ -5552,6 +5567,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_fanout_detach_admission.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_fanout_fallback.py",
       "layer": "pure",
       "sync": "auto"
@@ -5572,12 +5592,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_fanout_pick_drain.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_fanout_records.py",
       "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tests/test_sidecar_fanout_review_fold_bar.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_sidecar_fanout_rows.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5643,6 +5673,11 @@
     },
     {
       "path": ".claude/tests/test_sidecar_repay.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_sidecar_replace_retry.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5948,6 +5983,11 @@
     },
     {
       "path": ".claude/tests/test_void_check_engagement.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_wake_digest_amend.py",
       "layer": "pure",
       "sync": "auto"
     },
