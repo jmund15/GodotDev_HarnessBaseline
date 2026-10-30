@@ -45,7 +45,7 @@ def contract(temp_root):
     assert ok.returncode == 0 and ok.stdout.rstrip().splitlines()[-1].startswith("OK"), (ok.returncode, ok.stdout[-300:])
 
     # A dispatch runs the stub child with the flash model on its argv.
-    run = run_bash(LAUNCHER, temp_root, env, ["-d", str(temp_root), "-t", "Read", "--", "Reply with the single word OK."])
+    run = run_bash(LAUNCHER, temp_root, env, ["-d", str(temp_root), "-G", "bench-review", "-t", "-Glob,-Grep,-mcp:semantic-search,-mcp:ai-worker", "--", "Reply with the single word OK."])
     assert run.returncode == 0, (run.returncode, run.stdout[-300:], run.stderr[-300:])
     argv = (temp_root / "argv.log").read_text(encoding="utf-8").splitlines()
     assert len(argv) == 1 and argv[0].startswith("-p --model ") and " --allowedTools Read " in argv[0], argv

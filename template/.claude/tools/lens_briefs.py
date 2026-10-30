@@ -12,7 +12,7 @@ Usage:
   python3 .claude/tools/lens_briefs.py (--keys <key> | --plan <plan.json>) \
       --out .claude/scratch/pr_pipeline/briefs_pr116 --prefix pr116 \
       --pr-num 116 --branch claude/x --context-path <abs>/context_pr116.md --model <pin> --effort <rung> \
-      --must-read <list file> [--must-read-for <key>=<list file>] \
+      --must-read <list file> [--must-read-for <key>=<list file>] [--must-read-from <packet.json>] \
       [--tier <tier>] [--model-for <key>=<pin>] [--tier-for <key>=<tier>] [--effort-for <key>=<rung>] \
       [--sub TRANSCRIPT_CORRECTIONS=<file>] \
       [--subject-plan meta:<plan.md> | code:<plan.md>]... [--vault ROOT]
@@ -53,14 +53,19 @@ list and `--must-read-for KEY=<list file>` replaces it for one seat; a seat with
 list rides in the job as `mustRead`, one `{"path", "lines"}` entry per file with the line count the Read
 tool numbers (0 for a path that does not exist), and in the brief as its done condition: the seat's Read
 ranges cover every line of each entry. `must-read <list file>` prints those entries as JSON for a caller
-that builds a `review_fanout.js` agents array by hand. Before any brief is written,
+that builds a `review_fanout.js` agents array by hand. `--must-read-from <packet.json>` takes a seat's list
+from a frozen `session_audit_inputs.py` packet instead of a list file: the union of the packet's views for
+the seat's mandates, each exact artifact once, so no caller parses a `subject-N` filename or copies the
+whole frozen corpus into one seat. A packet with no per-mandate views, or a view naming an artifact that is
+gone, is refused. Before any brief is written,
 each seat's brief, context file and must-read files are summed at `dispatch_size.CHARS_PER_TOKEN`, the measured
 characters per token, and compared with the point its pin compacts at (`model_registry.compaction_point`,
 `dispatch_size.window_fit`), with every file those name counted too. A seat over that bound, or a pin with no declared window, refuses the whole panel with each
-seat's overage; the caller splits the list across seats and never truncates it.
+seat's overage; the caller splits the list across seats and never truncates it. Every seat's reading is
+printed before any brief is written, so an over-budget split is planned from sizes.
 
 `--target sidecar` writes the same briefs and `<out>/jobs_<prefix>.json` in `sidecar_fanout.py`'s job
-schema — `shape: review`, the canonical review schema, `disclosure: full`, the repository root as
+schema — `kind: reviewer`, the canonical review schema, the repository root as
 `workdir`, the context file as `contextFiles` — so one file serves the cross-transport route. The
 alias resolves through `model_registry` rather than the four-host-pin native vocabulary. On this
 target the effort rung must be one the alias's transport serves (`model_registry.py effort-values`). A sidecar may or may not run project hooks, so
@@ -391,6 +396,41 @@ def repo_path(entry: str) -> Path:
     return path if path.is_absolute() else REPO / path
 
 
+def packet_views(spec: str) -> dict[str, list[str]]:
+    """`{mandate: [artifact paths]}` from a frozen `session_audit_inputs.py` packet, or a refusal.
+
+    The packet's per-mandate views are the dispatch view of the complete frozen evidence: each mandate
+    lists the exact artifacts its lens reads, each once. A packet frozen before typed views, or a view
+    naming an artifact that is gone, is refused rather than read as a narrower and unproven review.
+    """
+    try:
+        data = json.loads(Path(spec).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        sys.exit(f"--must-read-from {spec}: not a frozen session-audit packet: {err}")
+    views = data.get("views") if isinstance(data, dict) else None
+    if not isinstance(views, dict) or not views:
+        sys.exit(f"--must-read-from {spec}: the packet holds no per-mandate views; re-freeze it with "
+                 "session_audit_inputs.py so each mandate's inputs are typed")
+    out = {}
+    for mandate, view in views.items():
+        paths = view.get("mustRead") if isinstance(view, dict) else None
+        if not isinstance(paths, list) or not paths or not all(isinstance(path, str) and path.strip()
+                                                               for path in paths):
+            sys.exit(f"--must-read-from {spec}: view {mandate!r} names no artifact")
+        missing = [path for path in paths if not repo_path(path).is_file()]
+        if missing:
+            sys.exit(f"--must-read-from {spec}: view {mandate!r} names artifacts that are gone: "
+                     + ", ".join(missing[:3]) + (" ..." if len(missing) > 3 else ""))
+        out[mandate] = list(dict.fromkeys(paths))
+    return out
+
+
+def packet_entries(views: dict, mandates: list[str]) -> list[dict]:
+    """A seat's must-read entries from the packet's views of its `mandates`, each artifact once in order."""
+    paths = list(dict.fromkeys(path for mandate in mandates for path in views.get(mandate, [])))
+    return must_read_entries(paths)
+
+
 def must_read_section(entries: list[dict]) -> str:
     """The seat's done condition and its list, in the words of the contract's home."""
     return ("# Must read\n\n"
@@ -406,14 +446,29 @@ def must_read_section(entries: list[dict]) -> str:
             + "".join(f"- {entry['path']} ({entry['lines']} lines)\n" for entry in entries))
 
 
+def seat_reading(*, key: str, token: str, body: str, context_path: str, entries: list[dict], data: dict) -> dict:
+    """The `dispatch_size` reading of one seat: its brief, its context and every must-read file."""
+    job = {"prompt": body, "model": token, "mustRead": entries}
+    return dispatch_size.dispatch_size({"jobs": [job], "contextPath": str(Path(context_path).resolve())},
+                                       REPO, data)["perJob"][0]
+
+
+def seat_size_line(key: str, seat: dict, brief_bytes: int) -> str:
+    """The seat's required reading, printed before any brief is written so a split is planned from sizes."""
+    if seat.get("fitError"):
+        return f"seat reading: {key}: not sized: {seat['fitError']}"
+    percent = round(100 * seat["tokens"] / seat["usable"]) if seat.get("usable") else 0
+    return (f"seat reading: {key}: {seat['tokens']} tokens, {percent}% of {seat.get('usable') or 0} usable; "
+            f"brief {brief_bytes:,}B, must-read {seat['bytes'] - brief_bytes:,}B")
+
+
 def seat_overage(*, key: str, token: str, body: str, context_path: str, entries: list[dict],
-                 data: dict) -> str | None:
+                 data: dict, reading: dict | None = None) -> str | None:
     """None when the seat's brief, context and must-read files fit its pin's compaction point, else the refusal
     line naming the overage. `dispatch_size` owns the reading and the fit. A must-read path that does not
-    exist adds nothing: its seat reports it `missing`."""
-    job = {"prompt": body, "model": token, "mustRead": entries}
-    seat = dispatch_size.dispatch_size({"jobs": [job], "contextPath": str(Path(context_path).resolve())},
-                                       REPO, data)["perJob"][0]
+    exist adds nothing: its seat reports it `missing`. `reading` is a `seat_reading` already computed."""
+    seat = reading or seat_reading(key=key, token=token, body=body, context_path=context_path,
+                                   entries=entries, data=data)
     if seat["fitError"]:
         return f"{key}: {token} {seat['fitError']}"
     if not seat["over"]:
@@ -567,6 +622,9 @@ def main() -> None:
                          "--must-read-for replaces it")
     ap.add_argument("--must-read-for", action="append", default=[], metavar="KEY=LIST",
                     help="one seat's must-read list file, replacing --must-read for that seat")
+    ap.add_argument("--must-read-from", default=None, metavar="PACKET",
+                    help="a frozen session_audit_inputs.py packet: each seat's must-read list is the union "
+                         "of its mandates' views, each exact artifact once")
     ap.add_argument("--subject-plan", action="append", default=[], metavar="SHAPE:PLAN",
                     help="meta:<plan.md> or code:<plan.md>; repeatable; a plan with no `## Job map` section is "
                          "refused. A seat declaring `citers: plan` gets a "
@@ -581,6 +639,7 @@ def main() -> None:
     bar = finding_bar.bar_contract(rigor) + "\n" if rigor else ""
 
     a.keys = seat_keys(a.keys, a.plan)
+    packet = packet_views(a.must_read_from) if a.must_read_from else {}
 
     # `choices` no longer owns --model or --effort: the sidecar route's vocabulary is the registry's,
     # which changes without a release. The native route keeps the same refusal text and exit code.
@@ -615,6 +674,11 @@ def main() -> None:
     mixed = [k for k in a.keys if len({found[m].registry for m in seats[k]}) > 1]
     if mixed:
         sys.exit(f"a seat draws its mandates from one registry: {', '.join(mixed)}")
+    packet_seat = {}
+    if packet:
+        for k in a.keys:
+            packet_seat[k] = packet_entries(packet, list(dict.fromkeys(
+                mandate for lens_key in seats[k] for mandate in found[lens_key].mandates)))
 
     subjects = subject_plans(a.subject_plan)
     citer_seats = [k for k in a.keys if any(found[m].citers for m in seats[k])]
@@ -683,7 +747,7 @@ def main() -> None:
             sys.exit(f"--must-read-for {s}: lens is not selected by --keys")
         must_overrides[k] = must_read_entries(must_read_list(spec, f"--must-read-for {k}"))
     panel_must = must_read_entries(must_read_list(a.must_read, "--must-read")) if a.must_read else None
-    unlisted = [k for k in a.keys if k not in must_overrides and panel_must is None]
+    unlisted = [k for k in a.keys if k not in must_overrides and panel_must is None and not packet_seat.get(k)]
     if unlisted:
         sys.exit(f"{', '.join(unlisted)}: no must-read list. Pass --must-read <list file> for the panel or "
                  f"--must-read-for KEY=<list file> per seat: the subject files or diff paths each lens covers "
@@ -693,6 +757,7 @@ def main() -> None:
                                         for entry in (must_overrides.get(k) or panel_must)))
     grounding = grounding_behavior_section(subjects, grounding_paths, out=out, prefix=a.prefix) if grounding_seats else ""
     over = []
+    readings = []
 
     # The profile the sidecar briefs must fit: the review row's built-ins. `author` would widen the
     # seat (Edit/Write/Bash) and the `arm`/bench rows are benchmark grammars, never a review route.
@@ -765,7 +830,8 @@ def main() -> None:
                 ap.error(why)
             sys.exit(why)
         effort = overrides.get(k) or a.effort
-        must = must_overrides.get(k) or panel_must
+        must = list(must_overrides.get(k) or panel_must or [])
+        must += [entry for entry in packet_seat.get(k, []) if entry["path"] not in {e["path"] for e in must}]
         if grounding and k in grounding_seats:
             artifact = (out / f"{a.prefix}_behavior.json").resolve().as_posix()
             must = must + must_read_entries([artifact])
@@ -783,8 +849,11 @@ def main() -> None:
                     + preamble + "\n\n" + lens_part + ("\n" + preloaded if preloaded else ""))
             path = out / f"{a.prefix}_{k}.md"
             briefs.append((path, body))
+            reading = seat_reading(key=k, token=model_overrides.get(k) or a.model, body=body,
+                                   context_path=a.context_path, entries=must, data=data)
+            readings.append((k, reading, len(body.encode("utf-8"))))
             over.append(seat_overage(key=k, token=model_overrides.get(k) or a.model, body=body,
-                                     context_path=a.context_path, entries=must, data=data))
+                                     context_path=a.context_path, entries=must, data=data, reading=reading))
             jobs.append({
                 "label": f"{a.prefix}-{k}",
                 "seat": k,
@@ -831,8 +900,11 @@ def main() -> None:
             sys.exit(f"{path.name}: {refusal}\nThis route dispatches a READ-ONLY review seat: rework "
                      f"the line to a read-only input, or move that mandate to a Bash-enabled seat. "
                      f"A sidecar job never grants Bash and never takes the `author` shape (C6).")
+        reading = seat_reading(key=k, token=token, body=body, context_path=a.context_path, entries=must,
+                               data=data)
+        readings.append((k, reading, len(body.encode("utf-8"))))
         over.append(seat_overage(key=k, token=token, body=body, context_path=a.context_path, entries=must,
-                                 data=data))
+                                 data=data, reading=reading))
         jobs.append({
             "label": f"{a.prefix}-{k}",
             "mandates": seats[k],
@@ -841,13 +913,14 @@ def main() -> None:
             "promptFile": str(path.resolve()).replace("\\", "/"),
             "tier": tier,
             "effort": effort,
-            "disclosure": "full",
-            "shape": REVIEW_SHAPE,
+            "kind": "reviewer",
             "schemaFile": str(schema).replace("\\", "/"),
             "workdir": str(REPO).replace("\\", "/"),
             "contextFiles": [a.context_path],
         })
         briefs.append((path, body))
+    for key, reading, brief_bytes in readings:
+        print(seat_size_line(key, reading, brief_bytes))
     refused = [line for line in over if line]
     if refused:
         sys.exit("refused before launch: split each named seat's must-read list across seats with "

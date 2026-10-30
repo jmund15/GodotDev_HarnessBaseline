@@ -41,7 +41,7 @@ MCP servers — lives in the project's tool-profile table; nothing here restates
 task built-ins, passed as the job's `baseBuiltins` (`-B`); `reference/sidecar_dispatch.md` §Tool profile
 owns why.
 
-Lower each spec to a `tools/sidecar_fanout.py` job (`{shape, tools:{add,remove}, baseBuiltins}`) and
+Lower each spec to a `tools/sidecar_fanout.py` job (`{kind: "arm", armDisclosure, tools:{add,remove}, baseBuiltins}`; `armDisclosure` only where the spec names a `-D`) and
 run both through
 
 ```

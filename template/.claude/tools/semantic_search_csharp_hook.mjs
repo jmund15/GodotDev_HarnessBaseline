@@ -20,6 +20,31 @@ const CSHARP_EXTRACTORS = [
 ]
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex')
 
+// Injected into tree-sitter-chunker.js as source; each may reference only its argument.
+function isCsharpPreamble(content) {
+	const preambleLine = /^\s*(?:(?:global\s+)?using\s+[^;(]*;|namespace\s+[\w.]+\s*[;{]?|[{}]|#.*|\/\/(?!\/).*)?\s*$/
+	return content.split('\n').every((line) => preambleLine.test(line))
+}
+
+function trimCsharpTypes(regions) {
+	const typeKinds = new Set(['class', 'struct', 'interface', 'enum', 'record'])
+	return regions.map((region) => {
+		if (!typeKinds.has(region.kind)) return region
+		const members = regions
+			.filter((r) => r !== region && r.startIndex >= region.startIndex && r.endIndex <= region.endIndex)
+			.sort((a, b) => a.startIndex - b.startIndex || b.endIndex - a.endIndex)
+		let content = ''
+		let cursor = region.startIndex
+		for (const member of members) {
+			if (member.startIndex < cursor) continue
+			content += region.content.slice(cursor - region.startIndex, member.startIndex - region.startIndex)
+			cursor = member.endIndex
+		}
+		content += region.content.slice(cursor - region.startIndex)
+		return { ...region, content: content.split('\n').filter((line) => line.trim()).join('\n') }
+	})
+}
+
 function replaceOnce(source, anchor, replacement, name) {
 	if (source.split(anchor).length !== 2) throw new Error(`C# hook drift: ${name}: anchor ${JSON.stringify(anchor)} is not unique`)
 	return source.replace(anchor, replacement)
@@ -37,6 +62,8 @@ export function buildCsharpPatch(pluginRoot) {
 		const replace = (anchor, replacement) => { source = replaceOnce(source, anchor, replacement, name) }
 		if (name === 'scanner.js') {
 			replace('const EXTENSION_MAP = new Map([', 'const EXTENSION_MAP = new Map([\n    [".cs", "csharp"],')
+			// .searchignore drops tracked paths from the index without hiding them from git.
+			replace('        loadGitignore(ig, projectRoot, projectRoot);\n', '        loadGitignore(ig, projectRoot, projectRoot);\n        const searchignorePath = join(projectRoot, ".searchignore");\n        if (existsSync(searchignorePath)) ig.add(readFileSync(searchignorePath, "utf-8"));\n')
 		} else if (name === 'chunker.js') {
 			replace('const TREE_SITTER_LANGUAGES = new Set([', 'const TREE_SITTER_LANGUAGES = new Set([\n    "csharp",')
 			replace('        catch {', '        catch (error) {\n            if (fileType === "csharp") throw error;')
@@ -44,8 +71,13 @@ export function buildCsharpPatch(pluginRoot) {
 			replace('const GRAMMAR_PATHS = {', `const GRAMMAR_PATHS = {\n    csharp: ${JSON.stringify(GRAMMAR)},`)
 			const extractors = CSHARP_EXTRACTORS.map(([type, kind]) => `        { type: "${type}", kind: "${kind}", getName: nameField },`).join('\n')
 			replace('const LANGUAGE_EXTRACTORS = {', `const LANGUAGE_EXTRACTORS = {\n    csharp: [\n${extractors}\n    ],`)
-			// Stock outermost-only extraction drops every member of a named type.
-			replace('    // Remove nested regions — keep only outermost', '    if (extractors === LANGUAGE_EXTRACTORS.csharp) return raw;\n    // Remove nested regions — keep only outermost')
+			// Stock outermost-only extraction drops every member of a named type. C# keeps members as
+			// their own chunks and cuts their text out of each enclosing type, so every line is indexed once.
+			replace('            content: node.text,\n        });', '            content: node.text,\n            startIndex: node.startIndex,\n            endIndex: node.endIndex,\n        });')
+			replace('function extractRegions(', `${trimCsharpTypes.toString()}\n${isCsharpPreamble.toString()}\nfunction extractRegions(`)
+			// A gap of only namespace, using and directive lines matches every query on its imports and says nothing.
+			replace('        const gaps = collectGaps(regions, sourceLines, filePath, language);', '        const gaps = collectGaps(regions, sourceLines, filePath, language).filter((gap) => language !== "csharp" || !isCsharpPreamble(gap.content));')
+			replace('    // Remove nested regions — keep only outermost', '    if (extractors === LANGUAGE_EXTRACTORS.csharp) return trimCsharpTypes(raw);\n    // Remove nested regions — keep only outermost')
 			// Gap coverage uses the union of enclosing types, not overlapping members.
 			replace('        cursor = region.endLine + 1;', '        cursor = Math.max(cursor, region.endLine + 1);')
 			replace('        const lines = content.split("\\n");', '        if (language === "csharp") throw new Error("C# AST parse failed");\n        const lines = content.split("\\n");')

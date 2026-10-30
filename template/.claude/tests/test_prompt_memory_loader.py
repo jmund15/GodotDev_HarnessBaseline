@@ -29,7 +29,7 @@ import _adaptation_fixture as fx  # noqa: E402
 
 HOOK_NAME = "prompt_memory_loader.py"
 EXTRA = ("_hook_state.py", "_prompt_provenance.py", "plan_memory_reminder.py",
-         "_claude_scope.py", "_model_tier.py", "_file_lock.py")
+         "_claude_scope.py", "_model_tier.py", "_file_lock.py", "_owner_text.py")
 PRECOMPACT = os.path.join(fx.REAL_HOOKS, "transcript_backup.py")
 SEED = {"memory_domains": [
     {"name": "Widgets", "triggers": ["widget", "gizmo"], "memory_keywords": ["widget"]},

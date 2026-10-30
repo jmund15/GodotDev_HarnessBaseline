@@ -10,9 +10,6 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
-
-import test_load_census as census_cases
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 MODULE_PATH = TOOLS / "close_predicates.py"
@@ -325,31 +322,6 @@ class PredicateTests(unittest.TestCase):
         self.assertIn("oversized skill or command body", text)
         self.assertIn("tripwire budget", text)
 
-    def test_hot_set_review_not_configured_is_null_with_basis_error(self):
-        original = cp._load_tool
-        census = original("load_census")
-        try:
-            class Unconfigured(StubCensus):
-                NotConfigured = census.NotConfigured
-
-                def over_baseline(self, report):
-                    raise self.NotConfigured("no tripwire baseline")
-
-            cp._load_tool = lambda name: Unconfigured()
-            row = run("hot_set_review", self.repo)
-            self.assertIsNone(row["value"])
-            self.assertEqual(row["basis"], {"error": "not-configured"})
-        finally:
-            cp._load_tool = original
-
-    def test_hot_set_review_on_a_consumer_without_a_tripwire_is_not_configured(self):
-        root = self.repo / ".claude"
-        home = census_cases.make_complete_root(root)
-        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
-            row = run("hot_set_review", self.repo)
-        self.assertIsNone(row["value"])
-        self.assertEqual(row["basis"], {"error": "not-configured"})
-
     def test_sync_subsystems_shape_density_false_null(self):
         tr = session_repo(self.repo)
         write(self.repo / ".claude" / "skills" / "project_subsystems" / "SKILL.md", REGISTRY)
@@ -415,6 +387,16 @@ class PredicateTests(unittest.TestCase):
         path = transcript(self.repo, {"file_path": ".claude/commands/update_roadmap.md"},
                           {"file_path": ".claude/plans/archive/old.md"})
         self.assertIs(run("roadmap_atlas", self.repo, path)["value"], False)
+
+    def test_roadmap_ignores_closeout_bookkeeping_and_call_labels(self):
+        skip = ('python3 .claude/tools/session_end_check.py --session x --record update_roadmap --status skipped '
+                '--reason "the transcript names no roadmap-bound plan, vault roadmap.md or /update_roadmap"')
+        path = transcript(self.repo, {"command": skip, "description": "Record the skips"},
+                          {"command": "python3 .claude/tools/close_predicates.py --only update_roadmap /update_roadmap"},
+                          {"command": "ls", "description": "Find which call mentions /update_roadmap"})
+        for stem in ("roadmap_atlas", "update_roadmap"):
+            with self.subTest(stem=stem):
+                self.assertIs(run(stem, self.repo, path)["value"], False)
 
     def test_roadmap_a_named_plan_that_cannot_be_read_is_null_not_false(self):
         plans = self.repo / ".claude" / "plans"

@@ -4,6 +4,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
+import _owner_text  # noqa: E402
 from _prompt_provenance import is_user_intent_prompt  # noqa: E402
 
 
@@ -35,6 +36,10 @@ def main():
              '[Cross-session idle notice] "project-a2", which you asked to be notified about, is idle now')),
         ("a human sentence that mentions a cross-session notice remains user intent",
          is_user_intent_prompt("Why did the [Cross-session idle notice] fire twice?")),
+        ("every envelope tag _owner_text lists is transport here too",
+         all(not is_user_intent_prompt(f"<{tag}>\n{SYNTHESIS}\n</{tag}>") for tag in _owner_text.ENVELOPE_TAGS)
+         and all(not is_user_intent_prompt(f"[{kind.capitalize()} idle notice] x")
+                 for kind in _owner_text.ENVELOPE_NOTICES)),
         ("empty and non-string values are not user intent",
          not is_user_intent_prompt("") and not is_user_intent_prompt(None)),
     ]

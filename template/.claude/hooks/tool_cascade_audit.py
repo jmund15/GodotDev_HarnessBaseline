@@ -42,6 +42,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _cs_files import cs_files  # noqa: E402
+from _checkout_root import repo_arg  # noqa: E402
 
 # --- Godot base-type knowledge (roots of the Resource / Node cascade surfaces) ---
 RESOURCE_ROOTS = {"Resource"}
@@ -472,10 +473,9 @@ def classify(name, types, required, kind_memo):
 
 
 def main():
-    if "--repo" in sys.argv:
-        i = sys.argv.index("--repo")
-        os.chdir(sys.argv.pop(i + 1))
-        sys.argv.pop(i)
+    repo = repo_arg(sys.argv)
+    if repo:
+        os.chdir(repo)
     args = sys.argv[1:]
     inventory_only = "--inventory-only" in args
     quiet = "--quiet" in args

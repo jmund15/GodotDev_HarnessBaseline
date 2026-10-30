@@ -35,8 +35,7 @@
   as a test failure.
 
 .NOTES
-  Windows-only (uses Win32_Process + taskkill). Cloud/Linux test runs go through
-  cloud_test_enforcer.py + xvfb-run, a separate path.
+  Runs on Windows and Linux (Stop-ProcessTree, -Display for xvfb).
 #>
 [CmdletBinding()]
 param(
@@ -316,7 +315,7 @@ function Get-SelfTreePids {
     }
     # Unary comma: `return` writes to the output stream, which UNROLLS a collection. A one-element
     # set would arrive at the caller as a bare [int], and `.Contains()` on it throws — aborting the
-    # reaper mid-classification. Measured 2026-08-13 against a live peer plus one other candidate.
+    # reaper mid-classification.
     return , $mine
 }
 
@@ -476,14 +475,20 @@ function Clear-RunDirGodot {
 
 # The consumed gdUnit4.api ignores GDUNIT4_SKIP_RECOMPILE silently unless it carries the fork patch, whose positive
 # signal is this line in the run's own TRX run-level StdOut (it never reaches dotnet test stdout). Without it the run
-# fails loud: an ignored opt-out brings back the concurrent editor-pass race. A missing or unparseable TRX proves
-# nothing either way and is left to the caller's TRX checks.
+# fails loud: an ignored opt-out brings back the concurrent editor-pass race. A missing or unparseable TRX, or one that
+# executed no test, proves nothing either way and is left to the caller's TRX checks.
 function Assert-RecompileSkipped {
     param([string] $Trx, [string] $Label)
     if (-not $Trx -or -not (Test-Path -LiteralPath $Trx)) { return }
     try { [xml] $x = Get-Content -LiteralPath $Trx -Raw } catch { return }
     $node = $x.SelectSingleNode("/*[local-name()='TestRun']/*[local-name()='ResultSummary']/*[local-name()='Output']/*[local-name()='StdOut']")
     if ($node -and $node.InnerText -match 'Skipping Godot project recompile') { return }
+    # Only the Godot runtime runner has a recompile step; a run whose tests all took the direct runner never reaches it.
+    if (-not ($node -and $node.InnerText -match 'Starting GodotRuntimeTestRunner')) { return }
+    # A run that executed no test may have died before the runner reached its recompile step, so a missing line there
+    # proves nothing; the caller's zero-result checks classify it.
+    $counters = $x.SelectSingleNode("/*[local-name()='TestRun']/*[local-name()='ResultSummary']/*[local-name()='Counters']")
+    if ($counters -and $counters.GetAttribute('executed') -eq '0') { return }
     Write-Output "STATUS=SKIP_RECOMPILE_IGNORED  label=$Label  trx=$Trx  (GDUNIT4_SKIP_RECOMPILE=1 was set but the run-level StdOut lacks 'Skipping Godot project recompile')"
     exit 127
 }
@@ -650,7 +655,7 @@ try {
             @('--results-directory', (Split-Path $passTrx), '--logger', "trx;LogFileName=$safe.trx") +
             @('--', $iso.AppDataArg, "GdUnit4.Parameters=--log-file $($godotLog -replace '\\', '/')$(if ($modeChoice.engineArgs) { ' ' + $modeChoice.engineArgs })",
                 # .runsettings' own TestSessionTimeout would abort a run the cap allows; vstest must never stop first.
-                "RunConfiguration.TestSessionTimeout=$([int64] $TimeoutMs + 60000)")
+                "RunConfiguration.TestSessionTimeout=$([int64] $TimeoutMs * $script:SuiteProgressCeilingFactor + 60000)")
         $p = Start-IsolatedNativeProcess -FilePath 'dotnet' -Arguments $testArgs -OutPath $log -ErrPath $errLog -Display:(-not $NoGodotRuntime)
         $null = $p.Handle
         Set-RuntimeSlotRunner -Lease $lease -Process $p

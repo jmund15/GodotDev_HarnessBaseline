@@ -108,6 +108,11 @@ def main():
     check("a python import never resolves to a shipped test fixture's same-named copy", got == [], got)
     got = dependencies({row: "import helper\n", shipped_copy: "x = 1\n"}, {row: "pure"}, row)
     check("a python import never resolves to an unshipped test fixture's same-named copy", got == [], got)
+    fixture_doc = ".claude/tests/fixtures/evidence/r1/tree/.claude/commands/plan_check.md"
+    got = planted({fixture_doc: "Run `/regression_gate`, then read `reference/absent.md`.\n",
+                   ".claude/commands/regression_gate.md": "# g\n"},
+                  {fixture_doc: "pure", ".claude/commands/regression_gate.md": "godot"})
+    check("a shipped fixture-tree copy is test data, never a citer", got == [], kinds(got))
 
     skill = ".claude/skills/testing/SKILL.md"
     cmd =".claude/commands/regression_gate.md"

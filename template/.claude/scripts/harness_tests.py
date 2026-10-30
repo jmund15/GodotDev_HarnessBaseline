@@ -574,9 +574,8 @@ def _head(repo_root):
 def tree_entries(repo_root):
     """{posix-relpath: sha256(bytes)} for every tracked/untracked-unignored code file under
     `DIRS`, enumerated by `git ls-files`, run with cwd=repo_root — plus every proof
-    `discover()` finds: new files under `.claude/tests/` are gitignored (existing proofs were
-    force-added), so a not-yet-added proof is invisible to both `ls-files` calls and would
-    leave the set unchanged. The stamp stores this map so the commit guard can judge only the
+    `discover()` finds: a consumer whose `.gitignore` still ignores `.claude/tests/` hides a
+    not-yet-added proof from both `ls-files` calls, which would leave the set unchanged. The stamp stores this map so the commit guard can judge only the
     paths a commit touches."""
     files = set()
     for out in (
@@ -2809,7 +2808,7 @@ def run_all(repo_root, include_excluded=False, verbose=False, behavior_out=None)
     discovered = discover(tests_dir)
     present = {os.path.basename(p) for p in discovered}
 
-    # `.claude/tests/` is gitignored, so a worktree or sparse checkout lacks the excluded
+    # A worktree or sparse checkout can lack the excluded
     # proofs. An absent entry is reported and skipped, never a FAIL that stops discovery:
     # git cannot tell "untracked file not in this checkout" from "file deleted".
     absent = sorted(name for name in EXCLUDED if name not in present)

@@ -19,7 +19,7 @@ description: >-
 | Workflow | An engine the fan-out lacks (`review_fanout.js`), or a measurement of the session model itself |
 | Sidecar | A lone ad-hoc launch, or a documented need for isolated process-level configuration |
 
-Litmus, for work the Inline row does not keep: can you enumerate the jobs now? Yes → `/delegate`. No → the unknown is itself one job: a focused lookup stays Inline; a search across files you cannot name yet is a single pinned survey through `/delegate` (`agentType: Explore`, a fanout-tier row) that returns the map, then `/delegate` over it. The Agent tool is denied: it cannot pin model or effort.
+Litmus, for work the Inline row does not keep: can you enumerate the jobs now? Yes → `/delegate`. No → the unknown is itself one job: a focused lookup stays Inline; a search across files you cannot name yet is a single pinned survey through `/delegate` (`kind: scout`, a fanout-tier row) that returns the map, then `/delegate` over it. The Agent tool is denied: it cannot pin model or effort.
 
 **Size every dispatch from its work.** This holds for every dispatch: author, survey, review, a later round or a rerun. Measure the work first: its units, their size, their coupling and their distinct risks. Then set four things from that measure, each at the least that delivers the accepted result (Goal):
 1. **Route:** inline when handoff costs more than the work, each inline call priced at the parent's whole context (`CLAUDE.core.md` §9), or the work is the parent's judgment; a converged spec dispatches (§11). Price it by what it leaves in the parent's context, not by how many files it touches: a loop (edit, run or render, inspect, fix) over a large file, images or long output is a job even on one known file, and returns its verdict and evidence paths.
@@ -70,7 +70,9 @@ A brief states its own task first, then context, purpose, the expected write set
 
 Debugging lanes gather discriminating evidence before fixes, especially after a failed fix. An executor's done-condition runs its dispatcher's checks of the returned work (its edited units' proof files, `dispatch_result.py check`, its live checks), so a defect is fixed inside the dispatch on the cheaper model. No brief hands it a wider run than the slice row of `change_control` §Gate cadence (bound proofs, `verify -Scope`, the gate, a whole spec file or a second test project): the dispatcher runs each once at its merge or close (`rules/harness_tooling.md`, `change_control` §Gate cadence). A findings or claims job's post-check follows §8.
 
-Message a dispatched agent only when it changes its next action, with the evidence path and the requested action; a running Workflow or sidecar author job has no inbox, so write its brief's full file name plus `.amend.md` (`S.md.amend.md` for `S.md`); its engine's line has the job Read it at each item and before returning. Text a delegate acts on orders a Read of a scratch file, never an existence check: Glob and Grep hide gitignored paths. A message may resume a finished agent; do not reopen a completed audit or review files still being edited. Never edit a running fold's subject or writer's write set: wait for its result, or use a worktree. Preserve original findings and provenance on integration (`commands/agents/orchestrator_action_protocol.md` Step 1 owns location versus defect identity).
+Text a delegate acts on orders a Read of a scratch file, never an existence check: Glob and Grep hide gitignored paths.
+
+Before messaging, amending or editing beside a running job, read [`reference/integration.md`](reference/integration.md) §While a job runs.
 
 ## 5. Model & Effort Selection
 
@@ -106,13 +108,9 @@ Before an `isolation: "worktree"` dispatch or a worktree retirement, read [`refe
 
 ## 8. Verification After Integration
 
-`dispatch.js` checks declared returns and recognized claims/findings fences against `reference/evidence_contract.md` and returns a `verification` block with applied verdicts. A job declaring `fold: {findings, digest, snapshot}` or `ledger: {stage, subject, roster, scopeJson}` selects its review closure. The parent checks each required standalone findings/claims deliverable's schema and completeness and runs its applicable `tools/post_check.py` route when no checked block was produced. In review mode the report carries fold results, held items, failures, ledger rows and `nextRound`; the parent rules these per `commands/agents/orchestrator_action_protocol.md` Step 1.5. The Stop audit recomputes checked verdicts and blocks on a mismatch or an unapplied verdict.
+When a dispatch returns, read [`reference/integration.md`](reference/integration.md): it owns the engine's `verification` block, the manifest join and recovery before a rerun.
 
 Reviewers report every finding that passes `commands/agents/orchestrator_action_protocol.md` §Reporting Filter, tagged with its `minRigor` ([`reference/rigor.md`](reference/rigor.md)); a cosmetic issue (whitespace, comment style) passes only when it shows a real problem. Check a symbol's call sites, not only its public surface. Failed, null or malformed output is uncovered, never "zero findings". For any other deliverable, read it, verify its decisive claims and original-source coverage, then run the applicable checks. Resolve every cited symbol and path in an architecting or planning deliverable before consuming it. Reconcile conflicting evidence directly.
-
-Compare intent with what ran. Before dispatch, write the announced job list (label, model, effort, transport, role per job) as the manifest seed; after the run, build the manifest (`orchestration_metrics.py --manifest-seed`). Record each `drift` entry and each label the manifest refuses in that job's rating note. A missing label, or a brief mandate with no returned seat, is UNCOVERED (§2's coverage rule).
-
-Recover before another paid call (artifact, then transcript or `/salvage_fanout`), and confirm a job is terminal before replacing it. Rate each result on consumption (`/orchestration_metrics` §Incremental rating).
 
 ## 9. Authoring a Workflow on the Fly
 

@@ -105,6 +105,18 @@ SIDECAR_SEAT_LAUNCH_ID=X (its never-kill members spared), printed `KILLED <pid> 
 Exit 0 = every target killed (or dry-run); 2 = at least one target refused (nothing partial
 is hidden: refused targets are listed, killed ones are killed).
 
+    python3 .claude/tools/reap.py inspect <pid> [<pid> ...] [--json] [--sample <s>] [--depth <n>]
+
+Read-only ownership evidence, for when load or a process name suggests a culprit and a wrong peer label
+would send the fix to the wrong session. Per pid it prints the launch id and label, the session tag on
+the process's own environment, the -R dispatch record it or an ancestor names (with that record's
+parentSessionId), the ancestry chain out to --depth links, and one bounded CPU sample of its tree: two
+reads --sample seconds apart, 0 reading the cumulative total once. owner: is MINE only on a proof the
+kill path would accept, PEER only when the target's own tag names another session or the printed chain
+reaches one, and UNKNOWN otherwise -- an unproven peer label is the failure this exists to stop. It
+never kills, changes a permission or polls. Exit 0 reported, 3 a pid absent from the table, 4 the
+process table unreadable.
+
 MSYS pids (what Git Bash `kill` and `ps` print) are mapped to Windows pids through `ps -W`.
 """
 import argparse
@@ -125,6 +137,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / ".claude" / "hooks"))
+import _msys  # noqa: E402
 import _hook_state  # noqa: E402
 from _win_path import drive_path, native_path  # noqa: E402
 
@@ -227,7 +240,7 @@ def resolve_pid(pid, table):
     if pid in table:
         return pid
     try:
-        r = subprocess.run(["ps", "-W"], capture_output=True, text=True, timeout=15)
+        r = subprocess.run([_msys.tool("ps"), "-W"], capture_output=True, text=True, timeout=15)
         mapped = winpid_from_ps(r.stdout, pid) if r.returncode == 0 else None
     except Exception:
         mapped = None
@@ -313,7 +326,7 @@ def ps_text():
     if _RUN is not None and "ps" in _RUN:
         return _RUN["ps"]
     try:
-        r = subprocess.run(["ps", "-W"], capture_output=True, text=True, timeout=15)
+        r = subprocess.run([_msys.tool("ps"), "-W"], capture_output=True, text=True, timeout=15)
         text = r.stdout if r.returncode == 0 else None
     except Exception:
         text = None
@@ -369,8 +382,8 @@ def git_bash():
     said `microsoft-standard-WSL2` and the read failed `No such file or directory`). `ps` is
     Git's, so its directory is the reliable anchor.
     """
-    ps = shutil.which("ps")
-    if not ps:
+    ps = _msys.tool("ps")
+    if not os.path.isabs(ps):
         return None
     cand = os.path.join(os.path.dirname(ps), "bash.exe")
     return cand if os.path.exists(cand) else None
@@ -476,7 +489,7 @@ def _msys_environ_read(pid):
         # `cat`, not `tr '\\0' '\\n'`: the quotes and backslashes do not survive CreateProcess's
         # re-quoting (the shell receives them mangled and the read fails empty). NULs pass through
         # a binary pipe unharmed, and the caller only does a substring search.
-        r = subprocess.run([shell, "-c", "cat /proc/%d/environ" % msys], capture_output=True, timeout=15)
+        r = subprocess.run([shell, "-c", "/usr/bin/cat /proc/%d/environ" % msys], capture_output=True, timeout=15)
     except Exception:
         return b""
     return r.stdout if r.returncode == 0 else b""
@@ -1094,6 +1107,233 @@ def _launch_label(table, pid):
     return found[-1] if found else "unknown"
 
 
+# ----------------------------------------------------------------- ownership report (read-only)
+REPORT_DEPTH = 12
+REPORT_SAMPLE_SEC = 1.0
+REPORT_SAMPLE_MAX = 5.0
+
+
+def cpu_tree_seconds(pid):
+    """CPU seconds `pid` and its live descendants have used (tools/tree_cpu.py), or None when the OS
+    will not say. The report's only CPU reader, so no second scanner appears."""
+    try:
+        import tree_cpu
+        return tree_cpu.tree_cpu(int(pid))
+    except Exception:
+        return None
+
+
+def _cpu_sleep(seconds):
+    time.sleep(seconds)
+
+
+def cpu_samples(pids, seconds, reader=None, sleep=None):
+    """{pid: (tree seconds, percent of one core)} over ONE bounded window, never polling: a read, a
+    wait, a read. `seconds` 0 reads the cumulative total once and reports no percent."""
+    reader = reader or cpu_tree_seconds
+    sleep = sleep or _cpu_sleep
+    pids = list(dict.fromkeys(pids))
+    window = max(0.0, min(float(seconds or 0.0), REPORT_SAMPLE_MAX))
+    first = {pid: reader(pid) for pid in pids}
+    if window <= 0 or all(value is None for value in first.values()):
+        return {pid: (value, None) for pid, value in first.items()}
+    sleep(window)
+    out = {}
+    for pid, before in first.items():
+        after = reader(pid)
+        if before is None or after is None:
+            out[pid] = (after if after is not None else before, None)
+        else:
+            out[pid] = (after, max(0.0, (after - before) / window * 100.0))
+    return out
+
+
+def _starts_after(parent, child):
+    """True when `parent` started after `child`: the pid was reused, so it did not launch it."""
+    p, c = (parent or {}).get("start") or "", (child or {}).get("start") or ""
+    return bool(p and c and p > c)
+
+
+def ancestry_chain(table, pid, depth=REPORT_DEPTH):
+    """([{pid, name, link, start}], gone parent | None, reused parent | None) from `pid` upward.
+
+    Reuses `_parent`, so a link an MSYS exec left in `ps -W` counts. A parent whose start is later
+    than its child's is a reused pid: the walk stops and names it, because a chain without that check
+    attributes a process to a stranger."""
+    chain, seen, cur = [], {pid}, pid
+    parent = _parent(table.get(pid, {}), table)
+    while isinstance(parent, int) and parent in table and parent not in seen and len(chain) < depth:
+        row = table[parent]
+        if _starts_after(row, table[cur]):
+            return chain, None, parent
+        chain.append({"pid": parent, "name": row.get("name") or "",
+                      "link": "msys" if table[cur].get("msys_ppid") == parent else "windows",
+                      "start": row.get("start") or ""})
+        seen.add(parent)
+        cur = parent
+        parent = _parent(row, table)
+    gone = parent if isinstance(parent, int) and parent not in table else None
+    if gone is None:
+        raw = table[chain[-1]["pid"] if chain else pid].get("ppid")
+        gone = raw if isinstance(raw, int) and raw not in table else None
+    return chain, gone, None
+
+
+def _ancestry_session(table, pid, depth=REPORT_DEPTH):
+    """(session, pid, how) of the nearest ancestor that names a session, else None. Evidence only: a
+    process with no readable tag and no session in its command line leaves this unset."""
+    for at in ancestors(table, pid)[:depth]:
+        block = _environ(at)
+        tag = _env_value(block, PARENT_ENV)
+        if tag:
+            return tag, at, "its SIDECAR_PARENT_SESSION_ID"
+        own = _env_value(block, SID_ENV)
+        if own:
+            return own, at, "its CLAUDE_CODE_SESSION_ID"
+        named = HOST_SESSION.search(table[at].get("cmd") or "")
+        if named:
+            return named.group(1), at, "its --session-id/--resume argument"
+    return None
+
+
+def _record_evidence(table, pid, depth=REPORT_DEPTH):
+    """The dispatch record a `-R` in the target's or an ancestor's command line names: its file name,
+    the pid whose line carried it, the launch id its `.pid` keeps, and its parentSessionId."""
+    for at in [pid] + ancestors(table, pid)[:depth]:
+        found = RECORD_RE.search(table[at].get("cmd") or "")
+        if not found:
+            continue
+        resolved = _resolve(found.group(1))
+        launch = None
+        try:
+            with open(resolved + ".pid", encoding="utf-8", errors="replace") as fh:
+                named = re.findall(r"\blaunch=(\S+)", fh.read())
+            launch = named[-1] if named else None
+        except OSError:
+            pass
+        return {"path": os.path.basename(found.group(1)), "by": at, "launch": launch,
+                "parentSessionId": _read_json(resolved).get("parentSessionId")}
+    return None
+
+
+def ownership_report(table, pid, session_pid, sid, depth=REPORT_DEPTH, cpu=(None, None)):
+    """The bounded evidence behind an ownership claim about `pid` (module docstring, `inspect`).
+
+    `verdict` is MINE only on a proof `ownership` accepts, PEER only when the target's own tag names
+    another session or an ancestor in the returned chain does, and UNKNOWN otherwise. Read-only.
+    """
+    block = _environ(pid)
+    tag = _env_value(block, PARENT_ENV)
+    own = _env_value(block, SID_ENV)
+    chain, gone, reused = ancestry_chain(table, pid, depth)
+    proof, foreign = ownership(table, pid, session_pid, sid)
+    if session_pid and pid == session_pid:
+        verdict = "mine"
+        evidence = "this is the session host the caller runs under (CLAUDE_PID %d)" % session_pid
+    elif proof:
+        verdict, evidence = "mine", proof
+    elif foreign and sid:
+        named = tag or own
+        verdict, evidence = "peer", "%s%s" % (foreign, " (%s)" % named[:8] if named else "")
+    elif foreign:
+        named = tag or own
+        verdict = "unknown"
+        evidence = ("its environment names session %s, but this process has no session id to compare "
+                    "it with" % named[:8] if named else foreign)
+    else:
+        found = _ancestry_session(table, pid, depth)
+        if found and sid and found[0] == sid:
+            verdict = "mine"
+            evidence = "descends from session %s at pid %d (%s)" % (found[0][:8], found[1], found[2])
+        elif found and sid:
+            verdict = "peer"
+            evidence = ("descends from session %s at pid %d (%s); its own tags name no session"
+                        % (found[0][:8], found[1], found[2]))
+        elif found:
+            verdict = "unknown"
+            evidence = ("descends from session %s at pid %d (%s), but this process has no session id "
+                        "to compare it with" % (found[0][:8], found[1], found[2]))
+        else:
+            verdict = "unknown"
+            evidence = "no launch tag, no session tag and no ancestor names a session%s" % (
+                "; parent %d is gone" % gone if gone else "")
+    return {"pid": pid, "name": table[pid].get("name") or "",
+            "cmd": (table[pid].get("cmd") or "")[:160], "start": table[pid].get("start") or "",
+            "launch": _launch_label(table, pid), "label": _env_value(block, LABEL_ENV),
+            "sessionTag": {"source": ("SIDECAR_PARENT_SESSION_ID" if tag else
+                                      "CLAUDE_CODE_SESSION_ID" if own else None),
+                           "session": tag or own},
+            "record": _record_evidence(table, pid, depth), "chain": chain, "goneParent": gone,
+            "reusedParent": reused,
+            "cpu": {"treeSeconds": cpu[0], "percentOneCore": cpu[1]},
+            "verdict": verdict, "evidence": evidence}
+
+
+def describe_ownership(rep):
+    """One bounded text block for `ownership_report`'s dict."""
+    cpu = rep["cpu"]
+    if cpu["percentOneCore"] is not None:
+        cpu_line = "%.0f%% of one core over the sample window (tree used %.1fs)" % (
+            cpu["percentOneCore"], cpu["treeSeconds"] or 0.0)
+    elif cpu["treeSeconds"] is not None:
+        cpu_line = "%.1fs used so far (tree, cumulative; no sample window)" % cpu["treeSeconds"]
+    else:
+        cpu_line = "unknown (the OS gave no reading, or the pid is gone)"
+    tag = rep["sessionTag"]
+    links = " <- ".join("%d %s%s" % (n["pid"], n["name"] or "?", " [msys]" if n["link"] == "msys" else "")
+                        for n in [{"pid": rep["pid"], "name": rep["name"], "link": "windows"}] + rep["chain"])
+    lines = ["pid=%d (%s) start=%s launch=%s" % (rep["pid"], rep["name"] or "?", rep["start"] or "?", rep["launch"]),
+             "  cpu: " + cpu_line,
+             "  cmd: " + (rep["cmd"] or "-"),
+             "  label: %s   session tag: %s" % (
+                 rep["label"] or "none",
+                 "%s=%s" % (tag["source"], tag["session"]) if tag["session"] else "none")]
+    if rep["record"]:
+        lines.append("  record: %s (via pid %d, parentSessionId=%s, launch=%s)" % (
+            rep["record"]["path"], rep["record"]["by"], rep["record"]["parentSessionId"] or "none",
+            rep["record"]["launch"] or "none"))
+    lines.append("  chain: " + links)
+    if rep["goneParent"]:
+        lines.append("  parent %d is gone from the process table" % rep["goneParent"])
+    if rep["reusedParent"]:
+        lines.append("  parent %d started AFTER this pid: the number was reused, so the chain stops there"
+                     % rep["reusedParent"])
+    lines.append("  owner: %s -- %s" % (rep["verdict"].upper(), rep["evidence"]))
+    return "\n".join(lines)
+
+
+def inspect_main(argv, env=None):
+    """Read-only ownership report (module docstring, `inspect`); stdout only, no kill, no ledger."""
+    env = os.environ if env is None else env
+    ap = argparse.ArgumentParser(prog="reap.py inspect")
+    ap.add_argument("pids", nargs="+", type=int)
+    ap.add_argument("--json", action="store_true", help="one JSON object per pid, for a status surface")
+    ap.add_argument("--sample", type=float, default=REPORT_SAMPLE_SEC,
+                    help="seconds of one CPU window (0 reads the cumulative total once; max %.0f)"
+                    % REPORT_SAMPLE_MAX)
+    ap.add_argument("--depth", type=int, default=REPORT_DEPTH, help="ancestor links to read")
+    args = ap.parse_args(argv)
+    session_pid = int(env.get("CLAUDE_PID") or 0) or None
+    sid = env.get("CLAUDE_CODE_SESSION_ID") or None
+    table = process_table()
+    if not table:
+        print("inspect: process table unreadable; no ownership is claimed", file=sys.stderr)
+        return 4
+    link_msys_parents(table, ps_text())
+    resolved, missing = [], []
+    for raw in args.pids:
+        pid = resolve_pid(raw, table)
+        (resolved if pid is not None else missing).append(pid if pid is not None else raw)
+    samples = cpu_samples(resolved, args.sample)
+    for pid in resolved:
+        rep = ownership_report(table, pid, session_pid, sid, max(1, args.depth), samples.get(pid, (None, None)))
+        print(json.dumps(rep) if args.json else describe_ownership(rep))
+    for raw in missing:
+        print(json.dumps({"pid": raw, "verdict": "unknown", "evidence": "not in the process table"})
+              if args.json else "pid=%s not in the process table (already gone, or a stale number)" % raw)
+    return 3 if missing else 0
+
+
 def describe_launches(table, hits):
     """Each live PID with its launch id and age, then one reap command per process tree root."""
     pids = [pid for pid, _ in hits]
@@ -1143,6 +1383,8 @@ def _main(argv=None, env=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "live-launch":
         return live_launch_main(argv[1:])
+    if argv and argv[0] == "inspect":
+        return inspect_main(argv[1:], env)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pids", nargs="+", type=int, help="Windows or MSYS pids")
     ap.add_argument("--reason", help="only to stop another session's dead leftover or to have a class verified: " + ", ".join(REASONS))

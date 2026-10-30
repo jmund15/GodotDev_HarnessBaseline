@@ -156,6 +156,24 @@ def main():
           run_hook(pre("Write", p("ignored", "gen.cs"), G))[0], ALLOW)
     check("4 production write after an ignored one still advised", run_hook(pre("Write", SRC, G))[0], ADVISE)
 
+    # 4b. a path inside a submodule: the parent's check-ignore exits 128 there, so the submodule's own
+    # ignore rules decide. An ignored submodule write passes; a tracked-side one advises.
+    sub = p("sub")
+    os.makedirs(sub, exist_ok=True)
+    subprocess.run(["git", "-C", sub, "init", "-q"], check=True)
+    write(os.path.join(sub, ".gitignore"), "gen/\n")
+    write(os.path.join(sub, "keep.cs"), "x")
+    subprocess.run(["git", "-C", sub, "-c", "user.email=p@p", "-c", "user.name=p", "add", "."], check=True)
+    subprocess.run(["git", "-C", sub, "-c", "user.email=p@p", "-c", "user.name=p", "commit", "-q", "-m", "s"],
+                   check=True)
+    subprocess.run(["git", "-C", PROJ, "add", "sub"], check=True, capture_output=True)
+    M = "submodule_sid_0011"
+    run_hook(post("Write", plan_a, M))
+    check("4b ignored path inside a submodule allowed",
+          run_hook(pre("Write", p("sub", "gen", "x.cs"), M))[0], ALLOW)
+    check("4b production path inside a submodule advised",
+          run_hook(pre("Edit", p("sub", "core", "y.cs"), M))[0], ADVISE)
+
     # 5. must-allow: each case runs in a fresh session that recorded plan_a first, so an
     # exclusion that failed would advise here.
     must_allow = [

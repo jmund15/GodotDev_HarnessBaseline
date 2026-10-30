@@ -5,7 +5,7 @@ type: feedback
 ---
 When creating or renaming slash commands, default to the **existing naming-family prefix** (e.g., `doc_` for doc-tooling commands, `session_` for session-lifecycle commands, `*_audit` for auditors) rather than inventing a new namespace.
 
-**Why:** The repo has a coherent naming convention — e.g., 8+ commands use the `doc_` prefix (`doc_architecture`, `doc_architecture_audit`, `doc_audit_fix`, `doc_full`, `doc_npc`, `doc_retrospective`, `doc_start_here_update`, `doc_usage`, now `doc_reality_audit`). Convention-aligned names cluster together in the slash picker, signal family membership, and reduce cognitive load when the user is scanning commands.
+**Why:** A repo's commands form naming families — e.g., eight or more doc-tooling commands sharing the `doc_` prefix. Convention-aligned names cluster together in the slash picker, signal family membership, and reduce cognitive load when the user is scanning commands.
 
 **Confirmed:** 2026-04-20 — I initially proposed `reality_audit` (no prefix), user asked for `obsidian_reality_audit`, I flagged the convention mismatch and suggested `doc_reality_audit` as the convention-aligned alternative. User picked the convention-aligned option. That validates: *surface the convention observation BEFORE renaming, so the user can choose knowingly rather than being rushed into an inconsistent name.*
 

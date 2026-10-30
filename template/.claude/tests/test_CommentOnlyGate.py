@@ -64,8 +64,7 @@ function Get-FixtureTree {
     })
     if (Test-Path -LiteralPath (Join-Path $Root 'Paired')) {
         $sub = Get-FixtureTree -Root (Join-Path $Root 'Paired')
-        $entries += 'Paired|gitlink|not-a-comparison-base'
-        $entries += @($sub.entries | ForEach-Object { "jm/$_" })
+        $entries += @($sub.entries | ForEach-Object { "Paired/$_" })
     }
     [Array]::Sort($entries, [StringComparer]::Ordinal)
     $digest = [Convert]::ToHexString([Security.Cryptography.SHA1]::HashData([Text.Encoding]::UTF8.GetBytes(($entries -join "`n")))).ToLowerInvariant()

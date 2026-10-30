@@ -635,7 +635,13 @@ function Get-IntegrationVerdict {
         $lines.Add($scope)
         return (& $done 0)
     }
-    if ($red.Count -gt 0) { $lines.Add("STATUS=FAIL red_batches=$(& $labels $red)"); return (& $done 1) }
+    if ($red.Count -gt 0) {
+        # A RED batch with no failed test exited nonzero after every test passed (an engine crash at shutdown, say).
+        # TOTAL then carries failed=0, so this line is what keeps the gate from reading the run as incomplete or green.
+        $noFailed = @($red | Where-Object { [int] $_.failed -le 0 })
+        if ($noFailed.Count -gt 0) { $lines.Add("RED_NO_FAILED_TEST=$(& $labels $noFailed)") }
+        $lines.Add("STATUS=FAIL red_batches=$(& $labels $red)"); return (& $done 1)
+    }
     if ($incomplete.Count -gt 0) { $lines.Add("COMPLETENESS=INCOMPLETE $(& $incompleteNote)"); $lines.Add("STATUS=FAIL incomplete_batches=$(& $labels $incomplete)"); return (& $done 1) }
     if ($locked.Count -gt 0) {
         $lines.Add("COMPLETENESS=INCOMPLETE locked=$($locked.Count) batches=$(& $labels $locked) (a batch could not acquire its checkout lock or a runtime slot — NOT a regression signal)")

@@ -630,16 +630,117 @@ function Invoke-RuntimeSlotSweep {
     $killed.ToArray()
 }
 
+# ------------------------------------------------------------------ lock objects
+# A run lock is a named object with WaitOne(ms) -> bool, ReleaseMutex() and Dispose(), and a wait that finishes through a
+# dead owner throws AbandonedMutexException after granting the lock. Windows uses a kernel mutex. A Linux .NET named
+# mutex is not released when its owner is killed while another process has the name open, so Linux uses an OS file lock
+# (flock through FileShare.None), which the kernel drops with its process. The file keeps the owner's pid until a clean
+# release truncates it, so a non-empty file at acquisition is a dead owner.
+$script:HarnessFileLockSource = @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+public sealed class HarnessFileLock : IDisposable
+{
+    private sealed class Held { public FileStream Stream; public int Count; public int Owner; }
+    private static readonly object Gate = new object();
+    private static readonly Dictionary<string, Held> Entries = new Dictionary<string, Held>();
+    private readonly string _path;
+
+    public HarnessFileLock(string path) { _path = path; }
+
+    public bool WaitOne(int timeoutMs)
+    {
+        int me = Thread.CurrentThread.ManagedThreadId;
+        long deadline = timeoutMs < 0 ? long.MaxValue : Environment.TickCount64 + timeoutMs;
+        while (true)
+        {
+            lock (Gate)
+            {
+                Held h;
+                if (Entries.TryGetValue(_path, out h))
+                {
+                    if (h.Owner == me) { h.Count++; return true; }
+                }
+                else
+                {
+                    FileStream fs = TryOpen();
+                    if (fs != null)
+                    {
+                        bool deadOwner = fs.Length > 0;
+                        Entries[_path] = new Held { Stream = fs, Count = 1, Owner = me };
+                        byte[] pid = Encoding.ASCII.GetBytes(Environment.ProcessId.ToString());
+                        fs.SetLength(0);
+                        fs.Write(pid, 0, pid.Length);
+                        fs.Flush(true);
+                        if (deadOwner) { throw new AbandonedMutexException(); }
+                        return true;
+                    }
+                }
+            }
+            if (Environment.TickCount64 >= deadline) { return false; }
+            Thread.Sleep(10);
+        }
+    }
+
+    public void ReleaseMutex()
+    {
+        int me = Thread.CurrentThread.ManagedThreadId;
+        lock (Gate)
+        {
+            Held h;
+            if (!Entries.TryGetValue(_path, out h) || h.Owner != me)
+            {
+                throw new ApplicationException("Object synchronization method was called from an unsynchronized block of code.");
+            }
+            if (--h.Count > 0) { return; }
+            h.Stream.SetLength(0);
+            h.Stream.Dispose();
+            Entries.Remove(_path);
+        }
+    }
+
+    public void Dispose() { }
+
+    private FileStream TryOpen()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(_path));
+        try { return new FileStream(_path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1); }
+        catch (IOException e) when (!(e is DirectoryNotFoundException) && !(e is PathTooLongException) && !(e is DriveNotFoundException)) { return null; }
+    }
+}
+'@
+
+# -Backend auto takes the host's kind; 'file' forces the file lock so a Windows proof can drive it.
+# Compiles the file-lock type once per process: seconds on a loaded host.
+function Import-HarnessFileLock {
+    if (-not ('HarnessFileLock' -as [type])) { Add-Type -TypeDefinition $script:HarnessFileLockSource }
+}
+
+function New-RunLock {
+    param([Parameter(Mandatory)] [string] $Name, [ValidateSet('auto', 'mutex', 'file')] [string] $Backend = 'auto')
+    Set-StrictMode -Version Latest
+    if ($Backend -eq 'auto') { $Backend = if ((Get-HostPlatform) -eq 'linux') { 'file' } else { 'mutex' } }
+    if ($Backend -eq 'mutex') { return , [System.Threading.Mutex]::new($false, $Name) }
+    Import-HarnessFileLock
+    $dir = Join-Path (Get-HarnessTempRoot) 'harness-runlocks'
+    , [HarnessFileLock]::new((Join-Path $dir ($Name -replace '[\\/:*?"<>|]', '_')))
+}
+
 # ------------------------------------------------------------------ waits
 # One wait for every lock: WaitAny over the given handles. Returns the signaled index (-1 on
 # timeout) and whether the wait completed through an abandoned mutex, which still grants it.
 # Linux refuses a WaitAny over named mutexes ("wait operations on multiple wait handles including a named
 # synchronization primitive are not supported"), so it polls each handle with WaitOne(0) in index order,
-# which is the order WaitAny grants a tie in.
+# which is the order WaitAny grants a tie in. A handle that is not a WaitHandle (the file lock New-RunLock hands out
+# on Linux, or with -Backend file) takes the same polling path on any host.
 function Wait-RunLock {
-    param([System.Threading.Mutex[]] $Handles, [int] $TimeoutMs)
+    param([object[]] $Handles, [int] $TimeoutMs)
     Set-StrictMode -Version Latest
-    if ((Get-HostPlatform) -eq 'linux') {
+    if ((Get-HostPlatform) -eq 'linux' -or ($Handles.Count -gt 0 -and $Handles[0] -isnot [System.Threading.WaitHandle])) {
         $clock = [System.Diagnostics.Stopwatch]::StartNew()
         while ($true) {
             for ($i = 0; $i -lt $Handles.Count; $i++) {
@@ -670,7 +771,7 @@ function Test-OtherSlotBusy {
     Set-StrictMode -Version Latest
     $m = $null
     try {
-        $m = [System.Threading.Mutex]::new($false, $Lease.SlotNames[$Slot])
+        $m = New-RunLock $Lease.SlotNames[$Slot]
         $r = Wait-RunLock -Handles @($m) -TimeoutMs 0
         if ($r.Index -ge 0) { $m.ReleaseMutex(); return $false }
     } catch { return $true } finally { if ($m) { $m.Dispose() } }
@@ -703,8 +804,8 @@ function Enter-RunLocks {
     }
     $names = @(if ($SlotNames.Count -gt 0) { $SlotNames } else { Get-RuntimeSlotNames })
     if ($SlotCount -gt $names.Count) { throw "SlotCount $SlotCount exceeds the $($names.Count) runtime slot names" }
-    $held = [System.Collections.Generic.List[System.Threading.Mutex]]::new()
-    $opened = [System.Collections.Generic.List[System.Threading.Mutex]]::new()
+    $held = [System.Collections.Generic.List[object]]::new()
+    $opened = [System.Collections.Generic.List[object]]::new()
     $lease = [pscustomobject]@{
         Acquired     = $false
         Blocker      = $null
@@ -729,6 +830,8 @@ function Enter-RunLocks {
         Records      = @{}
         Opened       = $opened
     }
+    # The compile is not a wait: WaitMs and every timeout below count only time spent on locks and their bookkeeping.
+    if ((Get-HostPlatform) -eq 'linux') { Import-HarnessFileLock }
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $reaped = [System.Collections.Generic.List[int]]::new()
     $sweep = {
@@ -756,7 +859,7 @@ function Enter-RunLocks {
         # Checkout lock first, always, unless this is a held child: its ancestor holds that lock.
         if (-not $HeldCheckout) {
             $ckName = if ($CheckoutLockName) { $CheckoutLockName } else { Get-CheckoutLockName -Repo $Repo }
-            $ck = [System.Threading.Mutex]::new($false, $ckName); $opened.Add($ck)
+            $ck = New-RunLock $ckName; $opened.Add($ck)
             $r = Wait-RunLock -Handles @($ck) -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds)
             if ($r.Index -lt 0) { & $fail 'checkout'; return $lease }
             $held.Add($ck)
@@ -765,7 +868,7 @@ function Enter-RunLocks {
         }
 
         if ($Runtime) {
-            $slotHandles = @(foreach ($nm in $names) { $m = [System.Threading.Mutex]::new($false, $nm); $opened.Add($m); $m })
+            $slotHandles = @(foreach ($nm in $names) { $m = New-RunLock $nm; $opened.Add($m); $m })
             if ($SlotCount -ge 2) {
                 $order = @(($SlotCount - 1)..0)
                 $r = Wait-RunLock -Handles @($order | ForEach-Object { $slotHandles[$_] }) -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds)
@@ -882,12 +985,12 @@ function Test-RuntimeSlotAvailable {
     $names = @(if ($SlotNames.Count -gt 0) { $SlotNames } else { Get-RuntimeSlotNames })
     $count = if ($SlotCount -ge 1) { $SlotCount } else { (Get-RuntimeSlotCount -Repo $Repo -OverridePath $OverridePath).Count }
     $count = [math]::Min($count, $names.Count)
-    $taken = [System.Collections.Generic.List[System.Threading.Mutex]]::new()
-    $opened = [System.Collections.Generic.List[System.Threading.Mutex]]::new()
+    $taken = [System.Collections.Generic.List[object]]::new()
+    $opened = [System.Collections.Generic.List[object]]::new()
     try {
         $order = if ($count -ge 2) { @(($count - 1)..0) } else { @(0..($names.Count - 1)) }
         foreach ($slot in $order) {
-            $m = [System.Threading.Mutex]::new($false, $names[$slot]); $opened.Add($m)
+            $m = New-RunLock $names[$slot]; $opened.Add($m)
             $r = Wait-RunLock -Handles @($m) -TimeoutMs 0
             if ($r.Index -ge 0) { $taken.Add($m); if ($count -ge 2) { return $true } }
             elseif ($count -eq 1) { return $false }
@@ -903,7 +1006,7 @@ function Test-CheckoutLockFree {
     param([string] $Repo, [string] $CheckoutLockName = '')
     Set-StrictMode -Version Latest
     $name = if ($CheckoutLockName) { $CheckoutLockName } else { Get-CheckoutLockName -Repo $Repo }
-    $m = [System.Threading.Mutex]::new($false, $name)
+    $m = New-RunLock $name
     $got = $false
     try {
         $r = Wait-RunLock -Handles @($m) -TimeoutMs 0

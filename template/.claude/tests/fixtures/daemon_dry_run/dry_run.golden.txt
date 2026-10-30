@@ -1,0 +1,13 @@
+[2026-09-30T15:31:14Z] DAEMON start plan=<TMP>/plan.json dry=1
+[2026-09-30T15:31:15Z] ESCAPE skipped (probe entry): ARM-T1-READY-r1
+[2026-09-30T15:31:15Z] BLIND ARM-T1-READY-r1 staged at <TMP>/arms/blind-stage/f-6c3bc267fc597079
+[2026-09-30T15:31:16Z] DRY ARM-T1-READY-r1: env CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 'bash' '<REPO>/.claude/scripts/anthropic_sidecar.sh' -m haiku -e low -G bench-score -x Task,Agent -f '<TMP>/probes/t1/ARM-T1-READY-r1.t1.daemon-brief.md' -R '<TMP>/probes/t1/ARM-T1-READY-r1.t1.daemon.record.json' -P '<TMP>/probes/t1/ARM-T1-READY-r1.t1.daemon.stream.jsonl' -l daemon:ARM-T1-READY-r1 -d '<REPO>'
+[2026-09-30T15:31:16Z] SKIP ARM-T1-MARKER-r1 (declared 'parked')
+[2026-09-30T15:31:16Z] SKIP ARM-T1-TABLEPARK-r1 (declared 'parked')
+[2026-09-30T15:31:16Z] SKIP ARM-T4-FILTERED-r1 (task filter: t4 not in 't1 t7')
+[2026-09-30T15:31:16Z] SKIP ARM-T3-PARKED-r1 (unscorable)
+[2026-09-30T15:31:17Z] SKIP ARM-T1-CELLFILTER-r1 (cell filter)
+[2026-09-30T15:31:17Z] ESCAPE skipped (probe entry): ARM-T7-NOROOT-r1
+[2026-09-30T15:31:17Z] BLIND ARM-T7-NOROOT-r1 staged at <TMP>/arms/blind-stage/f-a9d8a1da671563d2
+[2026-09-30T15:31:18Z] SKIP ARM-T7-NOROOT-r1 (exec entry names no root: no runtime slot to hold)
+[2026-09-30T15:31:18Z] DAEMON done scored=0 refused=0 failed=0 skipped=6 filtered=2

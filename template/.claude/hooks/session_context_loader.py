@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _optional_hooks
 from _bounded_run import run_bounded
+from _checkout_root import linked_main_root
 from _claude_scope import is_cloud
 
 # Windows consoles default stdout to cp1252; injected text carries em-dashes.
@@ -88,23 +89,7 @@ def get_project_root() -> Path:
 
 def is_worktree() -> bool:
     """Return True if the current directory is inside a git worktree (not the main repo)."""
-    try:
-        toplevel = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
-        )
-        common = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
-        )
-        if toplevel.returncode == 0 and common.returncode == 0:
-            tl = Path(toplevel.stdout.strip()).resolve()
-            cd = Path(common.stdout.strip()).resolve()
-            # In a worktree, the common dir points OUTSIDE the toplevel
-            return not str(cd).startswith(str(tl))
-    except Exception:
-        pass
-    return False
+    return bool(linked_main_root(os.getcwd()))
 
 
 # ---------------------------------------------------------------------------

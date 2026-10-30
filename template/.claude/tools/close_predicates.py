@@ -51,8 +51,6 @@ def _load_tool(name):
     return importlib.import_module(name)
 
 
-_WORKTREE_PREFIX = re.compile(r"^\.claude/worktrees/[^/]+/")
-
 # The commit summary a shell prints: `[<branch> <hash>] <subject>`, `[<branch> (root-commit) <hash>] <subject>`.
 _COMMIT_SUMMARY = re.compile(r"^\[[^\]]*? ([0-9a-f]{7,40})\]", re.M)
 # The range a merge or fast-forward prints: `Updating <a>..<b>`.
@@ -89,7 +87,8 @@ def _ignored(repo, paths):
 
 
 def _repo_relative(path):
-    return _WORKTREE_PREFIX.sub("", path, count=1)
+    found = _load_tool("review_ledger").worktree_split(path)
+    return found[1] if found else path
 
 
 class Ctx:

@@ -77,10 +77,11 @@ every later audit reads the claim as coverage. Name the file and confirm it is t
 same commit. Promote the scratch case, or drop the claim.
 
 Harness commits run quick checks plus an advisory run of the proofs bound to every authored `.claude/` path, docs included, within the runner's recorded per-proof and total commit budgets. The advisory never denies: a proof it did not pass (red, incomplete, could not run, or left to the close) leaves the commit unproven, and the advisory prints the command that runs it now.
-A session that will not push, or pushes to a land branch, proves only its own commits: `--for <the paths its
+A session that will not push proves only its own commits: `--for <the paths its
 commits changed> --base <the revision before its first commit>`, then reports each proof green or red. That
-result never authorizes a push. A land push (`/commit_push` step 6) needs no local close:
-the land runner runs it before the default branch moves. Before any other push, after the final local commit, run
+result never authorizes a push. A land push (`/commit_push` step 6) needs neither a local close nor a `--for` run:
+the land runner's close proves every commit before the default branch moves, and a local run repeats it on the
+machine the runner shares, slowing every land queued there. Before any other push, after the final local commit, run
 `python3 .claude/scripts/harness_tests.py --close` in the background. It selects the proofs bound to
 all harness paths changed since the push upstream (`--base <rev>` overrides it), including docs,
 deletions and paths later reverted, except what the push remote's default branch already carries. A
@@ -105,8 +106,7 @@ Passes are reused while reached inputs are unchanged, whichever checkout of the 
 
 `git_guardrails.py` keeps quick checks (skill load, density, git/index scope and tracked-proof
 presence) and makes the advisory proof run above. An authored `hooks/` or `tools/` `.py` needs a git-TRACKED `tests/test_<name>*.py` or
-`tests/<name>_test.*`; underscore helpers, deletions and edits `_behavior_unchanged` proves comment/docstring-only are exempt
-(`git add -f`, since `.claude/tests/` is gitignored). Staged-blob peer-revert checks stay;
+`tests/<name>_test.*`; underscore helpers, deletions and edits `_behavior_unchanged` proves comment/docstring-only are exempt. Staged-blob peer-revert checks stay;
 proof-byte freshness moves to committed HEAD at close. The inline prefix
 `HARNESS_ALLOW_UNSTAMPED_HARNESS=1` is only for repairing the guard or runner, never a hurry.
 
@@ -198,7 +198,11 @@ Facts such as a finished result about to be re-paid, an orphaned, stalled or dup
 
 ## A launcher script is not edited in place while detached runs execute it
 
-Bash reads a running script by byte offset, so a size-changing edit makes every in-flight run resume mid-token and die, losing the output its shell held. Before editing a `.sh` launcher with live detached instances, edit a copy and point new dispatches at it, or stop the instances this session owns through `python3 .claude/tools/reap.py` and edit once they are gone. Evidence: `gotcha_editing_shell_script_corrupts_running_instances`.
+Bash reads a running script by byte offset, so a size-changing edit makes every in-flight run resume mid-token and die, losing the output its shell held. Before editing a `.sh` launcher with live detached instances, edit a copy and point new dispatches at it, or stop the instances this session owns through `python3 .claude/tools/reap.py` and edit once they are gone. A launcher that calls `sc_reexec_snapshot` (`lib/sidecar_common.sh`) runs from a snapshot copy and sources `lib/sidecar_common.sh` whole, so this rule binds only scripts that run without a snapshot. Evidence: `gotcha_editing_shell_script_corrupts_running_instances`.
+
+## A new script a listed script dot-sources joins every copy list
+
+Proofs that copy scripts into a temp checkout (`_bench_sandbox.py`, `test_regression_gate_held.ps1`, `test_run_test_suite_userdir.py`, the integration batcher's adaptation proof) copy fixed file lists. A new sibling is absent from each, and its proofs fail with "not recognized" far from the edit. Before the first proof run, `git grep -n '<an existing sibling>.ps1' -- .claude/tests` and add the new file to every list that names that sibling, or keep the helper in its caller's file.
 
 ## Deleting a flag is not done until its stale invocations name their replacement
 

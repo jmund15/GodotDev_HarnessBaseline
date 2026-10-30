@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit advisory: re-arm uncovered sidecars after any killed/stopped task notice.
+"""UserPromptSubmit advisory: re-arm uncovered sidecars after any killed, stopped or completed task notice.
 
 Reads this session's dispatch_table_pending registry, not the transcript. Finished runs are
 read immediately; a missing process identity is never proof a launch did not start. One
@@ -21,7 +21,7 @@ from watch_records import _covered  # noqa: E402
 import dispatch_table  # noqa: E402
 
 
-STATUS = re.compile(r"<task-notification\b[^>]*>.*?<status>\s*(killed|stopped)\s*</status>.*?</task-notification>",
+STATUS = re.compile(r"<task-notification\b[^>]*>.*?<status>\s*(killed|stopped|completed)\s*</status>.*?</task-notification>",
                     re.DOTALL)
 
 
@@ -81,7 +81,7 @@ def advice(payload):
             groups["finished"].append("%s exit=%s" % (record, code))
         else:
             groups[state_name].append(record)
-    lines = ["[sidecar-watch-rearm] A background task stopped; check these session sidecars:"]
+    lines = ["[sidecar-watch-rearm] A background task ended; check these session sidecars:"]
     for group, paths in groups.items():
         if paths:
             action = {"finished": " (read each .out when present)",

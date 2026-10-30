@@ -953,6 +953,70 @@ def test_v2_triage_json_fields_and_truncation() -> None:
         assert refusal.returncode == 2
 
 
+def _verdict(content: bytes, verdict: str) -> dict:
+    return {"sha": _sha(content), "verdict": verdict, "at": "2026-01-01T00:00:00Z",
+            "borderline": False, "confirmed_at": None}
+
+
+def test_triage_relists_a_local_row_edited_since_its_keep_local_verdict() -> None:
+    old, new = b"value = 1\n", b"value = 2\n"
+    edited = ".claude/tools/edited.py"
+    unchanged = ".claude/tools/unchanged.py"
+    memory = ".claude/auto-memory/note.md"
+    log = ".claude/tools/runs.jsonl"
+    fixture = ".claude/tests/fixtures/edited.json"
+    seed = ".claude/reference/seeded.md"
+    with _fixture() as path:
+        rows = {
+            edited: {"status": "local", "manifest": False, "local": new, "judged": _verdict(old, "keep-local")},
+            unchanged: {"status": "local", "manifest": False, "local": old, "judged": _verdict(old, "keep-local")},
+            memory: {"status": "local", "manifest": False, "local": new, "judged": _verdict(old, "keep-local")},
+            log: {"status": "local", "manifest": False, "local": new, "judged": _verdict(old, "keep-local")},
+            fixture: {"status": "local", "manifest": False, "local": new, "judged": _verdict(old, "keep-local")},
+            seed: {"status": "local", "sync": "seed", "local": new, "judged": _verdict(old, "keep-local")},
+        }
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
+        result = _run_baseline(root, baseline, "triage", "--batch", "50", "--json")
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        listed = {row["relpath"]: row for row in _json_output(result)}
+        assert set(listed) == {edited, fixture}, listed
+        assert listed[edited]["status"] == "local" and listed[edited]["prior_verdict"] == "keep-local"
+
+
+def test_triage_relists_a_fork_edited_since_its_verdict() -> None:
+    old, new = b"fork = 1\n", b"fork = 2\n"
+    edited = ".claude/commands/edited.md"
+    unchanged = ".claude/commands/unchanged.md"
+    with _fixture() as path:
+        rows = {
+            edited: {"status": "forked", "local": new, "judged": _verdict(old, "fork")},
+            unchanged: {"status": "forked", "local": old, "judged": _verdict(old, "fork")},
+        }
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
+        result = _run_baseline(root, baseline, "triage", "--batch", "50", "--json")
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        assert [row["relpath"] for row in _json_output(result)] == [edited]
+
+
+def test_check_names_a_local_row_that_shadows_a_shipped_file() -> None:
+    shadow = ".claude/tools/shadow.py"
+    seed = ".claude/reference/seeded.md"
+    with _fixture() as path:
+        rows = {
+            shadow: {"status": "local", "local": b"mine = 1\n", "judged": _verdict(b"mine = 1\n", "keep-local")},
+            seed: {"status": "local", "sync": "seed", "local": b"mine\n", "judged": _verdict(b"mine\n", "keep-local")},
+        }
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
+        result = _run_baseline(root, baseline, "check", "--json")
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        states = _json_output(result)["results"]
+        assert states[shadow] == "local-shadows-upstream", states
+        assert states[seed] == "local", states
+        strict = _run_baseline(root, baseline, "check", "--strict")
+        assert strict.returncode != 0
+        assert shadow in strict.stdout.decode(errors="replace")
+
+
 def test_v2_forget_success_refusal_and_repeat() -> None:
     rel = ".claude/tools/forget.py"
     with _fixture() as path:
@@ -1268,7 +1332,8 @@ def test_paths_unshipped_names_a_push_row_edited_after_its_verdict() -> None:
         assert result.returncode == 0, _out(result)
         assert _json_output(result) == [], _out(result)
         stderr = result.stderr.decode(errors="replace")
-        assert f"stale verdict: {moved}" in stderr and "--carry" in stderr, stderr
+        assert f"stale verdict: {moved} changed since it was judged push" in stderr, stderr
+        assert "--carry" not in stderr, stderr
 
 
 def test_v2_pull_explicit_states_and_new_hash() -> None:
@@ -2356,6 +2421,18 @@ def test_j3_layer_on_an_existing_row_needs_relayer() -> None:
         assert no_layer.returncode == 2, _out(no_layer)
 
 
+def test_j3_relayer_of_a_fork_keeps_its_base() -> None:
+    rel = ".claude/tools/relayer_fork.py"
+    with _fixture() as path:
+        root, baseline, _r, commit_sha = _v2_fixture(path, {rel: {"upstream": b"v = 1\n"}})
+        forked = _run_baseline(root, baseline, "fork", rel)
+        assert forked.returncode == 0, _out(forked)
+        moved = _run(root, "classify", rel, "--status", "forked", "--layer", "coding", "--relayer")
+        assert moved.returncode == 0, _out(moved)
+        entry = _load_lock(root)["files"][rel]
+        assert entry["layer"] == "coding" and entry["base"] == commit_sha, entry
+
+
 def _delete_upstream(baseline: Path, relpath: str) -> None:
     (baseline / "template" / relpath).unlink()
     _commit(baseline, "upstream deletes " + relpath)
@@ -3266,6 +3343,7 @@ def main() -> int:
         test_j3_keep_local_on_an_unshipped_tracked_row_sets_local,
         test_j3_relpath_with_control_or_edge_whitespace_refuses,
         test_j3_layer_on_an_existing_row_needs_relayer,
+        test_j3_relayer_of_a_fork_keeps_its_base,
         test_pull_retires_unmodified_file_removed_upstream,
         test_explicit_pull_keeps_modified_file_removed_upstream_as_local,
         test_pull_drops_row_of_file_removed_upstream_and_missing_locally,
@@ -3384,6 +3462,9 @@ def main() -> int:
         test_check_text_names_every_strict_finding,
         test_carry_leaves_a_row_judged_keep_local_alone,
         test_carry_starts_from_a_pulled_row_whose_judged_sha_is_older,
+        test_triage_relists_a_local_row_edited_since_its_keep_local_verdict,
+        test_triage_relists_a_fork_edited_since_its_verdict,
+        test_check_names_a_local_row_that_shadows_a_shipped_file,
     ]
     return run_cases(cases)
 

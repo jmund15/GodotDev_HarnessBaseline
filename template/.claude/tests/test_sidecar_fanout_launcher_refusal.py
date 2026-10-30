@@ -84,8 +84,8 @@ with open(PROMPT, "w", encoding="utf-8") as fh:
     fh.write("Read README and say what it is.\n")
 
 
-def job(label, alias, shape="survey", **extra):
-    return dict({"label": label, "alias": alias, "effort": "high", "shape": shape, "promptFile": PROMPT,
+def job(label, alias, kind="scout", **extra):
+    return dict({"label": label, "alias": alias, "effort": "high", "kind": kind, "promptFile": PROMPT,
                  "plan": "anthropic"}, **extra)
 
 
@@ -155,17 +155,14 @@ def refused_text_is_the_launchers():
 case("the refusal text is the launcher's own, from the one check", refused_text_is_the_launchers)
 
 
-def tier_less_shape_is_never_refused():
-    tierless = sorted(set(("any", "arm")) - set(TIERS))
-    if not tierless:
-        return True
-    code, _out, err, *_ = run([job("loose", UNFIT[0], shape=tierless[0])], "--dry-run")
+def tier_less_kind_is_never_refused():
+    code, _out, err, *_ = run([job("loose", UNFIT[0], kind="arm", armDisclosure="pointer", baseBuiltins="Read")], "--dry-run")
     return code == 0 and REFUSAL_HEAD not in err
 
 
-case("a shape that declares no tier is never refused for its pin", tier_less_shape_is_never_refused)
+case("a kind that declares no tier is never refused for its pin", tier_less_kind_is_never_refused)
 
-# Refusals planning already ran in the caller's own call (effort.avoid, unknown alias, unknown shape): pinned so a
+# Refusals planning already ran in the caller's own call (effort.avoid, unknown alias, unknown kind): pinned so a
 # later reorder cannot move them behind `--detach`. These held before the fix; the tier fit is what moved.
 avoiding = sorted((row["alias"], rung) for row in DATA["models"] if row.get("alias") and row.get("transport") == "anthropic"
                   and model_registry.model_available(row["id"], DATA) for rung in model_registry.avoided_rungs(row)
@@ -186,13 +183,13 @@ def unknown_alias_refused():
 
 
 def unknown_shape_refused():
-    code, out, err, detached, ran, _ = run([job("odd-shape", FIT[0], shape="no-such-shape")], "--detach")
+    code, out, err, detached, ran, _ = run([job("odd-shape", FIT[0], kind="no-such-kind")], "--detach")
     return code == 2 and detached == 0
 
 
 case("(already held) an effort the registry's effort.avoid lists is refused before detach", avoided_effort_refused)
 case("(already held) an unknown alias is refused before detach", unknown_alias_refused)
-case("(already held) an unknown shape is refused before detach", unknown_shape_refused)
+case("(already held) an unknown kind is refused before detach", unknown_shape_refused)
 
 
 def fold_author_pin_is_checked():
@@ -202,7 +199,7 @@ def fold_author_pin_is_checked():
     work = tempfile.mkdtemp(dir=TMP)
     jobs_path = os.path.join(work, "jobs.json")
     with open(jobs_path, "w", encoding="utf-8") as fh:
-        json.dump([job("seat-1", FIT[0], shape="review")], fh)
+        json.dump([job("seat-1", FIT[0], kind="reviewer")], fh)
     refusal = ctx.fanout_fit_refusal([jobs_path, "--review", "--fold-alias", author_unfit[0], "--fold-effort", "high",
                                       "--fold-subject", "%s::%s::a.md" % (work, os.path.join(work, "m.json"))], work)
     return bool(refusal) and "review-fold-1" in refusal and REFUSAL_HEAD in refusal
@@ -292,7 +289,7 @@ def written_tier_refuses_the_pin_it_does_not_fit():
 
 
 def review_shape_no_longer_admits_a_cheaper_pin_for_architect_work():
-    code, out, err, *_ = run([job("arch-review", REVIEW_NOT_ARCH[0], shape="review", tier="architect")], "--dry-run")
+    code, out, err, *_ = run([job("arch-review", REVIEW_NOT_ARCH[0], kind="reviewer", tier="architect")], "--dry-run")
     return code == 2 and REFUSAL_HEAD in out + err and "`architect`" in out + err
 
 

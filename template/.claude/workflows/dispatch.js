@@ -215,7 +215,7 @@ if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 const concurrencyGuard = (j) => jobs.length > 1 ? [
   '',
   '=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===',
-  'Do NOT run a single-flight tool (a test runner, build, engine or language server that allows one process per machine or per checkout); your delegate rails name this project\'s. Python and Node proofs under .claude/tests/ are not single-flight'
+  'Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. Your delegate rails name this project\'s others; a build, typecheck or test command they do not name is not single-flight, so run your brief\'s own checks with it. Python and Node proofs under .claude/tests/ are not single-flight'
     + (NO_SHELL_AGENT_TYPES.includes(effectiveType(j)) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file, not harness_tests.py (its machine slots are shared; rules/harness_tooling.md).')
     + ' If your task file mandates a single-flight run, STOP and report that it needs a serialized dispatch.',
 ].join('\n') : ''

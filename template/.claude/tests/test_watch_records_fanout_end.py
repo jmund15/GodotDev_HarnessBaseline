@@ -33,13 +33,11 @@ def stamp(epoch):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
-PROCESS_STARTED = time.time()
-
-
 def alive():
-    """A process line the watcher reads as live: this test process, stamped after it started (a stamp earlier than
-    the process's creation reads as a reused PID)."""
-    return "%s %spid=%d" % (stamp(PROCESS_STARTED), "winpid=%d " % os.getpid() if os.name == "nt" else "", os.getpid())
+    """A process line the watcher reads as live: this test process, stamped now (a stamp earlier than the process's
+    creation reads as a reused PID). The stamp is taken at the call, not at import: a VM wall clock that steps forward
+    after the stamp moves the creation time the watcher derives, and an import-time stamp loses to that step late in the run."""
+    return "%s %spid=%d" % (stamp(time.time()), "winpid=%d " % os.getpid() if os.name == "nt" else "", os.getpid())
 
 
 class Session:
@@ -92,7 +90,7 @@ class Session:
         open(record, "w").close()
         with open(record + ".pid", "w", encoding="utf-8") as fh:
             fh.write("%s launch=%s winpid=0 pid=0\n%s launch=%s %s\n" % (
-                stamp(launched), LAUNCH, stamp(PROCESS_STARTED), LAUNCH, alive().split(" ", 1)[1]))
+                stamp(launched), LAUNCH, stamp(time.time()), LAUNCH, alive().split(" ", 1)[1]))
         return record
 
     def ended(self, label, code, with_json=False):

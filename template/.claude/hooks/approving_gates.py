@@ -26,13 +26,21 @@ except Exception:
 
 Contract = namedtuple("Contract", "name judge shape approver")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_ALLOWED_SIDECAR_FLAGS = frozenset("meDGfCSR PldaTZnorsNLxt".replace(" ", ""))
+_ALLOWED_SIDECAR_FLAGS = frozenset("meGfCSR PldaTZnorsNLxt".replace(" ", ""))
 _PATH_FLAGS = frozenset("dfRPSLaC")
 _EXISTING_FILE_FLAGS = frozenset("fCS")
 _EXISTING_DIR_FLAGS = frozenset("da")
 _PARENT_FLAGS = frozenset("RPL")
-_ALLOWED_SHAPES = frozenset({"any", "survey", "review"})
 _ALLOWED_TOOLS = frozenset({"Read", "Glob", "Grep"})
+
+
+def _allowed_kinds():
+    """The public kinds in guards/tool_profiles.json whose built-ins stay inside the read set: a
+    `-G` the auto-approval may pass. `author` carries Edit, Write and Bash, so it keeps the normal checks."""
+    import tool_profiles
+    table = tool_profiles.load_table()
+    return frozenset(name for name in tool_profiles.public_kinds(table)
+                     if set(table["kinds"][name]["builtins"]) <= _ALLOWED_TOOLS)
 _DIGEST_OPTIONS = frozenset({
     "--session", "--prompt-tail", "--project-dir", "--brief", "--handoff", "--full",
     "--digest-file", "--workflow-dir", "--workflow-kind", "--workflow-manifest",
@@ -454,15 +462,17 @@ def _green_close_head(root):
 
 
 def _proved_push_shape(argv, root):
-    """`git push [-u] origin <full sha>:<branch>` where the sha is the commit the stored green close proved.
+    """`git push [-u] [--recurse-submodules=check] origin <full sha>:<branch>` where the sha is the commit the
+    stored green close proved.
     git_guardrails still checks that close's base and paths against the outgoing range."""
     if argv[:2] != ["git", "push"]:
         return False, "the command is not `git push`"
     rest = argv[2:]
-    if rest[:1] in (["-u"], ["--set-upstream"]):
-        rest = rest[1:]
+    for flags in (("-u", "--set-upstream"), ("--recurse-submodules=check",)):
+        if rest[:1] and rest[0] in flags:
+            rest = rest[1:]
     if len(rest) != 2 or rest[0] != "origin":
-        return False, "the shape must be `git push [-u] origin <sha>:<branch>`"
+        return False, "the shape must be `git push [-u] [--recurse-submodules=check] origin <sha>:<branch>`"
     source, _, target = rest[1].partition(":")
     branch = target.removeprefix("refs/heads/")
     if not _FULL_SHA.fullmatch(source) or not _BRANCH_NAME.fullmatch(branch) or branch == "HEAD":
@@ -715,8 +725,8 @@ def sidecar_launch_shape(command, root):
             return False, "sidecar flag `-%s` is not approved" % letter
         if letter in sidecar_argv.SIDECAR_VALUE_FLAGS and not isinstance(value, str):
             return False, "sidecar flag `-%s` is missing its value" % letter
-        if letter == "G" and value not in _ALLOWED_SHAPES:
-            return False, "`-G` must be `any`, `survey`, or `review`"
+        if letter == "G" and value not in _allowed_kinds():
+            return False, "`-G` must be a read-only kind: %s" % ", ".join(sorted(_allowed_kinds()))
         if letter == "t":
             tools = set(value.split(",")) if isinstance(value, str) else set()
             if not tools or not tools <= _ALLOWED_TOOLS:
@@ -736,6 +746,8 @@ def sidecar_launch_shape(command, root):
                         return False, "`-a` grants a directory outside the project"
                 return False, "`-%s` must resolve to an existing in-project %s without symlinks or `..`" % (
                     letter, kind)
+    if "G" not in {letter for letter, _ in pairs}:
+        return False, "`-G <kind>` is required: the launcher refuses a launch without it"
     return True, ""
 
 
@@ -753,7 +765,7 @@ def sidecar_bash_ask_shape(command, root):
         return False, "the sidecar flags could not be parsed"
     if operand_index != len(argv) - 2:
         return False, "an operand follows the sidecar flags"
-    required = set("meDGtfSRPld")
+    required = set("meGtfSRPld")
     allowed = required | {"C"}
     seen = {}
     for letter, value in pairs:
@@ -763,9 +775,9 @@ def sidecar_bash_ask_shape(command, root):
             return False, "a sidecar flag is repeated"
         seen[letter] = value
     if set(seen) != required and set(seen) != allowed:
-        return False, "the review needs a model, effort, shape, prompt, schema, record and progress"
-    if seen["t"] != "+Bash" or seen["G"] != "review" or seen["D"] != "full":
-        return False, "only a full review with exactly +Bash can request consent"
+        return False, "the review needs a model, effort, kind, prompt, schema, record and progress"
+    if seen["t"] != "+Bash" or seen["G"] != "reviewer":
+        return False, "only `-G reviewer` with exactly `-t +Bash` can request consent"
     root = Path(root).resolve()
     if os.path.normcase(str(Path(seen["d"]).resolve())) != os.path.normcase(str(root)):
         return False, "the review workdir must be the project root"

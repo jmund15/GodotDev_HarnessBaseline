@@ -7,12 +7,13 @@ import os
 from pathlib import Path
 
 
-def cs_files(root, skip):
-    """Sorted (path, rel) pairs for every `*.cs` under `root` whose parent directories avoid `skip`."""
+def cs_files(root, skip, skip_dot=False):
+    """Sorted (path, rel) pairs for every `*.cs` under `root` whose parent directories avoid `skip`.
+    `skip_dot` also prunes every dot-directory (`.claude`, `.godot`, `.git`)."""
     root = Path(root)
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in skip]
+        dirnames[:] = [d for d in dirnames if d not in skip and not (skip_dot and d.startswith("."))]
         for name in filenames:
             if name.endswith(".cs"):
                 path = Path(dirpath) / name

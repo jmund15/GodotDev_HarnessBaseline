@@ -74,7 +74,8 @@ blocked) ends its lane, whose later jobs are not run, and the other lanes go on.
 its `spillDir` is the default --out-dir, and an --out-dir naming another directory refuses. A job
 may use dispatch.js's names `promptPath`, `model` and `contextPath` for `promptFile`, `alias` and
 `contextFiles`; a job carrying both names of one field with different values refuses. dispatch.js
-fields this route has no use for (`agentType`, `readOnly`) are ignored. Per job:
+fields this route has no use for (`readOnly`) are ignored; `agentType` refuses, like `shape` and
+`disclosure`: the `kind` sets them. Per job:
     label       required  attribution key; becomes `-l` and names the output files
     mandates              required by --review; catalog or lens keys the seat reports in checked.mandates
                           (findings|clean|not-reached per key; per-key checked.basis text is the fallback)
@@ -89,16 +90,19 @@ fields this route has no use for (`agentType`, `readOnly`) are ignored. Per job:
     promptFile  required  path to the prompt; NEVER argv (Windows caps argv near 8K)
     effort                vendor rung -> `-e`; refused unless the transport's vocabulary serves it. Also refused
                           when the row's registry `effort.avoid` lists it, unless this run is --compare (SC_COMPARISON)
-    disclosure            bare|pointer|full -> `-D`
-    shape                 any|survey|review|author|arm -> `-G`
-    tier                  the work's tier -> `-Q`: the pin must serve it. Omitted, the `shape` row's tier
+    kind        required  scout|lens|reviewer|author|judge (`guards/tool_profiles.json` `kinds`): sets the
+                          tools, `-D`, `-G` and agent type. A job carrying `shape`, `disclosure` or
+                          `agentType` refuses. The internal `arm` kind (the /pin_ab benchmark arms) and
+                          `bench-review` (the offkey review benchmark seat) are the other fan-out kinds
+    armDisclosure         bare|pointer|full -> `-D`; kind `arm` only (an arm's disclosure is the experiment)
+    tier                  the work's tier -> `-Q`: the pin must serve it. Omitted, the `kind` row's tier
                           (`guards/tool_profiles.json`) applies; an unknown tier refuses with the known list
     window                "full" -> the job compacts at its model's own window, not the login's cap
                           (`SIDECAR_FULL_WINDOW`); any other value refuses
     tools                 {add:[], remove:[]} -> a signed `-t` (`+Bash,-mcp:ai-worker`); items are
                           built-in names or `mcp:<server>`
-    toolsCsv              an absolute legacy `-t` list; cannot be combined with `tools`
-    baseBuiltins          the `arm` shape's task row -> `-B`; required when an arm job carries a
+    toolsCsv              kind `arm` only: its task row as an unsigned `-t`; cannot be combined with `tools`
+    baseBuiltins          the `arm` kind's task row -> `-B`; required when an arm job carries a
                           `tools` delta, which cannot share that arm's unsigned `-t` CSV
     contextFiles          list of paths -> repeated `-C`
     schemaFile            path -> `-S`
@@ -158,13 +162,13 @@ writing `<out-dir>/post_check.json`: quote verdicts over every finding, the fold
 disposition per source F-id; the check's failures, never the author's exit or digest, decide the fold.
 
 REFUSALS IN YOUR OWN CALL. These refusals a job's launcher would make from the job row alone happen here,
-before anything spawns or detaches, in `--dry-run` too: an unknown alias or shape, an unavailable row, an effort
+before anything spawns or detaches, in `--dry-run` too: an unknown alias or kind, an unavailable row, an effort
 outside the transport's vocabulary or in the row's registry `effort.avoid` (each row of `rows` checked alike), a plan
-that does not pay for the route (of any listed row), `rows` beside `alias` or `effort`, and a pin outside the job's tier (`tier`, else its `shape` row's in `guards/tool_profiles.json`; the refusal text is the
+that does not pay for the route (of any listed row), `rows` beside `alias` or `effort`, and a pin outside the job's tier (`tier`, else its `kind` row's in `guards/tool_profiles.json`; the refusal text is the
 launcher's, printed to stdout, naming every unfit job). Every exit before an inventory exists also writes its
 text, exit code and UTC time to `<out-dir>/launch-refused.txt`, which a launch that writes an inventory removes.
-A `--detach` run returns only once each first-wave job is printed `admitted`, `refused ... nothing ran`, `queued` or `undecided` (a `<label>.stream` written since the launch marks a job past every gate), and a child's capacity refusal moves the job to its next plan. Not decided here, because only the shell launcher owns them: a `disclosure`
-outside bare|pointer|full and `longContext` on a row with no long-context step (`sidecar_common.sh`).
+A `--detach` run returns only once each first-wave job is printed `admitted`, `refused ... nothing ran`, `queued` or `undecided` (a `<label>.stream` written since the launch marks a job past every gate), and a child's capacity refusal moves the job to its next plan. Not decided here, because only the shell launcher owns them: an
+`armDisclosure` outside bare|pointer|full and `longContext` on a row with no long-context step (`sidecar_common.sh`).
 
 EXIT: 0 every job exited 0; under --review, coverage is complete and the post-check passed.
       1 a job failed, review coverage is partial (each failed seat prints an `uncovered:` line naming
@@ -199,6 +203,7 @@ import sidecar_argv  # noqa: E402  -- owns the out-dir rule the launch hook read
 import sidecar_launch  # noqa: E402  -- owns the shell choice; see plan_job's argv[0]
 from _supervised_launch import launch as supervised_launch, MEMORY_REFUSED
 import sidecar_resume_check as stream_check  # noqa: E402  -- owns stream-event classification
+from stream_events import iter_stream_events  # noqa: E402  -- the one stream reader
 import tool_profiles  # noqa: E402  -- the one defaults table, resolver and `tools` parser
 import citer_coverage
 import review_result  # noqa: E402  -- source IDs, coverage and quote verdicts
@@ -512,6 +517,8 @@ FALLBACKS = {}
 # plan -> the signatures (model id, effort, shape) of the jobs this process has placed on it so far (named or
 # picked); `main` clears it with FALLBACKS.
 PLACED = {}
+# label -> the plan that pays it, for the inventory; `main` clears it with FALLBACKS.
+PAID_BY = {}
 FULL_WINDOW = set()  # labels of jobs that opt out of the login's compaction cap (`window: "full"`)
 _LIVE = {}  # {"load": plan -> live launchers}: read once per process, so a 13-job pass costs one table read
 # label -> the `Slot` `plan_job` placed the job in; `main` clears it with FALLBACKS and hands the planned jobs' slots to `Waves`.
@@ -536,7 +543,7 @@ def job_signature(job, data):
         model = model_registry.resolve(job["alias"], data)["id"]
     except Exception:
         model = None
-    return model, job.get("effort"), job.get("shape")
+    return model, job.get("effort"), job.get("kind") or job.get("shape")
 
 
 def listed_rows(job):
@@ -617,7 +624,7 @@ def live_plan_load(table, data):
         alias = flags.get("m")
         sig = job_signature({"alias": alias if isinstance(alias, str) else None,
                              "effort": flags.get("e") if isinstance(flags.get("e"), str) else None,
-                             "shape": flags.get("G") if isinstance(flags.get("G"), str) else None}, data)
+                             "kind": flags.get("G") if isinstance(flags.get("G"), str) else None}, data)
         (snapshots if "sidecar-snapshots" in script.replace("\\", "/") else invoked)[key] = (next(iter(plans)), sig)
     load = {}
     for plan, sig in {**snapshots, **invoked}.values():
@@ -839,6 +846,36 @@ def admission_refusal(jobs, data, read=None, now=None, load=None):
              for reason, labels in groups.items()]
     return ("capacity admission refused, nothing started:\n" + "\n".join(lines)
             + "\nWait for the reset, or move the refused jobs to a plan with room.")
+
+
+RETIRED_JOB_KEYS = ("shape", "disclosure", "agentType")
+
+
+def check_job_kind(job, label):
+    """The job's `kind`, refusing a kindless job, a retired key, an unknown or internal kind, an
+    `armDisclosure` on any kind but `arm`, and an `arm` without one. The kind alone sets tools, `-D` and agent type."""
+    try:
+        public = ", ".join(tool_profiles.public_kinds())
+    except ValueError as err:
+        raise JobError(f"job {label}: {err}") from None
+    kind = job.get("kind")
+    if not kind:
+        raise JobError(f"job {label}: needs a kind ({public.replace(', ', '|')}): the kind sets its tools, "
+                       f"-D and agent type (reference/sidecar_dispatch.md)")
+    for key in RETIRED_JOB_KEYS:
+        if key in job:
+            raise JobError(f"job {label}: `{key}` is retired: use kind ({public.replace(', ', '|')}); the kind "
+                           f"sets tools, -D and agent type (rules/harness_tooling.md §Deleting a flag)")
+    if kind != "arm" and "armDisclosure" in job:
+        raise JobError(f"job {label}: `armDisclosure` is for kind arm only; kind {kind!r} sets its own -D")
+    if kind == "arm" and not job.get("armDisclosure"):
+        raise JobError(f"job {label}: kind arm needs `armDisclosure` (the arm's -D)")
+    try:
+        tool_profiles.resolve_kind(kind, route="fanout", walk_mcp=False, tier=job.get("tier"),
+                                   base_builtins=["Read"] if kind == "arm" else None)
+    except (ValueError, model_registry.RegistryError) as err:
+        raise JobError(f"job {label}: {err}") from None
+    return kind
 
 
 IN_FLIGHT_SHARE = 0.5  # a job still running is taken to have drawn half of what it will
@@ -1183,7 +1220,7 @@ def check_row(job, label, alias, effort, data):
     if job.get("rows"):
         checks = _dispatch_checks_module()
         try:
-            tier, source = checks.job_tier(job.get("shape"), job.get("tier"))
+            tier, source = checks.job_tier(job.get("kind"), job.get("tier"))
         except ValueError as err:
             raise JobError(f"job {label}: {err}")
         why = checks.tier_fit(alias, tier, transport, data)
@@ -1215,6 +1252,7 @@ def plan_job(job, data, out_dir, authorize, stage=None):
             raise JobError(f"job {label or '<unlabelled>'}: `{name}` is required")
     if not os.path.exists(prompt):
         raise JobError(f"job {label}: promptFile not found: {prompt}")
+    kind = check_job_kind(job, label)
     # Children run with cwd=REPO: a caller-relative path must reach them resolved, or it names another file.
     prompt = job["promptFile"] = os.path.abspath(prompt)
     # `label` names four output files AND keys the spend ledger, so it must be a bare filename:
@@ -1274,6 +1312,7 @@ def plan_job(job, data, out_dir, authorize, stage=None):
     signature = job_signature(job, data)
     PLACED.setdefault(plan, []).append(signature)
     SLOTS[label] = Slot(plan, signature, () if job.get("plan") else tuple(plans), picks)
+    PAID_BY[label] = plan
     FALLBACKS.pop(label, None)
     spare = []
     for name in rest:
@@ -1294,14 +1333,17 @@ def plan_job(job, data, out_dir, authorize, stage=None):
             "-l", label,                                   # attribution: the metrics reader keys on
             "-X",                                          # every fan-out child runs detached
             "-R", _posix(attempt_record_path(out_dir, label))]  # unlabelled rows are skipped by it
-    for flag, key in (("-e", "effort"), ("-D", "disclosure"), ("-G", "shape"), ("-Q", "tier"),
-                      ("-S", "schemaFile"), ("-d", "workdir")):
-        if job.get(key):
-            argv += [flag, _posix(job[key])]
+    # The kind sets the launcher's tools, disclosure and guard text; only the internal `arm` kind
+    # passes `-D`, because an arm's disclosure is the experiment. A written `tier` rides as `-Q`.
+    for flag, value in (("-e", job.get("effort")), ("-G", kind), ("-Q", job.get("tier")),
+                        ("-D", job.get("armDisclosure") if kind == "arm" else None),
+                        ("-S", job.get("schemaFile")), ("-d", job.get("workdir"))):
+        if value:
+            argv += [flag, _posix(value)]
     # `tools.add` / `tools.remove` reach the launcher as the ONE signed `-t` grammar
     # (`+Bash,-mcp:ai-worker`), so a fan-out job and a command-line caller resolve through the
-    # same contract. An unsigned `tools` value is refused, never read as a profile; the legacy
-    # absolute list rides `toolsCsv`, and mixing it with a delta is refused, never merged.
+    # same contract. An unsigned `tools` value is refused, never read as a profile; an arm's task
+    # row rides `toolsCsv` (kind arm only), and mixing it with a delta is refused, never merged.
     try:
         add, remove = tool_profiles.tools_delta(job.get("tools"))
     except ValueError as err:
@@ -1312,6 +1354,10 @@ def plan_job(job, data, out_dir, authorize, stage=None):
                            f"tools.add/tools.remove. Use the signed -t grammar.")
         argv += ["-t", tool_profiles.signed_csv(add, remove)]
     elif job.get("toolsCsv"):
+        if kind != "arm":
+            raise JobError(f"job {label}: `toolsCsv` is an absolute tool list, which only kind arm takes (its "
+                           f"task row). Kind {kind!r} sets its own tools: write a signed `tools` delta "
+                           f"(add [\"Bash\"], remove [\"mcp:ai-worker\"]).")
         argv += ["-t", str(job["toolsCsv"])]
     # `baseBuiltins` is the `arm` shape's task row when a DELTA rides on top of it: the two grammars
     # cannot share one `-t` CSV, and an arm without a base (or a `-t` task row) refuses before spend.
@@ -1331,9 +1377,6 @@ def plan_job(job, data, out_dir, authorize, stage=None):
         if not os.path.exists(cf):
             raise JobError(f"job {label}: contextFile not found: {cf}")
         argv += ["-C", _posix(cf)]
-    # The launcher refuses a profile that does not cover its brief; refusing here keeps the promise
-    # that a bad job costs nothing, even beside nine good ones. An arm's task row is never widened.
-    shape = job.get("shape") or "any"
     try:
         citer_reason = citer_coverage.coverage_reason(job, root=job.get("workdir") or REPO, stage=stage)
     except Exception:
@@ -1342,18 +1385,10 @@ def plan_job(job, data, out_dir, authorize, stage=None):
         if citer_coverage.BLOCKING:
             raise JobError(citer_reason)
         print("warning: " + citer_reason, file=sys.stderr)
-    if shape != "arm":
-        try:
-            builtins = job_builtins(job)
-            orders = tool_profiles.brief_files(shape, prompt, job.get("contextFiles"))
-            refusal = tool_profiles.check_brief_files(
-                builtins, orders, grammar="job",
-                root=job.get("workdir") or None, widen=True,
-                removed=tool_profiles.tools_delta(job.get("tools"))[1])
-        except ValueError as err:
-            raise JobError(f"job {label}: {err}")
-        if refusal:
-            raise JobError(f"job {label}: {refusal}")
+    try:
+        job_builtins(job)   # a delta the kind refuses (+Edit off an author) fails here, before any spend
+    except ValueError as err:
+        raise JobError(f"job {label}: {err}") from None
     # The ladder pins this to the EFFORT rung, not the shape: a `max` run compacts and returns
     # prose without `-P` (model_ladder_evidence.md, §Role guidance). Schema and review shape stay as
     # additional triggers.
@@ -1365,11 +1400,11 @@ def plan_job(job, data, out_dir, authorize, stage=None):
     # lens therefore gets the canonical schema by default -- remembering the pair is exactly what
     # does not happen, and the prose that came back from a fan-out missing it was read as the
     # model's ceiling rather than as the dispatch error it was.
-    if job.get("shape") == "review" and not job.get("schemaFile"):
+    if tool_profiles.kind_guard(kind) == "review" and not job.get("schemaFile"):
         if DEFAULT_REVIEW_SCHEMA.is_file():
             argv += ["-S", _posix(DEFAULT_REVIEW_SCHEMA)]
         else:
-            raise JobError(f"job {label}: shape `review` needs a schema and the default is missing "
+            raise JobError(f"job {label}: kind `{kind}` needs a schema and the default is missing "
                            f"({DEFAULT_REVIEW_SCHEMA}). Pass `schemaFile`, or restore that file -- "
                            f"a review lens without one returns prose on any compaction.")
     if authorize:
@@ -1379,17 +1414,17 @@ def plan_job(job, data, out_dir, authorize, stage=None):
 
 
 def job_builtins(job):
-    """The built-in tools the job's child launches with: its shape's resolved profile, or an `arm`
+    """The built-in tools the job's child launches with: its kind's resolved profile, or an `arm`
     job's task row (`baseBuiltins` or `toolsCsv`) with its delta applied."""
     add, remove = tool_profiles.tools_delta(job.get("tools"))
-    if (job.get("shape") or "any") == "arm":
+    if job.get("kind") == "arm":
         base = [n.strip() for n in str(job.get("baseBuiltins") or job.get("toolsCsv") or "").split(",")
                 if n.strip()]
         return [n for n in dict.fromkeys(base + [a for a in add if not a.startswith("mcp:")])
                 if n not in remove]
-    return tool_profiles.resolve(
-        job.get("shape") or "any", tools_csv="" if (add or remove) else str(job.get("toolsCsv") or ""),
-        add=add, remove=remove, walk_mcp=False)[0]["builtins"]
+    return tool_profiles.resolve_kind(
+        job["kind"], add=add, remove=remove, route="fanout", walk_mcp=False,
+        tools_csv="" if (add or remove) else str(job.get("toolsCsv") or ""))[0]["builtins"]
 
 
 def concurrency_guard_text(shell):
@@ -1827,6 +1862,8 @@ def _inventory_job(label, argv, launch_id, record_path, wake_with=None):
     launcher = launcher_of(argv)
     if launcher:
         job["launcher"] = launcher
+    if label in PAID_BY:
+        job["plan"] = PAID_BY[label]
     if workdir_of(argv):
         job.update(workdir=os.path.abspath(workdir_of(argv)), startHead=_head_of(workdir_of(argv)))
     if brief_of(argv):
@@ -2234,7 +2271,7 @@ def _output_cap(r):
         try:
             last = None
             with open(path, encoding="utf-8", errors="replace") as fh:
-                for event in stream_check.iter_stream_events(fh):
+                for event in iter_stream_events(fh):
                     last = event
             cap = stream_check.output_cap((last or {}).get("result"))
         except OSError:
@@ -2501,7 +2538,7 @@ def fold_probe(args, seats=(), data=None):
     outside `plans_of` that transport would be refused), so the fold spends the review's currency. Otherwise
     the fold keeps its own default plan."""
     spec = {"label": FOLD_LABEL.format(0), "alias": args.fold_alias, "effort": args.fold_effort,
-            "promptFile": args.fold, "shape": "author", "disclosure": "full",
+            "promptFile": args.fold, "kind": "author",
             "contextFiles": [args.fold]}
     payers = {_seat_payer(seat, data) for seat in seats}
     payer = getattr(args, "fold_plan", None) or (payers.pop() if len(payers) == 1 else None)
@@ -2789,7 +2826,7 @@ def doctrine_refusal(argv):
 
 
 def launcher_fit_refusal(argv):
-    """The tier-fit refusal every job's launcher would print, else None. A job's tier (its own, else its shape's) is one its
+    """The tier-fit refusal every job's launcher would print, else None. A job's tier (its own, else its kind's) is one its
     pin must serve (`hooks/_dispatch_checks.py` `tier_fit`); the PreToolUse hook cannot read a jobs file the same call writes,
     and a detached launcher would print the refusal into a `.err` the caller never reads. Run before anything
     spawns or detaches. `hooks/sidecar_dispatch_context.py` owns the check and its text."""
@@ -2838,7 +2875,7 @@ def spare_facts(jobs, data, now=None, read=None):
             rows = listed_rows(job)
             if len(rows) != 1:
                 continue
-            tier = checks.job_tier(job.get("shape"), job.get("tier"))[0]
+            tier = checks.job_tier(job.get("kind"), job.get("tier"))[0]
             transport = job.get("transport") or model_registry.resolve(rows[0][0], data)["transport"]
             fact = checks.spare_plan_fact(tier, transport, data, now, read)
         except Exception:
@@ -3265,6 +3302,7 @@ def _main(argv):
     try:
         FALLBACKS.clear()
         PLACED.clear()
+        PAID_BY.clear()
         FULL_WINDOW.clear()
         SLOTS.clear()
         _LIVE.clear()

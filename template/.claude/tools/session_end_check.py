@@ -425,15 +425,29 @@ def land_prefix():
 def unpushed_commits(repo):
     """Commits on HEAD that its upstream and every remote land branch (`land_prefix`) lack: an int, or None
     when the count cannot be read (no repo, no upstream). Phase 7 runs /commit_push, and pushing is part of
-    it; a land push hands the commits to the runner before the upstream moves."""
+    it; a land push hands the commits to the runner before the upstream moves. A commit whose patch a ref
+    carries under another sha (a land replayed from a scratch worktree) counts as published."""
     land = land_prefix()
-    lands = ['--glob=refs/remotes/*/' + land + '*'] if land else []
+
+    def git(*a):
+        return subprocess.run(['git', '-C', repo, *a], capture_output=True, text=True, timeout=60)
     try:
-        r = subprocess.run(['git', '-C', repo, 'rev-list', '--count', 'HEAD', '--not', '@{u}', *lands],
-                           capture_output=True, text=True, timeout=30)
+        refs = ['@{u}']
+        if land:
+            r = git('for-each-ref', '--format=%(refname)', 'refs/remotes/*/' + land + '*')
+            if r.returncode != 0:
+                return None
+            refs += r.stdout.split()
+        unpublished = None
+        for ref in refs:
+            r = git('cherry', ref, 'HEAD')
+            if r.returncode != 0:
+                return None
+            plus = {line[2:] for line in r.stdout.splitlines() if line.startswith('+ ')}
+            unpublished = plus if unpublished is None else unpublished & plus
     except (OSError, subprocess.SubprocessError):
         return None
-    return int(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip().isdigit() else None
+    return len(unpublished)
 
 
 def unpublished_peer_sessions(repo, transcript):

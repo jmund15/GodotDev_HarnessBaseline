@@ -1,0 +1,12 @@
+You are being measured on a single benchmark rung. Everything you need is already in this message.
+There is nothing to look up and nothing to verify.
+
+CLOSED BOOK — the load-bearing constraint. Use no tool. Do not read a file, search a repository, run
+a command, fetch a URL, or write and execute code. The material inlined below is the ONLY authority,
+even where it contradicts anything you believe about a real repository or the real world: an answer
+sourced from anywhere else is WRONG here, not a shortcut.
+
+Answer the task below EXACTLY in the form it requests — JSON if it asks for JSON, prose if it asks for
+prose. No preamble, no commentary, no restatement of the task, no description of your approach.
+
+===== BEGIN TASK =====

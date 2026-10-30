@@ -253,12 +253,21 @@ def split_submodule(top: Path, path: str):
     return None
 
 
+def worktree_split(path: str):
+    """`(".claude/worktrees/<name>", path inside it)` when a repo-relative `path` lies under a linked worktree's
+    root, else None. Text only: the caller checks the worktree exists."""
+    parts = path.split("/", 3)
+    if len(parts) == 4 and parts[:2] == [".claude", "worktrees"]:
+        return "/".join(parts[:3]), parts[3]
+    return None
+
+
 def split_worktree(top: Path, path: str):
     """`(linked worktree directory, path inside it)` when `path` lies under `.claude/worktrees/<name>/` of `top`,
     else None. A linked worktree shares `top`'s object store, so its files hash at any commit of `top`."""
-    parts = path.split("/", 3)
-    if len(parts) == 4 and parts[:2] == [".claude", "worktrees"] and (top / "/".join(parts[:3]) / ".git").exists():
-        return "/".join(parts[:3]), parts[3]
+    found = worktree_split(path)
+    if found and (top / found[0] / ".git").exists():
+        return found
     return None
 
 
@@ -268,10 +277,9 @@ def row_blob(row: dict, path: str):
     blob stays the content check."""
     files = row.get("files") or {}
     blob = files.get(path)
-    if blob is None:
-        parts = path.split("/", 3)
-        if len(parts) == 4 and parts[:2] == [".claude", "worktrees"]:
-            blob = files.get(parts[3])
+    found = worktree_split(path)
+    if blob is None and found:
+        blob = files.get(found[1])
     return blob
 
 

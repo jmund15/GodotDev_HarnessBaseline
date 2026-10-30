@@ -109,8 +109,9 @@ function Start-SuiteChild {
     $out = Get-SuiteChildOutPath -ResultsRoot $ResultsRoot -Label $Unit.label
     New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
     # Start-Process joins its arguments with spaces, so a spaced value is quoted to stay one argument.
-    $quoted = @($argv | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
-    $p = Start-Process -FilePath 'pwsh' -ArgumentList $quoted -PassThru -NoNewWindow `
+    $pw = Get-PwshStart
+    $quoted = @($pw.Lead) + @($argv | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } })
+    $p = Start-Process -FilePath $pw.FilePath -ArgumentList $quoted -PassThru -NoNewWindow `
         -RedirectStandardOutput $out -RedirectStandardError ([System.IO.Path]::ChangeExtension($out, '.err'))
     $null = $p.Handle   # caches the handle so ExitCode survives the process
     $p

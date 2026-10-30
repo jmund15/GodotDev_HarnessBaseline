@@ -12,6 +12,8 @@ import sys
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / ".claude/hooks"))
 from _win_path import drive_path  # noqa: E402
+sys.path.insert(0, str(REPO / ".claude/tools"))
+import tool_profiles  # noqa: E402
 import finding_bar  # noqa: E402
 _EVIDENCE_KINDS = json.loads((REPO / '.claude/schemas/evidence.json').read_text(encoding='utf-8'))['items']['oneOf']
 
@@ -168,8 +170,8 @@ def validate_review_jobs(jobs):
     for job in jobs:
         if not isinstance(job, dict) or not _text(job.get("label")):
             raise ValueError("review jobs need a nonempty label")
-        if job.get("shape") != "review":
-            raise ValueError(f"review job {job['label']} needs shape review")
+        if tool_profiles.job_kind_shape(job) != "review":
+            raise ValueError(f"review job {job['label']} needs kind reviewer")
         mandates = job.get("mandates")
         if not isinstance(mandates, list) or not mandates or not all(_text(key) for key in mandates):
             raise ValueError(f"review job {job['label']} needs explicit mandate keys")
