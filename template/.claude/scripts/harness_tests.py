@@ -29,6 +29,7 @@ and leaves the run incomplete (exit 3). rules/harness_tooling.md owns cadence an
 """
 
 import argparse
+import base64
 from contextlib import contextmanager, redirect_stdout
 import io
 import math
@@ -45,6 +46,7 @@ import sys
 import tempfile
 import time
 import tokenize
+import zlib
 from threading import Event
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -59,7 +61,7 @@ _PROGRESS_MIN, _PROGRESS_EVERY = 25, 25  # a scoped commit run stays quiet; a cl
 
 sys.path.insert(0, os.path.join(_CLAUDE_DIR, "hooks"))
 from _hook_state import update_json_locked, read_json_salvage, HARNESS_DIRS as DIRS, \
-    SETUP_SURFACE_FILES as SURFACES, CODE_EXT as _CODE_EXT, SETTINGS_FILES as _SETTINGS_FILES, \
+    SETUP_SURFACE_FILES as SURFACES, CODE_EXT as _CODE_EXT, \
     is_harness_code as _is_code  # noqa: E402
 import _file_lock  # noqa: E402
 from _bounded_run import ProcessTree  # noqa: E402
@@ -751,32 +753,27 @@ def _mention_token(rel, census):
     return parts[-1]
 
 
+def _is_record(path):
+    return path.endswith(".jsonl")
+
+
 def bindings(repo_root, touched, include_excluded=False, proofs=None):
-    """{touched path: [bound proof paths]}, in discovery order. A file binds: itself when it is a
-    proof, `test_<stem>*` / `<stem>_test.*` by name, any proof whose source names it (its basename,
-    or its `<parent>/<basename>` when the basename is shared under `.claude/`), the dir-scanning
-    proofs, and every proof that names a settings file when it is one. A `.py` module under
-    `.claude/hooks/`, `tools/` or `scripts/` (top level or `lib/`) also binds the name and mention
-    proofs of the modules there that import it, a function-local import included; the closure goes
-    further only through a `_`-prefixed hooks helper. Each of those files binds as it would when
-    touched: a `PROOF_BINDINGS` input binds its declared proofs in place of its mention rule. Over-selection is harmless;
-    under-selection is what the name and mention rules guard. `proofs` restricts the candidates to
-    those paths."""
+    """{touched path: [bound proof paths]}, in discovery order. A path binds only the proofs that are it,
+    are named for it (`test_<stem>*`, `<stem>_test.*`), name it in their source (its basename, or its
+    `<parent>/<basename>` when the basename is shared under `.claude/`), declare it in `PROOF_BINDINGS`
+    (which replaces the mention rule), or scan its folder; a `.jsonl` record binds nothing. `proofs`
+    restricts the candidates to those paths."""
     tests_dir = os.path.join(repo_root, ".claude", "tests")
     discovered = discover(tests_dir) if proofs is None else list(proofs)
     if not include_excluded:
         discovered = [p for p in discovered if os.path.basename(p) not in EXCLUDED]
     census = _tracked_by_basename(repo_root)
-    rules, sources = {}, None
+    rules = {}
     for t in dict.fromkeys(_norm(t) for t in touched):
-        if sources is None and t.endswith(".py") and t.rpartition("/")[0] in _IMPORT_DIRS:
-            sources = _module_sources(repo_root)
-        named = [t] + sorted(_importers(t, sources or {}))
         rules[t] = (
-            {os.path.splitext(n.rsplit("/", 1)[-1])[0] for n in named},
-            [_mention_token(n, census) for n in named if n not in PROOF_BINDINGS],
-            {proof for n in named for proof in PROOF_BINDINGS.get(n, ())},
-            t in _SETTINGS_FILES,
+            os.path.splitext(t.rsplit("/", 1)[-1])[0],
+            None if t in PROOF_BINDINGS else _mention_token(t, census),
+            PROOF_BINDINGS.get(t, ()),
         )
     texts = {}
 
@@ -793,12 +790,12 @@ def bindings(repo_root, touched, include_excluded=False, proofs=None):
     for path in discovered:
         name = os.path.basename(path)
         rel = _norm(os.path.relpath(path, repo_root))
-        for t, (stems, tokens, declared, settings) in rules.items():
-            if (rel == t or name in _DIR_SCANNING or name in declared
+        for t, (stem, token, declared) in rules.items():
+            if rel == t or (not _is_record(t) and (
+                    name in _DIR_SCANNING or name in declared
                     or any(t.startswith(folder.rstrip("/") + "/") for folder in _corpus_dirs(name))
-                    or any(_named_for(name, s) for s in stems)
-                    or any(tok in text_of(path) for tok in tokens)
-                    or (settings and any(os.path.basename(f) in text_of(path) for f in _SETTINGS_FILES))):
+                    or _named_for(name, stem)
+                    or (token is not None and token in text_of(path)))):
                 result[t].append(path)
     return result
 
@@ -1027,13 +1024,15 @@ class SlotStoreError(OSError):
 
 
 def _claim_width(folder, count):
-    """Record `count` as the slot directory's width. A caller whose width differs from the recorded
-    one is refused while any slot of either width is held: the lock namespace is shared but each
-    process counts its own slots, so a runner of another width would overlap the holder."""
+    """The width this run takes slots at: `count`, recorded as the slot directory's width, or the recorded
+    width while any slot of either width is held. The lock namespace is shared but each process counts its
+    own slots, so two widths at once would overlap; a run that joins the held width waits for a slot like
+    any other, and a width change takes effect once the machine's slots are free."""
     path = os.path.join(folder, "width.json")
     recorded = read_json_salvage(path).get("width") if os.path.exists(path) else None
     if recorded == count:
-        return
+        return count
+    joined = []
 
     def claim(state):
         was = state.get("width")
@@ -1041,8 +1040,8 @@ def _claim_width(folder, count):
             for i in range(max(was, count)):
                 handle = _file_lock.acquire(os.path.join(folder, "slot-%d.lock" % i), 0)
                 if not handle:
-                    raise SlotStoreError("machine slot width %d conflicts with width %d held by a running "
-                                         "proof in %s; set HARNESS_MACHINE_SLOTS to %d or wait" % (count, was, folder, was))
+                    joined.append(was)
+                    return
                 _file_lock.release(handle)
         state["width"] = count
 
@@ -1050,12 +1049,13 @@ def _claim_width(folder, count):
         update_json_locked(path, claim, raising=True)
     except (OSError, TimeoutError) as exc:
         raise SlotStoreError("machine slot width cannot be recorded in %s (%s)" % (folder, exc))
+    return joined[0] if joined else count
 
 
 def _take_slots(exclusive):
     """Handles for one machine slot, or for every slot when `exclusive` (a `SERIAL` proof owns the
     machine); None when the deadline passes first; raises `SlotStoreError` when the slot directory
-    cannot be created or another width holds it. An exclusive taker holds `drain.lock` while it
+    cannot be created or its width cannot be recorded. An exclusive taker holds `drain.lock` while it
     collects, so pool takers from every run stop claiming the slots it waits for."""
     count, folder = _machine_slots(), _slot_dir()
     if count == 0:
@@ -1064,7 +1064,7 @@ def _take_slots(exclusive):
         os.makedirs(folder, exist_ok=True)
     except OSError as exc:
         raise SlotStoreError("machine slot directory unusable: %s (%s)" % (folder, exc))
-    _claim_width(folder, count)
+    count = _claim_width(folder, count)
     paths = [os.path.join(folder, "slot-%d.lock" % i) for i in range(count)]
     drain_path = os.path.join(folder, "drain.lock")
     deadline, held, drain = _deadline(), [], None
@@ -1243,6 +1243,33 @@ def _split_command_line(line):
     if quoted:
         return None
     return args + ["".join(buf)] if started else args
+
+
+_ROWS_MEMO, _ROWS_LOCK = {}, threading.Lock()
+
+
+def _pack_manifest(manifest):
+    """A manifest as one short string. Raw, its probed import paths were 80% of a 118 MB cache file that
+    every proof's record parsed and rewrote whole; packed, a row costs about 6 KB."""
+    return base64.b64encode(zlib.compress(json.dumps(manifest, separators=(",", ":")).encode("utf-8"))).decode("ascii")
+
+
+def _packed_row(row):
+    """`row` with an inline `manifest` (written before manifests were packed) moved to `zm`."""
+    if not isinstance(row.get("manifest"), dict):
+        return row
+    return dict({k: v for k, v in row.items() if k != "manifest"}, zm=_pack_manifest(row["manifest"]))
+
+
+def _unpack_manifest(row):
+    """A row's manifest, packed or inline; None when its packed form does not decode."""
+    packed = row.get("zm")
+    if not packed:
+        return row.get("manifest")
+    try:
+        return json.loads(zlib.decompress(base64.b64decode(packed)))
+    except (ValueError, zlib.error, TypeError):
+        return None
 
 
 class _PassCache:
@@ -1616,8 +1643,20 @@ class _PassCache:
         return hashlib.sha256(blob).hexdigest()
 
     def _rows(self):
-        rows = read_json_salvage(self.path) if os.path.exists(self.path) else {}
-        return rows if isinstance(rows, dict) else {}
+        """The stored rows, parsed once per file state: a run asks twice per proof, and a reparse of the
+        whole file costs more than most proofs. The file's (mtime, size, inode) says when a peer or
+        `record` replaced it. Callers read the rows and never change them."""
+        try:
+            info = os.stat(self.path)
+        except OSError:
+            return {}
+        state = (info.st_mtime_ns, info.st_size, info.st_ino)
+        with _ROWS_LOCK:
+            held = _ROWS_MEMO.get(self.path)
+            if held is None or held[0] != state:
+                rows = read_json_salvage(self.path)
+                held = _ROWS_MEMO[self.path] = (state, rows if isinstance(rows, dict) else {})
+            return held[1]
 
     def variants(self, proof):
         """The proof's recorded passes, newest first."""
@@ -1632,7 +1671,7 @@ class _PassCache:
         for row in self.variants(proof):
             okey = row.get("okey")
             if okey:
-                if self.observed_key(proof, row.get("manifest")) == okey:
+                if self.observed_key(proof, _unpack_manifest(row)) == okey:
                     return row
             elif key and row.get("key") == key:
                 return row
@@ -1662,22 +1701,33 @@ class _PassCache:
             checkout = _CLOSE_CHECKOUT
 
         def update(rows):
-            now = time.time()
+            now, standing = time.time(), {}
+
+            def lives(r):
+                where = r.get("checkout")
+                if where in (None, _CLOSE_CHECKOUT):
+                    return True
+                if where not in standing:
+                    standing[where] = os.path.isdir(where)
+                return standing[where]
+
+            # Every record sweeps the whole file: rows past the 30-day window and rows of a removed checkout
+            # go, and a row from before manifests were packed is packed now.
             for name in list(rows):
                 entry = rows[name]
                 entry = [entry] if isinstance(entry, dict) else entry if isinstance(entry, list) else []
-                entry = [r for r in entry if isinstance(r, dict) and now - r.get("ts", 0) <= 30 * 86400]
+                entry = [_packed_row(r) for r in entry
+                         if isinstance(r, dict) and now - r.get("ts", 0) <= 30 * 86400 and lives(r)]
                 if entry:
                     rows[name] = entry
                 else:
                     rows.pop(name)
             row = {"key": key, "ts": round(now, 1), "observations": observations or [], "checkout": checkout}
             if okey:
-                row.update(manifest=manifest, okey=okey)
+                row.update(zm=_pack_manifest(manifest), okey=okey)
             rows[rel] = [row] + [r for r in rows.get(rel, [])
                                  if r.get("checkout") not in (checkout, None)
-                                 and (r.get("key"), r.get("okey")) != (key, okey)
-                                 and (r["checkout"] == _CLOSE_CHECKOUT or os.path.isdir(r["checkout"]))]
+                                 and (r.get("key"), r.get("okey")) != (key, okey)]
         try:
             os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
             update_json_locked(self.path, update)
@@ -1712,10 +1762,13 @@ _LOG_LOCK_SECONDS = 2.0
 
 
 def _record_run(row):
-    """Append one run row to `harness_runs.json`, keeping the newest `_RUNS_KEPT`; best-effort."""
+    """Append one run row to `harness_runs.json`, keeping the newest `_RUNS_KEPT`; best-effort. The row's
+    `behavior` report (98% of the file's bytes, read by nobody from disk) stays in memory, not in the file."""
     def update(state):
         runs = state.get("runs")
-        state["runs"] = ((runs if isinstance(runs, list) else []) + [row])[-_RUNS_KEPT:]
+        runs = [{k: v for k, v in r.items() if k != "behavior"} if isinstance(r, dict) else r
+                for r in (runs if isinstance(runs, list) else [])]
+        state["runs"] = (runs + [{k: v for k, v in row.items() if k != "behavior"}])[-_RUNS_KEPT:]
     update_json_locked(runs_path(), update)
 
 
@@ -2550,7 +2603,7 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
             if roster_error:
                 raise RuntimeError(roster_error)
             selected = select_for(snapshot, paths)
-            if paths and not selected:
+            if not selected and any(not _is_record(p) for p in paths):
                 raise RuntimeError("no proof bound to outgoing harness paths")
             statuses, details = {}, {}
             _progress(_selection_estimate(selected))
