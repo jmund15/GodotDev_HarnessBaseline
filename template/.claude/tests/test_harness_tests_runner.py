@@ -514,57 +514,22 @@ def case_proof_receives_the_stamp_index(failures):
         failures.append("stamp index: with=%s without=%s %s" % (status, absent_status, detail[:200]))
 
 
-def case_helper_module_selects_its_importers_proofs(failures):
-    """Touching a `_`-prefixed hooks helper selects the proofs of every hook that imports it,
-    directly or through another helper."""
-    repo = make_repo()
-    hooks = os.path.join(repo, ".claude", "hooks")
-    sources = {
-        "_scope.py": "X = 1\n",
-        "_mid.py": "from _scope import X\n",
-        "direct.py": "import json\nfrom _scope import X\n",
-        "via_mid.py": "import _mid\n",
-        "bystander.py": "# mentions _scope in a comment only\nY = 2\n",
-    }
-    for name, text in sources.items():
-        with open(os.path.join(hooks, name), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(text)
-    for name in ("test_direct_rm.py", "test_via_mid.py", "test_bystander.py"):
-        write_proof(repo, name, 0)
-    seed_commit(repo)
-    harness_tests.EXCLUDED = {}
-    names = sorted(os.path.basename(p) for p in harness_tests.select_for(repo, [".claude/hooks/_scope.py"]))
-    real = sorted(os.path.basename(p) for p in harness_tests.select_for(
-        harness_tests.REPO_ROOT, [".claude/hooks/_claude_scope.py"]))
-    ok = (names == ["test_direct_rm.py", "test_via_mid.py"]
-          and "test_pattern_enforcer_autofix.py" in real)
-    print("%-4s a touched hooks helper selects its importers' proofs, transitively, and not a bystander's"
-          % ("ok" if ok else "FAIL"))
-    if not ok:
-        failures.append("helper importers: fixture=%s real_has_autofix=%s"
-                        % (names, "test_pattern_enforcer_autofix.py" in real))
-
-
-def case_module_selects_its_direct_importers_proofs(failures):
-    """A touched tool selects the name and mention proofs of the modules that import it, a
-    function-local import included; the closure goes no further than a direct importer unless that
-    importer is a `_`-prefixed hooks helper. A declared binding replaces only the touched path's own
-    mention rule."""
+def case_a_touched_path_binds_its_own_proofs_not_its_importers(failures):
+    """A touched tool binds its name, mention and declared proofs; the proofs of the modules that import
+    it (directly, in a function, or through a `_` hooks helper) stay unselected. A declared binding
+    replaces only the touched path's own mention rule."""
     repo = make_repo()
     sources = {
         "tools/a.py": "X = 1\n",
         "hooks/b.py": "def load():\n    from a import X\n",
-        "scripts/c.py": "import b\n",
-        "tools/_non_hook.py": "import a\n",
-        "hooks/via_non_hook.py": "import _non_hook\n",
-        "hooks/bystander.py": "# import a\nimport another\n",
+        "hooks/_helper.py": "import a\n",
+        "hooks/via_helper.py": "import _helper\n",
     }
     for rel, text in sources.items():
         with open(os.path.join(repo, ".claude", rel), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
-    for name, text in (("test_b.py", "# b.py\n"), ("test_contract.py", "# b.py\n"),
-                       ("test_mentions_alpha.py", "# a.py\n"), ("test_declared.py", ""),
-                       ("test_c.py", ""), ("test_via_non_hook.py", ""), ("test_other_bystander.py", "")):
+    for name, text in (("test_a_core.py", ""), ("test_b.py", "# b.py\n"), ("test_mentions_alpha.py", "# a.py\n"),
+                       ("test_declared.py", ""), ("test_via_helper.py", ""), ("test_other_bystander.py", "")):
         with open(os.path.join(repo, ".claude", "tests", name), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
     seed_commit(repo)
@@ -578,49 +543,34 @@ def case_module_selects_its_direct_importers_proofs(failures):
     finally:
         harness_tests.PROOF_BINDINGS.clear()
         harness_tests.PROOF_BINDINGS.update(saved)
-    ok = (names == ["test_b.py", "test_contract.py", "test_mentions_alpha.py"]
-          and declared == ["test_b.py", "test_contract.py", "test_declared.py"])
-    print("%-4s a touched tool selects its direct importers' name and mention proofs, function-local imports "
-          "included, and no further" % ("ok" if ok else "FAIL"))
+    ok = (names == ["test_a_core.py", "test_mentions_alpha.py"]
+          and declared == ["test_a_core.py", "test_declared.py"])
+    print("%-4s a touched path binds its name, mention and declared proofs, never an importer's"
+          % ("ok" if ok else "FAIL"))
     if not ok:
-        failures.append("direct importers: fixture=%s declared=%s" % (names, declared))
+        failures.append("own proofs only: fixture=%s declared=%s" % (names, declared))
 
 
-def case_importer_selection_covers_harness_roots_and_lib(failures):
+def case_settings_and_jsonl_paths_bind_only_their_own_proofs(failures):
+    """A settings file binds the proofs that name it, not every proof that names a sibling settings file;
+    a `.jsonl` record binds no proof by name or mention."""
     repo = make_repo()
-    folders = ("hooks", "tools", "scripts", "hooks/lib", "tools/lib", "scripts/lib")
-    touched = []
-    for i, folder in enumerate(folders):
-        os.makedirs(os.path.join(repo, ".claude", folder), exist_ok=True)
-        rel = ".claude/%s/source%d.py" % (folder, i)
-        touched.append(rel)
-        with open(os.path.join(repo, rel), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("X = 1\n")
-        with open(os.path.join(repo, ".claude", folder, "consumer%d.py" % i), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("def load():\n" + "".join("    import source%d\n" % j for j in range(len(folders))))
-        write_proof(repo, "test_consumer%d.py" % i, 0)
+    for rel, text in ((".claude/settings.base.json", "{}\n"), (".claude/orchestration_metrics.jsonl", "{}\n")):
+        with open(os.path.join(repo, *rel.split("/")), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+    for name, text in (("test_names_base.py", "# settings.base.json\n"), ("test_names_main.py", "# settings.json\n"),
+                       ("test_orchestration_metrics.py", ""), ("test_reads_metrics.py", "# orchestration_metrics.jsonl\n")):
+        with open(os.path.join(repo, ".claude", "tests", name), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
     seed_commit(repo)
     harness_tests.EXCLUDED = {}
-    expected = ["test_consumer%d.py" % i for i in range(len(folders))]
-    bound = harness_tests.bindings(repo, touched)
-    actual = {rel: sorted(os.path.basename(p) for p in paths) for rel, paths in bound.items()}
-    ok = all(names == expected for names in actual.values())
-    print("%-4s modules under hooks, tools and scripts, top level and lib/, select their importers' proofs"
-          % ("ok" if ok else "FAIL"))
+    bound = harness_tests.bindings(repo, [".claude/settings.base.json", ".claude/orchestration_metrics.jsonl"])
+    got = {t: sorted(os.path.basename(p) for p in paths) for t, paths in bound.items()}
+    ok = (got[".claude/settings.base.json"] == ["test_names_base.py"]
+          and got[".claude/orchestration_metrics.jsonl"] == [])
+    print("%-4s a settings file binds the proofs naming it; a .jsonl record binds none" % ("ok" if ok else "FAIL"))
     if not ok:
-        failures.append("importer folders: %s" % actual)
-
-
-def case_proofs_for_post_check_selects_dispatch_verification(failures):
-    """The live tree: `hooks/dispatch_table.py` imports `post_check` inside a function, so a
-    post_check change runs the dispatch table's proof."""
-    selected = [os.path.basename(p) for p in harness_tests.select_for(
-        harness_tests.REPO_ROOT, [".claude/tools/post_check.py"])]
-    ok = "test_dispatch_table_verification.py" in selected
-    print("%-4s live selection for tools/post_check.py includes test_dispatch_table_verification.py"
-          % ("ok" if ok else "FAIL"))
-    if not ok:
-        failures.append("live post_check selection: %s" % selected)
+        failures.append("settings/jsonl binding: %s" % got)
 
 
 def _leak_probe(repo, name, marker, tail):
@@ -931,10 +881,8 @@ CASES = (
     case_proof_drops_every_git_local_env_var,
     case_local_env_vars_come_from_git_with_a_fallback,
     case_proof_receives_the_stamp_index,
-    case_helper_module_selects_its_importers_proofs,
-    case_module_selects_its_direct_importers_proofs,
-    case_importer_selection_covers_harness_roots_and_lib,
-    case_proofs_for_post_check_selects_dispatch_verification,
+    case_a_touched_path_binds_its_own_proofs_not_its_importers,
+    case_settings_and_jsonl_paths_bind_only_their_own_proofs,
     case_proof_does_not_inherit_git_repo_env,
     case_scoped_run_selects_bound_proofs_only,
     case_scoped_run_refreshes_only_the_touched_entries,
@@ -1077,12 +1025,33 @@ class _CloseUntrackedRed(RepoCase):
         self.assertNotIn('UNCOMMITTED PROOF RED', out)
         self.assertEqual(json.loads(self.stamp.read_text())['close']['verdict'], 'red')
 
+    def outgoing_only(self, rel):
+        self.write('.claude/hooks/unit.py', "VALUE = 'good'\n")
+        self.write('.claude/tests/test_unit.py', self.PROOF)
+        self.base = self.commit('green harness')
+        self.git('update-ref', 'refs/remotes/origin/main', self.base)
+        self.write(rel, '{}\n')
+        self.commit('outgoing ' + rel)
+
+    def test_record_only_push_closes_green(self):
+        self.outgoing_only('.claude/orchestration_metrics.jsonl')
+        rc, out = self.close()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(json.loads(self.stamp.read_text())['close']['verdict'], 'green')
+
+    def test_unbound_code_path_stays_incomplete(self):
+        self.outgoing_only('.claude/hooks/orphan.py')
+        rc, out = self.close()
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn('no proof bound to outgoing harness paths', out)
+
 
 def case_close_untracked_red_is_advisory_tracked_red_blocks(failures):
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(_CloseUntrackedRed)
     result = unittest.TextTestRunner(stream=open(os.devnull, "w"), verbosity=0).run(suite)
     ok = result.wasSuccessful()
-    print("%-4s close: untracked red proof is advisory, tracked red blocks" % ("ok" if ok else "FAIL"))
+    print("%-4s close: untracked red proof is advisory, tracked red blocks, a records-only push is green"
+          % ("ok" if ok else "FAIL"))
     for _, trace in result.failures + result.errors:
         failures.append("close untracked red: " + trace.strip().splitlines()[-1])
 

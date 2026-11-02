@@ -529,6 +529,82 @@ def case_two_checkouts_keep_their_own_passes():
         harness_tests.PASSES_PATH = saved
 
 
+def case_the_rows_are_parsed_once_until_the_file_changes():
+    """A run asks for a proof's rows at least twice, and the file holds every proof's: parse it once per
+    file state, and again after a record replaces it."""
+    repo, proof, counter = make_repo()
+    parent = tempfile.mkdtemp(prefix="harnesspassrows_")
+    saved, real, reads = harness_tests.PASSES_PATH, harness_tests.read_json_salvage, []
+    harness_tests.PASSES_PATH = os.path.join(parent, "passes.json")
+    harness_tests.read_json_salvage = lambda path: reads.append(path) or real(path)
+    try:
+        cache = harness_tests._PassCache(repo)
+        cache.record(proof, key="k1")
+        hits = [cache.hit(proof, "k1") for _ in range(3)]
+        check("three lookups of an unchanged file parse it once", all(hits) and len(reads) == 1, str(len(reads)))
+        cache.record(proof, key="k2")
+        check("a record that replaced the file is read back", cache.hit(proof, "k2") and not cache.hit(proof, "k1")
+              and len(reads) == 2, str(len(reads)))
+    finally:
+        harness_tests.PASSES_PATH, harness_tests.read_json_salvage = saved, real
+
+
+def case_a_record_sweeps_the_file():
+    """Every record drops rows of a removed checkout from every proof and packs a manifest stored inline
+    before packing existed; the packed row keeps its reuse."""
+    repo, proof, counter = make_repo()
+    parent = tempfile.mkdtemp(prefix="harnesspasssweep_")
+    saved = harness_tests.PASSES_PATH
+    harness_tests.PASSES_PATH = os.path.join(parent, "passes.json")
+    try:
+        manifest = {"files": [".claude/tools/beta.py"], "probes": [], "dirs": [], "static": [], "git": False,
+                    "opaque": False}
+        cache = harness_tests._PassCache(repo)
+        cache.record(proof, key="k", manifest=manifest)
+        rel = os.path.relpath(proof, repo).replace(os.sep, "/")
+        with open(harness_tests.PASSES_PATH, encoding="utf-8") as fh:
+            rows = json.load(fh)
+        row = rows[rel][0]
+        packed = "zm" in row and "manifest" not in row
+        row["manifest"] = harness_tests._unpack_manifest(row)
+        del row["zm"]
+        rows["gone.py"] = [{"key": "g", "ts": time.time(), "observations": [],
+                            "checkout": os.path.join(parent, "removed")}]
+        with open(harness_tests.PASSES_PATH, "w", encoding="utf-8") as fh:
+            json.dump(rows, fh)
+        legacy_hits = harness_tests._PassCache(repo).hit(proof, "k")
+        harness_tests._PassCache(repo).record(os.path.join(repo, ".claude/tests/test_other.py"), key="o")
+        with open(harness_tests.PASSES_PATH, encoding="utf-8") as fh:
+            rows = json.load(fh)
+        swept = rows[rel][0]
+        check("a manifest is stored packed, an inline one still hits, and the next record packs it",
+              packed and legacy_hits and "zm" in swept and "manifest" not in swept
+              and harness_tests._PassCache(repo).hit(proof, "k"), str(sorted(swept)))
+        check("a record drops another proof's row of a removed checkout", "gone.py" not in rows, str(sorted(rows)))
+    finally:
+        harness_tests.PASSES_PATH = saved
+
+
+def case_the_run_log_keeps_no_behavior_report():
+    """The behavior report was 98% of `harness_runs.json` and no reader opens it from disk; the caller's
+    own row keeps it."""
+    parent = tempfile.mkdtemp(prefix="harnessruns_")
+    saved = harness_tests.RUNS_PATH
+    harness_tests.RUNS_PATH = os.path.join(parent, "runs.json")
+    try:
+        with open(harness_tests.RUNS_PATH, "w", encoding="utf-8") as fh:
+            json.dump({"runs": [{"mode": "old", "behavior": {"claims": [1, 2]}, "wall_s": 1.0}]}, fh)
+        row = {"mode": "close", "behavior": {"claims": [3]}, "wall_s": 2.0, "reused": 4}
+        harness_tests._record_run(row)
+        with open(harness_tests.RUNS_PATH, encoding="utf-8") as fh:
+            stored = json.load(fh)["runs"]
+        check("a recorded run keeps its figures and drops the behavior report, old rows included",
+              [r["mode"] for r in stored] == ["old", "close"] and stored[1]["reused"] == 4
+              and not any("behavior" in r for r in stored) and "behavior" in row, str(stored))
+    finally:
+        harness_tests.RUNS_PATH = saved
+
+
 def case_an_unparseable_spawn_marks_the_manifest_opaque():
     """A real close died on a spawned command line with an unbalanced quote (`No closing quotation`):
     the manifest builder must mark such reads opaque, never raise into the run."""
@@ -1007,35 +1083,45 @@ def case_a_head_comparison_takes_a_slot_and_honours_the_deadline():
           taken == [False] and not started and not reds, "slot requests=%s started=%s reds=%s" % (taken, started, reds))
 
 
-def case_a_runner_of_another_width_is_refused_while_work_holds_a_slot():
+def case_a_runner_of_another_width_joins_the_width_holding_a_slot():
     repo, _proof, _counter = make_repo()
     slots = os.path.join(repo, "slots")
     saved = dict(os.environ)
 
-    def take(width, exclusive):
+    def take(width, exclusive, deadline=None):
         os.environ.update({"HARNESS_SLOT_DIR": slots, "HARNESS_MACHINE_SLOTS": str(width)})
         os.environ.pop("HARNESS_DEADLINE", None)
+        if deadline:
+            os.environ["HARNESS_DEADLINE"] = str(time.time() + deadline)
         try:
             return harness_tests._take_slots(exclusive)
         except harness_tests.SlotStoreError as exc:
             return exc
 
+    def recorded():
+        with open(os.path.join(slots, "width.json"), encoding="utf-8") as fh:
+            return json.load(fh).get("width")
+
     try:
         serial = take(1, True)
-        refused = take(2, False)
-        for handle in serial + (refused if isinstance(refused, list) else []):
+        joined = take(2, False, deadline=1)
+        width_while_held = recorded()
+        for handle in serial + (joined if isinstance(joined, list) else []):
             _file_lock.release(handle)
         free = take(2, False)
         same = take(2, False)
+        width_after = recorded()
         for handle in (free if isinstance(free, list) else []) + (same if isinstance(same, list) else []):
             _file_lock.release(handle)
     finally:
         os.environ.clear()
         os.environ.update(saved)
-    check("a runner whose slot width differs from the one holding a slot is refused instead of overlapping it",
-          isinstance(refused, harness_tests.SlotStoreError), "second runner got %r" % (refused,))
-    check("a different width is accepted once no slot is held, and the same width always is",
-          isinstance(free, list) and isinstance(same, list), "free=%r same=%r" % (free, same))
+    check("a runner whose width differs from the one holding a slot joins the held width and waits for its slot, "
+          "never failing as cannot-run", joined is None and width_while_held == 1,
+          "second runner got %r, width %r" % (joined, width_while_held))
+    check("a different width is recorded once no slot is held, and the same width always is accepted",
+          isinstance(free, list) and isinstance(same, list) and width_after == 2,
+          "free=%r same=%r width=%r" % (free, same, width_after))
 
 
 def case_a_runner_with_no_width_set_adopts_the_recorded_width():
@@ -1086,6 +1172,9 @@ def main():
     case_a_missing_recorder_records_no_observed_key()
     case_two_checkouts_keep_their_own_passes()
     case_a_close_checkout_pass_outlives_its_removed_checkout()
+    case_the_rows_are_parsed_once_until_the_file_changes()
+    case_a_record_sweeps_the_file()
+    case_the_run_log_keeps_no_behavior_report()
     case_an_unparseable_spawn_marks_the_manifest_opaque()
     case_a_quoted_shell_script_spawn_splits_as_its_child_reads_it()
     case_a_non_python_child_running_a_temp_copy_is_opaque()
@@ -1105,7 +1194,7 @@ def main():
     case_a_corpus_scanning_proof_is_keyed_by_the_corpus_it_scans()
     case_a_dir_scanning_proof_is_reused_only_with_a_corpus_entry()
     case_a_head_comparison_takes_a_slot_and_honours_the_deadline()
-    case_a_runner_of_another_width_is_refused_while_work_holds_a_slot()
+    case_a_runner_of_another_width_joins_the_width_holding_a_slot()
     case_a_runner_with_no_width_set_adopts_the_recorded_width()
     print("\n%d/%d cases pass" % (TOTAL - len(FAILS), TOTAL))
     for f in FAILS:

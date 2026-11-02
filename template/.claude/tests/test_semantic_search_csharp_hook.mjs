@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -25,7 +25,22 @@ function pluginRoot() {
 	const entries = (JSON.parse(readFileSync(registry, 'utf8')).plugins || {})['semantic-search@dreb'] || []
 	const user = entries.filter((entry) => entry.scope === 'user')
 	assert.equal(user.length, 1, 'expected exactly one user-scope semantic-search@dreb registration')
-	return user[0].installPath
+	return builtCopy(user[0].installPath)
+}
+
+// The registered copy when its backend is built, else the newest built version beside it: a plugin update
+// leaves the registered copy unbuilt until its first launch, and the proof needs a real dist.
+function builtCopy(registered) {
+	const built = (root) => existsSync(path.join(root, 'dist', 'mcp-server.js'))
+		&& existsSync(path.join(root, 'node_modules')) && readdirSync(path.join(root, 'node_modules')).length > 0
+	const parent = path.dirname(registered)
+	if (built(registered) || !existsSync(parent)) return registered
+	const version = (name) => name.split('.').map((part) => (/^\d+$/.test(part) ? Number(part) : -1))
+	const newer = (a, b) => { const x = version(a), y = version(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] ?? -1) !== (y[i] ?? -1)) return (y[i] ?? -1) - (x[i] ?? -1) } return 0 }
+	const siblings = readdirSync(parent).filter((name) => built(path.join(parent, name))).sort(newer)
+	if (siblings.length === 0) return registered
+	console.log(`note: ${registered} is not built; the proof uses ${path.join(parent, siblings[0])}`)
+	return path.join(parent, siblings[0])
 }
 
 const PLUGIN = pluginRoot()

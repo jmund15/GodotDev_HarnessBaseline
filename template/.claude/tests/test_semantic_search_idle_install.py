@@ -35,7 +35,26 @@ def active_plugin_root() -> Path:
     data = json.loads(REGISTRY_SOURCE.read_text(encoding="utf-8"))
     entries = [e for e in data["plugins"][PLUGIN_KEY] if e.get("scope") == "user"]
     assert len(entries) == 1, "expected exactly one user-scope registration"
-    return Path(entries[0]["installPath"])
+    return built_copy(Path(entries[0]["installPath"]))
+
+
+def built_copy(registered: Path) -> Path:
+    """The registered copy when its backend is built, else the newest built version beside it: a plugin
+    update leaves the registered copy unbuilt until its first launch, and the fixture needs a real backend."""
+    def built(root: Path) -> bool:
+        modules = root / "node_modules"
+        return (root / "dist" / "mcp-server.js").exists() and modules.is_dir() and any(modules.iterdir())
+
+    def version(root: Path) -> tuple:
+        return tuple(int(part) if part.isdigit() else -1 for part in root.name.split("."))
+
+    if built(registered) or not registered.parent.is_dir():
+        return registered
+    siblings = sorted((p for p in registered.parent.iterdir() if p.is_dir() and built(p)), key=version, reverse=True)
+    if not siblings:
+        return registered
+    print(f"note: {registered} is not built; the fixture uses {siblings[0]}")
+    return siblings[0]
 
 
 def junction(link: Path, target: Path) -> None:
