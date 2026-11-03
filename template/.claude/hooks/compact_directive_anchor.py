@@ -15,18 +15,24 @@ session-control commands such as `/model fable`. A question answer keeps the own
 question text is shortened and the tool's trailing instruction is removed. The digest's public
 `is_substantive_owner_prompt()` helper owns the filter so compact recovery and digest selection stay in parity.
 
-The whole output has a byte cap, TOTAL_BYTES, under Claude Code's 10,000-character hook output limit
-(past it the client swaps the text for a file preview). The first HEAD_WHOLE messages (the directive)
-and the newest TAIL_WHOLE (current steering) share the larger clip, never above MESSAGE_CEILING; the
-middle shares what is left, never more than the ends. A clipped message keeps its opening and its closing
-words, since an owner often pastes material first and states the ask last. A clipped answer gets at least
-ANSWER_FLOOR_CHARS per answer, shortens its questions before its answers, and water-fills the room across
-its answers. Middle messages are omitted only when FLOOR_CHARS each does not fit, newest middle kept
-first. Clipped and omitted IDs are named with a command that prints only the requested messages
-(`--show <file> <ID>...`), so recall costs one message, never the whole uncapped file. The uncapped
-text goes to `logs/compact_directives_<sid8>.md`, one file per session, pruned after 30 days. An owner
-message naming another session whose transcript sits beside this one gets a pointer to that session's
-digest, for the root goal it set.
+The hook prints in two parts, each registered as its own SessionStart(compact) command, because Claude Code
+caps each hook's output at 10,000 characters on its own (past it the client swaps the text for a file path
+and a 2,000-character preview). Each part has its own byte cap, TOTAL_BYTES. `--opening` prints the first
+HEAD_WHOLE messages, which set the session's goal, whole at any length, oldest first while they fit
+(`fit_opening`; when even the first cannot, it alone prints, clipped); a line after them names each opening
+message that did not print whole and tells the session to read it with `--show` before any other step.
+The plain run prints the later messages, filled by `fit` in priority order: the newest TAIL_WHOLE (current
+steering) at FLOOR_CHARS; middle messages at FLOOR_CHARS, newest first, the rest omitted; then the newest up
+to MESSAGE_CEILING and the middle up to the newest's clip. An opening message the first part could not
+print joins the middle. A clipped message keeps its opening and
+its closing words, since an owner often pastes material first and states the ask last. A clipped answer
+gets at least ANSWER_FLOOR_CHARS per answer, shortens its questions before its answers, and water-fills
+the room across its answers. One line names the clipped and omitted IDs with a command that prints only
+the requested messages (`--show <file> <ID>...`), and tells the session to read one before work it could
+govern and each one the summary gives no status. The uncapped text goes to
+`logs/compact_directives_<sid8>.md`, one file per session, pruned after 30 days. An owner message naming
+another session whose transcript sits beside this one gets a pointer to that session's digest, for the
+root goal it set.
 
 A reply that carries no ruling of its own (a question answer, a message no longer than SHORT_REPLY_CHARS, or
 one naming a reference code such as `O2` or `S4`: a capital letter and digits; the owner's own `U<n>`
@@ -46,18 +52,24 @@ the session's sidecar records and launch transcript, which grows with the drive,
 RATING_DEADLINE_SEC measured from hook start and prints nothing when it is not done by then. A client
 that cancels the hook at its timeout discards every line, the owner messages included.
 
-`plan` lays the whole output out and `whole_ids` names the messages it prints in full. The PreCompact
+`plan` lays both parts out and `whole_ids` names the messages either prints in full. The PreCompact
 ledger (`compact_directive_ledger.py`) calls the same `plan` before the compaction, so the summary's holds
 lines carry only ID, status and scope for those messages and never duplicate the words printed here.
 
+The intro names what the summary cannot replace: where the summary words or rates a message differently,
+the message's own words hold. It asserts nothing about the summary's sections, which depend on whether
+the PreCompact ledger ran.
+
 Every transcript pass (owner messages, reply contexts, the rating count's launch scan) resumes from
 its `hooks/_transcript_scan.py` cache, so a run reads only what was appended since the last one. Each
-run appends its duration, output bytes and scans to `logs/compaction_hooks.jsonl` (`log_run`, shared
-with compact_directive_ledger.py).
+run appends its duration, output bytes, scans and payload keys to `logs/compaction_hooks.jsonl`
+(`log_run`, shared with compact_directive_ledger.py).
 
-A sidecar child is skipped: `sidecar_recompact_reprompt.py` re-injects its brief. A payload that is
-not a JSON object is a silent no-op. Any read failure prints one line naming the recovery command;
-the hook never blocks.
+A sidecar child is skipped: `sidecar_recompact_reprompt.py` re-injects its brief. A payload carrying
+`agent_id` is a subagent's and is skipped with a logged row. The hook runs for every other compaction,
+because a SessionStart payload carries no trigger to judge a subagent by, and a parent that loses this
+injection loses its goal. A payload that is not a JSON object is a silent no-op. Any read failure prints
+one line naming the recovery command; the hook never blocks.
 """
 import contextlib
 import io
@@ -104,20 +116,23 @@ def _scan():
     return _transcript_scan
 
 
-def log_run(hook: str, payload: dict, started: float, output: str) -> None:
+def log_run(hook: str, payload: dict, started: float, output: str, skipped: str = None) -> None:
     """Append one row per compaction-hook run to logs/compaction_hooks.jsonl (rotated): its duration,
-    output bytes, transcript size and the transcript scans it ran, so an auto-compaction's cost is
-    auditable after the fact. Never raises."""
+    output bytes, transcript size, the transcript scans it ran and the payload's keys (whether the client
+    sent `agent_id`), so an auto-compaction's cost is auditable after the fact. A run that printed nothing
+    because it judged the compaction a subagent's logs `skipped`. Never raises."""
     try:
         scans = list(_scan().STATS)
         from _hook_state import append_jsonl_rotating, log_path
         transcript = payload.get("transcript_path") or ""
         size = os.path.getsize(transcript) if transcript and os.path.isfile(transcript) else None
-        append_jsonl_rotating(log_path(RUN_LOG), [{
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "hook": hook,
-            "session": (payload.get("session_id") or "")[:8], "trigger": payload.get("trigger") or payload.get("source"),
-            "duration_s": round(time.monotonic() - started, 3), "output_bytes": len(output.encode("utf-8")),
-            "transcript_bytes": size, "scans": scans}])
+        row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "hook": hook,
+               "session": (payload.get("session_id") or "")[:8], "trigger": payload.get("trigger") or payload.get("source"),
+               "duration_s": round(time.monotonic() - started, 3), "output_bytes": len(output.encode("utf-8")),
+               "transcript_bytes": size, "scans": scans, "payload_keys": sorted(payload)}
+        if skipped:
+            row["skipped"] = skipped
+        append_jsonl_rotating(log_path(RUN_LOG), [row])
     except Exception:
         pass
 
@@ -222,15 +237,15 @@ def shown_assistant_row(row) -> bool:
             and (row.get("message") or {}).get("model") != "<synthetic>")
 
 
-def block(message: dict, body: str, level: int = 0) -> str:
+def block(message: dict, body: str, level: int = 0, context_cap: int = MESSAGE_CEILING) -> str:
     stamp_text = stamp(message.get("timestamp"))
     context = message.get("context")
-    tail = f"{CONTEXT_LABEL}{tail_clip(context, level)}\n" if context and level else ""
+    tail = f"{CONTEXT_LABEL}{tail_clip(context, min(level, context_cap))}\n" if context and level else ""
     return f"--- U{message.get('index')}{' · ' + stamp_text if stamp_text else ''} ---\n{body}\n{tail}"
 
 
-def size(entries: list, level: int) -> int:
-    return sum(len(block(m, render(shaped, level), level).encode("utf-8")) for m, shaped in entries)
+def size(entries: list, level: int, context_cap: int = MESSAGE_CEILING) -> int:
+    return sum(len(block(m, render(shaped, level), level, context_cap).encode("utf-8")) for m, shaped in entries)
 
 
 def _text_blocks(row: dict) -> list:
@@ -312,37 +327,82 @@ def locations_line(project: Path) -> str:
     return f"[locations] document roots outside the repo: {'; '.join(roots)}" if roots else ""
 
 
+def _whole(entry) -> int:
+    return max(FLOOR_CHARS, len(entry[1][0]))
+
+
+def fit_opening(entries: list, budget: int) -> tuple:
+    """(printed [(message, shaped)], levels {id(message): clip}) of the first HEAD_WHOLE entries inside the
+    opening part's budget bytes: oldest first while each prints whole; when even the first cannot, it alone
+    prints, clipped to fit."""
+    opening = entries[:HEAD_WHOLE]
+    printed, levels, cost = [], {}, 0
+    for entry in opening:
+        whole = size([entry], _whole(entry), FLOOR_CHARS)
+        if cost + whole > budget:
+            break
+        printed.append(entry)
+        levels[id(entry[0])] = _whole(entry)
+        cost += whole
+    if opening and not printed:
+        first = opening[0]
+        level = largest(lambda n: size([first], n, FLOOR_CHARS) <= budget, FLOOR_CHARS, _whole(first))
+        printed, levels = [first], {id(first[0]): level}
+    return printed, levels
+
+
 def fit(entries: list, budget: int) -> tuple:
-    """(kept [(message, shaped)], omitted [message], levels {id(message): clip}) inside budget bytes."""
-    split = max(HEAD_WHOLE, len(entries) - TAIL_WHOLE)
-    ends = entries[:HEAD_WHOLE] + entries[split:]
-    middle = entries[HEAD_WHOLE:split]
-    room = budget - size(ends, FLOOR_CHARS)
-    kept_middle = middle
-    if size(middle, FLOOR_CHARS) > room:
-        kept_middle = []
-        for entry in reversed(middle):
-            cost = size([entry], FLOOR_CHARS)
-            if cost > room:
-                break
-            kept_middle.append(entry)
-            room -= cost
-        kept_middle.reverse()
+    """(kept [(message, shaped)], omitted [message], levels {id(message): clip}) inside budget bytes, filled in
+    priority order: the newest TAIL_WHOLE at the floor; the middle at the floor, newest first; then the newest
+    up to MESSAGE_CEILING; then the middle up to the newest's clip."""
+    split = max(0, len(entries) - TAIL_WHOLE)
+    middle, tail = entries[:split], entries[split:]
+    room = budget - size(tail, FLOOR_CHARS)
+    kept_middle = []
+    for entry in reversed(middle):
+        cost = size([entry], FLOOR_CHARS)
+        if cost > room:
+            break
+        kept_middle.append(entry)
+        room -= cost
+    kept_middle.reverse()
     middle_floor = size(kept_middle, FLOOR_CHARS)
-    end_level = largest(lambda level: size(ends, level) + middle_floor <= budget, FLOOR_CHARS, MESSAGE_CEILING)
-    end_cost = size(ends, end_level)
-    middle_level = largest(lambda level: end_cost + size(kept_middle, level) <= budget, FLOOR_CHARS, end_level)
-    kept = entries[:HEAD_WHOLE] + kept_middle + entries[split:]
-    levels = {id(m): end_level for m, _ in ends}
+    tail_level = largest(lambda level: size(tail, level) + middle_floor <= budget, FLOOR_CHARS, MESSAGE_CEILING)
+    tail_cost = size(tail, tail_level)
+    middle_level = largest(lambda level: tail_cost + size(kept_middle, level) <= budget, FLOOR_CHARS, tail_level)
+    kept = kept_middle + tail
+    levels = {id(m): tail_level for m, _ in tail}
     levels.update({id(m): middle_level for m, _ in kept_middle})
     omitted = [m for m, _ in entries if id(m) not in levels]
     return kept, omitted, levels
 
 
-def note(label: str, messages: list, fetch: str) -> str:
+def _listed(label: str, messages: list) -> str:
     ids = ", ".join(f"U{m.get('index')}" for m in messages[:LISTED_IDS])
     more = f" and {len(messages) - LISTED_IDS} more" if len(messages) > LISTED_IDS else ""
-    return f"{TAG} {label}: {ids}{more}. Fetch one only when you act on it: {fetch}"
+    return f"{label}: {ids}{more}"
+
+
+def note(clipped: list, omitted: list, fetch: str) -> str:
+    """One line naming the clipped and the omitted messages and how to read them; '' when there are none."""
+    parts = [_listed(label, found) for label, found in (("clipped for injection", clipped),
+                                                         ("omitted for budget", omitted)) if found]
+    if not parts:
+        return ""
+    return (f"{TAG} {'; '.join(parts)}. Each may still bind: read one whole before work it could govern, "
+            f"and read each one the summary gives no status: {fetch}")
+
+
+def opening_intro() -> str:
+    return (f"{TAG} Context was compacted. The owner's opening messages for this session, verbatim with send times. "
+            f"They set its goal; the owner's later messages follow in the other {TAG} block.")
+
+
+def opening_line(messages: list, where: str) -> str:
+    """The required read of the opening messages that could not print whole."""
+    ids = " ".join(f"U{m.get('index')}" for m in messages)
+    return (f"{TAG} The opening messages {ids} did not fit whole here. Read them whole before any other step: "
+            f"python3 .claude/hooks/compact_directive_anchor.py --show {where} {ids}")
 
 
 def referenced_sessions(messages: list, transcript: Path, sid: str) -> list:
@@ -463,7 +523,8 @@ def rating_debt_text(n: int) -> str:
     return (f"[rating-debt] {n} unrated dispatches — rate every consumed result you did not accept as-is "
             f"in one --rate-batch call (python3 .claude/tools/orchestration_metrics.py --rate-batch <file|->; "
             f"--rate <label> <outcome> --note <why> for one), then "
-            f"--accept-rest for the rest you consumed (/orchestration_metrics §Incremental rating).")
+            f"--accept-rest for the Workflow jobs you consumed; a sidecar job takes --rate or --rate-batch "
+            f"(/orchestration_metrics §Incremental rating).")
 
 
 def main() -> int:
@@ -478,11 +539,16 @@ def main() -> int:
     if os.environ.get("CLAUDE_CODE_SIDECAR_PROMPT_FILE", "").strip():
         return 0
     started = time.monotonic()
+    opening = sys.argv[1:2] == ["--opening"]
+    hook = "compact_directive_anchor" + (" --opening" if opening else "")
+    if str(payload.get("agent_id") or "").strip():
+        log_run(hook, payload, started, "", skipped="subagent")
+        return 0
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
-        code = _compact(payload, started)
-    emit("compact_directive_anchor", payload, started, buffer.getvalue())
+        code = _compact(payload, started, opening)
+    emit(hook, payload, started, buffer.getvalue())
     return code
 
 
@@ -499,35 +565,35 @@ def fetch_command(where: str) -> str:
 
 
 def intro_line(where: str) -> str:
-    return (f"{TAG} Context was compacted. Below are the owner's own messages from this session, oldest first, "
-            f"with send times: typed prompts, command arguments and question answers (answer wording kept; "
-            f"question text shortened). They are a record of what the owner said and when, not a list of open "
-            f"orders. Each message holds only for the scope it was given; a step, a question or a temporary "
-            f"routing choice may already be done or replaced. The summary above records what happened since, "
-            f"so use these messages to catch what it dropped or distorted; its Owner directives section gives "
-            f"each ID a status (holds, done, replaced, scoped, unclear) to check against these words. On the same point, "
-            f"a later message "
-            f"replaces an earlier one. If you cannot tell whether a message still holds, ask the owner. "
-            f"Uncapped text: {where}")
+    return (f"{TAG} Context was compacted. Below are the owner's later messages from this session, oldest first, "
+            f"with send times: typed prompts, command arguments and question answers (question text shortened); "
+            f"the opening messages that set its goal are in their own {TAG} block. They are a record of what the "
+            f"owner said and when, not a list of open orders: each holds for the scope it was given, a step or "
+            f"question may be done, and on the same point a later message replaces an earlier one. Where the "
+            f"summary above words or rates a message differently, its words here hold. If you cannot tell whether "
+            f"a message still holds, ask the owner. Uncapped text: {where}")
 
 
-Injection = namedtuple("Injection", "lines kept omitted levels clipped record_block")
+Injection = namedtuple("Injection", "lines kept omitted levels clipped record_block opening_lines opening "
+                                    "opening_levels")
 
 
 def plan(transcript: Path, sid: str, project: Path, messages: list, where: str, fetch: str,
          started: float = None, rating_line: str = None) -> Injection:
-    """Everything the hook prints, laid out inside TOTAL_BYTES: the intro lines, the kept messages with
-    their clip levels, the clipped and omitted ones, and the record block. `compact_directive_ledger.py`
-    calls it before the compaction with `rating_line` standing in for the count, so the ledger and this
-    hook decide from one layout which messages print whole (`whole_ids`)."""
+    """Everything both parts print, each laid out inside its own TOTAL_BYTES. The opening part: its intro,
+    the opening messages `fit_opening` prints and the required read of the ones that did not fit whole. The
+    later part: the intro lines, the kept later messages with their clip levels, the clipped and omitted
+    ones, and the record block. `compact_directive_ledger.py` calls it before the compaction with
+    `rating_line` standing in for the count, so the ledger and this hook decide from one layout which
+    messages print whole (`whole_ids`)."""
     lines = [intro_line(where)]
     refs = referenced_sessions(messages, transcript, sid)
     if refs:
         lines.append(f"{TAG} These messages name other sessions. Read their owner messages for the root goal they "
                      f"set; their later messages steered that session and bind here only if restated: "
                      + "; ".join(f"python3 .claude/tools/session_digest.py --session {r} --handoff" for r in refs))
-    worst_note = note("clipped for injection", [{"index": 10 ** 7}] * LISTED_IDS, fetch) + " and 9999999 more"
-    reserve = 2 * (len(worst_note.encode("utf-8")) + 1)
+    worst = [{"index": 10 ** 7}] * (LISTED_IDS + 1)
+    reserve = len(note(worst, worst, fetch).replace(" and 1 more", " and 9999999 more").encode("utf-8")) + 1
     # The task record's block shares TOTAL_BYTES with the owner messages: the messages are clipped
     # around it, so the whole output stays under the client's hook-output limit.
     try:
@@ -542,31 +608,60 @@ def plan(transcript: Path, sid: str, project: Path, messages: list, where: str, 
               - (len(record_block.encode("utf-8")) + 2 if record_block else 0))
     messages = [dict(m, context=contexts[m["index"]]) if m["index"] in contexts else m for m in messages]
     entries = [(m, shape(m["content"])) for m in messages]
-    kept, omitted, levels = fit(entries, budget)
+    opening_head = [opening_intro()]
+    opening_budget = TOTAL_BYTES - len(opening_head[0].encode("utf-8")) - 1
+
+    def opening_cut(printed, levels):
+        return [m for m, shaped in entries[:HEAD_WHOLE]
+                if id(m) not in printed or render(shaped, levels[id(m)]) != shaped[0]]
+
+    opening, opening_levels = fit_opening(entries, opening_budget)
+    if opening_cut({id(m) for m, _ in opening}, opening_levels):
+        worst_line = opening_line([m for m, _ in entries[:HEAD_WHOLE]], where)
+        opening, opening_levels = fit_opening(entries, opening_budget - len(worst_line.encode("utf-8")) - 1)
+    printed = {id(m) for m, _ in opening}
+    cut = opening_cut(printed, opening_levels)
+    opening_lines = opening_head + ([opening_line(cut, where)] if cut else [])
+    kept, omitted, levels = fit([e for e in entries if id(e[0]) not in printed], budget)
     clipped = [m for m, shaped in kept if render(shaped, levels[id(m)]) != shaped[0]]
-    return Injection(lines, kept, omitted, levels, clipped, record_block)
+    return Injection(lines, kept, omitted, levels, clipped, record_block, opening_lines, opening, opening_levels)
 
 
 def whole_ids(injection: Injection) -> list:
-    """The U-ids of the messages `injection` prints in full, oldest first."""
+    """The U-ids of the messages either part of `injection` prints in full, oldest first."""
+    whole = [m for m, shaped in injection.opening if render(shaped, injection.opening_levels[id(m)]) == shaped[0]]
     cut = {id(m) for m in injection.clipped}
-    return [m["index"] for m, _ in injection.kept if id(m) not in cut]
+    whole += [m for m, _ in injection.kept if id(m) not in cut]
+    return sorted(m["index"] for m in whole)
 
 
-def _compact(payload: dict, started: float) -> int:
+def _compact(payload: dict, started: float, opening: bool = False) -> int:
+    """Print one part: the opening messages (`opening`), or the later messages and the record. Only the later
+    part reports a read failure and writes the uncapped file, so the two parallel runs never race on it."""
     transcript = Path(payload.get("transcript_path") or "")
     sid = payload.get("session_id") or transcript.stem
     try:
         sd = _digest()
         messages = [m for m in sd.owner_prompts(transcript) if keep(m)]
     except Exception as exc:
-        print(f"{TAG} context was compacted, but this hook could not read the transcript "
-              f"({type(exc).__name__}: {exc}). Recover the owner's messages before continuing: "
-              f"python3 .claude/tools/session_digest.py --session {sid[:8]} --handoff")
+        if not opening:
+            print(f"{TAG} context was compacted, but this hook could not read the transcript "
+                  f"({type(exc).__name__}: {exc}). Recover the owner's messages before continuing: "
+                  f"python3 .claude/tools/session_digest.py --session {sid[:8]} --handoff")
         return 0
     if not messages:
         return 0
     project = project_dir(payload)
+    if opening:
+        where = full_location(sid)
+        injection = plan(transcript, sid, project, messages, where, fetch_command(where), started, rating_line="")
+        print(injection.opening_lines[0])
+        for message, shaped in injection.opening:
+            level = injection.opening_levels[id(message)]
+            sys.stdout.write(block(message, render(shaped, level), level, FLOOR_CHARS))
+        for line in injection.opening_lines[1:]:
+            print(line)
+        return 0
     try:
         full = write_full(project / "logs", sid, messages)
         where = f"logs/{full.name}"
@@ -583,10 +678,9 @@ def _compact(payload: dict, started: float) -> int:
     for message, shaped in injection.kept:
         level = injection.levels[id(message)]
         sys.stdout.write(block(message, render(shaped, level), level))
-    if injection.clipped:
-        print(note("clipped for injection", injection.clipped, fetch))
-    if injection.omitted:
-        print(note("omitted for budget", injection.omitted, fetch))
+    listed = note(injection.clipped, injection.omitted, fetch)
+    if listed:
+        print(listed)
     if injection.record_block:
         print(injection.record_block)
     return 0

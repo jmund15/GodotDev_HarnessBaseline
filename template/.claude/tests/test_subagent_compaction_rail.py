@@ -1,7 +1,8 @@
 """subagent_compaction_rail: a Workflow subagent's compaction gets the Task-section rail; the parent and sidecar children get nothing from it.
 
 Payload shapes are cut from .claude/scratch/a2_probe/hook_log.jsonl (real PreCompact / SessionStart(compact) firings of a Workflow subagent:
-no agent_id, parent session_id and transcript_path). A subagent is told apart by an `auto` trigger while the parent's gauge sits under the floor.
+no agent_id, parent session_id and transcript_path). A subagent is told apart by an `auto` trigger beside a subagent transcript
+written after the parent's (`_hook_state.is_subagent_payload` owns the full test).
 """
 import json
 import os
@@ -16,17 +17,26 @@ HOOK = HOOKS / "subagent_compaction_rail.py"
 SID = "953e9207-bb96-48a4-bd4e-e237148db367"
 
 
-def run(payload, env_extra=None, raw=None, parent_gauge=True, state=None):
-    """One hook run in `state` (a shared dir, so a PreCompact marker reaches the SessionStart after it) or a fresh one."""
+def _call(tokens, sidechain=False):
+    return json.dumps({"type": "assistant", "isSidechain": sidechain, "message": {"usage": {
+        "input_tokens": tokens, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}) + "\n"
+
+
+def run(payload, env_extra=None, raw=None, live_subagent=True, state=None, parent_tokens=1000):
+    """One hook run in `state` (a shared dir, so a PreCompact marker reaches the SessionStart after it) or a fresh one.
+    `live_subagent` plants a Workflow agent's transcript at 469k tokens, written just now, beside the parent's."""
     with tempfile.TemporaryDirectory() as fresh:
         tmp = state or fresh
         transcript = Path(tmp) / "t.jsonl"
-        transcript.write_text(json.dumps({"type": "assistant", "message": {"usage": {
-            "input_tokens": 1000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}) + "\n",
-            encoding="utf-8")
-        if parent_gauge:
-            (Path(tmp) / f"cc-cachestat-{SID}.json").write_text(
-                json.dumps({"context_pct": 1, "last": "0:0:10000"}), encoding="utf-8")
+        transcript.write_text(_call(parent_tokens), encoding="utf-8")
+        agent = Path(tmp) / "t" / "subagents" / "workflows" / "wf_1" / "agent-a1.jsonl"
+        if live_subagent:
+            agent.parent.mkdir(parents=True, exist_ok=True)
+            agent.write_text(_call(469_000, sidechain=True), encoding="utf-8")
+            earlier = agent.stat().st_mtime - 2
+            os.utime(transcript, (earlier, earlier))
+        elif agent.exists():
+            agent.unlink()
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SIDECAR_PROMPT_FILE"}
         env["CC_CACHESTAT_DIR"] = tmp
         env.update(env_extra or {})
@@ -53,7 +63,7 @@ class SubagentRailTest(unittest.TestCase):
         self.assertNotIn("re-injected verbatim", r.stdout)
 
     def test_agent_id_marks_subagent(self):
-        r = run(dict(PRE, trigger="manual", agent_id="abc"), parent_gauge=False)
+        r = run(dict(PRE, trigger="manual", agent_id="abc"), live_subagent=False)
         self.ok(r)
         self.assertIn('"Task" section', r.stdout)
 
@@ -62,19 +72,11 @@ class SubagentRailTest(unittest.TestCase):
         self.ok(r)
         self.assertEqual(r.stdout, "")
 
-    def test_parent_over_floor_silent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            transcript = Path(tmp) / "t.jsonl"
-            transcript.write_text(json.dumps({"type": "assistant", "message": {"usage": {
-                "input_tokens": 9000}}}) + "\n", encoding="utf-8")
-            (Path(tmp) / f"cc-cachestat-{SID}.json").write_text(
-                json.dumps({"context_pct": 90, "last": "0:0:9000"}), encoding="utf-8")
-            env = dict(os.environ, CC_CACHESTAT_DIR=tmp)
-            env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
-            r = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(dict(PRE, transcript_path=str(transcript))),
-                               capture_output=True, text=True, env=env)
-        self.ok(r)
-        self.assertEqual(r.stdout, "")
+    def test_parent_at_its_window_silent(self):
+        for live in (False, True):
+            r = run(PRE, live_subagent=live, parent_tokens=467_000)
+            self.ok(r)
+            self.assertEqual(r.stdout, "", f"live_subagent={live}")
 
     def test_subagent_session_start_compact_prints_resume(self):
         with tempfile.TemporaryDirectory() as state:
@@ -97,7 +99,7 @@ class SubagentRailTest(unittest.TestCase):
         self.assertEqual(r.stdout, "")
 
     def test_parent_session_start_compact_silent(self):
-        r = run(START, parent_gauge=False)
+        r = run(START, live_subagent=False)
         self.ok(r)
         self.assertEqual(r.stdout, "")
 

@@ -3617,6 +3617,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/fixtures/compaction_intent/rows.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/fixtures/daemon_dry_run/dry_run.golden.txt",
       "layer": "pure",
       "sync": "auto"
@@ -4198,6 +4203,11 @@
     },
     {
       "path": ".claude/tests/test_compact_directive_ledger.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_compaction_intent.py",
       "layer": "pure",
       "sync": "auto"
     },

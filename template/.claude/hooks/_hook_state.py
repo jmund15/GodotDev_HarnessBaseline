@@ -299,10 +299,6 @@ def fire_once_since_compaction(session_id, key):
     return _fire_once_under(session_id, key, _COMPACTION_KEY)
 
 
-# The runtime auto-compacts a context only near the end of its window (1M at 700k, 200k near 167k),
-# so an `auto` PreCompact while the parent sits under half its window cannot be the parent's. A set
-# `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` moves that end, and the floor stays at half of it.
-PARENT_AUTOCOMPACT_FLOOR_PCT = 50
 # Bytes of a transcript line per token of context it adds. Lines carry JSON framing, so this
 # over-counts the pending tail, which errs toward the parent.
 _TRANSCRIPT_BYTES_PER_TOKEN = 3
@@ -314,39 +310,23 @@ ORCHESTRATOR_CHECKIN_SECONDS = 3000
 # margin for the turn itself. A delegate's foreground wait and a message to a subagent both end inside it.
 SUBAGENT_CACHE_WARM_SECONDS = 270
 _TRANSCRIPT_TAIL_BYTES = 8_000_000
+# A compacting context writes the row that triggers its compaction just before PreCompact fires (measured: 0 s
+# at both Workflow-agent compactions), so a subagent transcript last written longer ago than
+# this is not the one compacting.
+SUBAGENT_LIVE_SECONDS = 15
+# A parent mid-turn writes a row every few seconds; one silent this long is waiting, not compacting on its
+# own trigger (measured: 130 s and 1,654 s of parent quiet at the two Workflow-agent compactions).
+PARENT_QUIET_SECONDS = 30
+# A live subagent this many times the parent's pending context marks the compaction as its own even while
+# the parent writes, so a parent at its window beside a subagent near the same size stays the parent's.
+SUBAGENT_OVER_PARENT = 1.25
 
 
-def _autocompact_floor_pct():
-    try:
-        override = float(os.environ.get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE") or "")
-    except ValueError:
-        return PARENT_AUTOCOMPACT_FLOOR_PCT
-    return min(PARENT_AUTOCOMPACT_FLOOR_PCT, override / 2) if override > 0 else PARENT_AUTOCOMPACT_FLOOR_PCT
-
-
-def _parent_window_tokens(session_id):
-    """The parent's context window in tokens, from the status line's `cc-cachestat-<sid>.json`:
-    its `last` call's cache-write:cache-read:input tokens over that call's `context_pct`. None when
-    the file is absent, unreadable or lacks either field. Subagents never write this file."""
-    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")[:64]
-    path = os.path.join(os.environ.get("CC_CACHESTAT_DIR") or tempfile.gettempdir(),
-                        "cc-cachestat-%s.json" % (safe or "unknown"))
-    try:
-        with open(path, encoding="utf-8") as fh:
-            state = json.load(fh)
-        pct = state.get("context_pct")
-        tokens = sum(int(part) for part in str(state["last"]).split(":"))
-    except (OSError, ValueError, AttributeError, KeyError, TypeError):
-        return None
-    if isinstance(pct, bool) or not isinstance(pct, (int, float)) or pct <= 0 or tokens <= 0:
-        return None
-    return tokens * 100 / pct
-
-
-def _parent_pending_tokens(transcript_path):
-    """The parent's context as its next call would send it: the input tokens of its last recorded
-    API call plus everything written after that call. None when the transcript is unreadable or
-    holds no call. Subagent turns live in their own transcripts, so none of theirs count."""
+def _pending_tokens(transcript_path, sidechain=False):
+    """A context as its next call would send it: the input tokens of its last recorded API call, or the
+    `postTokens` of a later `compact_boundary`, plus everything written after that row. None when the
+    transcript is unreadable or holds neither. `sidechain=True` reads a subagent's own transcript, whose
+    rows are all sidechain rows; the parent's count only its own rows."""
     try:
         with open(transcript_path, "rb") as fh:
             fh.seek(0, os.SEEK_END)
@@ -361,8 +341,14 @@ def _parent_pending_tokens(transcript_path):
         except ValueError:
             after += len(raw)
             continue
-        usage = ((entry.get("message") or {}).get("usage") if isinstance(entry, dict)
-                 and entry.get("type") == "assistant" and not entry.get("isSidechain") else None)
+        if not isinstance(entry, dict) or bool(entry.get("isSidechain")) != sidechain:
+            after += len(raw)
+            continue
+        post = ((entry.get("compactMetadata") or {}).get("postTokens")
+                if entry.get("subtype") == "compact_boundary" else None)
+        if isinstance(post, int) and not isinstance(post, bool):
+            return post + after // _TRANSCRIPT_BYTES_PER_TOKEN
+        usage = (entry.get("message") or {}).get("usage") if entry.get("type") == "assistant" else None
         if isinstance(usage, dict):
             sent = sum(int(usage.get(k) or 0) for k in (
                 "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
@@ -371,24 +357,54 @@ def _parent_pending_tokens(transcript_path):
     return None
 
 
+def _live_subagents(transcript_path, now):
+    """(last write time, path) of each of the session's subagent transcripts (`<session>/subagents/**/
+    agent-*.jsonl` beside the parent's transcript) written in the last SUBAGENT_LIVE_SECONDS."""
+    root = os.path.join(os.path.splitext(str(transcript_path))[0], "subagents")
+    live = []
+    for directory, _, names in os.walk(root):
+        for name in names:
+            if name.startswith("agent-") and name.endswith(".jsonl"):
+                path = os.path.join(directory, name)
+                try:
+                    written = os.path.getmtime(path)
+                except OSError:
+                    continue
+                if now - written <= SUBAGENT_LIVE_SECONDS:
+                    live.append((written, path))
+    return live
+
+
 def is_subagent_payload(payload):
     """True when a PreCompact payload comes from a dispatched subagent, whose `session_id` and
     `transcript_path` are the parent's. Every PreCompact hook calls this and does nothing for a
-    subagent: its compaction is not the parent's. A non-empty `agent_id` marks one; the client may
-    send none, so an `auto` trigger while the parent's pending context sits under the floor of its
-    window marks one too. A `manual` trigger, an unreadable gauge or transcript, and any payload that
-    is not an object count as the parent, so an unknown keeps the hooks running.
+    subagent: its compaction is not the parent's. A non-empty `agent_id` marks one. The client may send
+    none, so an `auto` trigger also marks one when a subagent transcript was written after the parent's,
+    within SUBAGENT_LIVE_SECONDS, and either the parent has been quiet PARENT_QUIET_SECONDS or that
+    subagent holds over SUBAGENT_OVER_PARENT times the parent's pending context. A compacting context
+    writes its trigger row just before PreCompact, and a parent mid-turn keeps writing. The context
+    window is not a test: the `autoCompactWindow` setting puts the parent's compaction anywhere from 100k
+    to the model's window, a subagent's model may have another, and the status-line gauge measures against
+    the model's window. A `manual` trigger (`/compact` acts on the main conversation), no live subagent,
+    an unreadable transcript, and any payload that is not an object count as the parent, so an unknown
+    keeps the parent's hooks running.
     """
     try:
         if str(payload.get("agent_id") or "").strip():
             return True
-        if payload.get("trigger") != "auto":
+        transcript = payload.get("transcript_path")
+        if payload.get("trigger") != "auto" or not transcript:
             return False
-        window = _parent_window_tokens(payload.get("session_id"))
-        pending = _parent_pending_tokens(payload.get("transcript_path"))
-        if window is None or pending is None:
+        now = time.time()
+        parent_written = os.path.getmtime(transcript)
+        newer = [path for written, path in _live_subagents(transcript, now) if written > parent_written]
+        if not newer:
             return False
-        return pending * 100 / window < _autocompact_floor_pct()
+        if now - parent_written > PARENT_QUIET_SECONDS:
+            return True
+        parent = _pending_tokens(transcript)
+        return parent is not None and any(
+            (_pending_tokens(path, sidechain=True) or 0) > parent * SUBAGENT_OVER_PARENT for path in newer)
     except Exception:
         return False
 

@@ -92,18 +92,34 @@ def write_transcript(tmp, rows, name=SID):
     return path
 
 
+PARTS = (["--opening"], [])  # the two SessionStart(compact) registrations; the case below checks settings
+PART_BYTES = {}
+
+
 def run_hook(tmp, payload, env_extra=None):
-    """(stdout exactly as emitted, crashed, stderr); stdout keeps any CR so byte bounds are real."""
+    """(both parts' stdout as emitted, joined; crashed; stderr), the opening part first as registered; stdout keeps
+    any CR so byte bounds are real. `within(out)` reads each part's own size: the client caps each hook's output
+    on its own."""
     env = dict(os.environ, CLAUDE_PROJECT_DIR=tmp, PYTHONIOENCODING="utf-8", HARNESS_PENDING_COUNT="0")
     env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
     env.update(env_extra or {})
     for key in [k for k, v in env.items() if v is None]:
         env.pop(key)
-    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload).encode("utf-8"),
-                       capture_output=True, env=env, timeout=120)
-    out = (r.stdout or b"").decode("utf-8", errors="replace")
-    err = (r.stderr or b"").decode("utf-8", errors="replace")
-    return out, r.returncode != 0 or "Traceback" in err, err
+    outs, errs, crashed = [], [], False
+    for args in PARTS:
+        r = subprocess.run([sys.executable, HOOK, *args], input=json.dumps(payload).encode("utf-8"),
+                           capture_output=True, env=env, timeout=120)
+        outs.append((r.stdout or b"").decode("utf-8", errors="replace"))
+        errs.append((r.stderr or b"").decode("utf-8", errors="replace"))
+        crashed = crashed or r.returncode != 0 or "Traceback" in errs[-1]
+    out = "".join(outs)
+    PART_BYTES[out] = max(len(part.encode("utf-8")) for part in outs)
+    return out, crashed, "".join(errs)
+
+
+def within(out):
+    """True when every part of the run that produced `out` stays inside the byte bound."""
+    return PART_BYTES.get(out, MAX_OUTPUT_BYTES + 1) <= MAX_OUTPUT_BYTES
 
 
 def run_show(tmp, args):
@@ -173,17 +189,12 @@ def main():
         cases.append(("a message-first slash command is re-injected as the command and its args",
                       "/orchestration route the audit lanes to sol" in out))
         cases.append(("no raw command markup is injected", "<command-" not in out))
-        long_line = next((line for line in out.splitlines() if line.startswith("Long owner message.")), "")
-        cases.append(("a long message is capped within the per-message ceiling",
-                      "detail " * 400 not in out and "…[+" in long_line and 0 < len(long_line) <= MESSAGE_CEILING))
-        cases.append(("a clipped message keeps its closing words as well as its opening",
-                      long_line.startswith("Long owner message.") and long_line.endswith("TAIL-MARKER")))
+        cases.append(("an opening message past the per-message ceiling prints whole",
+                      LONG in out and len(LONG) > MESSAGE_CEILING))
         full = Path(tmp) / FULL_REL
         cases.append(("the uncapped text is written to logs/", full.exists()
                       and "TAIL-MARKER" in full.read_text(encoding="utf-8")))
         cases.append(("the injection names the full-text path", full.name in out))
-        cases.append(("a clipped message names its ID and the command that fetches only that message",
-                      "clipped for injection: U6" in out and SHOW_COMMAND in out))
         cases.append(("no injection demands reading the whole uncapped file",
                       "before your next action" not in out and "Read the uncapped file" not in out))
         cases.append(("an answer keeps the owner's words", '="Keep the owner words"' in out))
@@ -200,11 +211,22 @@ def main():
         cases.append(("the messages are framed as a record, not open orders",
                       "not a list of open orders" in out and "override the summary" not in out
                       and "ask the owner" in out))
-        cases.append(("the injection points at the summary's owner directives ledger with all five statuses",
-                      "Owner directives" in out and "scoped, unclear)" in out))
+        cases.append(("the owner's words outrank the summary's account, with no claim that the summary has a section",
+                      "its words here hold" in out and "Owner directives section gives" not in out))
         cases.append(("another session's messages are read for its root goal only",
                       "root goal" in out and "before acting on those directives" not in out))
         cases.append(("each header carries the send date and time", "--- U1 · 09-14 13:01 ---" in out))
+
+        late = write_transcript(tmp, [user("first"), user("second"), user("third"), user(LONG)], name="late")
+        out_late, crashed, _ = run_hook(tmp, dict(payload, session_id="late", transcript_path=str(late)))
+        long_line = next((line for line in out_late.splitlines() if line.startswith("Long owner message.")), "")
+        cases.append(("a long later message is capped within the per-message ceiling",
+                      not crashed and "…[+" in long_line and 0 < len(long_line) <= MESSAGE_CEILING))
+        cases.append(("a clipped message keeps its closing words as well as its opening",
+                      long_line.startswith("Long owner message.") and long_line.endswith("TAIL-MARKER")))
+        cases.append(("a clipped message names its ID and the command that fetches only that message",
+                      "clipped for injection: U4" in out_late
+                      and "compact_directive_anchor.py --show logs/compact_directives_late.md" in out_late))
 
         shown, rc, traced = run_show(tmp, [FULL_REL, "U6"])
         cases.append(("--show prints one message's full text and nothing else",
@@ -227,12 +249,18 @@ def main():
         out, crashed, _ = run_hook(tmp, dict(payload, transcript_path=str(spread_transcript)))
         cases.append(("every message in a spread run appears",
                       not crashed and all(f"START-{k} " in out for k in range(10))))
-        cases.append(("the first and newest messages stay whole while the middle is clipped first",
-                      all(spread_text[k] in out for k in (0, 1, 2, 7, 8, 9))
-                      and not any(spread_text[k] in out for k in (3, 4, 5, 6))))
+        cases.append(("the opening and newest messages stay whole",
+                      all(spread_text[k] in out for k in (0, 1, 2, 7, 8, 9))))
+        wide_text = [f"START-{k} " + "word " * 196 + f"END-{k}" for k in range(20)]
+        wide = write_transcript(tmp, [user(text) for text in wide_text], name="wide")
+        out_wide, crashed, _ = run_hook(tmp, dict(payload, session_id="wide", transcript_path=str(wide)))
+        cases.append(("past the opening, the middle is clipped before the newest",
+                      not crashed and all(wide_text[k] in out_wide for k in (0, 1, 2))
+                      and all(f"END-{k}" in out_wide for k in (17, 18, 19))
+                      and any(f"START-{k} " in out_wide and wide_text[k] not in out_wide for k in range(3, 17))))
         cases.append(("a clipped middle message keeps its closing words",
                       all(f"END-{k}" in out for k in (3, 4, 5, 6))))
-        cases.append(("the spread run stays inside the byte bound", len(out.encode("utf-8")) <= MAX_OUTPUT_BYTES))
+        cases.append(("the spread run stays inside the byte bound", within(out)))
 
         # The active task record (tools/task_record.py) rides after the owner messages, bounded, inside the
         # same output budget. With no record the block is one line naming the command that opens one:
@@ -258,7 +286,7 @@ def main():
         cases.append(("an oversize record names its omitted rows with the show command",
                       "omitted:" in out and "task_record.py show t-drive" in out))
         cases.append(("the block comes after the owner messages", out.find("[task-record]") > out.find(DIRECTIVE)))
-        cases.append(("the run with a record stays inside the byte bound", len(out.encode("utf-8")) <= MAX_OUTPUT_BYTES))
+        cases.append(("the run with a record stays inside the byte bound", within(out)))
         os.environ.pop("HARNESS_TASK_RECORD_DIR", None)
         out, crashed, _ = run_hook(tmp, payload)
         cases.append(("no task record -> the opening command carries --next for the summary's next action",
@@ -311,7 +339,7 @@ def main():
                       "(answering, assistant text)" in out and "Do all recs now" in out))
         cases.append(("the project's document roots are re-injected as locations",
                       "[locations]" in out and "D:/Vault/DOCROOT-MARKER" in out))
-        cases.append(("the packet run stays inside the byte bound", len(out.encode("utf-8")) <= MAX_OUTPUT_BYTES))
+        cases.append(("the packet run stays inside the byte bound", within(out)))
         out, crashed, _ = run_hook(tmp, payload)
         cases.append(("a project with no document roots gets no locations line", "[locations]" not in out))
 
@@ -330,7 +358,7 @@ def main():
                       not crashed and "[owner-directives]" in out and "could not read" in out
                       and "--handoff" in out and "--full" not in out))
 
-        multi_answer = ('The user answered: "Policy?"="' + "long reason " * 90 + '", "Rails?"="PAIR-2-KEPT", '
+        multi_answer = ('The user answered: "Policy?"="' + "long reason " * 400 + '", "Rails?"="PAIR-2-KEPT", '
                         '"Cadence?"="PAIR-3-KEPT", "Baseline?"="PAIR-4-KEPT". Read the answers carefully '
                         "— they may request clarification, changes, or that you not proceed — and follow what "
                         "they actually say.")
@@ -342,10 +370,10 @@ def main():
         cases.append(("every message appears when a shared clip fits the budget",
                       all(f"MID-DECISION-{i:02d}" in out for i in range(14)) and "omitted for budget" not in out))
         cases.append(("the shared clip is named with its fetch command",
-                      "clipped for injection: U1" in out and "--show" in out))
+                      "clipped for injection: U4" in out and "--show" in out))
         cases.append(("a clipped answer keeps every decision",
-                      all(f"PAIR-{k}-KEPT" in out for k in (2, 3, 4)) and "long reason " * 90 not in out))
-        cases.append(("the medium run stays inside the byte bound", len(out.encode("utf-8")) <= MAX_OUTPUT_BYTES))
+                      all(f"PAIR-{k}-KEPT" in out for k in (2, 3, 4)) and "long reason " * 400 not in out))
+        cases.append(("the medium run stays inside the byte bound", within(out)))
 
         # Live defect 2026-09-14: at the middle floor, four 100-char question stubs ate the whole clip and
         # every answer of a four-decision message vanished while its questions survived.
@@ -360,7 +388,7 @@ def main():
         cases.append(("a floor-clipped answer keeps every decision when its questions are long",
                       not crashed and "omitted for budget" not in out
                       and all(f"DECISION-{k}" in out for k in range(4))))
-        cases.append(("the tight run stays inside the byte bound", len(out.encode("utf-8")) <= MAX_OUTPUT_BYTES))
+        cases.append(("the tight run stays inside the byte bound", within(out)))
 
         many = [user(f"PROMPT-{i:04d} x") for i in range(3000)]
         transcript2 = write_transcript(tmp, many, name="many")
@@ -372,7 +400,7 @@ def main():
         cases.append(("dropped messages are named, not silent",
                       "omitted for budget" in out and "PROMPT-0005" not in out))
         cases.append(("the full SessionStart output has a fixed byte bound",
-                      len(out.encode("utf-8")) <= MAX_OUTPUT_BYTES))
+                      within(out)))
         omitted_line = next((line for line in out.splitlines() if "omitted for budget" in line), "")
         cases.append(("the omitted line names the fetch command", "--show" in omitted_line))
         cases.append(("the omitted ID list is capped", "more" in omitted_line and len(omitted_line) < 600))
@@ -398,8 +426,9 @@ def main():
         registered_commands = [hook.get("command") for group in compact_groups
                                for hook in group.get("hooks", [])]
         expected_command = 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/compact_directive_anchor.py"'
-        cases.append(("settings registers the anchor in SessionStart(compact)",
-                      expected_command in registered_commands))
+        expected_commands = [" ".join([expected_command, *args]) for args in PARTS]
+        cases.append(("settings registers both anchor parts in SessionStart(compact)",
+                      all(command in registered_commands for command in expected_commands)))
 
         registration_transcript = Path(tmp) / f"{REGISTRATION_SID}.jsonl"
         registration_directive = "REGISTRATION-FIXTURE owner directive"
@@ -417,20 +446,22 @@ def main():
                             ignore=shutil.ignore_patterns("__pycache__"))
         registration_log = run_project / "logs" / f"compact_directives_{REGISTRATION_SID[:8]}.md"
         registration_rc, registration_out, registration_err = 1, "", "not registered"
-        if expected_command in registered_commands:
+        if all(command in registered_commands for command in expected_commands):
             # Git Bash, as Claude Code runs hooks. A bare "bash" from Windows Python resolves System32's
             # WSL bash first, and WSL does not inherit CLAUDE_PROJECT_DIR.
             bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") or git_bash()
             env = dict(os.environ, CLAUDE_PROJECT_DIR=run_project.as_posix(), PYTHONIOENCODING="utf-8")
             env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
+            registration_rc, registration_err = 0, ""
             try:
-                result = subprocess.run([bash, "-lc", expected_command],
-                                        input=json.dumps(registration_payload), capture_output=True,
-                                        text=True, encoding="utf-8", errors="replace", env=env,
-                                        timeout=120)
-                registration_rc = result.returncode
-                registration_out = result.stdout or ""
-                registration_err = result.stderr or ""
+                for command in expected_commands:
+                    result = subprocess.run([bash, "-lc", command],
+                                            input=json.dumps(registration_payload), capture_output=True,
+                                            text=True, encoding="utf-8", errors="replace", env=env,
+                                            timeout=120)
+                    registration_rc = registration_rc or result.returncode
+                    registration_out += result.stdout or ""
+                    registration_err += result.stderr or ""
             finally:
                 registration_log.unlink(missing_ok=True)
         cases.append(("the exact registered command runs through bash",
@@ -443,8 +474,10 @@ def main():
                       not debt_crashed and "[rating-debt] 4 unrated" in debt_out
                       and "--rate-batch" in debt_out and "one --rate-batch call" in debt_out
                       and "--accept-rest" in debt_out))
+        cases.append(("the debt line scopes --accept-rest to Workflow jobs and sends sidecar jobs to --rate",
+                      "--accept-rest for the Workflow jobs" in debt_out and "a sidecar job takes --rate" in debt_out))
         cases.append(("the debt line stays inside the output cap",
-                      len(debt_out.encode("utf-8")) <= MAX_OUTPUT_BYTES))
+                      within(debt_out)))
         for n in ("0", "-1"):
             quiet_out, quiet_crashed, _ = run_hook(tmp, payload, {"HARNESS_PENDING_COUNT": n})
             cases.append((f"count {n} prints no rating-debt line",
