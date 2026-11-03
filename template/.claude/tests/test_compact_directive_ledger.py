@@ -213,17 +213,21 @@ def heavy_rows(count=30):
 
 
 def whole_in_anchor(tmp, transcript, session):
-    """{U-id} of the owner messages whose full text the real anchor run prints."""
+    """{U-id} of the owner messages whose full text the real anchor run prints, across both registered parts
+    (`--opening` and the rest)."""
     env = dict(os.environ, CLAUDE_PROJECT_DIR=tmp, PYTHONIOENCODING="utf-8", HARNESS_PENDING_COUNT="0")
     env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
     payload = {"source": "compact", "session_id": session, "transcript_path": str(transcript)}
-    r = subprocess.run([sys.executable, ANCHOR_HOOK], input=json.dumps(payload).encode("utf-8"),
-                       capture_output=True, env=env, timeout=120)
-    out = (r.stdout or b"").decode("utf-8", errors="replace")
+    out, ok = "", True
+    for args in (["--opening"], []):
+        r = subprocess.run([sys.executable, ANCHOR_HOOK, *args], input=json.dumps(payload).encode("utf-8"),
+                           capture_output=True, env=env, timeout=120)
+        out += (r.stdout or b"").decode("utf-8", errors="replace")
+        ok = ok and r.returncode == 0
     digest = ledger_hook.anchor._digest()
     messages = [m for m in digest.owner_prompts(transcript) if ledger_hook.anchor.keep(m)]
     shaped = ledger_hook.anchor.shape
-    return {m["index"] for m in messages if shaped(m["content"])[0] in out}, len(messages), r.returncode == 0
+    return {m["index"] for m in messages if shaped(m["content"])[0] in out}, len(messages), ok
 
 
 def anchor_overlap_cases():

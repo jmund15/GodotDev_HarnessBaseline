@@ -389,6 +389,23 @@ def main():
     cases.append(("holds_token ignores a pasted block",
                   bool(holds) and not holds("<pasted_content id=\"a\">--lean</pasted_content id=\"a\">", "lean")))
 
+    # Client 2.1.316 writes `api-request-blob` rows, a copy of each request's user turn (row cut from
+    # session f3a34186, fixtures/compaction_intent/rows.jsonl). 51 of that session's 124 "owner messages" were these.
+    blob_template = next(json.loads(line)["row"] for line in
+                         (HERE / "fixtures" / "compaction_intent" / "rows.jsonl").read_text(encoding="utf-8").splitlines()
+                         if json.loads(line)["kind"] == "blob")
+    for label, text in (("a mid-turn wrapper copy", "The user sent a new message while you were working:\nstop that"),
+                        ("an image marker", "[Image: original 2388x1744, displayed at 2000x1461.]"),
+                        ("a tool-load notice", "Tool loaded.")):
+        blob = json.loads(json.dumps(blob_template).replace("{TEXT}", text.replace("\n", "\\n")))
+        cases.append((f"an api-request-blob row holding {label} is not an owner row", ot.classify(blob, 1) is None))
+    with tempfile.TemporaryDirectory() as tmp:
+        blob_path = Path(tmp) / "blob.jsonl"
+        blob = json.loads(json.dumps(blob_template).replace("{TEXT}", "BLOB-COPY of a typed prompt"))
+        blob_path.write_text(json.dumps(blob) + "\n", encoding="utf-8")
+        cases.append(("session_digest.owner_prompts takes no message from an api-request-blob row",
+                      not any("BLOB-COPY" in m["content"] for m in sd.owner_prompts(blob_path))))
+
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))

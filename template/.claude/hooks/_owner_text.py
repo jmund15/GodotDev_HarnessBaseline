@@ -311,7 +311,11 @@ def classify(entry, index, raw=None):
     message = entry.get("message")
     if not isinstance(message, dict):
         return None
-    role = entry.get("type") if entry.get("type") in ("user", "assistant") else message.get("role")
+    # A row typed other than user/assistant, such as the client's `api-request-blob` copy of a request body,
+    # carries a user-role message the owner never typed.
+    if entry.get("type") not in (None, "user", "assistant"):
+        return None
+    role = entry.get("type") or message.get("role")
     if role != "user":
         return None
     content = message.get("content", entry.get("content", ""))

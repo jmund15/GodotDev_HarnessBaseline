@@ -247,6 +247,11 @@
       {
         "hooks": [
           {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/compact_directive_anchor.py\" --opening",
+            "timeout": 30,
+            "type": "command"
+          },
+          {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/compact_directive_anchor.py\"",
             "timeout": 30,
             "type": "command"

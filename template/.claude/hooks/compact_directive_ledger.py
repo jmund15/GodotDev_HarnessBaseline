@@ -22,10 +22,10 @@ listing and named only in one bare comma-separated line; the next summary is ask
 forward the same way unless later conversation actually reopened it, in which case it gets a fresh
 full status line. Fewer than two prior summaries in the transcript: the hook behaves exactly as before
 this feature, full entries and the plain instructions text, which is also what an unreadable
-transcript falls back to (asking for the section, without IDs). A sidecar child, a subagent
-payload (`_hook_state.is_subagent_payload`; its transcript is the parent's, so the ledger would list the parent's
-owner messages in the subagent's summary) and a non-object payload are silent no-ops; the hook never
-blocks.
+transcript falls back to (asking for the section, without IDs). A sidecar child and a non-object payload
+are silent no-ops. A subagent payload (`_hook_state.is_subagent_payload`; its transcript is the parent's, so
+the ledger would list the parent's owner messages in the subagent's summary) prints nothing and logs a
+`skipped` row, so a muted parent compaction is visible in the run log. The hook never blocks.
 
 The instructions give each kind of fact one section of the summary, the client's built-in sections
 included, which then cite it: compaction audits found
@@ -408,9 +408,12 @@ def main() -> int:
         payload = None
     if not isinstance(payload, dict) or payload.get("hook_event_name") not in (None, "PreCompact"):
         return 0
-    if os.environ.get("CLAUDE_CODE_SIDECAR_PROMPT_FILE", "").strip() or is_subagent_payload(payload):
+    if os.environ.get("CLAUDE_CODE_SIDECAR_PROMPT_FILE", "").strip():
         return 0
     started = time.monotonic()
+    if is_subagent_payload(payload):
+        anchor.log_run("compact_directive_ledger", payload, started, "", skipped="subagent")
+        return 0
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
