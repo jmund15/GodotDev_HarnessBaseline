@@ -241,6 +241,11 @@
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_model_rails.py\"",
             "timeout": 30,
             "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/vault_mirror_start.py\"",
+            "timeout": 120,
+            "type": "command"
           }
         ]
       },

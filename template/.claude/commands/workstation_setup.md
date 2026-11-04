@@ -5,6 +5,8 @@ stamp-inputs:
   - ".claude/reference/project_stack.md"
   - ".claude/commands/workstation_setup.md"
   - ".claude/commands/reference/workstation_setup_land_runner.md"
+  - ".claude/tools/vault_sync.py"
+  - ".claude/hooks/vault_mirror_start.py"
   - ".claude/tools/user_scope.py"
   - ".claude/user_scope/manifest.json"
   - ".claude/user_scope/statusline.py"
@@ -210,6 +212,19 @@ its old value; start a new one after a change.
 2. A different vault location on this machine → report the delta. The harness hard-codes the root,
    so the user changes it, or approves the edit.
 3. Spot-read `Worklog.md`: content, not OneDrive placeholder stubs.
+4. Vault transport applies when `.claude/tools/vault_sync.project.json` exists. It names the vault
+   folders this repo carries to cloud sessions on its `vault` branch, the git dir and the scheduled
+   task. Absent → one NOT-ADOPTED row, skip steps 4–5. `tools/vault_sync.py` owns the transport.
+   `%LOCALAPPDATA%/<gitDirName>/config` names this repo's `origin` and the `DevProjects/` worktree;
+   `info/exclude` allows only the configured folders, and `hooks/pre-commit` invokes this checkout's
+   `tools/vault_sync.py precommit`. A missing or wrong item → DEGRADED. With approval,
+   `python3 .claude/tools/vault_sync.py init` creates or repairs it without a push; the first
+   `sync --first-push` publishes vault content and needs separate push authority.
+5. Scheduled sync: audit the config's `taskName` in Task Scheduler for the windowless command printed
+   by `python3 .claude/tools/vault_sync.py install-task --dry-run`; its cadence comes from
+   `vault_sync.py`'s `SYNC_INTERVAL_MIN`. Missing or different → DEGRADED; with approval,
+   `python3 .claude/tools/vault_sync.py install-task` registers it. Read `sync_status.json` in
+   that git dir: a failed sync is DEGRADED, with its refusal paths or error in Evidence.
 
 ## Phase 7 — Land runner
 
