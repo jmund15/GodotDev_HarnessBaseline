@@ -21,8 +21,17 @@ if not GEN_MANIFEST.exists():
     sys.exit(2)
 
 # The root .gitignore ignores these, so skipping them leaves the mirror's template file list unchanged.
-_MIRROR_SKIP = shutil.ignore_patterns("__pycache__", "*.pyc", "logs", ".cache", "sessions", "worktrees",
-                                      "plans", "scratch", ".search-index")
+_SKIP_ANYWHERE = shutil.ignore_patterns("__pycache__", "*.pyc", "logs", ".cache", "sessions", "worktrees",
+                                        "scratch", ".search-index")
+
+
+def _MIRROR_SKIP(directory: str, names: list[str]) -> set[str]:
+    """The skip names above, plus `plans` only in the template's own `.claude/` (the root .gitignore
+    anchors that one; a fixture tree's `.claude/plans/` ships)."""
+    skipped = set(_SKIP_ANYWHERE(directory, names))
+    if Path(directory).resolve() == (ROOT / "template" / ".claude").resolve() and "plans" in names:
+        skipped.add("plans")
+    return skipped
 _mirror_root: Path | None = None
 
 
