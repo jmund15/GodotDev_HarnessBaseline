@@ -1367,11 +1367,7 @@ def _owned_records(entry, session_id, pending):
     return owned
 
 
-# A false "never started" tells the owner a launched fan-out failed; a late notice costs only the wait. So the
-# window is a multiple of the slowest measured preflight (52 s over 57 fan-out runs, issue to inventory write),
-# not its typical time: 600 s is over 10x that. A change in the preflight (process-table scan, machine lock)
-# needs a re-measure before this moves.
-FANOUT_PREFLIGHT_S = 600
+FANOUT_PREFLIGHT_S = watch_records.FANOUT_PREFLIGHT_S  # the window's basis lives with its definition
 # A refused call whose label a later call launched is answered by that launch: the entry leaves without a line.
 SUPERSEDED = "superseded"
 # The command that writes the jobs file runs before the fan-out in the same call, so the file lands inside the
@@ -1590,25 +1586,27 @@ def _never_started(entry, payload):
 
 
 def _launched_nothing(entry, payload):
-    """The reason when the fan-out call that registered `entry` ended and no inventory written since
-    its issue names the job's label: the fan-out refused in preflight. None while that call may still
-    write one (a live background task, or inside FANOUT_PREFLIGHT_S of its issue)."""
-    if entry.get("task_id") and str(entry["task_id"]) in _background_ids(payload, None):
-        return None
+    """The reason when the fan-out call that registered `entry` ended and nothing it launched names the
+    job's label: the fan-out refused in preflight. None while that call may still write an inventory
+    (a live background task, or inside FANOUT_PREFLIGHT_S of its issue). SUPERSEDED when `watch_records.superseded`
+    answers for it: a refusal file in its out dir names its label, or a later-issued run of the same label
+    allocated a record in any out dir."""
+    pending = payload.get("_pending_sidecars") or []
     issued = _issued_at(entry, payload.get("session_id"))
-    since = issued if issued is not None else float(entry.get("launched_at") or time.time())
-    if time.time() - since < FANOUT_PREFLIGHT_S:
+    if issued is not None:
+        entry["issued_at"] = issued
+    live = _background_ids(payload, None)
+    if watch_records.superseded(
+            entry, pending, live_ids=live,
+            resolve=lambda other: resolve_sidecar_record(other, payload.get("session_id"), pending)):
+        return SUPERSEDED
+    if watch_records.call_open(entry, live):
         return None
     label = _label(entry)
     for written, path in _inventories(entry["fanout_dir"]):
         if (issued is None or written >= issued) and any(
                 job.get("label") == label for job in _read_json(path).get("jobs") or []):
             return None
-    for other in payload.get("_pending_sidecars") or []:
-        if (other is not entry and other.get("kind") == "sidecar" and other.get("fanout_dir") != entry["fanout_dir"]
-                and _label(other) == label and float(other.get("issued_at") or other.get("launched_at") or 0) >= since
-                and resolve_sidecar_record(other, payload.get("session_id"), payload.get("_pending_sidecars"))):
-            return SUPERSEDED
     refused = os.path.join(entry["fanout_dir"], "launch-refused.txt")
     where = ("%s names the refusal" % refused.replace("\\", "/") if os.path.isfile(refused)
              else "the call's output names the refusal")

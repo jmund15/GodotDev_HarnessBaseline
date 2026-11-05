@@ -2,7 +2,7 @@
 """RED-first proof: a fan-out job lists the rows that meet its bar (`rows: {alias: effort}`); the fan-out ranks
 the union of those rows' plans with `place_job`, then runs the cheapest listed row on the winning plan.
 
-The captured failure (2026-10-27): 71 of 71 overnight jobs pinned an Anthropic row while Codex and Go read Surplus,
+The failure this proves: every overnight job pinned an Anthropic row while Codex and Go read Surplus,
 because a job's alias fixed its transport and so the plans `place_job` ranked. Every case plants the capacity
 readings, the registry's live plans and the finished-job history; no process is a real launcher and nothing is billed.
 The provider_bands cases at the end prove the amendment: a rate measured over a span forecasts no further than it.

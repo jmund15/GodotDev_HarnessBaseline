@@ -1,4 +1,9 @@
-"""Shared planted Runner 4 cases; launchers are never run."""
+"""Shared planted Runner 4 cases; launchers are never run.
+
+The predicate is keyed on the declared subject set: the subjects recorded in the brief's sweep file,
+which `lens_briefs.py --subject-plan` writes. A must-read file carrying a `**Shape:**` header
+declares nothing.
+"""
 import json
 import subprocess
 from pathlib import Path
@@ -12,11 +17,6 @@ def cases(root):
         return p
     meta = write("meta.md", "# Plan\n\n**Shape:** meta\n```surfaces\n{}\n```\n")
     second = write("second.md", meta.read_text())
-    bare = write("bare.md", "# Plan\n**Shape:** meta\n")
-    code = write("code.md", "# Plan\n**Shape:** code\n")
-    # The header form real plans carry: Shape is one field of the Task line, its value in backticks.
-    task_line = write("task_line.md", "# Plan\n\n- **Task:** `t`. **Shape:** `meta`. **Covers:** D1.\n")
-    code_prose = write("code_prose.md", "# Plan\n\n- **Task:** `t`. **Shape:** `code`.\n\n**Shape:** meta is a header value.\n")
     raw = write("raw.md", "Review this plan.\n")
     def brief(name, subjects, header=True):
         sweep = root / (name + "_citers.json")
@@ -31,31 +31,31 @@ def cases(root):
     stale_plan = write("stale.md", meta.read_text())
     stale = brief("stale_brief", [stale_plan])
     stale_plan.write_text(stale_plan.read_text() + "changed\n", encoding="utf-8")
+    gone_sweep = root / "gone_plan_citers.json"
+    gone_sweep.write_text(json.dumps({"subjects": [
+        {"path": str(root / "gone-plan.md"), "hash": "0" * 40, "head": "old"}]}), encoding="utf-8")
+    gone_brief = write("gone_plan_brief.md", "<!-- lens brief: planted -->\n> Sweep file: `"
+                       + gone_sweep.as_posix() + "`. Grep that file for the surfaces you judge.\n")
     def job(prompt, subjects, **fields):
         return {"label": "seat", "shape": "review", "promptPath": str(prompt),
                 "mustRead": [{"path": str(p), "lines": 1} for p in subjects], **fields}
     return [
-        ("raw unlabelled review", job(raw, [meta]), True),
-        ("raw non-lens key", job(raw, [meta], key="custom-seat"), True),
-        ("missing block", job(raw, [bare]), True),
-        ("stale content hash", job(stale, [stale_plan]), True),
-        ("incomplete split subjects", job(incomplete, [meta, second]), True),
-        ("missing lens brief header", job(noheader, [meta]), True),
+        ("raw review with no declared sweep", job(raw, [meta]), False),
+        ("raw review of a task-line meta must-read, no sweep", job(raw, [meta]), False),
+        ("declared sweep, current", job(current, [meta, second]), False),
         ("current after unrelated HEAD move", job(current, [meta]), False),
-        ("current split subjects", job(current, [meta, second]), False),
-        ("merged mandates", job(current, [meta], key="plc-doctrine-consistency+plc-evidence-grounding",
-                                 mandates=["plc-doctrine-consistency", "plc-evidence-grounding"]), False),
-        ("code-only", job(raw, [code]), False),
-        ("raw review of a task-line meta header", job(raw, [task_line]), True),
-        ("code header, meta only in later prose", job(raw, [code_prose]), False),
-        ("non-plan review", job(raw, [raw]), False),
-        ("declared citer non-review", job(raw, [meta], shape="author", key="plc-doctrine-consistency"), True),
-        ("non-review without citer", job(raw, [meta], shape="author"), False),
+        ("merged mandates with a current sweep", job(current, [meta], key="plc-doctrine-consistency+plc-evidence-grounding",
+                                                     mandates=["plc-doctrine-consistency", "plc-evidence-grounding"]), False),
+        ("declared sweep without a lens brief header", job(noheader, [meta]), True),
+        ("declared sweep, stale content hash", job(stale, [stale_plan]), True),
+        ("declared sweep naming a subject that is gone", job(gone_brief, [root / "gone-plan.md"]), True),
+        ("declared citer seat with no swept subject is not checked", job(raw, [meta], shape="author", key="plc-doctrine-consistency"), False),
+        ("non-review without a citer lens", job(raw, [meta], shape="author"), False),
     ]
 
 
 def stage_cases(root):
     """(label, job, ledger stage, bad): a declared non-plan-check stage reads a plan as input, not subject."""
     return [(label + " under " + stage, job, stage, bad) for label, job, bad in cases(root)
-            if label in ("raw unlabelled review", "raw review of a task-line meta header")
+            if label == "declared sweep, stale content hash"
             for stage, bad in (("candidate", False), ("pr-review", False), ("plan-check", True))]

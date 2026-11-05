@@ -21,6 +21,8 @@ What gets logged (and what doesn't):
 - CUE_EXEMPT       : append. Confirms K1/L6/audit-shape carve-outs are firing
                      correctly — counts as "compliant override" in the dashboard.
 - COMPLIANT        : skip. Routine routing wins, not interesting.
+- CENSUS           : append. Vault doc writes and lookups (Bash searches and inline
+                     scripts, LSP): measured, never judged.
 - ADVISORY_APP.    : skip. Soft-nudge categories (memory_search, read_web below
                      the synthesis floor) — too noisy to log every one.
 - NOT_ROUTABLE     : skip. Tool has no §Tool Routing routing rules.
@@ -45,7 +47,8 @@ Boundaries:
 - Reads `last_prompt` from the agent-keyed `<sid>_<aid>.json` when present, else the
   session-level `<sid>.json` that `tool_routing_cumulative_reset.py` writes.
 
-Wired through: settings.json hooks.PostToolUse → `post_read_dispatch.py`.
+Wired through: settings.json hooks.PostToolUse → `post_read_dispatch.py` (Read, Write, web and
+LSP calls) and hooks.PreToolUse → `pre_bash_dispatch.py` (an allowed Bash call).
 """
 
 from __future__ import annotations
@@ -105,8 +108,6 @@ def _read_state(session_id: str, agent_id: str = "") -> dict:
 
 def _detect_nudge_fired(
     classification: Classification,
-    tool_name: str,
-    tool_input: dict,
     state: dict,
     session_id: str,
     agent_id: str,
@@ -117,8 +118,6 @@ def _detect_nudge_fired(
     Sources of truth:
     - `pre_nudges_fired_this_turn` — written by `tool_routing_nudge.py` for every
       delivered PreToolUse advisory, keyed by classification rule.
-    - `post_grep_nudges_fired_this_turn` — legacy fallback receipts from before
-      its retirement, keyed by Grep pattern.
     Receipts live in session-level state, so subagent calls also consult that file.
     """
     if classification.severity != "nudge-warranted":
@@ -132,10 +131,6 @@ def _detect_nudge_fired(
     for candidate in states:
         if rule in (candidate.get("pre_nudges_fired_this_turn") or []):
             return True
-        if tool_name == "Grep":
-            pattern = tool_input.get("pattern") or ""
-            if pattern in (candidate.get("post_grep_nudges_fired_this_turn") or []):
-                return True
     return False
 
 
@@ -149,7 +144,7 @@ def _summarize_args(tool_input: dict) -> str:
     if not tool_input:
         return ""
     parts = []
-    for key in ("pattern", "glob", "type", "filePath", "query", "url", "command"):
+    for key in ("operation", "pattern", "glob", "type", "filePath", "query", "url", "command"):
         if key in tool_input:
             val = tool_input[key]
             if not isinstance(val, str):
@@ -216,7 +211,7 @@ def process(input_data: dict) -> None:
     if classification.severity not in ("nudge-warranted", "cue-exempt", "census"):
         return
 
-    nudge_fired = _detect_nudge_fired(classification, tool_name, tool_input, state, session_id, agent_id)
+    nudge_fired = _detect_nudge_fired(classification, state, session_id, agent_id)
 
     # Excerpt the prompt for context (helps the dashboard explain WHY a
     # call was classified silent-miss without re-loading the full transcript).

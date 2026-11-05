@@ -99,11 +99,9 @@ def run_other_rule_unchanged():
         "agent_id": "agent0001",
     })
     rows = _read_rows(log_path)
-    label = "agent_id does not exempt the PascalCase C# Grep rule"
-    ok = bool(rows and rows[-1].get("classification") == "nudge-warranted"
-              and rows[-1].get("rule") == "pascal-grep-on-cs"
-              and "[subagent: bundling delegate]" not in (rows[-1].get("reason") or ""))
-    reason = "" if ok else "control row missing or changed: %r" % (rows[-1] if rows else None)
+    label = "a PascalCase C# Grep writes no audit row (the retired heuristic is gone, subagent or not)"
+    ok = not rows
+    reason = "" if ok else "unexpected row: %r" % (rows[-1] if rows else None)
     print("%-4s %s" % ("ok" if ok else "FAIL", label))
     return ok, reason
 

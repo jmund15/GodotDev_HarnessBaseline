@@ -73,7 +73,7 @@ most one live native job, counting its own (`dispatch_width`). A live job is a s
 this session's `subagents/workflows/<run>/journal.jsonl` with no `result`/`failed`/`error` line, or a
 `subagents/agent-<id>.jsonl` whose last message record is not an assistant `end_turn`/`stop_sequence`
 and whose completion notification in the session transcript does not postdate its last write; either
-counts only while its transcript changed in the last LIVE_SECONDS. The deny names quota left, window left and the UTC reset when Hot or Exhausted, the live jobs, and per job a launcher invocation serving its tier (`model_registry.for_role`):
+counts only while its transcript changed in the last LIVE_SECONDS. The deny names quota left, window left and the UTC reset when Hot or Exhausted, the live jobs, and per job a launcher invocation serving its tier (`model_registry.route_rows`):
 another plan paying for this route's row first, since it runs the same model, else a cross-transport
 row; or the wait (for a live run or the reset) where neither exists. A hot window that admits the
 call adds nothing: the posture line states the rule before the call. An unreadable window or transcript tree adds no deny;
@@ -460,19 +460,27 @@ def call_tiers(payload):
     no pin, a pin carries no tier, or a tier is not legal: the dispatch gate then cannot tell which ladder slice the
     call needs and asks for the full ladder. An untiered review_fanout fold pin reads as `fold_tier`; the provider
     rules do not check that tier, so it only names the ladder slice the gate wants."""
+    consumers = call_tier_consumers(payload)
+    return sorted(consumers) if consumers else None
+
+
+def call_tier_consumers(payload):
+    """{canonical tier: [the call's pin labels that pin it]}, the same tiers `call_tiers` returns, so the dispatch
+    gate's deny can name what needs each missing tier (`executor (fold)`); None exactly when `call_tiers` is."""
     if model_registry is None:
         return None
     pins = call_pins(payload)
     folded = fold_tier(payload)
-    tiers = set()
+    consumers = {}
     for label, _model, tier, _implied in pins:
         if tier is None and label == "fold" and folded:
             tier = folded
         try:
-            tiers.add(model_registry.canonical_tier(str(tier)))
+            canonical = model_registry.canonical_tier(str(tier))
         except Exception:
             return None
-    return sorted(tiers) if pins and tiers else None
+        consumers.setdefault(canonical, []).append(str(label))
+    return consumers if pins and consumers else None
 
 
 def _strip_context_suffix(model):
@@ -904,7 +912,7 @@ def _clock(reset):
 
 def _width_steps(pins, live, hhmm, data, seat):
     """One next step per job in the call: a launcher invocation serving its tier
-    (`model_registry.for_role`), another plan of this route ahead of a cross-transport row, or the
+    (`model_registry.route_rows`), another plan of this route ahead of a cross-transport row, or the
     wait where neither exists."""
     runs = list(dict.fromkeys(j["run"] for j in live))
     wait = (f"wait for {', '.join(runs[:4])} or the reset at {hhmm}, then re-issue it alone" if runs else
@@ -918,7 +926,7 @@ def _width_steps(pins, live, hhmm, data, seat):
         hops = []
         if tier:
             try:
-                res = model_registry.for_role(tier, seat, data)
+                res = model_registry.route_rows(tier, seat, data)
                 hops = ([(r, launcher) for r, _plan, launcher in res["otherPlans"]]
                         + [(r, None) for r in res["crossTransport"]])
             except Exception:
@@ -938,7 +946,7 @@ def five_hour_rule(payload, pins, data, seat, owner=None, plan=None):
     """RULE 5. ("deny", reason) when a hot 5-hour window would gain native concurrency; (None, None)
     otherwise, a hot window with a lifting owner statement or one live native job included: the posture line
     states the rule before the call. `seat` is the route the
-    owner override names; `plan` (default `seat`) seats each job's next step in `for_role`."""
+    owner override names; `plan` (default `seat`) seats each job's next step in `route_rows`."""
     pressure, reset, used = five_hour_window(payload.get("session_id"))
     if pressure is None:
         _TRACE["fiveHour"] = "unreadable: the band read carried no 5h window"

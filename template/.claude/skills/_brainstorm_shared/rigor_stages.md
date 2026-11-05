@@ -11,8 +11,8 @@ What rigor changes at each stage this layer adds, beyond every panel's rule in `
 | `/architecture_brainstorm_redteam` | `commands/architecture_brainstorm_redteam.md` | The five-lens floor stays. APPROVE needs zero counting design-holes, zero dead-ends and every lens returned; `--auto` stops on a round with no new counting design-hole. A dead-end halts and a taste-fork counts at every level. |
 | `/design_drive`, `/part_drive`, `/feature_drive`, `/plan_part` | `commands/design_drive.md`, `commands/part_drive.md`, `commands/feature_drive.md`, `commands/plan_part.md` | Nothing of their own: they run `drive_spine.md`, whose Intake states the level, and convergence is `/plan_check`'s. |
 | `/plan_check` | `commands/plan_check.md` | Every admitted mandate runs whatever the plan's size. The verdict reads counting findings only. |
-| Seam review | `skills/_brainstorm_shared/drive_spine.md` | Width unchanged. A below-bar finding is noted in the seam report and routes into no slice. |
-| Spec verifier | `skills/_brainstorm_shared/drive_spine.md` | Nothing. It checks a probation executor's conformance to the slice plan, not a graded review. |
+| Seam review | `skills/_brainstorm_shared/drive_execution.md` §Slices | Width unchanged. A below-bar finding is noted in the seam report and routes into no slice. |
+| Spec verifier | `skills/_brainstorm_shared/drive_execution.md` §Slices | Nothing. It checks a probation executor's conformance to the slice plan, not a graded review. |
 | `/session_audit` | `commands/session_audit.md` | Each axis verdict reads counting findings. A Phase 1.5 parity finding is `critical` and holds at every level. |
 | `/pr_ready` | `commands/pr_ready.md` | Findings carry `critical` and `minRigor`; a critical finding holds at every level. A NOT RUN or unverified check is a coverage gap and stays open. Each lens's outcome uses the protocol's verdict scale. |
 | `/review_pr` | `commands/review_pr.md` | APPROVE reads counting findings only. |

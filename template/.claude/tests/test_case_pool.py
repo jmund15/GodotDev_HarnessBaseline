@@ -4,6 +4,7 @@ crashing case fails the run and is the only case named, and a case's os.environ 
 reaches another case."""
 import contextlib
 import io
+import re
 import os
 import sys
 import tempfile
@@ -11,7 +12,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _case_pool import emit_section, run_cases, run_sections, unittest_cases  # noqa: E402
+from _case_pool import emit_section, run_cases, run_sections, run_sharded, unittest_cases  # noqa: E402
 
 
 def _timed(name):
@@ -156,6 +157,33 @@ def main():
     print("%-4s a unittest method runs inside its class's setUpClass and tearDownClass" % ("ok" if ok else "FAIL"))
     if not ok:
         failures.append("class fixtures: rc=%s torn=%s %s" % (rc, torn, out.getvalue().strip()[-200:]))
+    # A deep checkout times many node ids passes the OS command-line limit if a shard's ids ride on argv.
+    top = tempfile.mkdtemp(prefix="pool_deep_")
+    with open(os.path.join(top, "pytest.ini"), "w", encoding="utf-8") as fh:
+        fh.write("[pytest]\n")  # the planted tree is its own rootdir, never the machine's TEMP
+    deep = os.path.join(top, *(["d" * 60] * 3))
+    os.makedirs(deep)
+    planted = os.path.join(deep, "test_many.py")
+    with open(planted, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("".join("def test_case_%03d_%s():\n    pass\n\n" % (i, "x" * 60) for i in range(400)))
+    saved = os.environ.get("HARNESS_CASE_JOBS")
+    os.environ["HARNESS_CASE_JOBS"] = "1"
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            rc = run_sharded(planted)
+    except OSError as exc:
+        rc = repr(exc)
+    finally:
+        if saved is None:
+            os.environ.pop("HARNESS_CASE_JOBS", None)
+        else:
+            os.environ["HARNESS_CASE_JOBS"] = saved
+    passed = sum(int(n) for n in re.findall(r"(\d+) passed", out.getvalue()))
+    ok = rc == 0 and passed == 400
+    print("%-4s a shard whose node ids exceed the command-line limit still runs every case" % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("long shard: rc=%s %s" % (rc, out.getvalue().strip()[-200:]))
     print("%d failure(s)" % len(failures))
     return 1 if failures else 0
 

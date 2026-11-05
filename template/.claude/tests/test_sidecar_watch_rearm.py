@@ -43,38 +43,38 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=str(state), HARNESS_PROMPT_DISPATCH_TIMING=str(timing),
                CLAUDE_PROJECT_DIR=str(root), HARNESS_GIT_STATE_CACHE_DIR=str(root / "git-state-cache"))
 
-    def dispatch(status, prompt=None):
+    def run_hook(status, prompt=None):
         if prompt is None:
             prompt = "<task-notification><status>%s</status></task-notification>" % status
         payload = {"session_id": SID, "hook_event_name": "UserPromptSubmit", "prompt": prompt}
         run = subprocess.run([sys.executable, str(MEMBER)], input=json.dumps(payload), text=True,
                              capture_output=True, env=env, timeout=40)
         check(run.returncode == 0 and "fault" not in run.stderr and "timeout" not in run.stderr,
-              "dispatcher stays healthy", run.stderr)
+              "hook stays healthy", run.stderr)
         if not run.stdout.strip():
             return ""
         return json.loads(run.stdout)["hookSpecificOutput"]["additionalContext"]
 
     # A completed notice wakes the session too: any other sidecar still running without a watcher is advised then.
     for notice in ("killed", "stopped", "completed"):
-        output = dispatch(notice)
+        output = run_hook(notice)
         check(WATCH_COMMAND in output and GROUP in output and str(record) in output,
               notice + " notice names the uncovered record and the wake route", output)
-    check("watch_records.py" not in dispatch("failed"), "a notice status outside the wake set is silent")
-    check("watch_records.py" not in dispatch("", "Owner asks a question"), "owner prompt is silent")
+    check("watch_records.py" not in run_hook("failed"), "a notice status outside the wake set is silent")
+    check("watch_records.py" not in run_hook("", "Owner asks a question"), "owner prompt is silent")
 
     state_file.write_text(json.dumps({"dispatch_table_pending": []}))
-    check("watch_records.py" not in dispatch("killed"), "no pending sidecar is silent")
+    check("watch_records.py" not in run_hook("killed"), "no pending sidecar is silent")
 
     watched = {"process": process(os.getpid()), "records": [str(record)]}
     state_file.write_text(json.dumps({"dispatch_table_pending": [entry], "sidecar_watchers": [watched]}))
-    check("watch_records.py" not in dispatch("stopped"), "live watcher covers record")
+    check("watch_records.py" not in run_hook("stopped"), "live watcher covers record")
     watched["process"] = process(99999999)
     state_file.write_text(json.dumps({"dispatch_table_pending": [entry], "sidecar_watchers": [watched]}))
-    check(str(record) in dispatch("stopped"), "dead watcher no longer covers record")
+    check(str(record) in run_hook("stopped"), "dead watcher no longer covers record")
     session_wide = {"process": process(os.getpid()), "records": [], "session": True}
     state_file.write_text(json.dumps({"dispatch_table_pending": [entry], "sidecar_watchers": [session_wide]}))
-    check("watch_records.py" not in dispatch("stopped"), "a live session watcher covers the record")
+    check("watch_records.py" not in run_hook("stopped"), "a live session watcher covers the record")
 
     finished = root / "finished.record.json"
     (root / "finished.record.json.exit").write_text("3")
@@ -92,7 +92,7 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
         pending.append({**entry, "id": str(path), "record": str(path),
                         "jobs": [{"label": path.stem, "launcher": "test"}]})
     state_file.write_text(json.dumps({"dispatch_table_pending": pending}))
-    output = dispatch("killed")
+    output = run_hook("killed")
     for category, path in (("finished", finished), ("queued", queued), ("never started", never),
                            ("died", dead), ("unknown", unknown)):
         check(category in output.lower() and str(path) in output, category + " names its record", output)
@@ -110,7 +110,7 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
                    "launched_at": time.time() - 1, "issued_at": time.time() - 1,
                    "jobs": [{"label": "retry", "launcher": "test"}]}
     state_file.write_text(json.dumps({"dispatch_table_pending": [retry_entry]}))
-    retry_output = dispatch("killed")
+    retry_output = run_hook("killed")
     check(str(later) in retry_output and str(earlier) not in retry_output,
           "rearm resolves attempt two through the same inventory as Stop", retry_output)
     refused_dir = root / "refused"
@@ -129,18 +129,47 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
                      "fanout_dir": str(refused_dir), "id": "refused-fanout", "issued_at": issued,
                      "jobs": [{"label": "gate", "launcher": "test"}]}
     state_file.write_text(json.dumps({"dispatch_table_pending": [refused_entry]}))
-    refused_output = dispatch("killed")
+    refused_output = run_hook("killed")
     check(str(relaunched) in refused_output.split(GROUP, 1)[-1] and str(refused) + " " not in refused_output
           and "exit=12" not in refused_output,
           "rearm follows a refused job's relaunch the way Stop and the watcher do", refused_output)
-    check("watch_records.py" not in dispatch("", "hello " + "z" * (9 * 1024 * 1024)),
+    # The rearm hook applies the same supersede rule as the Stop hook and the watcher. A
+    # refusal file in the call's out dir drops its entry; a later-issued entry of the same label
+    # with a record supersedes it in any out dir, not only the same one.
+    split = root / "split"
+    split_dead, split_live = split / "dead", split / "live"
+    split_dead.mkdir(parents=True)
+    split_live.mkdir()
+    dead_entry = {**entry, "record": None, "fanout_dir": str(split_dead), "id": "dead-fanout",
+                  "issued_at": time.time() - 700, "launched_at": time.time() - 700,
+                  "jobs": [{"label": "pair", "launcher": "test"}]}
+    (split_dead / "fanout-a.refused.json").write_text(json.dumps(
+        {"labels": ["pair"], "refusal": "refused before any seat", "time": time.time() - 650}))
+    relaunched_record = split_live / "pair.attempt2.record.json"
+    relaunched_record.write_text("")
+    Path(str(relaunched_record) + ".pid").write_text(process(os.getpid()))
+    relaunch_entry = {**dead_entry, "id": "relaunch-fanout", "record": str(relaunched_record),
+                      "fanout_dir": str(split_live), "issued_at": time.time() - 100,
+                      "launched_at": time.time() - 100}
+    state_file.write_text(json.dumps({"dispatch_table_pending": [dead_entry, relaunch_entry]}))
+    split_output = run_hook("killed")
+    check(str(split_live) in split_output and str(split_dead) not in split_output
+          and "dead-fanout" not in split_output,
+          "the rearm hook drops a refused call's entry and lists only the relaunch", split_output)
+    fresh = {**dead_entry, "id": "fresh-fanout", "fanout_dir": str(root / "fresh"),
+             "issued_at": time.time() - 5, "launched_at": time.time() - 5}
+    state_file.write_text(json.dumps({"dispatch_table_pending": [fresh]}))
+    check("fresh-fanout" in run_hook("killed"),
+          "an entry inside its preflight window keeps its place in the rearm list")
+
+    check("watch_records.py" not in run_hook("", "hello " + "z" * (9 * 1024 * 1024)),
           "owner prompt does not scan a long transcript")
     state_file.write_text(json.dumps({"dispatch_table_pending": [entry]}) + '{"dispatch_table_pending": [tor')
-    check(str(record) in dispatch("killed"), "a torn state file still advises from its first document")
+    check(str(record) in run_hook("killed"), "a torn state file still advises from its first document")
     state_file.write_text(json.dumps({"dispatch_table_pending": [None, "junk", 3, [], entry]}))
-    check(str(record) in dispatch("killed"), "non-dict pending entries are skipped, the real one advised")
+    check(str(record) in run_hook("killed"), "non-dict pending entries are skipped, the real one advised")
     state_file.write_text("{not json")
-    check("watch_records.py" not in dispatch("killed"), "an unrecoverable state file stays silent")
+    check("watch_records.py" not in run_hook("killed"), "an unrecoverable state file stays silent")
 
     launch = [json.loads(line) for line in (ROOT / "tests" / "fixtures" / "sidecar_watch_rearm"
                                              / "workflow_launch.jsonl").read_text(encoding="utf-8").splitlines()]
@@ -155,15 +184,15 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
     workflow_entry = {"kind": "workflow", "id": run_id, "name": "dispatch", "run_dir": str(run_dir),
                       "launched_at": time.time(), "jobs": []}
     state_file.write_text(json.dumps({"dispatch_table_pending": [workflow_entry]}))
-    output = dispatch("killed")
+    output = run_hook("killed")
     check(WATCH_COMMAND in output and GROUP in output and str(run_dir) in output,
           "workflow-only session gets the re-arm reminder for its running run", output)
     watched = {"process": process(os.getpid()), "records": [], "session": True}
     state_file.write_text(json.dumps({"dispatch_table_pending": [workflow_entry], "sidecar_watchers": [watched]}))
-    check("watch_records.py" not in dispatch("killed"), "a live session watcher covers the running workflow")
+    check("watch_records.py" not in run_hook("killed"), "a live session watcher covers the running workflow")
     state_file.write_text(json.dumps({"dispatch_table_pending": [workflow_entry]}))
     (session_dir / "workflows").mkdir()
     (session_dir / "workflows" / (run_id + ".json")).write_text(json.dumps({"status": "completed"}))
-    check("watch_records.py" not in dispatch("killed"), "a workflow with a terminal host record is silent")
+    check("watch_records.py" not in run_hook("killed"), "a workflow with a terminal host record is silent")
 
 print("test_sidecar_watch_rearm: %d passed, 0 failed" % passed)

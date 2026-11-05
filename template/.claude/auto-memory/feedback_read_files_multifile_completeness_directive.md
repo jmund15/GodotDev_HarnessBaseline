@@ -1,11 +1,11 @@
 ---
 name: read-files-multifile-completeness-directive
 description: "ai-worker read_files multi-file extraction silently omits files (returns N-1 of N) without an explicit completeness directive in the question. Fix is the prompt instruction, NOT a cap change, chaining, or size reduction. Verified 2026-05-19."
-metadata: 
+metadata:
   node_type: memory
+  retire_when:
+    - review-by: 2026-11-22
   type: feedback
-retire_when:
-  - review-by: 2026-11-22
 ---
 
 When using `mcp__ai-worker__read_files` to extract structured data across multiple files (N≥4), the question MUST include an explicit completeness directive: *"You MUST return one entry per input path (N total). Do NOT silently omit any file. If a file can't be parsed, include an entry with a 'reason' field rather than omitting."* Then verify output shape post-call: count returned entries against `len(paths)`; retry missed entries individually.
@@ -23,4 +23,4 @@ When using `mcp__ai-worker__read_files` to extract structured data across multip
 - **A self-reported total is not verification** — the model counts what it emitted, not what existed. Verify against something the worker did not produce: `grep -c` the source, or a count derived from a separate read.
 - Consequence when unverified: any ranking, triage, or "top N" selection drawn from the digest is silently drawn from an incomplete pool.
 
-Full reference: `ai_worker_model_guide.md` → "read_files — Output Discipline". Sibling gotcha: [[feedback_read_files_enumerate_first]] (glob to concrete paths before bundling).
+Full reference: `ai_worker_model_guide.md` → "read_files — Output Discipline".

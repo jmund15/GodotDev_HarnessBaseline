@@ -10,6 +10,9 @@ This module runs the members in-process, like `pre_bash_dispatch.py` and `pre_re
 collects every deny instead of stopping at the first.
 
 Members, in order (each keeps its own `main()` and CLI contract, so its own proof stays standalone):
+  0. expand_args_file           `args: {argsFile: <path>}` expands from a repo-relative JSON file under the
+                               session's own `.claude/scratch/`, so every later member reads the real args. A
+                               Workflow script has no filesystem, so the hook, not the engine, reads it.
   1. subagent_dispatch_guard   a delegate or sidecar child may not dispatch. A deny here ends the chain: the
                                orchestrator's preconditions below are not the delegate's to meet.
   2. workflow_script_lf_guard  rewrites a harness script's CRLF to LF before the permission handler reads it.
@@ -42,6 +45,7 @@ import importlib
 import json
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -51,6 +55,95 @@ _ROLE_GATE = "subagent_dispatch_guard"
 _RUNS_WHEN_ALLOWED = "readonly_marker_arm"
 _FAIL_CLOSED_ON_WORKFLOW = "workflow_provider_guard"
 _DECISION_RANK = {"deny": 3, "ask": 2, "allow": 1}
+_ARGS_FILE_NEXT = ("write the run's args with `python3 .claude/tools/lens_briefs.py prepare --spec <spec.json> "
+                   "--out <run dir>`, then pass only `{argsFile: \"<run dir>/args.json\"}`")
+
+
+def _session_root(payload):
+    """The checkout the session runs in: its own `cwd` first, so a lane worktree reads its own scratch."""
+    cwd = payload.get("cwd")
+    if isinstance(cwd, str) and cwd.strip():
+        return Path(cwd).resolve()
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    return Path(env).resolve() if env else Path(__file__).resolve().parents[2]
+
+
+def _args_deny(reason):
+    return {"permissionDecision": "deny", "permissionDecisionReason": reason}
+
+
+def expand_args_file(payload, root=None):
+    """Expand `tool_input.args = {argsFile: <path>}` to the file's JSON object, or deny.
+
+    Returns None when the call does not use the member, so a call without `argsFile` is untouched. The path
+    is repository-relative under the session's own `.claude/scratch/`; containment is decided after
+    `realpath` and `normcase`, so a junction or symlink that resolves outside scratch denies and a
+    case-different spelling of a real scratch file passes."""
+    if payload.get("tool_name") != "Workflow":
+        return None
+    tool_input = payload.get("tool_input") or {}
+    args = tool_input.get("args")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return None
+    if not isinstance(args, dict) or "argsFile" not in args:
+        return None
+    given = args.get("argsFile")
+    if set(args) != {"argsFile"}:
+        return _args_deny(f"`args` carries argsFile beside other keys ({', '.join(sorted(set(args) - {'argsFile'}))}); "
+                          f"pass argsFile alone. {_ARGS_FILE_NEXT}")
+    if not isinstance(given, str) or not given.strip():
+        return _args_deny(f"argsFile must be a non-empty repository-relative path. {_ARGS_FILE_NEXT}")
+    if "\\" in given:
+        return _args_deny(f"argsFile {given!r} uses backslashes; write it repository-relative with forward "
+                          f"slashes. {_ARGS_FILE_NEXT}")
+    if Path(given).is_absolute() or (len(given) > 1 and given[1] == ":"):
+        return _args_deny(f"argsFile {given!r} is absolute; it must be relative to the session root. {_ARGS_FILE_NEXT}")
+    base = Path(root).resolve() if root else _session_root(payload)
+    scratch = (base / ".claude" / "scratch").resolve()
+    target = (base / given).resolve()
+    inside = os.path.normcase(str(target)).startswith(os.path.normcase(str(scratch)) + os.sep)
+    if not inside:
+        return _args_deny(f"argsFile {given!r} resolves to {target.as_posix()}, outside the session's own "
+                          f"{scratch.as_posix()}; an args file lives under this checkout's .claude/scratch/. "
+                          f"{_ARGS_FILE_NEXT}")
+    try:
+        text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return _args_deny(f"argsFile {given!r} is unreadable: {exc}. {_ARGS_FILE_NEXT}")
+    try:
+        expanded = json.loads(text)
+    except ValueError as exc:
+        return _args_deny(f"argsFile {given!r} holds invalid JSON: {exc}. {_ARGS_FILE_NEXT}")
+    if not isinstance(expanded, dict):
+        return _args_deny(f"argsFile {given!r} holds a {type(expanded).__name__}, not a JSON object. "
+                          f"{_ARGS_FILE_NEXT}")
+    return {"updatedInput": {"args": expanded}}
+
+
+class _ExpandArgsFile:
+    """The first member: expand `argsFile` before every later member reads `args`."""
+
+    __name__ = "expand_args_file"
+    __file__ = "pre_workflow_dispatch.py"
+
+    def main(self):
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+        except ValueError:
+            return 0
+        if not isinstance(payload, dict):
+            return 0
+        result = expand_args_file(payload)
+        if result:
+            sys.stdout.write(json.dumps({"hookSpecificOutput": dict(result, hookEventName="PreToolUse")}))
+        return 0
+
+
+EXPAND_ARGS_MEMBER = _ExpandArgsFile()
+
 
 
 class _ImportStub:
@@ -85,6 +178,7 @@ workflow_provider_guard = _load("workflow_provider_guard")
 readonly_marker_arm = _load("readonly_marker_arm")
 
 HOOKS = (
+    (EXPAND_ARGS_MEMBER, ()),
     (subagent_dispatch_guard, ()),
     (workflow_script_lf_guard, ()),
     (dispatch_mechanism_guard, ()),

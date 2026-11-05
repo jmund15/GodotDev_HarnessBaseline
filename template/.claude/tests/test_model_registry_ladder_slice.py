@@ -1,14 +1,10 @@
-"""Proof for `model_registry.py ladder-slice <tier>...`: the per-tier slice of the model ladder.
+"""Proof for `model_registry.ladder_slice(tiers)`: the per-tier slice of the model ladder.
 
-The slice is what a dispatcher reads instead of the whole ladder: the role definitions and terms, the
+The slice is what a dispatcher reads instead of the whole ladder (`for-role` prints it): the role definitions and terms, the
 Role guidance rows whose registry `roles` claim a named tier, the selection-line bullets and the axis
-definitions. A successful run records the covered tiers in the compaction-scoped hook state, so the
-dispatch gate admits a call whose tiers the slice covers.
+definitions. The `ladder-slice` CLI is retired and points to `for-role`.
 """
-import contextlib
 import importlib.util
-import io
-import os
 import sys
 from pathlib import Path
 
@@ -16,7 +12,6 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent / "tools"
-HOOKS = HERE.parent / "hooks"
 
 
 def _load(name, path):
@@ -117,41 +112,9 @@ def test_a_drifted_table_fails_closed(mr, tmp_path):
         mr.ladder_slice(["architect"], path=ladder)
 
 
-def test_cli_prints_the_slice_and_records_the_covered_tiers(mr, tmp_path, monkeypatch):
-    monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "slicecli-0000-aaaa")
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        assert mr.main(["ladder-slice", "architect", "validation"]) == 0
-    assert out.getvalue().strip() == _slice(mr, "architect", "validation").strip()
-    hook_state = _load("_hook_state_slice_probe", HOOKS / "_hook_state.py")
-    assert hook_state.ladder_slice_tiers("slicecli-0000-aaaa") == ["architect", "fanout"]
-
-
-def test_cli_without_a_session_id_prints_and_says_nothing_was_recorded(mr, tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path))
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    assert mr.main(["ladder-slice", "architect"]) == 0
-    captured = capsys.readouterr()
-    assert "## Role definitions" in captured.out
-    assert "not recorded" in captured.err
-    assert not list(Path(tmp_path).glob("*.json"))
-
-
-def test_cli_rejects_no_tier(mr, capsys):
-    assert mr.main(["ladder-slice"]) == 2
-    assert "usage" in capsys.readouterr().err
-
-
-def test_two_runs_accumulate_covered_tiers(mr, tmp_path, monkeypatch):
-    monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "slicecum-0000-aaaa")
-    with contextlib.redirect_stdout(io.StringIO()):
-        mr.main(["ladder-slice", "executor"])
-        mr.main(["ladder-slice", "architect"])
-    hook_state = _load("_hook_state_slice_probe2", HOOKS / "_hook_state.py")
-    assert hook_state.ladder_slice_tiers("slicecum-0000-aaaa") == ["architect", "executor"]
-    assert os.path.isdir(str(tmp_path))
+def test_the_retired_cli_exits_2_and_names_for_role(mr, capsys):
+    assert mr.main(["ladder-slice", "architect"]) == 2
+    assert "for-role" in capsys.readouterr().err
 
 
 def _supplementary_ladder(mr, tmp_path):

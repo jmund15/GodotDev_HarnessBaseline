@@ -15,6 +15,9 @@ import sys
 import tempfile
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+sys.path.insert(0, os.path.join(ROOT, ".claude", "hooks"))
+import _msys  # noqa: E402  the land runner's PATH holds Git's cmd folder without its usr\bin, so a bare `sh` is missing there
+SH = _msys.tool("sh")
 FAILS = []
 PEER = "Claude-Session: https://claude.ai/code/session_peer"
 MINE = "Claude-Session: https://claude.ai/code/session_mine"
@@ -87,7 +90,7 @@ def main():
         message = os.path.join(tmp, "msg")
         with open(message, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("planted commit\n")
-        r = subprocess.run(["sh", os.path.join(ROOT, ".claude", "githooks", "commit-msg"), message],
+        r = subprocess.run([SH, os.path.join(ROOT, ".claude", "githooks", "commit-msg"), message],
                            cwd=tmp, capture_output=True, text=True, encoding="utf-8", errors="replace")
         check(r.returncode == 1 and "BLOCKED commit" in r.stderr
               and "cannot find the repository root" in r.stderr and "peer-revert guard" in r.stderr,
@@ -214,14 +217,14 @@ def main():
               "a missing guard refuses the commit and names the file to restore (rc=%d) %s"
               % (r.returncode, r.stderr[-200:]))
 
-        bare = os.pathsep.join(os.path.dirname(shutil.which(t) or "") for t in ("git", "sh"))
-        if shutil.which("git") and shutil.which("sh") and shutil.which("python3", path=bare) and os.name == "posix":
+        bare = os.pathsep.join(os.path.dirname(t) for t in (shutil.which("git") or "", SH))
+        if shutil.which("git") and os.path.isabs(SH) and shutil.which("python3", path=bare) and os.name == "posix":
             # On a POSIX host git, sh and python3 share /usr/bin: link just the first two into a bare directory.
             bare = os.path.join(tmp, "bare_bin")
             os.makedirs(bare)
             for tool in ("git", "sh"):
                 os.symlink(shutil.which(tool), os.path.join(bare, tool))
-        if shutil.which("git") and shutil.which("sh") and not shutil.which("python3", path=bare):
+        if shutil.which("git") and os.path.isabs(SH) and not shutil.which("python3", path=bare):
             repo = make_repo(os.path.join(tmp, "k"))
             write(repo, "g.txt", "nopython\n")
             git(repo, "add", "g.txt")

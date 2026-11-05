@@ -22,6 +22,9 @@ from pathlib import Path
 _TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 COMPOSE_PATH = _TOOLS_DIR / "baseline_compose.py"
 SYNC_PATH = _TOOLS_DIR / "baseline_sync.py"
+# baseline_sync.py's own imports, copied into each temp consumer so the CLI runs there.
+SYNC_TOOLS = ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py",
+              "adaptation.py", "layer_closure.py", "cli_usage.py")
 
 
 def _load(path: Path, name: str):
@@ -229,7 +232,7 @@ def main() -> int:
     claude2 = root2 / ".claude"
     (claude2 / "hooks").mkdir(parents=True)
     (claude2 / "tools").mkdir(parents=True)
-    for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py", "layer_closure.py"):
+    for name in SYNC_TOOLS:
         shutil.copy(_TOOLS_DIR / name, claude2 / "tools" / name)
     base_settings = {"permissions": {"allow": ["A"]}, "hooks": {}}
     project_settings = {"permissions": {"allow": ["B"]}, "hooks": {}}
@@ -302,7 +305,7 @@ def main() -> int:
     claude3 = root3 / ".claude"
     (claude3 / "hooks").mkdir(parents=True)
     (claude3 / "tools").mkdir(parents=True)
-    for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py", "layer_closure.py"):
+    for name in SYNC_TOOLS:
         shutil.copy(_TOOLS_DIR / name, claude3 / "tools" / name)
     base_settings = {"permissions": {"allow": ["A"]}, "hooks": {}}
     project_settings = {"permissions": {"allow": ["B"]}, "hooks": {}}
@@ -522,7 +525,7 @@ def main() -> int:
         claude = tmp / ".claude"
         (claude / "hooks").mkdir(parents=True)
         (claude / "tools").mkdir(parents=True)
-        for name in ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py", "adaptation.py", "layer_closure.py"):
+        for name in SYNC_TOOLS:
             shutil.copy(_TOOLS_DIR / name, claude / "tools" / name)
         (claude / "settings.base.json").write_text(json.dumps({"permissions": {"allow": ["A"]}}), encoding="utf-8")
         (claude / "settings.godot.json").write_text(

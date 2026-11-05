@@ -20,6 +20,8 @@ Follow the Writing bullet of `CLAUDE.core.md` §9. Code tips in `instruction_qua
 facts-versus-judgment sort for any output an agent acts on, §13 the channel a hook's output reaches, §14 a
 RED-first proof against a planted violation, §16 fail posture and docstring parity.
 
+A Python outline is `python3 .claude/tools/python_outline.py <path>`, never a `grep '^def'` chain.
+
 A shell a program spawns differs from an interactive one (WSL Bash versus Git Bash, no profile `PATH`): `environment_bootstrap` §This-machine ground truth owns the details.
 
 `settings.json` is composed: register a hook or change a setting in `settings.base.json` (shared),
@@ -144,7 +146,7 @@ and plain write, even an atomic one, drops fields a sibling hook saved in betwee
 
 A content id a later step resolves (a review ledger blob, a fold snapshot) is stored when computed: `git hash-object -w`. An unwritten id strands its record when the file moves on; the project's frozen-blob proof lists any compare-only exception.
 
-Append-only state also needs rotation, a stale-sweep, or a size cap (`instruction_quality` §15). The exemption is an append-only log whose rows a reader must see in full: `escape_log.jsonl` stays unrotated because a dropped row would silently restore the coverage it revoked. Any other append-only state still rotates.
+Append-only state also needs rotation, a stale-sweep, or a size cap (`instruction_quality` §15). The exemption is an append-only log whose rows a reader must see in full: `escape_log.jsonl` stays unrotated because a dropped row would silently restore the coverage it revoked, and `.gitattributes` gives it `merge=union` on that basis: a rotation or rewrite path added to it removes the attribute, since a union merge keeps both sides' lines wherever hunks conflict. Any other append-only state still rotates and keeps git's text merge.
 
 ## PowerShell: a function's success stream IS its return value
 

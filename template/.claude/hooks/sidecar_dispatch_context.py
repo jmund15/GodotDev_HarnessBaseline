@@ -14,10 +14,11 @@ The PREFLIGHT and DOCTRINE gates use that reader, never the APPROVAL
 recognizer: a gate keyed on the narrow recognizer fails open for every shape it does not recognize.
 
 0. TIER FIT (deny path), the check the Workflow route runs (`hooks/_dispatch_checks.py`), per direct launch
-   and per `sidecar_fanout.py` job (`alias` or `model`, `kind`, written `tier`). A job whose written `tier` (`-Q`),
+   and per `sidecar_fanout.py` job (`alias`, `model` or `rows`, `kind`, written `tier`; a `rows` job is checked
+   once per listed row). A job whose written `tier` (`-Q`),
    else its `-G`/`kind` row (`guards/tool_profiles.json`), declares a tier must pin a row serving it on the alias's own registry transport, else
    the launch is denied before preflight. An alias the registry does not know is left to the launcher's
-   availability gate. A fan-out job's `plan` must be a live plan of its row's route for the approval in step 3.
+   availability gate. A fan-out job's `plan` must be a live plan of its row's route (of at least one listed row's, for `rows`) for the approval in step 3.
    A fan-out whose jobs file the same call writes is checked by `sidecar_fanout.py` itself, through
    `fanout_fit_refusal`, once it can read the file and before it spawns or detaches.
 1. PREFLIGHT (deny path). Direct launchers run `<launcher> --check [-m <alias>] [-A] [-U] [-W]`
@@ -31,7 +32,7 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
    reads those values from the command text (`reference/sidecar_dispatch.md` Procedure step 5).
 2. DOCTRINE (deny). A launch while the orchestration skill or the model ladder is not in this
    context (a compaction clears both) is denied with each document's load route
-   (`model_ladder_gate.doctrine_check`): the full Read, or `model_registry.py ladder-slice <tier>` for
+   (`model_ladder_gate.doctrine_check`): the full Read, or `model_registry.py for-role <tier>` for
    the tiers the launch's `-G`/`shape` rows imply; a deny for another reason carries the same routes. Fan-out
    calls include their `--fold-*` authors (also under `--refold`) in doctrine and tier-fit checks. Hook-written
    receipts bind each child's label, alias, effort, shape, output directory and legal paying plans. They survive
@@ -98,17 +99,16 @@ except Exception:
     sidecar_fanout = None
 
 PREFLIGHT_TIMEOUT = 45   # under pre_bash_dispatch's 75 s; the codex probe is one network call
-# A launcher's own launch answers no hook: the go --check took 127 s under study load (2026-10-29) and refused a
-# study's ruler three times at 45 s. A slow check only delays the launch; this bounds a hung one.
+# A launcher's own launch answers no hook deadline: a slow check only delays the launch, and this bounds a hung one.
 LAUNCH_PREFLIGHT_TIMEOUT = 300
 CAPACITY_EXIT = 8        # lib/sidecar_common.sh: the capacity runner is missing, failed or malformed; no override
 CAPACITY_REFUSAL_EXIT = 10  # pre-spawn floor, spent allowance or live usage-limit marker; no override
 PEAK_EXIT = 11           # lib/sidecar_common.sh: peak pricing window on a peakPolicy=refuse row; only -W lifts it
 SAFE_JOB_FIELDS = frozenset({
-    "label", "alias", "promptFile", "effort", "kind", "armDisclosure",
+    "label", "alias", "rows", "promptFile", "effort", "kind", "tier", "armDisclosure",
     "contextFiles", "schemaFile", "workdir", "transport", "plan",
 })
-REQUIRED_JOB_FIELDS = frozenset({"label", "alias", "promptFile", "kind"})
+REQUIRED_JOB_FIELDS = frozenset({"label", "promptFile", "kind"})  # and `alias` or `rows`, per `_listed_rows`
 SAFE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
 LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 NON_DISPATCHING_FANOUT_ARGS = frozenset({"--status", "--dry-run", "--help", "-h"})
@@ -179,24 +179,28 @@ def _assigned(inv, cmd):
 
 
 def launch_preflight(cmd, root):
-    """run_preflight for a launcher's own launch, which no hook deadline bounds."""
-    return run_preflight(cmd, root, limit=LAUNCH_PREFLIGHT_TIMEOUT)
+    """(state, refusal, check exit code or None) for a launcher's own launch, which no hook deadline bounds."""
+    return _preflight(cmd, root, limit=LAUNCH_PREFLIGHT_TIMEOUT)
 
 
 def run_preflight(cmd, root, deadline=None, limit=None):
     """Return (state, refusal): passed, refused, or skipped when no check ran. `deadline` is the monotonic
     time by which the hook must have answered; the check gets at most what remains of it, up to `limit`
     (PREFLIGHT_TIMEOUT when unset)."""
+    return _preflight(cmd, root, deadline, limit)[:2]
+
+
+def _preflight(cmd, root, deadline=None, limit=None):
     if os.environ.get("HARNESS_SIDECAR_PREFLIGHT") == "0":
-        return "skipped", None
+        return "skipped", None, None
     inv = next((c for c in sidecar_argv.launcher_invocations(cmd) if c.kind == "sidecar"), None)
     bash = _git_bash()
     if inv is None or not bash:
-        return "skipped", None
+        return "skipped", None, None
     if approving_gates is None:
         return "refused", ("REFUSED at preflight (%s) — safe launcher path checks are unavailable (%s). "
                             "Repair hooks/approving_gates.py before dispatch."
-                            % (os.path.basename(inv.path), _APPROVING_GATES_IMPORT_ERROR))
+                            % (os.path.basename(inv.path), _APPROVING_GATES_IMPORT_ERROR)), None
     launcher = inv.path
     root_path = Path(root).resolve()
     candidate = Path(launcher)
@@ -205,10 +209,10 @@ def run_preflight(cmd, root, deadline=None, limit=None):
         launcher_path = candidate.resolve(strict=True)
         trusted_dir = (root_path / ".claude" / "scripts").resolve(strict=True)
     except OSError:
-        return "skipped", None
+        return "skipped", None, None
     if (candidate.is_symlink() or launcher_path.parent != trusted_dir
             or not launcher_path.is_file() or _path_has_symlink(root_path, launcher_path)):
-        return "skipped", None
+        return "skipped", None, None
     flags = sidecar_argv.sidecar_flags(inv.args)
     args = [bash, str(launcher_path), "--check"]
     if isinstance(flags.get("m"), str):
@@ -225,37 +229,37 @@ def run_preflight(cmd, root, deadline=None, limit=None):
     if allowed < 1:
         return "refused", ("REFUSED at preflight (%s --check never started: the earlier dispatch checks used "
                 "this hook's time budget) — availability and budget were not verified. Retry the dispatch."
-                % os.path.basename(launcher))
+                % os.path.basename(launcher)), None
     try:
         # Bounded: a check whose probes outlive it would otherwise hold this hook past its deadline.
         r = run_bounded(args, allowed, cwd=root, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         if r.returncode is None:
             return "refused", ("REFUSED at preflight (%s --check timed out after %d s) — availability and budget "
                     "were not verified. Retry after checking the launcher."
-                    % (os.path.basename(launcher), allowed))
+                    % (os.path.basename(launcher), allowed)), None
     except Exception as exc:
         return "refused", ("REFUSED at preflight (%s --check could not run: %s: %s) — availability and budget "
                 "were not verified. Repair the launcher check before dispatch."
-                % (os.path.basename(launcher), type(exc).__name__, exc))
+                % (os.path.basename(launcher), type(exc).__name__, exc)), None
     if r.returncode == 0:
-        return "passed", None
+        return "passed", None, 0
     text = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
     if r.returncode == CAPACITY_EXIT:
         return "refused", ("REFUSED at preflight (%s --check exit %d) — the provider capacity check itself failed:\n%s\n"
                 "-A does not lift it: no band was read. Repair the capacity check (tools/provider_capacity.py), "
-                "then retry." % (os.path.basename(launcher), r.returncode, text[-1500:]))
+                "then retry." % (os.path.basename(launcher), r.returncode, text[-1500:])), r.returncode
     if r.returncode == CAPACITY_REFUSAL_EXIT:
         return "refused", ("REFUSED at preflight (%s --check exit %d) — capacity admission refused before spawn:\n%s\n"
                 "-A does not lift this refusal; wait for reset or use another plan with room."
-                % (os.path.basename(launcher), r.returncode, text[-1500:]))
+                % (os.path.basename(launcher), r.returncode, text[-1500:])), r.returncode
     if r.returncode == PEAK_EXIT:
         return "refused", ("REFUSED at preflight (%s --check exit %d) — a peak pricing window is open:\n%s\n"
                 "-A does not lift it. Pass -W only when the user explicitly authorized peak pricing in this "
                 "conversation; otherwise wait for off-peak or route the work to another provider."
-                % (os.path.basename(launcher), r.returncode, text[-1500:]))
+                % (os.path.basename(launcher), r.returncode, text[-1500:])), r.returncode
     return "refused", ("REFUSED at preflight (%s --check exit %d) — the dispatch would have died the same way in the "
             "background:\n%s\nRe-select under the ladder, or pass -A and state the spend."
-            % (os.path.basename(launcher), r.returncode, text[-1500:]))
+            % (os.path.basename(launcher), r.returncode, text[-1500:])), r.returncode
 
 
 def _parse_fanout_command(command, root):
@@ -326,8 +330,23 @@ def _safe_kinds():
         return frozenset()
 
 
+def _listed_rows(job):
+    """[(alias, effort)] the job lists: its `rows` in order, else its one `alias` + `effort`. Empty where it names
+    neither, or `rows` beside `alias` or `effort` (`sidecar_fanout.normalize_job` refuses both), or `rows` is
+    not a non-empty object."""
+    if "rows" in job:
+        rows = job["rows"]
+        if "alias" in job or "effort" in job or not isinstance(rows, dict) or not rows:
+            return []
+        return list(rows.items())
+    return [(job["alias"], job.get("effort"))] if "alias" in job else []
+
+
 def _safe_fanout_job(job, root, registry):
     if not isinstance(job, dict) or not REQUIRED_JOB_FIELDS <= job.keys():
+        return False
+    rows = _listed_rows(job)
+    if not rows:
         return False
     if not job.keys() <= SAFE_JOB_FIELDS:
         return False
@@ -350,18 +369,23 @@ def _safe_fanout_job(job, root, registry):
             return False
     if "effort" in job and job["effort"] not in SAFE_EFFORTS:
         return False
-    try:
-        entry = model_registry.resolve(job["alias"], registry)
-        available = model_registry.model_available(job["alias"], registry)
-    except Exception:
-        return False
-    try:
-        plans = model_registry.plans_of(entry.get("transport"), registry)
-    except Exception:
-        return False
-    return (available
-            and job.get("transport", entry.get("transport")) == entry.get("transport")
-            and job.get("plan", entry.get("transport")) in plans)
+    served = []
+    for alias, effort in rows:
+        if not isinstance(alias, str) or (effort is not None and effort not in SAFE_EFFORTS):
+            return False
+        try:
+            entry = model_registry.resolve(alias, registry)
+            available = model_registry.model_available(alias, registry)
+            plans = model_registry.plans_of(entry.get("transport"), registry)
+        except Exception:
+            return False
+        if not available or job.get("transport", entry.get("transport")) != entry.get("transport"):
+            return False
+        served.append((entry.get("transport"), plans))
+    # The fan-out runs a `rows` job on the row its plan pays for, so a named plan need serve only one row.
+    if "plan" in job:
+        return any(job["plan"] in plans for _transport, plans in served)
+    return all(transport in plans for transport, plans in served)
 
 
 def fanout_allowed(payload):
@@ -442,21 +466,29 @@ def fanout_contract(fanout, root):
                           "effort": args.fold_effort, "kind": "author", "plan": fold_plan}
                          for index in range(1, len(args.fold_subject) + 1)]
         contracts = []
+        import tool_profiles
         for job in children:
-            alias = job.get("alias")
-            if not isinstance(alias, str):
-                continue
-            route = model_registry.resolve(alias, data)["transport"]
-            plans = [job["plan"]] if job.get("plan") else model_registry.plans_of(route, data)
-            legal = model_registry.plans_of(route, data)
-            if not plans or any(plan not in legal for plan in plans):
-                raise ValueError("fan-out paying plan does not serve its alias")
-            import tool_profiles
-            contracts.append({"job": (str(job.get("label") or alias), alias, tool_profiles.job_kind_shape(job),
-                                      job.get("plan")),
-                              "kind": job.get("kind"), "tier": job.get("tier"),
-                              "effort": job.get("effort"), "plans": plans,
-                              "directory": os.path.normcase(os.path.abspath(directory))})
+            # One contract per row the job lists: the fan-out runs a `rows` job on the row its plan pays for,
+            # so each row is a legal pin. A named plan skips a `rows` job's rows it does not serve and raises
+            # when it serves none, as it does for an alias it does not serve.
+            listed = [(alias, effort) for alias, effort in sidecar_fanout.listed_rows(job) if isinstance(alias, str)]
+            served = 0
+            for alias, effort in listed:
+                route = model_registry.resolve(alias, data)["transport"]
+                legal = model_registry.plans_of(route, data)
+                plans = [job["plan"]] if job.get("plan") else legal
+                if job.get("rows") and job.get("plan") and job["plan"] not in legal:
+                    continue
+                if not plans or any(plan not in legal for plan in plans):
+                    raise ValueError("fan-out paying plan does not serve its alias")
+                served += 1
+                contracts.append({"job": (str(job.get("label") or alias), alias, tool_profiles.job_kind_shape(job),
+                                          job.get("plan")),
+                                  "kind": job.get("kind"), "tier": job.get("tier"),
+                                  "effort": effort, "plans": plans,
+                                  "directory": os.path.normcase(os.path.abspath(directory))})
+            if listed and not served:
+                raise ValueError("fan-out paying plan does not serve a listed row")
         return contracts
     except (Exception, SystemExit):
         return []
@@ -482,10 +514,13 @@ def launch_jobs(direct, fanout, root, contracts=None):
         if not isinstance(alias, str):
             return []
         shape = flags.get("G") if isinstance(flags.get("G"), str) else None
-        # A launcher's -G names a kind; the fan-out receipt and the shape tiers key on its guard (removed in S5).
-        import tool_profiles
-        if shape in (tool_profiles.load_table().get("kinds") or {}):
-            shape = tool_profiles.job_kind_shape({"kind": shape})
+        # A launcher's -G names a kind; the fan-out receipt and the shape tiers key on its guard.
+        try:
+            import tool_profiles
+            if shape in (tool_profiles.load_table().get("kinds") or {}):
+                shape = tool_profiles.job_kind_shape({"kind": shape})
+        except Exception:
+            pass
         label = flags.get("l") if isinstance(flags.get("l"), str) else alias
         try:
             plan = model_registry.plan_for_launcher(direct.path) if model_registry is not None else None
@@ -577,10 +612,6 @@ def dispatch_checks(jobs, kinds=None):
             continue
         try:
             tier, source = _dispatch_checks.job_tier(kinds.get(label) or shape, written[0] if written else None)
-            if written and written[0]:
-                source = "the job's `tier`"
-            else:
-                source = f"shape `{shape}`"   # the guard a kind's row names, which the child's `-G` repeats
             why = _dispatch_checks.tier_fit(alias, tier, row["transport"], data)
         except ValueError as err:
             why, source = str(err), None
@@ -757,18 +788,21 @@ def launcher_launch(launcher, argv):
     jobs = launch_jobs(checked_direct, None, root)
     checked, preflight = take_checks(payload, entries[0], jobs[0], flags) if entries and jobs else (False, False)
     refusal = None if checked else dispatch_checks(
-        with_written_tiers(jobs, written_tiers(checked_direct, None, root)))
+        with_written_tiers(jobs, written_tiers(checked_direct, None, root)),
+        {jobs[0].label: flags["G"]} if jobs and isinstance(flags.get("G"), str) else None)
     if (refusal is None and not checked and payload["session_id"]
             and not fanout_admitted(payload["session_id"], flags.get("R"))):
         refusal, fault = model_ladder_gate.doctrine_check(
             payload, tiers=lambda: launch_tiers(checked_direct, None, root), embed_slice=False)
         if fault:
             print(fault, file=sys.stderr)
+    code = None
     if refusal is None and not preflight:
-        _state, refusal = launch_preflight(command, root)
+        _state, refusal, code = launch_preflight(command, root)
     if refusal:
         print(refusal, file=sys.stderr)
-        return 2
+        # A spent allowance or a peak window is a pause its caller waits out (lib/sidecar_common.sh exit codes).
+        return code if code in (CAPACITY_REFUSAL_EXIT, PEAK_EXIT) else 2
     for line in untracked:
         print(line, file=sys.stderr)
     if payload["session_id"]:

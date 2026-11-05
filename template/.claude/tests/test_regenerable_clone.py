@@ -384,7 +384,7 @@ def retired_worktree_cases():
     pr_head = add_branch_wt("pr_head", "feat/open-pr-head")
     with patch.object(rc, "_open_prs", lambda root: [(7, "feat/seven")]):
         expect_wt("sync/pr<N> branch of an open PR", pr_sync, False, proj)
-        expect_wt("sync/pr<N> branch of an open PR, owner approved", pr_sync, False, proj, allow_ignored=True)
+        expect_wt("sync/pr<N> branch of an open PR, ignored files allowed", pr_sync, False, proj, allow_ignored=True)
     with patch.object(rc, "_open_prs", lambda root: [(9, "feat/open-pr-head")]):
         expect_wt("branch that is an open PR's head", pr_head, False, proj)
     with patch.object(rc, "_open_prs", lambda root: [(8, "feat/eight")]):
@@ -645,6 +645,39 @@ def retired_worktree_cases():
     expect_wt("gitless leftover, content held by git, ignored files not allowed", g_clean, True, proj)
     g_new = gitless("g_new", edit=lambda p: write(os.path.join(p, "notes.md"), "unsaved notes\n"))
     expect_wt("gitless leftover, authored file git never saw", g_new, False, proj, allow_ignored=True)
+    # One deny names every unheld file, so removing a worktree never walks through a deny per file.
+    def three_files(p):
+        for n in ("a_notes.md", "b_notes.md", "c_notes.md"):
+            write(os.path.join(p, n), "unsaved " + n + "\n")
+
+    def named_all(label, reasons):
+        global fails, total
+        total += 1
+        text = " | ".join(reasons)
+        if len(reasons) == 1 and all(n in text for n in ("a_notes.md", "b_notes.md", "c_notes.md")):
+            print(f"  ok   {label} with three unheld files names all three in one deny")
+        else:
+            fails += 1
+            print(f"  FAIL {label} with three unheld files names all three in one deny: {reasons}")
+
+    many_o3 = orphan("many_o3", edit=three_files)
+    got = []
+    rc.lossless_orphan_worktree(many_o3, proj, proj, got)
+    named_all("orphan", got)
+    many_l3 = add_wt("many_l3")
+    three_files(many_l3)
+    got = []
+    rc.is_retired_worktree(many_l3, proj, proj, reasons=got)
+    named_all("live worktree", [r for r in got if "local files" in r])
+    many_cap = orphan("many_cap", edit=lambda p: [write(os.path.join(p, "f%02d.md" % i), "x%d\n" % i) for i in range(11)])
+    got = []
+    rc.lossless_orphan_worktree(many_cap, proj, proj, got)
+    total += 1
+    if not (got and "f00.md" in got[0] and "(and 3 more)" in got[0] and "f10.md" not in got[0]):
+        fails += 1
+        print(f"  FAIL a long list is capped and counts the rest: {got}")
+    else:
+        print("  ok   a long list is capped and counts the rest")
     expect_wt_channel("lossless orphan", "rm -rf .claude/worktrees/o_clean", "allow", proj)
     expect_wt_channel("lossless orphan a peer session works in", "rm -rf .claude/worktrees/o_clean", "deny", proj,
                       env=peer_login("orphan", ("peer-orphan", "5eed5eed-aaaa-4bbb-8ccc-000000000006", o_clean)))

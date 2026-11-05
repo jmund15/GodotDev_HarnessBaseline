@@ -16,7 +16,7 @@ Skills use `description: >-`; commands use one action-first `description:` line,
 Measure current state before changing it. Define the no-change result and resume behavior; do not repeat completed work merely because the command was invoked again.
 
 ### 10. Procedure verifiability
-Each work-starting step names a concrete operation and a checkable done-condition. Demand complete required coverage, not merely a list or a self-report. Procedure invocation is not completion. Prescribe evidence and gates, not unnecessary internal choreography: a brief to a downstream receiver carries context and gates only, and a line the receiver could work out itself is flow, so cut it.
+Each work-starting step names a concrete operation and a checkable done-condition. Demand complete required coverage, not merely a list or a self-report. Procedure invocation is not completion. Prescribe evidence and gates, not unnecessary internal choreography: a brief to a downstream receiver carries context and gates only, and a line the receiver could work out itself is flow, so cut it. A step that runs a CLI carries its copyable invocation with required arguments, or links the one step that does.
 
 ### 11. Argument handling
-State argument format, no-argument behavior and malformed-input behavior. Validate before work starts; examples must run against the real interface.
+State argument format, no-argument behavior and malformed-input behavior. Validate before work starts; examples must run against the real interface. A tool that refuses an argument prints the shape it accepts and one valid example, as an `accepts:` line and an `example:` line.

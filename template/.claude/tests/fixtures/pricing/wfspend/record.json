@@ -1,0 +1,18 @@
+{
+  "sessionId": "61a50469-e2df-4f40-a2dc-abaa08dc2480",
+  "transport": "anthropic-secondary",
+  "requestedModel": "claude-haiku-5-5",
+  "servedModel": [
+    "claude-haiku-5-5",
+    "claude-sonnet-5-5"
+  ],
+  "costModel": "plan-quota",
+  "costBasis": "list-price (plan-quota; not spend)",
+  "priceMultiplier": 1.0,
+  "inputTokens": 16,
+  "cacheReadTokens": 81906,
+  "cacheWriteTokens": 20226,
+  "cacheWrite1hTokens": 0,
+  "outputTokens": 3334,
+  "costUSD": 0.005904
+}

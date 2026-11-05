@@ -3,19 +3,25 @@
 
 dispatch_mechanism_guard (Workflow) and sidecar_dispatch_context (sidecar launches) deny a dispatch until the
 orchestration skill and the ladder are in this context: read in full, or printed as the per-tier slice
-(`model_registry.py ladder-slice <tier>...`) for every tier the call implies; a deny that reaches the session
-carries the slice of the missing tiers itself and records them. Class: process guard, blocking
+(`model_registry.py for-role <tier>...`) for every tier the call implies; a deny that reaches the session
+carries the slice of the missing tiers itself and records them, and names each missing tier with its dispatch
+consumer. A slice credits only when its stdout reached context untouched: the Bash PostToolUse entry
+(`--bash-credit`) compares the delivered text to the hash the run staged. Class: process guard, blocking
 because the advisory that replaced it let the skip recur (instruction_quality §3)."""
+import json
 import os
+import re
+import shlex
 import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_state import (LADDER_SLICE_KEY, ladder_slice_tiers, mark_ladder_slice, state_path,  # noqa: E402
-                         update_json_locked, skill_in_context)
+                         update_json_locked, skill_in_context, consume_ladder_receipt, fail_ladder_receipt,
+                         ladder_receipt_failure, normalize_stdout, stdout_sha256)
 
 STATE_KEY = "model_ladder_ready"
-SLICE_COMMAND = "python3 .claude/tools/model_registry.py ladder-slice"
+SLICE_COMMAND = "python3 .claude/tools/model_registry.py for-role"
 RELATIVE_PATH = Path(".claude") / "reference" / "model_ladder_evidence.md"
 
 
@@ -49,8 +55,14 @@ def _full_read_succeeded(payload):
 
 
 def mark_loaded(payload):
-    """Arm readiness after a successful exact-path Read covering the whole ladder."""
-    if not isinstance(payload, dict) or payload.get("tool_name") != "Read":
+    """Arm readiness from a delivery that reached context: a successful exact-path Read covering the whole
+    ladder, or a `for-role` run whose delivered stdout is the text it staged. A Bash result that was piped,
+    filtered, redirected, persisted, interrupted or failed credits nothing, and records why for the next deny."""
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("tool_name") == "Bash":
+        return _credit_delivered_slice(payload)
+    if payload.get("tool_name") != "Read":
         return False
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict) or not _full_read_succeeded(payload):
@@ -78,15 +90,79 @@ def mark_loaded(payload):
     return bool(written and marked)
 
 
+_INTERPRETERS = ("python", "python3", "py", "py.exe", "python.exe", "python3.exe")
+_MODEL_REGISTRY = re.compile(r"(?:^|[/\\])model_registry\.py$")
+_EXIT_KEYS = ("exitCode", "exit_code", "code")
+
+
+def _invokes_for_role(command):
+    """True when a simple command in `command` runs `model_registry.py for-role`: a mention inside a quoted
+    argument (`echo "python3 .../model_registry.py for-role"`) is not an invocation, so it cannot spend a
+    receipt a real run staged."""
+    for part in re.split(r"(?:&&|\|\||[;|&\n])", str(command or "")):
+        try:
+            tokens = shlex.split(part, posix=True)
+        except ValueError:
+            tokens = part.split()
+        for index in range(len(tokens) - 2):
+            if (os.path.basename(tokens[index]).lower() in _INTERPRETERS
+                    and _MODEL_REGISTRY.search(tokens[index + 1]) and tokens[index + 2] == "for-role"):
+                return True
+    return False
+
+
+def _delivery_failure(response, receipt):
+    """The reason this Bash result did not deliver the staged text, or None when it did."""
+    if not isinstance(response, dict):
+        return "the call returned no result object"
+    if response.get("interrupted"):
+        return "the call was interrupted"
+    if response.get("persistedOutputPath"):
+        return "the client persisted the output (persistedOutputPath) instead of delivering it"
+    code = next((response[key] for key in _EXIT_KEYS if key in response), None)
+    if isinstance(code, int) and not isinstance(code, bool) and code != 0:
+        return "for-role exited %d" % code
+    if response.get("isTruncated") or response.get("truncated"):
+        return "the delivered output was truncated"
+    delivered = normalize_stdout(response.get("stdout"))
+    if not delivered.strip():
+        return "the run delivered no output"
+    if stdout_sha256(delivered) != receipt.get("sha256"):
+        return "the delivered text differs from the run's own output (piped, filtered or redirected)"
+    return None
+
+
+def _credit_delivered_slice(payload):
+    """Credit the tiers a staged `for-role` receipt names, only for the stdout that reached context."""
+    session_id = payload.get("session_id") or ""
+    if not session_id or not _invokes_for_role((payload.get("tool_input") or {}).get("command")):
+        return False
+    receipt = consume_ladder_receipt(session_id)
+    if not receipt:
+        return False
+    reason = _delivery_failure(payload.get("tool_response"), receipt)
+    if reason:
+        fail_ladder_receipt(session_id, reason)
+        return False
+    tiers = [tier for tier in receipt.get("tiers") or [] if isinstance(tier, str) and tier]
+    return bool(tiers and mark_ladder_slice(session_id, tiers, clear_receipt_failure=True))
+
+
 FAULT_NOTE = ("Dispatch doctrine check could not read its session state, so this call is allowed without it. "
               "Repair hooks/model_ladder_gate.py if this repeats.")
 
 
 # The load steps the deny names and the post-compaction rule (`doctrine_rule`) states: one string per step.
 SKILL_STEP = 'invoke Skill(skill="orchestration") (orchestration §0)'
-SLICE_STEP = 'print the ladder slice for {which}: `' + SLICE_COMMAND + ' {tiers}` (orchestration §5)'
+SLICE_STEP = 'print the doctrine for {which}: `' + SLICE_COMMAND + ' {tiers}` (orchestration §5)'
 SLICE_BELOW_STEP = 'read the ladder slice for {which} below (orchestration §5)'
 READ_STEP = 'Read `{path}` in full, no offset or limit (orchestration §5)'
+
+
+def _tier_phrase(tier, consumers):
+    """`executor (fold)`: the missing tier and the call's labels that pin it, when the caller named them."""
+    labels = consumers.get(tier) or []
+    return "%s (%s)" % (tier, ", ".join(labels)) if labels else tier
 
 
 def doctrine_rule(payload):
@@ -99,12 +175,16 @@ def doctrine_rule(payload):
 
 
 def _call_tiers(tiers):
-    """The sorted tiers `tiers()` names, or None when the call's tiers are unknown (no callable, an error, or no tier)."""
+    """(sorted tiers, {tier: [consumer label]}) from `tiers()`, which returns tiers or a {tier: labels} map; None when
+    the call's tiers are unknown (no callable, an error, or no tier)."""
     try:
-        named = {t for t in (tiers() if callable(tiers) else None) or () if isinstance(t, str) and t}
+        got = tiers() if callable(tiers) else None
+        consumers = ({t: [str(label) for label in labels or ()] for t, labels in got.items()}
+                     if isinstance(got, dict) else {})
+        named = {t for t in got or () if isinstance(t, str) and t}
     except Exception:
         return None
-    return sorted(named) or None
+    return (sorted(named), consumers) if named else None
 
 
 def _embedded_slice(session_id, missing):
@@ -130,7 +210,7 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
     tool; the deny names only the Skill call. State the lock cannot write fails open with the fault note
     (instruction_quality §16): no load could be recorded.
 
-    The ladder is met by a full Read or by `model_registry.py ladder-slice` for every tier the call implies.
+    The ladder is met by a full Read or by `model_registry.py for-role` for every tier the call implies.
     `tiers` is a zero-argument callable returning those canonical tiers, evaluated only when the full Read is
     absent. When it names none (absent, failing or empty) the call's tiers are unknown, so only the full Read meets
     the ladder; with tiers known and `embed_slice` True, the deny ends with the slice of the uncovered ones and
@@ -153,18 +233,24 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
         if needed is None:
             unmet.append(READ_STEP.format(path=expected_path(payload)))
         else:
+            needed, consumers = needed
             missing = [t for t in needed if t not in covered]
             if missing:
-                which = 'the tier this call pins' if len(missing) == 1 else 'the tiers this call pins'
+                named = ', '.join(_tier_phrase(tier, consumers) for tier in missing)
                 slice_text = _embedded_slice(session_id, missing) if embed_slice else None
-                unmet.append(SLICE_BELOW_STEP.format(which=which) if slice_text
-                             else SLICE_STEP.format(which=which, tiers=' '.join(missing)))
+                unmet.append(SLICE_BELOW_STEP.format(which=named) if slice_text
+                             else SLICE_STEP.format(which=named, tiers=' '.join(missing)))
     if not unmet:
         return None, None
-    return ('Dispatch DENIED: the dispatch doctrine is not in context since the session started or last compacted. '
-            'Load it: ' + '; '.join(unmet) + '. Then check this call against it (route, jobs, '
-            'models, efforts, reading) and re-issue it with any change it calls for.'
-            + ('\n\n' + slice_text if slice_text else '')), None
+    reason = ('Dispatch DENIED: the dispatch doctrine is not in context since the session started or last compacted. '
+              'Load it: ' + '; '.join(unmet) + '. Then check this call against it (route, jobs, '
+              'models, efforts, reading) and re-issue it with any change it calls for.')
+    failure = ladder_receipt_failure(session_id) if session_id else None
+    if failure:
+        reason += ' The last for-role run did not reach context: %s.' % failure
+    if slice_text:
+        reason += '\n\n' + slice_text
+    return reason, None
 
 
 def tier_in_context(session_id, tier):
@@ -180,3 +266,21 @@ def claim_loaded(session_id):
 
     written, ready = update_json_locked(state_path(session_id or ""), update)
     return bool(written and ready)
+
+
+def main(argv=None):
+    """PostToolUse entry: `--bash-credit` credits the stdout a `for-role` run delivered, and prints nothing.
+    Every other invocation does nothing, so the narrow entry never becomes a second dispatcher."""
+    args = sys.argv[1:] if argv is None else list(argv)
+    if "--bash-credit" not in args:
+        return 0
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        return 0
+    mark_loaded(payload)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

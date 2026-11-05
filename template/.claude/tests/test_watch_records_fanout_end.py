@@ -20,6 +20,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "..", "tools")
@@ -298,7 +299,7 @@ class FanoutEnd(unittest.TestCase):
 class WakeUnit(unittest.TestCase):
     """The wake unit is the jobs one fan-out inventory puts in a `wakeWith` group; a job with none is its own unit.
 
-    Captured 2026-10-28: eight independent fix jobs in one fan-out; three ended clean over
+    Failure this proves: independent fix jobs in one fan-out; three ended clean over
     40, 22 and 10 minutes and none woke the session, which woke only when a fourth job failed."""
 
     def setUp(self):
@@ -412,6 +413,20 @@ class WakeUnit(unittest.TestCase):
         again, exited = outcome(self.s.watch(), 3)
         self.assertFalse(exited, "b still runs, so the re-armed watcher keeps watching; printed: %r" % again)
         self.assertNotIn("DONE a", again)
+
+
+class ProcessIdentity(unittest.TestCase):
+    """A live pid whose derived creation time reads a little after its stamp is the same process, not a reused pid."""
+
+    @unittest.skipIf(os.name == "nt", "Windows reads an exact creation time; the slack covers Linux's whole-second boot time")
+    def test_a_creation_time_a_second_or_two_after_the_stamp_is_not_a_reused_pid(self):
+        sys.path.insert(0, TOOLS)
+        import watch_records
+        now = int(time.time())
+        line = "%s pid=%d" % (stamp(now), os.getpid())
+        for late, gone in ((1.9, False), (30.0, True)):
+            with unittest.mock.patch.object(watch_records, "_process_started", return_value=now + late):
+                self.assertIs(watch_records._process_line_gone(line), gone, late)
 
 
 if __name__ == "__main__":

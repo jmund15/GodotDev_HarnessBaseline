@@ -7,7 +7,7 @@ accepted artifacts and the next action. The parent writes it at phase boundaries
 consumed result; `hooks/compact_directive_anchor.py` re-injects a bounded block of it after a
 compaction and `session_digest.py --brief` prints the same block.
 
-Store: one JSON file per task at `<project>/.claude/logs/tasks/<task_id>.json` (env override
+Store: one JSON file per task at `<project>/.claude/logs/tasks/<task_id>.json`, a linked worktree's project being its main checkout (env override
 `HARNESS_TASK_RECORD_DIR` for proofs). Every write goes through `_hook_state.update_json_locked`, so
 concurrent writers from several hooks or sessions compose. A record is capped at MAX_BYTES; a write
 that would exceed it is refused with the offending field named, never truncated (a capped store that
@@ -32,7 +32,8 @@ checks stored items, including command output. Without items a decision is `hash
 bytes are freshness, not a re-verified premise. The retired reproduction flag remains parseable,
 refuses the write and prints its replacement; legacy reproduction commands are never executed.
 
-    task_record.py open <task_id> --session <sid> --title <t>
+    task_record.py open <task_id> --spec <spec.json> [--reset]
+    task_record.py open <task_id> --session <sid> --title <t> [--reset]
     task_record.py set <task_id> [--phase P] [--next N] [--owner O] [--files PATH ...] [--rigor light|normal|thorough]
     task_record.py add <task_id> requirement|exclusion|decision|artifact "<text>" [--evidence P ...]
     task_record.py add <task_id> decision "<text>" --evidence-item '<json>' [--evidence-item '<json>' ...] [--supersedes <Dn> ...]
@@ -46,6 +47,11 @@ refuses the write and prints its replacement; legacy reproduction commands are n
     task_record.py show <task_id> | active --session <sid> | block <task_id> [--max-bytes N]
     task_record.py check <task_id> [--rerun]
 
+**One-call open.** `open --spec <spec.json>` opens the record, its requirements and exclusions, its scope and its
+triage in one transaction; the spec's keys are `session`, `title`, `requirements[]`, `exclusions[]`,
+`scope{owner,files[]}` and `triage{fields,paths[],outward[]}`. The same spec on an existing record is a no-op; a
+different spec is refused (edit through `add`/`triage`). A bare `open` on an existing record needs `--reset`.
+
 `condition` records an owner deadline or an owner request to add or drop process. The tool finds the last
 owner turn of the caller's session (`CLAUDE_CODE_SESSION_ID`) whose text contains `--quote`, using
 `_owner_text`'s classifier and prompt/answer projections plus typed command arguments. It stores that
@@ -57,6 +63,7 @@ needs `--until` as an ISO time with a zone, and no delegate may record one.
 """
 import argparse
 import copy
+import functools
 import hashlib
 import json
 import os
@@ -70,6 +77,7 @@ for _d in (os.path.join(HERE, "..", "hooks"), HERE):
     if _d not in sys.path:
         sys.path.insert(0, _d)
 import _hook_state  # noqa: E402
+from _checkout_root import linked_main_root  # noqa: E402
 
 # The per-turn cost is bounded by BLOCK_BYTES (the injected block), never by the file: the file is read
 # whole only by `show` and the digest. MAX_BYTES therefore guards against a dump, not context. Measured
@@ -94,6 +102,10 @@ class TriageRefused(Exception):
     pass
 
 
+class OpenRefused(Exception):
+    pass
+
+
 class ConditionRefused(Exception):
     pass
 
@@ -110,14 +122,29 @@ REPRODUCTION_REPLACEMENT = ('--reproduction is retired; use --evidence-item '
 CONDITION_KINDS = ("urgency", "request", "spend")
 SPEND_EFFECTS = ("lean", "normal")
 TRIAGE_ORDER = ("reach", "reversibility", "design", "grounding", "oracle", "size", "kind")
+SPEC_KEYS = ("session", "title", "requirements", "exclusions", "scope", "triage")
+SPEC_ACCEPTS = ("accepts: open <task_id> --spec <spec.json> [--reset], spec keys session, title, "
+                "requirements[], exclusions[], scope{owner,files[]}, triage{fields,paths[],outward[] optional}")
+SPEC_EXAMPLE = "example: python3 .claude/tools/task_record.py open my-task --spec .claude/scratch/my-task/spec.json"
 
 
-def record_dir():
+def _spec_refusal(message):
+    return OpenRefused("%s\n%s\n%s" % (message, SPEC_ACCEPTS, SPEC_EXAMPLE))
+
+
+def record_dir(start=None):
+    """The task record store: the env override, else `start`'s, where a linked worktree reads its main
+    checkout's store, so a lane sees the records the session opened there."""
     override = os.environ.get("HARNESS_TASK_RECORD_DIR")
     if override:
         return override
-    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    return os.path.join(root, ".claude", "logs", "tasks")
+    return os.path.join(_store_root(str(start or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())),
+                        ".claude", "logs", "tasks")
+
+
+@functools.lru_cache(maxsize=None)
+def _store_root(start):
+    return linked_main_root(start) or start
 
 
 def path_for(task_id, *, directory=None):
@@ -220,7 +247,7 @@ def _mutate(task_id, mutation):
         working = copy.deepcopy(state)
         try:
             result = mutation(working)
-        except (KeyError, TriageRefused) as exc:
+        except (KeyError, TriageRefused, OpenRefused) as exc:
             caught["exc"] = exc
             raise
         working["updated"] = now()
@@ -248,16 +275,141 @@ def _mutate(task_id, mutation):
     return result
 
 
-def open_record(task_id, session_id, title, owner=None):
+def open_record(task_id, session_id, title, owner=None, reset=False):
     stamp = now()
     rec = {"task_id": task_id, "session_id": session_id, "title": title, "opened": stamp, "updated": stamp,
            "requirements": [], "exclusions": [], "decisions": [], "scope": {"owner": owner, "files": []},
            "phase": None, "active_jobs": [], "slices": [], "accepted_artifacts": [], "admissions": [], "next_action": None}
 
     def mutation(state):
+        if state.get("task_id") and not reset:
+            raise OpenRefused("record %s is already open; --reset replaces it, an existing record is edited with "
+                              "`set`, `add` and `triage`, and one call from a spec is `open --spec`.\n%s\n%s"
+                              % (task_id, SPEC_ACCEPTS, SPEC_EXAMPLE))
         state.clear()
         state.update(rec)
         return rec
+
+    return _mutate(task_id, mutation)
+
+
+def _string_list(value, name):
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise _spec_refusal("spec key %s must be a list of strings" % name)
+    return list(value)
+
+
+def _validate_spec(spec):
+    """Normalize one spec object and derive its triage floor; returns (record fields, triage block)."""
+    import triage
+    if not isinstance(spec, dict):
+        raise _spec_refusal("the spec must be a JSON object")
+    extra = sorted(set(spec) - set(SPEC_KEYS))
+    missing = sorted(set(SPEC_KEYS) - set(spec))
+    if extra:
+        raise _spec_refusal("spec names unknown keys: %s" % ", ".join(extra))
+    if missing:
+        raise _spec_refusal("spec lacks keys: %s" % ", ".join(missing))
+    if not isinstance(spec["session"], str) or not spec["session"].strip():
+        raise _spec_refusal("spec session must be a non-empty string")
+    if not isinstance(spec["title"], str) or not spec["title"].strip():
+        raise _spec_refusal("spec title must be a non-empty string")
+    scope = spec["scope"]
+    if not isinstance(scope, dict) or set(scope) != {"owner", "files"}:
+        raise _spec_refusal("spec scope must be an object with exactly owner and files")
+    if scope["owner"] is not None and not isinstance(scope["owner"], str):
+        raise _spec_refusal("spec scope.owner must be a string or null")
+    triage_spec = spec["triage"]
+    if not isinstance(triage_spec, dict) or not set(triage_spec) <= {"fields", "paths", "outward"}:
+        raise _spec_refusal("spec triage must be an object with fields, paths and outward")
+    if not {"fields", "paths"} <= set(triage_spec):
+        raise _spec_refusal("spec triage needs fields and paths")
+    paths = _string_list(triage_spec["paths"], "triage.paths")
+    if not paths:
+        raise _spec_refusal("triage.paths is empty: the reach and oracle floor derives from the paths")
+    outward = _string_list(triage_spec.get("outward", []), "triage.outward")
+    triage_fields = triage_spec["fields"]
+    if not isinstance(triage_fields, dict):
+        raise _spec_refusal("spec triage.fields must be an object")
+    unknown = sorted(set(triage_fields) - set(TRIAGE_ORDER))
+    if unknown:
+        raise _spec_refusal("triage fields names unknown fields: %s" % ", ".join(unknown))
+    missing_fields = [name for name in TRIAGE_ORDER if name != "kind" and name not in triage_fields]
+    if missing_fields:
+        raise _spec_refusal("triage fields lacks: %s" % ", ".join(missing_fields))
+    fields = {}
+    for name in TRIAGE_ORDER:
+        if name not in triage_fields:
+            continue
+        value = triage_fields[name]
+        if name == "oracle":
+            values = parse_oracle(value) if isinstance(value, str) else _string_list(value, "triage.fields.oracle")
+            bad = [item for item in values if item not in triage.FIELDS["oracle"]]
+            if bad:
+                raise _spec_refusal("triage oracle has unknown values: %s" % ", ".join(bad))
+            fields[name] = set(values)
+            continue
+        choices = triage.FIELDS.get(name) or triage.OPTIONAL_FIELDS[name]
+        if not isinstance(value, str) or value not in choices:
+            value = triage.RETIRED.get(name, {}).get(value, value) if isinstance(value, str) else value
+            if value not in choices:
+                raise _spec_refusal("triage %s must be one of %s" % (name, ", ".join(choices)))
+        fields[name] = value
+    fields, derived = _derive_floor(fields, paths)
+    block = {"fields": fields, "paths": paths, "outward": outward, "derived": derived, "at": now()}
+    record = {"session": spec["session"], "title": spec["title"],
+              "requirements": _string_list(spec["requirements"], "requirements"),
+              "exclusions": _string_list(spec["exclusions"], "exclusions"),
+              "owner": scope["owner"], "files": _string_list(scope["files"], "scope.files")}
+    return record, block
+
+
+def open_from_spec(task_id, spec_path, reset=False):
+    """Open, record and triage a task record in one transaction from a JSON spec.
+
+    The same spec on an existing record is a no-op; a different spec is refused, because the record
+    already exists and `add`/`triage` are its edit routes. `--reset` replaces it."""
+    try:
+        with open(spec_path, encoding="utf-8") as fh:
+            spec = json.load(fh)
+    except OSError as exc:
+        raise _spec_refusal("cannot read spec %s: %s" % (spec_path, exc))
+    except json.JSONDecodeError as exc:
+        raise _spec_refusal("spec %s is not JSON: %s" % (spec_path, exc))
+    fields, triage_block = _validate_spec(spec)
+    digest = hashlib.sha256(json.dumps(
+        {"session": fields["session"], "title": fields["title"], "requirements": fields["requirements"],
+         "exclusions": fields["exclusions"], "scope": {"owner": fields["owner"], "files": fields["files"]},
+         "triage": {"fields": triage_block["fields"], "paths": triage_block["paths"],
+                    "outward": triage_block["outward"]}},
+        sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+
+    def conflict():
+        raise _spec_refusal("record %s is already open with a different spec; edit it with `task_record.py add` "
+                            "and `task_record.py triage` (a re-triage needs --reason), or replace it with --reset"
+                            % task_id)
+
+    existing = load(task_id)
+    if existing and not reset:
+        if existing.get("spec_sha256") == digest:
+            return existing
+        conflict()
+    stamp = now()
+    rec = {"task_id": task_id, "session_id": fields["session"], "title": fields["title"],
+           "opened": stamp, "updated": stamp, "requirements": fields["requirements"],
+           "exclusions": fields["exclusions"], "decisions": [],
+           "scope": {"owner": fields["owner"], "files": fields["files"]},
+           "phase": None, "active_jobs": [], "slices": [], "accepted_artifacts": [], "admissions": [],
+           "next_action": None, "triage": triage_block, "spec_sha256": digest}
+
+    def mutation(state):
+        if state.get("task_id") and not reset:
+            if state.get("spec_sha256") == digest:
+                return state
+            conflict()
+        state.clear()
+        state.update(copy.deepcopy(rec))
+        return state
 
     return _mutate(task_id, mutation)
 
@@ -599,13 +751,10 @@ def _joined(value):
     return triage._format_oracle(value) if isinstance(value, list) else value
 
 
-def record_triage(task_id, fields, paths, outward=None, reason=None, session_id=None):
-    """Store the six triage fields with the registry-derived block. Refuses an empty `paths` (no floor to derive),
-    a reach below the derived reach or an oracle set missing a value an unconditional match sets. A second call is a re-triage: it needs `reason`, logs
-    one decision per changed field and rebinds the record to `session_id`."""
+def _derive_floor(fields, paths):
+    """`(fields, derived)`: the fields with a sorted oracle, and the registry-derived block. Refuses fields
+    below the floor `paths` derive."""
     import triage
-    if not paths:
-        raise TriageRefused("triage needs --paths: the reach and oracle floor derive from them")
     fields = dict(fields, oracle=sorted(fields["oracle"]))
     res = triage.derive(triage.planned_changes(paths), triage.load_tags(_claude_dir()))
     low = [triage.describe(r) for r in triage.raises(dict(fields, oracle=frozenset(fields["oracle"])), res)]
@@ -616,7 +765,16 @@ def record_triage(task_id, fields, paths, outward=None, reason=None, session_id=
         if (m.tag, m.path) not in seen:
             seen.add((m.tag, m.path))
             matches.append({"tag": m.tag, "path": m.path, "sets": m.sets, "conditional": m.conditional})
-    derived = {"reach": res.reach, "oracle": sorted(res.oracle), "matches": matches}
+    return fields, {"reach": res.reach, "oracle": sorted(res.oracle), "matches": matches}
+
+
+def record_triage(task_id, fields, paths, outward=None, reason=None, session_id=None):
+    """Store the six triage fields with the registry-derived block. Refuses an empty `paths` (no floor to derive),
+    a reach below the derived reach or an oracle set missing a value an unconditional match sets. A second call is a re-triage: it needs `reason`, logs
+    one decision per changed field and rebinds the record to `session_id`."""
+    if not paths:
+        raise TriageRefused("triage needs --paths: the reach and oracle floor derive from them")
+    fields, derived = _derive_floor(fields, paths)
 
     def mutation(state):
         _require(state, task_id)
@@ -830,8 +988,9 @@ def main(argv=None):
     import triage
     ap = argparse.ArgumentParser(description="One durable record per task.")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("open"); p.add_argument("task_id"); p.add_argument("--session", required=True)
-    p.add_argument("--title", required=True); p.add_argument("--owner")
+    p = sub.add_parser("open"); p.add_argument("task_id"); p.add_argument("--session")
+    p.add_argument("--title"); p.add_argument("--owner")
+    p.add_argument("--spec", help="JSON spec for a one-call open"); p.add_argument("--reset", action="store_true")
     p = sub.add_parser("set"); p.add_argument("task_id"); p.add_argument("--phase"); p.add_argument("--next")
     p.add_argument("--owner"); p.add_argument("--files", nargs="*"); p.add_argument("--rigor", choices=triage.RIGORS)
     p = sub.add_parser("add"); p.add_argument("task_id"); p.add_argument("kind", choices=sorted(ITEM_KINDS))
@@ -870,7 +1029,15 @@ def main(argv=None):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
     try:
         if a.cmd == "open":
-            print(json.dumps(open_record(a.task_id, a.session, a.title, a.owner), indent=1))
+            if a.spec:
+                if a.session or a.title or a.owner:
+                    raise _spec_refusal("--spec supplies session, title and scope.owner; drop --session, --title "
+                                        "and --owner")
+                print(json.dumps(open_from_spec(a.task_id, a.spec, reset=a.reset), indent=1))
+            else:
+                if not a.session or not a.title:
+                    raise _spec_refusal("open needs --session and --title, or --spec <spec.json>")
+                print(json.dumps(open_record(a.task_id, a.session, a.title, a.owner, reset=a.reset), indent=1))
         elif a.cmd == "set":
             set_fields(a.task_id, phase=a.phase, next_action=a.next, owner=a.owner, files=a.files, rigor=a.rigor)
             print(json.dumps(load(a.task_id), indent=1))
@@ -923,7 +1090,7 @@ def main(argv=None):
     except KeyError as exc:
         print("REFUSED: %s" % exc.args[0], file=sys.stderr)
         return 1
-    except (TriageRefused, ConditionRefused, EvidenceRefused) as exc:
+    except (TriageRefused, ConditionRefused, EvidenceRefused, OpenRefused) as exc:
         print("REFUSED: %s" % exc, file=sys.stderr)
         return 1
     return 0

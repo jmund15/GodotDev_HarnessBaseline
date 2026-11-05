@@ -20,7 +20,7 @@ Signal detection runs over the digest, never over what survived compaction. In `
 python3 .claude/tools/session_digest.py --prompt-tail autolearn --handoff
 ```
 
-Use the handoff only as the bounded orientation packet. Then dispatch one `shape: review` job through `/delegate`, pinned per `orchestration` §5, cold to this session's reasoning, with the full-JSON path, the accessors below, the fix-commit query (§Signal detection, Fixed defects) and `/codify` §Step 0's question. It pages every prompt and friction row until each kind's reported `pages` count is exhausted:
+Use the handoff only as the bounded orientation packet. Then dispatch one `kind: reviewer` job through `/delegate`, pinned per `orchestration` §5, cold to this session's reasoning, with the full-JSON path, the accessors below, the fix-commit query (§Signal detection, Fixed defects) and `/codify` §Step 0's question. It pages every prompt and friction row until each kind's reported `pages` count is exhausted:
 
 ```bash
 python3 .claude/tools/session_digest.py --digest-file <full-json> --evidence-page prompts --page <N>

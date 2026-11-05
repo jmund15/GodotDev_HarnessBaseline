@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -17,6 +18,187 @@ def load(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+FIXTURE = HERE / "fixtures" / "model_ladder_gate_bash_result.json"
+SETTINGS = HERE.parent / "settings.base.json"
+BARE = "python3 .claude/tools/model_registry.py for-role executor fanout"
+
+
+def _capacity_cache(tmp):
+    """A fresh cache reading for every plan-quota transport: `for-role` never probes the machine's plans."""
+    tools = str(HERE.parent / "tools")
+    for where in (tools, str(HERE)):
+        if where not in sys.path:
+            sys.path.insert(0, where)
+    import model_registry
+    from _capacity_fixtures import write_capacity_cache
+    return write_capacity_cache(Path(tmp) / "capacity.json", model_registry.load())
+
+
+def _bash_credit_cases(cases, gate, hook_state, project):
+    """A staged `for-role` receipt credits only the stdout that reaches context. Each payload's `tool_response`
+    takes its keys from the captured real shape in FIXTURE and the run's own stdout; the non-zero-exit case adds
+    `exitCode`, a key the captured shape lacks."""
+    import contextlib
+    import io
+    try:
+        fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        fixture = {}
+    shape = fixture.get("for_role") or {}
+    cases.append(("the captured Bash result fixture loads", bool(shape.get("toolUseResult"))))
+    tools = str(HERE.parent / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import model_registry
+    cache = _capacity_cache(tempfile.mkdtemp(prefix="ladder_gate_capacity_"))
+    saved_cache = os.environ.get("PROVIDER_CAPACITY_CACHE")
+    os.environ["PROVIDER_CAPACITY_CACHE"] = str(cache)
+
+    def run_role(session, args):
+        previous = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        os.environ["CLAUDE_CODE_SESSION_ID"] = session
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                rc = model_registry.main(list(args))
+        finally:
+            if previous is None:
+                os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            else:
+                os.environ["CLAUDE_CODE_SESSION_ID"] = previous
+        return rc, out.getvalue()
+
+    def bash(session, command=None, **response):
+        return {"tool_name": "Bash", "session_id": session,
+                "tool_input": {"command": command or BARE},
+                "tool_response": dict(shape.get("toolUseResult") or {}, **response)}
+
+    def stage(session, text, tiers=("executor", "fanout")):
+        stage_fn, digest = getattr(hook_state, "stage_ladder_receipt", None), getattr(hook_state, "stdout_sha256", None)
+        if stage_fn is None or digest is None:
+            return False
+        return bool(stage_fn(session, digest(text), list(tiers)))
+
+    def failure(session):
+        reader = getattr(hook_state, "ladder_receipt_failure", None)
+        return reader(session) if reader else None
+
+    try:
+        rc, full = run_role("bashcredit1", ["for-role", "executor", "fanout", "--from", "anthropic"])
+        cases.append(("a bare for-role run prints its table", rc == 0 and bool(full.strip())))
+        delivered = gate.mark_loaded(bash("bashcredit1", stdout=full.replace("\n", "\r\n")))
+        cases.append(("a delivered for-role stdout (CRLF, as the client returns it) credits the staged tiers",
+                      delivered is True and hook_state.ladder_slice_tiers("bashcredit1") == ["executor", "fanout"]))
+        captured = (fixture.get("for_role") or {}).get("toolUseResult", {}).get("stdout") or ""
+        rc, full = run_role("bashtrim1", ["for-role", "executor", "fanout", "--from", "anthropic"])
+        cases.append(("the client trims the trailing newline off a Bash stdout (the captured result ends without one), "
+                      "and a bare for-role run so delivered still credits its tiers",
+                      rc == 0 and full.endswith("\n") and bool(captured) and not captured.endswith("\n")
+                      and gate.mark_loaded(bash("bashtrim1", stdout=full.rstrip("\n"))) is True
+                      and hook_state.ladder_slice_tiers("bashtrim1") == ["executor", "fanout"]))
+
+        rc, full = run_role("bashhead1", ["for-role", "executor", "--from", "anthropic"])
+        head = "".join(full.splitlines(True)[:5])
+        piped = gate.mark_loaded(bash("bashhead1", command=BARE + " | head -5", stdout=head))
+        cases.append(("a for-role run piped through head credits nothing and records why",
+                      rc == 0 and not piped and hook_state.ladder_slice_tiers("bashhead1") == []
+                      and bool(failure("bashhead1"))))
+
+        stage("bashtail1", full)
+        cases.append(("a for-role run piped through tail credits nothing",
+                      not gate.mark_loaded(bash("bashtail1", command=BARE + " | tail -5",
+                                                stdout="".join(full.splitlines(True)[-5:])))))
+        stage("bashgrep1", full)
+        line = next((l for l in full.splitlines(True) if "role" in l), "")
+        cases.append(("a for-role run piped through grep credits nothing",
+                      not gate.mark_loaded(bash("bashgrep1", command=BARE + " | grep -i role", stdout=line))))
+        stage("bashredir1", full)
+        cases.append(("a for-role run redirected to a file credits nothing",
+                      not gate.mark_loaded(bash("bashredir1", command=BARE + " > .claude/scratch/role.txt",
+                                                stdout=""))))
+        stage("bashexit1", full)
+        cases.append(("a non-zero exit never credits even with matching stdout",
+                      not gate.mark_loaded(bash("bashexit1", stdout=full, exitCode=2))))
+        persisted = fixture.get("persisted") or {}
+        ptext = (persisted.get("toolUseResult") or {}).get("stdout") or ""
+        stage("bashpersist1", ptext)
+        cases.append(("a client-persisted result never credits",
+                      not gate.mark_loaded({"tool_name": "Bash", "session_id": "bashpersist1",
+                                            "tool_input": {"command": BARE},
+                                            "tool_response": persisted.get("toolUseResult") or {}})))
+        stage("bashintr1", full)
+        cases.append(("an interrupted call never credits",
+                      not gate.mark_loaded(bash("bashintr1", stdout=full, interrupted=True))))
+        stage("bashmention1", full)
+        cases.append(("a quoted mention of the command never credits",
+                      not gate.mark_loaded(bash("bashmention1", command='echo "%s"' % BARE, stdout=full))))
+        stage("bashoth1", full)
+        cases.append(("another session's payload never credits",
+                      not gate.mark_loaded(bash("bashoth2", stdout=full))))
+        stage("bashcompact1", full)
+        hook_state.clear_compaction_keys("bashcompact1")
+        cases.append(("a post-compaction payload never credits",
+                      not gate.mark_loaded(bash("bashcompact1", stdout=full))))
+
+        hook_state.mark_skill_in_context("bashdn1", "orchestration")
+        hook_state.mark_ladder_slice("bashdn1", ["fanout"])
+        reason, _ = gate.doctrine_check({"session_id": "bashdn1", "cwd": str(project)},
+                                        tiers=lambda: {"executor": ["fold"], "fanout": ["lens-a"]})
+        cases.append(("the deny names each missing tier and the call's consumer of it",
+                      "executor (fold)" in (reason or "") and "lens-a" not in (reason or "")))
+        hook_state.mark_skill_in_context("bashdn3", "orchestration")
+        reason, _ = gate.doctrine_check({"session_id": "bashdn3", "cwd": str(project)},
+                                        tiers=lambda: ["executor", "architect"])
+        cases.append(("a caller that names no consumer gets the bare tier, never an invented one",
+                      "for executor, architect" in (reason or "") or "for architect, executor" in (reason or "")))
+        hook_state.mark_skill_in_context("bashdn2", "orchestration")
+        reason, _ = gate.doctrine_check({"session_id": "bashdn2", "cwd": str(project)},
+                                        tiers=lambda: {"executor": ["fold"]}, embed_slice=True)
+        cases.append(("the embedded-slice step names the tier it embeds",
+                      "read the ladder slice for executor (fold) below" in (reason or "")))
+        hook_state.mark_skill_in_context("bashfail1", "orchestration")
+        stage("bashfail1", full, ["executor"])
+        gate.mark_loaded(bash("bashfail1", command=BARE + " | head -5", stdout=head))
+        reason, _ = gate.doctrine_check({"session_id": "bashfail1", "cwd": str(project)},
+                                        tiers=lambda: ["executor"])
+        cases.append(("the next deny names the recorded failed delivery",
+                      "did not reach context" in (reason or "")))
+
+        rc, out = run_role("bashjson1", ["for-role", "architect", "--json", "--from", "anthropic"])
+        state = hook_state.read_json_salvage(hook_state.state_path("bashjson1"))
+        cases.append(("--json exits cleanly and stages no receipt",
+                      rc == 0 and out.lstrip().startswith("{") and "ladder_receipt" not in state))
+        cases.append(("a --json call never credits",
+                      not gate.mark_loaded({"tool_name": "Bash", "session_id": "bashjson1",
+                                            "tool_input": {"command": "python3 .claude/tools/model_registry.py "
+                                                                     "for-role architect --json"},
+                                            "tool_response": {"stdout": out, "stderr": "", "interrupted": False}})))
+        import subprocess
+        cli_sid = "bashcli1"
+        _, cli_stdout = run_role(cli_sid, ["for-role", "executor", "--from", "anthropic"])
+        proc = subprocess.run([sys.executable, str(HOOKS / "model_ladder_gate.py"), "--bash-credit"],
+                              input=json.dumps(bash(cli_sid, stdout=cli_stdout)), capture_output=True,
+                              text=True, encoding="utf-8", timeout=60)
+        cases.append(("the registered --bash-credit entry credits a delivered run on stdin",
+                      proc.returncode == 0 and not proc.stdout.strip()
+                      and hook_state.ladder_slice_tiers(cli_sid) == ["executor"]))
+    finally:
+        if saved_cache is None:
+            os.environ.pop("PROVIDER_CAPACITY_CACHE", None)
+        else:
+            os.environ["PROVIDER_CAPACITY_CACHE"] = saved_cache
+
+    try:
+        settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        settings = {}
+    entries = [entry for item in ((settings.get("hooks") or {}).get("PostToolUse") or [])
+               if item.get("matcher") == "Bash" for entry in item.get("hooks") or []]
+    cases.append(("settings.base.json registers the if-filtered for-role Bash credit",
+                  any(entry.get("if") == "Bash(*model_registry.py*for-role*)"
+                      and "model_ladder_gate.py" in str(entry.get("command") or "") for entry in entries)))
 
 
 def main():
@@ -89,6 +271,8 @@ def main():
         cases.append(("a Read of the worktree's stale copy cannot arm",
                       not gate.mark_loaded(stale_payload)))
 
+        _bash_credit_cases(cases, gate, hook_state, project)
+
         path = Path(hook_state.state_path(sid))
         path.write_text("{not-json", encoding="utf-8")
         cases.append(("corrupt state fails closed", not gate.claim_loaded(sid)))
@@ -157,7 +341,7 @@ def test_unwritable_state_fails_open_with_a_fault_note(tmp_path, monkeypatch):
     assert reason is None and 'could not read its session state' in fault and 'model_ladder_gate' in fault
 
 
-SLICE_CMD = 'python3 .claude/tools/model_registry.py ladder-slice'
+SLICE_CMD = 'python3 .claude/tools/model_registry.py for-role'
 
 
 def _sliced_session(tmp_path, monkeypatch, sid, covered, skill=True):
@@ -215,7 +399,7 @@ def test_a_compaction_clears_the_slice(tmp_path, monkeypatch):
 def test_one_deny_names_the_skill_and_the_slice_together(tmp_path, monkeypatch):
     gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'slice007', [], skill=False)
     reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'], embed_slice=True)
-    assert 'Skill(skill="orchestration")' in reason and 'slice for the tier this call pins below' in reason, reason
+    assert 'Skill(skill="orchestration")' in reason and 'read the ladder slice for architect below' in reason, reason
     assert reason.index('## Role definitions') > reason.index('re-issue')
 
 
@@ -240,7 +424,9 @@ def test_the_deny_embeds_the_slice_for_the_missing_tier_only_and_records_it(tmp_
     registry = _tools_registry()
     reason, fault = gate.doctrine_check(payload, tiers=lambda: ['fanout', 'executor'], embed_slice=True)
     assert fault is None and reason.endswith(registry.ladder_slice(['executor'])), reason
-    assert SLICE_CMD not in reason and 're-issue' in reason and 'DENIED' in reason, reason
+    assert gate.SLICE_BELOW_STEP.format(which="executor") in reason, reason
+    assert gate.SLICE_STEP.format(which="executor", tiers="executor") not in reason, reason
+    assert 're-issue' in reason and 'DENIED' in reason, reason
     executor_lines = set(registry.ladder_slice(['executor']).splitlines())
     only_architect = [l for l in registry.ladder_slice(['fanout']).splitlines() if l not in executor_lines]
     assert only_architect and not any(l in reason for l in only_architect)

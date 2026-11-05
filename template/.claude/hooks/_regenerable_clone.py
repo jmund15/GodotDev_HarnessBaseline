@@ -511,25 +511,41 @@ def empty_leftover(path: str) -> bool:
     return _holds_no_file(root) and not any(p.name == ".git" for p in root.rglob("*"))
 
 
-def _first_loss(status: str, root: Path, allow_ignored: bool = False) -> str | None:
-    """The first `git status --porcelain --ignored=matching` line whose deletion loses work, or None.
+_LOSS_LIST_CAP = 8
+
+
+def _format_losses(losses: list[str]) -> str:
+    """The losses as one list for a deny: the first `_LOSS_LIST_CAP`, then how many more."""
+    more = len(losses) - _LOSS_LIST_CAP
+    return "; ".join(losses[:_LOSS_LIST_CAP]) + (" (and %d more)" % more if more > 0 else "")
+
+
+def _losses(status: str, root: Path, allow_ignored: bool = False) -> list[str]:
+    """Every `git status --porcelain --ignored=matching` line whose deletion loses work.
     Untracked Godot `.import` files, ignored regenerable caches and ignored directories holding no file
     lose nothing; `allow_ignored` (this session created the worktree) lets every ignored entry go."""
+    out = []
     for line in status.splitlines():
         entry = line[3:].rstrip("/")
         if line.startswith("?? ") and entry.endswith(_GENERATED_UNTRACKED_SUFFIXES):
             continue
         if line.startswith("!! ") and (allow_ignored or _regenerable_ignored(entry) or _holds_no_file(root / entry)):
             continue
-        return line
-    return None
+        out.append(line)
+    return out
 
 
-def _first_unstored_loss(status: str, root: Path) -> str | None:
-    """`_first_loss` for a worktree this session created: a dirty path loses nothing when its working file is gone
+def _first_loss(status: str, root: Path, allow_ignored: bool = False) -> str | None:
+    """The first line `_losses` reports, or None."""
+    return next(iter(_losses(status, root, allow_ignored)), None)
+
+
+def _unstored_losses(status: str, root: Path) -> list[str]:
+    """`_losses` for a worktree this session created: a dirty path loses nothing when its working file is gone
     (an index blob is always in the store) or its content is already a blob in the object store, and a
     submodule's gitlink is judged by that submodule's own checks. A missing working file that git does not
     report deleted (a path git quoted, say) is a loss: the check fails closed."""
+    out = []
     for line in status.splitlines():
         if _first_loss(line, root, allow_ignored=True) is None:
             continue
@@ -538,13 +554,17 @@ def _first_unstored_loss(status: str, root: Path) -> str | None:
         if (path / ".git").exists():
             continue
         if not (path.is_file() or path.is_symlink()):
-            if "D" in line[:2]:
-                continue
-            return line
+            if "D" not in line[:2]:
+                out.append(line)
+            continue
         unstored = worktree_unstored(str(root), [entry])
         if unstored is None or unstored:
-            return line
-    return None
+            out.append(line)
+    return out
+
+
+def _first_unstored_loss(status: str, root: Path) -> str | None:
+    return next(iter(_unstored_losses(status, root)), None)
 
 
 def _pushed(repo: Path, reasons: list[str] | None = None, prefix: str = '', also: Path | None = None) -> bool:
@@ -666,10 +686,16 @@ def worktree_unstored(cwd: str, files: list[str]) -> list[str] | None:
     return unstored_files(files, lambda args, stdin: _git(args, Path(cwd), stdin))
 
 
-def _unheld_file(git_dir: Path, work_tree: Path, root: Path, absent_index: Path,
-                 ignored_ok: bool = True) -> str | None:
-    """The first non-ignored file under `work_tree` whose content `git_dir`'s object store lacks, or
-    None. `absent_index` names no file, so git reads an empty index and writes nothing. A nested
+def _unheld_file(*args, **kwargs) -> str | None:
+    """`_unheld_files` as one printable list, or None when nothing is lost."""
+    found = _unheld_files(*args, **kwargs)
+    return _format_losses(found) if found else None
+
+
+def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path,
+                  ignored_ok: bool = True) -> list[str]:
+    """Every non-ignored file under `work_tree` whose content `git_dir`'s object store lacks (an empty
+    list when none). `absent_index` names no file, so git reads an empty index and writes nothing. A nested
     checkout (a submodule) is judged against `root`'s `.git/modules/<path>` store. Unless `ignored_ok`
     (this session created the worktree), an ignored file that is no regenerable cache is a loss too
     (`_regenerable_ignored`, Godot `.import`; an ignored directory holding no file lists nothing)."""
@@ -684,6 +710,7 @@ def _unheld_file(git_dir: Path, work_tree: Path, root: Path, absent_index: Path,
             return None
         return proc.stdout if proc.returncode == 0 else None
 
+    found: list[str] = []
     subs = []
     if (work_tree / ".gitmodules").is_file():
         listed = run(["config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"])
@@ -693,33 +720,32 @@ def _unheld_file(git_dir: Path, work_tree: Path, root: Path, absent_index: Path,
             continue
         store = root / ".git" / "modules" / sub
         if not store.is_dir():
-            return sub + "/ (a populated submodule with no store at .git/modules/" + sub + ")"
-        loss = _unheld_file(store, work_tree / sub, root, absent_index, ignored_ok)
-        if loss:
-            return sub + "/" + loss
+            found.append(sub + "/ (a populated submodule with no store at .git/modules/" + sub + ")")
+            continue
+        found.extend(sub + "/" + loss for loss in _unheld_files(store, work_tree / sub, root, absent_index, ignored_ok))
     if not ignored_ok:
         ignored = run(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"])
         if ignored is None:
-            return "(cannot list ignored files)"
+            return found + ["(cannot list ignored files)"]
         for entry in filter(None, ignored.split("\0")):
             if any(entry == sub or entry.startswith(sub + "/") for sub in subs):
                 continue
             if not (entry.endswith(_GENERATED_UNTRACKED_SUFFIXES) or _regenerable_ignored(entry)):
-                return entry + " (ignored, and not a regenerable cache)"
+                found.append(entry + " (ignored, and not a regenerable cache)")
     listed = run(["ls-files", "--others", "--exclude-standard", "-z"])
     if listed is None:
-        return "(cannot list files)"
+        return found + ["(cannot list files)"]
     files = [entry for entry in filter(None, listed.split("\0"))
              if not entry.endswith(_GENERATED_UNTRACKED_SUFFIXES)
              and not any(entry == sub or entry.startswith(sub + "/") for sub in subs)]
-    if any(entry.endswith("/") for entry in files):
-        return next(entry for entry in files if entry.endswith("/")) + " (a nested repository)"
+    found.extend(entry + " (a nested repository)" for entry in files if entry.endswith("/"))
+    files = [entry for entry in files if not entry.endswith("/")]
     if not files:
-        return None
+        return found
     missing = unstored_files(files, run)
     if missing is None:
-        return "(cannot read the object store)"
-    return missing[0] if missing else None
+        return found + ["(cannot read the object store)"]
+    return found + missing
 
 
 def _worktree_target(token: str, cwd: str, project_root: str, reject) -> tuple[Path, Path] | None:
@@ -762,7 +788,7 @@ def _orphan_verdict(target: Path, root: Path, allow_ignored: bool, reject) -> bo
     if loss is None:
         return True
     return reject('orphaned worktree holds content git does not have: ' + loss
-                  + ' (save it elsewhere or delete that file, then retry)')
+                  + ' (save those files elsewhere or delete them, then retry)')
 
 
 def lossless_orphan_worktree(token: str, cwd: str, project_root: str, reasons: list[str] | None = None) -> bool:
@@ -827,7 +853,7 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
     pr_reason = _open_pr_reason(target, root)
     if pr_reason:
         return reject(pr_reason)
-    listed =_git(["config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"], target) \
+    listed = _git(["config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"], target) \
         if (target / ".gitmodules").is_file() else ""
     declared = [line.split(" ", 1)[1].strip().strip("/") for line in (listed or "").splitlines() if " " in line]
     broken = [name for name in declared if (target / name / ".git").is_file() and _orphan_admin(target / name)]
@@ -836,9 +862,9 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
     if status is None:
         return reject('cannot read worktree status')
     failed: list[str] = []
-    loss = _first_unstored_loss(status, target) if allow_ignored else _first_loss(status, target)
+    loss = _unstored_losses(status, target) if allow_ignored else _losses(status, target)
     if loss:
-        failed.append('worktree has local files or changes: ' + loss)
+        failed.append('worktree has local files or changes: ' + _format_losses(loss))
     _pushed(target, failed)
 
     for name in broken:
@@ -875,9 +901,9 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
             failed.append('submodule ' + name + ': cannot read status')
             continue
         _pushed(sub, failed, 'submodule ' + name + ': ', also=root / name)
-        loss = _first_unstored_loss(sub_status, sub) if allow_ignored else _first_loss(sub_status, sub)
+        loss = _unstored_losses(sub_status, sub) if allow_ignored else _losses(sub_status, sub)
         if loss:
-            failed.append('submodule ' + name + ' has local files or changes: ' + loss)
+            failed.append('submodule ' + name + ' has local files or changes: ' + _format_losses(loss))
     if reasons is not None:
         reasons.extend(failed)
     return not failed

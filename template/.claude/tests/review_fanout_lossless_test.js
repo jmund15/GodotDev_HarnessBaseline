@@ -143,7 +143,7 @@ async function check(name, test) {
     const row = out.perAgent.find(r => r.key === 'one')
     assert.equal(row.status, 'uncovered')
     const unlisted = await run({one: {findings: [], checked: null}, two: {findings: []}})
-    assert.equal(unlisted.perAgent.find(r => r.key === 'one').status, 'failed', 'with no provenance its must-read entry is unread')
+    assert.equal(unlisted.perAgent.find(r => r.key === 'one').status, 'uncovered', 'with no provenance its must-read entry is unproven and nothing else proves the seat')
     assert.ok(out.flags.some(f => f.lens === 'one' && f.kind.includes('coverage')))
   })
   await check('G3 a capability gap makes a lens partial even when it returned findings', async () => {
@@ -807,19 +807,19 @@ async function check(name, test) {
   const A_CS = { path: 'src/a.cs', lines: 437 }
   const IMPACT = { path: 'src/Core/ImpactPhysics.cs', lines: 900 }
   const MUST = [A_CS, IMPACT]
-  await check('MR1 a must-read entry the seat never read, with no legal gap, fails the seat at exhausted-leads and keeps its findings', async () => {
+  await check('MR1 a must-read entry the seat never read, with no legal gap, is unproven: the seat is partial at exhausted-leads, keeps its findings, and post_check judges the transcript', async () => {
     const out = await run({ one: { findings: [finding('partial look')], checked: checked({ toolsUsed: ['Read:src/a.cs:1-437'] }) }, two: { findings: [] } },
       { agents: [listed('one', MUST), listed('two', [A_CS])] })
     const row = out.perAgent.find(r => r.key === 'one')
-    assert.equal(row.status, 'failed')
+    assert.equal(row.status, 'partial')
     assert.deepEqual(row.unread, ['src/Core/ImpactPhysics.cs'])
     assert.equal(out.sources.length, 1)
     const flag = out.flags.find(f => f.lens === 'one' && f.kind === 'lens-unread-must-read')
     assert.ok(flag && flag.detail.includes('src/Core/ImpactPhysics.cs') && flag.detail.includes('exhausted-leads'), JSON.stringify(out.flags))
-    assert.equal(out.perAgent.find(r => r.key === 'two').status, 'failed', 'two never read src/a.cs either')
+    assert.equal(out.perAgent.find(r => r.key === 'two').status, 'partial', 'two never read src/a.cs either')
     const bounded = await run({ one: { findings: [], checked: checked({ toolsUsed: ['Read:src/a.cs'] }) }, two: { findings: [], checked: checked({ toolsUsed: ['Read:C:/repo/src/a.cs'] }) } },
       { agents: [listed('one', MUST), listed('two', [A_CS])], resultMode: 'bounded' })
-    assert.equal(bounded.delivery.coverage.status, 'uncovered')
+    assert.equal(bounded.delivery.coverage.status, 'partial', 'an unproven seat leaves the run partial, never uncovered')
     const seats = Object.fromEntries(bounded.delivery.coverage.seats.map(s => [s.key, s]))
     assert.deepEqual(seats.one.unread, ['src/Core/ImpactPhysics.cs'])
     assert.equal(seats.two.status, 'completed', 'an absolute Read target engages its repo-relative entry')
@@ -851,7 +851,7 @@ async function check(name, test) {
     }, { agents: ['text', 'unlisted', 'reason', 'extra', 'short'].map(k => listed(k, MUST)) })
     const rows = Object.fromEntries(out.perAgent.map(r => [r.key, r]))
     for (const key of ['text', 'unlisted', 'reason', 'extra']) assert.equal(rows[key].status, 'completed', key)
-    assert.equal(rows.short.status, 'failed')
+    assert.equal(rows.short.status, 'partial')
     assert.deepEqual(rows.unlisted.gapNotes, ['src/other.cs (capability)'])
     assert.ok(out.flags.some(f => f.lens === 'text' && f.kind === 'lens-gap-notes'))
     assert.ok(!out.flags.some(f => f.kind === 'lens-invalid-gaps'), JSON.stringify(out.flags))
@@ -881,11 +881,11 @@ async function check(name, test) {
       assert.ok(out.error && out.error.includes('mustRead'), JSON.stringify(bad) + ' -> ' + JSON.stringify(out))
     }
   })
-  await check('MR5 a must-read entry read only in part fails the seat, naming the lines it read', async () => {
+  await check('MR5 a must-read entry read only in part is unproven, naming the lines it read', async () => {
     const out = await run({ part: { findings: [], checked: checked({ toolsUsed: ['Read:src/a.cs:1-437', 'Read:src/Core/ImpactPhysics.cs:1-437'] }) } },
       { agents: [listed('part', MUST)] })
     const row = out.perAgent[0]
-    assert.equal(row.status, 'failed')
+    assert.equal(row.status, 'partial')
     assert.deepEqual(row.unread, ['src/Core/ImpactPhysics.cs'])
     const flag = out.flags.find(f => f.kind === 'lens-unread-must-read')
     assert.ok(flag && flag.detail.includes('src/Core/ImpactPhysics.cs (read 1-437 of 900)'), JSON.stringify(out.flags))
@@ -904,15 +904,15 @@ async function check(name, test) {
     const out = await run(Object.fromEntries(Object.entries(replies).map(([k, tools]) => [k, { findings: [], checked: checked({ toolsUsed: tools }) }])),
       { agents: Object.keys(replies).map(k => listed(k, lists[k] || MUST)) })
     const got = Object.fromEntries(out.perAgent.map(r => [r.key, r.status]))
-    assert.deepEqual(got, { halves: 'completed', comma: 'completed', absolute: 'completed', paged: 'completed', window: 'failed', hole: 'failed' })
+    assert.deepEqual(got, { halves: 'completed', comma: 'completed', absolute: 'completed', paged: 'completed', window: 'partial', hole: 'partial' })
   })
   await check('MR7 a shell read covers its entry whole; a search covers no line', async () => {
     const out = await run({
-      shell: { findings: [], checked: checked({ toolsUsed: ['Read:src/a.cs:1-437', 'Bash:git diff -- src/Core/ImpactPhysics.cs'] }) },
+      shell: { findings: [], checked: checked({ toolsUsed: ['Read:src/a.cs:1-437', 'Bash:cat src/Core/ImpactPhysics.cs'] }) },
       search: { findings: [], checked: checked({ toolsUsed: ['Read:src/a.cs:1-437', 'Grep:src/Core/ImpactPhysics.cs'] }) },
     }, { agents: [listed('shell', MUST), listed('search', MUST)] })
     const got = Object.fromEntries(out.perAgent.map(r => [r.key, r.status]))
-    assert.deepEqual(got, { shell: 'completed', search: 'failed' })
+    assert.deepEqual(got, { shell: 'completed', search: 'partial' })
   })
   await check('MR8 an agents array with a seat carrying no mustRead is refused at the call, naming the seat, before any agent runs', async () => {
     let calls = 0

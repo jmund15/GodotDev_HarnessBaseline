@@ -53,6 +53,33 @@ def main():
     cases.append(("a window with no census rows emits an empty map, not a missing key",
                   ara.aggregate([row("cue-exempt", "x")], 30).get("vault_writes") == {}))
 
+    # S6: lookups are census too, split out of vault_writes; the retired PascalCase verdicts are legacy.
+    mixed = [
+        row("census", "bash-lookup"), row("census", "bash-lookup"), row("census", "bash-opaque-script"),
+        row("census", "lsp-lookup"), row("census", "vault-write-worker"),
+        row("nudge-warranted", "pascal-grep-on-cs"), row("nudge-warranted", "pascal-grep-on-indexed", nudge=True),
+        row("cue-exempt", "pascal-grep-on-cs"), row("nudge-warranted", "native-read-bulk-copyable"),
+    ]
+    st = ara.aggregate(mixed, active_window_days=30)
+    cases.append(("vault_writes holds only vault-write-* rules", st["vault_writes"] == {"vault-write-worker": 1},
+                  st["vault_writes"]))
+    cases.append(("lookup_calls splits bash recognized, bash opaque and lsp",
+                  st.get("lookup_calls") == {"bash_recognized": 2, "bash_opaque": 1, "lsp": 1}, st.get("lookup_calls")))
+    cases.append(("legacy pascal-grep rows leave the current miss counts",
+                  st["silent_misses"] == 1 and st["nudged_routing_misses"] == 0 and st["cue_exempt_overrides"] == 0,
+                  (st["silent_misses"], st["nudged_routing_misses"], st["cue_exempt_overrides"])))
+    cases.append(("legacy pascal-grep rows land in a legacy bucket",
+                  st.get("legacy_heuristic_events") == {"pascal-grep-on-cs": 2, "pascal-grep-on-indexed": 1},
+                  st.get("legacy_heuristic_events")))
+    cases.append(("a legacy rule never reaches the top-5 silent-miss table",
+                  all(r["rule"] != "pascal-grep-on-cs" for r in st["top_5_silent_miss_rules"])))
+    empty = ara.aggregate([row("cue-exempt", "x")], 30)
+    cases.append(("a window with no lookups emits zeroed lookup_calls and an empty legacy map",
+                  empty.get("lookup_calls") == {"bash_recognized": 0, "bash_opaque": 0, "lsp": 0}
+                  and empty.get("legacy_heuristic_events") == {}, (empty.get("lookup_calls"), empty.get("legacy_heuristic_events"))))
+    cases.append(("the console summary prints the lookup census",
+                  "bash recognized" in ara.render_console_summary(st) and "2" in ara.render_console_summary(st)))
+
     failures = [c for c in cases if not c[1]]
     for c in cases:
         print("%-4s %s%s" % ("ok" if c[1] else "FAIL", c[0], "" if c[1] or len(c) < 3 else "  got=%r" % (c[2],)))

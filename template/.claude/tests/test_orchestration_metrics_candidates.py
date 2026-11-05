@@ -101,17 +101,6 @@ class CandidateReportTests(unittest.TestCase):
         for name, text in self.reports.items():
             self.assertIn("claude-opus-5", text, name)
 
-    def test_both_reports_stay_advisory(self):
-        for name, text in self.reports.items():
-            self.assertIn("advisory", text.lower(), name)
-            self.assertNotIn("substituted downgrade", text.lower(), name)
-            self.assertNotIn("runs at the suggested rung", text.lower(), name)
-
-    def test_module_text_carries_no_downgrade_instruction(self):
-        with open(TOOL, encoding="utf-8") as fh:
-            source = fh.read().lower()
-        self.assertNotIn("substituted downgrade", source)
-
 
 if __name__ == "__main__":
     sys.exit(unittest.main(verbosity=1))

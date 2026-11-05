@@ -337,12 +337,9 @@ def main():
         cases.append(("a client-synthetic assistant row is never the answered text", "SYNTHETIC-MARKER" not in out))
         cases.append(("the answered text is labeled as the assistant's, apart from the owner's words",
                       "(answering, assistant text)" in out and "Do all recs now" in out))
-        cases.append(("the project's document roots are re-injected as locations",
-                      "[locations]" in out and "D:/Vault/DOCROOT-MARKER" in out))
+        cases.append(("the document roots are the session-start loader's line, never re-injected here",
+                      "[locations]" not in out))
         cases.append(("the packet run stays inside the byte bound", within(out)))
-        out, crashed, _ = run_hook(tmp, payload)
-        cases.append(("a project with no document roots gets no locations line", "[locations]" not in out))
-
         out, crashed, _ = run_hook(tmp, [])
         cases.append(("a JSON array payload is a silent no-op", out.strip() == "" and not crashed))
         out, crashed, _ = run_hook(tmp, None)

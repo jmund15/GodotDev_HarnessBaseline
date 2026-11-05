@@ -21,9 +21,7 @@ that executes a terminal-window close by handle, title or host process (`window_
 text override: a reason the agent writes into the call proves no ownership of the window.
 
 WHY THIS EXISTS: `shell_census.py` lists long-running shells with their command tails TRUNCATED, and
-its own text hands over `taskkill /PID <pid> /T /F`. Measured 2026-09-08: a session read that list,
-meant to kill a stray home-directory `grep`, matched the wrong row, and killed its own
-`sidecar_fanout.py` run mid-flight -- destroying a paid comparison arm.
+its own text hands over `taskkill /PID <pid> /T /F`. A session that matched the wrong row of that list killed its own `sidecar_fanout.py` run, a paid arm.
 
 A stop is irreversible and the display is lossy, so this gate fails CLOSED (instruction_quality
 section 16). Bash/PowerShell bypass, per target: `HARNESS_ALLOW_KILL=<pid> taskkill /PID <pid> /T /F`. It covers

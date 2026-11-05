@@ -47,9 +47,9 @@ that is not a plain fragment; a path outside the repo, or unknown to the working
 HEAD's lock; a submodule with no checkout; `baseline.lock.json` itself named as a path; a `--blob` argument without `=` or with an unreadable source; an unreadable
 `baseline.lock.json` or one absent from HEAD; a classifier failure; and on `resync`, a missing
 sidecar or a commit that did not land. A refused `stage` discards its private index and leaves the
-shared index untouched.
+shared index untouched. Every refusal also prints the shape it accepts and one valid call
+(`accepts:`, `example:`).
 """
-import argparse
 import json
 import os
 import posixpath
@@ -67,6 +67,8 @@ for _d in (HERE.parent / "hooks", HERE):
     if str(_d) not in sys.path:
         sys.path.insert(0, str(_d))
 import _hook_state  # noqa: E402
+import cli_usage  # noqa: E402
+from lock_merge import dump_lock  # noqa: E402
 
 INDEX_LOCK_TIMEOUT = 5.0
 LOCK_RELPATH = ".claude/baseline.lock.json"
@@ -340,7 +342,7 @@ def _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock
             files[rel] = _lock_row(work_lock, rel)
             changed_rows.append(rel)
 
-    payload = (json.dumps(blob, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    payload = dump_lock(blob)
     lock_sha = _git(root, ["hash-object", "-w", "--stdin"], input_bytes=payload)[1].strip()
     _git(root, ["update-index", "--add", "--cacheinfo", "100644,%s,%s" % (lock_sha, LOCK_RELPATH)], index=index)
 
@@ -546,11 +548,22 @@ def cmd_resync(args):
     return 0
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(prog="index_commit", description=__doc__.splitlines()[0])
+STAGE_ACCEPTS = "stage --name <name> [--blob <path>=<file> ...] [--msg <file>] -- <paths...>"
+STAGE_EXAMPLE = "python3 .claude/tools/index_commit.py stage --name lane -- .claude/tools/reap.py"
+RESYNC_ACCEPTS = "resync --name <name>"
+RESYNC_EXAMPLE = "python3 .claude/tools/index_commit.py resync --name lane"
+CYCLE = ("The cycle: `stage` builds the private index and prints the GIT_INDEX_FILE git commit line; "
+         "run that printed line in its own call; then `resync` resets the shared index and the working lock.")
+
+
+def build_parser():
+    parser = cli_usage.ShapeParser(prog="index_commit", description=__doc__.splitlines()[0],
+                                   epilog=CYCLE)
+    parser.accepts, parser.example = STAGE_ACCEPTS, STAGE_EXAMPLE
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     stage = sub.add_parser("stage", help="build the private index and print the commit line")
+    stage.accepts, stage.example = STAGE_ACCEPTS, STAGE_EXAMPLE
     stage.add_argument("--name", required=True)
     stage.add_argument('--entry', action='append', default=[], metavar='PATH=MODE,OBJECT-ID')
     stage.add_argument("--blob", action="append", default=[], metavar="PATH=FILE")
@@ -559,14 +572,21 @@ def main(argv=None):
     stage.set_defaults(run=cmd_stage)
 
     resync = sub.add_parser("resync", help="reset the shared index and the working lock after the commit")
+    resync.accepts, resync.example = RESYNC_ACCEPTS, RESYNC_EXAMPLE
     resync.add_argument("--name", required=True)
     resync.set_defaults(run=cmd_resync)
+    return parser
 
+
+def main(argv=None):
+    parser = build_parser()
     args = parser.parse_args(argv)
+    shapes = {"stage": (STAGE_ACCEPTS, STAGE_EXAMPLE), "resync": (RESYNC_ACCEPTS, RESYNC_EXAMPLE)}
     try:
         return args.run(args)
     except IndexCommitError as exc:
         print("error: %s" % exc, file=sys.stderr)
+        sys.stderr.write(cli_usage.refusal(*shapes[args.subcommand]))
         return 2
 
 

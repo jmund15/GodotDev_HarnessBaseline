@@ -73,6 +73,10 @@ try:
     import dispatch_result
 except Exception:  # no task-block reader: every named file counts whole
     dispatch_result = None
+try:
+    import model_ladder_gate
+except Exception:  # no context reader: the `±` cell always prints in full
+    model_ladder_gate = None
 
 KB = 1024
 CHARS_PER_TOKEN = 2.5
@@ -190,7 +194,8 @@ def _in_write_set(path: str, root: Path, write_set: list) -> bool:
         relative = os.path.relpath(path, root).replace("\\", "/")
     except ValueError:
         return False
-    return not relative.startswith("..") and dispatch_result._inside(relative, write_set)
+    return (dispatch_result is not None and not relative.startswith("..")
+            and dispatch_result._inside(relative, write_set))
 
 
 def _tokens_of(characters) -> int:
@@ -402,7 +407,42 @@ def fit_lines(size: dict) -> list:
     return out
 
 
-def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> list:
+def _job_tier(job: dict, by_shape: dict, by_kind: dict):
+    """The tier a job's own data names: its seat's lens tier, else the tier it writes, else its shape or kind
+    row. A seat keyed by registry lenses takes `lens.seat_tier`, never a `kind` row's role (a `judge` kind
+    once labelled four `plc-*` plan-review seats executor)."""
+    key = job.get("seat") or job.get("key")
+    if isinstance(key, str) and key:
+        try:
+            import lens
+            tier = lens.seat_tier(key)
+        except (Exception, SystemExit):
+            tier = None
+        if tier:
+            return tier
+    return job.get("tier") or (by_kind.get(job["kind"]) if job.get("kind") else None) \
+        or by_shape.get(job.get("shape"))
+
+
+def _tier_in_context(tier, session_id):
+    """True when `tier`'s ladder rows reached this session's context (`model_ladder_gate.tier_in_context`): the
+    `±` cell then prints once, in that table, not again on every claimant line."""
+    if not session_id or model_ladder_gate is None:
+        return False
+    try:
+        return bool(model_ladder_gate.tier_in_context(session_id, tier))
+    except Exception:
+        return False
+
+
+def _claimant_text(claimant, lower, upper, drop_sign):
+    text = _dispatch_checks.claimant_text(claimant, lower, upper)
+    if drop_sign:
+        text = text.replace("; ± " + str(claimant.get("sign")), "", 1)
+    return text
+
+
+def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None, session_id=None) -> list:
     """The claimant verdict of each job of a dispatch, in job order; [] for a spec holding no job. Per job, one of:
     a `cheaper claimants:` line for a job pinned above a cheaper claimant of its tier (the job's pin and cost, then each
     cheaper row on its transport with cost, prices, `±` cell, the job's measured reading against that row's usable
@@ -410,9 +450,12 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
     the tier projects unused quota; a `spare plan:` line carrying that fact alone for a job with no cheaper claimant;
     a `cheaper claimants: `label` (model) not compared: reason` line for a job it
     could not compare; and, once, `pin is the cheapest claimant: labels` naming the compared jobs with nothing cheaper.
-    A job's tier is `_dispatch_checks.job_tier`'s: its own `tier`, else its kind row's (a Workflow-args job with no `kind` uses its `shape` row's). Facts only: no check denies on
-    these lines, and `_dispatch_checks.cheaper_claimants` owns the filter and raises on what it cannot compare.
-    `now`/`read` plant the clock and the capacity reader; both have production defaults."""
+    A job's tier is its own data: a seat keyed by registry lenses takes `lens.seat_tier`, else its written `tier`,
+    else its shape or kind row (`guards/tool_profiles.json`). The `±` cell is omitted when `tier_in_context` says the
+    tier's rows already reached context. Facts only: no check denies on these lines, and
+    `_dispatch_checks.cheaper_claimants` owns the filter and raises on what it cannot compare.
+    `now`/`read` plant the clock and the capacity reader; both have production defaults. `session_id` is the
+    receipt's session, read only when given, so a caller with no session states the `±` cell every time."""
     try:
         jobs = _jobs_of(spec)
     except ValueError:
@@ -423,16 +466,14 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
     try:
         size = dispatch_size(spec, root, data)
         data = data if data is not None else model_registry.load()
+        by_shape = _dispatch_checks.shape_tiers()
+        by_kind = _dispatch_checks.kind_tiers()
     except Exception as err:
         return ["cheaper claimants: not compared for this dispatch: %s" % err]
     out, compared = [], []
     for job, sized in zip(jobs, size["perJob"]):
         label, model = sized["label"], sized["model"]
-        try:
-            tier = _dispatch_checks.job_tier(job.get("kind") or job.get("shape"), job.get("tier"))[0]
-        except ValueError as err:
-            out.append("cheaper claimants: `%s` (%s) not compared: %s" % (label, model, err))
-            continue
+        tier = _job_tier(job, by_shape, by_kind)
         if not model:
             out.append("cheaper claimants: `%s` not compared: no model pin" % label)
             continue
@@ -451,7 +492,9 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None) -> 
         if claimants:
             line = "cheaper claimants: `%s` is pinned %s (cost %s) for `%s` on %s; cheaper there: %s" % (
                 label, model, claimants[0]["pinCost"], tier, transport,
-                "; ".join(_dispatch_checks.claimant_text(c, sized["lowerTokens"], sized["upperTokens"]) for c in claimants))
+                "; ".join(_claimant_text(c, sized["lowerTokens"], sized["upperTokens"],
+                                         _tier_in_context(tier, session_id))
+                          for c in claimants))
             spare = _dispatch_checks.spare_plan_fact(tier, transport, data, now, read)
             out.append(line + ("; " + spare if spare else ""))
         else:
@@ -481,7 +524,7 @@ def main(argv=None) -> int:
     try:
         spec = json.loads(Path(argv[0]).read_text(encoding="utf-8"))
         print(format_line(dispatch_size(spec)))
-        for fact in fact_lines(spec):
+        for fact in fact_lines(spec, session_id=os.environ.get("CLAUDE_CODE_SESSION_ID")):
             print(fact)
     except (OSError, ValueError) as exc:
         print("dispatch_size: %s" % exc, file=sys.stderr)

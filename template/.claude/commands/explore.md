@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash(git ls-files:*), Bash(git ls-tree:*), Bash(git branch:*), Bash(git grep:*), Bash(git check-ignore:*), Bash(python3 .claude/tools/lens.py:*), Bash(node:*), Bash(bash:*), Glob, Grep, Read, Write, Workflow
-description: Establish current owners, constraints and consumers before designing a change
+description: Ground a design: map what exists, its owners, constraints and consumers, with explicit coverage
 ---
 
 # Explore
@@ -16,7 +16,7 @@ Run when grounding is admitted (`_brainstorm_shared/execution_depth.md` §Admiss
 ## Phase 1: Scope & Seed
 
 ### 1a. State the topic
-Name the capability/files and intended change; a topic naming no system, file or capability gets a clarifying question, not a dispatch. Record actual constraints and exclusions. Facts inherited from another session are claims to check, not ground truth.
+Name the capability/files and intended change; a breadth map with no design question is a `/delegate` scout (`CLAUDE.core.md` §9); a design question too vague to set coverage gets a clarifying question. Record actual constraints and exclusions. Facts inherited from another session are claims to check, not ground truth.
 
 ### 1b. Select resources
 Load `orchestration`; choose each lens's row and paying plan by the ladder's selection line. Every lens is `fanout`-tier work (a read-heavy survey); resolve the tier per `orchestration` §5, which owns when to declare it. Use one suitable arm per independently needed lens: `/explore` runs one seat per mandate and never merges (`orchestration` §2 *Sizing the width*), because its engine stamps each claim with its seat key. Provider availability does not create more jobs. Explicit comparisons are separate, frozen and budgeted.
@@ -28,13 +28,41 @@ Use actual scope and `reference/memory_domains.md`; meta work does not need game
 Run `python3 .claude/tools/lens.py shared explore` for selection and evidence-reuse rules, then `get <keys>` for selected mandates. Keep every independently needed dimension its trigger table admits. `--make-this-easy` adds `exp-change-ease`, never replaces another lens. Record why each lens ran or was omitted. Resolve current pins through orchestration/registry, not historical vendor examples in a catalog.
 
 ### 1e. Assemble context
-Put topic, questions, domains, exclusions, evidence handles and starting paths in one run-specific scratch file. For `exp-memory`, materialize and check the run's KFM index per the `kfm.py` docstring, and include the printed index path in the context. Push orientation, not conclusions. A seed is not a search boundary. Do not inline whole source sets or unrelated skills.
+Put topic, questions, domains, exclusions, evidence handles and starting paths in one run-specific scratch file. Push orientation, not conclusions. A seed is not a search boundary. Do not inline whole source sets or unrelated skills. `prepare` (Phase 2) writes every `kfm: index` seat's run snapshot and names its index in that seat's brief.
 
 Map each question to the selected lens whose mandate owns it, and write the map into the context file. A question one command or script can enumerate (every call site, every file holding a field, every test naming a symbol) is answered by that script before dispatch, whichever lens owns it: the script also sorts each hit where a fact decides it (path class, declaration or use, test or production), and the owning lens receives the output file and judges only the hits the script could not sort. A question no selected mandate owns and no script answers returns to §1d for a bespoke lens (`commands/agents/explore_agents.md` *Extending the roster*). A script's output file is an evidence handle in the context, and its answer goes in the report.
 
 ## Phase 2: Dispatch
 
-Invoking `/explore` is this fan-out's Workflow authorization (`orchestration` §0). Use the existing exploration engine with explicit model, effort and agent profile. Native: `Workflow({scriptPath: ".claude/workflows/explore_fanout.js", args})` (never `name`), whose header owns the argument schema (lenses carry `tier: "fanout"`). Off-transport: the registered sidecar owner with `.claude/workflows/explore_fanout.schema.json`. Preserve one run identity across routes (`transcriptDir`, which recovery and full retrieval key on); current transport capability, not vendor count, selects the mechanism.
+Invoking `/explore` is this fan-out's Workflow authorization (`orchestration` §0). One `prepare` call writes the briefs, the context, the run's `args.json` and prints the next call. Write `<run dir>/spec.json`:
+
+```json
+{
+  "mode": "explore",
+  "engine": ".claude/workflows/explore_fanout.js",
+  "prefix": "explore",
+  "topic": "<topic>",
+  "questions": {"<seat key>": ["<question it owns>"]},
+  "seats": [{"key": "<lens key>", "pin": "<row>", "effort": "<rung>"}],
+  "pins": {"panel": "<row>"},
+  "efforts": {"panel": "<rung>"},
+  "subjectFiles": ["<evidence handles the lens reads>"],
+  "context": "<absolute context.md from 1e>",
+  "checker": {"model": "<row>", "effort": "<rung>"}
+}
+```
+
+```bash
+python3 .claude/tools/lens_briefs.py prepare --spec <run dir>/spec.json --out <run dir>
+```
+
+```
+Workflow({scriptPath: ".claude/workflows/explore_fanout.js", args: {argsFile: "<run dir>/args.json"}})
+```
+
+Never pass `name`: a named call can run a cached older engine.
+
+Each lens carries `tier: "fanout"`; `prepare` refuses a seat that does not fit its pin's window, naming the seat and tokens. Off-transport, run the registered sidecar owner with `.claude/workflows/explore_fanout.schema.json`; preserve one run identity across routes (`transcriptDir`, which recovery and full retrieval key on); current transport capability, not vendor count, selects the mechanism.
 
 Lenses are read-only; `orchestration` §5b owns the capability preflight and §4 the return contract. Keep completed evidence recoverable before the final response. Tests/builds/shared LSP operations stay serialized by the parent; cheap independent searches remain part of each lens's work.
 

@@ -60,26 +60,20 @@ The core lenses (+ any Step 0.5 additions), each judging the pushed input. The m
 
 **Model — pin every lens to the architect tier at its review effort, never the session model.** The ladder's selection line and *Review seats* bullet own the floor, and the fanout rows' `±` cells mark them down on architecture; a purely mechanical bespoke lens (rubric-matching, reference enumeration) may drop to that tier.
 
-**Ledger plan.** Before each pass, write the composed seats to a roster file (`{key, effort}`, the effort resolved per `orchestration` §5; `review_ledger.py` fills each seat's mandates and tier from the lens registry) and run `python3 .claude/tools/review_ledger.py plan --stage design --subject doc:<design path> --roster <roster.json> --files <design path>`; dispatch only the seats it returns.
+**Ledger plan.** Before each pass, write the composed seats to `<run dir>/spec.json` (`{"mode": "design-redteam", "prefix": "rt", "seats": [{"key": "<lens key>", "effort": "<review rung>"}], "pins": {"panel": "<architect row>"}, "efforts": {"panel": "<review rung>"}, "fold": {"tier": "architect", "model": "<row>", "effort": "<rung>"}, "subjectFiles": ["<design path>"], "ledger": {"stage": "design", "subject": "doc:<design path>", "files": ["<design path>"], "scopeJson": "<scope file>"}}`) and run:
 
-**Dispatch.** `review_fanout.js` §USAGE CONTRACT owns the flat `args` shape and the large-design fallback to `dispatch.js` brief files. Push the input once via `contextPrefix`; each lens `prompt` is its registry mandate only. The design path the Ledger plan names is each seat's must-read entry; write a design that is not yet a file to a scratch file first. Pass it as the seat's `mustRead` (`agents/review_agents.md` *Seat coverage contract*). Pass `args.ledger` `{stage: "design", subject: "doc:<design path>", roster: <roster.json>, scopeJson: <scope file>}`, where the scope file holds `{"files": ["<design path>"]}` so a pass with no fold still records its rows over the design; consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5.
+```bash
+python3 .claude/tools/lens_briefs.py prepare --spec <run dir>/spec.json --out <run dir>
+```
 
 ```
-Workflow({
-  scriptPath: ".claude/workflows/review_fanout.js",
-  args: {
-    contextPrefix: "<the pushed input + abstraction inventory + gotchas, as ONE flat string>",
-    agents: [
-      { key: "rt-boundary",    prompt: "<mandate only>", tier: "architect", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
-      { key: "rt-failuremode", prompt: "<mandate only>", tier: "architect", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
-      { key: "rt-yagni-scope", prompt: "<mandate only>", tier: "architect", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] }
-      // + rt-abstraction / rt-testability per the phase subset above (tier: "architect", model: "<architect>", effort: "<review effort>", mustRead)
-      // + Step 0.5 conditional (rt-systemic / rt-vision) + bespoke design lenses (tier: "architect", model: "<architect>", effort: "<review effort>", mustRead)
-      // a purely mechanical bespoke lens may drop to the fanout tier; the orchestrator tier only via an explicit per-lens pin
-    ]
-  }
-})
+Workflow({scriptPath: ".claude/workflows/review_fanout.js", args: {argsFile: "<run dir>/args.json"}})
 ```
+
+`prepare` briefs only the seats the ledger returns. The scope file holds `{"files": ["<design path>"]}` so a pass with no fold still records its rows over the design. The design path is each seat's must-read entry; write a design that is not yet a file to a scratch file first and name it in `subjectFiles`. Consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5.
+
+**Dispatch.** `review_fanout.js` §USAGE CONTRACT owns the flat `args` shape and the large-design fallback to `dispatch.js` brief files.
+Phase-scoped subsets and Step 0.5 additions are the spec's `seats`; a bespoke lens with no registry key carries its mandate text as that seat's `brief`. A purely mechanical bespoke lens may take the fanout tier; the orchestrator tier only by an explicit per-seat pin. For a large design, pass the same generated jobs to `dispatch.js` with `contextPath` and `spillDir`.
 
 **Liveness is mandatory — a silent-empty round is NOT a clean round.** `review_fanout.js` marks a lens that errors, times out or returns an invalid shape `failed` or `uncovered` in `perAgent` and raises a flag. Before reporting or converging, confirm every dispatched lens key reads as returned. A merged seat reports each mandate's coverage per `orchestration` §2 *Sizing the width*, and a mandate it did not reach counts as missing. Any missing lens is INCOMPLETE, never APPROVE: surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses or halt.
 

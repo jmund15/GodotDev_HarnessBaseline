@@ -11,7 +11,7 @@ BASENAME = "tool_routing_cumulative_reset.py"
 NUDGE = os.path.join(ROOT, ".claude", "hooks", "tool_routing_nudge.py")
 
 
-def registered_hook():
+def shipped_hook():
     """The shared input no longer registers this hook (a consumer opts in from its project file), so
     the proof drives the shipped file with the payload a registration would feed it."""
     hook = os.path.join(ROOT, ".claude", "hooks", BASENAME)
@@ -38,7 +38,7 @@ def load(path):
 
 
 def main():
-    hook = registered_hook()
+    hook = shipped_hook()
     tmp = tempfile.mkdtemp(prefix="routing_reset_")
     home = os.path.join(tmp, "home")
     state_dir = os.path.join(home, ".claude", ".routing_state")

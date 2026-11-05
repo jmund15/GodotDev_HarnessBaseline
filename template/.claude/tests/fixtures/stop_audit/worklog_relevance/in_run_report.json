@@ -1,0 +1,61 @@
+{
+  "status": "fail",
+  "counts": {
+    "VERIFIED": 2,
+    "UNVERIFIED": 1,
+    "UNCHECKED": 0
+  },
+  "verdicts": {
+    "worklog:relevance#1": {
+      "verdict": "VERIFIED",
+      "items": [
+        {
+          "kind": "file",
+          "verdict": "VERIFIED",
+          "reason": "quote-found",
+          "file": ".claude/worklog-titles.md",
+          "rangeHit": null,
+          "citedRange": null,
+          "path": "C:\\Users\\dev\\proj\\.claude\\worklog-titles.md",
+          "blobHash": "d974bbff3b13d27cf76fb68c91d18d79ee1daec3"
+        }
+      ]
+    },
+    "worklog:relevance#2": {
+      "verdict": "UNVERIFIED",
+      "items": [
+        {
+          "kind": "file",
+          "verdict": "UNVERIFIED",
+          "reason": "quote-absent",
+          "file": ".claude/worklog-titles.md",
+          "rangeHit": null,
+          "citedRange": null,
+          "path": "C:\\Users\\dev\\proj\\.claude\\worklog-titles.md",
+          "blobHash": "d974bbff3b13d27cf76fb68c91d18d79ee1daec3"
+        }
+      ]
+    },
+    "worklog:relevance#checked": {
+      "verdict": "VERIFIED",
+      "items": [
+        {
+          "kind": "file",
+          "verdict": "VERIFIED",
+          "reason": "quote-found",
+          "file": ".claude/worklog-titles.md",
+          "rangeHit": null,
+          "citedRange": null,
+          "path": "C:\\Users\\dev\\proj\\.claude\\worklog-titles.md",
+          "blobHash": "d974bbff3b13d27cf76fb68c91d18d79ee1daec3"
+        }
+      ]
+    }
+  },
+  "errors": [],
+  "mode": "claims",
+  "source": [
+    "--workflow-dir",
+    "C:\\Users\\dev\\.claude\\projects\\C--Users-dev-proj\\ae2238a9-d793-452f-97fa-1b628cf81394\\subagents\\workflows\\wf_a72c1e44-86f"
+  ]
+}

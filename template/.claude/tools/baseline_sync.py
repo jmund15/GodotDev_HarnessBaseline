@@ -38,6 +38,30 @@ import baseline_identity  # noqa: E402
 import baseline_compose  # noqa: E402
 import adaptation  # noqa: E402
 import layer_closure  # noqa: E402
+import cli_usage  # noqa: E402
+
+OPS = ("check", "diff", "pull", "update-lock", "resolve", "migrate", "upgrade",
+       "classify", "judge", "triage", "forget", "gc", "fork", "track",
+       "ignore", "candidates", "paths", "init", "compose", "sub", "doctor")
+ROOT_ACCEPTS = "<op> [relpaths] [flags]; ops: " + "|".join(OPS)
+ROOT_EXAMPLE = "python3 .claude/tools/baseline_sync.py judge .claude/tools/reap.py --verdict push"
+JUDGE_ACCEPTS = ("judge RELPATH [RELPATH ...] --verdict push|keep-local|fork [--accept-hit PATH] "
+                 "[--borderline] [--confirm] [--carry BASE..HEAD] [--commit REV] [--json] [--baseline-dir DIR]")
+JUDGE_EXAMPLE = "python3 .claude/tools/baseline_sync.py judge .claude/tools/reap.py --verdict push"
+JUDGE_HELP = """\
+usage: baseline_sync.py judge RELPATH [RELPATH ...] --verdict push|keep-local|fork [options]
+       baseline_sync.py --verdict push|keep-local|fork judge RELPATH ...  (legacy flag order)
+
+Record a verdict on each relpath's current bytes:
+  --verdict push|keep-local|fork  the verdict (or --carry BASE..HEAD for a range)
+  --accept-hit PATH               an identity hit already accepted for this verdict
+  --borderline                    mark the verdict borderline
+  --confirm                       confirm a push judge
+  --commit REV                    judge the blob at REV, not the working copy
+  --json                          machine-readable result
+  --baseline-dir DIR              the baseline checkout
+
+""" + cli_usage.refusal(JUDGE_ACCEPTS, JUDGE_EXAMPLE)
 
 LOCK_RELPATH = ".claude/baseline.lock.json"
 CACHE_CLONE = ".claude/.cache/baseline-repo"
@@ -1979,8 +2003,8 @@ def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, p
                     subs: dict, source: BaselineSource | None, source_error: str | None,
                     accept_hits: list[str] | None, lock: dict, pushing: dict[str, str],
                     commit: str | None = None) -> list[str]:
-    """Refuses the row's first unaccepted identity hit; returns the accepted hit ids its content carries,
-    which the verdict records so `publish` honors them."""
+    """Refuses every unaccepted identity hit in the row at once; returns the accepted hit ids its content
+    carries, which the verdict records so `publish` honors them."""
     content = data if data is not None else _content_bytes(root, relpath)
     text = content.decode("utf-8", errors="replace") if content is not None and not is_binary(content) else ""
     literal = sorted(key for key in subs if key.startswith("{{") and key in text) if relpath not in PLACEHOLDER_OK else []
@@ -1989,11 +2013,11 @@ def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, p
             f"{relpath} holds {', '.join(literal)} literally, which a consumer's pull renders, so the row can never "
             f"match the baseline again; build the token from parts (\"{{{{\" + name + \"}}}}\")")
     hits = _identity_hits(root, relpath, profile, data, subs)
-    for hit in hits:
-        if hit.id not in (accept_hits or []):
-            raise BaselineError(
-                f"identity scan hit in {relpath}:{hit.line} ({hit.token_kind}): {hit.excerpt}; "
-                f"fix the source, or pass --accept-hit {hit.id} for a legitimate generic use")
+    refused = [hit for hit in hits if hit.id not in (accept_hits or [])]
+    if refused:
+        raise BaselineError("\n".join(
+            f"identity scan hit in {relpath}:{hit.line} ({hit.token_kind}): {hit.excerpt}; "
+            f"fix the source, or pass --accept-hit {hit.id} for a legitimate generic use" for hit in refused))
     if entry.get("layer") not in FULL_LAYERS:
         if source is None:
             raise BaselineError(f"row has no layer and the baseline cannot be read to see "
@@ -2083,13 +2107,18 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
         # Only rows whose carry succeeded are being pushed at their final sha; a named dependency whose carry
         # failed is judged at its current blob like any other dependency.
         carrying = {rel: walk[0] for rel, walk in walks.items()}
+        refusals = []
         for relpath, (final_sha, first_before, final) in walks.items():
             entry = files[relpath]
             old = entry.get("judged") or {}
             if profile is None:
                 profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
-            accepted = _push_preflight(root, relpath, entry, final, profile, subs, source, source_error,
-                                       [*(accept_hits or []), *old.get("accepted_hits", [])], lock, carrying)
+            try:
+                accepted = _push_preflight(root, relpath, entry, final, profile, subs, source, source_error,
+                                           [*(accept_hits or []), *old.get("accepted_hits", [])], lock, carrying)
+            except BaselineError as exc:
+                refusals.append(str(exc))
+                continue
             added, removed = _diff_stat(first_before, final)
             start = content_sha(relpath, first_before)
             report.append(f"carried: {relpath} (+{added} -{removed}) {start[:8]}..{final_sha[:8]}")
@@ -2099,6 +2128,8 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
                 decision["accepted_hits"] = accepted
             entry["judged"] = decision
             carried.append(relpath)
+        if refusals:
+            raise BaselineError("\n".join(refusals))
         snapshots["after"] = copy.deepcopy(lock)
         return carried or NO_CHANGE
 
@@ -2143,6 +2174,7 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
         pushing = {rel: current[rel] for rel in relpaths} if verdict == "push" else {}
         profile = None  # built on the first pushed row: it reads the pinned template tree
         changed = []
+        refusals = []
         for relpath, current_sha in decisions.items():
             entry = files[relpath]
             old = entry.get("judged") or {}
@@ -2166,8 +2198,12 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
                 if profile is None:
                     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
                 data = _commit_blob(root, commit, relpath) if commit else _content_bytes(root, relpath)
-                accepted = _push_preflight(root, relpath, entry, data, profile, subs, source, source_error,
-                                           accept_hits, lock, pushing, commit)
+                try:
+                    accepted = _push_preflight(root, relpath, entry, data, profile, subs, source, source_error,
+                                               accept_hits, lock, pushing, commit)
+                except BaselineError as exc:
+                    refusals.append(str(exc))
+                    continue
             entry["judged"] = _decision(
                 root, relpath, verdict, sha_value=current_sha,
                 borderline=borderline, confirmed_at=confirmed_at,
@@ -2178,6 +2214,8 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
                 entry["status"] = "local"
                 entry.pop("hash", None)
             changed.append(relpath)
+        if refusals:
+            raise BaselineError("\n".join(refusals))
         snapshots["after"] = copy.deepcopy(lock)
         return changed or NO_CHANGE
 
@@ -3743,40 +3781,11 @@ def v2_upgrade(project: str, baseline_dir: str | None, layers_arg: str | None,
         source.close()
 
 
-def main(argv=None) -> int:
-    _force_lf_stream(sys.stdout)
-    _force_lf_stream(sys.stderr)
-    raw_argv = sys.argv[1:] if argv is None else list(argv)
-    # `publish` and `author start` take their own flag shapes (not this module's
-    # relpaths-plus-flags grammar), and `materialize` is retired -- all three are
-    # intercepted before the shared ArgumentParser below, so the merge here stays small.
-    if raw_argv[:1] == ["publish"]:
-        import baseline_publish
-        rest = raw_argv[1:]
-        if "--root" not in rest:
-            # every other op resolves its root by walking up from cwd (`project_root()`);
-            # `baseline_publish.main`'s own `--root` defaults to a bare ".", so this keeps
-            # `publish` consistent when invoked from a subdirectory.
-            rest = ["--root", str(project_root())] + rest
-        return baseline_publish.main(rest)
-    if raw_argv[:1] == ["author"]:
-        if raw_argv[1:2] != ["start"]:
-            print("error: author requires a subcommand: start", file=sys.stderr)
-            return 2
-        try:
-            return cmd_author_start(project_root())
-        except BaselineError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
-    if raw_argv[:1] == ["materialize"]:
-        print("error: materialize is retired; use publish --dry-run", file=sys.stderr)
-        return 2
-    ap = argparse.ArgumentParser()
-    ap.add_argument("op", choices=[
-        "check", "diff", "pull", "update-lock", "resolve", "migrate", "upgrade",
-        "classify", "judge", "triage", "forget", "gc", "fork", "track",
-        "ignore", "candidates", "paths", "init", "compose", "sub", "doctor",
-    ])
+def build_parser():
+    """The shared relpaths-plus-flags grammar every op but `publish`/`author start` uses."""
+    ap = cli_usage.ShapeParser()
+    ap.accepts, ap.example = ROOT_ACCEPTS, ROOT_EXAMPLE
+    ap.add_argument("op", choices=list(OPS))
     ap.add_argument("relpaths", nargs="*")
     ap.add_argument("--baseline-dir")
     ap.add_argument("--layers", metavar="PURE,CODING,GODOT")
@@ -3808,8 +3817,46 @@ def main(argv=None) -> int:
     ap.add_argument("--unset", action="append", default=[], metavar="PLACEHOLDER")
     ap.add_argument("--abbrev", action="append", default=[])
     ap.add_argument("--project")
+    return ap
+
+
+def main(argv=None) -> int:
+    _force_lf_stream(sys.stdout)
+    _force_lf_stream(sys.stderr)
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+    # `publish` and `author start` take their own flag shapes (not this module's
+    # relpaths-plus-flags grammar), and `materialize` is retired -- all three are
+    # intercepted before the shared ArgumentParser below, so the merge here stays small.
+    if raw_argv[:1] == ["publish"]:
+        import baseline_publish
+        rest = raw_argv[1:]
+        if "--root" not in rest:
+            # every other op resolves its root by walking up from cwd (`project_root()`);
+            # `baseline_publish.main`'s own `--root` defaults to a bare ".", so this keeps
+            # `publish` consistent when invoked from a subdirectory.
+            rest = ["--root", str(project_root())] + rest
+        return baseline_publish.main(rest)
+    if raw_argv[:1] == ["author"]:
+        if raw_argv[1:2] != ["start"]:
+            print("error: author requires a subcommand: start", file=sys.stderr)
+            return 2
+        try:
+            return cmd_author_start(project_root())
+        except BaselineError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    if raw_argv[:1] == ["materialize"]:
+        print("error: materialize is retired; use publish --dry-run", file=sys.stderr)
+        return 2
+    if ({"--help", "-h"} & set(raw_argv)) and any(tok in OPS for tok in raw_argv):
+        if next(tok for tok in raw_argv if tok in OPS) == "judge":
+            sys.stdout.write(JUDGE_HELP)
+            return 0
+    ap = build_parser()
+    op = None
     try:
         args = ap.parse_intermixed_args(argv)
+        op = args.op
         inputs = _validate_cli_usage(args)
         if args.op == "upgrade":
             if not args.project or args.relpaths:
@@ -3921,6 +3968,8 @@ def main(argv=None) -> int:
                 source.close()
     except UsageError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        if op == "judge":
+            sys.stderr.write(cli_usage.refusal(JUDGE_ACCEPTS, JUDGE_EXAMPLE))
         return 2
     except BaselineError as exc:
         print(f"error: {exc}", file=sys.stderr)

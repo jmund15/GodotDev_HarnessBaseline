@@ -83,6 +83,7 @@ import session_timeline  # noqa: E402
 import sidecar_argv  # noqa: E402
 import transcript_usage  # noqa: E402
 import watch_records  # noqa: E402
+import cli_usage  # noqa: E402
 
 IN_W, OUT_W, CW_W, CR_W = 1.0, 5.0, 1.25, 0.1
 
@@ -1280,6 +1281,16 @@ def _write_verdicts(entries):
 
 
 MANDATE_OUTCOMES = ('findings', 'clean', 'not-reached')
+MANDATE_SHAPE = '{mandate: {outcome: findings|clean|not-reached, unique, duplicate}}'
+RATE_ACCEPTS = ("--rate LABEL OUTCOME [--note TEXT] [--effort PIN] [--tier ROLE] [--shape right|over|under] "
+                "[--effort-fit under|over] [--mandates '<json>'] [--probe] [--measurement]")
+RATE_EXAMPLE = ("python3 .claude/tools/orchestration_metrics.py --rate wf_1:review:x clean "
+                "--mandates '{\"lens-a\": {\"outcome\": \"clean\", \"unique\": 2, \"duplicate\": 0}}'")
+# The root parser serves every mode, so its shape is the mode list; RATE_ACCEPTS would name another
+# mode's flags on every error outside --rate.
+MODES_ACCEPTS = ("--rollup | --rate LABEL OUTCOME | --rate-batch FILE | --pending | --run RUN_ID | "
+                 "--pricier-pins [DAYS] | --ignore-run RUN_ID | --manifest-seed JSON | --sidecar-all | --all-time")
+MODES_EXAMPLE = "python3 .claude/tools/orchestration_metrics.py --rollup"
 REVIEW_INVALID_SHARE_MAX = 0.25
 
 
@@ -1364,13 +1375,13 @@ def _rating_spec(req):
         except json.JSONDecodeError as exc:
             return None, f'REFUSED: mandates is not JSON ({exc}).'
         if not isinstance(mandates, dict):
-            return None, ("REFUSED: mandates (--mandates, or a --rate-batch entry's \"mandates\") must be a JSON object "
-                          '{mandate: {outcome, unique, duplicate}}.')
+            return None, ("REFUSED: mandates (--mandates, or a --rate-batch entry's \"mandates\") must be "
+                          "a JSON object " + MANDATE_SHAPE + '.')
         bad = sorted(k for k, m in mandates.items()
                      if not isinstance(m, dict) or m.get('outcome') not in MANDATE_OUTCOMES)
         if bad:
-            return None, (f"REFUSED: each mandates entry needs outcome {'|'.join(MANDATE_OUTCOMES)}: "
-                          + ', '.join(bad))
+            return None, (f"REFUSED: mandates takes {MANDATE_SHAPE}, each entry's outcome one of "
+                          f"{'|'.join(MANDATE_OUTCOMES)}: " + ', '.join(bad))
         try:
             precision = _seat_precision(mandates)
         except ValueError as exc:
@@ -3789,8 +3800,9 @@ def report_pricier_pins(days, tiers=PRICIER_PIN_TIERS):
     return 0
 
 
-def main():
-    ap = argparse.ArgumentParser()
+def build_parser():
+    ap = cli_usage.ShapeParser()
+    ap.accepts, ap.example = MODES_ACCEPTS, MODES_EXAMPLE
     ap.add_argument('--rollup', action='store_true',
                     help='price the whole session (orchestrator, dispatches, proofs, waste); never archives')
     ap.add_argument('--json', metavar='PATH', help='with --rollup: also write the machine form here')
@@ -3823,7 +3835,7 @@ def main():
     ap.add_argument('--effort', help='with --rate: the effort pin when the record has none')
     ap.add_argument('--tier', help='with --rate: the row\'s role tier (orchestrator|architect|executor|fanout|'
                                    'scout; validation folds to fanout); fills only a row that recorded none')
-    ap.add_argument('--mandates', help='with --rate: a panel seat\'s JSON {mandate: {outcome, unique, duplicate}}')
+    ap.add_argument('--mandates', help='with --rate: a panel seat\'s JSON ' + MANDATE_SHAPE)
     ap.add_argument('--probe', action='store_true', help='with --rate: a deliberate downgrade comparison')
     ap.add_argument('--measurement', action='store_true', help='with --rate: the dispatch is a comparison arm')
     ap.add_argument('--accept-rest', action='store_true',
@@ -3849,7 +3861,11 @@ def main():
     ap.add_argument('--pricier-pins', type=int, nargs='?', const=30, metavar='DAYS',
                     help='list archived dispatches pinned while a cheaper row claimed their tier (default 30 days); '
                          'a fact for review, never archives')
-    a = ap.parse_args()
+    return ap
+
+
+def main():
+    a = build_parser().parse_args()
 
     if a.pricier_pins is not None:
         return report_pricier_pins(a.pricier_pins)
@@ -3951,9 +3967,13 @@ def main():
                 w(refusal)
                 return 1
             return rate_batch(session, requests)
-        return rate(session, a.rate[0], a.rate[1], note=a.note, effort=a.effort, tier=a.tier,
-                    mandates=a.mandates, probe=a.probe, shape=a.shape, measurement=a.measurement,
-                    effort_fit=a.effort_fit, effort_fit_note=a.effort_fit_note)
+        rc = rate(session, a.rate[0], a.rate[1], note=a.note, effort=a.effort, tier=a.tier,
+                  mandates=a.mandates, probe=a.probe, shape=a.shape, measurement=a.measurement,
+                  effort_fit=a.effort_fit, effort_fit_note=a.effort_fit_note)
+        if rc:
+            sys.stdout.flush()
+            sys.stderr.write(cli_usage.refusal(RATE_ACCEPTS, RATE_EXAMPLE))
+        return rc
 
     if a.pending:
         session = find_session_dir(a.session)

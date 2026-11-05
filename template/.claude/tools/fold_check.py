@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Check a review fold against disk and an independent quote run; never against its own report.
 
-A fold author reports its judgment: the ids it applied (each with its `source`, an optional `file` and `noTest`),
-the ids it deferred with a class and reason, `designDelta`, and the paths it changed. This checker computes every
-fact from inputs the author did not write:
+A fold transcribes. It applies a verified FIX whose `old` is a nonempty literal that occurs exactly once in the
+snapshot of one declared existing `.md`/`.txt` file, replaced by the string `new` (empty deletes), with no overlap
+with another applied pair. Everything else (PLAN, ASK, code, authored data, settings, path moves, creations,
+conflicts) is the parent's, who applies it and records it with `post_check.py review --applied`.
+The author reports its judgment: the ids it applied (each with `id`, `change`, optional `file`, `source: finding`),
+the ids it deferred with a `reason`, and the paths it changed. This checker computes every fact from inputs the
+author did not write:
 
   * the ORIGINAL findings (the native journal's source findings, sidecar `review.json` sources,
     or an ungrouped findings list/object), independently of the routing view;
@@ -12,8 +16,8 @@ fact from inputs the author did not write:
   * the subject's snapshot (the pre-fold bytes) and the bytes on disk now.
 
 A subject is `{root, files, newPaths, snapshot}`. `root` is the checkout the author edits, `files`
-lists the paths findings may route to, `newPaths` lists files the author may create (test files
-included), and `snapshot` is a manifest naming the pre-fold bytes in a form the author cannot
+lists the paths findings may route to, `newPaths` lists files the author may name (a fold creates none),
+and `snapshot` is a manifest naming the pre-fold bytes in a form the author cannot
 write: git blobs (`{"kind": "blobs", "files": {path: sha|null}, "head": sha}`,
 written by `post_check.py snapshot`) or a base revision (`{"kind": "rev", "base": sha}`).
 
@@ -21,35 +25,29 @@ Checks, each a failure kind in the report:
   fold-routing            a finding's file names several subject files, or a file-less finding with several
                           subjects; a file outside every subject is disposition `out-of-subject`, held for
                           the session, never a failure
-                          has no single subject to take it
   fold-invalid-shape      the digest lacks its applied/deferred lists of {id} rows
   fold-id-coverage        a routed id is absent from applied + deferred (held `unreported`); an unknown id is
                           reported and ignored; a repeated id counts once (an id in both lists counts deferred)
   fold-applied-unverified an applied id with evidence is not independently VERIFIED, or an
-                          applied refutation has no verified evidence, unless `--ruled` names it
-  fold-not-applied        an applied old/new pair whose `old` is still present: it occurs as often as in the
-                          snapshot bytes of its file (an `adapted`, `fold` or `ruling` source may keep it on a
-                          line that changed). A `finding`-sourced pair whose `old`
-                          is gone but whose `new` is not verbatim is recorded `adapted` for the next round's
-                          re-review, never a failure
-  fold-old-missing        an applied FIX whose `old` occurs zero times in its file's snapshot bytes,
-                          unless another applied id in the same file changed that region
+                          applied refutation has no verified evidence, unless the parent's `--applied --ruled` names it
+  fold-not-mechanical     a fold applied an id that is not a literal text fix (above), or one whose file the fold
+                          moved, created or deleted. Parent-applied ids (`--applied`) are exempt
+  fold-not-applied        an applied old/new pair whose `old` is still present, or whose `old` is gone but whose
+                          `new` is not verbatim (a fold's reworded edit)
+  fold-old-missing        an applied FIX whose `old` occurs zero times in its file's snapshot bytes
   fold-applied-held       ASK or open PLAN (a PLAN with no options) applied without a caller-authorized ruling
   fold-applied-below-bar  an applied id that does not count at the job's `bar` (the run's rigor) and is not a FIX
-                          old/new pair applied verbatim (`source: finding`, its `new` in the file), without a ruling
+                          old/new pair applied verbatim, without a ruling
   fold-application-unattributed an applied id resolves to no subject file
-  fold-unchanged-file     an applied id over file bytes identical to the snapshot, unless `--ruled` names it
-  fold-untested-code      an applied id on a code path without `noTest`, and the change set
-                          holds no test path
-  fold-test-order         a rev subject's fix commit precedes the test commit of the same id, or a
-                          commit's kind disagrees with the paths it touches
-  fold-out-of-subject     a changed or claimed path outside `files` and `newPaths` (a claimed path naming the fold's own findings,
+  fold-unchanged-file     an applied id over file bytes identical to the snapshot, unless the parent's `--ruled` names it
+  fold-out-of-subject     a changed or claimed path outside `files` and `newPaths`, or a fold's change to a path that
+                          is not `.md`/`.txt` (a claimed path naming the fold's own findings,
                           verdicts, digest or prompt file, or any path under `.claude/scratch/`, is excepted)
   fold-snapshot-missing   the snapshot or a subject file is unreadable
 
 `FAILURE_SCOPE` defines each failure's `ids` and voided `files`; an unknown kind voids the whole
-subject. An `id` or `file` scoped failure, or a `finding` scoped one that names its ids, holds those ids alone; any other scope fails a post-check's outcome. A path-prefixed `designDelta` marks only its named changed file; an unnamed element marks
-all changed files. Post-fold bytes are captured once, so recording never credits a later disk edit.
+subject. An `id` or `file` scoped failure, or a `finding` scoped one that names its ids, holds those ids alone; any
+other scope fails a post-check's outcome. Post-fold bytes are captured once, so recording never credits a later disk edit.
 
 A successful child exit, a present digest or a self-reported pass never overrides a failure here.
 
@@ -57,9 +55,8 @@ A successful child exit, a present digest or a self-reported pass never override
                 --digest <digest.json> [--subject ... --digest ...] --out <report.json>
   fold_check.py --workflow-dir <review_fanout transcriptDir> --out <report.json>
 
-`--ruled ID[,ID...]` supplies caller-authorized rulings; a digest's `source: ruling`
-alone grants no authority. A fileless applied entry over several files names its
-subject-relative `file`; changedPaths alone cannot attribute it.
+A fileless applied entry over several files names its subject-relative `file`; changedPaths alone cannot attribute it.
+Rulings reach this checker only through `post_check.py review --applied ... --ruled`, the parent's own application.
 
 `--workflow-dir` is the native route: each fold agent's first prompt (engine-authored) supplies
 its `Root:`, `Snapshot:`, `Files:` and complete findings, and the journal supplies its returned
@@ -69,15 +66,9 @@ were shed is refused as a `--findings` input.
 `--subject/--digest` repeat once per subject, in the same order. Each finding routes to the
 one subject whose `files` holds its `file`.
 The report holds one disposition per source finding (a merged view id expands to its
-`merged_from` sources), and one `nextRound` block per subject: the next review round's seats read
-from the fold (`orchestration` §2 *Later rounds*). A `re-review` seat carries the units the fold
-wrote itself, the `noTest` code entries, the reworded edits and the units whose check failed, with the mandates whose
-findings cite them; a `grounding` seat carries each added line that states a number, path or line
-cite; a `coherence` seat carries the digest's `designDelta`. `fileUnits` maps each changed file to
-the reasons it holds a unit. `change` measures how much of the reviewed subject changed and how far
-(`change_measure`); `--measure REVIEWED CURRENT` prints the same block for any two copies of a file.
-`unaccounted` lists each added line holding text no applied finding proposed, read from the diff
-rather than the fold's own report. `inline` is true when the subject changed and no seat is needed.
+`merged_from` sources) and each job's `changedFiles` and `designFiles` (changed files holding an applied id that is
+more than a verbatim literal text fix: the parent's design, never credited as reviewed). It proposes no next review
+round: the session decides one from the ledger's own coverage queries over the revised diff.
 Beside `--out` it writes `<out>.findings.json` and `<out>.verdicts.json`, the independent checker
 input and output.
 
@@ -85,7 +76,6 @@ EXIT: 0 pass; 1 a check failed; 2 unusable input.
 """
 import argparse
 from dataclasses import dataclass
-import functools
 import json
 import os
 from pathlib import Path
@@ -98,11 +88,8 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import finding_bar  # noqa: E402
 sys.path.insert(0, str(REPO / ".claude" / "hooks"))
-import difflib  # noqa: E402
 
 import adaptation  # noqa: E402
-import extract_numbers  # noqa: E402
-from _hook_state import is_harness_code  # noqa: E402
 import verify_claims  # noqa: E402
 
 _LINE = re.compile(r":[1-9]\d*(?:-[1-9]\d*)?$")
@@ -112,12 +99,11 @@ Scope = Literal["id", "file", "path", "finding", "subject", "none", "run"]
 FAILURE_SCOPE: dict[str, Scope] = {
     "fold-not-applied": "id", "fold-applied-unverified": "id", "fold-old-missing": "id",
     "fold-applied-held": "id", "fold-applied-below-bar": "id", "fold-application-unattributed": "id",
-    "fold-test-order": "id", "fold-untested-code": "id", "fold-unchanged-file": "file",
+    "fold-not-mechanical": "id", "fold-unchanged-file": "file",
     "fold-out-of-subject": "path", "fold-id-coverage": "id", "fold-routing": "finding",
     "fold-invalid-shape": "subject", "fold-snapshot-missing": "subject",
     "source-incomplete": "none", "ledger-record-failed": "run",
 }
-_CONTENT_FAILURES = tuple(kind for kind, scope in FAILURE_SCOPE.items() if scope == "id")
 
 
 def scoped_failure(kind, detail, subject=None, rows=(), **extra):
@@ -135,9 +121,6 @@ def scoped_failure(kind, detail, subject=None, rows=(), **extra):
                             if (rel := subject.file_of(row)) is not None})
     return dict(kind=kind, detail=detail, ids=sorted(set(ids)), files=files,
                 **({"subject": subject.root_text} if subject else {}), **extra)
-
-_FACT = re.compile(r"`[^`]*[/.][^`]*`|\b[\w.-]+\.(?:md|py|js|json|jsonl|cs|tres|tscn|ps1|sh|txt)\b|\w:\d+")
-
 
 def test_dirs(claude_dir=None):
     """The project's test roots: `adaptation.json` `tests_root` and the harness proofs under `.claude/tests`."""
@@ -213,17 +196,6 @@ def is_test_path(path, root=None):
     """True under `Tests/` or `.claude/tests/` (relative to `root` when the path is absolute)."""
     rel = rel_path(path, root)
     return any(rel == d or rel.startswith(d + "/") for d in TEST_DIRS)
-
-
-def is_code_path(path, root=None):
-    """True for a `.cs` file or harness code (`_hook_state.is_harness_code`: a script or a settings file) that is not a test.
-
-    The proof runner's own predicate, widened with `.cs`: a path `select_for` binds only by a proof's mention of
-    its basename would make every documented markdown file code."""
-    rel = rel_path(path, root)
-    if is_test_path(rel):
-        return False
-    return rel.lower().endswith(".cs") or is_harness_code(rel)
 
 
 def _read_json(path, what):
@@ -737,22 +709,6 @@ def _flat(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _unit_changed(before, after, old):
-    """True when some pre-fold line run holding `old` is no longer a run of whole lines after the fold."""
-    lines = [_flat(line) for line in before.splitlines()]
-    kept = "\n" + "\n".join(_flat(line) for line in after.splitlines()) + "\n"
-    for i in range(len(lines)):
-        for j in range(i, len(lines)):
-            if old in _flat(" ".join(lines[i:j + 1])):
-                if old not in _flat(" ".join(lines[i + 1:j + 1])) and \
-                        "\n" + "\n".join(lines[i:j + 1]) + "\n" not in kept:
-                    return True
-                break
-            if len(_flat(" ".join(lines[i + 1:j + 1]))) >= len(old):
-                break
-    return False
-
-
 def _text(data):
     return "" if data is None else data.decode("utf-8", errors="replace")
 
@@ -769,8 +725,11 @@ def hold_class(row):
 def check_job(job, rows, independent, failures):
     """Validate one subject's digest over the ids routed to it; -> {id: (disposition, taken)}.
 
-    The digest is judgment only: `taken` is True for an applied id, False for a deferred one, None for an absent one."""
+    The digest is judgment only: `taken` is True for an applied id, False for a deferred one, None for an absent one.
+    A fold job applies mechanical ids alone; a parent job (`post_check.py review --applied`) records what the parent
+    applied, whatever its kind."""
     subject = job["subject"]
+    parent = bool(job.get("parent"))
     fail = lambda kind, detail, **extra: failures.append(scoped_failure(kind, detail, subject, rows, **extra))  # noqa: E731
     ids = [row["id"] for row in rows]
     by_id = {row["id"]: row for row in rows}
@@ -825,17 +784,19 @@ def check_job(job, rows, independent, failures):
         for i in applied:
             if file_of.get(i) is None:
                 fail('fold-application-unattributed', f'{i}: applied id resolves to no subject file', id=i)
-        state = _FoldState(by_id, applied, file_of, tables, sources, entries, digest)
+        state = _FoldState(by_id, applied, file_of, tables, sources, entries, strict=not parent)
+        design = _check_mechanical(state, lambda *a, **k: None if parent else fail(*a, **k))
         job["reworded"] = _check_old_new(state, fail)
+        if state.strict:
+            _check_transcription(state, fail, design)
+        job["designFiles"] = sorted(design | {file_of[i] for i in applied if file_of.get(i) and (
+            i in job["reworded"] or i in (job.get("ruled") or ()))})
         for i in sorted(job["reworded"]):
             if below_bar(i):
                 fail('fold-applied-below-bar', f"{i}: below the run's bar {job.get('bar')}, its `new` is not in "
                                                "the file verbatim", id=i)
         _check_unchanged_files(state, fail, set(job.get('ruled') or ()))
-        _check_untested_code(state, change, fail)
-        _check_out_of_subject(subject, job, digest, change, fail)
-        if subject.snapshot["kind"] == "rev":
-            _check_commit_order(subject, digest, fail)
+        _check_out_of_subject(subject, job, digest, change, fail, text_only=not parent)
     return {i: ("applied" if i in applied else "deferred" if i in deferred else "missing",
                 True if i in applied else False if i in deferred else None) for i in ids}
 
@@ -853,14 +814,14 @@ def _old_touched_by_other(i, old, rel, applied, file_of, by_id):
 @dataclass
 class _FoldState:
     """One fold job's findings by id, applied ids, file of each id, (pre, post) bytes per file, each applied id's
-    source and entry, and the digest, as the per-job checks read them."""
+    source and entry, and whether the applier is a fold (`strict`: it transcribes literal pairs only)."""
     by_id: dict
     applied: list
     file_of: dict
     tables: dict
     sources: dict
     entries: dict
-    digest: dict
+    strict: bool = False
 
 
 def _has_pair(row):
@@ -868,9 +829,72 @@ def _has_pair(row):
     return isinstance(old, str) and old.strip() != "" and isinstance(new, str)
 
 
+_TEXT_TARGET = (".md", ".txt")
+
+
+def _check_mechanical(state, fail):
+    """A fold applies a verified FIX with a literal `old` found exactly once in the snapshot of an existing
+    `.md`/`.txt` file and no overlap with another applied pair (merged duplicates of one pair are one edit). Any other
+    applied id is the parent's. -> the files holding an applied id that is not such a transcription."""
+    spans, design = {}, set()
+    for i in state.applied:
+        row, rel = state.by_id[i], state.file_of.get(i)
+        if rel is None:
+            continue
+        before, after = state.tables[rel]
+        why = None
+        if row.get("action") != "FIX":
+            why = f"a {row.get('action')} finding is the parent's"
+        elif not _has_pair(row):
+            why = "it has no literal old/new pair"
+        elif not rel.lower().endswith(_TEXT_TARGET):
+            why = f"{rel} is not a .md or .txt file"
+        elif before is None or after is None:
+            why = f"{rel} is created, moved or deleted"
+        else:
+            hits = [m.start() for m in re.finditer(re.escape(row["old"]), _text(before))]
+            if len(hits) > 1:
+                why = f"its old text occurs {len(hits)} times in {rel}"
+            elif hits:
+                spans.setdefault(rel, []).append((hits[0], hits[0] + len(row["old"]), i, row["new"]))
+        if why:
+            design.add(rel)
+            fail("fold-not-mechanical", f"{i}: {why}; the parent applies it", id=i)
+    for rel, found in spans.items():
+        clash = {i for lo, hi, i, new in found for lo2, hi2, i2, new2 in found
+                 if i != i2 and lo2 < hi and lo < hi2 and (lo, hi, new) != (lo2, hi2, new2)}
+        for i in sorted(clash):
+            design.add(rel)
+            fail("fold-not-mechanical", f"{i}: its old text overlaps another applied pair in {rel}", id=i)
+    return design
+
+
+def _check_transcription(state, fail, design):
+    """A strict fold's post bytes of a file equal its snapshot with each applied pair substituted once. Files the
+    mechanical check already failed, and files whose pairs are not yet applied, are skipped: their ids have failed."""
+    by_file = {}
+    for i in state.applied:
+        rel, row = state.file_of.get(i), state.by_id[i]
+        if rel is None or rel in design or not _has_pair(row):
+            continue
+        by_file.setdefault(rel, []).append(i)
+    for rel, ids in by_file.items():
+        before, after = state.tables[rel]
+        if before is None or after is None:
+            continue
+        expected, text = _text(before).replace("\r\n", "\n"), _text(after).replace("\r\n", "\n")
+        for i in ids:
+            expected = expected.replace(state.by_id[i]["old"], state.by_id[i]["new"], 1)
+        if any(_flat(state.by_id[i]["new"]) not in _flat(text) for i in ids):
+            continue
+        if expected != text:
+            fail("fold-not-mechanical", f"{', '.join(ids)}: {rel} holds bytes its applied pairs do not produce; "
+                                        "the fold transcribes only", id=ids[0])
+
+
 def _check_old_new(state, fail):
-    """Fail an applied id whose `old` is still present; -> the ids whose `old` is gone but whose `new` is not verbatim
-    though the fold named `finding` as the source: those are reworded edits for the next round's re-review."""
+    """Fail an applied id whose `old` is still present; -> the ids whose `old` is gone but whose `new` is not verbatim.
+    A fold's reworded pair fails as not applied. A parent's `finding`-sourced one is returned for the below-bar check."""
     by_id, applied, file_of, tables = state.by_id, state.applied, state.file_of, state.tables
     reworded = set()
     for i in applied:
@@ -882,15 +906,19 @@ def _check_old_new(state, fail):
         before, text = _text(tables[rel][0]), _text(tables[rel][1])
         flat, flat_before = _flat(text), _flat(before)
         had = flat_before.count(_flat(old))
-        if had == 0 and not _old_touched_by_other(i, old, rel, applied, file_of, by_id):
+        if had == 0 and (state.strict or not _old_touched_by_other(i, old, rel, applied, file_of, by_id)):
             fail("fold-old-missing", f"{i}: old occurs zero times in the snapshot bytes of {rel}", id=i)
         old_absent = _flat(old) in _flat(new) or had == 0 or flat.count(_flat(old)) < had
-        if not old_absent and state.sources.get(i) in ("adapted", "fold", "ruling"):
-            old_absent = _unit_changed(before, text, _flat(old))
+        if not old_absent and not state.strict and state.sources.get(i) in ("adapted", "fold", "ruling"):
+            old_absent = before != text
         if not old_absent:
             fail("fold-not-applied", f"{i}: old is still present in {rel}", id=i)
-        elif _flat(new) not in flat and state.sources.get(i) == "finding":
-            reworded.add(i)
+        elif _flat(new) not in flat:
+            if state.strict:
+                if had:
+                    fail("fold-not-applied", f"{i}: old is gone but its new text is not in {rel} verbatim", id=i)
+            elif state.sources.get(i) == "finding":
+                reworded.add(i)
     return reworded
 
 
@@ -907,18 +935,12 @@ def _check_unchanged_files(state, fail, ruled=()):
                                     f"to the snapshot", ids=owed)
 
 
-def _check_untested_code(state, change, fail):
-    tested = any(is_test_path(p) for p in change)
-    for i in state.applied:
-        rel = state.file_of.get(i)
-        if rel is not None and is_code_path(rel) and not tested and not state.entries.get(i, {}).get("noTest"):
-            fail("fold-untested-code", f"{i} changes code path {rel} with no test path in the change set "
-                                       f"and no noTest reason", id=i)
-
-
-def _check_out_of_subject(subject, job, digest, change, fail):
+def _check_out_of_subject(subject, job, digest, change, fail, text_only=False):
     allowed = subject.allowed
     outside = sorted(p for p in change if p not in allowed)
+    if text_only:
+        outside += [p for p in sorted(change) if p in allowed and p not in outside and (
+            not p.lower().endswith(_TEXT_TARGET) or subject.pre_bytes(p) is None or subject.post_bytes(p) is None)]
     own = {rel_path(p, subject.root) for p in [*(job.get("artifacts") or ()), job.get("digest"),
                                                fold_verdicts_path(job.get("digest") or "")] if isinstance(p, str) and p}
     claimed = [rel_path(p, subject.root) for p in digest.get("changedPaths") or []
@@ -933,245 +955,6 @@ def _check_out_of_subject(subject, job, digest, change, fail):
     if outside:
         fail("fold-out-of-subject", "changed or claimed outside the subject's files and new paths: "
                                     + ", ".join(outside), ids=[], paths=outside)
-
-
-def _check_commit_order(subject, digest, fail):
-    commits = digest.get("commits")
-    if not isinstance(commits, list) or not commits:
-        return
-    done = _git(subject.root, "rev-list", "--reverse", f"{subject.snapshot['base']}..HEAD")
-    order = [sha for sha in done.stdout.decode().split() if sha] if done.returncode == 0 else []
-    seen = {}
-    for entry in commits:
-        sha = entry.get("sha") if isinstance(entry, dict) else None
-        kind = entry.get("kind") if isinstance(entry, dict) else None
-        ids = [i for i in (entry.get("ids") if isinstance(entry, dict) else None) or [] if isinstance(i, str)]
-        full = next((c for c in order if sha and c.startswith(sha)), None)
-        if full is None or kind not in ("test", "fix"):
-            fail("fold-test-order", f"commit {sha!r} is not in {subject.snapshot['base'][:9]}..HEAD or has no kind test|fix", ids=ids)
-            continue
-        paths = _git_text(subject.root, "show", "--name-only", "--format=", full) or ""
-        touched = [p for p in paths.splitlines() if p]
-        if (kind == "test" and not any(is_test_path(p) for p in touched)) or (
-                kind == "fix" and not any(not is_test_path(p) for p in touched)):
-            fail("fold-test-order", f"commit {full[:9]} is labelled {kind} but touches {touched or 'nothing'}", ids=ids)
-        for i in ids:
-            seen.setdefault(i, []).append((order.index(full), kind))
-    for i, rows in sorted(seen.items()):
-        tests = [pos for pos, kind in rows if kind == "test"]
-        fixes = [pos for pos, kind in rows if kind == "fix"]
-        if fixes and (not tests or min(fixes) < min(tests)):
-            fail("fold-test-order", f"{i}: its fix commit precedes its test commit" if tests
-                 else f"{i}: a fix commit with no test commit", id=i)
-
-
-# ---- next round -----------------------------------------------------------------------------------
-
-
-def _unaccounted(added, news, before):
-    """Added lines holding text no applied finding proposed: each line minus the findings' `new`
-    text must be text the pre-fold file already held, or the line is listed."""
-    pre = _flat(before)
-    out = []
-    for line in added:
-        flat = _flat(line)
-        if not flat or any(flat in new for new in news):
-            continue
-        hits = sorted((new for new in news if new in flat), key=len, reverse=True)
-        if hits and all(part.strip() in pre for part in re.split("|".join(map(re.escape, hits)), flat)
-                        if part.strip()):
-            continue
-        out.append(line.strip())
-    return out
-
-
-_UNIT = re.compile(r"^\s*[-*]\s+\*\*([A-Za-z][\w-]*(?: \d+)?)")
-_STEP = re.compile(r"^\s*(\d+)[.)]\s")
-_HEADING = re.compile(r"^#+\s+(.*\S)")
-
-
-def _units(lines):
-    """Each line's owning unit and each unit's citation pattern. A unit is a heading (its own prose), a
-    bold-labelled bullet or a numbered step (`<section> <n>`); a line belongs to the nearest unit above it."""
-    owner, cite, section, current = {}, {}, "", None
-    for i, line in enumerate(lines):
-        heading, bullet, step = _HEADING.match(line), _UNIT.match(line), _STEP.match(line)
-        if heading:
-            section = current = heading.group(1).strip()
-            cite[current] = r"(?i)" + re.escape(section)
-        elif bullet:
-            current = bullet.group(1)
-            cite[current] = r"(?<![\w-])" + re.escape(current) + r"(?![\w-])"
-        elif step:
-            current = f"{section} {step.group(1)}".strip()
-            cite[current] = r"(?i)(?<![\w-])step\s+" + step.group(1) + r"(?![\w-])"
-        if current is not None:
-            owner[i] = current
-    return owner, cite
-
-
-def change_measure(pre, post, markdown=True):
-    """How much of a reviewed file changed, and how far: the inputs a later round is sized from.
-
-    `changedLines` counts the non-blank lines each diff hunk touches on its longer side, over `lines`,
-    the current file's non-blank lines. For markdown, units are headings, bold-labelled bullets and numbered steps
-    (`_units`); `changedUnits` hold a changed, added or removed line, `unplacedLines` counts changed lines
-    no unit holds, and `reach` maps each changed unit to the unchanged units that cite it by label, step
-    number or heading: literal citations only, so a dependency by concept stays the reader's judgment.
-    A heading cites by its literal words, so a common-word heading over-reaches. Any other file is measured as
-    changed lines and hunks (`git diff --stat` semantics): it has no units, so `hunks` counts its changed runs.
-    The measure informs the width and depth judgment; it sets neither."""
-    if not markdown:
-        count, hunks = 0, 0
-        for tag, a1, a2, b1, b2 in difflib.SequenceMatcher(None, pre, post, autojunk=False).get_opcodes():
-            if tag == "equal":
-                continue
-            hunks += 1
-            count += max(sum(1 for line in pre[a1:a2] if line.strip()), sum(1 for line in post[b1:b2] if line.strip()))
-        return {"lines": sum(1 for line in post if line.strip()), "changedLines": count, "hunks": hunks,
-                "units": 0, "changedUnits": [], "unplacedLines": count, "reach": {}, "unitsReached": 0}
-    (was, _), (now, cite) = _units(pre), _units(post)
-    changed, count, unplaced = set(), 0, 0
-    for tag, a1, a2, b1, b2 in difflib.SequenceMatcher(None, pre, post, autojunk=False).get_opcodes():
-        if tag == "equal":
-            continue
-        count += max(sum(1 for line in pre[a1:a2] if line.strip()), sum(1 for line in post[b1:b2] if line.strip()))
-        for owners, lines, lo, hi in ((was, pre, a1, a2), (now, post, b1, b2)):
-            for i in range(lo, hi):
-                if owners.get(i):
-                    changed.add(owners[i])
-                elif lines[i].strip() and owners is now:
-                    unplaced += 1
-    text = {}
-    for i, label in now.items():
-        text.setdefault(label, []).append(post[i])
-    steady = {label: "\n".join(body) for label, body in text.items() if label not in changed}
-    reach = {label: sorted(other for other, body in steady.items()
-                           if label in cite and re.search(cite[label], body))
-             for label in sorted(changed)}
-    return {"lines": sum(1 for line in post if line.strip()), "changedLines": count,
-            "units": len(text), "changedUnits": sorted(changed), "unplacedLines": unplaced, "reach": reach,
-            "unitsReached": len({other for cited in reach.values() for other in cited})}
-
-
-@functools.lru_cache(maxsize=None)
-def _seat_mandates(part):
-    """The registry's mandates for one agent part, read once per process; None when the registry cannot name it."""
-    try:
-        import lens
-        return tuple(lens.seat_mandates(part) or ()) or None
-    except (Exception, SystemExit):
-        return None
-
-
-def _mandates_of(agent):
-    """Catalog keys a finding's `agent` names: a lens seat key expands through `lens.seat_mandates`, a catalog key
-    names itself."""
-    out = []
-    for part in str(agent or "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        out.extend(key for key in (_seat_mandates(part) or [part]) if key not in out)
-    return out
-
-
-def next_round(job, mine, failures):
-    """The next review round's seats for one subject, read from its fold (`orchestration` §2 *Later rounds*)."""
-    subject = job["subject"]
-    digest = job.get("digestValue") if isinstance(job.get("digestValue"), dict) else {}
-    applied = [d for d in digest.get("applied") or [] if isinstance(d, dict)]
-    by_id = {row["id"]: row for row in mine}
-    ids = set(by_id)
-    taken = {d.get("id") for d in applied}
-    failed = {f["id"] for f in failures if f.get("id") in ids and f["kind"] in _CONTENT_FAILURES}
-    reworded = set(job.get("reworded") or ())
-    try:
-        change = subject.change_set()
-        before = {rel: subject.pre_bytes(rel) for rel in subject.allowed}
-        after = {rel: subject.post_bytes(rel) for rel in subject.allowed}
-    except Unusable:
-        change = before = after = None
-    entries = {d.get("id"): d for d in applied}
-    file_of = {i: subject.application_file(row, entries.get(i, {})) for i, row in by_id.items()}
-    notest_code = {d.get("id") for d in applied if d.get("noTest")
-                   and file_of.get(d.get("id")) and is_code_path(file_of[d["id"]])}
-    sources = {d.get("id"): _source_of(d) for d in applied}
-    sources.update({i: "adapted" for i in reworded})
-    fold_units = {i for i, source in sources.items() if source in ("fold", "ruling")} | reworded
-    units = sorted((fold_units | notest_code | failed) & ids)
-    anchors = {row.get("file") for row in mine if row["id"] in units and row.get("file")}
-    mandates = sorted({key for row in mine if row["id"] in units or row.get("file") in anchors
-                       for key in _mandates_of(row.get("agent"))})
-    facts, unaccounted, per_file, measures, per_mandate = [], [], {}, {}, {}
-    if change is not None:
-        for rel in [p for p in change if p in subject.allowed and not is_test_path(p)]:
-            reasons = per_file.setdefault(rel, [])
-            was, now = _text(before.get(rel)), _text(after.get(rel))
-            pre_lines, post_lines = was.splitlines(), now.splitlines()
-            markdown = rel.lower().endswith(".md")
-            measures[rel] = change_measure(pre_lines, post_lines, markdown)
-            added = [line[1:] for line in difflib.unified_diff(pre_lines, post_lines, lineterm="", n=0)
-                     if line.startswith("+") and not line.startswith("+++")]
-            if markdown:
-                numbered = {f.line for f in extract_numbers.flagged("plan.md", "\n".join(added) + "\n")}
-                found = [line.strip() for i, line in enumerate(added, 1) if i in numbered or _FACT.search(line)]
-                if found:
-                    facts += found
-                    reasons.append("grounding")
-            local = [row for row in mine if file_of[row["id"]] == rel]
-            news = [_flat(row["new"]) for row in local if row["id"] in taken
-                    and sources.get(row["id"]) in ("finding", "adapted")
-                    and isinstance(row.get("new"), str) and row["new"].strip()]
-            for row in local:
-                if row["id"] not in taken or sources.get(row["id"]) not in ("finding", "adapted"):
-                    continue
-                if row.get("action") == "PLAN" and row.get("options"):
-                    news.append(_flat(str(row["options"][0]).replace("(Recommended)", "")))
-                if sources.get(row["id"]) == "adapted" and row.get("old"):
-                    for tag, a, z, b, y in difflib.SequenceMatcher(None, pre_lines, post_lines,
-                                                                autojunk=False).get_opcodes():
-                        if tag == "replace" and z - a == y - b:
-                            for old_line, new_line in zip(pre_lines[a:z], post_lines[b:y]):
-                                if _flat(row["old"]) in _flat(old_line):
-                                    news.append(_flat(new_line))
-            lost = _unaccounted(added, news, was)
-            per_mandate[rel] = sorted({key for row in local if row["id"] in units or lost
-                                      for key in _mandates_of(row.get("agent"))})
-            if lost:
-                unaccounted += lost
-                reasons.append("unaccounted")
-            for i, rel_of in file_of.items():
-                if rel_of == rel:
-                    if i in taken and sources.get(i) in ("fold", "adapted", "ruling"):
-                        reasons.append(f"{sources[i]}:{i}")
-                    if i in failed:
-                        reasons.append(f"check:{i}")
-                    if i in notest_code:
-                        reasons.append(f"noTest:{i}")
-    delta = [d for d in digest.get("designDelta") or [] if isinstance(d, str) and d.strip()]
-    for element in delta:
-        named = [rel for rel in subject.allowed if element.startswith(rel + ":")]
-        for rel in named or per_file:
-            if rel in per_file and "seam" not in per_file[rel]:
-                per_file[rel].append("seam")
-    seats = []
-    if units:
-        seats.append({"role": "re-review", "units": units, "mandates": mandates})
-    if facts:
-        seats.append({"role": "grounding", "lines": facts})
-    if delta:
-        seats.append({"role": "coherence", "units": delta})
-    totals = None
-    if change is not None:
-        keys = ("lines", "changedLines", "units", "unplacedLines", "unitsReached")
-        totals = {key: sum(m.get(key, 0) for m in measures.values()) for key in keys}
-        totals["files"] = measures
-    return {"subject": subject.describe(), "seats": seats, "change": totals, "unaccounted": unaccounted,
-            "fileUnits": {rel: reasons for rel, reasons in per_file.items() if reasons},
-            "fileMandates": per_mandate,
-            "changedFiles": sorted(p for p in change or [] if p in subject.allowed),
-            "inline": not seats and bool(per_file), "unknown": change is None}
 
 
 # ---- run ------------------------------------------------------------------------------------------
@@ -1195,10 +978,6 @@ def _expanded_job(job, views):
                                          for source in aliases.get(entry.get('id'), [entry.get('id')]))
                 else:
                     expanded[key].append(entry)
-    if isinstance(digest.get('commits'), list):
-        expanded['commits'] = [dict(entry, ids=[source for key in entry.get('ids', [])
-                                               for source in aliases.get(key, [key])])
-                               if isinstance(entry, dict) else entry for entry in digest['commits']]
     copy['digestValue'] = expanded
     copy['ruled'] = list(job.get('ruled') or [])
     return copy
@@ -1248,11 +1027,9 @@ def run(findings, jobs, out, *, independent=None, original=None):
     state = {i: ("unrouted", None) for i in unrouted}
     state.update({i: ("ambiguous", None) for i in ambiguous})
     state.update({i: ("out-of-subject", None) for i in outside})
-    rounds = []
     for index, job in enumerate(jobs):
         mine = [row for row in rows if routed.get(row["id"]) == index]
         state.update(check_job(job, mine, independent, failures))
-        rounds.append(next_round(job, mine, failures))
     dispositions = []
     entries = {entry['id']: entry for job in jobs if isinstance(job.get('digestValue'), dict)
                for entry in job['digestValue'].get('applied') or []
@@ -1266,11 +1043,20 @@ def run(findings, jobs, out, *, independent=None, original=None):
                              "disposition": disposition, "taken": taken,
                              "verdict": independent.get(row['id'])})
     return {"status": "fail" if failures else "pass", "failures": failures,
-            "dispositions": dispositions, "nextRound": rounds,
+            "dispositions": dispositions,
             "independentVerdicts": [{"id": i, "verdict": v} for i, v in independent.items()],
             "independentVerdictPath": verdicts_path,
-            "jobs": [dict(job["subject"].describe(), **({"agentId": job["agentId"]} if "agentId" in job else {}))
-                     for job in jobs]}
+            "jobs": [dict(job["subject"].describe(), changedFiles=_changed_files(job["subject"]),
+                          designFiles=job.get("designFiles", []),
+                          **({"agentId": job["agentId"]} if "agentId" in job else {})) for job in jobs]}
+
+
+def _changed_files(subject):
+    """The subject files whose bytes differ from the snapshot, read from disk."""
+    try:
+        return sorted(p for p in subject.change_set() if p in subject.allowed)
+    except Unusable:
+        return []
 
 
 def main(argv=None):
@@ -1280,20 +1066,8 @@ def main(argv=None):
     ap.add_argument("--subject", action="append", default=[],
                     help="<root>::<snapshot manifest>::<file>[,<file>...][::<new path>[,<new path>...]]")
     ap.add_argument("--digest", action="append", default=[])
-    ap.add_argument('--ruled', action='append', default=[], help='caller-authorized finding ids, comma-separated')
-    ap.add_argument("--measure", nargs=2, metavar=("REVIEWED", "CURRENT"))
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
-    if args.measure:
-        try:
-            pre, post = (_abs(p).read_text(encoding="utf-8").splitlines() for p in args.measure)
-        except (OSError, UnicodeDecodeError) as exc:
-            print(f"fold_check: --measure: {exc}", file=sys.stderr)
-            return 2
-        Path(args.out).write_text(json.dumps(change_measure(pre, post, markdown=args.measure[1].lower().endswith(".md")), indent=2) + "\n", encoding="utf-8",
-                                  newline="\n")
-        print(f"fold_check: change measure -> {args.out}")
-        return 0
     if args.workflow_dir:
         if args.findings or args.subject or args.digest:
             print("fold_check: --workflow-dir derives findings, subjects and digests; pass nothing else",
@@ -1301,8 +1075,6 @@ def main(argv=None):
             return 2
         try:
             jobs = workflow_jobs(args.workflow_dir)
-            for job in jobs:
-                job['ruled'] = [i for value in args.ruled for i in value.split(',') if i]
             import post_check
             original, archive = post_check._archive_rows(args.workflow_dir, merge=False)
             report = run(None, jobs, args.out, original=original)
@@ -1325,9 +1097,7 @@ def main(argv=None):
         if len({key for key, _ in claimed}) != len(claimed):
             print("fold_check: a subject file repeats", file=sys.stderr)
             return 2
-        jobs = [{"subject": s, "digest": d,
-                 'ruled': [i for value in args.ruled for i in value.split(',') if i]}
-                for s, d in zip(subjects, args.digest)]
+        jobs = [{"subject": s, "digest": d} for s, d in zip(subjects, args.digest)]
         report = run(args.findings, jobs, args.out)
     except Unusable as exc:
         print(f"fold_check: {exc}", file=sys.stderr)

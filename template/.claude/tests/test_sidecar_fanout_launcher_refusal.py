@@ -147,7 +147,8 @@ for mode in ("--detach", "--dry-run", None):
 
 def refused_text_is_the_launchers():
     """The tool prints the text `launcher_launch` prints: one source, `sidecar_dispatch_context.dispatch_checks`."""
-    expected = ctx.dispatch_checks([ctx.LaunchJob("unfit-a", UNFIT[0], "survey", "anthropic")])
+    expected = ctx.dispatch_checks([ctx.LaunchJob("unfit-a", UNFIT[0], "survey", "anthropic")],
+                                   {"unfit-a": "scout"})
     _code, out, err, *_ = run([job("unfit-a", UNFIT[0])], "--detach")
     return bool(expected) and expected in (out + err)
 
@@ -182,14 +183,14 @@ def unknown_alias_refused():
     return code == 2 and detached == 0 and "ghost" in out + err
 
 
-def unknown_shape_refused():
+def unknown_kind_refused():
     code, out, err, detached, ran, _ = run([job("odd-shape", FIT[0], kind="no-such-kind")], "--detach")
     return code == 2 and detached == 0
 
 
 case("(already held) an effort the registry's effort.avoid lists is refused before detach", avoided_effort_refused)
 case("(already held) an unknown alias is refused before detach", unknown_alias_refused)
-case("(already held) an unknown kind is refused before detach", unknown_shape_refused)
+case("(already held) an unknown kind is refused before detach", unknown_kind_refused)
 
 
 def fold_author_pin_is_checked():
@@ -296,7 +297,7 @@ def review_shape_no_longer_admits_a_cheaper_pin_for_architect_work():
 def no_tier_keeps_the_shape_default():
     unfit, _o, err, *_ = run([job("shape-unfit", ARCH_NOT_SURVEY[0])], "--dry-run")[:3]
     fit, *_ = run([job("shape-fit", FIT[0])], "--dry-run")
-    return unfit == 2 and "from shape `survey`" in _o + err and fit == 0
+    return unfit == 2 and "from kind `scout`" in _o + err and fit == 0
 
 
 def unknown_tier_is_refused_with_the_known_list():

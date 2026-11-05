@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Hook: PreToolUse on Bash|PowerShell — block git operations that destroy local state, and
-require a green harness close before push (floor guard), remind about admitted doctrine reviews, and advise a harness commit authored without
+require a green harness close before push (floor guard), and advise a harness commit authored without
 `instruction_quality` loaded (`_skill_verdict`; retire-when review-by 2027-03-15), name a staged skill or
 command body past the client's re-attach cap (`_reattach_cap_verdict`), report cheap bound
 proofs at commit that failed, ran incomplete, could not run or were left to the close (process
@@ -78,8 +78,9 @@ except Exception as _exc:
 from _git_commit import (  # noqa: E402
     git_environ,
     git_invocation, git_invocations, executable_text, run_git,
-    staged_paths, incoming_paths, bypass_declared, parse_commit_args, resolve_index, commit_source,
-    resolve_cd, expand_literal, ref_resolves, refs_created, ref_names_created,
+    staged_paths, incoming_paths, bypass_declared, parse_commit_args, full_pathspec, resolve_index, commit_source,
+    _pathspec_file,
+    unexpanded_hint, resolve_cd, expand_literal, ref_resolves, refs_created, ref_names_created,
 )
 
 REF_MAKERS = ("fetch", "update-ref", "branch", "tag")  # subcommands that can create the ref a later merge names
@@ -228,16 +229,13 @@ def _branch_deletion_problems(rest, cwd, git_env=None):
     return problems
 
 
-def _own_worktree_discard(sub, rest, cwd, git_env, transcript_path):
+def _in_own_worktree(cwd, git_env, transcript_path):
+    """True when `cwd` (resolved through `-C`) lies in a worktree this session created, a submodule checked out
+    inside one included: that clone is the session's own. Redirected git state or an unknown session reads False."""
     if (not session_created_worktree or not cwd or not transcript_path or any((git_env or {}).get(k) for k in
             ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'))):
         return False
-    if sub == 'checkout' and '--' not in rest:
-        return False
-    if sub not in ('checkout', 'restore') or not rest:
-        return False
     top = run_git(['rev-parse', '--show-toplevel'], cwd, git_env)
-    # A submodule checked out inside a session-created worktree is that worktree's own clone.
     while top and top.strip():
         if session_created_worktree(top.strip(), transcript_path):
             return True
@@ -245,14 +243,38 @@ def _own_worktree_discard(sub, rest, cwd, git_env, transcript_path):
     return False
 
 
+def _own_worktree_discard(sub, rest, cwd, git_env, transcript_path):
+    if sub == 'checkout' and '--' not in rest:
+        return False
+    if sub not in ('checkout', 'restore') or not rest:
+        return False
+    return _in_own_worktree(cwd, git_env, transcript_path)
+
+
+def _own_clean_reset(cwd, git_env, transcript_path):
+    """A `reset --hard` in a worktree this session created whose tree holds nothing uncommitted, untracked files
+    included, discards nothing git holds nowhere else. An unreadable status reads as dirty."""
+    if not _in_own_worktree(cwd, git_env, transcript_path):
+        return False
+    status = run_git(['status', '--short'], cwd, git_env)
+    return status is not None and status.strip() == ''
+
+
+def _named_paths(rest, cwd):
+    """(index of `--` in `rest`, else len(rest); True when a path is `.`, `:/`, `/`, a glob or a directory)."""
+    split = rest.index("--") if "--" in rest else len(rest)
+    paths = rest[split + 1:] if "--" in rest else [a for a in rest if not a.startswith("-")]
+    bulk = any(p in (".", ":/", "/") or re.search(r"[*?\[\]$`%]", p) or (cwd and os.path.isdir(os.path.join(cwd, p)))
+               for p in paths)
+    return split, bulk
+
+
 def _checkout_retry(rest, cwd):
     """The step after the save that `_discards_nothing` admits for this checkout's shape: the same command for
     `checkout -- <file>`, `restore --source` for a checkout from a ref (its stored-bytes test covers a restore only),
     and one named file at a time for `.`, a glob or a directory (it judges named files only)."""
-    split = rest.index("--") if "--" in rest else len(rest)
-    paths = rest[split + 1:] if "--" in rest else [a for a in rest if not a.startswith("-")]
-    if any(p in (".", ":/", "/") or re.search(r"[*?\[\]$`%]", p) or (cwd and os.path.isdir(os.path.join(cwd, p)))
-           for p in paths):
+    split, bulk = _named_paths(rest, cwd)
+    if bulk:
         return "then name each file: `git checkout -- <file>` for one saved edit at a time."
     refs = [a for a in rest[:split] if not a.startswith("-")]
     if refs:
@@ -264,10 +286,8 @@ def _restore_retry(rest, cwd):
     """The step after the save that `_discards_nothing` admits for this restore's shape: one named file at a
     time for `.`, a glob or a directory, no `--worktree`/`-W` (restore's default), `--source=<ref>` spelled with
     the equals sign, else the same command."""
-    split = rest.index("--") if "--" in rest else len(rest)
-    paths = rest[split + 1:] if "--" in rest else [a for a in rest if not a.startswith("-")]
-    if any(p in (".", ":/", "/") or re.search(r"[*?\[\]$`%]", p) or (cwd and os.path.isdir(os.path.join(cwd, p)))
-           for p in paths):
+    _split, bulk = _named_paths(rest, cwd)
+    if bulk:
         return "then name each file: `git restore <file>` for one saved edit at a time."
     if "--worktree" in rest or "W" in short_flag_chars(rest):
         return "then run it without `--worktree`/`-W` (restore's default), one saved file at a time."
@@ -288,7 +308,7 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
                 or _own_worktree_discard(sub, rest, cwd, git_env, transcript_path)):
             return None
 
-    if sub == "reset" and "--hard" in rest:
+    if sub == "reset" and "--hard" in rest and not _own_clean_reset(cwd, git_env, transcript_path):
         return ("BLOCKED `git reset --hard` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
                 "discards every uncommitted change in the shared worktree with no undo. Use "
                 "`git reset --keep` to move HEAD and keep local edits.")
@@ -484,11 +504,14 @@ def _reattach_cap_verdict(repo_root, touched):
     return "\n".join(lines)
 
 
-def _removed(repo_root, norm, git_env=None):
-    """True when the commit deletes `norm`: absent from both worktree and index. Its proof may
-    leave in the same commit. A git failure reads as present, so the proof is still required."""
+def _removed(repo_root, norm, git_env=None, *, worktree=False):
+    """True when the commit deletes `norm`: absent from the worktree, and absent from the index too unless the
+    commit publishes the worktree (`worktree`: a pathspec or `-a` commit, which commits the deletion itself).
+    Its proof may leave in the same commit. A git failure reads as present, so the proof is still required."""
     if os.path.exists(os.path.join(repo_root, norm)):
         return False
+    if worktree:
+        return True
     listed = run_git(["ls-files", "--", norm], repo_root, git_env)
     return listed is not None and not listed.strip()
 
@@ -643,11 +666,15 @@ def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
     judged; a pathspec or `-a` commit takes the working tree. Staged deletions are skipped, because
     `git rm --cached` has the same shape on purpose. A git failure skips that signature. A blob only
     this session's own commits replaced (its `Claude-Session` trailer, `_own_trailer`) is not a peer's,
-    and neither is a merge staging the merged-in parent's own blob: that is the parent's history.
-    While REVERT_HEAD names a commit, a path staged at that commit's parent version is the revert git was
-    asked for, not a stale index; every other path is judged as usual."""
+    nor is one only a linked worktree's own commits replaced (`_lane_commits`), and neither is a merge
+    staging the merged-in parent's own blob: that is the parent's history.
+    While REVERT_HEAD names a commit, a path that commit changed against any of its parents (a merge
+    revert included) is the revert git was asked for, not a stale index; every other path is judged as
+    usual. The exemption is by path: a revert of a non-tip commit yields a blob no parent holds, so a
+    blob test cannot stand in for it. `--pathspec-from-file` is a pathspec."""
     include_dirty, _amend, pathspec = parse_commit_args(rest)
-    if include_dirty or (pathspec and not ({"-i", "--include"} & set(rest))):
+    has_spec = bool(pathspec) or _pathspec_file(rest) is not None
+    if include_dirty or (has_spec and not ({"-i", "--include"} & set(rest))):
         return None
     root = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
     if root is None:
@@ -656,8 +683,11 @@ def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
     reverting = run_git(["rev-parse", "-q", "--verify", "REVERT_HEAD"], root, git_env)
 
     def verdict(found):
-        if reverting:
-            found = [p for p in found if not _staged_at(p, "REVERT_HEAD^", root, git_env)]
+        if reverting and found:
+            changed = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "-z", "REVERT_HEAD"],
+                              root, git_env)
+            reverted = set((changed or "").split("\0"))
+            found = [p for p in found if p not in reverted]
         return _revert_message(found)
 
     added =run_git(["diff", "--cached", "--name-only", "--diff-filter=A", "-z"], root, git_env)
@@ -691,12 +721,6 @@ def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
     stale += [p for p in paths if p not in stale and staged.get(p, (None, None))[1] in replaced.get(p, ())
               and staged[p][1] != theirs.get(p)]
     return verdict(stale + readded)
-
-
-def _staged_at(path, rev, root, git_env):
-    """True when the index holds `path` exactly as `rev` does."""
-    want = run_git(["rev-parse", "-q", "--verify", "%s:%s" % (rev, path)], root, git_env)
-    return want is not None and run_git(["rev-parse", "-q", "--verify", ":" + path], root, git_env) == want
 
 
 REVERT_HISTORY = 30  # recent HEAD commits whose replaced blobs count as stale
@@ -740,14 +764,28 @@ def _replaced_by(root, revs):
     return replaced
 
 
+def _lane_commits(root):
+    """The commits above the merge-base of HEAD and the default branch, in a linked worktree; empty in
+    the shared checkout or when the default branch or the merge-base cannot be read. A peer cannot
+    commit into a lane's HEAD, so these are the lane's own line of work."""
+    git_dir, common = (run_git(["rev-parse", "--git-dir", "--git-common-dir"], root) or "\n").split("\n")[:2]
+    if not git_dir or os.path.realpath(os.path.join(root, git_dir)) == os.path.realpath(os.path.join(root, common)):
+        return set()
+    for ref in ("refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"):
+        base = run_git(["merge-base", "HEAD", ref], root)
+        if base and base.strip():
+            return set((run_git(["rev-list", "%s..HEAD" % base.strip()], root) or "").split())
+    return set()
+
+
 def _replaced_blobs(root, own_trailer=None):
     """{path: {blob}}: every blob one of HEAD's last REVERT_HISTORY commits replaced, except those
-    replaced only by commits carrying `own_trailer`."""
+    replaced only by commits carrying `own_trailer` or by a lane's own commits (`_lane_commits`)."""
     revs = (run_git(["rev-list", "-n", str(REVERT_HISTORY), "HEAD"], root) or "").split()
-    own = set()
+    own = _lane_commits(root)
     if own_trailer and revs:
-        own = set((run_git(["log", "--format=%H", "-F", "--grep=" + own_trailer, "-n",
-                            str(REVERT_HISTORY), "HEAD"], root) or "").split())
+        own |= set((run_git(["log", "--format=%H", "-F", "--grep=" + own_trailer, "-n",
+                             str(REVERT_HISTORY), "HEAD"], root) or "").split())
     return _replaced_by(root, [r for r in revs if r not in own])
 
 
@@ -763,13 +801,6 @@ def _revert_message(stale):
 
 
 ADVISORIES = []  # commit advisories `main()` prints as additionalContext when no check denies
-
-
-def _unexpanded_hint(text):
-    if "$" not in str(text or ""):
-        return ""
-    return (" The guard reads the command before the shell expands `$`; run it with the ref and "
-            "directory written literally (one call per ref in a loop).")
 
 
 def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=None, refs_pending=()):
@@ -789,8 +820,17 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
 
     root = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
     if root is None:
+        if cwd and "$" not in cwd and not os.path.isdir(cwd):
+            # `cd <dir>` into a worktree an earlier step of this command creates: the hook reads the command
+            # before that step runs. A bare merge, cherry-pick or revert re-commits content judged where it
+            # was committed, so only a commit that publishes the index is denied.
+            if not publishes_index(sub, rest):
+                return None
+            return ("BLOCKED harness commit — the directory `%s` does not exist yet when the hook reads the "
+                    "command, so the commit scope cannot be verified; run the step that creates it in its own "
+                    "call, then commit." % cwd)
         return ("BLOCKED harness commit — `git rev-parse --show-toplevel` failed; cannot "
-                "verify commit scope." + _unexpanded_hint(cwd))
+                "verify commit scope." + unexpanded_hint(cwd))
     repo_root = root.strip()
 
     if publishes_index(sub, rest):
@@ -804,7 +844,7 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
         return None
     if paths is None:
         return ("BLOCKED harness commit — `git %s` failed; cannot verify commit scope." % failed_cmd
-                + _unexpanded_hint(failed_cmd))
+                + unexpanded_hint(failed_cmd))
 
     touched = sorted(p for p in paths if p.replace("\\", "/").startswith(".claude/"))
     surfaces = sorted(p for p in paths if _setup_surface(p))
@@ -839,13 +879,16 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
         ADVISORIES.append(reattach)
 
     tests_dir = os.path.join(repo_root, ".claude", "tests")
+    include_dirty, _amend, pathspec = parse_commit_args(rest)
+    pathspec, _problem = full_pathspec(rest, cwd, pathspec)
+    worktree_commit = bool(include_dirty or pathspec)
     missing = []
     for norm in touched:
         for prefix in (".claude/hooks/", ".claude/tools/"):
             if norm.startswith(prefix) and norm.endswith(".py"):
                 name = os.path.basename(norm)[:-3]
                 if (not name.startswith("_") and not _has_proof(tests_dir, name, git_env)
-                        and not _removed(repo_root, norm, git_env)
+                        and not _removed(repo_root, norm, git_env, worktree=worktree_commit)
                         and not _behavior_unchanged(repo_root, norm, git_env)
                         and norm in changed):
                     if _behavior_unchanged(repo_root, norm, git_env, ignore_strings=True):
@@ -950,57 +993,6 @@ def _push_ranges(rest, root, git_env=None, targets=None):
     return ranges
 
 
-def doctrine_audit_verdict(rest, cwd, inline_env=None, git_env=None):
-    """Advisory: name admitted outgoing doctrine commits with no harness-quality coverage.
-
-    Range and ledger failures report unavailable coverage, never deny a push.
-    """
-    if bypass_declared(inline_env, BYPASS_VAR):
-        return None
-    next_step = ("[review] doctrine review owed (execution_depth.md §Admission): %s; "
-                 "run `/session_audit --lens sa-harness-quality` over the named range.")
-    saved_env = dict(os.environ) if git_env else None
-    try:
-        sys.path.insert(0, os.path.join(_CLAUDE_DIR, "tools"))
-        try:
-            import review_ledger
-            import lens
-            from harness_edit_skill_reminder import is_doctrine_path
-        finally:
-            sys.path.pop(0)
-        root = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
-        if not root:
-            raise RuntimeError("cannot resolve the push checkout")
-        root = root.strip()
-        ranges = _push_ranges(rest, root, git_env)
-        if not ranges:
-            return None
-        tier = lens.seat_tier("sa-harness-quality")
-        if tier is None:
-            raise RuntimeError("cannot resolve sa-harness-quality tier")
-        # Effort is model-specific; require valid observed effort, not a new model-specific floor.
-        roster = [{"key": "sa-harness-quality", "mandates": ["harness-quality"],
-                   "tier": tier, "effort": "none"}]
-        if git_env:
-            effective = git_environ(git_env)
-            os.environ.clear()
-            os.environ.update(effective)
-        missing = []
-        for base, rev in ranges:
-            owed = review_ledger.owed_range(Path(root), base, rev, ["harness-quality"], roster,
-                                            is_doctrine_path, exclude_remotes=True)
-            if owed:
-                missing.append(f"{base}..{rev}: " + ", ".join(
-                    f"{commit['sha'][:7]} {commit['subject']}" for commit in owed))
-        return next_step % ("unaudited doctrine in " + "; ".join(missing)) if missing else None
-    except Exception as exc:
-        return next_step % f"doctrine audit check unavailable: {type(exc).__name__}: {exc}"
-    finally:
-        if saved_env is not None:
-            os.environ.clear()
-            os.environ.update(saved_env)
-
-
 _ADAPTATION_DIR = _CLAUDE_DIR
 
 
@@ -1030,8 +1022,7 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
     if land:
         next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %%s; this project has a land runner: "
                      "`git push --recurse-submodules=check origin HEAD:%s<session id's first 8 chars>`; the runner "
-                     "runs the close and lands the branch. A direct push needs `python3 "
-                     ".claude/scripts/harness_tests.py --close` in the background first, then the commit it proves."
+                     "runs the close and lands the branch."
                      % land)
     else:
         next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %s; run `python3 "
@@ -1056,7 +1047,7 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
         return next_step % "cannot resolve the outgoing harness range"
     except (OSError, ValueError):
         return next_step % "cannot resolve the outgoing harness range"
-    harness =[(base, rev, paths, dest) for (base, rev, paths), dest in zip(outgoing, targets)
+    harness = [(base, rev, paths, dest) for (base, rev, paths), dest in zip(outgoing, targets)
                if paths and not (land and dest[1].removeprefix("refs/heads/").startswith(land))]
     if not harness:
         return None
@@ -1210,10 +1201,6 @@ def main() -> None:
         message = verdict(judged_args, target, git_env, input_data.get('transcript_path'))
         if not message and args and args[0] == "push":
             message = harness_push_verdict(args[1:], target, inline_env, git_env)
-        if not message and args and args[0] == "push":
-            reminder = doctrine_audit_verdict(args[1:], target, inline_env, git_env)
-            if reminder:
-                ADVISORIES.append(reminder)
         if (index_write and not message and key not in born and publishes_index and args
                 and publishes_index(args[0], args[1:])):
             message = SAME_COMMAND_WRITE % (index_write, index_write)

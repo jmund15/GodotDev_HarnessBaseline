@@ -150,6 +150,15 @@ def headroom_cases():
         "five_hour": {"utilization": 1.0, "resets_at": None},
         "seven_day": {"utilization": 50.0, "resets_at": NOW + 2 * 86400},
     }, now=NOW)
+    null_five = probe.summarize({
+        "five_hour": None,
+        "seven_day": {"utilization": 0.0, "resets_at": NOW + 7 * 86400},
+        "limits": [],
+    }, now=NOW)
+    null_week = probe.summarize({
+        "five_hour": {"utilization": 10.0, "resets_at": NOW + 2 * 3600},
+        "seven_day": None,
+    }, now=NOW)
     dormant_only = probe.summarize({
         "five_hour": {"utilization": 0.0, "resets_at": None},
     }, now=NOW)
@@ -170,6 +179,10 @@ def headroom_cases():
     return [
         ("usable extra usage admits a 99%-weekly / 22h-to-reset capture",
          credited.get("status") == "available"),
+        ("a null five_hour block (no session window open after a reset) reads as dormant, not malformed",
+         null_five.get("status") == "available"),
+        ("a null seven_day block is malformed, never a fully spare week",
+         null_week.get("status") == "malformed" and null_week.get("quota") is None),
         ("a 99%-used week 22h from reset routes Hot on the weekly risk band",
          quota.get("routingBand") == "Hot" and quota.get("routingWindow") == "seven_day"),
         ("the weekly row grades Hot and carries its projected run-out ratio (~0.067)",

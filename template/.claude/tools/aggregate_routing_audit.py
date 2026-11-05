@@ -31,11 +31,22 @@ Stats JSON schema (single source of truth for /eval_dashboard):
       "silent_misses_subagent": int,       # silent_misses from subagents (see note below)
       "nudged_routing_misses": int,        # nudge-warranted + nudge_fired=true
       "cue_exempt_overrides": int,         # cue-exempt classification
+      "lookup_calls": {                    # census rows, never misses
+        "bash_recognized": int,            # rule bash-lookup
+        "bash_opaque": int,                # rule bash-opaque-script
+        "lsp": int                         # rule lsp-lookup
+      },
+      "vault_writes": {"vault-write-direct": int, "vault-write-worker": int},
+      "legacy_heuristic_events": {"pascal-grep-on-cs": int, ...},  # retired verdicts, read as history
       "by_rule": {
-        "pascal-grep-on-cs": {"silent_miss": int, "silent_miss_main": int,
-                              "silent_miss_sub": int, "nudged": int, "cue_exempt": int},
+        "native-read-bulk-copyable": {"silent_miss": int, "silent_miss_main": int,
+                                      "silent_miss_sub": int, "nudged": int, "cue_exempt": int},
         ...
       },
+
+    The retired PascalCase-Grep verdicts (LEGACY_RULES) stay in old logs. They are counted under
+    `legacy_heuristic_events` and excluded from every current count, so a historical row is never
+    read as a current miss.
 
     Subagent silent-miss caveat: a subagent's one-off discovery Grep writes its
     nudge-fired record AFTER routing_audit.py reads it (PostToolUse hook ordering),
@@ -66,6 +77,11 @@ from pathlib import Path
 LOG_PATH = Path("logs/routing_audit.jsonl")
 STATS_PATH = Path("logs/routing_audit_stats.json")
 ARCHIVE_DIR = Path("logs/routing-audit-archive")
+
+# Verdicts retired with the PascalCase-Grep nudge: rows written before it went read as history.
+LEGACY_RULES = frozenset(("pascal-grep-on-cs", "pascal-grep-on-indexed"))
+LOOKUP_RULES = {"bash-lookup": "bash_recognized", "bash-opaque-script": "bash_opaque", "lsp-lookup": "lsp"}
+VAULT_WRITE_PREFIX = "vault-write-"
 
 
 # === I/O =====================================================================
@@ -152,8 +168,14 @@ def aggregate(entries: list[dict], active_window_days: int = 30) -> dict:
     by_rule_counts: dict[str, Counter] = defaultdict(Counter)
     by_week_counts: dict[str, Counter] = defaultdict(Counter)
     bucket_totals = Counter()
+    legacy = Counter()
+    current = []
 
     for ts, entry in in_window:
+        if entry.get("rule") in LEGACY_RULES:
+            legacy[entry["rule"]] += 1
+            continue
+        current.append((ts, entry))
         bucket = _classification_bucket(entry)
         if bucket == "other":
             continue
@@ -184,7 +206,7 @@ def aggregate(entries: list[dict], active_window_days: int = 30) -> dict:
         # rebuild it. (The double-loop is fine; entries-in-window typically <1k.)
     # Per-rule per-week breakdown
     rule_week_counts: dict[str, Counter] = defaultdict(Counter)
-    for ts, entry in in_window:
+    for ts, entry in current:
         if _classification_bucket(entry) != "silent_miss":
             continue
         rule = entry.get("rule") or "(unknown)"
@@ -222,7 +244,7 @@ def aggregate(entries: list[dict], active_window_days: int = 30) -> dict:
         "generated_at": now.isoformat(timespec="seconds"),
         "log_path": str(LOG_PATH),
         "active_window_days": active_window_days,
-        "total_entries": len(in_window),
+        "total_entries": len(current),
         "silent_misses": bucket_totals.get("silent_miss", 0),
         "silent_misses_main_loop": bucket_totals.get("silent_miss_main", 0),
         "silent_misses_subagent": bucket_totals.get("silent_miss_sub", 0),
@@ -232,8 +254,14 @@ def aggregate(entries: list[dict], active_window_days: int = 30) -> dict:
         # direct/worker split the Documentation Delegation Rule is judged against.
         "vault_writes": {
             rule: counts.get("census", 0)
-            for rule, counts in by_rule_counts.items() if counts.get("census", 0)
+            for rule, counts in by_rule_counts.items()
+            if rule.startswith(VAULT_WRITE_PREFIX) and counts.get("census", 0)
         },
+        "lookup_calls": {
+            key: by_rule_counts[rule].get("census", 0) if rule in by_rule_counts else 0
+            for rule, key in LOOKUP_RULES.items()
+        },
+        "legacy_heuristic_events": dict(legacy),
         "by_rule": {
             rule: dict(counts) for rule, counts in by_rule_counts.items()
         },
@@ -312,6 +340,12 @@ def render_console_summary(stats: dict) -> str:
                  "(rule-warranted, nudge fired; channel works but agent may still ignore)")
     lines.append(f"  cue_exempt_override  : {stats['cue_exempt_overrides']}    "
                  "(legitimate K1/L6/audit-shape override)")
+    lookups = stats.get("lookup_calls") or {}
+    lines.append(f"  lookups (census)     : bash recognized {lookups.get('bash_recognized', 0)}, "
+                 f"bash opaque {lookups.get('bash_opaque', 0)}, lsp {lookups.get('lsp', 0)}")
+    if stats.get("legacy_heuristic_events"):
+        lines.append(f"  legacy heuristic     : {sum(stats['legacy_heuristic_events'].values())}    "
+                     "(retired PascalCase-Grep verdicts in old rows; history, not current misses)")
     lines.append("")
     if stats["top_5_silent_miss_rules"]:
         lines.append("Top silent-miss rules:")

@@ -24,6 +24,9 @@ import re
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import cli_usage  # noqa: E402
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
 from _file_lock import locked  # noqa: E402
 
@@ -34,6 +37,13 @@ DEFAULT_CAP = 500
 OUTCOMES = ("applied", "declined", "recorded")
 FIXES = ("text", "reach", "tool", "hook", "remove", "none")
 REQUIRED = ("date", "session", "target", "signal", "recommended", "outcome", "reason")
+RECORD_ACCEPTS = ("record --date YYYY-MM-DD --session S --target T --signal G --recommended R "
+                  "--outcome applied|declined|recorded --reason TEXT [--fix text|reach|tool|hook|remove|none] "
+                  "[--row ID] [--metric KEY] [--cap N] [--file PATH]")
+RECORD_EXAMPLE = ("python3 .claude/tools/autolearn_outcomes.py record --date 2026-10-29 --session navtools "
+                  "--target .claude/skills/instruction_quality/reference/skills_and_commands.md "
+                  "--signal 'a refusal printed no shape' --recommended 'state the accepts: and example: lines' "
+                  "--outcome applied --reason 'one wire format, one owner' --fix text")
 
 
 def read_rows(path):
@@ -82,6 +92,7 @@ def cmd_record(args):
     bad = problems(row)
     if bad:
         print("autolearn_outcomes: row rejected, file unchanged: " + "; ".join(bad), file=sys.stderr)
+        sys.stderr.write(cli_usage.refusal(RECORD_ACCEPTS, RECORD_EXAMPLE))
         return 1
     temp = None
     try:
@@ -130,10 +141,18 @@ def cmd_history(args):
     return 0
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog="autolearn_outcomes.py", description=__doc__.split("\n")[0])
+def build_parser():
+    ap = cli_usage.ShapeParser(prog="autolearn_outcomes.py", description=__doc__.split("\n")[0])
+    ap.accepts, ap.example = RECORD_ACCEPTS, RECORD_EXAMPLE
     sub = ap.add_subparsers(dest="cmd", required=True)
-    rec = sub.add_parser("record")
+    rec = sub.add_parser(
+        "record", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Append one validated ledger row.",
+        epilog="required: --date YYYY-MM-DD --session S --target T --signal G --recommended R "
+               "--outcome applied|declined|recorded --reason TEXT\n"
+               "optional: --fix text|reach|tool|hook|remove|none, --row ID, --metric KEY, --cap N, --file PATH\n"
+               + cli_usage.refusal(RECORD_ACCEPTS, RECORD_EXAMPLE))
+    rec.accepts, rec.example = RECORD_ACCEPTS, RECORD_EXAMPLE
     for k in REQUIRED:
         rec.add_argument("--" + k, default="")
     rec.add_argument("--row", default="")
@@ -150,7 +169,11 @@ def main(argv=None):
     hist.add_argument("--target", action="append", required=True)
     hist.add_argument("--file", default=DEFAULT_FILE)
     hist.set_defaults(fn=cmd_history)
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
     return args.fn(args)
 
 

@@ -520,7 +520,7 @@ sc_dispatch_launch() {
   [ "${SC_DISPATCH_CHECKED:-0}" = 1 ] && return 0
   [ -n "${SC_INVOKED_LAUNCHER:-}" ] || return 0
   SC_DISPATCH_DEFAULT_MODEL="$SC_MODEL" python3 "$SC_ROOT/hooks/sidecar_dispatch_context.py" \
-    --launcher "$(sc_to_native "$SC_INVOKED_LAUNCHER")" "$@" || { rc=2; exit 2; }
+    --launcher "$(sc_to_native "$SC_INVOKED_LAUNCHER")" "$@" || { rc=$?; case "$rc" in 10|11) ;; *) rc=2 ;; esac; exit "$rc"; }
   SC_DISPATCH_CHECKED=1
 }
 

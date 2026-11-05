@@ -11,6 +11,7 @@ const UPSTREAM = {
 	'scanner.js': 'f55c8eb49b1fe0d6f6c6408fbd28203cce3acd39785405403a6c2ac69a10e5d3',
 	'chunker.js': '21405cfbb9ba90c6c79035662275fb8e6a3e4efa131614eb74692653e6fd9efa',
 	'tree-sitter-chunker.js': '23fc510669da81397d139e6baefad7e3a9ac7b9182ada542a9f6b3c763cd4a7f',
+	'embedder.js': 'bb498ec67885351f85a30c3204890b18cc8f9dd7d993f1dbeb5bd16445f3e021',
 }
 const CSHARP_EXTRACTORS = [
 	['class_declaration', 'class'], ['struct_declaration', 'struct'],
@@ -64,6 +65,12 @@ export function buildCsharpPatch(pluginRoot) {
 			replace('const EXTENSION_MAP = new Map([', 'const EXTENSION_MAP = new Map([\n    [".cs", "csharp"],')
 			// .searchignore drops tracked paths from the index without hiding them from git.
 			replace('        loadGitignore(ig, projectRoot, projectRoot);\n', '        loadGitignore(ig, projectRoot, projectRoot);\n        const searchignorePath = join(projectRoot, ".searchignore");\n        if (existsSync(searchignorePath)) ig.add(readFileSync(searchignorePath, "utf-8"));\n')
+		} else if (name === 'embedder.js') {
+			// A batch pads every text to its longest member, so index-order batches spent ~2.8x the real tokens
+			// on padding. Embedding in length order keeps each text's vector and returns them in input order.
+			replace('            const batch = texts.slice(i, i + this.batchSize);', '            const batch = sorted.slice(i, i + this.batchSize);')
+			replace('        for (let i = 0; i < total; i += this.batchSize) {', '        const order = texts.map((_, k) => k).sort((a, b) => texts[a].length - texts[b].length);\n        const sorted = order.map((k) => texts[k]);\n        for (let i = 0; i < total; i += this.batchSize) {')
+			replace('                results.push(data.slice(start, start + dim));', '                results[order[i + j]] = data.slice(start, start + dim);')
 		} else if (name === 'chunker.js') {
 			replace('const TREE_SITTER_LANGUAGES = new Set([', 'const TREE_SITTER_LANGUAGES = new Set([\n    "csharp",')
 			replace('        catch {', '        catch (error) {\n            if (fileType === "csharp") throw error;')

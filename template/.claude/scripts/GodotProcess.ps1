@@ -422,9 +422,9 @@ function Get-SafeRunLabel {
 
 # A run_test_suite.ps1 run's bounds from its -TimeoutMs: the lock wait and the attempts (one retry on a hang or a
 # silent skip). The lock wait outlasts the longest hold of the holder the run can queue behind (every attempt at the
-# longest suite cap, plus a buffer for that holder to finish), whatever this run's own cap: a short unit bounded by its
-# own cap starved behind longer ones. LifetimeMs is the longest a healthy wrapper lives before pre-work and teardown,
-# which the run pool's backstop sits above.
+# longest suite cap, each allowed the progress ceiling, plus a buffer for that holder to finish), whatever this run's
+# own cap: a short unit bounded by its own cap starved behind longer ones. LifetimeMs is the longest a healthy wrapper
+# lives before pre-work and teardown, which the run pool's backstop sits above.
 $script:SuiteLockWaitExtraMs = 120000
 # The gate's longest fixed unit (Logic). Dynamic standalone caps can be larger; their own bound
 # still widens the wait through Max below.
@@ -432,7 +432,7 @@ $script:SuiteLockWaitFloorMs = 480000
 function Get-SuiteRunBounds {
     param([Parameter(Mandatory)] [int64] $TimeoutMs)
     $attempts = 2
-    $lockWait = $attempts * [math]::Max($TimeoutMs, $script:SuiteLockWaitFloorMs) + $script:SuiteLockWaitExtraMs
+    $lockWait = $attempts * [math]::Max($TimeoutMs, $script:SuiteLockWaitFloorMs) * $script:SuiteProgressCeilingFactor + $script:SuiteLockWaitExtraMs
     [pscustomobject] @{ LockWaitMs = $lockWait; MaxAttempts = $attempts; LifetimeMs = $lockWait + $attempts * $TimeoutMs * $script:SuiteProgressCeilingFactor }
 }
 

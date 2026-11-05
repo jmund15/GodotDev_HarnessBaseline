@@ -3,7 +3,7 @@
 
 A plan (`planOf`) pays for its route's rows through its own launcher, so a hot 5-hour window on
 one Anthropic plan can move a job to the other. `_width_steps` builds each job's next step from
-`model_registry.for_role`; this plants a registry with a host plan sibling and reads the step text.
+`model_registry.route_rows`; this plants a registry with a host plan sibling and reads the step text.
 The RULE 2 cases feed real payloads to `main()` with the session plan taken from a planted
 CLAUDE_CONFIG_DIR and assert on the emitted `permissionDecision`.
 

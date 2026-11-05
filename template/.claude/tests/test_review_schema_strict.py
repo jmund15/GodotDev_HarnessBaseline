@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proof that `.claude/schemas/review_findings.json` survives the CLI's schema validator.
 
-`sidecar_fanout.plan_job` hands this file to every `shape: review` job as `--json-schema`, and the
+`sidecar_fanout.plan_job` hands this file to every job whose `kind` takes the review guard as `--json-schema`, and the
 CLI validates it in ajv STRICT mode BEFORE the child does any work. An unknown keyword is not a
 warning there: the dispatch dies with `--json-schema is not a valid JSON Schema: strict mode:
 unknown keyword: "X"`, and a whole fan-out fails at launch. That is how it shipped the first time,

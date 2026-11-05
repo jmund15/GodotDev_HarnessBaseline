@@ -1130,7 +1130,9 @@ def plant_session(runs=(), top=(), notes=(), owner=(), queued=(), cross=(), answ
     line only), `result` or `failed`; `top` = [(agent id, description, ended, age seconds)] for
     `<session>/subagents/agent-<id>.jsonl`, whose last record is an end_turn when `ended`;
     `notes` = [(agent id, age seconds)] for a completion notification in the parent transcript.
-    `owner`/`queued` plant owner rows the `owner:` lift may be verified in; `answers` = [(question, picked label)] plant answered AskUserQuestions; `cross` plants the
+    `owner`/`queued` plant owner rows the `owner:` lift may be verified in.
+    `answers` = [(question, picked label)] plant answered AskUserQuestions.
+    `cross` plants the
     same words as a cross-session message, which is a peer talking, not the owner."""
     root = tempfile.mkdtemp(prefix="wpg_5h_")
     session = os.path.join(root, sid)

@@ -15,12 +15,12 @@ configuration error, never a fake healthy sample.
 The floors follow the job, never a field the dispatcher fills in. `--brief <file> --shape <shape>`
 (read from the launcher's own `-f`/`-G`) lets `classify_job` read the brief's declared operations:
 
-    light   shape author/review/survey and the brief names no Playwright, vitest, npm/npx
+    light   kind author/reviewer/lens/scout and the brief names no Playwright, vitest, npm/npx
             or tsc command: commit 6.5 GiB, physical 3.25 GiB free
     heavy   everything else, including a missing, unreadable or empty brief and any other shape:
             commit 12 GiB, physical 6 GiB free (the floors before classes existed)
 
-Basis (2026-10-28; a floor is its class's peak plus a 1 GiB margin, the margin the old floor used):
+Basis (a floor is its class's peak plus a 1 GiB margin, the margin the old floor used):
 - heavy peak 4.85 GiB: the largest of 12 live sidecar trees (claude -p plus its tool and test processes,
   private bytes, sampled every 5 s). An e2e job fits it: its test tree measured 0.65 GiB for the
   backend plus 1.94 GiB for one Playwright worker (working set), 2.6 GiB, on top of
@@ -55,7 +55,7 @@ _GIB = 1024 ** 3
 HEAVY = "heavy"
 LIGHT = "light"
 CLASS_FLOORS = {HEAVY: (12.0, 6.0), LIGHT: (6.5, 3.25)}
-LIGHT_SHAPES = frozenset({"author", "review", "survey"})
+LIGHT_SHAPES = frozenset({"author", "reviewer", "lens", "scout"})
 HEAVY_OPERATION = re.compile(
     r"\bnpm\s+(?:run|test|ci|exec|install|i)\b|\bnpx\b|\bplaywright\b"
     r"|\bvitest\b|\btsc\b", re.IGNORECASE)
@@ -303,7 +303,7 @@ def main(argv=None) -> int:
     check.add_argument("--label", default="sidecar", help="what is launching, for the REFUSED line")
     for command in (wait, check):
         command.add_argument("--brief", default="", help="the job's brief file; its declared operations pick the floors")
-        command.add_argument("--shape", default="", help="the job's guard shape (author, review, survey ...)")
+        command.add_argument("--shape", default="", help="the job's launcher kind (author, reviewer, lens, scout ...)")
     args = parser.parse_args(argv)
     try:
         floors = floors_from_env(job_class_of(args.brief, args.shape))

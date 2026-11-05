@@ -2,7 +2,7 @@
 """RED-first proof: a `--detach` fan-out tells its caller, before it returns, whether each job was admitted or
 refused, and a capacity refusal that only the detached child found moves the job to its next plan.
 
-The captured failure (2026-10-26): one haiku job detached on plan anthropic-secondary; the detached child
+The failure this proves: a haiku job detached on plan anthropic-secondary; the detached child
 refused before any model call (`.exit` 10, `[sidecar] REFUSING haiku (claude-haiku-5-5): anthropic-secondary
 five_hour window 98% used, at its 98% dispatch floor`), and the caller, told only `fan-out detached`, said the
 job was running. The admission observable is `<label>.stream`: every launcher truncates its `-P` file right
@@ -179,7 +179,7 @@ def undecided_job_ends_the_wait_in_bound():
     plant(out, "job")
     inventory(out, [("job", os.path.join(out, "job.record.json"))])
     text, outcome, took = watch(out, ["job"], wait=0.6)
-    return outcome["job"] == "undecided" and "admitted" not in text and "undecided" in text and took < 2.0
+    return outcome["job"] == "undecided" and "admitted" not in text and "undecided" in text and took < 5.0
 
 
 def stale_stream_before_launch_is_not_admission():

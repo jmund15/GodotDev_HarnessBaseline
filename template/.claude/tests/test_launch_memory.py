@@ -706,9 +706,7 @@ if os.environ.get('PROOF_MEMORY_FILE'):
         bad("already clear headroom", "reads=%s err=%r" % (after - before, healthy_err[-500:]))
 
 # ---- 9. the floor follows the job: a brief that declares no heavy operation gets the light floor
-# The briefs below are cut from real dispatch briefs: LIGHT_BRIEF from the harness author job that
-# waited 20 min on 2026-10-28 (it names e2e runs only as the cost it measures, and `--close`/`--all`
-# only to forbid them); HEAVY_BRIEF is an e2e fix job's command line.
+# LIGHT_BRIEF names e2e runs only as a cost and `--close`/`--all` only to forbid them; HEAVY_BRIEFS declare a browser or test runner.
 LIGHT_BRIEF = ("Your task: assess the options below, implement it test-first in the semantic-search idle proxy.\n"
                "- Cost: full-machine CPU that slowed the e2e runs sharing the machine, and RAM.\n"
                "- Run the proofs bound to the changed files: `python3 .claude/scripts/harness_tests.py "
@@ -726,11 +724,11 @@ if mod is None or not hasattr(mod, "classify_job"):
                  "unknown shape, empty and missing brief classify heavy", "light floors are below heavy floors"):
         bad(name, "launch_memory.classify_job is missing")
 else:
-    if mod.classify_job(LIGHT_BRIEF, "author") == "light" and mod.classify_job(LIGHT_BRIEF, "review") == "light":
-        ok("a brief that runs no browser or test runner classifies light for author and review")
+    if mod.classify_job(LIGHT_BRIEF, "author") == "light" and mod.classify_job(LIGHT_BRIEF, "reviewer") == "light":
+        ok("a brief that runs no browser or test runner classifies light for author and reviewer")
     else:
         bad("light brief classifies light", repr((mod.classify_job(LIGHT_BRIEF, "author"),
-                                                  mod.classify_job(LIGHT_BRIEF, "review"))))
+                                                  mod.classify_job(LIGHT_BRIEF, "reviewer"))))
     wrong = {n: mod.classify_job(t, "author") for n, t in HEAVY_BRIEFS.items()
              if mod.classify_job(t, "author") != "heavy"}
     if not wrong:
@@ -741,7 +739,7 @@ else:
            mod.classify_job(LIGHT_BRIEF, ""), mod.classify_job(LIGHT_BRIEF, None),
            mod.classify_job("", "author"), mod.classify_job(None, "author")]
     if odd == ["heavy"] * 6:
-        ok("a shape outside author/review/survey, an empty shape and an empty or missing brief classify heavy")
+        ok("a kind outside author/reviewer/lens/scout, an empty shape and an empty or missing brief classify heavy")
     else:
         bad("unknown shape, empty and missing brief classify heavy", repr(odd))
     light, heavy = mod.floors_for("light"), mod.floors_for("heavy")

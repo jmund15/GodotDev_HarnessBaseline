@@ -3,7 +3,7 @@
 
 A plan's ROOM is the share of its routing window's allowance left over the share of that window's
 time left: `(100 - usedPercent) / (100 x fraction of the window left)`. 1.0 is even pace, the rate
-the plan can spend at until its reset. `pick` ranks a plan by its routing window's room (the fan-out's `pick_key` ranks first by the quota projected unused at the reset): that
+the plan can spend at until its reset. `pick` ranks a plan by its routing window's room: that
 window's unused share is what expires at its reset. Every other window is a capacity gate, not a rank.
 A job that starts now spends from every window, so a non-routing window GATES the plan when its
 remaining share cannot carry even-pace work to its own reset: its shortfall, the share of its time
@@ -37,10 +37,11 @@ rate leaves unused at the reset (`unused_at_reset`), never a bare ratio.
 CLI:
     provider_bands.py list                      each plan-quota transport's band and pressure
     provider_bands.py probe <transport>          one transport's routing-band view as JSON
-    provider_bands.py room <tier> [--json]       each plan paying for a <tier> row: quota left, window left; `low` when none has allowance
     provider_bands.py pick <tier> --json         the most-room plan, for a tool choosing a plan for a fixed row
-    provider_bands.py lean <tier> [--json]       each row claiming a <tier>, per route: cost, ± cell, effort cell, owner mark, each plan's room; facts, never a pick
     provider_bands.py warm <transport>...        read each transport, refreshing a missing or expired cache entry
+
+`for-role` in `model_registry.py` owns the pick-facing rows; `tier_table` here is its one facts
+computation. `room` and `lean` are retired and name that command.
 """
 import json
 import os
@@ -340,7 +341,7 @@ def read_capacity(transport, data=None, live=True):
 
 def plan_room(transport, data, read, now):
     """{transport, room, window, left, headroom, headroomWindow, headroomResetsAt, windows, daysLeft, planType, unusedAtReset when it projects} for a plan with allowance left, else
-    {transport, room: None, why}. `headroom` is the window with the fewest points left; `windows` lists every window's own
+    {transport, room: None, why}; `stale: True` when the reader had no fresh reading at all. `headroom` is the window with the fewest points left; `windows` lists every window's own
     {name, headroom, resetsAt}, because points of two windows are different units and a job's draw is priced per window."""
     try:
         got = read(transport, data)
@@ -348,7 +349,8 @@ def plan_room(transport, data, read, now):
         return {"transport": transport, "room": None,
                 "why": "unreadable: %s" % (str(exc)[:120] or type(exc).__name__)}
     if not isinstance(got, dict):
-        return {"transport": transport, "room": None, "why": "unreadable: no fresh reading"}
+        return {"transport": transport, "room": None, "stale": True,
+                "why": "warming: no fresh reading"}
     status = got.get("status")
     if status == "dispatch-floor":
         return {"transport": transport, "room": None, "why": provider_capacity.floor_refusal(got, now)}
@@ -395,6 +397,10 @@ def plan_room(transport, data, read, now):
     projection = unused_at_reset(transport, window, now, windows=windows)
     if projection is not None:
         row["unusedAtReset"] = projection
+    if isinstance(got.get("liveFailure"), dict):
+        observed = provider_capacity._epoch(got.get("observedAt"))
+        if observed is not None:
+            row["age"] = int(max(0.0, now - observed))
     gates = [(room(w, now), w.get("name")) for w in windows if w is not window and _gates(w, now)]
     tightest = min((g for g in gates if g[0] < value), default=None)
     if tightest:
@@ -780,73 +786,203 @@ def _owner_mark(row, tier):
     return None
 
 
-def lean_candidates(tier, session_plan, data=None, read=None, now=None, ladder=None):
-    """{tier, seat, routes, payOptions, refused}: every row claiming `tier` that the session can dispatch to, grouped by
-    the route it pays on, each with its ladder cost, `±` cell, effort cell, owner probation mark and each plan's room.
+def _plan_facts(row, launchers=None):
+    """One plan's pick facts: quota left, time to reset, quota unused at reset, launchers running jobs."""
+    days = row.get("daysLeft")
+    return {"plan": row["transport"], "left": round(float(row.get("left") or 0.0), 1),
+            "timeLeft": round(float(days), 2) if days is not None else None,
+            "unusedAtReset": row.get("unusedAtReset"), "launchers": launchers}
 
-    Facts only, in registry order and never sorted: a listing sorted by one axis reads as the pick. Plan-quota rows
-    fill `routes`, the session's route first. A marginal-usd row is listed in `payOptions` only when no plan on any
-    route has room. Each `routes` and `payOptions` entry carries `supplementary`: true when the row also holds the
-    tier in registry `supplementary`, so its review seats need a qualified seat beside them. A row holding the tier
-    only as `supplementary` is no claimant: it is listed apart, under `supplementary` by route, and only a plan-quota
-    row, since it fills an added review seat beside a qualified one and never a lone seat or authoring. An unknown
-    seat is refused, with no routes and no pay options, so it fails closed."""
+
+def _read_plans(names, data, read, now, live):
+    """{plan: `plan_room` row}, read in parallel on the live path: the table and the fan-out's pick
+    rest on the same readings, so one slow plan does not serialize the rest."""
+    if not names:
+        return {}
+    if live and len(names) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=len(names)) as pool:
+            return dict(zip(names, pool.map(lambda name: plan_room(name, data, read, now), names)))
+    return {name: plan_room(name, data, read, now) for name in names}
+
+
+def _standing_of(row, tiers):
+    """{requested tier: "qualified"|"supplementary"} for this row, only where it holds one."""
+    roles = set(model_registry.entry_tiers(row))
+    supplementary = set(model_registry.supplementary_tiers(row))
+    found = {}
+    for tier in tiers:
+        if tier in roles:
+            found[tier] = "qualified"
+        elif tier in supplementary:
+            found[tier] = "supplementary"
+    return found
+
+
+def _draw_cells(draw, alias, effort, plans):
+    """{plan: the `draw(plan, alias, effort)` result} for the plans that can pay this row."""
+    out = {}
+    for plan in plans:
+        try:
+            out[plan] = draw(plan, alias, effort) if draw else {}
+        except Exception:
+            out[plan] = {}
+    return out
+
+
+def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, draw=None, pay=False):
+    """{tiers, seat, sessionPlan, groups, payOptions, plansLow, warming, ages, refused}: the one facts computation
+    behind `for-role` and `hooks/task_brief_facts`.
+
+    A plan `plan_room` drops (`room: None`) is absent from every group and takes
+    its route with it; a plan whose reader returned nothing fresh is named in `warming`, never dropped; a
+    reading served from the cache after a failed live read keeps its `age`. Rows are grouped by route in
+    registry order, never sorted, each row once with its standing per requested tier, ladder cells, owner
+    probation mark and its draw per surviving plan. `read` is the capacity reader (default: the live,
+    cache-first `read_capacity`); `pay` lists the marginal-usd rows even when a plan survived. An unknown
+    seat is refused so it fails closed."""
     data = data if data is not None else model_registry.load()
     now = time.time() if now is None else now
+    tiers = [model_registry.canonical_tier(t) for t in
+             ([tier] if isinstance(tier, str) else list(tier or [])) if t]
+    tiers = list(dict.fromkeys(tiers))
+    live = read is None
     read = read or read_capacity
-    tier = model_registry.canonical_tier(tier)
     transports = data.get("transports") or {}
-    out = {"tier": tier, "seat": None, "routes": {}, "supplementary": {}, "payOptions": [], "refused": None}
+    out = {"tiers": tiers, "seat": None, "sessionPlan": session_plan, "groups": [], "payOptions": [],
+           "plansLow": False, "warming": [], "ages": {}, "refused": None}
     if session_plan not in transports:
         out["refused"] = ("unknown seat: CLAUDE_CODE_TRANSPORT names no plan and CLAUDE_CONFIG_DIR matches no plan's "
                           "configDir, so this session's route is unreadable")
         return out
     seat = model_registry.route_of(session_plan, data)
     out["seat"] = seat
-    costs = model_registry.ladder_costs(data, ladder)
-    minus = _ladder_cells("±", data, ladder)
-    effort = _ladder_cells("effort", data, ladder)
-    plan_rooms = {}
-
-    def plans_on(route):
-        found = []
-        for name in model_registry.plans_of(route, data):
-            if (transports.get(name) or {}).get("costModel") != "plan-quota":
+    cost_model_of = lambda row: (transports.get(row.get("transport")) or {}).get("costModel")
+    rows, marginal = {}, []
+    marginal_ids = set()
+    for wanted in tiers:
+        qualified = model_registry.rows_for_tier(wanted, data, seat=seat)
+        qualified_ids = {r["id"] for r in qualified}
+        listed = qualified + [r for r in model_registry.supplementary_rows(wanted, data, seat=seat)
+                              if r["id"] not in qualified_ids]
+        for row in listed:
+            if cost_model_of(row) == "marginal-usd":
+                if row["id"] in qualified_ids and row["id"] not in marginal_ids:
+                    marginal.append(row)
+                    marginal_ids.add(row["id"])
                 continue
-            if name not in plan_rooms:
-                plan_rooms[name] = plan_room(name, data, read, now)
-            found.append({"plan": name, "room": rank_room(plan_rooms[name]),
-                          "unusedAtReset": plan_rooms[name].get("unusedAtReset")})
-        return found
-
-    routes, only, plans_by_route, marginal, claimant_routes = {}, {}, {}, [], set()
-    claimants = model_registry.rows_for_tier(tier, data, seat=seat)
-    ids = {r["id"] for r in claimants}
-    added = [r for r in model_registry.supplementary_rows(tier, data, seat=seat) if r["id"] not in ids]
-    for row in claimants + added:
-        cost_model = (transports.get(row.get("transport")) or {}).get("costModel")
-        holds = tier in model_registry.supplementary_tiers(row)
-        if cost_model == "marginal-usd":
-            if row["id"] in ids:
-                marginal.append(row)
+            if cost_model_of(row) != "plan-quota":
+                continue
+            if row["id"] not in rows:
+                rows[row["id"]] = {"row": row, "standing": _standing_of(row, tiers)}
+    route_plans = {}
+    for info in rows.values():
+        route = info["row"]["transport"]
+        if route not in route_plans:
+            route_plans[route] = [name for name in model_registry.plans_of(route, data)
+                                  if (transports.get(name) or {}).get("costModel") == "plan-quota"]
+    names = []
+    for info in rows.values():
+        for name in route_plans[info["row"]["transport"]]:
+            if name not in names:
+                names.append(name)
+    rooms = _read_plans(names, data, read, now, live)
+    launchers = {}
+    if live:
+        try:
+            import sidecar_fanout
+            launchers = sidecar_fanout.plan_load(data)
+        except Exception:
+            launchers = {}
+    order = {name: i for i, name in enumerate(plan_quota_transports(data))}
+    cells = {"cost": model_registry.ladder_costs(data, ladder), "speed": _ladder_cells("speed", data, ladder),
+             "intel": _ladder_cells("intel", data, ladder), "minus": _ladder_cells("±", data, ladder),
+             "effort": _ladder_cells("effort", data, ladder), "ladder": _ladder_cells("model", data, ladder)}
+    groups = []
+    for route in sorted(route_plans, key=lambda name: order.get(name, len(order))):
+        surviving = [rooms[name] for name in route_plans[route] if rooms[name].get("room") is not None]
+        for name in route_plans[route]:
+            if rooms[name].get("stale") and name not in out["warming"]:
+                out["warming"].append(name)
+            if rooms[name].get("age") is not None:
+                out["ages"][name] = rooms[name]["age"]
+        if not surviving:
             continue
-        if cost_model != "plan-quota":
-            continue
-        route = row["transport"]
-        if route not in plans_by_route:
-            plans_by_route[route] = plans_on(route)
-        if row["id"] in ids:
-            claimant_routes.add(route)
-        entry = {"alias": row.get("alias"), "id": row["id"], "cost": costs.get(row["id"]),
-                 "plans": plans_by_route[route], "minus": minus.get(row["id"]),
-                 "effort": effort.get(row["id"]), "probation": _owner_mark(row, tier), "supplementary": holds}
-        (routes if row["id"] in ids else only).setdefault(route, []).append(entry)
-    order = lambda found: {r: found[r] for r in sorted(found, key=lambda r: r != seat)}
-    out["routes"], out["supplementary"] = order(routes), order(only)
-    if not any(p["room"] is not None for r in claimant_routes for p in plans_by_route[r]):
-        out["payOptions"] = [{"alias": r.get("alias"), "id": r.get("id"), "transport": r.get("transport"),
-                              "supplementary": tier in model_registry.supplementary_tiers(r)} for r in marginal]
+        plans = [_plan_facts(room, None if not live else len(launchers.get(room["transport"]) or []))
+                 for room in surviving]
+        group_rows = []
+        for rid, info in rows.items():
+            row = info["row"]
+            if row["transport"] != route:
+                continue
+            effort = cells["effort"].get(rid)
+            probation = next((_owner_mark(row, wanted) for wanted in tiers
+                              if info["standing"].get(wanted) and _owner_mark(row, wanted)), None)
+            group_rows.append({
+                "alias": row.get("alias"), "id": rid, "ladder": cells["ladder"].get(rid),
+                "standing": dict(info["standing"]),
+                "cost": cells["cost"].get(rid), "speed": cells["speed"].get(rid),
+                "intel": cells["intel"].get(rid), "minus": cells["minus"].get(rid), "effort": effort,
+                "probation": probation,
+                "draw": _draw_cells(draw, row.get("alias"), effort, [room["transport"] for room in surviving])})
+        groups.append({"route": route, "seat": route == seat, "plans": plans, "rows": group_rows})
+    out["groups"] = groups
+    out["plansLow"] = not groups
+    if out["plansLow"] or pay:
+        out["payOptions"] = [{"alias": row.get("alias"), "id": row["id"], "transport": row.get("transport"),
+                              "standing": _standing_of(row, tiers)} for row in marginal]
     return out
+
+
+def _reset_cell(days):
+    if days is None:
+        return "reset unknown"
+    whole = int(days)
+    return "resets in %dd %dh" % (whole, round((days - whole) * 24))
+
+
+def _unused_cell(projection):
+    if not isinstance(projection, dict) or projection.get("pct") is None:
+        return "unused at reset unknown"
+    return "~%d%% unused at reset" % int(round(projection["pct"]))
+
+
+def render_tier_table(got):
+    """The `for-role` text: ladder doctrine is printed ahead of it; every line here is a pick fact, and no
+    dropped plan, hop recipe, transport label or pin spelling appears."""
+    if got.get("refused"):
+        return got["refused"]
+    session_plan = got.get("sessionPlan")
+    lines = ["for-role: tiers %s; session plan %s (marked *)" % (
+        ", ".join(got.get("tiers") or []), session_plan)]
+    for group in got.get("groups") or []:
+        lines.append("route %s%s" % (group["route"], " (session route)" if group.get("seat") else ""))
+        for plan in group["plans"]:
+            marker = " *" if plan["plan"] == session_plan else ""
+            age = got.get("ages", {}).get(plan["plan"])
+            lines.append("  plan %s%s: left %.1f%%, %s, %s, %s%s" % (
+                plan["plan"], marker, plan["left"], _reset_cell(plan["timeLeft"]),
+                _unused_cell(plan["unusedAtReset"]),
+                "launchers unknown" if plan["launchers"] is None else
+                "%d launcher%s" % (plan["launchers"], "" if plan["launchers"] == 1 else "s"),
+                ", reading %d s old" % age if age is not None else ""))
+        for row in group["rows"]:
+            draw = ", ".join("%s %s" % (plan, ", ".join(
+                "%s %.1f%%/job" % (window, pct) for window, (pct, _basis) in cell.items()))
+                             for plan, cell in (row.get("draw") or {}).items() if cell)
+            # Its cost, speed, intel, ± and effort cells print once, in the ladder table above, under `ladder`.
+            name = row.get("alias") or row["id"]
+            ladder = row.get("ladder")
+            lines.append("  %s%s %s%s%s" % (
+                name, "" if ladder == name else " (ladder %s)" % (ladder or "none"),
+                ", ".join("%s:%s" % (tier, kind) for tier, kind in row["standing"].items()),
+                " | draw %s" % draw if draw else "",
+                ' | probation "%s"' % row["probation"] if row.get("probation") else ""))
+    for plan in got.get("warming") or []:
+        lines.append("  %s warming" % plan)
+    for option in got.get("payOptions") or []:
+        lines.append("pay per token: %s (%s)" % (option["alias"] or option["id"], option["id"]))
+    return "\n".join(lines)
 
 
 def session_plan():
@@ -868,67 +1004,26 @@ def main(argv):
             print(f"{name}\t{got.get('band') or 'uncomputable'}\t{got.get('pressure')}"
                   f"\t{got.get('planType') or '?'}")
         return 0
-    if argv[0] in ("pick", "room"):
-        rest = [a for a in argv[1:] if a != "--json"]
-        if len(rest) != 1 or (argv[0] == "pick" and "--json" not in argv):
-            print(f"usage: provider_bands.py room <tier> [--json] | pick <tier> --json", file=sys.stderr)
-            return 2
-        try:
-            tier = model_registry.canonical_tier(rest[0])
-        except Exception as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        if argv[0] == "pick":
-            print(json.dumps(pick(tier, session_plan()), indent=2))
-            return 0
-        view = room_facts(facts(tier, session_plan()))
-        if "--json" in argv:
-            print(json.dumps(dict(view, tier=tier), indent=2))
-        else:
-            for line in view["entries"]:
-                print(line)
-            if view["low"]:
-                print("low: no plan paying for a %s row has allowance left" % tier)
-        return 0
+    if argv[0] == "room":
+        print("provider_bands.py room is retired: run "
+              "`python3 .claude/tools/model_registry.py for-role <tier> --json` (its `plansLow` is the old `low`)",
+              file=sys.stderr)
+        return 2
     if argv[0] == "lean":
+        print("provider_bands.py lean is retired: run "
+              "`python3 .claude/tools/model_registry.py for-role <tier>`", file=sys.stderr)
+        return 2
+    if argv[0] == "pick":
         rest = [a for a in argv[1:] if a != "--json"]
-        if len(rest) != 1:
-            print("usage: provider_bands.py lean <tier> [--json]", file=sys.stderr)
+        if len(rest) != 1 or "--json" not in argv:
+            print("usage: provider_bands.py pick <tier> --json", file=sys.stderr)
             return 2
         try:
             tier = model_registry.canonical_tier(rest[0])
         except Exception as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        got = lean_candidates(tier, session_plan())
-        if got["refused"]:
-            print(got["refused"], file=sys.stderr)
-            return 2
-        if "--json" in argv:
-            print(json.dumps(got, indent=2))
-            return 0
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        def show(groups):
-            for route, rows in groups.items():
-                print(route)
-                for r in rows:
-                    plans = ", ".join("%s room %s" % (p["plan"], "none" if p["room"] is None else "%.2f" % p["room"])
-                                      for p in r["plans"])
-                    print("  %s (cost %s) | plans: %s | effort: %s | ±: %s | probation: %s%s"
-                          % (r["alias"] or r["id"], "?" if r["cost"] is None else r["cost"], plans,
-                             r["effort"] or "no effort cell", r["minus"] or "no ± cell",
-                             r["probation"] or "none",
-                             " | supplementary: its review seats need a qualified seat beside them"
-                             if r.get("supplementary") else ""))
-
-        show(got["routes"])
-        for option in got["payOptions"]:
-            print("pay per token: %s" % (option["alias"] or option["id"]))
-        if got["supplementary"]:
-            print("added review seats only: never lone, never author")
-            show(got["supplementary"])
-        if not got["routes"] and not got["payOptions"] and not got["supplementary"]:
-            print("no row claims %s" % tier)
+        print(json.dumps(pick(tier, session_plan()), indent=2))
         return 0
     if argv[0] == "warm":
         for name in argv[1:]:

@@ -397,5 +397,64 @@ class RealSubmoduleTests(unittest.TestCase):
         self.assertEqual(self.commits[0], self.head())
 
 
+class HarnessFactLineTests(unittest.TestCase):
+    """The session block prints how much of the last week's fix work was harness-only, from origin/main."""
+
+    def setUp(self):
+        if not hasattr(scl, "harness_fact_line"):  # this project's addition to a keep-local hook
+            self.skipTest("this checkout's session hook prints no harness fact line")
+        self.directory = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.git("init", "-q", "-b", "main")
+
+    def git(self, *args, when=None):
+        env = dict(__import__("os").environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
+                   GIT_COMMITTER_EMAIL="t@t")
+        if when:
+            env["GIT_COMMITTER_DATE"] = env["GIT_AUTHOR_DATE"] = when
+        done = subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True, env=env,
+                              stdin=subprocess.DEVNULL)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def commit(self, subject, files, days_ago):
+        for rel in files:
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(subject + rel, encoding="utf-8")
+        self.git("add", "-A")
+        when = (__import__("datetime").datetime.now().astimezone() - __import__("datetime").timedelta(days=days_ago, hours=1)).isoformat()
+        self.git("commit", "-q", "-m", subject, when=when)
+
+    def publish(self):
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+    def test_line_counts_the_last_seven_days_of_origin_main(self):
+        self.commit("chore: seed", ["README.md"], 30)
+        self.commit("fix(tools): old harness fix", [".claude/tools/a.py"], 20)
+        self.commit("fix(tools): harness fix one", [".claude/tools/a.py"], 1)
+        self.commit("fix: harness fix two", [".claude/tests/test_a.py"], 2)
+        self.commit("chore(tools): harness chore", [".claude/tools/b.py"], 3)
+        self.commit("fix(combat): mixed fix", [".claude/tools/c.py", "Combat/a.cs"], 4)
+        self.commit("feat(spell): game feature", ["Spells/a.cs"], 5)
+        self.publish()
+        self.assertEqual(
+            "harness: 2 harness-only fix commits in the last 7 committer days, 60% harness-only "
+            "(Sep–Oct baseline 237/wk, 78%)", scl.harness_fact_line(self.root))
+
+    def test_line_is_cached_for_the_calendar_day(self):
+        self.commit("fix(tools): harness fix", [".claude/tools/a.py"], 1)
+        self.publish()
+        first = scl.harness_fact_line(self.root)
+        self.assertTrue(first.startswith("harness: 1 harness-only fix commits"), first)
+        self.commit("fix(tools): another", [".claude/tools/a.py"], 0)
+        self.publish()
+        self.assertEqual(first, scl.harness_fact_line(self.root))
+
+    def test_line_is_silent_when_origin_main_is_unreadable(self):
+        self.commit("fix(tools): harness fix", [".claude/tools/a.py"], 1)
+        self.assertEqual("", scl.harness_fact_line(self.root))
+
+
 if __name__ == "__main__":
     unittest.main()

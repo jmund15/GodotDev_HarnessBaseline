@@ -130,7 +130,8 @@ UNKNOWN_SEAT = run(transport="notatransport", session="bpt00003")
 # seat that is NOT codex -- the host path is the one that must name it.
 HOST_CODEX_SPENT = run(session="bpt00009", bands={"codex": ("Exhausted", None)})
 HOST_COLD_CACHE = run(session="bpt00010", bands={})
-# A weekly Surplus once hid a five-hour window at 96%: unattended lanes ran into it and nobody noticed.
+# Another plan's five-hour window running out is acceptable: it prints its routing band word only, and
+# dispatch preflight refuses a launch the binding window cannot carry.
 HOST_BINDING_HOT = run(session="bpt00011", bands={"codex": ("Surplus", 0.8, ("Hot", 96))})
 HOST_WIDTH = run(session="bptwidth1", five_pct=60)
 CODEX_WIDTH = run("codex", session="bptwidth2", five_pct=60)
@@ -393,16 +394,15 @@ CASES = [
      lambda: "budget-posture" in CUR_COLD[0] and "budget-posture" not in CUR_COLD[1]
      and "budget-posture" not in CUR_COLD[2]),
 
-    # ---- a plan with more quota than time left: one plan entry, no reset and no ratio in the figures ----
-    ("a plan with more quota than time left prints its figures by its own band, with no reset and no spare clause",
-     lambda: "codex Surplus: 7d 60% left, 20% to go" in SPARE and "resets" not in SPARE.split("codex Surplus")[1]
-     and "spare" not in SPARE and "ahead of pace" not in SPARE),
-    # The roster is longer than QUOTA_CLAUSE_CAP, so the LINE names the cold plans inside the cap
-    # while the WARM covers every cold one: a plan hidden behind "+N more" is still a currency this
-    # session may spend, so its cache is still read.
-    ("a cold cache names `warming` for the cold plans inside the cap and starts one warm for all of them",
+    # ---- another plan prints its band word only; figures live in `for-role` ----
+    ("another plan prints its band word alone: no figures, no reset, no spare clause",
+     lambda: "codex Surplus" in SPARE and "7d 60% left" not in SPARE
+     and "resets" not in SPARE.split("codex Surplus")[1] and "spare" not in SPARE
+     and "ahead of pace" not in SPARE),
+    # Every cold plan is named, so no plan hides behind a cap while the WARM covers each cold one.
+    ("a cold cache names `warming` for every cold plan and starts one warm for all of them",
      lambda: len(WARM) == 2
-     and all("%s band unknown (cache cold); warming" % n in WARM[0][0]
+     and all("%s unknown, warming" % n in WARM[0][0]
              for n in ("anthropic-console", "anthropic-console-secondary", "codex"))
      and WARM[0][1] == [["anthropic-console", "anthropic-console-secondary", "codex", "go"]]),
     ("...and a second prompt inside the cache TTL starts no second warm",
@@ -429,7 +429,7 @@ CASES = [
      lambda: "codex (this session) Ahead: 7d 50% left, 100% to go" in CODEX),
 
     ("with NO planted reading the hook says cache-cold unknown -- so the plant is load-bearing",
-     lambda: "band unknown" in CODEX_UNREADABLE and "Ahead" not in CODEX_UNREADABLE),
+     lambda: "unknown" in CODEX_UNREADABLE and "Ahead" not in CODEX_UNREADABLE),
 
     # ---- the host contract is the thing that must not move ------------------
     ("host seat still emits a posture line",
@@ -454,13 +454,11 @@ CASES = [
                  for line in (HOST, CODEX, UNKNOWN_SEAT, HOST_WIDTH, CODEX_WIDTH, HOST_EQUAL, CODEX_SPENT_SEAT,
                               HOST_BINDING_HOT, HOST_CODEX_SPENT,
                               HOST_COLD_CACHE, NO_RL_CODEX, NO_RL_COLD, SPARE, CUR_TODAY, CUR_GO, WARM[0][0]))),
-    ("each plan has exactly one entry: named once inside the cap, or counted once in its overflow row",
+    ("each plan has exactly one entry and no plan hides behind '+N more'",
      lambda: all(sum(part.startswith(name + " ") for part in HOST.split(" | ")) == 1
                  for name in ("anthropic-console", "anthropic-console-secondary", "anthropic-secondary",
-                              "codex"))
-     and "+%d more plan-quota transports" % len([n for n in (
-         "anthropic-console", "anthropic-console-secondary", "anthropic-secondary", "codex", "go")
-         if not any(part.startswith(n + " ") for part in HOST.split(" | "))]) in HOST
+                              "codex", "go"))
+     and "more plan-quota transports" not in HOST
      and HOST.count("anthropic (this session)") == 1 and "currency:" not in HOST),
     ("the HOST fixture is shorter than the 604-byte baseline",
      lambda: len(HOST.encode("utf-8")) < 604),
@@ -469,21 +467,22 @@ CASES = [
     # The incident: a Codex account at 100% used, invisible on the boot line, dispatched a sidecar
     # that hung 13 minutes. Naming only the seat and Anthropic is what made it invisible.
     ("the host line names codex -- another plan-quota transport it can spend",
-     lambda: "codex Ahead: 7d 50% left, 100% to go" in HOST),
+     lambda: "codex Ahead" in HOST),
 
-    ("a binding five-hour window in a worse band than the weekly routing band is named with its reset",
-     lambda: "codex Hot: 5h 4% left, 20% to go, resets " in HOST_BINDING_HOT and "; 7d 50% left, 100% to go" in HOST_BINDING_HOT),
+    ("another plan binds at its band word, never a window figure or a reset",
+     lambda: "codex Surplus" in HOST_BINDING_HOT and "5h 4% left" not in HOST_BINDING_HOT
+     and "resets" not in HOST_BINDING_HOT),
 
-    ("a non-Hot plan with one window carries no reset time",
-     lambda: "codex Ahead: 7d 50% left, 100% to go" in HOST and "resets" not in HOST),
+    ("a non-Hot other plan carries no figures and no reset time",
+     lambda: "codex Ahead" in HOST and "resets" not in HOST),
 
     ("a SPENT codex allowance reads as Exhausted on the boot line",
-     lambda: "codex Exhausted: 7d 0% left, 100% to go, resets " in HOST_CODEX_SPENT),
+     lambda: "codex Exhausted" in HOST_CODEX_SPENT),
 
     # The load-bearing negative: omitting an unknown transport is the failure mode, because an
     # absent clause reads as "no such currency" -- which is how the spent account stayed hidden.
     ("a cold codex cache NAMES it as unknown rather than omitting the transport",
-     lambda: "codex band unknown" in HOST_COLD_CACHE),
+     lambda: "codex unknown" in HOST_COLD_CACHE),
 
     ("the host line carries no separate seat clause",
      lambda: "seat:" not in HOST),
@@ -633,44 +632,35 @@ def structure_cases(bp):
     cases.append(("a spent 5h window blocks native dispatch as it did when the plan text was read",
                   blocked in inprocess_line(bp, "bptexh003", 45, five_pct=100)))
 
-    real_band, real_fp = bp.provider_band, bp.binding_fingerprint
+    real_band = bp.provider_band
     try:
         bp.provider_band = lambda t: "Hot" if t == "codex" else None
-        bp.binding_fingerprint = lambda t, b: " (fp)"
         rows = bp.other_quota_bits("anthropic")
         keys = [bp.quota_key(r) for r in rows]
     finally:
-        bp.provider_band, bp.binding_fingerprint = real_band, real_fp
+        bp.provider_band = real_band
     named = {r.get("name"): r for r in rows}
-    # WHICH plan holds the cold slot is the roster's business, not this proof's: the shipped
-    # plan-quota roster is now longer than QUOTA_CLAUSE_CAP, so only the first rows are named and
-    # the rest ride the overflow row. The cold row is therefore read off the emitted rows.
     in_cap = [r["name"] for r in rows if "name" in r]
-    cases.append(("a quota row carries name, band and fingerprint as data",
+    cases.append(("a quota row carries its name and band word as data",
                   isinstance(named.get("codex"), dict) and named["codex"].get("band") == "Hot"
-                  and named["codex"].get("fingerprint") == " (fp)"
-                  and all(named[n].get("band") is None for n in in_cap if n != "codex"), repr(rows)))
-    cold = "%s band unknown (cache cold; python3 .claude/tools/provider_bands.py reads and warms it)" % next(
-        n for n in in_cap if n != "codex")
-    cases.append(("the emission key keeps its legacy text for a read and a cold plan",
-                  "codex Hot band (fp)" in keys and cold in keys, repr(keys)))
-    real_cap = bp.QUOTA_CLAUSE_CAP
+                  and all(set(named[n]) == {"name", "band"} for n in in_cap), repr(rows)))
+    cold = "%s unknown" % next(n for n in in_cap if n != "codex")
+    cases.append(("the emission key is the printed band word",
+                  "codex Hot" in keys and cold in keys, repr(keys)))
+    bp.provider_band = lambda t: None
     try:
-        bp.QUOTA_CLAUSE_CAP = 1
-        bp.provider_band = lambda t: None
-        capped = bp.other_quota_bits("anthropic")
-        capped_keys = [bp.quota_key(r) for r in capped]
+        every = bp.other_quota_bits("anthropic")
+        every_keys = [bp.quota_key(r) for r in every]
     finally:
-        bp.QUOTA_CLAUSE_CAP, bp.provider_band = real_cap, real_band
-    cases.append(("a capped plan list ends in its '+N more' row, keyed as before",
-                  len(capped) == 2 and capped_keys[-1].startswith("+") and capped_keys[-1].endswith(
-                      " more plan-quota transports"), repr(capped_keys)))
-    shown = (bp.quota_clause({"name": "go", "band": None, "fingerprint": ""}, set(), 0),
-             bp.quota_clause({"name": "go", "band": None, "fingerprint": ""}, {"go"}, 0),
-             bp.quota_clause({"more": 3}, set(), 0))
-    cases.append(("the printed clause for a cold plan, a warming plan and the overflow row is rendered in one place",
-                  shown == ("go band unknown (cache cold)", "go band unknown (cache cold); warming",
-                            "+3 more plan-quota transports"), repr(shown)))
+        bp.provider_band = real_band
+    cases.append(("every plan is named: no '+N more' row, no cap",
+                  len(every) == len(in_cap) and not any(k.startswith("+") for k in every_keys),
+                  repr(every_keys)))
+    shown = (bp.quota_clause({"name": "go", "band": None}, set(), 0),
+             bp.quota_clause({"name": "go", "band": None}, {"go"}, 0),
+             bp.quota_clause({"name": "go", "band": "Hot"}, set(), 0))
+    cases.append(("the printed clause for a cold plan, a warming plan and a read plan is rendered in one place",
+                  shown == ("go unknown", "go unknown, warming", "go Hot"), repr(shown)))
 
     cache = write_band_cache(tempfile.mkdtemp(prefix="bptpb_"), {"codex": ("Ahead", 1.31)})
     saved = os.environ.get("PROVIDER_CAPACITY_CACHE")
@@ -696,7 +686,7 @@ def structure_cases(bp):
 
 
 def ordering_cases(bp):
-    """[(name, ok, detail)]: the cap must not spend a slot on a currency nobody can spend.
+    """[(name, ok, detail)]: every plan with room is named, and a spent or cold plan never hides one.
 
     Hermetic on purpose. The roster is synthetic and only its four plans are live, so the emitted
     rows are exactly those four whatever this machine's registry holds; the bands come from a
@@ -709,31 +699,28 @@ def ordering_cases(bp):
         if isinstance(cfg, dict):
             cfg["status"] = {"state": "unavailable", "reason": "ordering proof: synthetic roster only"}
     data["transports"]["anthropic"]["status"] = {"state": "available"}
-    # Registry order (these names sort alphabetically, which is also the order the roster prints in):
-    # a spent plan first, then a cold one, then the two with room -- the order that hides `go` today.
     bands = {"zz-a-spent": "Exhausted", "zz-b-cold": None, "zz-c-room": "Surplus", "zz-d-room": "Hot"}
     for name in bands:
         data["transports"][name] = {"planOf": "anthropic", "costModel": "plan-quota",
                                     "status": {"state": "available"}}
-    real_load, real_band, real_cap = mr.load, bp.provider_band, bp.QUOTA_CLAUSE_CAP
+    real_load, real_band = mr.load, bp.provider_band
     try:
         mr.load = lambda *a, **k: data
         bp.provider_band = lambda t: bands.get(t)
-        bp.QUOTA_CLAUSE_CAP = 2
         rows = bp.other_quota_bits("anthropic")
         keys = [bp.quota_key(r) for r in rows]
     finally:
-        mr.load, bp.provider_band, bp.QUOTA_CLAUSE_CAP = real_load, real_band, real_cap
+        mr.load, bp.provider_band = real_load, real_band
     named = [r["name"] for r in rows if "name" in r]
     return [
-        ("with the cap full, a plan with room is named before a spent or cold one",
-         named == ["zz-c-room", "zz-d-room"], repr(rows)),
-        ("...and the cap and its '+N more' row are kept, counting every plan left out",
-         len(rows) == 3 and rows[-1] == {"more": 2}, repr(rows)),
+        ("a plan with room is named before a spent or cold one",
+         named == ["zz-c-room", "zz-d-room", "zz-a-spent", "zz-b-cold"], repr(rows)),
+        ("...and every plan is named, with no '+N more' row to hide one",
+         len(rows) == 4 and all("band" in r for r in rows), repr(rows)),
         ("...with each named row carrying its OWN plan's band, not a neighbour's after the move",
          [r["band"] for r in rows[:2]] == ["Surplus", "Hot"], repr(rows)),
-        ("...and the emission key wording is unchanged, so a running session's saved key still matches",
-         keys[:2] == ["zz-c-room Surplus band", "zz-d-room Hot band"], repr(keys)),
+        ("...and the emission key is the printed band word",
+         keys[:2] == ["zz-c-room Surplus", "zz-d-room Hot"], repr(keys)),
     ]
 
 
@@ -795,7 +782,7 @@ SPEND_QUOTE = "Build job J3 of the lean-spend plan --lean"
 SPEND_FUTURE = "2031-01-01T00:00:00Z"
 SPEND_PAST = "2026-01-01T00:00:00Z"
 SPEND_LINE = ("spend: lean (owner, session, until %s) — pin rule: orchestration reference "
-              "spend_lean.md; rows: provider_bands.py lean <tier>")
+              "spend_lean.md; rows: model_registry.py for-role <tier>")
 
 
 def spend_owner_row(uuid, text):
@@ -1049,9 +1036,9 @@ def main():
                 and "more" not in r]
     finally:
         bp.provider_band = real_band
-    ok = bool(cold) and all("python3 .claude/tools/provider_bands.py" in c for c in cold)
+    ok = bool(cold) and all(c.endswith(" unknown") for c in cold)
     failed += not ok
-    print("%s a cold-cache transport clause names the command that reads and warms it: %r"
+    print("%s a cold-cache transport clause names the plan and its unknown band: %r"
           % ("ok  " if ok else "FAIL", cold))
 
     # A plan no route reaches (its own status unavailable) never earns a posture clause: the line
@@ -1076,8 +1063,8 @@ def main():
     # A session on the second Anthropic plan: its own band is the capture's (the payload is its own
     # account's), the currency tie goes to it, and the PRIMARY is the other plan named in the line.
     line = secondary_session_line()
-    ok = ("pick" not in line.lower() and "anthropic Hot:" in line
-          and "anthropic-secondary Hot:" not in line and "anthropic-secondary (this session) On pace: 7d 55% left, 50% to go" in line
+    ok = ("pick" not in line.lower() and "anthropic Hot" in line
+          and "anthropic-secondary Hot" not in line and "anthropic-secondary (this session) On pace: 7d 55% left, 50% to go" in line
           and "UNIDENTIFIED" not in line)
     failed += not ok
     print("%s a secondary session's own band reads its plan and the primary is the other plan: %r"

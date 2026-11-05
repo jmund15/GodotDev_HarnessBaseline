@@ -63,7 +63,7 @@
             "type": "command"
           }
         ],
-        "matcher": "Read|Grep|Glob|Write|WebFetch|WebSearch|mcp__plugin_semantic-search_semantic-search__search|mcp__ai-worker__write_doc"
+        "matcher": "Read|Grep|Glob|Write|WebFetch|WebSearch|LSP|mcp__plugin_semantic-search_semantic-search__search|mcp__ai-worker__write_doc"
       },
       {
         "hooks": [
@@ -105,6 +105,12 @@
           {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/dispatch_table.py\" --launch",
             "if": "Bash(*sidecar_fanout.py*)",
+            "timeout": 10,
+            "type": "command"
+          },
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/model_ladder_gate.py\" --bash-credit",
+            "if": "Bash(*model_registry.py*for-role*)",
             "timeout": 10,
             "type": "command"
           }
@@ -240,11 +246,6 @@
           {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_model_rails.py\"",
             "timeout": 30,
-            "type": "command"
-          },
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/vault_mirror_start.py\"",
-            "timeout": 120,
             "type": "command"
           }
         ]
