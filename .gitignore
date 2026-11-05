@@ -8,7 +8,7 @@ logs/
 .cache/
 sessions/
 worktrees/
-plans/
+/template/.claude/plans/
 scratch/
 
 # Semantic-search index a plugin may build when this checkout is indexed.
