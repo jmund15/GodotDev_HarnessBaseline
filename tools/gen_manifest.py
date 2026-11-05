@@ -282,6 +282,12 @@ PURE_PATTERNS = [
     # Sidecar/tooling trio consumed by any harness (pure):
     ".claude/reference/external_models.json",
     ".claude/scripts/claude_profile_functions.ps1",
+    # Vault transport to cloud sessions; inert until a project writes tools/vault_sync.project.json:
+    ".claude/tools/vault_sync.py",
+    ".claude/hooks/vault_mirror_start.py",
+    ".claude/rules/vault_mirror.md",
+    ".claude/tests/test_vault_sync_*.py",
+    ".claude/tests/test_vault_mirror_start.py",
     # Video contact sheets; pre_read_dispatch imports the hint module:
     ".claude/scripts/video_frames.py",
     ".claude/hooks/video_read_hint.py",

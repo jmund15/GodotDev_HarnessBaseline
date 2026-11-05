@@ -69,14 +69,15 @@ CLAUDE_DIRS = {"agents", "auto-memory", "commands", "guards", "hooks", "referenc
                "scripts", "skills", "templates", "tests", "tools", "workflows"}
 SCRIPT_SUFFIXES = (".py", ".sh", ".js", ".ps1")
 DOC_SUFFIXES = (".md", ".json") + SCRIPT_SUFFIXES
-# Paths relative to .claude/ that the harness writes at runtime; they exist in every consumer that
-# runs the writer, so citing them is not a dangling reference.
+# Paths relative to .claude/ that the harness writes at runtime, or a project writes to adopt a shipped
+# tool (its `*.project.json` profile); they exist in every consumer that runs the writer or adopts the
+# tool, so citing them is not a dangling reference.
 GENERATED = (
     "baseline.lock.json", "settings.json", "settings.local.json", "worklog-pending.md",
     "pending_harness_edits.md", "orchestration_verdicts.json", "orchestration_candidates.json", "eval_history.json",
     "self_evaluate_archive.json", "logs/*", "scratch/*", ".cache/*", "cache/*", "worktrees/*",
     "sessions/*", "state/*", "generated/*", "reference/godot_class_index.md", "plugins/*", "__*__/*",
-    "tools/load_census.project.json", "index_composition_baseline.json",
+    "tools/load_census.project.json", "tools/vault_sync.project.json", "index_composition_baseline.json",
 )
 # Python sources whose string literals name a .md/.json file the source tolerates absent (a path it
 # matches, a name in a message, a read behind an existence check, or a list it classifies):
@@ -92,6 +93,8 @@ OPTIONAL_DATA = {
     ".claude/hooks/semantic_search_scope_guard.py": ("reference/semantic_search.md",),
     ".claude/scripts/sync_plan_config.py": ("user_scope/*",),
     ".claude/tools/restate_scan.py": ("tests/fixtures/*",),
+    ".claude/tools/vault_sync.py": ("tools/vault_sync.project.json",),
+    ".claude/hooks/vault_mirror_start.py": ("tools/vault_sync.project.json", "rules/vault_mirror.md"),
     ".claude/tools/sidecar_fanout.py": ("tests/fixtures/*",),
     ".claude/tools/subsys.py": ("skills/project_subsystems/reference/subsystem_details.md",),
     ".claude/tools/user_scope.py": ("user_scope/manifest.local.json",),

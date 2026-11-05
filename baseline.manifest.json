@@ -2267,6 +2267,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/vault_mirror_start.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/video_read_hint.py",
       "layer": "pure",
       "sync": "auto"
@@ -2489,6 +2494,11 @@
     {
       "path": ".claude/rules/test_authoring.md",
       "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/rules/vault_mirror.md",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -5962,7 +5972,42 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_vault_mirror_start.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_vault_read.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_vault_sync_config.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_vault_sync_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_vault_sync_mirror.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_vault_sync_scan.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_vault_sync_sync.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_vault_sync_task.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -6683,6 +6728,11 @@
     },
     {
       "path": ".claude/tools/vault_read.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/vault_sync.py",
       "layer": "pure",
       "sync": "auto"
     },
