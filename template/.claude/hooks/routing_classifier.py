@@ -5,34 +5,32 @@ routing_classifier.py — shared classification library for tool-routing hooks.
 
 Why this exists:
 - The PreToolUse and PostToolUse routing hooks had inlined copies of the same cue-word
-  lists, PascalCase regex, file-family classifier, and cloud-session detector.
-- The new `routing_audit.py` hook (continuous silent-miss logger) needs a
-  `classify_call()` API that combines all three rule families into a single
+  lists and classifiers.
+- The `routing_audit.py` hook (continuous silent-miss logger) needs a
+  `classify_call()` API that combines every rule family into a single
   classification per tool call. Building it forced the extraction.
 
 Design contract:
 - Pure module. No I/O, no `sys.exit`, no stderr writes. Hooks own their output
   channels (stderr for nudge.py, additionalContext JSON for post_grep.py /
   cumulative.py / routing_audit.py).
-- Constants and helpers are public (no leading underscore). Hooks may
-  `from routing_classifier import is_pascal_identifier, LITERAL_INTENT_CUES, ...`.
+- Constants and helpers are public (no leading underscore).
 - The high-level `classify_call(tool, tool_input, last_prompt)` returns a
   `Classification` dataclass. Severity values:
     - COMPLIANT          : call followed §Tool Routing; no rule applies → no nudge expected
-    - NUDGE_WARRANTED    : call violated a clear rule (PascalCase Grep on
-                           indexed file; a bulk-copyable native Read; etc.)
-                           Silent-miss if the existing nudge channel doesn't fire.
-    - CUE_EXEMPT         : would warrant nudge BUT user prompt cue words
-                           legitimize the override (K1 literal-intent, L6
-                           verified-unique-name, audit-shape carve-out).
+    - NUDGE_WARRANTED    : call violated a clear rule (a bulk-copyable native Read; a
+                           version-pinned WebFetch). Silent-miss if the nudge channel doesn't fire.
+    - CUE_EXEMPT         : would warrant nudge BUT the prompt or caller legitimizes it
+                           (audit-shape carve-out, bundling subagent).
     - ADVISORY_APPLICABLE: soft-nudge category (memory_search, read_web below
                            the synthesis floor) — informational, not a violation.
-    - NOT_ROUTABLE       : tool has no §Tool Routing routing rules (Bash, Edit, Write,
-                           Glob, etc.) OR the call shape doesn't match a rule.
+    - NOT_ROUTABLE       : tool has no §Tool Routing routing rules (Grep, Edit, Glob, etc.)
+                           OR the call shape doesn't match a rule.
+    - CENSUS             : measured, never judged: vault doc writes (direct vs worker) and
+                           lookups (Bash searches and source reads, inline scripts, LSP).
 
-  The audit hook logs NUDGE_WARRANTED, CUE_EXEMPT and CENSUS (vault doc writes, direct
-  vs worker — measured, never judged). The other three are noise from the dashboard's
-  perspective.
+  The audit hook logs NUDGE_WARRANTED, CUE_EXEMPT and CENSUS. The other three are noise from
+  the dashboard's perspective.
 
 This module is the single home for these helpers and cue lists.
 """
@@ -46,7 +44,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 import _optional_hooks
-from _claude_scope import harness_tail, is_cloud
+from _claude_scope import harness_tail
+from _command_text import command_words, executable_spans, executable_word
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
 
@@ -71,36 +70,6 @@ SOURCE_PINS = tuple(m for m in (_optional_hooks.load("godot_source_pins"),) if m
 
 
 # === Cue-word constants =====================================================
-
-# K1 carve-out: user explicitly wanted literal text scan including comments,
-# doc-comments, string-literal mentions. LSP would filter those out;
-# semantic-search ranks by similarity, not exact-text occurrence.
-# Grep remains correct for literal text even when the pattern is PascalCase.
-LITERAL_INTENT_CUES = (
-    "literal",
-    "verbatim",
-    # Keep comment cues qualified; a bare "comment" matches ordinary prose.
-    "including comments",
-    "in comments",
-    "comment scan",
-    "string literal",
-    # Bare "audit" describes review shape, not a literal scan.
-    "documentation audit",
-    "every occurrence",
-    "exact text",
-    "raw text",
-)
-
-# L6 carve-out: verified-unique names return the same set through Grep as through LSP.
-VERIFIED_UNIQUE_CUES = (
-    "verified-unique",
-    "verified unique",
-    "no overloads",
-    "name is unique",
-    "project-unique",
-    "project unique",
-    "no other class defines",
-)
 
 # Audit-shape carve-out (CLAUDE.core.md §9 known-evidence bullet): line-precision direct
 # reads are warranted only when user explicitly framed the task as audit/
@@ -150,80 +119,7 @@ COPYABLE_OUTPUT_CUES = (
     "extract",
 )
 
-# === Pattern matchers ========================================================
-
-# PascalCase identifier with no regex metacharacters.
-_PASCAL_IDENT = re.compile(r"^[A-Z][A-Za-z0-9_]+$")
-_REGEX_METACHARS = set(r".\^$|?*+()[]{}")
-
-
-def is_pascal_identifier(pattern: str) -> bool:
-    """True if pattern is a single PascalCase identifier with no regex meta.
-    """
-    if not pattern or not _PASCAL_IDENT.match(pattern):
-        return False
-    return not any(c in _REGEX_METACHARS for c in pattern)
-
-
-def grep_target_family(tool_input: dict) -> str:
-    """
-    Classify the Grep target by file family for routing dispatch.
-
-    Returns one of: "cs", "indexed-other", "mixed", "other".
-      cs            — `.cs` only (use LSP)
-      indexed-other — `.tscn` / `.tres` / `.gd` / `.md` / `.godot` / `.json` /
-                      `.yaml` / `.toml` / `.txt` — semantic-search indexes these
-      mixed         — unrestricted search (no glob, no type) — likely crosses
-                      indexed file families; semantic-search broadly applicable
-      other         — file family not indexed by semantic-search (rare)
-
-    """
-    glob = (tool_input.get("glob") or "").lower()
-    type_ = (tool_input.get("type") or "").lower()
-
-    if type_ == "cs" or "*.cs" in glob:
-        return "cs"
-
-    indexed_extensions = (
-        "*.gd", "*.md", "*.tscn", "*.tres", "*.godot",
-        "*.json", "*.yaml", "*.toml", "*.txt",
-    )
-    indexed_types = ("gd", "md", "godot", "json", "yaml", "toml", "txt")
-    if type_ in indexed_types:
-        return "indexed-other"
-    if any(ext in glob for ext in indexed_extensions):
-        return "indexed-other"
-    if any(ext in glob for ext in ("tscn", "tres", "gd", "godot")) and "{" in glob:
-        return "indexed-other"
-
-    if not glob and not type_:
-        return "mixed"
-
-    return "other"
-
-
-def is_cloud_session() -> bool:
-    """Cloud sessions disable LSP."""
-    return is_cloud()
-
-
-# === Cue-word checkers (consolidating duplicate logic across hooks) ==========
-
-def prompt_has_literal_intent(prompt: str) -> bool:
-    """True if prompt contains any K1-style literal-scan cue word."""
-    if not prompt:
-        return False
-    lowered = prompt.lower()
-    return any(cue in lowered for cue in LITERAL_INTENT_CUES)
-
-
-def prompt_has_verified_unique_intent(prompt: str) -> bool:
-    """True if prompt contains any L6-style verified-unique-name cue word."""
-    if not prompt:
-        return False
-    lowered = prompt.lower()
-    return any(cue in lowered for cue in VERIFIED_UNIQUE_CUES)
-
+# === Cue-word checkers ========================================================
 
 def prompt_has_audit_intent(prompt: str) -> bool:
     """True if prompt contains any audit-shape exception cue word."""
@@ -254,14 +150,6 @@ def prompt_requests_bulk_copyable(prompt: str) -> bool:
             and any(cue in lowered for cue in COPYABLE_OUTPUT_CUES))
 
 
-def prompt_has_grep_override_cue(prompt: str) -> bool:
-    """
-    True if prompt contains EITHER literal-intent (K1) OR verified-unique (L6) cue.
-    Combined check used by the Grep-on-PascalCase rule.
-    """
-    return prompt_has_literal_intent(prompt) or prompt_has_verified_unique_intent(prompt)
-
-
 # === High-level classification (new — used by routing_audit.py) ==============
 
 Severity = Literal[
@@ -270,7 +158,7 @@ Severity = Literal[
     "cue-exempt",
     "advisory-applicable",
     "not-routable",
-    "census",  # logged for measurement, never a verdict (vault doc writes)
+    "census",  # logged for measurement, never a verdict (vault doc writes, lookups)
 ]
 
 
@@ -281,7 +169,7 @@ class Classification:
     Fields:
       severity : See `Severity` literal — the routing-correctness bucket.
       rule     : Short identifier of the rule that applied (e.g.
-                 "pascal-grep-on-cs"), or None if no rule matched.
+                 "native-read-bulk-copyable"), or None if no rule matched.
       reason   : Human-readable one-line explanation suitable for the audit
                  log's `reason` field. None if no rule matched.
       tool     : Echo of the tool name (for audit log convenience).
@@ -326,9 +214,13 @@ def classify_call(
 
     tool_input = tool_input or {}
 
-    # Grep — the highest-confidence routing rule.
-    if tool_name == "Grep":
-        return _classify_grep(tool_input, last_prompt)
+    # Lookups are a census, never a verdict: whether a name was known or verified unique is not
+    # observable from the call, so Grep carries no rule and Bash and LSP are only counted.
+    if tool_name == "Bash":
+        return _classify_bash(tool_input)
+
+    if tool_name == "LSP":
+        return Classification("census", "lsp-lookup", f"LSP {tool_input.get('operation') or ''}".strip(), "LSP")
 
     # Native Read while the request asks for bulk copyable I/O.
     if tool_name == "Read":
@@ -354,58 +246,67 @@ def classify_call(
     return Classification("not-routable", None, None, tool_name)
 
 
-def _classify_grep(tool_input: dict, last_prompt: str) -> Classification:
-    pattern = tool_input.get("pattern") or ""
-    if not is_pascal_identifier(pattern):
-        # Literal/regex/UID/attribute Grep — §Tool Routing carves these out as legitimate.
-        return Classification("compliant", None, None, "Grep")
+_SEARCH_EXECUTABLES = frozenset(("grep", "egrep", "fgrep", "rg", "find"))
+_READ_EXECUTABLES = frozenset(("cat", "head", "tail", "sed", "awk"))
+_SCRIPT_FIRST = frozenset(("sed", "awk"))  # the first operand is the script, not a file
+_GIT_LOOKUPS = frozenset(("grep", "ls-files", "ls-tree", "check-ignore"))
+_GIT_VALUE_OPTIONS = frozenset(("-C", "-c", "--git-dir", "--work-tree", "--namespace"))
+_INTERPRETERS = frozenset(("python", "python3", "py", "node"))
+_INLINE_FLAGS = frozenset(("-c", "-e", "--eval", "-"))
+_SOURCE_FILE = re.compile(
+    r"\.(cs|gd|tscn|tres|godot|py|js|ts|sh|ps1|md|json|jsonl|yaml|yml|toml|txt|cfg|ini|xml|csproj|sln)$", re.I)
 
-    family = grep_target_family(tool_input)
-    if family == "other":
-        # Not an indexed family — Grep is fine.
-        return Classification("compliant", None, None, "Grep")
 
-    # PascalCase + indexed family = the bypass smell.
-    if family == "cs":
-        # Check K1 / L6 cue-word exemptions first.
-        if prompt_has_grep_override_cue(last_prompt):
-            return Classification(
-                severity="cue-exempt",
-                rule="pascal-grep-on-cs",
-                reason=(
-                    "PascalCase Grep on .cs would normally route to anchor-then-navigate, "
-                    "but user prompt invokes K1 literal-intent or L6 verified-unique override"
-                ),
-                tool="Grep",
-            )
-        return Classification(
-            severity="nudge-warranted",
-            rule="pascal-grep-on-cs",
-            reason="bare PascalCase Grep on .cs bypasses LSP anchor-then-navigate (§Tool Routing)",
-            tool="Grep",
-        )
+def _git_subcommand(args: list[str]) -> str:
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg in _GIT_VALUE_OPTIONS:
+            skip = True
+        elif not arg.startswith("-"):
+            return arg
+    return ""
 
-    # indexed-other or mixed — semantic-search is the right tool.
-    if prompt_has_literal_intent(last_prompt):
-        # K1 also applies for non-.cs indexed files (literal scan in .tres).
-        return Classification(
-            severity="cue-exempt",
-            rule="pascal-grep-on-indexed",
-            reason=(
-                "PascalCase Grep on indexed file would route to semantic-search, "
-                "but user prompt invokes literal-intent override"
-            ),
-            tool="Grep",
-        )
-    return Classification(
-        severity="nudge-warranted",
-        rule="pascal-grep-on-indexed",
-        reason=(
-            "PascalCase Grep on indexed-other family bypasses semantic-search (§Tool Routing — "
-            ".tscn/.tres/.gd/.md/etc. are indexed)"
-        ),
-        tool="Grep",
-    )
+
+def _segment_kind(segment: str) -> str:
+    """"lookup", "opaque" or "" for one simple command."""
+    parsed = command_words(segment)
+    if parsed:
+        words = [w.value for w in parsed[0]]
+        index = executable_word(parsed[0], segment)
+    else:  # a heredoc or substitution: the executable and flags still sit at the front
+        words = segment.split()
+        index = next((i for i, word in enumerate(words) if not re.match(r"[A-Za-z_]\w*=", word)), len(words))
+    if index >= len(words):
+        return ""
+    name = words[index].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    args = words[index + 1:]
+    if name in _SEARCH_EXECUTABLES:
+        return "lookup"
+    if name == "git":
+        return "lookup" if _git_subcommand(args) in _GIT_LOOKUPS else ""
+    if name in _READ_EXECUTABLES:
+        operands = [a for a in args if not a.startswith("-")]
+        if name in _SCRIPT_FIRST:
+            operands = operands[1:]
+        return "lookup" if any(_SOURCE_FILE.search(a) for a in operands) else ""
+    if name in _INTERPRETERS:
+        return "opaque" if any(a in _INLINE_FLAGS for a in args) else ""
+    return ""
+
+
+def _classify_bash(tool_input: dict) -> Classification:
+    """One census row per Bash call: a search or source read outranks an inline script in the same
+    chain. Quoted mentions, comments and heredoc bodies are not executed, so they never count."""
+    kinds = {_segment_kind(segment) for _left, _right, segment in executable_spans(tool_input.get("command") or "")}
+    if "lookup" in kinds:
+        return Classification("census", "bash-lookup", "Bash search or source read", "Bash")
+    if "opaque" in kinds:
+        return Classification("census", "bash-opaque-script", "Bash inline interpreter script", "Bash")
+    return Classification("not-routable", None, None, "Bash")
 
 
 def _classify_native_read(tool_input: dict, last_prompt: str, agent_id: str = "") -> Classification:

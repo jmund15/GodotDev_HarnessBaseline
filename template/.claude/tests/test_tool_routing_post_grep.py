@@ -63,8 +63,10 @@ def main():
     pre_context = additional_context(before, "PreToolUse")
     post_context = additional_context(after, "PostToolUse")
     audit_path = env["HARNESS_ROUTING_AUDIT_LOG_PATH"]
-    with open(audit_path, encoding="utf-8") as fh:
-        audit_rows = [json.loads(line) for line in fh if line.strip()]
+    audit_rows = []
+    if os.path.exists(audit_path):
+        with open(audit_path, encoding="utf-8") as fh:
+            audit_rows = [json.loads(line) for line in fh if line.strip()]
     main_audit = [row for row in audit_rows if row.get("session_id") == sid[:8]]
 
     # Missing pre-call receipts must not revive the retired fallback.
@@ -84,13 +86,12 @@ def main():
     indexed_context = additional_context(indexed, "PostToolUse")
 
     cases = [
-        ("registered pre-call route keeps the C# symbol nudge",
-         before.returncode == 0 and "LSP" in pre_context),
+        ("registered pre-call route gives a bare C# Grep no advice (D6)",
+         before.returncode == 0 and pre_context == ""),
         ("the post-call route does not repeat advice already delivered",
          after.returncode == 0 and post_context == ""),
-        ("routing audit records the delivered pre-call Grep advisory",
-         bool(main_audit and main_audit[-1].get("classification") == "nudge-warranted"
-              and main_audit[-1].get("nudge_fired") is True)),
+        ("routing audit records no row for a Grep",
+         not main_audit),
         ("missing pre-call receipt does not revive retroactive advice",
          fallback.returncode == 0 and fallback_context == ''),
         ("indexed resources get no retroactive advice either",

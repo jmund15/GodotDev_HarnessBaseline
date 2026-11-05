@@ -87,13 +87,17 @@ def main():
                       c.severity == "nudge-warranted"
                       and c.rule == "native-read-bulk-copyable"))
 
-    # Owner decision R4 (2026-09-14): a bare "audit" is not a literal-scan request.
-    grep_cs = {"pattern": "SpellFactory", "glob": "*.cs"}
-    c = classify_call("Grep", grep_cs, "Audit SpellFactory for bugs")
-    cases.append(("a bare audit request keeps the C# navigation advice",
-                  c.severity == "nudge-warranted"))
-    c = classify_call("Grep", grep_cs, "Run a documentation audit of SpellFactory mentions")
-    cases.append(("documentation audit stays a literal-intent cue", c.severity == "cue-exempt"))
+    # D6: a Grep is never a routing verdict. Neither the name's PascalCase shape nor the prompt's
+    # cue words say whether the name was known or verified unique, so none of it is observable.
+    for label, grep_input in (("cs", {"pattern": "SpellFactory", "glob": "*.cs"}),
+                              ("tres", {"pattern": "SpellFactory", "glob": "*.tres"}),
+                              ("gd", {"pattern": "SpellFactory", "type": "gd"}),
+                              ("unrestricted", {"pattern": "SpellFactory"})):
+        for prompt in ("", "Audit SpellFactory for bugs", "Run a documentation audit of SpellFactory mentions",
+                       "literal scan, name is unique"):
+            c = classify_call("Grep", grep_input, prompt)
+            cases.append(("bare known-name Grep on %s (%r) yields no verdict" % (label, prompt[:20]),
+                          c.severity == "not-routable" and c.rule is None))
 
     bulk_then_edit = (
         "Extract the same raw fields from every file into one copyable entry per input path, "
@@ -156,8 +160,23 @@ def main():
                   c.severity == "not-routable" and c.rule is None))
 
     c = classify_call("Grep", {"pattern": "DomainCore", "glob": "*.cs"}, "", agent_id="agent0001")
-    cases.append(("subagent bare-PascalCase Grep on .cs: still nudge-warranted (agent_id is read-only scope)",
-                  c.severity == "nudge-warranted" and c.rule == "pascal-grep-on-cs"))
+    cases.append(("subagent bare-PascalCase Grep on .cs is not routable either",
+                  c.severity == "not-routable" and c.rule is None))
+
+    # --- Bash and LSP: census rows, one per call, never a verdict ----------------------
+    for command in ("rg -n Foo src", "git grep Foo", "git -C x ls-files", "find . -name a", "cat a/b.py",
+                    "sed -n 1,5p a.cs", "git log | grep fix"):
+        c = classify_call("Bash", {"command": command}, "")
+        cases.append(("Bash %r is a bash-lookup census row" % command,
+                      (c.severity, c.rule) == ("census", "bash-lookup")))
+    c = classify_call("Bash", {"command": "python3 -c 'print(1)'"}, "")
+    cases.append(("an inline interpreter script is bash-opaque-script",
+                  (c.severity, c.rule) == ("census", "bash-opaque-script")))
+    for command in ("git status", "echo 'rg Foo'", "ls", ""):
+        c = classify_call("Bash", {"command": command}, "")
+        cases.append(("Bash %r is not routable" % command, c.severity == "not-routable" and c.rule is None))
+    c = classify_call("LSP", {"operation": "hover", "filePath": "A.cs"}, "")
+    cases.append(("LSP is an lsp-lookup census row", (c.severity, c.rule) == ("census", "lsp-lookup")))
 
     # --- vault doc writes: a CENSUS row, never a miss ---------------------------------
     # Measured 2026-09-08: one model wrote a 40KB review straight into the vault with zero

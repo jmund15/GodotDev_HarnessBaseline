@@ -4,19 +4,22 @@
 Class: advisory. It never denies, and a malformed `task` block is named in its context line.
 
 A Write or Edit that leaves a file holding a ```task block gets one context block: a route header per route, then
-one row per claiming model on that route, in registry order, with no pick. A plan route's header names each paying
-plan's room (`room unknown` on a cold capacity cache, read cache-only with no probe). A plan row states its draw: the
+one row per claiming model on that route, in registry order, with no pick. A plan route's header names each
+surviving plan's quota left, read cache-only with no probe; a plan with no fresh cache reading is named
+`warming` and its rows wait for that reading. A plan row states its draw: the
 output-rate ratio to the cheapest row on its own route, one measured point, never compared across plans. A
 pay-per-token row states its spend: its priced reading ratio to the cheapest row on its route, with the USD figure.
 Every row also states the ladder's intel and speed, whether the reading fits its usable window, and the first `+` and
 first `−` clause of its `±` cell, quoted verbatim. A later brief of the same tier in the same session, with no
 compaction between, gets one short line instead: its reading, the fit of each row whose fit changed, and `table as
-earlier this session`. The record is `_hook_state.brief_table_seen`, cleared by a compaction. The reading is two numbers, as
+earlier this session`. A tier whose `for-role` table already reached this context (a delivered receipt,
+`_hook_state.ladder_slice_tiers`) gets one line with its reading, each row's fit and draw, and `table as earlier
+this session`. The record is `_hook_state.brief_table_seen`, cleared by a compaction. The reading is two numbers, as
 `dispatch_size` measures a job: the lower (the brief, its listed files and the files it names to read whole, which
 `_dispatch_checks.price_reading` prices) and the upper (every named file read whole). A row's fit is judged on the lower
 number against the row's compaction point.
 
-Owners: `dispatch_result.task_block` (the block), `provider_bands.lean_candidates` (rows, routes, rooms, probation),
+Owners: `dispatch_result.task_block` (the block), `provider_bands.tier_table` (rows, plans, warming, probation),
 `dispatch_size` (the reading and the fit), `_dispatch_checks` (the price and the draw ratio) and the ladder (intel,
 speed, `±`).
 
@@ -54,8 +57,8 @@ def _n(value):
     return "{:,}".format(value)
 
 
-def _room(value):
-    return "room unknown" if value is None else "room %.2f" % value
+def _left(value):
+    return "left unknown" if value is None else "left %.1f%%" % value
 
 
 def _fit(dispatch_size, row_id, lower, upper, data, transport=None):
@@ -110,34 +113,39 @@ def _money(price):
     return "unpriced" if price is None else "$%.4f" % price
 
 
-def _route_lines(route, entries, seat, data, tokens, owners, ladder, fits):
-    """One route's header line, then one row per entry. Ratios restart on each route: a plan's draw is taken
-    against the cheapest priced row of that plan's route, and a pay-per-token row's spend against its own route."""
+def _route_labels(route, entries, data, tokens, owners):
+    """(is_plan, {row id: draw or spend label}) for one route: ratios restart per route, so a plan's draw is
+    taken against the cheapest priced row of that plan's route and a pay-per-token row's spend against its own."""
     model_registry, dispatch_checks = owners
-    suffix = ", session route" if route == seat else ""
-    plan = model_registry.cost_model_for(route, data) == "plan-quota"
-    if plan:
-        plans = entries[0]["plans"] if entries else []
-        room = "; ".join("%s %s" % (p["plan"], _room(p["room"])) for p in plans) or "no plan"
-        lines = ["route %s (plan%s): %s" % (route, suffix, room)]
+    if model_registry.cost_model_for(route, data) == "plan-quota":
         draws = dispatch_checks.draw_ratios([e["id"] for e in entries], data)
+        return True, {e["id"]: "draw " + ("n/a" if draws.get(e["id"]) is None else "%.2fx" % draws[e["id"]])
+                      for e in entries}
+    prices = {e["id"]: dispatch_checks.price_reading(e["id"], tokens, data)[0] for e in entries}
+    priced = [p for p in prices.values() if p]
+    base = min(priced) if priced else None
+    labels = {}
+    for entry in entries:
+        price = prices[entry["id"]]
+        ratio = None if price is None or not base else price / base
+        labels[entry["id"]] = "spend %s %s" % ("n/a" if ratio is None else "%.2fx" % ratio, _money(price))
+    return False, labels
+
+
+def _route_lines(route, entries, seat, data, tokens, owners, ladder, fits, plans):
+    """One route's header line, then one row per entry."""
+    suffix = ", session route" if route == seat else ""
+    plan, labels = _route_labels(route, entries, data, tokens, owners)
+    if plan:
+        room = "; ".join("%s %s" % (p["plan"], _left(p["left"])) for p in plans) or "no plan"
+        lines = ["route %s (plan%s): %s" % (route, suffix, room)]
     else:
         lines = ["route %s (pays per token%s, room n/a)" % (route, suffix)]
-        prices = {e["id"]: dispatch_checks.price_reading(e["id"], tokens, data)[0] for e in entries}
-        priced = [p for p in prices.values() if p]
-        base = min(priced) if priced else None
     for entry in entries:
         cell = ladder.get(entry["id"], {})
         plus, minus = _clauses(cell.get("±"))
-        if plan:
-            ratio = draws.get(entry["id"])
-            label = "draw " + ("n/a" if ratio is None else "%.2fx" % ratio)
-        else:
-            price = prices[entry["id"]]
-            ratio = None if price is None or not base else price / base
-            label = "spend %s %s" % ("n/a" if ratio is None else "%.2fx" % ratio, _money(price))
-        cells = [entry.get("alias") or entry["id"], label, cell.get("intel", "?"), cell.get("speed", "?"),
-                 fits[entry["id"]], _quoted("+", plus), _quoted("−", minus)]
+        cells = [entry.get("alias") or entry["id"], labels[entry["id"]], cell.get("intel", "?"),
+                 cell.get("speed", "?"), fits[entry["id"]], _quoted("+", plus), _quoted("−", minus)]
         if entry.get("probation"):
             cells.append('probation "%s"' % entry["probation"])
         lines.append(" | ".join(cells))
@@ -161,6 +169,17 @@ def _short(tier, tokens, upper, unreadable, fits, names, earlier):
     return "; ".join(parts)
 
 
+def _receipt_short(tier, tokens, unreadable, fits, names, labels):
+    """One line for a brief whose tier's table already reached this context through a delivered `for-role`
+    receipt: its reading, each row's fit and draw, and that the table stands as earlier. Never the table again."""
+    parts = ["%s tier %s; reading %s tokens" % (TAG, tier, _n(tokens))]
+    if unreadable:
+        parts.append("unreadable, counted 0: " + ", ".join(os.path.basename(p) for p in unreadable[:3]))
+    parts.append("; ".join("%s %s, %s" % (names[row], labels[row], fit) for row, fit in fits.items()))
+    parts.append("table as earlier this session")
+    return "; ".join(parts)
+
+
 def _facts(block, path, data, session, session_id=None):
     dispatch_result, dispatch_size, model_registry, provider_bands, dispatch_checks = _owners()
     tier = block.get("tier")
@@ -170,7 +189,7 @@ def _facts(block, path, data, session, session_id=None):
     def cache_only(name, _data=None):
         return provider_bands.read_capacity(name, data, live=False)
 
-    got = provider_bands.lean_candidates(tier, session, data=data, read=cache_only)
+    got = provider_bands.tier_table(tier, session, data=data, read=cache_only)
     if got.get("refused"):
         return "%s tier %s: %s" % (TAG, tier, got["refused"])
     tokens, upper, unreadable = _reading(dispatch_size, path)
@@ -178,10 +197,11 @@ def _facts(block, path, data, session, session_id=None):
     pay = {}
     for option in got["payOptions"]:
         pay.setdefault(option["transport"], []).append(option)
-    groups = list(got["routes"].items()) + list(pay.items())
+    groups = [(group["route"], group["rows"], group["plans"]) for group in got["groups"]]
+    groups += [(route, entries, []) for route, entries in pay.items()]
     fits = {}
     names = {}
-    for route, entries in groups:
+    for route, entries, _plans in groups:
         for entry in entries:
             fits[entry["id"]] = _fit(dispatch_size, entry["id"], tokens, upper, data, route)
             names[entry["id"]] = entry.get("alias") or entry["id"]
@@ -190,14 +210,22 @@ def _facts(block, path, data, session, session_id=None):
         earlier = _hook_state.brief_table_seen(session_id, tier, {row: _verdict(fit) for row, fit in fits.items()})
         if earlier is not None:
             return _short(tier, tokens, upper, unreadable, fits, names, earlier)
+        if tier in _hook_state.ladder_slice_tiers(session_id):
+            owners = (model_registry, dispatch_checks)
+            labels = {}
+            for route, entries, _plans in groups:
+                labels.update(_route_labels(route, entries, data, tokens, owners)[1])
+            return _receipt_short(tier, tokens, unreadable, fits, names, labels)
     lines = ["%s tier %s, session plan %s; reading %s tokens (%s if every named file is read whole); "
              "USD only on pay-per-token rows; facts only, registry order" % (TAG, tier, session, _n(tokens), _n(upper))]
     if unreadable:
         lines.append("unreadable, counted 0: " + ", ".join(os.path.basename(p) for p in unreadable[:3]))
+    if got.get("warming"):
+        lines.append(", ".join("%s warming" % name for name in got["warming"]))
     lines += [NOTE, HEADER]
     owners = (model_registry, dispatch_checks)
-    for route, entries in groups:
-        lines += _route_lines(route, entries, got["seat"], data, tokens, owners, ladder, fits)
+    for route, entries, plans in groups:
+        lines += _route_lines(route, entries, got["seat"], data, tokens, owners, ladder, fits, plans)
     return "\n".join(lines)
 
 

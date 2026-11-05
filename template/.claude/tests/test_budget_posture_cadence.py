@@ -220,7 +220,7 @@ def main():
                   "[budget-posture]" in out and "Surplus" in out))
     cases.append(("the emitted NEVER clause cites its home", "orchestration §5" in out))
     cases.append(("a cache-free machine reads every plan cold, whatever the real cache holds",
-                  "codex band unknown (cache cold)" in out))
+                  "codex unknown" in out))
 
     # The plan rooms reach the session before its first dispatch: no dispatch, no transcript, still speaks.
     write_capture(tmp, "bpc00020", 40.0)

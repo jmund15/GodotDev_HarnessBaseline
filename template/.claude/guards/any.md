@@ -17,6 +17,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 - Never edit `allowed-tools`, `settings*.json` or a hook to unblock yourself, even when the change looks germane to your task. Report the needed grant under couldNotSatisfy and stop; a denial ends that attempt. [CLAUDE.core.md §Shell Discipline]
 - A causal claim about a configured value names the whole chain — where it is declared, what overrides it, where it is injected at runtime, and which consumer reads it — or it is labeled unmeasured. [reference/claim_confidence.md §Configured values]
 - No completion notification reaches a Workflow agent or a `claude -p` child, so a backgrounded job never wakes those callers. An identified Agent-tool child receives completion notifications and waits with `run_in_background` (`CLAUDE.core.md` §Shell Discipline), not this foreground loop. Keep working while a job runs, then wait for it in foreground calls, `until <done-test>; do sleep 30; done`, each running at most 270000 ms, because a delegate's prompt cache lives 5 minutes and a longer call's return rewrites your whole context; repeat only while the job runs. Never re-run a status check (`tail`, `wc`, `ls`, `date`) call after call: each run is a full turn that re-reads your whole context. [hooks/foreground_wait_guard.py]
+- When waiting is all your work has left and the job's own counts put its end past about 30 minutes, return now with its log path, pid, expected end and the steps left, even when the brief says to wait, and report that conflict. [orchestration §11]
 
 ## condensed
 
@@ -30,7 +31,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 - Never edit `allowed-tools`, `settings*.json` or a hook to unblock yourself; report the grant under couldNotSatisfy and stop: orchestration §4.
 - Configured-value claims name the chain: declared → overridden → injected → consumed, or are labeled unmeasured.
 - Complete grammatical sentences, never note-form: cut filler per sentence, never a finding or a caveat.
-- A Workflow or `claude -p` child waits for a job in foreground `until <done-test>; do sleep 30; done` calls that each run at most 270000 ms, because a delegate's prompt cache lives 5 minutes and no wake reaches either; never re-run a status check call after call: hooks/foreground_wait_guard.py.
+- A Workflow or `claude -p` child waits for a job in foreground `until <done-test>; do sleep 30; done` calls that each run at most 270000 ms, because a delegate's prompt cache lives 5 minutes and no wake reaches either; never re-run a status check call after call: hooks/foreground_wait_guard.py. When waiting is all that is left and the job's own counts put its end past about 30 minutes, return now with its log path, pid, expected end and the steps left, even when the brief says to wait: orchestration §11.
 
 ## minimal
 
@@ -44,3 +45,4 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 - Name the value's chain: declared, overridden, injected, consumed; else unmeasured.
 - Read a catalog with an accessor (`kfm.py`, `lens.py`, grep for the family manifest) through it, never whole.
 - A Workflow or `claude -p` child waits for a job in foreground until-loop calls that each run at most 270000 ms, because a delegate's prompt cache lives 5 minutes; never re-run a status check call after call.
+- When waiting is all that is left and the job will run past about 30 minutes, return with its log path, pid, expected end and the steps left.

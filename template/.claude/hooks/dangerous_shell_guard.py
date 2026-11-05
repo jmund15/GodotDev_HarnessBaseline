@@ -290,7 +290,7 @@ def _removable_scratch_entry(token: str, target: str, cwd: str | None, transcrip
         if reasons is not None:
             reasons.append('it is or holds another session\'s folder (%s)' % peer)
         return False
-    held =[wt for wt in _registered_worktrees() if wt == _norm(target) or _strictly_under(wt, _norm(target))]
+    held = [wt for wt in _registered_worktrees() if wt == _norm(target) or _strictly_under(wt, _norm(target))]
     if held:
         if reasons is not None:
             reasons.append('a registered worktree lies inside it (%s): retire that worktree first' % held[0])
@@ -303,6 +303,24 @@ def _removable_scratch_entry(token: str, target: str, cwd: str | None, transcrip
                            'delete it' % (clone[0] if clone else 'not a clean pushed clone'))
         return False
     return True
+
+
+def _scratch_bases(root: str, cwd: str | None) -> list[str]:
+    """The checkouts whose `.claude/scratch` this delete may judge: the project root, plus the git toplevel
+    of `cwd` when that toplevel is a registered linked worktree (its `.git` is a file) of this repository
+    (a delegate removing its own scratch). An unreadable toplevel or an unregistered checkout adds nothing."""
+    bases = [root]
+    if cwd and os.path.isdir(cwd):
+        import subprocess
+        try:
+            out = subprocess.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], capture_output=True,
+                                 text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return bases
+        top = out.stdout.strip() if out.returncode == 0 else ''
+        if top and os.path.isfile(os.path.join(top, '.git')) and _norm(top) in _registered_worktrees():
+            bases.append(top)
+    return bases
 
 
 def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | None = None,
@@ -321,7 +339,8 @@ def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | N
         return False
     if is_regenerable_clone(token, cwd or root, root):
         return True
-    if _strictly_under(_norm(target), _norm(os.path.join(root, '.claude', 'scratch'))):
+    if any(_strictly_under(_norm(target), _norm(os.path.join(base, '.claude', 'scratch')))
+           for base in _scratch_bases(root, cwd)):
         if empty_leftover(_norm(target)):
             return True
         if _UNSAFE_PATH_CHARS.search(token):

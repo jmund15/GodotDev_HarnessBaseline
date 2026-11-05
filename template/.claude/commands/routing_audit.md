@@ -19,14 +19,15 @@ Inspect and aggregate the continuous routing-audit log.
 
 ## What the audit log captures
 
-The `routing_audit.py` PostToolUse hook (wired at `settings.json`) classifies every routing-relevant tool call and appends an event to `logs/routing_audit.jsonl` when the call falls into one of two tiers:
+`routing_audit.process` classifies a tool call and appends an event to `logs/routing_audit.jsonl` when the call falls into one of three tiers. `post_read_dispatch.py` calls it after Read, Write, web and LSP calls; `pre_bash_dispatch.py` calls it after its chain allows a Bash call, so a denied call writes no row.
 
-- **`nudge-warranted`** — call violated a clear §Tool Routing rule (PascalCase Grep on indexed file, synthesis-shaped Obsidian read, etc.). Each entry records `nudge_fired: bool` indicating whether `tool_routing_nudge.py` delivered PreToolUse `additionalContext` to the agent.
+- **`nudge-warranted`** — call violated a clear §Tool Routing rule (a bulk-copyable native Read, a version-pinned WebFetch). Each entry records `nudge_fired: bool` indicating whether `tool_routing_nudge.py` delivered PreToolUse `additionalContext` to the agent.
   - `nudge_fired=false` → **silent-miss** (the gap this audit log exists to find).
   - `nudge_fired=true` → **nudged routing miss** (channel works; agent ignored or accepted the nudge).
-- **`cue-exempt`** — would warrant nudge BUT user prompt invokes K1 (literal-intent), L6 (verified-unique-name), or audit-shape carve-out. These count as compliant overrides.
+- **`cue-exempt`** — would warrant nudge BUT the prompt invokes the audit-shape carve-out or the caller is a bundling subagent. These count as compliant overrides.
+- **`census`** — counted, never judged, one row per call: `bash-lookup` (a search or source read), `bash-opaque-script` (an inline interpreter script), `lsp-lookup`, and `vault-write-direct` / `vault-write-worker`. The stats JSON splits them into `lookup_calls` and `vault_writes`; no census row counts as a miss.
 
-Compliant calls and tools without §Tool Routing rules (Bash, Edit, Write, Read, Glob, etc.) are NOT logged — would drown the silent-miss signal in noise.
+Compliant calls and tools without §Tool Routing rules (Grep, Edit, Glob, other Bash, etc.) are NOT logged — would drown the silent-miss signal in noise. A Grep carries no verdict; the retired `pascal-grep-on-cs` and `pascal-grep-on-indexed` rows in older logs are counted as `legacy_heuristic_events` and excluded from every miss count.
 
 ## How to read the output
 
@@ -127,11 +128,12 @@ python3 .claude/tools/aggregate_routing_audit.py 2>/dev/null | sed -n '/Top sile
 
 The dashboard reads `logs/routing_audit_stats.json`; [`eval_dashboard.md`](eval_dashboard.md) owns when its routing Inputs row and Routing card appear. The card renders:
 - 4-week trend line of `silent_miss` count.
+- One census line: lookups by kind, vault writes by route, and legacy heuristic events (history, not misses).
 - Top-5 silent-miss rules with `current_week / prior_4wk_avg / trend` columns.
 - Cross-link to the most recent synthetic routing-battery results, where the project keeps one, for triangulation (synthetic vs. real-traffic).
 
 ## Troubleshooting
 
-- **"no entries in logs/routing_audit.jsonl"** — either the audit hook isn't wired in `settings.json`, or no routing-relevant tool calls happened yet (a fresh session before any Grep/Obsidian/Memory call). Trigger a known-warrant call to confirm the hook fires.
+- **"no entries in logs/routing_audit.jsonl"** — either the audit hook isn't wired in `settings.json`, or no routing-relevant tool calls happened yet (a fresh session before any allowed Bash lookup, LSP or Read call). Trigger a known-warrant call to confirm the hook fires.
 - **Silent-miss count seems too high after a CLAUDE.md change** — re-run the synthetic routing battery, where the project keeps one, to triangulate. Continuous-audit silent-miss can spike for normal reasons (a sprint with lots of unfamiliar code-discovery tasks); the battery is the synthetic baseline.
 - **Stats JSON has empty `top_5_silent_miss_rules`** — log is healthy but no `nudge-warranted` entries in the active window (good outcome). Verify by checking `silent_misses` count in the JSON.

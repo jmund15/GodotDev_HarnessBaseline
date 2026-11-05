@@ -8,12 +8,15 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+sys.path[:0] = [str(Path(__file__).resolve().parents[1] / part) for part in ('tools', 'scripts')]
+import anthropic_capacity_probe as probe
 import model_registry
+import provider_bands
 import sidecar_fanout as sf
 
 TMP = Path(tempfile.mkdtemp(prefix='sf_chains_'))
@@ -158,6 +161,16 @@ class ChainRun(unittest.TestCase):
 
 
 class ChainMain(unittest.TestCase):
+    def setUp(self):
+        # main() admits a job from the live plan reading; a plan the machine has spent refuses a dry run too.
+        now = time.time()
+        room = probe.summarize({'five_hour': {'utilization': 4, 'resets_at': now + 13030},
+                                'seven_day': {'utilization': 10, 'resets_at': now + 2830},
+                                'extra_usage': {'is_enabled': False}, 'limits': []}, now=now)
+        patcher = patch.object(provider_bands, 'read_capacity', lambda transport, data=None, live=True: dict(room, transport=transport))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def write(self, spec):
         path = TMP / ('spec_%d.json' % len(list(TMP.glob('spec_*.json'))))
         path.write_text(json.dumps(spec), encoding='utf-8')

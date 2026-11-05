@@ -37,7 +37,8 @@ CELLS = (
 
 def test_table_cells():
     for check, size, reach, kind, gate, expected in CELLS:
-        fields = triage.Fields(reach=reach, kind=kind, size=size, paths=('.claude/rules/example.md',))
+        paths = ('.claude/rules/example.md',) if check == 'premises' else ('Combat/Demo.cs',)
+        fields = triage.Fields(reach=reach, kind=kind, size=size, paths=paths)
         for rigor, value in zip(RIGORS, expected):
             adm = triage.admits(check, fields, rigor, gate_green=gate)
             if check == 'candidate-lenses':
@@ -47,6 +48,50 @@ def test_table_cells():
                 assert adm.admitted == value, (check, fields, rigor, gate, adm, value)
                 assert adm.width is None
             assert isinstance(adm.reason, str) and adm.reason
+
+
+def test_prose_only_harness_scope_has_no_candidate_below_thorough():
+    for path in ('.claude/rules/example.md', 'CLAUDE.md', '.claude/baseline.lock.json'):
+        for kind in ('mechanical', 'decision'):
+            fields = triage.Fields(reach='shared', kind=kind, size='milestones', paths=(path,))
+            assert triage.admits('candidate-lenses', fields, 'light').width == 'none', path
+            assert triage.admits('candidate-lenses', fields, 'normal').width == 'none', path
+            assert triage.admits('candidate-lenses', fields, 'thorough').width == 'all', path
+
+
+def test_executable_harness_change_and_mixed_scopes_keep_the_sized_lenses():
+    for path in ('.claude/hooks/guard.py', '.claude/tools/t.py', '.claude/workflows/w.js', '.claude/scripts/s.sh',
+                 '.claude/scripts/s.ps1', '.claude/hooks/config.json', '.claude/settings.base.json',
+                 '.claude/tests/test_x.py'):
+        fields = triage.Fields(reach='shared', kind='decision', size='milestones', paths=(path,))
+        assert triage.admits('candidate-lenses', fields, 'normal').width == 'sized', path
+    mixed = triage.Fields(reach='shared', kind='decision', size='milestones',
+                          paths=('.claude/rules/example.md', '.claude/hooks/guard.py'))
+    assert triage.admits('candidate-lenses', mixed, 'normal').width == 'sized'
+    production = triage.Fields(reach='shared', kind='decision', size='milestones',
+                               paths=('.claude/rules/example.md', 'Combat/Demo.cs'))
+    assert triage.admits('candidate-lenses', production, 'normal').width == 'sized'
+
+
+def test_harness_path_predicates_name_the_split():
+    import _claude_scope as scope
+    for path in ('.claude/rules/x.md', 'CLAUDE.md', 'Jmodot/CLAUDE.md', 'docs/claude.md', 'MEMORY.md',
+                 '.claude/worktrees/x4/.claude/tools/t.py'):
+        assert scope.is_harness_path(path), path
+    for path in ('src/a.cs', 'README.md', 'Combat/Demo.cs'):
+        assert not scope.is_harness_path(path), path
+    for path in ('.claude/tools/t.py', '.claude/hooks/h.json', '.claude/settings.project.json', '.claude/tests/t.js',
+                 '.claude/tools/proxy.mjs', '.claude/tools/launch.cjs',
+                 # data a tool reads changes what runs: a schema, the adaptation seam, a registry
+                 '.claude/skills/project_subsystems/adaptation.json', '.claude/schemas/evidence.json',
+                 '.claude/reference/external_models.json'):
+        assert scope.is_executable_harness_path(path), path
+    for path in ('.claude/rules/x.md', 'CLAUDE.md', 'src/a.py', '.claude/plans/p.json', '.claude/scratch/s.json',
+                 '.claude/logs/l.json', '.claude/orchestration_metrics.jsonl'):
+        assert not scope.is_executable_harness_path(path), path
+    assert scope.is_prose_harness_scope([".claude/commands/x.md", ".claude/plans/p.json"])
+    assert not scope.is_prose_harness_scope([".claude/commands/x.md", ".claude/tools/x.py"])
+    assert not scope.is_prose_harness_scope([])
 
 
 def test_boundaries():
@@ -139,7 +184,7 @@ def test_unrecorded_size_fails_closed(tmp_path, monkeypatch):
     assert (unknown.kind, unknown.size) == ('decision', 'milestones'), unknown
     task_record.open_record('legacy', 'unknown-size-session', 'Legacy missing size')
     task_record._mutate('legacy', lambda state: state.update(triage={
-        'fields': {'reach': 'shared'}, 'paths': ['.claude/rules/example.md']}))
+        'fields': {'reach': 'shared'}, 'paths': ['.claude/rules/example.md', 'Combat/Demo.cs']}))
     fields = triage.current(tmp_path, task_id='legacy')
     assert (fields.kind, fields.size) == ('decision', 'milestones'), fields
     for check, expected in [('harness-quality-seat', True), ('candidate-lenses', True),

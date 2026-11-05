@@ -73,6 +73,9 @@ trusting a grid.
 check that reaches it before any round that depends on it. `bench probes` does this: it scores each task's positive
 control (the probe expected at full marks) first and stops a task whose control misses, because its other probes then
 measure nothing.
+Before that, the free instrument lint refuses a task whose probes disagree with what the judge reads; read
+`reference/validation_probes.md` §The instrument lint gates paid judge runs before adding a probe or acting on a
+paid red the lint missed.
 
 **A universal miss is an audit trigger, not a verdict** — the reachability audit keeps, rewrites or
 removes the item, and a hard-but-reachable item stays in the denominator (`reference/validation_probes.md`
@@ -159,4 +162,4 @@ delegated mining pass.
 - **Don't fix a scorer without re-scoring collected cells** — verdicts are derived, responses are the
   durable artifact. Score once: settle instrument, engine and panel fixes before new cells are scored;
   re-derive from stored returns where the engine allows; prove a change that moves only paths or labels
-  with a free parity test, never a probe re-score; state any re-judge that remains with its cost first.
+  with a free parity test, never a probe re-score; report any re-judge that remains by what it runs.

@@ -38,13 +38,9 @@ def nudged(sid, tool_input, tool="Read"):
     return msg is not None
 
 
-# --- Path alone must stay silent; symbol-navigation advice remains ---------
+# --- Path alone must stay silent ---------------------------------------
 seed("s1______", "summarize the wind system design")
 check("synthesis-shaped path is not bulk-I/O evidence", nudged("s1______", {"file_path": VAULT}), False)
-
-seed("s2______", "how does the spell pipeline work")
-check("PascalCase Grep on .cs",
-      nudged("s2______", {"pattern": "SpellFactory", "glob": "*.cs"}, "Grep"), True)
 
 seed("s3______", "give me an overview of the architecture doc")
 check("Obsidian path is not bulk-I/O evidence",
@@ -80,11 +76,9 @@ for i, (prompt, label) in enumerate([
     seed(sid, prompt)
     check(f"path-only silence: {label}", nudged(sid, {"file_path": VAULT}), False)
 
-# --- An edit-shaped prompt (no edit verb) leaves path reads silent and the Grep rule intact ---
+# --- An edit-shaped prompt (no edit verb) leaves path reads silent ---
 seed("b1______", "please address this now using /instruction_quality")
 check("edit-shaped prompt: path read stays silent", nudged("b1______", {"file_path": VAULT}), False)
-check("edit-shaped prompt: Grep rule unaffected",
-      nudged("b1______", {"pattern": "SpellFactory", "glob": "*.cs"}, "Grep"), True)
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"\n{sum(results)}/{len(results)} passed")

@@ -11,6 +11,29 @@ sys.path.insert(0, str(ROOT / ".claude/tools"))
 import review_result
 
 
+class ClaimedReadsTests(unittest.TestCase):
+    def test_a_chained_shell_read_credits_each_file_its_own_spans(self):
+        reads = review_result.claimed_reads(["Bash:cat src/a.cs && sed -n 1,5p src/b.cs"])
+        by_path = {path: spans for path, spans in reads}
+        self.assertEqual(by_path.get("src/a.cs"), [(1, review_result.math.inf)])
+        self.assertEqual(by_path.get("src/b.cs"), [(1, 5)])
+
+    def test_a_single_target_entry_keeps_one_pair(self):
+        self.assertEqual(review_result.claimed_reads(["Read:src/a.cs:3-9"]), [("src/a.cs", [(3, 9)])])
+
+
+class ReadCoverageCorpusTests(unittest.TestCase):
+    def test_shell_reads_match_shared_corpus(self):
+        corpus = json.loads((Path(__file__).with_name("read_coverage_corpus.json")).read_text(encoding="utf-8"))
+        for row in corpus:
+            with self.subTest(case=row["name"]):
+                reads = review_result._shell_reads(row["command"], toplevel=".")
+                actual = [[Path(path).as_posix().removeprefix("./"),
+                           [[first, "end" if last == review_result.math.inf else last] for first, last in spans]]
+                          for path, spans in reads]
+                self.assertEqual(actual, row["reads"])
+
+
 # Trimmed blocks from sr_runs/sr-D1.progress.jsonl: Read 20/21, Bash 18/19.
 # Failed Read: sr-D6b.progress.jsonl 1969/1970. Only tool/input and ids are planted below.
 _CAPTURED_READ = [
@@ -98,7 +121,7 @@ class ReviewIngestionTests(unittest.TestCase):
         unread = seat("unread", reply(), record=dict(missing, attestedModel="runtime"))
         unread["mustRead"] = [{"path": "src/a.cs", "lines": 4}]
         coverage = review_result.ingest([unread])["coverage"][0]
-        self.assertEqual(coverage["status"], "failed")
+        self.assertEqual(coverage["status"], "partial")
         self.assertEqual(coverage["uncoveredMandates"], ["plc-instruction-quality"])
 
     def test_valid_neighbor_is_retained_when_one_finding_is_invalid(self):
@@ -378,6 +401,8 @@ class ReviewIngestionTests(unittest.TestCase):
                              [('NPCs/Enemy.cs', [review_result.WHOLE]), ('NPCs/Entity.cs', [review_result.WHOLE])])
             self.assertEqual(review_result.target_path(f'Bash:{command}', top), 'NPCs/Entity.cs')
             self.assertEqual(review_result.target_spans(f'Bash:{command}'), [review_result.WHOLE])
+            self.assertEqual([Path(path).name for path, _ in review_result.claimed_reads([f'Bash:{command}'])],
+                             ['Enemy.cs', 'Entity.cs'])
 
     def test_sed_line_ranges_and_head_counts_are_reads_of_their_lines_only(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -521,21 +546,21 @@ class ReviewIngestionTests(unittest.TestCase):
         row.update(more)
         return row
 
-    def test_an_unread_must_read_entry_with_no_legal_gap_fails_the_seat(self):
+    def test_an_unread_must_read_entry_with_no_legal_gap_leaves_the_seat_unproven(self):
         result = review_result.ingest([self._listed("skipped")])
         entry = result["coverage"][0]
-        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["status"], "partial")
         self.assertEqual(entry["unread"], ["src/Core/ImpactPhysics.cs"])
         self.assertEqual(entry["uncoveredMandates"], ["plc-instruction-quality"])
         self.assertTrue(any("ImpactPhysics.cs" in issue and "exhausted-leads" in issue for issue in entry["issues"]),
                         entry["issues"])
-        self.assertEqual(result["counts"]["failed"], 1)
-        self.assertEqual(result["counts"]["valid"], 1, "the failed seat's findings stay sources")
+        self.assertEqual(result["counts"]["partial"], 1)
+        self.assertEqual(result["counts"]["valid"], 1, "the unproven seat's findings stay sources")
 
-    def test_a_must_read_entry_read_only_in_part_fails_the_seat(self):
+    def test_a_must_read_entry_read_only_in_part_leaves_the_seat_unproven(self):
         part = self._listed("part", tools=("Read:src/a.cs:1-437", "Read:src/Core/ImpactPhysics.cs:1-437"))
         entry = review_result.ingest([part])["coverage"][0]
-        self.assertEqual((entry["status"], entry["unread"]), ("failed", ["src/Core/ImpactPhysics.cs"]))
+        self.assertEqual((entry["status"], entry["unread"]), ("partial", ["src/Core/ImpactPhysics.cs"]))
         self.assertTrue(any("ImpactPhysics.cs" in issue and "1-437 of 900" in issue for issue in entry["issues"]),
                         entry["issues"])
 
@@ -553,21 +578,21 @@ class ReviewIngestionTests(unittest.TestCase):
                                              "Read:src/Core/ImpactPhysics.cs:402-900"))]
         by = {row["label"]: row["status"] for row in review_result.ingest(rows)["coverage"]}
         self.assertEqual(by, {"halves": "completed", "comma": "completed", "absolute": "completed",
-                              "paged": "completed", "window": "failed", "hole": "failed"})
+                              "paged": "completed", "window": "partial", "hole": "partial"})
 
     def test_a_shell_read_covers_an_entry_and_a_search_does_not(self):
         rows = [self._listed("shell", tools=("Read:src/a.cs:1-437", "Bash:cat src/Core/ImpactPhysics.cs")),
                 self._listed("diff", tools=("Read:src/a.cs:1-437", "Bash:git diff -- src/Core/ImpactPhysics.cs")),
                 self._listed("search", tools=("Read:src/a.cs:1-437", "Grep:src/Core/ImpactPhysics.cs"))]
         by = {row["label"]: row["status"] for row in review_result.ingest(rows)["coverage"]}
-        self.assertEqual(by, {"shell": "completed", "diff": "failed", "search": "failed"})
+        self.assertEqual(by, {"shell": "completed", "diff": "partial", "search": "partial"})
 
     def test_an_empty_or_absent_must_read_file_needs_one_read_or_a_gap(self):
         empty = [{"path": "src/a.cs", "lines": 437}, {"path": "src/empty.cs", "lines": 0}]
         rows = [self._listed("opened", tools=("Read:src/a.cs:1-437", "Read:src/empty.cs"), must=empty),
                 self._listed("never", must=empty)]
         by = {row["label"]: row["status"] for row in review_result.ingest(rows)["coverage"]}
-        self.assertEqual(by, {"opened": "completed", "never": "failed"})
+        self.assertEqual(by, {"opened": "completed", "never": "partial"})
 
     def test_observed_reads_decide_a_must_read_entry_over_the_seats_own_tool_list(self):
         claimed = self._listed("claimed", tools=("Read:src/a.cs", "Read:src/Core/ImpactPhysics.cs"),
@@ -600,14 +625,14 @@ class ReviewIngestionTests(unittest.TestCase):
         self.assertEqual(by["unlisted"]["gapNotes"], [{"item": "src/other.cs", "reason": "capability"}])
         self.assertEqual(by["unlisted"]["gaps"], [])
 
-    def test_a_gap_that_excuses_nothing_still_fails_an_unread_entry_or_a_seat_with_no_list(self):
+    def test_a_gap_that_excuses_nothing_leaves_an_unread_entry_unproven_and_fails_a_seat_with_no_list(self):
         rows = [self._listed("unread", gaps=[{"item": "src/other.cs", "reason": "outside-lens"}],
                              tools=("Read:src/a.cs",))]
         bare = reply(finding())
         bare["structured_output"]["gaps"] = ["skimmed the rest"]
         rows.append(seat("bare", bare))
         by = {row["label"]: row["status"] for row in review_result.ingest(rows)["coverage"]}
-        self.assertEqual(by, {"unread": "failed", "bare": "failed"})
+        self.assertEqual(by, {"unread": "partial", "bare": "failed"})
 
     def _stream_review(self, root, reads):
         """`prepare_review` over one job whose stream shows `reads`: (file_path, offset, limit) Read calls, None
@@ -894,6 +919,59 @@ class EngagementPathTests(unittest.TestCase):
             context.write_text("x", encoding="utf-8")
             job = {"contextFiles": [str(context)]}
             self.assertFalse(review_result.engaged(job, self._stream(root, ["other.md"])))
+
+
+class ContentReadsTests(unittest.TestCase):
+    """A shell call the command parser cannot read (a loop, a pipe) still credits a must-read file whose whole
+    content its result shows. Cut from a Workflow seat that read 24 diffs in five `for` loops (wf_23ead844)."""
+
+    DIFFS = {"subject-0.diff": "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n",
+             "subject-1.diff": "--- a/y.py\n+++ b/y.py\n@@ -2 +2 @@\n-two\n+deux\n"}
+
+    def _stream(self, root, command, output):
+        stream = root / "s.stream"
+        rows = [{"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "id": "t0", "name": "Bash", "input": {"command": command}}]}},
+                {"type": "user", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": "t0", "content": output}]}}]
+        stream.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+        return stream
+
+    def _numbered(self, names):
+        out = []
+        for name in names:
+            out.append("=== " + name)
+            out.extend("%6d\t%s" % (n + 1, line) for n, line in enumerate(self.DIFFS[name].splitlines()))
+        return "\n".join(out) + "\n"
+
+    def test_a_loop_whose_result_shows_each_file_whole_credits_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, text in self.DIFFS.items():
+                (root / name).write_text(text, encoding="utf-8")
+            must = [{"path": str(root / name), "lines": 5} for name in self.DIFFS]
+            loop = 'cd "%s" && for i in 0 1; do echo "=== subject-$i.diff"; cat -n subject-$i.diff; done' % root
+            both = review_result.called_reads(self._stream(root, loop, self._numbered(self.DIFFS)), root, must_read=must)
+            self.assertEqual(sorted(path for path, _ in both), sorted(review_result.target_path("Read:" + e["path"], root) for e in must))
+            self.assertTrue(all(review_result.covers(spans, 5) for _, spans in both))
+            one = review_result.called_reads(self._stream(root, loop, self._numbered(["subject-0.diff"])), root, must_read=must)
+            self.assertEqual([path for path, _ in one], [review_result.target_path("Read:" + must[0]["path"], root)])
+            partial = self._numbered(["subject-1.diff"]).replace("+deux", "+trois")
+            self.assertEqual(review_result.called_reads(self._stream(root, loop, partial), root, must_read=must), [])
+            self.assertEqual(review_result.called_reads(self._stream(root, loop, self._numbered(self.DIFFS)), root), [])
+
+    def test_a_parsed_shell_read_keeps_its_own_spans_and_a_failed_call_credits_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "subject-0.diff").write_text(self.DIFFS["subject-0.diff"], encoding="utf-8")
+            must = [{"path": str(root / "subject-0.diff"), "lines": 5}]
+            stream = self._stream(root, "sed -n 1,2p %s" % (root / "subject-0.diff"), self._numbered(["subject-0.diff"]))
+            self.assertEqual([spans for _, spans in review_result.called_reads(stream, root, must_read=must)], [[(1, 2)]])
+            failed = json.loads(stream.read_text(encoding="utf-8").splitlines()[1])
+            failed["message"]["content"][0]["is_error"] = True
+            lines = stream.read_text(encoding="utf-8").splitlines()
+            stream.write_text(lines[0] + "\n" + json.dumps(failed) + "\n", encoding="utf-8")
+            self.assertEqual(review_result.called_reads(stream, root, must_read=must), [])
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLAUDE = os.path.abspath(os.path.join(HERE, ".."))
@@ -92,6 +93,16 @@ def load_module():
     return module
 
 
+GATE = os.path.join(HOOKS, "model_ladder_gate.py")
+
+
+def load_gate():
+    spec = importlib.util.spec_from_file_location("model_ladder_gate_probe", GATE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def load_chain():
     spec = importlib.util.spec_from_file_location("post_edit_dispatch_probe", DISPATCH)
     module = importlib.util.module_from_spec(spec)
@@ -135,12 +146,12 @@ def no_probe_spy(calls):
 
 
 def registry_aliases(env):
-    """Aliases `model_registry.py for-role executor` lists: the row lines, never the `bash` launch lines."""
+    """Aliases `model_registry.py for-role executor` lists: the table's row lines, never its doctrine."""
     r = subprocess.run([sys.executable, REGISTRY, "for-role", "executor"], capture_output=True,
                        text=True, timeout=120, env=env, encoding="utf-8", errors="replace")
     found = set()
     for line in (r.stdout or "").splitlines():
-        match = re.match(r"^  (\S+)\s+\S+\s+\S+\s+effort ", line)
+        match = re.match(r"^  (\S+)(?: \(ladder \S+\))? \w+:(qualified|supplementary)\b", line)
         if match:
             found.add(match.group(1))
     return found
@@ -155,9 +166,19 @@ ROW_SHAPE = re.compile(r"\| draw \d+\.\d{2}x \| \S+ \| \S+ \| (fits|over by|wind
 PLANT_LIMITS = {"contextTokens": 200000, "maxOutputTokens": 32000}
 
 
-def planted_facts(module, brief_path, routes, pay, seat="alpha"):
-    """The sub-hook's `_facts` over planted route rows: `lean_candidates` stubbed to `routes` and `pay`, the real
-    brief file as the reading, and the ladder stubbed out so only the table's own cells are under test."""
+def plant_capacity(tmp):
+    """A temp capacity cache with one available reading per live plan-quota transport: the brief hook reads it
+    cache-only, and the proof never touches the machine's cache."""
+    if TOOLS not in sys.path:
+        sys.path.insert(0, TOOLS)
+    import model_registry
+    from _capacity_fixtures import write_capacity_cache
+    return write_capacity_cache(os.path.join(tmp, "capacity.json"), model_registry.load())
+
+
+def planted_facts(module, brief_path, groups, pay, seat="alpha", warming=()):
+    """The sub-hook's `_facts` over planted tier-table groups: `tier_table` stubbed to `groups` and `pay`, the
+    real brief file as the reading, and the ladder stubbed out so only the table's own cells are under test."""
     if TOOLS not in sys.path:
         sys.path.insert(0, TOOLS)
     import provider_bands
@@ -170,21 +191,28 @@ def planted_facts(module, brief_path, routes, pay, seat="alpha"):
                        "limits": PLANT_LIMITS, "price": {"cacheMissPer1M": out / 5, "outputPer1M": out,
                                                          "cacheHitPer1M": out / 50}})
     data = {"transports": transports, "models": models}
-    got = {"tier": "executor", "seat": seat, "refused": None, "supplementary": {}, "routes": routes,
-           "payOptions": pay}
-    saved_lean, saved_ladder = provider_bands.lean_candidates, module._ladder
-    provider_bands.lean_candidates = lambda tier, session, data=None, read=None, **kw: got
+    got = {"tiers": ["executor"], "seat": seat, "sessionPlan": seat, "refused": None, "plansLow": not groups,
+           "groups": [{"route": route, "seat": route == seat, "plans": plans, "rows": rows}
+                      for route, plans, rows in groups],
+           "payOptions": pay, "warming": list(warming), "ages": {}}
+    saved_table, saved_ladder = provider_bands.tier_table, module._ladder
+    provider_bands.tier_table = lambda tier, session, data=None, read=None, **kw: got
     module._ladder = lambda _mr, _data: {}
     try:
         return module._facts({"tier": "executor"}, brief_path, data, seat)
     finally:
-        provider_bands.lean_candidates = saved_lean
+        provider_bands.tier_table = saved_table
         module._ladder = saved_ladder
 
 
 def planted_row(alias, plans=None):
-    return {"alias": alias, "id": alias, "cost": None, "plans": plans or [], "minus": None, "effort": None,
-            "probation": None, "supplementary": False}
+    return {"alias": alias, "id": alias, "standing": {"executor": "qualified"}, "cost": None,
+            "speed": None, "intel": None, "minus": None, "effort": None, "probation": None,
+            "draw": {p["plan"]: {} for p in (plans or [])}}
+
+
+def planted_plan(name, left):
+    return {"plan": name, "left": left, "timeLeft": 3.0, "unusedAtReset": None, "launchers": 0}
 
 
 def main():
@@ -201,9 +229,10 @@ def _main(tmp):
     os.makedirs(state_dir, exist_ok=True)
     os.environ.update(HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir)
     cold_cache = os.path.join(tmp, "no-such-capacity-cache.json")
+    warm_cache = plant_capacity(tmp)
     env = dict(os.environ, HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir,
                CLAUDE_PROJECT_DIR=ROOT, PYTHONIOENCODING="utf-8",
-               CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache)
+               CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache)
     cases = []
 
     def case(label, ok):
@@ -218,7 +247,7 @@ def _main(tmp):
     calls = []
     result = None
     if module is not None and callable(getattr(module, "process", None)):
-        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache), no_probe_spy(calls):
+        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache), no_probe_spy(calls):
             result = module.process(written(brief_path, BRIEF))
     text = (result or {}).get("context") or ""
 
@@ -248,14 +277,19 @@ def _main(tmp):
                                                                for line in alias_lines(text, alias))
                               for alias in plan_aliases))
     case("the draw note prints once per table", text.count(NOTE) == 1)
-    case("a cold capacity cache prints room unknown on a route header, and no row names a room",
-         "room unknown" in text and not any("room" in line for alias in expected for line in alias_lines(text, alias)))
-    case("a cold capacity cache runs no subprocess and no network call", bool(text) and calls == [])
+    case("a warm cache prints each plan's quota left on a route header, and no row names a room",
+         " left " in text and not any("room" in line for alias in expected for line in alias_lines(text, alias)))
+    cold_calls = []
+    cold_text = ""
+    if module is not None and callable(getattr(module, "process", None)):
+        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache), no_probe_spy(cold_calls):
+            cold_text = (module.process(written(brief_path, BRIEF, session="cold-sess")) or {}).get("context") or ""
+    case("a cold capacity cache runs no subprocess and no network call", bool(cold_text) and cold_calls == [])
     big_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "big_brief.md"),
                      BRIEF + "filler " * 200_000)
     big_text = ""
     if module is not None and callable(getattr(module, "process", None)):
-        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache):
+        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache):
             big_text = (module.process(written(big_path, BRIEF + "filler " * 200_000, session="big-sess"))
                         or {}).get("context") or ""
     case("a brief over a row's window prints its excess tokens", "over by" in big_text)
@@ -266,7 +300,7 @@ def _main(tmp):
     reading_named = math.ceil((len(named_brief_text) + len(named_text)) / 2.5)
     named_out = ""
     if module is not None and callable(getattr(module, "process", None)):
-        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache):
+        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache):
             named_out = (module.process(written(named_brief, named_brief_text, session="named-sess"))
                          or {}).get("context") or ""
     case("the window fit reads the brief plus the file it names, not the brief alone",
@@ -278,7 +312,7 @@ def _main(tmp):
     upper_cited = math.ceil((len(cited_brief_text) + len(named_text)) / 2.5)
     cited_out = ""
     if module is not None and callable(getattr(module, "process", None)):
-        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache):
+        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache):
             cited_out = (module.process(written(cited_brief, cited_brief_text, session="cited-sess"))
                          or {}).get("context") or ""
     case("a line-cited file is a span: the cell prints the lower number, then the upper if read whole",
@@ -305,14 +339,14 @@ def _main(tmp):
     plain_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "plain.md"), "# no fence\n")
     bad = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "empty_check.md"), EMPTY_CHECK_BRIEF)
     if module is not None and callable(getattr(module, "process", None)):
-        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache):
+        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache):
             case("a write without a task block yields None",
                  module.process(written(plain_path, "# no fence\n")) is None)
             defect = (module.process(written(bad, EMPTY_CHECK_BRIEF)) or {}).get("context") or ""
             case("a malformed task block yields a context naming the defect",
                  defect.startswith(TAG) and "empty check" in defect)
         elsewhere = plant(os.path.join(tmp, "repo", "plans", "doc_with_fence.md"), BRIEF)
-        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=cold_cache):
+        with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache):
             case("a file outside the scratch directory that holds a task block yields None",
                  module.process(written(elsewhere, BRIEF)) is None)
     else:
@@ -339,12 +373,13 @@ def _main(tmp):
 
     if module is not None and callable(getattr(module, "_facts", None)):
         plant_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "plant_brief.md"), BRIEF)
-        routes = {"alpha": [planted_row("a-top", [{"plan": "alpha-plan", "room": 0.4}]),
-                            planted_row("a-half", [{"plan": "alpha-plan", "room": 0.4}])],
-                  "beta": [planted_row("b-only", [{"plan": "beta-plan", "room": None}])]}
+        groups = [("alpha", [planted_plan("alpha-plan", 40.0)],
+                   [planted_row("a-top", [planted_plan("alpha-plan", 40.0)]),
+                    planted_row("a-half", [planted_plan("alpha-plan", 40.0)])]),
+                  ("beta", [planted_plan("beta-plan", None)], [planted_row("b-only")])]
         pay = [{"alias": "d-pay", "id": "d-pay", "transport": "ds", "cost": None, "plans": None, "minus": None,
                 "effort": None, "probation": None, "supplementary": False}]
-        planted = planted_facts(module, plant_path, routes, pay)
+        planted = planted_facts(module, plant_path, groups, pay)
         rows = {alias: alias_lines(planted, alias) for alias in ("a-top", "a-half", "b-only", "d-pay")}
         case("ratios restart per route: the cheapest plan row on each route reads draw 1.00x, others against it",
              bool(rows["a-top"]) and "| draw 2.00x |" in rows["a-top"][0] and "| draw 1.00x |" in rows["a-half"][0]
@@ -354,16 +389,21 @@ def _main(tmp):
         case("a pay-per-token row prints spend with its USD figure",
              bool(rows["d-pay"]) and "| spend " in rows["d-pay"][0] and "$" in rows["d-pay"][0])
         case("each route header names its plan room once, with its route",
-             "route alpha (plan, session route): alpha-plan room 0.40" in planted
-             and "route beta (plan): beta-plan room unknown" in planted and planted.count("alpha-plan room") == 1)
+             "route alpha (plan, session route): alpha-plan left 40.0%" in planted
+             and "route beta (plan): beta-plan left unknown" in planted
+             and planted.count("alpha-plan left") == 1)
         case("the planted table prints the draw note once and names no room on a row",
              planted.count(NOTE) == 1 and not any("room" in line for a in rows for line in rows[a]))
+        warm_line = planted_facts(module, plant_path, groups, pay, warming=["codex", "go"])
+        case("a warming plan is named once per row, never behind a second 'warming:' prefix",
+             "codex warming, go warming" in warm_line and "warming: " not in warm_line)
     else:
         for label in ("ratios restart per route: the cheapest plan row on each route reads draw 1.00x",
                       "a plan row prints no USD in the planted table",
                       "a pay-per-token row prints spend with its USD figure",
                       "each route header names its plan room once, with its route",
-                      "the planted table prints the draw note once and names no room on a row"):
+                      "the planted table prints the draw note once and names no room on a row",
+                      "a warming plan is named once per row, never behind a second 'warming:' prefix"):
             case(label, False)
     if module is not None and callable(getattr(module, "process", None)):
         sys.path.insert(0, HOOKS)
@@ -374,7 +414,7 @@ def _main(tmp):
         wide_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "wide_brief.md"),
                           BRIEF + "filler " * 200_000)
         with planted_env(HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir, CLAUDE_CODE_TRANSPORT=SEAT,
-                         PROVIDER_CAPACITY_CACHE=cold_cache), no_probe_spy([]):
+                         PROVIDER_CAPACITY_CACHE=warm_cache), no_probe_spy([]):
             first = (module.process(written(brief_path, BRIEF, session=sess)) or {}).get("context") or ""
             second = (module.process(written(brief_path, BRIEF, session=sess)) or {}).get("context") or ""
             bigger_path = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "bigger_brief.md"),
@@ -396,6 +436,29 @@ def _main(tmp):
              "model | draw or spend" in arch and "table as earlier" not in arch)
         case("after a compaction the executor brief prints its full table again",
              "model | draw or spend" in after and "table as earlier" not in after)
+    if module is not None and callable(getattr(module, "process", None)):
+        sys.path.insert(0, HOOKS)
+        import _hook_state
+        receipt_sid = "brief-receipt-sess"
+        table_text = "for-role executor: the delivered table\n"
+        stage = getattr(_hook_state, "stage_ladder_receipt", None)
+        digest = getattr(_hook_state, "stdout_sha256", None)
+        credited = False
+        if stage is not None and digest is not None:
+            stage(receipt_sid, digest(table_text), ["executor"])
+            credited = load_gate().mark_loaded({
+                "tool_name": "Bash", "session_id": receipt_sid,
+                "tool_input": {"command": "python3 .claude/tools/model_registry.py for-role executor"},
+                "tool_response": {"stdout": table_text, "stderr": "", "interrupted": False}})
+        with planted_env(HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir, CLAUDE_CODE_TRANSPORT=SEAT,
+                         PROVIDER_CAPACITY_CACHE=warm_cache), no_probe_spy([]):
+            receipt_line = (module.process(written(brief_path, BRIEF, session=receipt_sid))
+                            or {}).get("context") or ""
+        case("a delivered for-role receipt credits the tier at delivery", credited)
+        case("after a delivered receipt the brief prints the reading, each row's fit and draw, not the table",
+             "model | draw or spend" not in receipt_line and "table as earlier this session" in receipt_line
+             and "reading" in receipt_line and "draw " in receipt_line)
+
     if text:
         print("real executor brief table: %d bytes (target under 1536; measured, not gated)" % len(text.encode("utf-8")))
 

@@ -6,6 +6,10 @@ raw prompts on both routes drew the warning. BLOCKING is the one flag both launc
 Phase 2 of commands/plan_check.md owns materialization. This module validates, never sweeps.
 A run that declares a ledger stage other than plan-check (a close audit, a PR review) reads a plan
 as an input, not as the subject whose proposed changes need inbound refs, so it is not checked.
+
+The sweep is keyed on the declared subject set: the subjects recorded in the brief's `--subject-plan`
+sweep file. A must-read file merely carrying a `**Shape:** meta` header is not a subject, so a seat
+that never declared a plan sweep is not failed for reading one.
 """
 from functools import lru_cache
 import json
@@ -15,7 +19,6 @@ import subprocess
 
 REPO = Path(__file__).resolve().parents[2]
 BLOCKING = True
-SHAPE = re.compile(r"\*\*Shape:\*\*\s*`?(\w+)")
 POINTER = re.compile(r"^> Sweep file: `([^`]+)`", re.M)
 REMEDY = ("(plan_check.md §Phase 2) Run lens_briefs.py with each typed --subject-plan and launch its "
           "materialized brief files; Phase 2 is the sole INBOUND_REFS producer.")
@@ -39,22 +42,9 @@ def coverage_reason(job, *, review=False, root=REPO, stage=None):
     for key in (job.get("key"), job.get("seat"), *(job.get("mandates") or [])):
         if isinstance(key, str):
             names.update(key.split("+"))
-    if not review and job.get("shape") != "review" and not names.intersection(citer_keys()):
-        return None
-    subjects = []
-    for entry in job.get("mustRead") or []:
-        value = entry.get("path") if isinstance(entry, dict) else entry
-        if not isinstance(value, str) or not value.endswith(".md"):
-            continue
-        path = path_at(root, value)
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
-            continue
-        shape = SHAPE.search(text)
-        if shape and shape.group(1) == "meta":
-            subjects.append(path)
-    if not subjects:
+    import tool_profiles
+    declared_seat = bool(names.intersection(citer_keys()))
+    if not review and tool_profiles.job_kind_shape(job) != "review" and not declared_seat:
         return None
     label = job.get("key") or job.get("label") or job.get("seat") or "review seat"
     prompt_path = job.get("promptPath") or job.get("promptFile")
@@ -63,8 +53,6 @@ def coverage_reason(job, *, review=False, root=REPO, stage=None):
     except (OSError, UnicodeError):
         body = ""
     problems = []
-    if not body.startswith("<!-- lens brief:"):
-        problems.append("raw prompt (no lens brief header)")
     recorded = {}
     for pointer in POINTER.findall(body):
         try:
@@ -73,9 +61,15 @@ def coverage_reason(job, *, review=False, root=REPO, stage=None):
                 recorded.setdefault(path_at(root, entry["path"]), set()).add(entry["hash"])
         except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError):
             problems.append(f"unreadable sweep {pointer}")
-    for subject in dict.fromkeys(subjects):
+    if not recorded and declared_seat:
+        # A citer lens with nothing declared (a code-only subject) owes no sweep; a declared seat's sweep
+        # is the only subject set this check reads.
+        return None
+    if recorded and not body.startswith("<!-- lens brief:"):
+        problems.append("raw prompt (no lens brief header)")
+    for subject in dict.fromkeys(recorded):
         run = subprocess.run(["git", "-C", str(root), "hash-object", str(subject)], capture_output=True, text=True)
-        if run.returncode or run.stdout.strip() not in recorded.get(subject, set()):
+        if run.returncode or run.stdout.strip() not in recorded[subject]:
             problems.append(f"missing or stale sweep for {subject}")
     return f"citer coverage {label}: {'; '.join(problems)}. {REMEDY}" if problems else None
 

@@ -25,6 +25,9 @@ blocks the call. Bootstrap import faults deny every Bash/PowerShell call and sta
 other tools. dangerous_shell_guard is the one destructive-command check and a floor member in every
 profile, loaded outside `_optional_hooks`; its import fault denies through `_floor_stub`.
 
+After the chain allows a call, `routing_audit.process` writes its lookup census row (the routing
+classifier's Bash branch); it observes and never changes the verdict.
+
 The chain runs inside `_git_commit.memoized()`: every sub-hook reads the same repo state, so a
 read-only git query they repeat spawns git once per tool call.
 
@@ -175,6 +178,7 @@ duplicate_commit_check = _load('duplicate_commit_check')
 baseline_classification_guard = _load('baseline_classification_guard')
 rule_number_guard = _load('rule_number_guard')
 heredoc_quoting_advisory = _load('heredoc_quoting_advisory')
+routing_audit = _load('routing_audit')
 _APPROVING_GATES_IMPORT_ERROR = _IMPORT_ERRORS.get('approving_gates')
 _TRIAGE_CHECK_IMPORT_ERROR = _IMPORT_ERRORS.get('triage_commit_check')
 _DUPLICATE_CHECK_IMPORT_ERROR = _IMPORT_ERRORS.get('duplicate_commit_check')
@@ -322,6 +326,14 @@ def _dispatch(raw_payload, hooks):
                 extra[key] = value
         if decision == "deny":
             break
+
+    # Lookup census: one row for an allowed search or inline script. A denied or asked call ran
+    # nothing, and a log fault never costs the call (routing_audit swallows its own write errors).
+    if decision in (None, "allow"):
+        try:
+            routing_audit.process(payload)
+        except Exception:
+            pass
 
     # Throttled orphaned-search reaper. After the chain so a hard block (exit 2, above) never
     # spends a snapshot whose advisory it could not deliver, and skipped on a deny so nothing

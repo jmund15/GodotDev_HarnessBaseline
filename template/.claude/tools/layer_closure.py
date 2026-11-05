@@ -69,14 +69,15 @@ CLAUDE_DIRS = {"agents", "auto-memory", "commands", "guards", "hooks", "referenc
                "scripts", "skills", "templates", "tests", "tools", "workflows"}
 SCRIPT_SUFFIXES = (".py", ".sh", ".js", ".ps1")
 DOC_SUFFIXES = (".md", ".json") + SCRIPT_SUFFIXES
-# Paths relative to .claude/ that the harness writes at runtime; they exist in every consumer that
-# runs the writer, so citing them is not a dangling reference.
+# Paths relative to .claude/ that exist in every consumer: the harness writes them at runtime, or the
+# consumer owns its own copy (CLAUDE.md). Citing them is not a dangling reference.
 GENERATED = (
-    "baseline.lock.json", "settings.json", "settings.local.json", "worklog-pending.md",
+    "CLAUDE.md", "baseline.lock.json", "settings.json", "settings.local.json", "worklog-pending.md",
     "pending_harness_edits.md", "orchestration_verdicts.json", "orchestration_candidates.json", "eval_history.json",
     "self_evaluate_archive.json", "logs/*", "scratch/*", ".cache/*", "cache/*", "worktrees/*",
     "sessions/*", "state/*", "generated/*", "reference/godot_class_index.md", "plugins/*", "__*__/*",
     "tools/load_census.project.json", "index_composition_baseline.json",
+    "skills/project_subsystems/reference/subsystem_details.md",
 )
 # Python sources whose string literals name a .md/.json file the source tolerates absent (a path it
 # matches, a name in a message, a read behind an existence check, or a list it classifies):
@@ -84,6 +85,9 @@ GENERATED = (
 OPTIONAL_DATA = {
     ".claude/tools/baseline_sync.py": ("*",),
     ".claude/tools/layer_closure.py": ("*",),
+    ".claude/tests/test_layer_closure.py": ("tests/fixtures/evidence/*",),
+    ".claude/tests/test_verify_claims.py": ("tests/fixtures/evidence/p19*", "tests/fixtures/evidence/oracle_labels.json"),
+    ".claude/tests/test_dispatch_table_verification.py": ("tests/fixtures/evidence*", "tests/fixtures/stop_audit/review_fold_native*"),
     ".claude/tools/lens.py": ("commands/agents/*_agents.md",),
     ".claude/tools/lens_briefs.py": ("commands/checklists/*.md",),
     ".claude/tools/review_ledger.py": ("skills/_brainstorm_shared/execution_depth.md",),
@@ -467,6 +471,91 @@ def _data_refs(tree: Tree, source: str, strings, seen: set[str]):
                 yield found
 
 
+PROOF_PATH = re.compile(r"[\w.-]+(?:/[\w.-]+)*")
+
+
+def _is_path_join(node) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "join" \
+        and ast.unparse(node.func.value) in ("os.path", "posixpath", "path")
+
+
+def _anchored_reads(text: str) -> list[str]:
+    """Paths a proof joins onto a name bound from `__file__` (`HERE / "fixtures" / "rows.jsonl"`,
+    `ROOT / ".claude/scripts/map.json"`): reads of the repo. A path joined onto any other name (a temp root)
+    is one the proof plants."""
+    module = ast.parse(text)
+    anchored: dict[str, list[str]] = {}
+
+    def is_str(node) -> bool:
+        return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+    def pieces(node):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            left = pieces(node.left)
+            return None if left is None or not is_str(node.right) else left + [node.right.value]
+        if _is_path_join(node) and node.args:
+            left = pieces(node.args[0])
+            return None if left is None or not all(map(is_str, node.args[1:])) \
+                else left + [a.value for a in node.args[1:]]
+        if isinstance(node, ast.Name) and node.id in anchored:
+            return list(anchored[node.id])
+        names = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+        rooted = "__file__" in names or names & anchored.keys()
+        return [] if rooted and not any(anchored.get(n) for n in names) else None
+
+    for stmt in module.body:
+        if isinstance(stmt, ast.Assign):
+            found = pieces(stmt.value)
+            for target in stmt.targets:
+                if isinstance(target, ast.Name) and found is not None:
+                    anchored[target.id] = found
+    inner = set()
+    for node in ast.walk(module):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            inner.add(id(node.left))
+        elif _is_path_join(node) and node.args:
+            inner.add(id(node.args[0]))
+    reads = []
+    for node in ast.walk(module):
+        if id(node) in inner or not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)
+                                     or _is_path_join(node)):
+            continue
+        found = pieces(node)
+        path = posixpath.normpath("/".join(found)) if found else ""
+        if path and path != "." and not path.startswith(".."):
+            reads.append(path)
+    return reads
+
+
+def _proof_data_refs(tree: Tree, source: str, strings, joined=()):
+    """The files a proof reads by a path string: a path under its `fixtures/` folder, or a data file named beside it,
+    each one that exists, and any file it joins onto a name bound from `__file__` (`_anchored_reads`). A proof's
+    other path strings (`.claude/settings.json`, the lock) name files it plants in a temp tree, so they bind
+    nothing."""
+    source_dir = posixpath.dirname(source)
+    seen = set()
+    joined = set(joined)
+    for value in [*strings, *sorted(joined)]:
+        value = value.strip()
+        if value in seen or not PROOF_PATH.fullmatch(value) or not value.strip("."):
+            continue
+        seen.add(value)
+        if value.startswith(f"{source_dir}/fixtures/"):
+            cand = value
+        elif value.startswith("fixtures/") or "/" not in value and "." in value.lstrip("."):
+            cand = f"{source_dir}/{value}"
+        elif value in joined and value.startswith(".claude/") and tree.is_file(value):
+            cand = value
+        else:
+            continue
+        optional = OPTIONAL_DATA.get(source, ())
+        if cand != source and tree.on_disk(cand) and not cand.endswith(".py") and not _generated(cand) \
+                and not any(fnmatch.fnmatch(cand, ".claude/" + pat) for pat in optional):
+            found = _judge(tree, source, (cand,), value, path_shaped=True)
+            if found:
+                yield found
+
+
 def _scan_python(tree: Tree, source: str, text: str):
     try:
         imports, strings, optional, loader = _python_deps(text)
@@ -503,6 +592,8 @@ def _scan_python(tree: Tree, source: str, text: str):
                 yield found
     if not fixtures:
         yield from _data_refs(tree, source, strings, set())
+    else:
+        yield from _proof_data_refs(tree, source, strings, _anchored_reads(text))
 
 
 def _strip_comments(text: str, suffix: str) -> str:
@@ -628,7 +719,10 @@ def scan(root: Path, layers: dict[str, str], check: set[str] | None = None) -> l
 def row_dependencies(root: Path, relpath: str, layers: dict[str, str] | None = None,
                      text: str | None = None) -> list[str]:
     """Every file `relpath` imports, runs or cites, shipped or local: what `scan` resolves for it, whatever its
-    layer. `layers` defaults to the consumer view of the root's lock; `text` to the file on disk."""
+    layer. `layers` defaults to the consumer view of the root's lock; `text` to the file on disk. A fixture-tree copy
+    is test data, never a citer, so it depends on nothing."""
+    if FIXTURE_TREE in "/" + relpath:
+        return []
     root = Path(root)
     if layers is None:
         lock = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))

@@ -11,10 +11,12 @@ retire_when:
 Workflow/Agent subagents run on the session's own endpoint and nothing else. What changes with the
 endpoint is the PIN VOCABULARY, and since 2026-09-04 nothing translates between vocabularies.
 
-**Pin the session transport's own model IDs.** Use `model_registry.py for-role <tier>` to read
-the current roster, then pass that endpoint's legal pin. `hooks/workflow_provider_guard.py` DENIES
-another transport's vocabulary before the call runs: an unsupported pin can otherwise return a
-null agent that a workflow mistakes for zero findings.
+**Pin the session transport's own model IDs.** `model_registry.py for-role <tier>` lists the rows
+(`commands/delegate.md`). A row on
+another route still runs through that plan's launcher (`reference/sidecar_dispatch.md`,
+`model_registry.py available`), never a native Workflow pin. Pass the endpoint's legal pin.
+`hooks/workflow_provider_guard.py` DENIES another transport's vocabulary before the call runs: an
+unsupported pin can otherwise return a null agent that a workflow mistakes for zero findings.
 
 **Siblings on the current transport need no sidecar while the session's plan pays.** Transport-aware
 Workflow engines accept that endpoint's IDs from their arguments. A separate sidecar process reaches

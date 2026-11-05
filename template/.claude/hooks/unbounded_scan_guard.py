@@ -525,19 +525,40 @@ def _plain_grep_rewrite(command, cwd):
         patterns, operands = [None, operands[0]], operands[1:]
     if any(p and "-F" not in flags and "-E" not in flags and _GNU_BRE.search(p) for p in patterns):
         return None
-    operands = _expand_globs(operands or ["."], cwd)
-    if operands is None:
-        return None
+    # Windows caps a command line at 32,767 characters: a longer rewrite retries with wide shell
+    # globs kept as git pathspec globs, and past the cap still falls to the deny.
+    for compact in (False, True):
+        expanded = _expand_globs(operands or ["."], cwd, compact)
+        if expanded is None:
+            return None
+        found = _bounded_rewrite(cwd, flags, patterns, expanded, globs, exclusions)
+        if found is None or len(found[0]) <= _MAX_COMMAND_CHARS:
+            return found
+    return None
+
+
+_MAX_COMMAND_CHARS = 30000
+
+
+def _bounded_rewrite(cwd, flags, patterns, operands, globs, exclusions):
     repo = _git_grep_command(cwd, flags, patterns, operands, globs, exclusions)
     if repo:
         return repo, REWRITE_NOTE
+    if any(isinstance(o, _GlobSpec) for o in operands):
+        return None
     rg = _rg_command(cwd, flags, patterns, operands, globs, exclusions)
     return (rg, REWRITE_NOTE_RG) if rg else None
 
 
-def _expand_globs(operands, cwd):
+class _GlobSpec(str):
+    """A one-level shell glob kept as a git pathspec glob, so a wide match list stays a short command."""
+
+
+def _expand_globs(operands, cwd, compact=False):
     """Expand one-level glob operands as bash does (sorted, dotfiles skipped). `**` and a glob that
-    matches nothing return None: the first walks a tree the text does not bound, the second names no file."""
+    matches nothing return None: the first walks a tree the text does not bound, the second names no file.
+    `compact` keeps a glob whose matches are all files, with the wildcard only in its last component,
+    as a _GlobSpec (git's glob also matches dotfiles, which bash skips)."""
     out = []
     for path in operands:
         if not re.search(r"[*?\[]", path):
@@ -548,30 +569,56 @@ def _expand_globs(operands, cwd):
             matches = sorted(glob.glob(os.path.join(cwd, path)))
             if not matches:
                 return None
+            if (compact and not re.search(r"[*?\[]", os.path.dirname(path))
+                    and not any(os.path.isdir(m) for m in matches)):
+                out.append(_GlobSpec(path))
+                continue
             out += [m if os.path.isabs(path) else os.path.relpath(m, cwd).replace("\\", "/") for m in matches]
     return out
 
 
 def _git_grep_command(cwd, flags, patterns, operands, globs, exclusions):
-    top = _git(cwd, "rev-parse", "--show-toplevel")
-    if top is None or top.returncode != 0:
-        return None
-    root = os.path.normcase(os.path.abspath(top.stdout.strip()))
+    """`git [-C <repo>] grep --untracked` for operands that all live in one git repository: the
+    checkout, or another one (nested, a submodule) named by its own toplevel. A file operand stays
+    the file; --include narrows only a directory."""
+    cwd_top = _git(cwd, "rev-parse", "--show-toplevel")
+    cwd_top = (os.path.normcase(os.path.abspath(cwd_top.stdout.strip()))
+               if cwd_top is not None and cwd_top.returncode == 0 else None)
+    entries, tops, top = [], set(), None
     for path in operands:
-        full = os.path.normcase(os.path.abspath(os.path.join(cwd, path)))
-        if not os.path.exists(full) or not (full == root or full.startswith(root.rstrip(os.sep) + os.sep)):
+        full = os.path.abspath(os.path.join(cwd, native_path(path)))
+        spec = isinstance(path, _GlobSpec)
+        if not spec and not os.path.exists(full):
             return None
-        ignored = _git(cwd, "check-ignore", "-q", path)
+        anchor = full if os.path.isdir(full) and not spec else os.path.dirname(full)
+        top = _git(anchor, "rev-parse", "--show-toplevel")
+        if top is None or top.returncode != 0:
+            return None
+        top = os.path.abspath(top.stdout.strip())
+        tops.add(os.path.normcase(top))
+        hits = glob.glob(full) if spec else [full]
+        ignored = _git(top, "check-ignore", "-q", *hits)
         if ignored is None or ignored.returncode == 0:
             return None
-    if globs:
-        specs = [":(glob)%s**/%s" % ("" if p in (".", "./") else p.rstrip("/") + "/", g)
-                 for p in operands for g in globs]
-    else:
-        specs = operands
+        entries.append((path, full, spec))
+    if len(tops) != 1:
+        return None
+    base = top
+    foreign = os.path.normcase(base) != cwd_top
+
+    specs = []
+    for path, full, spec in entries:
+        where = os.path.relpath(full, base).replace("\\", "/") if foreign else path
+        if spec:
+            specs.append(":(glob)" + where)
+        elif globs and os.path.isdir(full):
+            specs += [":(glob)%s**/%s" % ("" if where in (".", "./") else where.rstrip("/") + "/", g)
+                      for g in globs]
+        else:
+            specs.append(where)
     specs += [":(exclude,glob)**/%s%s" % (value, "/**" if name == "exclude-dir" else "")
               for name, value in exclusions]
-    words = ["git", "grep", "--untracked"] + flags
+    words = ["git"] + (["-C", base.replace("\\", "/")] if foreign else []) + ["grep", "--untracked"] + flags
     if patterns[0] is None:
         words += ["-e", patterns[1]]
     else:

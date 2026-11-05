@@ -68,7 +68,7 @@ if [[ "$s" == *"-u CLAUDE_CODE_PROMPT_CACHE_TTL"* && "$s" != *"CLAUDE_CODE_PROMP
   echo "OK   non-Anthropic: the scrub drops a host cache TTL and sets none"
 else echo "FAIL non-Anthropic ttl: $s"; fail=1; fi
 for l in codex_proxy deepseek opencode; do
-  if git -C "$HERE" grep -q PROMPT_CACHE_TTL -- "../scripts/${l}_sidecar.sh"; then
+  if grep -q PROMPT_CACHE_TTL "$HERE/../scripts/${l}_sidecar.sh"; then
     echo "FAIL ${l}_sidecar.sh sets a cache TTL"; fail=1
   else echo "OK   ${l}_sidecar.sh leaves the cache TTL unset"; fi
 done
@@ -86,6 +86,11 @@ if [ -n "$prefix" ] && [ -f "$prefix" ]; then
   if [ "${OS:-}" = Windows_NT ]; then
     pri="$("$prefix" "python3 -c 'import ctypes as c; k=c.windll.kernel32; k.GetCurrentProcess.restype=c.c_void_p; k.GetPriorityClass.argtypes=[c.c_void_p]; print(hex(k.GetPriorityClass(k.GetCurrentProcess())))'")"
     [ "$pri" = 0x4000 ] && echo "OK   arm prefix child runs below normal" || { echo "FAIL arm prefix child priority $pri"; fail=1; }
+    # A caller already below normal (a lowered runner reads as nice 8) must not push the arm's work to idle.
+    # The plant sets nice 8 itself, since this proof may already run under that runner.
+    n=$(nice)
+    pri="$(nice -n $(( n < 8 ? 8 - n : 0 )) "$prefix" "python3 -c 'import ctypes as c; k=c.windll.kernel32; k.GetCurrentProcess.restype=c.c_void_p; k.GetPriorityClass.argtypes=[c.c_void_p]; print(hex(k.GetPriorityClass(k.GetCurrentProcess())))'")"
+    [ "$pri" = 0x4000 ] && echo "OK   arm prefix child under a below-normal caller stays below normal" || { echo "FAIL arm prefix child under a below-normal caller priority $pri"; fail=1; }
   fi
 else echo "FAIL arm prefix: none in <$s>"; fail=1; fi
 

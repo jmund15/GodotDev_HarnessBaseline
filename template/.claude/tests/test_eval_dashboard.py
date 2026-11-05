@@ -481,7 +481,7 @@ def main():
 
     def with_routing(content):
         root_dir, vault_dir = fresh()
-        logs = os.path.join(root_dir, ".claude", "logs")
+        logs = os.path.join(root_dir, "logs")
         os.makedirs(logs)
         if content is not None:
             with open(os.path.join(logs, "routing_audit_stats.json"), "w", encoding="utf-8") as handle:
@@ -852,6 +852,35 @@ def main():
           and ok_route[0]["status"] == "ok" and ok_route[0]["rows"] == 4 and ok_route[1]["silent_misses"] == 1,
           "loaders: read_routing reads absent, unparseable, stale and ok routing stats",
           repr((absent_route, unparse_route, stale_route, ok_route)))
+
+    check(eval_dashboard.ROUTING_REL == "logs/routing_audit_stats.json",
+          "loaders: ROUTING_REL is the path the aggregator writes", eval_dashboard.ROUTING_REL)
+    census_root = fresh_root()
+    put(census_root, eval_dashboard.ROUTING_REL, json.dumps({
+        "generated_at": "2026-09-27T10:00:00", "total_entries": 9, "silent_misses": 1,
+        "lookup_calls": {"bash_recognized": 5, "bash_opaque": 2, "lsp": 1}, "vault_writes": {"vault-write-worker": 1},
+        "legacy_heuristic_events": {"pascal-grep-on-cs": 7}}))
+    census_card = eval_dashboard.read_routing(census_root, "2026-09-28")[1] or {}
+    check(census_card.get("lookup_calls") == {"bash_recognized": 5, "bash_opaque": 2, "lsp": 1}
+          and census_card.get("legacy_heuristic_events") == {"pascal-grep-on-cs": 7}
+          and census_card.get("vault_writes") == {"vault-write-worker": 1},
+          "loaders: the routing card carries lookup_calls, vault_writes and legacy events", repr(census_card))
+    old_card = eval_dashboard.read_routing(ok_root, "2026-09-28")[1] or {}
+    check(old_card.get("lookup_calls") == {} and old_card.get("legacy_heuristic_events") == {},
+          "loaders: a stats file without the new fields reads as empty maps", repr(old_card))
+    import subprocess as _sp
+    agg_root = fresh_root()
+    audit_dir = os.path.join(agg_root, "logs")
+    os.makedirs(audit_dir)
+    stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    with open(os.path.join(audit_dir, "routing_audit.jsonl"), "w", encoding="utf-8") as handle:
+        handle.write(json.dumps({"ts": stamp, "classification": "census", "rule": "bash-lookup", "agent_id": ""}) + "\n")
+    agg = _sp.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(eval_dashboard.__file__)),
+                                                "aggregate_routing_audit.py")],
+                  cwd=agg_root, capture_output=True, text=True, timeout=60)
+    piped = eval_dashboard.read_routing(agg_root, stamp[:10])
+    check(agg.returncode == 0 and piped[0]["status"] == "ok" and (piped[1] or {}).get("lookup_calls", {}).get("bash_recognized") == 1,
+          "pipeline: aggregator output at logs/ reaches the dashboard card", repr((agg.stderr[-200:], piped)))
 
     good_rules = put(fresh_root(), "rules.json", '{"fired": [], "undecidable": [], "malformed": []}')
     short_rules = put(fresh_root(), "short.json", '{"fired": []}')

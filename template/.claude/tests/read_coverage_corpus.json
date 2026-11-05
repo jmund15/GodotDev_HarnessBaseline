@@ -1,0 +1,13 @@
+[
+  {"name":"multi-file cat","command":"cat src/a.cs src/b.cs","reads":[["src/a.cs",[[1,"end"]]],["src/b.cs",[[1,"end"]]]]},
+  {"name":"quoted cat","command":"cat 'src/a file.cs'","reads":[["src/a file.cs",[[1,"end"]]]]},
+  {"name":"cd then cat","command":"cd src && cat a.cs b.cs","reads":[["src/a.cs",[[1,"end"]]],["src/b.cs",[[1,"end"]]]]},
+  {"name":"sed range","command":"sed -n '2,4p' src/a.cs","reads":[["src/a.cs",[[2,4]]]]},
+  {"name":"head count","command":"head -n 3 src/a.cs","reads":[["src/a.cs",[[1,3]]]]},
+  {"name":"tail range has unknown start","command":"tail -n 3 src/a.cs","reads":[]},
+  {"name":"grep only","command":"grep -n thing src/a.cs","reads":[]},
+  {"name":"pipeline","command":"cat src/a.cs | head","reads":[]},
+  {"name":"redirect","command":"cat src/a.cs > out.txt","reads":[]},
+  {"name":"backgrounded command","command":"cat src/a.cs & rm src/b.cs","reads":[]},
+  {"name":"sequence","command":"cat src/a.cs; rm src/b.cs","reads":[]}
+]

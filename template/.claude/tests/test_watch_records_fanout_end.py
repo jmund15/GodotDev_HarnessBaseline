@@ -298,7 +298,7 @@ class FanoutEnd(unittest.TestCase):
 class WakeUnit(unittest.TestCase):
     """The wake unit is the jobs one fan-out inventory puts in a `wakeWith` group; a job with none is its own unit.
 
-    Captured 2026-10-28: eight independent fix jobs in one fan-out; three ended clean over
+    Failure this proves: independent fix jobs in one fan-out; three ended clean over
     40, 22 and 10 minutes and none woke the session, which woke only when a fourth job failed."""
 
     def setUp(self):

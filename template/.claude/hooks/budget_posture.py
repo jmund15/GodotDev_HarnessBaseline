@@ -356,33 +356,9 @@ def provider_band(transport):
         return None
 
 
-QUOTA_CLAUSE_CAP = 4
-
-
-def binding_fingerprint(transport, band):
-    """Legacy emission fingerprint only; never printed. Preserve the existing re-emit conditions."""
-    try:
-        sys.path.insert(0, os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
-        import provider_capacity
-        view = provider_capacity.routing_view(provider_capacity.cached(transport) or {}) or {}
-        binding, routing = view.get("binding") or {}, view.get("routing") or {}
-        if not binding.get("band") or binding.get("name") == routing.get("name"):
-            return ""
-        if quota_bands.band_rank(binding["band"]) <= quota_bands.band_rank(band):
-            return ""
-        reset = binding.get("resetsAt")
-        when = time.strftime("%H:%MZ", time.gmtime(float(reset))) if reset else "unknown"
-        return " (%s %s %d%%, resets %s)" % (binding.get("name"), binding["band"],
-                                             round(float(binding.get("usedPercent") or 0)), when)
-    except Exception:
-        return ""
-
-
 def other_quota_bits(plan):
-    """One row per OTHER live plan-quota plan, from cache only: `{"name", "band", "fingerprint"}`, with
-    `band` None on a cold cache. A list longer than `QUOTA_CLAUSE_CAP` ends in `{"more": <count>}`.
-    `quota_key` is a row's emission key and `quota_clause` its printed clause.
+    """One row per OTHER live plan-quota plan, from cache only: `{"name", "band"}`, with `band` None on a cold
+    cache. `quota_key` is a row's emission key and `quota_clause` its printed clause.
 
     A plan a session can sidecar to is a currency it may spend, and naming only the session's own
     plan leaves a spent one invisible. The session's plan is left out; so is `anthropic` when the
@@ -390,13 +366,9 @@ def other_quota_bits(plan):
     `provider_band` is: this hook must never spawn a probe.
 
     A cold cache says `unknown` and NAMES the transport rather than omitting the clause — an absent
-    clause reads as "no such currency", which is the failure mode this prevents.
-
-    A plan with room is named before one that is spent or unreadable. The cap is what keeps the line
-    short, and a slot spent on a currency nobody can spend is exactly the trade the line must not
-    make: with the Console plans in the roster, `go` -- warmed, with room, and the plan the router
-    reaches for -- was the row that fell behind `+N more` while an Exhausted `codex` was named. The
-    split is stable, so registry order still decides WITHIN each group; only the group moves.
+    clause reads as "no such currency", which is the failure mode this prevents. Every other plan is
+    named with its band word alone, in registry order within its spendability group: figures for a
+    pick live in `for-role`, and a cap hid a live plan behind `+N more`.
     """
     try:
         sys.path.insert(0, os.path.join(
@@ -412,30 +384,20 @@ def other_quota_bits(plan):
     rows = [{"name": name, "band": provider_band(name)} for name in names]
     rows.sort(key=lambda row: 0 if row["band"] and row["band"] not in
               (quota_bands.EXHAUSTED_BAND, "Dispatch floor") else 1)
-    out = [{"name": row["name"], "band": row["band"],
-            "fingerprint": binding_fingerprint(row["name"], row["band"]) if row["band"] else ""}
-           for row in rows[:QUOTA_CLAUSE_CAP]]
-    if len(names) > QUOTA_CLAUSE_CAP:
-        out.append({"more": len(names) - QUOTA_CLAUSE_CAP})
-    return out
+    return rows
 
 
 def quota_key(row):
-    """The row's emission-dedupe text. Its wording is the key a running session already saved."""
-    if "more" in row:
-        return f"+{row['more']} more plan-quota transports"
-    if row["band"]:
-        return f"{row['name']} {row['band']} band{row['fingerprint']}"
-    return f"{row['name']} band unknown (cache cold; python3 .claude/tools/provider_bands.py reads and warms it)"
+    """The row's emission-dedupe text: its band word alone, so the line stays a fact and not a pick."""
+    return f"{row['name']} {row['band']}" if row["band"] else f"{row['name']} unknown"
 
 
 def quota_clause(row, warm, now):
-    """The posture line's clause for one `other_quota_bits` row; `warm` names the plans a warm is running for."""
-    if "more" in row:
+    """The posture line's clause for one `other_quota_bits` row: its band word alone; `warm` names the plans a
+    warm is running for."""
+    if row["band"] is not None:
         return quota_key(row)
-    if row["band"] is None:
-        return f"{row['name']} band unknown (cache cold)" + ("; warming" if row["name"] in warm else "")
-    return provider_entry(row["name"], now=now)
+    return quota_key(row) + (", warming" if row["name"] in warm else "")
 
 
 def free_pool_text():
@@ -697,7 +659,7 @@ def spend_line(posture, own_band):
     """The owner's spend line for a posture, or None when it says nothing. `own_band` is the session's own plan band."""
     if posture.get("mode") == "lean":
         return ("spend: lean (owner, %s, until %s) — pin rule: orchestration reference spend_lean.md; "
-                "rows: provider_bands.py lean <tier>" % (posture.get("scope"), posture.get("until")))
+                "rows: model_registry.py for-role <tier>" % (posture.get("scope"), posture.get("until")))
     if posture.get("expired"):
         return "spend: lean expired %s" % posture.get("until")
     if own_band in (quota_bands.EXHAUSTED_BAND, "Dispatch floor", "Hot"):

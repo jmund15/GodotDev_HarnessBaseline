@@ -96,10 +96,24 @@ def capture(fn, argv, data):
     return code, out.getvalue()
 
 
-def cross_section(text):
-    start = text.find("CROSS-TRANSPORT")
-    end = text.find("NEAREST", start)
-    return text[start:end if end > 0 else None]
+@contextlib.contextmanager
+def planted_capacity(data):
+    """A temp capacity cache with one available reading per plan-quota transport: `for-role` reads it
+    cache-first, and the proof never touches the machine's cache."""
+    from _capacity_fixtures import write_capacity_cache
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_capacity_cache(os.path.join(tmp, "capacity.json"), data)
+        saved = {k: os.environ.get(k) for k in ("PROVIDER_CAPACITY_CACHE", "HARNESS_USAGE_SAMPLES")}
+        os.environ["PROVIDER_CAPACITY_CACHE"] = path
+        os.environ["HARNESS_USAGE_SAMPLES"] = os.path.join(tmp, "usage.jsonl")
+        try:
+            yield
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 def main():
@@ -437,16 +451,16 @@ def main():
 
     def other_plans():
         d = forced()
-        res = mr.for_role("executor", PRIMARY, d)
+        res = mr.route_rows("executor", PRIMARY, d)
         others = [(m["id"], p, l) for m, p, l in res.get("otherPlans") or []]
         row = exec_row(d)
         return ((row["id"], SECONDARY, SECOND_LAUNCHER) in others
                 and row["id"] in [m["id"] for m in res["inTransport"]]), repr(others)
-    case("for_role reports the other plan of an in-transport row in otherPlans", other_plans)
+    case("route_rows reports the other plan of an in-transport row in otherPlans", other_plans)
 
     def from_secondary():
         d = forced()
-        res = mr.for_role("executor", SECONDARY, d)
+        res = mr.route_rows("executor", SECONDARY, d)
         others = [(m["id"], p, l) for m, p, l in res.get("otherPlans") or []]
         row = exec_row(d)
         return (row["id"] in [m["id"] for m in res["inTransport"]]
@@ -456,55 +470,44 @@ def main():
 
     def cli(seat, data, want, unwanted=None):
         def run():
-            original = mr.role_tiers
-            mr.role_tiers = lambda *_a, **_k: None
-            try:
-                code, text = capture(mr._cmd_for_role, ["executor", "--from", seat], data())
-            finally:
-                mr.role_tiers = original
-            cross = cross_section(text)
-            ok = code == 0 and want in cross and "bash " + want in cross
-            if unwanted:
-                ok = ok and "bash " + unwanted not in cross
+            d = data()
+            with planted_capacity(d):
+                code, text = capture(mr._cmd_for_role, ["executor", "--from", seat], d)
+            ok = (code == 0 and ("plan " + want) in text and "bash " not in text
+                  and (unwanted is None or ("plan " + unwanted) not in text))
             return ok, text[-900:]
         return run
-    case("`for-role executor` from the primary seat prints the secondary launcher under CROSS-TRANSPORT",
-         cli(PRIMARY, forced, SECOND_LAUNCHER, unwanted=BASE_LAUNCHER))
-    case("`for-role executor` from the secondary seat prints the primary launcher under CROSS-TRANSPORT",
-         cli(SECONDARY, forced, BASE_LAUNCHER, unwanted=SECOND_LAUNCHER))
+    case("`for-role executor` from the primary seat names the secondary plan and prints no launcher",
+         cli(PRIMARY, forced, SECONDARY))
+    case("`for-role executor` from the secondary seat names the primary plan and no launcher",
+         cli(SECONDARY, forced, PRIMARY))
 
     def cli_session_plan():
-        original = mr.role_tiers
-        mr.role_tiers = lambda *_a, **_k: None
         saved = {k: os.environ.get(k) for k in ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_TRANSPORT",
                                                   "ANTHROPIC_BASE_URL")}
         os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(os.path.expanduser("~"), ".claude-secondary")
         os.environ.pop("CLAUDE_CODE_TRANSPORT", None)
         os.environ.pop("ANTHROPIC_BASE_URL", None)
         try:
-            code, text = capture(mr._cmd_for_role, ["executor"], forced())
+            d = forced()
+            with planted_capacity(d):
+                code, text = capture(mr._cmd_for_role, ["executor"], d)
         finally:
-            mr.role_tiers = original
             for k, v in saved.items():
                 if v is None:
                     os.environ.pop(k, None)
                 else:
                     os.environ[k] = v
-        cross = cross_section(text)
-        return (code == 0 and "seat: " + SECONDARY in text and "bash " + BASE_LAUNCHER in cross
-                and "bash " + SECOND_LAUNCHER not in cross), text[-900:]
-    case("`for-role executor` with no --from seats the session PLAN (a secondary session hops to the primary)",
+        return (code == 0 and "session plan " + SECONDARY in text and "bash " not in text), text[-900:]
+    case("`for-role executor` with no --from seats the session PLAN (a secondary session)",
          cli_session_plan)
 
     def cli_unavailable():
-        original = mr.role_tiers
-        mr.role_tiers = lambda *_a, **_k: None
-        try:
-            code, text = capture(mr._cmd_for_role, ["executor", "--from", PRIMARY], suspended())
-        finally:
-            mr.role_tiers = original
-        return code == 0 and SECOND_LAUNCHER not in text, text[-600:]
-    case("an unavailable plan's launcher is not printed by `for-role`", cli_unavailable)
+        d = suspended()
+        with planted_capacity(d):
+            code, text = capture(mr._cmd_for_role, ["executor", "--from", PRIMARY], d)
+        return code == 0 and "plan " + SECONDARY not in text, text[-600:]
+    case("an unavailable plan is never named by `for-role`", cli_unavailable)
 
     def available_cli(data, present):
         def run():

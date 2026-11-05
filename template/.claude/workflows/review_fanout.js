@@ -727,6 +727,80 @@ const isChecked = (value) => isRecord(value)
 // The seat coverage contract, judged as tools/review_result.py `gap_verdict` judges it on the sidecar
 // route; that docstring names the contract's home.
 const GAP_REASONS = ['outside-lens', 'capability', 'missing']
+const SHELL_TOOLS = ['bash', 'powershell']
+const WHOLE = [1, Infinity]
+const shellWords = command => {
+  if (/[$`\n\r]/.test(command)) return null
+  const words = []; let word = '', quote = '', escaped = false
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i]
+    if (escaped) { word += char; escaped = false; continue }
+    if (char === '\\' && quote !== "'") { escaped = true; continue }
+    if (quote) { if (char === quote) quote = ''; else word += char; continue }
+    if (char === "'" || char === '"') { quote = char; continue }
+    if (/\s/.test(char)) { if (word) words.push(word); word = ''; continue }
+    if (char === '&' && command[i + 1] === '&') { if (word) words.push(word); word = ''; words.push('&&'); i++; continue }
+    if (';&|<>()'.includes(char)) { if (word) words.push(word); word = ''; words.push(char); continue }
+    word += char
+  }
+  if (quote || escaped) return null
+  if (word) words.push(word)
+  return words
+}
+const simpleShellReads = words => {
+  const [operation, ...args] = words
+  if (operation.toLowerCase() === 'cat') {
+    const paths = []; let options = true
+    for (const word of args) {
+      if (options && word === '--') options = false
+      else if (options && word.startsWith('-') && !/^-[AbEnsTv]+$/.test(word)) return []
+      else if (!options || !word.startsWith('-')) paths.push(word)
+    }
+    return paths.filter(p => p !== '-' && !/[*?\[\]]/.test(p)).map(p => [p, [WHOLE]])
+  }
+  if (operation.toLowerCase() === 'get-content') {
+    const paths = []
+    for (let i = 0; i < args.length; i++) {
+      const flag = args[i].toLowerCase()
+      if (flag === '-raw') continue
+      if (flag === '-path' || flag === '-literalpath') { if (++i >= args.length) return []; paths.push(args[i]) }
+      else if (flag.startsWith('-')) return []
+      else paths.push(args[i])
+    }
+    return paths.length === 1 && !/[*?\[\],]/.test(paths[0]) ? [[paths[0], [WHOLE]]] : []
+  }
+  if (operation.toLowerCase() === 'sed') {
+    const m = args.length === 3 && args[0] === '-n' && !args[2].startsWith('-') ? args[1].match(/^(\d+)(?:,(\d+))?p$/) : null
+    return m && +m[1] >= 1 && +(m[2] || m[1]) >= +m[1] ? [[args[2], [[+m[1], +(m[2] || m[1])]]]] : []
+  }
+  if (operation.toLowerCase() === 'head') {
+    let count = 10, file
+    if (args.length === 3 && args[0] === '-n' && /^\d+$/.test(args[1])) [count, file] = [+args[1], args[2]]
+    else if (args.length === 2 && /^-\d+$/.test(args[0])) [count, file] = [+args[0].slice(1), args[1]]
+    else if (args.length === 1) file = args[0]
+    return file && count >= 1 && !file.startsWith('-') ? [[file, [[1, count]]]] : []
+  }
+  return []
+}
+const shellReads = (command, root = '.') => {
+  const words = shellWords(command.trim())
+  if (!words || !words.length || words.some(w => w !== '&&' && /[;&|<>()]/.test(w))) return []
+  if (!words.includes('&&')) return simpleShellReads(words)
+  const commands = [[]]
+  for (const word of words) word === '&&' ? commands.push([]) : commands[commands.length - 1].push(word)
+  let cwd = root.replace(/\\/g, '/'); const reads = []
+  for (const part of commands) {
+    if (!part.length) return []
+    if (part[0] === 'cd' && part.length === 2 && !part[1].startsWith('-')) cwd = part[1].startsWith('/') ? part[1] : cwd + '/' + part[1]
+    else if (part[0] === 'echo') continue
+    else {
+      const found = simpleShellReads(part)
+      if (!found.length) return []
+      reads.push(...found.map(([p, spans]) => [p.startsWith('/') ? p : cwd + '/' + p, spans]))
+    }
+  }
+  return reads.map(([p, spans]) => [p.replace(/\\/g, '/').replace(/\/\.\//g, '/'), spans])
+}
 // The path a `tool:target` entry names, lower-cased: review_result.py `target_path` without its repo-root
 // strip, which samePath's suffix match on a `/` boundary replaces.
 const targetPath = (target) => {
@@ -734,30 +808,43 @@ const targetPath = (target) => {
   const cut = text.indexOf(':')
   const tool = cut >= 0 ? text.slice(0, cut).trim().toLowerCase() : ''
   let name = (cut >= 0 ? text.slice(cut + 1) : text).trim().replace(/\\/g, '/').replace(/(?:\s+\([^()]*\))+\s*$/, '')
-  if (tool === 'bash' || tool === 'powershell') {
-    const words = name.split(/\s+/).filter(Boolean)
-    const dash = words.lastIndexOf('--')
-    const operands = (dash >= 0 ? words.slice(dash + 1) : words.slice(1)).filter(w => !w.startsWith('-'))
-    name = operands.length ? operands[operands.length - 1] : ''
+  if (SHELL_TOOLS.includes(tool)) {
+    const reads = shellReads(name)
+    if (reads.length) name = reads[reads.length - 1][0]
+    else {
+      const words = name.split(/\s+/).filter(Boolean)
+      const dash = words.lastIndexOf('--')
+      const operands = (dash >= 0 ? words.slice(dash + 1) : words.slice(1)).filter(w => !w.startsWith('-'))
+      name = operands.length ? operands[operands.length - 1] : ''
+    }
   }
   name = name.replace(/^['"]+|['"]+$/g, '').replace(/:\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$/, '').replace(/\/+$/, '')
   return name.split('/').filter(seg => seg !== '.').join('/').toLowerCase()
 }
 const samePath = (a, b) => !!a && !!b && (a === b || a.endsWith('/' + b) || b.endsWith('/' + a))
-// The [first, last] line spans of its file one `tool:target` entry read: a Read's `:<first>-<last>` suffix or comma
-// list of them, else the Read window from line 1; a shell read whole, since its span is not in the entry; any
-// other tool, a search included, none. review_result.py `target_spans` applies the same rule.
+// The [first, last] line spans one `tool:target` entry read; searches and unsupported shell commands get none.
 const targetSpans = (target) => {
   const text = String(target)
   const cut = text.indexOf(':')
   const tool = cut >= 0 ? text.slice(0, cut).trim().toLowerCase() : ''
-  if (tool === 'bash' || tool === 'powershell') return [[1, Infinity]]
+  if (SHELL_TOOLS.includes(tool)) return shellReads(text.slice(cut + 1).trim().replace(/\\/g, '/')).flatMap(([, spans]) => spans)
   if (tool !== 'read') return []
   const name = text.slice(cut + 1).trim().replace(/\\/g, '/').replace(/(?:\s+\([^()]*\))+\s*$/, '').replace(/^['"]+|['"]+$/g, '')
   const suffix = name.match(/:(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)$/)
   if (!suffix) return [[1, READ_WINDOW]]
   return suffix[1].split(',').map(part => { const [first, last] = part.split('-').map(Number); return [first, last === undefined ? first : last] })
 }
+// review_result.py `claimed_reads`: one {path, spans} per file a seat's toolsUsed entries read, so a chained shell
+// read never credits its last file with another file's spans. Entries that read no line are dropped.
+const claimedReads = (tools) => tools.flatMap(t => {
+  const text = String(t)
+  const cut = text.indexOf(':')
+  if (cut >= 0 && SHELL_TOOLS.includes(text.slice(0, cut).trim().toLowerCase())) {
+    const reads = shellReads(text.slice(cut + 1).trim().replace(/\\/g, '/').replace(/(?:\s+\([^()]*\))+\s*$/, ''))
+    if (reads.length) return reads.map(([p, spans]) => ({ path: targetPath('Read:' + p), spans }))
+  }
+  return [{ path: targetPath(text), spans: targetSpans(text) }]
+}).filter(r => r.path && r.spans.length)
 // True when `spans` hold at least one read and together cover lines 1 to `lines`.
 const covers = (spans, lines) => {
   if (!spans.length) return false
@@ -895,7 +982,7 @@ for (let i = 0; i < resolved.length; i++) {
   const mustRead = resolved[i].mustRead
   const claimed = isRecord(result.checked) && Array.isArray(result.checked.toolsUsed)
     ? result.checked.toolsUsed.filter(t => typeof t === 'string' && t.trim()) : []
-  const reads = claimed.map(t => ({ path: targetPath(t), spans: targetSpans(t) })).filter(r => r.path && r.spans.length)
+  const reads = claimedReads(claimed)
   const verdict = gapVerdict(result.gaps, mustRead, reads)
   const gapTexts = verdict.legal.map(gap => gap.item + ' (' + gap.reason + ')')
   for (const text of gapTexts) flags.push({ kind: 'lens-gaps', lens, detail: text })
@@ -903,9 +990,12 @@ for (let i = 0; i < resolved.length; i++) {
   const gapNotes = verdict.notes.map(gap => isRecord(gap) && typeof gap.item === 'string'
     ? gap.item + ' (' + (gap.reason === undefined ? 'no reason' : String(gap.reason).slice(0, 80)) + ')' : String(JSON.stringify(gap)).slice(0, 200))
   for (const text of gapNotes) flags.push({ kind: 'lens-gap-notes', lens, detail: text })
+  // The engine sees only the seat's own `checked.toolsUsed` entries, never its transcript, so an entry they do not
+  // cover is unproven, not failed: post_check.py review reads the transcript (review_result.called_reads, which
+  // also credits a shell result showing the file whole) and the ledger record carries the verdict.
   if (verdict.unread.length) {
-    flags.push({ kind: 'lens-unread-must-read', lens, detail: 'must-read entries not read in full, with no legal gap: ' + verdict.unreadText.join(', ')
-      + '; stoppedAt=' + (checked ? checked.stoppedAt : 'invalid') + ' does not excuse them. This seat failed: its coverage is uncovered, and the panel does not re-run it.' })
+    flags.push({ kind: 'lens-unread-must-read', lens, detail: 'must-read entries the seat\'s own entries do not cover in full, with no legal gap: ' + verdict.unreadText.join(', ')
+      + '; stoppedAt=' + (checked ? checked.stoppedAt : 'invalid') + ' does not excuse them. Coverage unproven here: post_check.py review judges it from the transcript, and the panel does not re-run the seat.' })
   }
   const map = result.checked && result.checked.mandates
   // A blocked stop the seat's own map names (`not-reached` keys in a valid map), with a must-read list to prove
@@ -919,11 +1009,11 @@ for (let i = 0; i < resolved.length; i++) {
     rowStatus = valid > 0 || (namedBlock && checked.toolsUsed.length > 0) ? 'partial' : 'uncovered'
     flags.push({ kind: 'lens-incomplete-coverage', lens, detail: 'stoppedAt=' + checked.stoppedAt + ' with ' + checked.toolsUsed.length + ' checked targets; this axis is not complete.' })
   }
-  if (verdict.unread.length) rowStatus = 'failed'
+  if (verdict.unread.length && rowStatus !== 'uncovered') rowStatus = 'partial'
   // Capability-partial (computed here, the one home of this fact): a seat that did not fail, no rejected entry, valid provenance, a valid
   // mandate map, and a shortfall that is the seat's own limit: a capability gap, or a blocked stop its map names.
   // A map's `not-reached` key is that limit, not a disqualifier.
-  const capabilityPartial = rowStatus !== 'failed' && !rejected && !!checked && checked.toolsUsed.length > 0
+  const capabilityPartial = rowStatus !== 'failed' && !verdict.unread.length && !rejected && !!checked && checked.toolsUsed.length > 0
     && (namedBlock || (checked.stoppedAt !== 'blocked' && capability > 0)) && isMandateMap(map, mandateKeysOf({ key: lens }))
   perAgent.push({
     key: lens, count: valid, status: rowStatus, rejected,
@@ -1171,13 +1261,11 @@ log('review-fanout: ' + agents.length + ' agents → ' + counts.raw + ' received
 const DIGEST_SCHEMA = {
   type: 'object', additionalProperties: true,
   properties: {
-    applied: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { id: { type: 'string' }, change: { type: 'string', description: 'what changed and where, one line' }, source: { type: 'string', enum: ['finding', 'adapted', 'fold', 'ruling'], description: 'finding when the subject carries the fix or option the finding proposed verbatim, adapted when it carries reviewers fixes merged or reworded with no design of the fold, fold when the fold wrote its own design, ruling for a ruled id whose prompt-given ruling is not one of the finding options' }, file: { type: 'string', description: 'the subject-relative file of a fileless application over several subject files' }, noTest: { type: 'string', description: 'the reason a change to a code path needs no test' } }, required: ['id', 'change'] } },
-    deferred: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { id: { type: 'string' }, class: { type: 'string' }, reason: { type: 'string' } }, required: ['id', 'class', 'reason'] } },
-    designDelta: { type: 'array', items: { type: 'string' }, description: 'each changed element, read from the diff against the snapshot' },
-    changedPaths: { type: 'array', items: { type: 'string' }, description: 'every path created, edited, moved or deleted, relative to the subject root' },
-    commits: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { sha: { type: 'string' }, ids: { type: 'array', items: { type: 'string' } }, kind: { type: 'string', enum: ['test', 'fix'] } }, required: ['sha', 'ids', 'kind'] }, description: 'rev subjects only, in commit order' },
+    applied: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { id: { type: 'string' }, change: { type: 'string', description: 'what changed and where, one line' }, source: { type: 'string', enum: ['finding'], description: 'finding: the subject carries the finding\'s literal old/new pair verbatim' }, file: { type: 'string', description: 'the subject-relative file of a fileless application over several subject files' } }, required: ['id', 'change'] } },
+    deferred: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { id: { type: 'string' }, reason: { type: 'string' } }, required: ['id', 'reason'] } },
+    changedPaths: { type: 'array', items: { type: 'string' }, description: 'every path edited, relative to the subject root' },
   },
-  required: ['applied', 'deferred', 'designDelta', 'changedPaths'],
+  required: ['applied', 'deferred', 'changedPaths'],
 }
 const AMEND_LINE = (promptPath) => 'Amend: at each item and before returning, Read ' + promptPath + '.amend.md with the Read tool (Glob and Grep hide gitignored files); a not-found error means no amendment. A found amendment overrides the brief. Name what you applied.'
 const authorRef = (label, model, writes, promptPath) => {
@@ -1232,11 +1320,11 @@ const foldSubject = async (job, jobFinal) => {
     'Findings file: ' + FOLD_FILES.findings,
     'Verdicts file: ' + FOLD_FILES.verdicts,
     'Digest file: ' + FOLD_FILES.digest,
-    A.__rigor ? 'Bar: ' + A.__rigor + ' — each finding\'s `counts` says whether it counts at it (review_fold.md step 5).' : null,
+    A.__rigor ? 'Bar: ' + A.__rigor + ' — each finding\'s `counts` says whether it counts at it (review_fold.md step 3).' : null,
     'Prompt file: ' + FOLD_FILES.promptPath,
-    'Write the CONSOLIDATED FINDINGS JSON array exactly to the Findings file. Run `' + cdRootPrefix(A) + 'python3 .claude/tools/verify_claims.py --findings ' + FOLD_FILES.findings + ' --out ' + FOLD_FILES.verdicts + '` and read the verdicts file (template steps 1 and 5).',
+    'Write the CONSOLIDATED FINDINGS JSON array exactly to the Findings file. Run `' + cdRootPrefix(A) + 'python3 .claude/tools/verify_claims.py --findings ' + FOLD_FILES.findings + ' --out ' + FOLD_FILES.verdicts + '` and read the verdicts file (template steps 1 and 3).',
     'Read each cited source and decide whether it supports the finding (template step 3). A refuting finding with no evidence is deferred, never applied.',
-    'Apply each supported FIX edit and each PLAN\'s options[0]. Hold exactly the cases steps 4 and 5 of the template list, and name the hold class in deferred.',
+    'Transcribe each verified FIX whose literal old text occurs once in a declared .md or .txt file. Defer every other finding with its reason (template step 3).',
     '',
     findingsBlock,
   ].filter(l => l !== null).join('\n') + authorRef(job.label, FOLD_PIN.model, [
@@ -1483,11 +1571,9 @@ if (RESULT_MODE === 'bounded') {
       files: r.files || null,
     }, r.reason ? { reason: r.reason } : {}, foldDigest ? {
       applied: (foldDigest.applied || []).map(e => ({ id: e.id, change: clipText(e.change, 'fold', 120) })),
-      deferred: (foldDigest.deferred || []).map(e => ({ id: e.id, class: e.class, reason: clipText(e.reason, 'fold', 120) })),
-      designDelta: (foldDigest.designDelta || []).map(d => clipText(d, 'fold', 160)),
+      deferred: (foldDigest.deferred || []).map(e => ({ id: e.id, reason: clipText(e.reason, 'fold', 120) })),
       appliedWithAlternative: (foldDigest.appliedWithAlternative || []).map(e => ({ id: e.id, applied: clipText(e.applied, 'fold', 160), alternative: clipText(e.alternative, 'fold', 160) })),
       changedPaths: foldDigest.changedPaths || [],
-      refutingIds: (foldDigest.deferred || []).filter(e => e.class === 'refutation').map(e => e.id),
     } : {})
   }
   const boundedFold = !FOLD_RESULT ? null

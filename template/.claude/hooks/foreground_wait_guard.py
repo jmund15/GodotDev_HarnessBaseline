@@ -34,7 +34,8 @@ a caller should use depends on whether a backgrounded job wakes it:
    previous POLL_LIMIT - 1 consecutive Bash calls is denied: each call is a full model turn that
    re-reads the whole context. POLL_LIMIT is a litmus bound: a deliberate re-check before and after
    one action repeats a shape at most twice, so a fourth identical read with nothing run between is a
-   poll. Any other command, a wait loop included, resets the count. The deny names that caller's wait.
+   poll. Any other command, a wait loop included, resets the count, and so does a non-Bash tool call (an LSP or
+   MCP lookup) the transcript shows between two reads. The deny names that caller's wait.
 4. Foreground proof batch (advisory only, woken callers only). A segment that executes the runner
    `harness_tests.py` in `--close`, `--all` or no mode, or that executes proofs under a `tests/` directory directly,
    draws one `additionalContext` line when its expected time exceeds the call's own timeout (BASH_DEFAULT_MS when it
@@ -47,7 +48,8 @@ a caller should use depends on whether a backgrounded job wakes it:
    run long, and a raised call holds every other wake. The one exception is a proof batch whose every proof has a
    recorded time summing within the timeout (`_timed_fit`), the only job length the harness records. A delegate
    or print-mode child keeps its timeout: no wake reaches it, so one bounded call is its wait.
-5. Blind pipe (denies, background calls only). A `run_in_background` pipeline whose stdout reaches a later `tail` or `head` unredirected and unteed is denied (`blind_pipe`): the task's output file already keeps every line, so the pipe only holds them until the job exits and drops the ones past its count. `tail -f`, a `tee` stage and a `tail` of a file pass. Rule home: CLAUDE.core.md §Shell Discipline.
+5. Blind pipe (denies, background calls only). A `run_in_background` pipeline whose producer stage (a script, a runner, any command that is not a short read) reaches a later `tail` or `head` unredirected and unteed is denied (`blind_pipe`): the task's output file already keeps every line, so the pipe only holds them until the job exits and drops the ones past its count. A short read (`grep`, `git status/log/diff`, `cat`, `sed`, `find`...) ends with the call and passes, as do `tail -f`, a `tee` stage and a `tail` of a file.
+6. Hand-back (denies, never-woken callers). A subagent or print-mode child's foreground loop waits are clamped to SUBAGENT_WAIT_MS each and their clamped time is totalled since its last non-wait call; past HANDBACK_MS (30 minutes) the next wait is denied with the hand-back text (return the log path, pid, expected end and the steps left), the same hand-back `bench wait` gives (`wait_log.py` HANDBACK_S). Rule home: CLAUDE.core.md §Shell Discipline.
 
 7. Monitor past its cap. A Monitor call whose `timeout_ms` exceeds MONITOR_CAP_MS is denied: the tool ends every watch
    at that ceiling with no wake, so the request cannot do what it says. The deny names the waiter for a detached
@@ -100,6 +102,8 @@ _HEREDOC = re.compile(r"(?P<head>[^\n]*?)<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[
 _SHELL_WORDS = frozenset(("bash", "sh", "zsh", "dash", "pwsh", "powershell"))
 
 POLL_LIMIT = 4
+HANDBACK_MS = 1800000  # wait_log.py HANDBACK_S: the break-even past which the parent's one wake costs less than a child's trickle polls
+HANDBACK_KEY = "wait_loops"
 SUBAGENT_WAIT_MS = _hook_state.SUBAGENT_CACHE_WARM_SECONDS * 1000
 BASH_DEFAULT_MS = 120000
 TIMEOUT_BIN = "/usr/bin/timeout"  # Git Bash's coreutils; a bare `timeout` can resolve to Windows' timeout.exe (a pause)
@@ -261,12 +265,42 @@ def never_woken(payload):
     return kind in ("", "workflow-subagent") or not _agent_tool_subagent(payload)
 
 
+def _ran_between(transcript, start, end):
+    """True when the transcript between two polls' sizes holds a tool call that is not a shell row (Bash or
+    PowerShell): a shell row is a status read's own call, while an LSP or MCP lookup never reaches this hook, yet
+    it is work run between the reads. Unknown sizes read as nothing run, so the count still binds."""
+    if not transcript or start is None or end is None or end <= start:
+        return False
+    try:
+        with open(transcript, "rb") as fh:
+            fh.seek(start)
+            chunk = fh.read(end - start)
+    except OSError:
+        return False
+    for line in chunk.splitlines():
+        if b'"tool_use"' not in line:
+            continue
+        try:
+            content = (json.loads(line).get("message") or {}).get("content")
+        except ValueError:
+            continue
+        if isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_use"
+                                             and b.get("name") not in ("Bash", "PowerShell") for b in content):
+            return True
+    return False
+
+
 def _count_poll(payload, command):
     """Record this call for its caller and return how many consecutive identical status polls it makes (0 when it
     is not one). Fails open to 0 when the state cannot be locked."""
     key = _caller(payload) or "main"
     poll = is_status_only(command) and not _LOOP_SLEEP.search(shell_code(command))
     shape = _shape(command) if poll else None
+    transcript = str(payload.get("transcript_path") or "")
+    try:
+        size = os.path.getsize(transcript) if poll and transcript else None
+    except OSError:
+        size = None
 
     def update(state):
         polls = state.setdefault(STATE_KEY, {})
@@ -277,8 +311,9 @@ def _count_poll(payload, command):
         if not poll:
             polls.pop(key, None)
             return 0
-        count = prior.get("count", 0) + 1 if prior.get("shape") == shape else 1
-        polls[key] = {"shape": shape, "count": count, "at": now}
+        repeat = prior.get("shape") == shape and not _ran_between(transcript, prior.get("offset"), size)
+        count = prior.get("count", 0) + 1 if repeat else 1
+        polls[key] = {"shape": shape, "count": count, "at": now, "offset": size}
         return count
 
     path = _hook_state.state_path(payload.get("session_id"))
@@ -288,6 +323,40 @@ def _count_poll(payload, command):
             return 0
     written, count = _hook_state.update_json_locked(path, update)
     return count if written and count else 0
+
+
+HANDBACK_REASON = (
+    "BLOCKED wait: this caller's foreground loop waits total %d minutes since its last non-wait call, past the %d minutes "
+    "after which the parent's one wake costs less than these polls, and no wake reaches a subagent or `claude -p` child. "
+    "Return now with the log path, pid, expected end and the steps left after it, so the parent waits for it "
+    "(guards/any.md; the same hand-back `bench wait` gives)."
+)
+
+
+def _wait_total_ms(payload, add_ms):
+    """Track an unwoken caller's clamped loop-wait time: `add_ms` is added when this call is a loop wait, and any other
+    call resets the total. Returns the total BEFORE this call. Fails open to 0 when the state cannot be locked."""
+    key = _caller(payload) or "main"
+    path = _hook_state.state_path(payload.get("session_id"))
+    if not add_ms:
+        existing = _hook_state.read_json_salvage(path) if os.path.exists(path) else {}
+        if key not in (existing.get(HANDBACK_KEY) or {}):
+            return 0
+
+    def update(state):
+        loops = state.setdefault(HANDBACK_KEY, {})
+        now = time.time()
+        for other in [k for k, v in loops.items() if now - float((v or {}).get("at") or 0) > STALE_POLL_S]:
+            del loops[other]
+        prior = int((loops.get(key) or {}).get("ms") or 0)
+        if not add_ms:
+            loops.pop(key, None)
+        elif prior <= HANDBACK_MS:
+            loops[key] = {"ms": prior + add_ms, "at": now}
+        return prior
+
+    written, prior = _hook_state.update_json_locked(path, update)
+    return prior if written else 0
 
 
 def _words(segment):
@@ -697,17 +766,57 @@ def _producer(words):
     return None
 
 
+_GIT_READS = frozenset((
+    "status", "log", "diff", "show", "rev-parse", "ls-files", "grep", "branch", "blame", "rev-list", "describe", "ls-tree",
+    "cat-file", "config", "remote", "tag", "shortlog", "merge-base", "for-each-ref", "name-rev", "diff-tree", "show-ref",
+))
+_SHORT_READS = frozenset((
+    "grep", "egrep", "fgrep", "rg", "cat", "sed", "awk", "cut", "sort", "uniq", "wc", "echo", "printf", "ls", "find", "tr",
+    "tail", "head", "date", "pwd", "cd", "test", "[", "[[", "true", "stat", "basename", "dirname", "realpath", "xargs",
+    "ps", "pgrep", "du", "nl", "column", "paste", "rev", "tac", "jq",
+))
+
+
+def _short_read(words):
+    """True when `words` run a short read (grep, git status/log/diff, cat, sed...), never a script or a runner: its output
+    ends with the call, so a later `tail` or `head` holds nothing back."""
+    program = words[0].strip("'\"").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    if program == "git":
+        rest, i = words[1:], 0
+        while i < len(rest) and rest[i].startswith("-"):
+            i += 2 if rest[i] in ("-C", "-c", "--git-dir", "--work-tree") else 1
+        return i < len(rest) and rest[i] in _GIT_READS
+    return program in _SHORT_READS and not _invoked_script(words)
+
+
+def _without_substitutions(code):
+    """`code` with each `$(...)` and backtick body removed: a pipe inside one feeds a captured string."""
+    out, depth, i = [], 0, 0
+    while i < len(code):
+        if code.startswith("$(", i):
+            depth, i = depth + 1, i + 2
+            continue
+        if depth and code[i] == "(":
+            depth += 1
+        elif depth and code[i] == ")":
+            depth -= 1
+        elif not depth:
+            out.append(code[i])
+        i += 1
+    return re.sub(r"`[^`]*`", "", "".join(out))
+
+
 def blind_pipe(command):
     """(producer, consumer) when a backgrounded pipeline's stdout reaches a later `tail` or `head` stage unredirected
     and unteed, else None. The task's output file already keeps every line for a later bounded Read, so the pipe only
     hides progress until exit and drops the lines past its count. `tail -f` follows a file and stays live."""
-    for pipeline in re.split(r"\|\||&&|[;\n]|(?<![>&])&(?![&>])", shell_code(command)):
-        stages = [s.strip(" \t()`$") for s in re.split(r"(?<![|>])\|(?!\|)", pipeline)]
+    for pipeline in re.split(r"\|\||&&|[;\n]|(?<![>&])&(?![&>])", _without_substitutions(shell_code(command))):
+        stages = [s.strip(" \t()`$") for s in re.split(r"(?<![|>])\|(?!\|)(?=(?:[^'\"]|'[^']*'|\"[^\"]*\")*$)", pipeline)]
         for i, stage in enumerate(stages[:-1]):
             words = _words(stage)
             if words and words[0] == "tee":
                 break
-            producer = _producer(words) or (words[0] if words else None)
+            producer = _producer(words) or (words[0] if words and not _short_read(words) else None)
             if not producer or ">" in re.sub(r"\d?>&\d|2>\s*/dev/null|2>\S+", "", stage):
                 continue
             for later in stages[i + 1:]:
@@ -738,6 +847,8 @@ def main():
         return 0
     command = str(tool_input.get("command") or "")
     unwoken = never_woken(payload)
+    if unwoken and (tool_input.get("run_in_background") or not _LOOP_SLEEP.search(shell_code(command))):
+        _wait_total_ms(payload, 0)
     if tool_input.get("run_in_background"):
         blind = blind_pipe(command)
         if blind:
@@ -762,6 +873,10 @@ def main():
         except (TypeError, ValueError):
             budget = BASH_DEFAULT_MS
         updated, note = None, None
+        if unwoken:
+            spent = _wait_total_ms(payload, min(budget, SUBAGENT_WAIT_MS))
+            if spent > HANDBACK_MS:
+                return _deny(HANDBACK_REASON % (spent // 60000, HANDBACK_MS // 60000))
         if _caller(payload) or unwoken:
             if budget > SUBAGENT_WAIT_MS:
                 updated = dict(tool_input, timeout=SUBAGENT_WAIT_MS)

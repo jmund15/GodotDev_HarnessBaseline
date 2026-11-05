@@ -9,6 +9,7 @@ run (readOnly, spillDir), and a second run consolidates. This tool does the mate
 prompt byte travels through Workflow `args` (gotcha_workflow_args_generation_fidelity).
 
 Usage:
+  python3 .claude/tools/lens_briefs.py prepare --spec <spec.json> --out <run dir>
   python3 .claude/tools/lens_briefs.py (--keys <key> | --plan <plan.json>) \
       --out .claude/scratch/pr_pipeline/briefs_pr116 --prefix pr116 \
       --pr-num 116 --branch claude/x --context-path <abs>/context_pr116.md --model <pin> --effort <rung> \
@@ -17,6 +18,20 @@ Usage:
       [--sub TRANSCRIPT_CORRECTIONS=<file>] \
       [--subject-plan meta:<plan.md> | code:<plan.md>]... [--vault ROOT]
   python3 .claude/tools/lens_briefs.py must-read <list file>
+
+`prepare --spec <spec.json> --out <run dir>` is one fan-out prep: it composes `review_ledger.py plan`
+(ledger modes), `session_audit_inputs.py freeze` (a `sessionAudit` block), each seat's must-read list,
+the seat fit, the `kfm` snapshot, the fold snapshot, the briefs and `<run dir>/args.json`, the engine
+args `Workflow({scriptPath, args: {argsFile}})` expands. Spec keys: `mode` (`explore`, `session-audit`,
+`plan-check`, `pr-review`, `design-redteam`, `pr-ready`), `prefix`, `topic`, `questions`, `seats`
+(`{key, mandates?, tier?, effort?, pin?, mustRead?, brief?}`) or `roster` or `lenses`, `pins`,
+`efforts`, `tiers`, `fold`, `subjectFiles`, `seatFiles`, `subjectPlans`, `context`, `task`,
+`sessionAudit`, `ledger`, `spillDir`, `transcriptDir`, `checker`, `target`, `subs`, `round`, `root`,
+`engine`, `prNum`, `branch`, `session`, `commands`.
+A seat with no lens-registry key (the five `/pr_ready` lenses) carries its brief text or file path as
+`brief`. It prints each seat's reading and fit, every dropped mandate with its `coveredBy`, every tier
+the envelope pins and any tier lacking a delivered `for-role` receipt, and the exact next call; it
+never prints the ladder, which must reach context before the pick it informs.
 
 A panel of more than one seat takes its seats from `review_ledger.py plan`: `--plan <file>` is the JSON that
 command printed, its `roster` keys are the seats, and `--keys` must be absent. Several `--keys` without `--plan`
@@ -98,7 +113,7 @@ from __future__ import annotations
 import sys as _cli_usage_sys
 from pathlib import Path as _cli_usage_path
 _cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
-from cli_usage import usage
+from cli_usage import refusal as shape_lines, usage
 
 
 
@@ -106,7 +121,10 @@ import argparse
 import functools
 import hashlib
 import json
+import os
 import re
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -586,54 +604,501 @@ def acceptance_section(task_id: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def main() -> None:
-    if sys.argv[1:2] == ["must-read"]:
-        must_read_command(sys.argv[2:])
-        return
-    ap = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--keys", nargs="+", default=None, help="one seat key; a panel of several seats uses --plan")
-    ap.add_argument("--plan", default=None, metavar="FILE",
-                    help="the JSON `review_ledger.py plan` printed: its roster keys are the seats; excludes --keys")
-    ap.add_argument("--out", required=True)
-    ap.add_argument("--prefix", required=True)
-    ap.add_argument("--pr-num", default=None,
-                    help="required when a selected template carries {{PR_NUM}}")
-    ap.add_argument("--branch", default=None,
-                    help="required when a selected template carries {{BRANCH}}")
-    ap.add_argument("--context-path", required=True, help="absolute path of the shared CONTEXT file")
-    ap.add_argument("--target", default="native", choices=["native", "sidecar"],
-                    help="native: dispatch.js jobs (default, unchanged). sidecar: sidecar_fanout.py jobs")
-    ap.add_argument("--sub", action="append", default=[], help="PLACEHOLDER=<file> extra substitutions")
-    ap.add_argument("--model", required=True,
-                    help="native: the panel pin (opus|sonnet|haiku|fable), resolved by the caller "
-                         "through orchestration §5. sidecar: a model_registry alias")
-    ap.add_argument("--model-for", action="append", default=[], metavar="KEY=MODEL",
-                    help="per-lens model override, e.g. --model-for <key>=opus")
-    ap.add_argument("--tier", default=None, choices=TIERS,
-                    help="panel tier, the one its --model pin serves; default: each seat's lens tier")
-    ap.add_argument("--tier-for", action="append", default=[], metavar="KEY=TIER",
-                    help="per-lens tier override, paired with that lens's --model-for pin")
-    ap.add_argument("--effort", default=None,
-                    help="the panel's ladder rung; required unless --effort-for covers every seat")
-    ap.add_argument("--effort-for", action="append", default=[], metavar="KEY=EFFORT",
-                    help="per-lens override, e.g. --effort-for <key>=medium (names the ambiguity in --justification at dispatch)")
-    ap.add_argument("--must-read", default=None, metavar="LIST",
-                    help="file listing the panel's must-read paths, one per line: every seat's list unless "
-                         "--must-read-for replaces it")
-    ap.add_argument("--must-read-for", action="append", default=[], metavar="KEY=LIST",
-                    help="one seat's must-read list file, replacing --must-read for that seat")
-    ap.add_argument("--must-read-from", default=None, metavar="PACKET",
-                    help="a frozen session_audit_inputs.py packet: each seat's must-read list is the union "
-                         "of its mandates' views, each exact artifact once")
-    ap.add_argument("--subject-plan", action="append", default=[], metavar="SHAPE:PLAN",
-                    help="meta:<plan.md> or code:<plan.md>; repeatable; a plan with no `## Job map` section is "
-                         "refused. A seat declaring `citers: plan` gets a "
-                         "bounded summary and sweep-file pointer for each meta subject and needs at least one subject")
-    ap.add_argument("--vault", default=None, metavar="ROOT",
-                    help="the Obsidian vault root a citers sweep reads (default: vault_read.DEFAULT_VAULT)")
-    ap.add_argument("--task", default=None, metavar="ID",
-                    help="task record whose requirements and exclusions every seat judges as its acceptance test")
-    a = ap.parse_args()
+PREP_MODES = ("explore", "session-audit", "plan-check", "pr-review", "design-redteam", "pr-ready")
+# The engines that ship beside this tool; a mode whose engine sits in the coding layer (explore) names it
+# in `spec.engine`, so this pure tool never cites a higher-layer file.
+PREP_ENGINES = {"session-audit": ".claude/workflows/review_fanout.js",
+                "plan-check": ".claude/workflows/review_fanout.js",
+                "pr-review": ".claude/workflows/review_fanout.js",
+                "design-redteam": ".claude/workflows/review_fanout.js",
+                "pr-ready": ".claude/workflows/review_fanout.js"}
+PREP_STAGES = {"session-audit": "candidate", "plan-check": "plan-check", "pr-review": "pr-review",
+               "design-redteam": "design", "pr-ready": "pr-ready"}
+
+
+def _rel(path: Path, root: Path) -> str:
+    """The repository-relative POSIX spelling of `path`, or its absolute one when it lives outside `root`."""
+    try:
+        return Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+    except ValueError:
+        return Path(path).resolve().as_posix()
+
+
+def _prep_seats(spec: dict) -> list[dict]:
+    """The spec's seats: `seats` (may carry brief text), `roster` (`{key, effort}`), or `lenses`."""
+    seats = spec.get("seats")
+    if isinstance(seats, list) and seats:
+        return [dict(seat) for seat in seats if isinstance(seat, dict) and seat.get("key")]
+    roster = spec.get("roster")
+    if isinstance(roster, list) and roster:
+        return [dict(seat) for seat in roster if isinstance(seat, dict) and seat.get("key")]
+    lenses = spec.get("lenses")
+    if isinstance(lenses, list) and lenses:
+        return [{"key": key} for key in lenses if isinstance(key, str)]
+    sys.exit("prepare: the spec names no seats (write `seats`, `roster` or `lenses`)")
+
+
+def _registry_seat(key: str, found: dict) -> bool:
+    return all(part in found for part in key.split("+"))
+
+
+def _must_read_for(seat: dict, spec: dict, packet_views: dict) -> list[str]:
+    """A seat's must-read paths: its own list, the frozen packet's view of its mandates, or the shared subject."""
+    if isinstance(seat.get("mustRead"), list) and seat["mustRead"]:
+        return list(seat["mustRead"])
+    mandates = seat.get("mandates") or lens.seat_mandates(seat["key"]) or []
+    packet = [path for mandate in mandates for path in packet_views.get(mandate, [])]
+    if packet:
+        return list(dict.fromkeys(packet))
+    per_seat = (spec.get("seatFiles") or {}).get(seat["key"])
+    if per_seat:
+        return list(per_seat)
+    return list(spec.get("subjectFiles") or [])
+
+
+def _write_list(path: Path, paths: list[str]) -> Path:
+    path.write_text("".join(str(p) + "\n" for p in paths), encoding="utf-8", newline="\n")
+    return path
+
+
+PRODUCTION_SUFFIXES = (".cs", ".tres")  # `/session_audit` §1a's code set
+_SIDECAR_LEDGER_FLAGS = (("stage", "--ledger-stage"), ("subject", "--ledger-subject"),
+                         ("roster", "--ledger-roster"), ("scopeJson", "--ledger-scope-json"),
+                         ("premiseCommits", "--ledger-premise-commits"), ("head", "--ledger-head"),
+                         ("blobs", "--ledger-blobs"), ("task", "--ledger-task"))
+
+
+def _sidecar_call(root: Path, out: Path, prefix: str, fold: dict | None, ledger: dict) -> list[str]:
+    """The sidecar review launch carrying the same fold and ledger the native args hold."""
+    call = ["python3", ".claude/tools/sidecar_fanout.py", _rel(out / f"jobs_{prefix}.json", root),
+            "--review", "--out", _rel(out, root)]
+    if fold:
+        call += ["--fold-alias", str(fold["model"]), "--fold-effort", str(fold["effort"])]
+        for subject in fold.get("subjects") or []:
+            call += ["--fold-subject", f"{subject['root']}::{subject['snapshot']}::{','.join(subject['files'])}"]
+    for key, flag in _SIDECAR_LEDGER_FLAGS:
+        if ledger.get(key):
+            call += [flag, str(ledger[key])]
+    if ledger.get("noNewDecision"):
+        call.append("--no-new-decision")
+    return call
+
+
+def _base_sizes(root: Path, base: str | None, files: list[str]) -> dict[str, int]:
+    """Each file's byte size at `base`; a file absent there is left out."""
+    if not base or not files:
+        return {}
+    wanted = set(files)
+    out = subprocess.run(["git", "ls-tree", "-r", "-l", base], cwd=root, capture_output=True,
+                         text=True, encoding="utf-8", errors="replace").stdout
+    sizes = {}
+    for line in out.splitlines():
+        meta, _, path = line.partition("\t")
+        parts = meta.split()
+        if path in wanted and len(parts) == 4 and parts[3].isdigit():
+            sizes[path] = int(parts[3])
+    return sizes
+
+
+def _spec_ledger(spec: dict) -> dict:
+    """The spec's `ledger`; a session audit's subject, files, task and base default from its `sessionAudit`."""
+    ledger = dict(spec.get("ledger") or {})
+    audit = spec.get("sessionAudit")
+    if audit:
+        if audit.get("session"):
+            ledger.setdefault("subject", f"session:{audit['session']}")
+        ledger.setdefault("stage", PREP_STAGES.get(spec["mode"]))
+        ledger.setdefault("files", spec.get("subjectFiles") or audit.get("files"))
+        if spec.get("task") or audit.get("task"):
+            ledger.setdefault("task", spec.get("task") or audit.get("task"))
+        if audit.get("baseRef"):
+            ledger.setdefault("baseRef", audit["baseRef"])
+    return ledger
+
+
+def _run_ledger_plan(root: Path, spec: dict, seats: list[dict], out: Path
+                     ) -> tuple[list[dict], list[dict], dict | None]:
+    """Compose `review_ledger.plan` in process; returns (filled roster, dropped rows, crossFamily)."""
+    import review_ledger
+    ledger = _spec_ledger(spec)
+    stage = ledger.get("stage") or PREP_STAGES.get(spec["mode"])
+    if not stage:
+        sys.exit(f"prepare: mode {spec['mode']!r} has no ledger stage; name one in the spec's `ledger`")
+    roster_in = out / "roster_input.json"
+    roster_in.write_text(json.dumps([{k: s[k] for k in ("key", "mandates", "tier", "effort") if k in s}
+                                     for s in seats], indent=2), encoding="utf-8", newline="\n")
+    try:
+        planned = review_ledger.plan(
+            root, stage=stage, subject=ledger.get("subject") or sys.exit("prepare: the spec's `ledger` names no subject"),
+            roster=str(roster_in), base_ref=ledger.get("baseRef", "origin/main"), task=ledger.get("task"),
+            files=ledger.get("files"), scope_json=ledger.get("scopeJson"),
+            ignore_ledger=bool(ledger.get("ignoreLedger")), design=ledger.get("design"),
+            no_new_decision=bool(ledger.get("noNewDecision")))
+    except review_ledger.ToolError as exc:
+        sys.exit(f"prepare: review_ledger.py plan refused: {exc}")
+    kept = planned.get("roster") or []
+    by_key = {seat["key"]: seat for seat in seats}
+    for seat in kept:
+        extra = by_key.get(seat.get("key"), {})
+        for name in ("brief", "pin", "mustRead"):
+            if name in extra:
+                seat[name] = extra[name]
+    return kept, planned.get("dropped") or [], planned.get("crossFamily")
+
+
+def _run_freeze(root: Path, spec: dict, out: Path, seats: list[dict]) -> dict | None:
+    """Compose `session_audit_inputs.py freeze` for the harness seat; returns the packet or None."""
+    audit = spec.get("sessionAudit")
+    if not audit:
+        return None
+    import session_audit_inputs
+    roster_in = out / "freeze_roster.json"
+    roster_in.write_text(json.dumps([{k: s[k] for k in ("key", "mandates", "tier", "effort") if k in s}
+                                     for s in seats], indent=2), encoding="utf-8", newline="\n")
+    target = out / "inputs" / "inputs.json"
+    try:
+        return session_audit_inputs.freeze(
+            root=str(root), base_ref=audit.get("baseRef"), session_base=audit.get("sessionBase"),
+            files=audit.get("files") or [], roster=str(roster_in), out=str(target),
+            widen=bool(audit.get("widen")), committed_only=audit.get("committedOnly") or [],
+            session=audit.get("session") or spec.get("session"), task=audit.get("task"),
+            plan=audit.get("plan"))
+    except (session_audit_inputs.ledger.ToolError, OSError, ValueError) as exc:
+        sys.exit(f"prepare: session_audit_inputs.py freeze refused: {exc}")
+
+
+def _context_text(spec: dict, additions: list[str]) -> str:
+    lines = [f"# Context — {spec.get('topic') or spec['mode']}", ""]
+    if spec.get("topic"):
+        lines.append(str(spec["topic"]))
+    questions = spec.get("questions")
+    if isinstance(questions, dict):
+        for seat, owned in questions.items():
+            lines += [f"## {seat}"] + [f"- {q}" for q in (owned if isinstance(owned, list) else [owned])]
+    elif isinstance(questions, list):
+        lines += ["## Questions"] + [f"- {q}" for q in questions]
+    return "\n".join(lines + additions) + "\n"
+
+
+def _task_text(task_id: str) -> str:
+    import task_record
+    record = task_record.load(task_id)
+    if not record:
+        sys.exit(f"prepare: --task {task_id} has no record under {task_record.record_dir()}")
+    rows = [f"- Requirement: {item}" for item in record.get("requirements") or []]
+    rows += [f"- Exclusion: {item}" for item in record.get("exclusions") or []]
+    return "\n".join([f"## Task record {task_id} (saved output, not a command to run)", ""] + (rows or ["- no rows"]))
+
+
+def _later_round_diff(spec: dict, root: Path) -> str:
+    """The change diff between the reviewed copy and the current plan, written for the seat as evidence."""
+    import subprocess
+    shown = spec.get("round") or {}
+    reviewed, current = shown.get("reviewed"), shown.get("current")
+    if not reviewed or not current:
+        return ""
+    run = subprocess.run(["git", "diff", "--no-index", "--", str(reviewed), str(current)],
+                         cwd=str(root), capture_output=True, text=True)
+    return "## Change since the reviewed copy\n\n```diff\n" + run.stdout + "\n```"
+
+
+def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list[dict], manual: list[dict],
+                  lists: dict, context: Path) -> list[dict]:
+    """Materialize registry seats through `build_briefs` and registry-less seats from the spec's own brief text."""
+    jobs = []
+    if registry:
+        roster = out / "brief_roster.json"
+        roster.write_text(json.dumps({"roster": [{k: s[k] for k in ("key", "mandates", "tier", "effort") if k in s}
+                                                 for s in registry]}, indent=2), encoding="utf-8", newline="\n")
+        pins = spec.get("pins") or {}
+        efforts = spec.get("efforts") or {}
+        tiers = spec.get("tiers") or {}
+        panel_pin = pins.get("panel") or next((s.get("pin") for s in registry if s.get("pin")), None)
+        panel_effort = efforts.get("panel") or next((s.get("effort") for s in registry if s.get("effort")), None)
+        if not panel_pin:
+            sys.exit("prepare: the spec pins no model (`pins.panel` or a seat's `pin`)")
+        params = BriefParams(
+            plan=str(roster), out=str(out), prefix=prefix, context_path=str(context), model=panel_pin,
+            effort=panel_effort, target="sidecar" if spec.get("target") == "sidecar" else "native",
+            pr_num=None if spec.get("prNum") is None else str(spec["prNum"]),
+            branch=str(spec["branch"]) if spec.get("branch") else None,
+            subject_plan=[str(plan_arg) for plan_arg in spec.get("subjectPlans") or []],
+            sub=[str(sub) for sub in spec.get("subs") or []], kfm_root=str(out / "kfm"))
+        for seat in registry:
+            key = seat["key"]
+            if key in lists:
+                params.must_read_for.append(f"{key}={lists[key]}")
+            pin = seat.get("pin") or pins.get(key)
+            if pin:
+                params.model_for.append(f"{key}={pin}")
+            effort = seat.get("effort") or efforts.get(key)
+            if effort:
+                params.effort_for.append(f"{key}={effort}")
+            tier = seat.get("tier") or tiers.get(key)
+            if tier:
+                params.tier_for.append(f"{key}={tier}")
+        try:
+            jobs += build_briefs(params)
+        except ArgumentRefused as exc:
+            sys.exit(f"prepare: {exc}")
+    for seat in manual:
+        key = seat["key"]
+        brief = seat.get("brief") or ""
+        text = Path(brief).read_text(encoding="utf-8") if brief and Path(brief).is_file() else str(brief)
+        if not text.strip():
+            sys.exit(f"prepare: seat {key!r} is not a lens-registry key and carries no `brief` text")
+        path = out / f"{prefix}_{key}.md"
+        path.write_text(f"<!-- lens brief: {key} — generated by tools/lens_briefs.py prepare; do not edit -->\n\n"
+                        + text.rstrip() + "\n", encoding="utf-8", newline="\n")
+        pins = spec.get("pins") or {}
+        efforts = spec.get("efforts") or {}
+        jobs.append({"label": f"{prefix}-{key}", "key": key,
+                     "mandates": seat.get("mandates") or [key],
+                     "mustRead": must_read_entries(_must_read_for(seat, spec, {})),
+                     "promptPath": str(path.resolve()).replace("\\", "/"),
+                     "model": seat.get("pin") or pins.get(key) or pins.get("panel"),
+                     "effort": seat.get("effort") or efforts.get(key) or efforts.get("panel"),
+                     "tier": seat.get("tier"), "agentType": "general-purpose"})
+    return jobs
+
+
+def _engine_args(spec: dict, root: Path, out: Path, prefix: str, context: Path, jobs: list[dict],
+                 fold: dict | None, ledger: dict | None) -> dict:
+    mode = spec["mode"]
+    if mode == "explore":
+        lenses = [{"key": job.get("seat") or job.get("key"), "promptPath": job["promptPath"],
+                   "model": job["model"], "effort": job["effort"],
+                   "agentType": job.get("agentType", "general-purpose"), "tier": job.get("tier")}
+                  for job in jobs]
+        args = {"lenses": lenses, "contextPrefixPath": str(context)}
+        if spec.get("checker"):
+            args["checker"] = spec["checker"]
+        else:
+            sys.exit("prepare: explore mode needs a `checker` pin ({model, effort})")
+    else:
+        agents = [{"key": job.get("seat") or job.get("key"), "label": job["label"],
+                   "mandates": job.get("mandates"), "mustRead": job.get("mustRead"),
+                   "promptPath": job.get("promptPath") or job.get("promptFile"),
+                   "model": job.get("model") or job.get("alias"), "effort": job["effort"],
+                   "agentType": job.get("agentType", "general-purpose")}
+                  for job in jobs]
+        args = {"agents": agents, "contextPrefixPath": str(context)}
+        if fold:
+            args["fold"] = fold
+        if ledger:
+            args["ledger"] = ledger
+    spill = Path(spec.get("spillDir") or (out / "spill")).resolve()
+    spill.mkdir(parents=True, exist_ok=True)
+    args["spillDir"] = _rel(spill, root)
+    if spec.get("transcriptDir"):
+        args["transcriptDir"] = str(spec["transcriptDir"])
+    return args
+
+
+def _receipt_line(spec: dict, pinned: list[str]) -> str:
+    """Every tier the envelope pins, and each tier lacking a delivered `for-role` receipt (`model_ladder_gate` owns the credit)."""
+    import model_ladder_gate
+    session = spec.get("session") or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    missing = [tier for tier in pinned if not (session and model_ladder_gate.tier_in_context(session, tier))]
+    line = "tiers pinned: " + (", ".join(pinned) if pinned else "none")
+    if missing:
+        line += "; missing receipt: " + ", ".join(missing)
+    return line
+
+
+def prepare_command(argv: list[str]) -> None:
+    """One prep call: compose the ledger plan, the frozen inputs, the briefs, the fold snapshot and the
+    engine `args.json` the `argsFile` member expands. Prints the bounded summary and the next call.
+
+    Spec keys: `mode` (required), `engine` (required when the mode's engine is not beside this tool),
+    `prefix`, `topic`, `questions`, `seats`/`roster`/`lenses`, `pins`,
+    `efforts`, `tiers`, `fold`, `subjectFiles`, `seatFiles`, `subjectPlans`, `context`, `task`,
+    `sessionAudit`, `ledger`, `spillDir`, `transcriptDir`, `checker`, `target`, `subs`, `round`, `root`,
+    `prNum`, `branch`, `session`, `commands`."""
+    import argparse
+    import os
+    ap = argparse.ArgumentParser(prog="lens_briefs.py prepare",
+                                 description="compose a fan-out's roster, briefs, snapshots and engine args from one spec")
+    ap.add_argument("--spec", required=True, help="the JSON spec holding the session's judgments")
+    ap.add_argument("--out", required=True, help="the run directory (under .claude/scratch/)")
+    a = ap.parse_args(argv)
+    try:
+        spec = json.loads(Path(a.spec).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        sys.exit(f"prepare: --spec {a.spec}: {exc}")
+    if not isinstance(spec, dict) or spec.get("mode") not in PREP_MODES:
+        sys.exit(f"prepare: spec mode must be one of {', '.join(PREP_MODES)}")
+    if spec["mode"] not in PREP_ENGINES and not spec.get("engine"):
+        sys.exit(f"prepare: mode {spec['mode']} runs an engine the calling command names; add `engine` to the spec")
+    root = Path(spec.get("root") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+    out = Path(a.out).resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    prefix = spec.get("prefix") or spec["mode"]
+
+    packets = _run_freeze(root, spec, out, _prep_seats(spec)) if spec.get("sessionAudit") else None
+    packet_views = {}
+    if packets:
+        for mandate, view in (packets.get("views") or {}).items():
+            packet_views[mandate] = [str((root / path).resolve()) for path in view.get("mustRead") or []]
+        subs = list(spec.get("subs") or [])
+        for name in ("DOCTRINE_COMMITS", "HARNESS_HUNKS", "HOT_SET"):
+            if any(str(entry).startswith(name + "=") for entry in subs):
+                continue
+            # A pointer, never the text: the seat's must-read list delivers these files, and an inlined
+            # copy doubles the reading and puts quoted doctrine where the capability scan reads orders.
+            if name == "DOCTRINE_COMMITS" and packets.get("doctrineCommits"):
+                text = f"Read `{packets['doctrineCommits']}` in full."
+            elif name == "HARNESS_HUNKS":
+                diffs = [art for art in packets.get("artifacts") or [] if art.get("kind") == "subject-diff"]
+                before = _base_sizes(root, spec["sessionAudit"].get("sessionBase"), [art.get("file") for art in diffs])
+                text = "\n".join(["The harness diff, one file per subject file; read each in full:"] + [
+                    f"- `{art['artifact']}`: {art.get('file')}, bytes: {before.get(art.get('file'), 0)} → "
+                    f"{(root / art['file']).stat().st_size if (root / art['file']).is_file() else 0}"
+                    for art in diffs])
+            else:
+                text = "none"
+            path = out / f"sub_{name}.txt"
+            path.write_text(text, encoding="utf-8", newline="\n")
+            subs.append(f"{name}={path}")
+        spec["subs"] = subs
+
+    seats = _prep_seats(spec)
+    dropped = []
+    cross_family = None
+    if spec["mode"] != "explore":
+        seats, dropped, cross_family = _run_ledger_plan(root, spec, seats, out)
+        if not seats:
+            print("prepare: the ledger keeps no seat (nothing is owed); no args.json written")
+            return
+
+    preambles, found = lens.catalog()
+    registry = [s for s in seats if any(part in found for part in s["key"].split("+"))
+                and all(part in found for part in s["key"].split("+"))]
+    manual = [s for s in seats if s not in registry]
+    unknown = [s["key"] for s in manual if not s.get("brief")]
+    if unknown:
+        sys.exit("prepare: no such lens and no `brief` text: " + ", ".join(unknown) + " — run `lens.py index`")
+
+    lists = {}
+    for seat in seats:
+        if not _registry_seat(seat["key"], found):
+            continue
+        paths = _must_read_for(seat, spec, packet_views)
+        if not paths:
+            sys.exit(f"prepare: seat {seat['key']} has no must-read input; name `subjectFiles` or `seatFiles`")
+        lists[seat["key"]] = _write_list(out / ("must_" + seat["key"].replace("+", "_") + ".txt"), paths)
+
+    additions = []
+    if spec.get("task"):
+        additions.append(_task_text(str(spec["task"])))
+    diff = _later_round_diff(spec, root)
+    if diff:
+        additions.append(diff)
+    for command in spec.get("commands") or []:
+        import subprocess
+        run = subprocess.run(command["argv"], cwd=str(root), capture_output=True, text=True)
+        additions.append(f"## {command.get('label') or 'command'} (saved output, not a command to run)\n\n"
+                         + "\n".join("> " + line for line in (run.stdout + run.stderr).splitlines()))
+    if spec.get("context"):
+        context = Path(spec["context"]).resolve()
+        if not context.is_file():
+            sys.exit(f"prepare: the spec's `context` names {context}, which does not resolve")
+    else:
+        context = out / "context.md"
+    if additions:
+        existing = context.read_text(encoding="utf-8") if context.exists() else ""
+        context.write_text(existing.rstrip() + "\n\n" + "\n\n".join(additions) + "\n",
+                           encoding="utf-8", newline="\n")
+    elif not context.exists():
+        context.write_text(_context_text(spec, []), encoding="utf-8", newline="\n")
+
+    jobs = _write_briefs(root, spec, out, prefix, registry, manual, lists, context)
+
+    fold = None
+    if spec.get("fold"):
+        import fold_check
+        fold = dict(spec["fold"])
+        if not fold.get("subjects"):
+            files = [str(path) for path in spec.get("subjectFiles") or []]
+            if spec.get("target") != "sidecar":
+                # The native engine runs no project tests or gate, so production code folds on the sidecar route.
+                production = [path for path in files if path.lower().endswith(PRODUCTION_SUFFIXES)]
+                files = [path for path in files if path not in production]
+                if production:
+                    print("fold these on the sidecar route (the native fold runs no gate): " + ", ".join(production))
+            if not spec.get("subjectFiles"):
+                sys.exit("prepare: the fold needs `subjectFiles` (or `fold.subjects`)")
+            if files:
+                manifest = fold_check.snapshot_blobs(str(root), files)
+                snapshot = out / "snapshot.json"
+                snapshot.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
+                fold["subjects"] = [{"root": ".", "snapshot": _rel(snapshot, root),
+                                     "files": [_rel(Path(path), root) for path in files]}]
+            else:
+                fold = None
+
+    roster_out = out / "roster.json"
+    roster_out.write_text(json.dumps([{k: s[k] for k in ("key", "mandates", "tier", "effort") if k in s}
+                                      for s in seats], indent=2), encoding="utf-8", newline="\n")
+    ledger = None
+    if spec["mode"] != "explore":
+        ledger = _spec_ledger(spec)
+        ledger["roster"] = _rel(roster_out, root)
+        for key in ("scopeJson",):
+            if ledger.get(key):
+                ledger[key] = _rel(Path(ledger[key]), root)
+        if packets:
+            for key in ("premiseCommits", "head", "blobs"):
+                if packets.get(key):
+                    ledger[key] = packets[key]
+
+    args = _engine_args(spec, root, out, prefix, context, jobs, fold, ledger)
+    args_path = out / "args.json"
+    args_path.write_text(json.dumps(args, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+    for row in dropped:
+        print(f"dropped: {row.get('mandate')} coveredBy {row.get('coveredBy')}")
+    if cross_family:
+        candidates = ", ".join(str(c) for c in cross_family.get("candidates") or []) or "none"
+        print("crossFamily: required=%s candidates=%s — %s"
+              % (str(bool(cross_family.get("required"))).lower(), candidates, cross_family.get("reason", "")))
+    pinned = sorted({str(job.get("tier")) for job in jobs if job.get("tier")}
+                    | ({str(fold["tier"])} if fold and fold.get("tier") else set()))
+    print(_receipt_line(spec, pinned))
+    engine = spec.get("engine") or PREP_ENGINES.get(spec["mode"])
+    if spec.get("target") == "sidecar":
+        print("next: " + " ".join(shlex.quote(part) for part in _sidecar_call(
+            root, out, prefix, args.get("fold"), args.get("ledger") or {})))
+    else:
+        print(f'next: Workflow({{scriptPath: "{engine}", args: {{argsFile: "{_rel(args_path, root)}"}}}})')
+
+
+class ArgumentRefused(Exception):
+    """`build_briefs` refused a pin or effort the CLI reports as an argument error (exit 2)."""
+
+
+class BriefParams:
+    """`build_briefs`' inputs; each attribute is the CLI flag of the same name (see `main`'s parser for the meaning).
+    `kfm_root` replaces the shared `.claude/scratch/kfm` as the parent of the known-failure-modes snapshot."""
+
+    def __init__(self, *, out: str, prefix: str, context_path: str, model: str, keys: list[str] | None = None,
+                 plan: str | None = None, pr_num: str | None = None, branch: str | None = None,
+                 target: str = "native", sub: list[str] | None = None, model_for: list[str] | None = None,
+                 tier: str | None = None, tier_for: list[str] | None = None, effort: str | None = None,
+                 effort_for: list[str] | None = None, must_read: str | None = None,
+                 must_read_for: list[str] | None = None, must_read_from: str | None = None,
+                 subject_plan: list[str] | None = None, vault: str | None = None, task: str | None = None,
+                 kfm_root: str | None = None):
+        self.out, self.prefix, self.context_path, self.model = out, prefix, context_path, model
+        self.keys, self.plan, self.pr_num, self.branch, self.target = keys, plan, pr_num, branch, target
+        self.sub, self.model_for, self.tier, self.tier_for = list(sub or []), list(model_for or []), tier, list(tier_for or [])
+        self.effort, self.effort_for, self.must_read = effort, list(effort_for or []), must_read
+        self.must_read_for, self.must_read_from = list(must_read_for or []), must_read_from
+        self.subject_plan, self.vault, self.task, self.kfm_root = list(subject_plan or []), vault, task, kfm_root
+
+
+def build_briefs(a: BriefParams) -> list[dict]:
+    """Write the selected seats' brief files and `jobs_<prefix>.json`; returns the job rows."""
     acceptance = acceptance_section(a.task) if a.task else ""
     rigor = finding_bar.run_rigor(a.task, REPO) if a.target == "sidecar" else None
     bar = finding_bar.bar_contract(rigor) + "\n" if rigor else ""
@@ -644,11 +1109,11 @@ def main() -> None:
     # `choices` no longer owns --model or --effort: the sidecar route's vocabulary is the registry's,
     # which changes without a release. The native route keeps the same refusal text and exit code.
     if a.target == "native" and a.model not in NATIVE_PINS:
-        ap.error(f"argument --model: invalid choice: {a.model!r} "
-                 f"(choose from {', '.join(repr(p) for p in NATIVE_PINS)})")
+        raise ArgumentRefused(f"argument --model: invalid choice: {a.model!r} "
+                              f"(choose from {', '.join(repr(p) for p in NATIVE_PINS)})")
     if a.target == "native" and a.effort and a.effort not in NATIVE_EFFORTS:
-        ap.error(f"argument --effort: invalid choice: {a.effort!r} "
-                 f"(choose from {', '.join(repr(e) for e in NATIVE_EFFORTS)})")
+        raise ArgumentRefused(f"argument --effort: invalid choice: {a.effort!r} "
+                              f"(choose from {', '.join(repr(e) for e in NATIVE_EFFORTS)})")
     if not Path(a.context_path).is_file():
         sys.exit(f"--context-path does not resolve: {a.context_path}")
 
@@ -814,7 +1279,7 @@ def main() -> None:
             )
         preamble = lens_facing(preambles[found[seats[k][0]].registry])
         if any(found[key].kfm for key in seats[k]):
-            lens_part += "\n" + kfm_section()
+            lens_part += "\n" + (kfm_section(a.kfm_root) if a.kfm_root else kfm_section())
         if inbound and (any(found[key].citers for key in seats[k]) or any(shape == "meta" for shape, _path in subjects)):
             lens_part += "\n" + inbound
         if grounding and k in grounding_seats:
@@ -827,7 +1292,7 @@ def main() -> None:
             # Native's pins are argv-shaped, so its refusal is an argument error (exit 2); the
             # sidecar route keeps its own semantic exit.
             if a.target == "native":
-                ap.error(why)
+                raise ArgumentRefused(why)
             sys.exit(why)
         effort = overrides.get(k) or a.effort
         must = list(must_overrides.get(k) or panel_must or [])
@@ -945,6 +1410,72 @@ def main() -> None:
         else:
             print(f"  {j['label']:36} {j['alias']:12} {j['effort']:6} "
                   f"{Path(j['promptFile']).stat().st_size:7,}B")
+    return jobs
+
+
+def main() -> None:
+    if sys.argv[1:2] == ["must-read"]:
+        must_read_command(sys.argv[2:])
+        return
+    if sys.argv[1:2] == ["prepare"]:
+        try:
+            prepare_command(sys.argv[2:])
+        except SystemExit as exc:
+            if isinstance(exc.code, str):
+                sys.exit(exc.code.rstrip("\n") + "\n" + shape_lines(
+                    "prepare --spec <spec.json> --out <run dir>; spec keys in `prepare_command`'s docstring",
+                    "python3 .claude/tools/lens_briefs.py prepare --spec .claude/scratch/run/spec.json "
+                    "--out .claude/scratch/run").rstrip("\n"))
+            raise
+        return
+    ap = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--keys", nargs="+", default=None, help="one seat key; a panel of several seats uses --plan")
+    ap.add_argument("--plan", default=None, metavar="FILE",
+                    help="the JSON `review_ledger.py plan` printed: its roster keys are the seats; excludes --keys")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--prefix", required=True)
+    ap.add_argument("--pr-num", default=None,
+                    help="required when a selected template carries {{PR_NUM}}")
+    ap.add_argument("--branch", default=None,
+                    help="required when a selected template carries {{BRANCH}}")
+    ap.add_argument("--context-path", required=True, help="absolute path of the shared CONTEXT file")
+    ap.add_argument("--target", default="native", choices=["native", "sidecar"],
+                    help="native: dispatch.js jobs (default, unchanged). sidecar: sidecar_fanout.py jobs")
+    ap.add_argument("--sub", action="append", default=[], help="PLACEHOLDER=<file> extra substitutions")
+    ap.add_argument("--model", required=True,
+                    help="native: the panel pin (opus|sonnet|haiku|fable), resolved by the caller "
+                         "through orchestration §5. sidecar: a model_registry alias")
+    ap.add_argument("--model-for", action="append", default=[], metavar="KEY=MODEL",
+                    help="per-lens model override, e.g. --model-for <key>=opus")
+    ap.add_argument("--tier", default=None, choices=TIERS,
+                    help="panel tier, the one its --model pin serves; default: each seat's lens tier")
+    ap.add_argument("--tier-for", action="append", default=[], metavar="KEY=TIER",
+                    help="per-lens tier override, paired with that lens's --model-for pin")
+    ap.add_argument("--effort", default=None,
+                    help="the panel's ladder rung; required unless --effort-for covers every seat")
+    ap.add_argument("--effort-for", action="append", default=[], metavar="KEY=EFFORT",
+                    help="per-lens override, e.g. --effort-for <key>=medium (names the ambiguity in --justification at dispatch)")
+    ap.add_argument("--must-read", default=None, metavar="LIST",
+                    help="file listing the panel's must-read paths, one per line: every seat's list unless "
+                         "--must-read-for replaces it")
+    ap.add_argument("--must-read-for", action="append", default=[], metavar="KEY=LIST",
+                    help="one seat's must-read list file, replacing --must-read for that seat")
+    ap.add_argument("--must-read-from", default=None, metavar="PACKET",
+                    help="a frozen session_audit_inputs.py packet: each seat's must-read list is the union "
+                         "of its mandates' views, each exact artifact once")
+    ap.add_argument("--subject-plan", action="append", default=[], metavar="SHAPE:PLAN",
+                    help="meta:<plan.md> or code:<plan.md>; repeatable; a plan with no `## Job map` section is "
+                         "refused. A seat declaring `citers: plan` gets a "
+                         "bounded summary and sweep-file pointer for each meta subject and needs at least one subject")
+    ap.add_argument("--vault", default=None, metavar="ROOT",
+                    help="the Obsidian vault root a citers sweep reads (default: vault_read.DEFAULT_VAULT)")
+    ap.add_argument("--task", default=None, metavar="ID",
+                    help="task record whose requirements and exclusions every seat judges as its acceptance test")
+    a = ap.parse_args()
+    try:
+        build_briefs(BriefParams(**vars(a)))
+    except ArgumentRefused as exc:
+        ap.error(str(exc))
 
 
 if __name__ == "__main__":

@@ -1,9 +1,34 @@
-"""Extract the concise summary and usage section from CLI help text."""
+"""Extract the concise summary and usage section from CLI help text, and print a refusal's shape.
 
+Every measured tool's refusal ends with the same two lines — what the argument accepts and one call
+that works. `refusal` writes them; `ShapeParser` makes an argparse usage error carry them too.
+"""
+
+import argparse
 import re
+import sys
 
 
 _USAGE = re.compile(r"^( *)(?:usage|cli|subcommands)(?::)?(?:\s|$)", re.IGNORECASE)
+
+
+def refusal(accepts, example) -> str:
+    return "accepts: %s\nexample: %s\n" % (accepts, example)
+
+
+class ShapeParser(argparse.ArgumentParser):
+    """ArgumentParser whose usage error ends with `accepts:` and `example:`.
+
+    Each parser sets `accepts`/`example` for its own operation, so a subparser's error never names
+    another operation's flags.
+    """
+    accepts = ""
+    example = ""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        sys.stderr.write("error: %s\n%s" % (message, refusal(self.accepts, self.example)))
+        raise SystemExit(2)
 
 
 def usage(doc) -> str:

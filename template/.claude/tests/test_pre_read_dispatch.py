@@ -175,13 +175,12 @@ def main():
     routing = member("tool_routing_nudge")
     if routing:
         rc, out, err = run(call("Grep", grep_input, session="rdgrep01"), env)
-        ctx = context_of(out) if rc == 0 else ""
-        crash_free("a bare PascalCase Grep over .cs gets the routing advisory on additionalContext",
-                   rc, out, err, rc == 0 and "[tool-routing]" in ctx)
+        crash_free("a bare PascalCase Grep over .cs carries no routing advisory",
+                   rc, out, err, rc == 0 and "[tool-routing]" not in context_of(out) and not err)
         rc, out, err = run(call("Grep", grep_input, session="rdgrep02"),
                            dict(env, HARNESS_ROUTING_HARD_BLOCK_CS_GREP="1"))
         crash_free("the retired hard-block env var cannot deny a C# Grep",
-                   rc, out, err, rc == 0 and "[tool-routing]" in context_of(out) and not err)
+                   rc, out, err, rc == 0 and "[tool-routing]" not in context_of(out) and not err)
 
     # A present optional member's broken import must not stop sibling checks.
     for name in ('indexed_reference_guard', 'semantic_search_scope_guard', 'tool_routing_nudge',
@@ -198,13 +197,14 @@ def main():
             f'runpy.run_path({DISPATCH!r}, run_name="__main__")\n')
         data = call('Read', {'file_path': big}, session='fault-' + name)
         if name == 'file_size_preblock':
-            data = call('Grep', grep_input, session='fault-' + name)
+            data = call('Read', {'file_path': os.path.join(tmp, 'clip.mp4')}, session='fault-' + name)
         proc = subprocess.run([sys.executable, '-c', script], input=json.dumps(data),
                               capture_output=True, text=True, encoding='utf-8', env=env, timeout=120)
         if name != 'file_size_preblock':
             later = (json.loads(proc.stdout).get('hookSpecificOutput') or {}).get('updatedInput', {}).get('limit', 0) > 0
         else:
-            later = '[tool-routing]' in context_of(proc.stdout) if routing else True  # no later Grep check ships
+            # video_read_hint is the later check a Read still reaches once file_size_preblock's import fails.
+            later = 'video_frames' in context_of(proc.stdout) if member('video_read_hint') else True
         crash_free(name + ' import fault reports on model channel and keeps later checks',
                    proc.returncode, proc.stdout, proc.stderr,
                    proc.returncode == 0 and name in context_of(proc.stdout)

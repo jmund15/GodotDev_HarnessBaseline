@@ -35,6 +35,7 @@ that cannot be written must degrade to a missing nudge, never to a crashed hook.
 """
 
 import fnmatch
+import hashlib
 import importlib.util
 import io
 import json
@@ -60,6 +61,12 @@ __all__ = [
     "fire_once_since_compaction",
     "mark_ladder_slice",
     "ladder_slice_tiers",
+    "stage_ladder_receipt",
+    "consume_ladder_receipt",
+    "fail_ladder_receipt",
+    "ladder_receipt_failure",
+    "normalize_stdout",
+    "stdout_sha256",
     "clear_compaction_keys",
     "is_subagent_payload",
     "log_path",
@@ -138,9 +145,11 @@ _COMPACTION_KEY = "fired_since_compaction"
 SKILL_REATTACH_CHARS = 20_000
 _COMPACTED_AT_KEY = "compacted_at"
 LADDER_SLICE_KEY = "ladder_slice_tiers"
+LADDER_RECEIPT_KEY = "ladder_receipt"
+LADDER_RECEIPT_FAILURE_KEY = "ladder_receipt_failure"
 BRIEF_TABLE_KEY = "brief_table_fits"
 _COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", "model_ladder_ready", LADDER_SLICE_KEY,
-                          BRIEF_TABLE_KEY)
+                          LADDER_RECEIPT_KEY, LADDER_RECEIPT_FAILURE_KEY, BRIEF_TABLE_KEY)
 _LOCK_WAIT_SECONDS = 2.0
 
 
@@ -253,12 +262,16 @@ def skill_in_context(session_id, name, agent_id="", transcript_path=None):
     return name in whole
 
 
-def mark_ladder_slice(session_id, tiers):
-    """Record that `model_registry.py ladder-slice` printed these tiers into this context window; a compaction
-    clears them. Accumulates across runs. True when the record was written."""
+def mark_ladder_slice(session_id, tiers, clear_receipt_failure=False):
+    """Record that `model_registry.py for-role` printed these tiers into this context window; a compaction
+    clears them. Accumulates across runs. `clear_receipt_failure` drops the last failed-delivery note in the
+    same write, so a credit never leaves its session accusing a delivery that succeeded. True when the record
+    was written."""
     def update(state):
         have = state.get(LADDER_SLICE_KEY)
         state[LADDER_SLICE_KEY] = sorted({*(have if isinstance(have, list) else []), *tiers})
+        if clear_receipt_failure:
+            state.pop(LADDER_RECEIPT_FAILURE_KEY, None)
         return True
 
     written, _ = update_json_locked(state_path(session_id), update)
@@ -269,6 +282,61 @@ def ladder_slice_tiers(session_id):
     """The tiers whose ladder slice is in this context window, else []. Reads only."""
     have = read_json_salvage(state_path(session_id)).get(LADDER_SLICE_KEY)
     return sorted(t for t in have if isinstance(t, str)) if isinstance(have, list) else []
+
+
+def normalize_stdout(text):
+    """Stdout as both the producer and the delivered payload spell it: CRLF and lone CR become LF, and trailing
+    whitespace goes, since the client trims a Bash result's final newline before delivering it."""
+    return str(text or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
+
+
+def stdout_sha256(text):
+    """The digest a `for-role` run stages and the Bash PostToolUse entry compares against delivery."""
+    return hashlib.sha256(normalize_stdout(text).encode("utf-8")).hexdigest()
+
+
+def stage_ladder_receipt(session_id, sha256, tiers):
+    """Stage the text a `for-role` run is about to deliver, with the tiers it credits. The delivery hook
+    (`model_ladder_gate.mark_loaded`) credits them only when the delivered stdout hashes to this value.
+    One pending receipt per session: a later run replaces it. True when staged."""
+    if not session_id or not sha256:
+        return False
+
+    def update(state):
+        state[LADDER_RECEIPT_KEY] = {"sha256": sha256, "tiers": sorted({t for t in tiers if isinstance(t, str)}),
+                                     "at": time.time()}
+        return True
+
+    written, _ = update_json_locked(state_path(session_id), update)
+    return bool(written)
+
+
+def consume_ladder_receipt(session_id):
+    """Pop the pending receipt for `session_id` (atomic), or None when none is staged. A delivery attempt
+    consumes it whether it credits or not: a second payload cannot retry the first one's stage."""
+    def update(state):
+        receipt = state.pop(LADDER_RECEIPT_KEY, None)
+        return receipt if isinstance(receipt, dict) else None
+
+    written, receipt = update_json_locked(state_path(session_id), update)
+    return receipt if written else None
+
+
+def fail_ladder_receipt(session_id, reason):
+    """Record why a staged `for-role` delivery earned no credit, for the next deny to name. Cleared by a
+    credited delivery and by a compaction. True when recorded."""
+    def update(state):
+        state[LADDER_RECEIPT_FAILURE_KEY] = {"reason": str(reason), "at": time.time()}
+        return True
+
+    written, _ = update_json_locked(state_path(session_id), update)
+    return bool(written)
+
+
+def ladder_receipt_failure(session_id):
+    """The recorded reason the last `for-role` delivery earned no credit, else None. Reads only."""
+    entry = read_json_salvage(state_path(session_id)).get(LADDER_RECEIPT_FAILURE_KEY)
+    return entry.get("reason") if isinstance(entry, dict) else None
 
 
 def brief_table_seen(session_id, tier, fits):

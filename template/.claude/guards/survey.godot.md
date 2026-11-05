@@ -4,9 +4,10 @@
 
 ## detailed
 
-- A PascalCase identifier on `.cs`: the declaration anchor is `Grep("class X\b"|"interface X\b" -g "*.cs")`; the language server here is the csharp-ls LSP. [CLAUDE.godot.md §Godot Docs and C# Navigation]
-- A PascalCase name in `.tres`/`.tscn`/`.gd`/`.godot` or other text data: route to semantic-search, not Grep. [CLAUDE.godot.md §Godot Docs and C# Navigation]
+- A PascalCase identifier on `.cs`: the declaration anchor is `Grep("class X\b"|"interface X\b" -g "*.cs")`. [CLAUDE.godot.md §Godot Docs and C# Navigation]
+- In `.tres`/`.tscn`/`.gd`/`.godot`: Grep for the occurrences of an exact name; semantic search when the location is unknown (`CLAUDE.coding.md` §Semantic Search MCP).
+- Blast-radius sweep: a serialized reference names the target's `res://` path or `uid://`, rarely its class name — Grep both. [rules/godot_files.md §UID handling]
 
 ## condensed
 
-- `.cs` anchor: `Grep("class X\b" -g "*.cs")`; names in `.tres`/`.tscn`/`.gd` route to semantic-search.
+- `.cs` anchor: `Grep("class X\b" -g "*.cs")`. In `.tres`/`.tscn`/`.gd`/`.godot`: Grep an exact name's occurrences; semantic search when the location is unknown (`CLAUDE.coding.md` §Semantic Search MCP).

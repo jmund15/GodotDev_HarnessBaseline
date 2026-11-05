@@ -28,9 +28,5 @@ for consumer, label in (
 ):
     check(label, "update_json_locked(" in source(consumer))
 
-# `edit_seen_this_turn` lost its only reader when the cumulative nudge retired.
-for consumer in ("harness_edit_skill_reminder.py", "tool_routing_cumulative_reset.py"):
-    check(consumer + " writes no retired edit_seen_this_turn state", "edit_seen_this_turn" not in source(consumer))
-
 print("all ok" if not failures else "%d failure(s)" % failures)
 sys.exit(int(bool(failures)))

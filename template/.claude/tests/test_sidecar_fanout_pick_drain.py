@@ -2,7 +2,7 @@
 """RED-first proof: forecasts pace a fan-out per plan, observed drain re-sizes each plan's waves, and only
 observed spent allowance stops work.
 
-The captured failure (2026-10-25 17:03Z): two `sonnet` `high` `author` jobs went to `anthropic-secondary` at 92%
+The failure this proves: two `sonnet` `high` `author` jobs went to `anthropic-secondary` at 92%
 used of its 5h window (8 points headroom; the flat 4-point charge read 8 - 2x4 = 0 as a fit). The plan hit 100%
 at 17:34Z and both jobs stopped with `provider-usage-limit` before writing anything. Every case plants the
 capacity readings and the history (samples, finished jobs); no process is spawned and nothing is billed.
@@ -699,7 +699,7 @@ def a_stopped_chain_head_gives_its_successors_the_same_not_run_error():
 
 
 def a_window_is_priced_by_its_own_history_not_the_one_with_fewest_points_left():
-    """2026-10-28: anthropic-secondary read five_hour 4% used (96 left) and seven_day 28% (72 left). The job was
+    """anthropic-secondary reads five_hour 4% used (96 left) and seven_day 28% (72 left). The job was
     priced on seven_day (2 reset periods of samples: the default) while five_hour, the window that later stopped
     the run, has the history. The binding window is the one that holds the fewest of this job."""
     plant(PB)

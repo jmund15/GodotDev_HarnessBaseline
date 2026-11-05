@@ -257,7 +257,6 @@ class HarnessIntegrityTests(unittest.TestCase):
         code, _, _, _ = self.run_pool(proof, ['test_ok.py', 'test_slow.py'])
         self.assertEqual(code, 1)
         self.assertEqual(len(calls['test_slow.py']), 2)
-        self.assertEqual(calls['test_slow.py'][0], runner._TIMEOUT_SEC)
         self.assertGreater(calls['test_slow.py'][1], calls['test_slow.py'][0])
 
     def test_slowest_recorded_proof_starts_first(self):

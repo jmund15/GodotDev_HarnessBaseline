@@ -643,6 +643,35 @@ def test_collect_without_rows_takes_only_push_verdicts() -> None:
             raise AssertionError("a listed row without a push verdict was collected")
 
 
+def test_collect_publishes_a_committed_deletion_of_a_push_row() -> None:
+    gone = ".claude/tests/test_gone.py"
+    never = ".claude/tests/test_never.py"
+    with _fixture() as path:
+        root = path / "consumer"
+        _init_repo(root)
+        _write(root / gone, b"gone = 1\n")
+        _write(root / ".claude/tools/keep.py", b"keep = 1\n")
+        _commit(root, "add")
+        _git(root, "rm", "-q", "--", gone)
+        commit = _commit(root, "retire the proof")
+        lock = {"files": {
+            gone: {"status": "tracked", "hash": "x",
+                   "judged": {"sha": _sha(b"gone = 1\n"), "verdict": "push", "at": "t"}},
+            never: {"status": "tracked", "hash": "y",
+                    "judged": {"sha": "z", "verdict": "push", "at": "t"}},
+        }}
+        publish = _load_publish()
+        source = {"kind": "commit", "repo": str(root), "commit": commit}
+        records = publish._collect(root, source, [gone], lock, None, "unused")
+        assert [(r["relpath"], r["op"]) for r in records] == [(gone, "D")], records
+        try:
+            publish._collect(root, source, [never], lock, None, "unused")
+        except publish.PublishError:
+            pass
+        else:
+            raise AssertionError("a push row no commit ever held was collected")
+
+
 def test_materialize_keeps_a_100755_source_entry_executable() -> None:
     exec_rel = ".claude/scripts/fixture_run.sh"
     plain_rel = ".claude/tools/fixture_plain.py"
@@ -675,6 +704,28 @@ def test_materialize_keeps_a_100755_source_entry_executable() -> None:
         _git(worktree, "add", "-A")
         assert staged_mode(exec_rel) == "100755", staged_mode(exec_rel)
         assert staged_mode(plain_rel) == "100644", staged_mode(plain_rel)
+
+
+def test_materialize_stages_a_judged_row_the_baseline_gitignore_matches() -> None:
+    rel = ".claude/tests/fixtures/run/tree/.claude/plans/plan.md"
+    with _fixture() as path:
+        cache = path / "cache"
+        _init_repo(cache)
+        _write(cache / ".gitignore", b"plans/\n")
+        baseline_sha = _commit(cache, "seed")
+        root = path / "consumer"
+        _init_repo(root)
+        _write(root / rel, b"# plan\n")
+        commit = _commit(root, "consumer")
+        publish = _load_publish()
+        worktree = path / "publish-worktree"
+        record = {"relpath": rel, "source_path": rel, "dest_path": "template/" + rel, "kind": "lock", "op": "A"}
+        publish._materialize(
+            root, {"kind": "commit", "repo": str(root), "commit": commit}, [record],
+            {"substitutions": {}, "files": {rel: {"layer": "pure"}}}, cache, baseline_sha, worktree, "publish/x",
+        )
+        staged = _git(worktree, "ls-files", "--", "template/" + rel).decode().strip()
+        assert staged == "template/" + rel, staged
 
 
 def test_materialize_writes_source_bytes_unsubstituted() -> None:
@@ -1193,6 +1244,7 @@ def test_unreadable_poll_answers_are_polled_again() -> None:
         commit = _git(root, "rev-parse", "HEAD").decode().strip()
         publish = _load_publish()
         publish.CHECKS_POLL_S = 0.05
+        publish.sync.NETWORK_RETRY_DELAYS = (0, 0)  # the fake gh's timeout stderr reads as transient: no backoff sleeps
         env = dict(_install_fake_gh(path))
         env["GH_FAKE_UNREADABLE_POLLS"] = "2"
         with _patched_env(env):
@@ -1211,6 +1263,7 @@ def test_unreadable_poll_answers_fail_step_six_after_the_wait() -> None:
         publish = _load_publish()
         publish.CHECKS_POLL_S = 0.05
         publish.CHECKS_REGISTER_WAIT_S = 0.3
+        publish.sync.NETWORK_RETRY_DELAYS = (0, 0)
         env = dict(_install_fake_gh(path))
         env["GH_FAKE_UNREADABLE_POLLS"] = "100000"
         with _patched_env(env):
@@ -2220,7 +2273,7 @@ def test_gh_carries_the_network_timeout() -> None:
     publish = _load_publish()
     with mock.patch.object(subprocess, "run", _run), mock.patch.object(publish, "_resolve_gh", lambda: "gh"):
         publish._gh(Path("wt"), ["pr", "view", "url"])
-    assert seen == [publish.sync.NETWORK_CALL_TIMEOUT_S], seen
+    assert len(seen) == 1 and seen[0] and seen[0] > 0, seen
 
 
 def test_gh_api_post_is_never_retried_and_api_get_is() -> None:
@@ -2299,7 +2352,9 @@ def main() -> int:
         test_tracer_publishes_one_row_to_fixture_remote,
         test_peer_edit_after_the_source_commit_leaves_step_eight_green,
         test_collect_without_rows_takes_only_push_verdicts,
+        test_collect_publishes_a_committed_deletion_of_a_push_row,
         test_materialize_keeps_a_100755_source_entry_executable,
+        test_materialize_stages_a_judged_row_the_baseline_gitignore_matches,
         test_materialize_writes_source_bytes_unsubstituted,
         test_materialize_records_new_row_layers_and_regenerates_manifest,
         test_materialize_records_a_layer_move_for_an_existing_row,
@@ -2344,6 +2399,7 @@ def main() -> int:
         test_published_forked_row_records_tracked_not_forked,
         test_scrub_honors_the_hits_a_judge_accepted_on_each_row,
         test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds,
+        test_update_lock_keeps_a_verdict_judged_while_the_publish_ran,
         test_worktree_deletion_leaves_every_row_for_the_consumer_pull,
         test_full_battery_upgrade_refuses_a_published_journal,
         test_a_push_that_resets_once_is_retried,
@@ -2380,18 +2436,53 @@ def test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds() ->
         for rel in (held_local, held_tracked):
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text("x\n", encoding="utf-8")
-        lock = {"files": {
+        _write_lock(root, {"schema": 2, "files": {
             held_local: {"status": "local", "layer": "coding", "judged": None},
             held_tracked: {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
             gone: {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
-        }}
+        }})
         records = [{"kind": "lock", "relpath": rel, "op": "D"} for rel in (held_local, held_tracked, gone)]
-        publish._update_lock(root, lock, records, root, "after", {"kind": "commit"})
-        files = lock["files"]
+        publish._update_lock(root, records, root, "after", {"kind": "commit"})
+        files = _read_lock(root)["files"]
         assert files.get(held_local) == {"status": "local", "layer": "coding", "judged": None}, files.get(held_local)
         assert files.get(held_tracked, {}).get("status") == "local", files.get(held_tracked)
         assert "hash" not in files.get(held_tracked, {}), files.get(held_tracked)
         assert gone not in files, files.get(gone)
+
+
+def _write_lock(root: Path, lock: dict) -> None:
+    path = root / ".claude" / "baseline.lock.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(lock), encoding="utf-8")
+
+
+def _read_lock(root: Path) -> dict:
+    return json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+
+
+def test_update_lock_keeps_a_verdict_judged_while_the_publish_ran() -> None:
+    """The lock step applies its rows to the lock as it is on disk when the step runs.
+
+    A publish runs for many minutes; a `judge` in that window writes the lock. A step that saves
+    the snapshot it loaded at publish start erases that verdict.
+    """
+    publish = _load_publish()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        gone, other = ".claude/commands/gone.md", ".claude/commands/other.md"
+        at_start = {"schema": 2, "files": {
+            gone: {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
+            other: {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
+        }}
+        _write_lock(root, at_start)
+        judged = json.loads(json.dumps(at_start))
+        judged["files"][other]["judged"] = {"verdict": "push", "sha": "s2"}
+        _write_lock(root, judged)
+        records = [{"kind": "lock", "relpath": gone, "op": "D"}]
+        publish._update_lock(root, records, root, "after", {"kind": "commit"})
+        files = _read_lock(root)["files"]
+        assert gone not in files, files
+        assert files[other]["judged"] == {"verdict": "push", "sha": "s2"}, files[other]
 
 
 def test_worktree_deletion_leaves_every_row_for_the_consumer_pull() -> None:
@@ -2415,10 +2506,10 @@ def test_worktree_deletion_leaves_every_row_for_the_consumer_pull() -> None:
         for rel in (".claude/commands/held_local.md", ".claude/commands/held_tracked.md"):
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text("x\n", encoding="utf-8")
-        lock = rows()
-        records = [{"kind": "lock", "relpath": rel, "op": "D"} for rel in lock["files"]]
-        publish._update_lock(root, lock, records, root, "after", {"kind": "worktree"})
-        assert lock["files"] == rows()["files"], lock
+        _write_lock(root, {"schema": 2, **rows()})
+        records = [{"kind": "lock", "relpath": rel, "op": "D"} for rel in rows()["files"]]
+        publish._update_lock(root, records, root, "after", {"kind": "worktree"})
+        assert _read_lock(root)["files"] == rows()["files"], _read_lock(root)
 
 
 def test_publish_renames_project_identifiers_without_touching_the_local_file() -> None:

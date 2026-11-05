@@ -819,7 +819,8 @@ def cmd_selftest(args):
 
 def main(argv=None):
     default_repo = str(Path(__file__).resolve().parents[2])
-    ap = argparse.ArgumentParser(prog="restate_scan.py", description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(prog="restate_scan.py", description=__doc__.split("\n")[0],
+                                 fromfile_prefix_chars="@")
     ap.add_argument("--repo", default=default_repo)
     sub = ap.add_subparsers(dest="cmd", required=True)
     common = argparse.ArgumentParser(add_help=False)

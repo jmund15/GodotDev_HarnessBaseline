@@ -180,22 +180,6 @@ def main():
                           and ("bench_liveness" in err if isinstance(content.get("bench_liveness"), list) else err == "")))
         cases.append(("the module docstring names bench_liveness and its reader",
                       "bench_liveness" in doc and "sync_plan_config" in doc))
-        # --- later_round_roles: the grounding and coherence mandates a later review round seats, per stage ----
-        roles = {"plan-check": {"grounding": "g", "coherence": {"meta": "m", "code": "c"}}}
-        claude_dir = _claude_dir_with(tmp, None)
-        cases.append(("later_round_roles defaults to {}: every stage omits the roles",
-                      adaptation.DEFAULTS.get("later_round_roles") == {}
-                      and adaptation.get(claude_dir, "later_round_roles") == {}))
-        claude_dir = _claude_dir_with(tmp, json.dumps({"later_round_roles": roles}))
-        result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
-        cases.append(("an object loads under later_round_roles", result.get("later_round_roles") == roles and err == ""))
-        claude_dir = _claude_dir_with(tmp, json.dumps({"later_round_roles": ["a"]}))
-        result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
-        cases.append(("a wrong-typed later_round_roles falls back to {} and names itself",
-                      result.get("later_round_roles") == {} and "later_round_roles" in err
-                      and len(err.strip().splitlines()) == 1))
-        cases.append(("the module docstring lists later_round_roles with its reader",
-                      "later_round_roles" in doc and "post_check" in doc))
         # --- lens_prefixes: the key prefix a project's lens registry headings share ----
         prefixes = {"review": "xx-"}
         claude_dir = _claude_dir_with(tmp, None)

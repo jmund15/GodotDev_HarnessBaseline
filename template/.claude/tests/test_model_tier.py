@@ -115,7 +115,7 @@ for env_tier, expected in [("condensed", "condensed"), ("none", "minimal"), ("mi
                            ("terse", "detailed")]:  # old names are not accepted from the env
     out = rails_stdout(
         {"session_id": "sid-delegate", "model": "fable", "hook_event_name": "SessionStart"},
-        {"CLAUDE_CODE_SIDECAR": "1", "CLAUDE_CODE_SIDECAR_SHAPE": "review",
+        {"CLAUDE_CODE_SIDECAR": "1", "CLAUDE_CODE_SIDECAR_KIND": "reviewer",
          "CLAUDE_CODE_SIDECAR_TIER": env_tier},
     )
     lines = tier_lines(out)

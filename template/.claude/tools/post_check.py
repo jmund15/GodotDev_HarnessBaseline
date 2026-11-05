@@ -22,13 +22,13 @@ file with an optional digest/snapshot pair per fold subject) and refuses a bound
 runs the independent quote verdicts over every finding, `fold_check` per subject when the run folded, records the
 panel when `--stage/--subject/--roster` are given. It records derived inline `fold` rows per file and
 mandate whose predecessor is covered, except uncovered mandates and files a scoped failure voids.
-`nextRound.uncovered` lists, per lens, the mandates and files no reviewer has covered since the change. It is a
-fact for the session's later-round choice (`orchestration` §2 *Later rounds*), never a seat to fill. `review --findings F --applied ID[,ID...] [--ruled ID...] --files P...` applies the
-same checks to any applier, using the newest common reviewed blob as its snapshot; it excludes
-`--digest` and `--snapshot`. Every ledgered stage requires an adaptation `later_round_roles` row.
-`nextRound.refold` names the round's held and failed-check ids, files and standalone commands.
+The fold only transcribes literal text fixes (`fold_check.py`); `held` lists every other id for the parent, and no
+next review round is synthesized: the session reads the ledger's own `uncovered`/`plan` over the revised diff.
+`review --findings F --applied ID[,ID...] [--ruled ID...] --files P...` records what the parent applied (any kind of
+finding), checking bytes and evidence with the same checks, using the newest common reviewed blob as its snapshot; it
+excludes `--digest` and `--snapshot`.
 `OUT` holds `status`, `verdicts`,
-`held`, `failures`, `ledger`, `nextRound`, `changedPaths`, `unverified`, `foldReport`; `OUT.fold.json` holds the fold checker's report.
+`held`, `failures`, `ledger`, `changedPaths`, `unverified`, `foldReport`; `OUT.fold.json` holds the fold checker's report.
 
 Both check modes write `status`, `counts`, the per-id `verdicts` map and `errors`, through
 verify_claims.check_claims, plus `mode` and `source`, the resolved read flags the Stop audit replays. Claims without evidence are UNCHECKED, never skipped. `--root` resolves
@@ -56,19 +56,16 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 TOOLS = Path(__file__).resolve().parent
 REPO = TOOLS.parents[1]
 sys.path.insert(0, str(TOOLS))
-import adaptation  # noqa: E402
 import fold_check  # noqa: E402
 import finding_bar  # noqa: E402
 from cli_usage import usage  # noqa: E402
 
 Unusable = fold_check.Unusable
-HOLD_CLASSES = ("owner-input", "own-design", "unbased-number", "new-mechanism", "path-scope",
-                "read-first", "conflict", "destructive", "taste-fork", "plan-alternative", "spike", "refutation",
-                "unverified")
 COVERING = ("findings", "clean")
 
 
@@ -86,9 +83,17 @@ def _digest_value(path):
 
 
 def ledger(cwd, *args):
-    """Run review_ledger.py in `cwd` (the ledger repo) -> (code, stdout, stderr)."""
-    done = subprocess.run([sys.executable, str(TOOLS / "review_ledger.py"), *args], cwd=str(cwd),
-                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    """Run review_ledger.py in `cwd` (the ledger repo) -> (code, stdout, stderr).
+
+    Arguments past the Windows command-line limit (32,767 characters) go through an `@file`."""
+    with tempfile.TemporaryDirectory() as tmp:
+        argv = [str(a) for a in args]
+        if sum(len(a) + 3 for a in argv) > 24000 and not any("\n" in a for a in argv):
+            listing = Path(tmp) / "args.txt"
+            listing.write_text("\n".join(argv) + "\n", encoding="utf-8", newline="\n")
+            argv = [f"@{listing}"]
+        done = subprocess.run([sys.executable, str(TOOLS / "review_ledger.py"), *argv], cwd=str(cwd),
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
     return done.returncode, done.stdout, done.stderr
 
 
@@ -134,7 +139,7 @@ def _seat_order(seats_file):
 
 def _seat_agent(item):
     """The archived finding's `agent` when it names its seat or one of the seat's `+`-joined lens keys, else the seat
-    key: the seat writes `agent` itself, and `roster_mandates` maps only a seat key or a lens key to mandates."""
+    key: the seat writes `agent` itself, and only a seat key or a lens key names a roster mandate."""
     agent, seat = item["finding"].get("agent"), item.get("lens")
     if not isinstance(seat, str) or not seat or agent == seat or agent in seat.split("+"):
         return agent
@@ -342,26 +347,23 @@ def applied_job(args, src):
     src.rows = [row for row in src.rows if row['id'] in applied]
     digest = {"applied": [{"id": i, "change": "applied by the caller", "source": "ruling" if i in ruled else "finding"}
                           for i in sorted(applied)],
-              "deferred": [], "designDelta": [], "changedPaths": subject.change_set()}
+              "deferred": [], "changedPaths": subject.change_set()}
     return {"subject": subject, "digestValue": digest, "artifacts": [args.findings], "rows": src.rows,
-            "ruled": sorted(authorized)}
+            "ruled": sorted(authorized), "parent": True}
 
 
 # ---- report ---------------------------------------------------------------------------------------
 
 
-def _hold_class(entry):
-    """The class the fold author named; the first class token in the reason only for a digest that names none."""
-    if entry.get("class") in HOLD_CLASSES:
-        return entry["class"]
-    text = str(entry.get("reason") or "").lower()
-    return next((name for name in HOLD_CLASSES if name in text), "other")
+def _applied_ids(jobs):
+    """The ids of findings the fold's digests record as applied."""
+    return {entry.get("id") for job in jobs if isinstance(job.get("digestValue"), dict)
+            for entry in job["digestValue"].get("applied") or [] if isinstance(entry, dict)}
 
 
 def held_rows(rows, jobs, *, views=None, rigor=None):
-    """Every id the parent rules: the fold's deferred ids with their class, each ASK and open PLAN, and on a run with
-    no fold every FIX and resolved PLAN as `unfolded`, which the standalone fold applies. A finding below the run's
-    `rigor` is never held: the fold defers it `below-bar`, and `below_bar_ids` lists it."""
+    """Every id the parent rules: the fold's deferred ids, each ASK and open PLAN, and on a run with no fold every
+    FIX and resolved PLAN as `unfolded`. A finding below the run's `rigor` is never held: `below_bar_ids` lists it."""
     by_id = {row['id']: row for row in rows}
     jobs = [fold_check._expanded_job(job, job.get('rows') or views or rows) for job in jobs]
     held, seen = [], set()
@@ -371,12 +373,10 @@ def held_rows(rows, jobs, *, views=None, rigor=None):
             if isinstance(entry, dict) and isinstance(entry.get("id"), str) and entry["id"] not in seen:
                 seen.add(entry["id"])
                 row = by_id.get(entry["id"])
-                if entry.get("class") == "below-bar" and row is not None and finding_bar.below(row, rigor):
+                if row is not None and finding_bar.below(row, rigor):
                     continue
-                held_class = "below-bar" if entry.get("class") == "below-bar" else _hold_class(entry)
-                held.append({"id": entry["id"], "class": held_class, "reason": str(entry.get("reason") or "")})
-    applied = {entry.get("id") for job in jobs if isinstance(job.get("digestValue"), dict)
-               for entry in job["digestValue"].get("applied") or [] if isinstance(entry, dict)}
+                held.append({"id": entry["id"], "class": "deferred", "reason": str(entry.get("reason") or "")})
+    applied = _applied_ids(jobs)
     authorized = {i for job in jobs for i in job.get('ruled') or []}
     for row in rows:
         if row['id'] in seen or (row['id'] in applied and
@@ -396,8 +396,7 @@ def held_rows(rows, jobs, *, views=None, rigor=None):
 def below_bar_ids(rows, jobs, held, rigor):
     """The ids below the run's rigor that neither the fold applied nor `held_rows` holds: listed with the close's offer."""
     held_ids = {entry["id"] for entry in held}
-    applied = {entry.get("id") for job in jobs if isinstance(job.get("digestValue"), dict)
-               for entry in job["digestValue"].get("applied") or [] if isinstance(entry, dict)}
+    applied = _applied_ids(jobs)
     return [row["id"] for row in rows if finding_bar.below(row, rigor) and row["id"] not in held_ids | applied]
 
 
@@ -407,8 +406,9 @@ def _covering_mandates(rows, rel, wanted):
                    and row.get("outcome") in COVERING and row.get("mandate") in wanted})
 
 
-def record_inline(cwd, args, wanted, blocks, rows, candidates, failures, subjects, roster):
-    """Record each unchanged mandate over the exact checked post-fold bytes and predecessor."""
+def record_inline(cwd, args, wanted, changed, failures, subjects, roster):
+    """Record each mandate whose predecessor is covered over the exact checked post-fold bytes: a fold only
+    transcribes, so it adds no unit a reviewer has not seen. `changed` maps a subject (by id) to its changed files without parent design."""
     import review_ledger
     voided = set()
     for failure in failures:
@@ -419,18 +419,18 @@ def record_inline(cwd, args, wanted, blocks, rows, candidates, failures, subject
         else:
             voided.update(failure.get("files") or [])
     written, recorded = 0, set()
-    for block, subject in zip(blocks, subjects):
+    for subject in subjects:
         if set(subject.allowed) <= voided:
             continue
         pre = reviewed_blobs(subject)
         cover = review_ledger.cover_at(cwd, pre)
         cover.subject_kind = review_ledger._subject_kind(args.subject)
-        for rel in block["changedFiles"]:
+        for rel in changed.get(id(subject), []):
             if rel in voided or subject.post_bytes(rel) is None:
                 continue
             previous = pre.get(rel)
             root = previous is None and fold_check.is_test_path(rel)
-            mandates = [m for m in sorted(wanted - candidates.get(rel, set())) if root or (
+            mandates = [m for m in sorted(wanted) if root or (
                 previous and cover.pair_state(m, rel, review_ledger._depth_seats(roster, m)) is None)]
             post = subprocess.run(["git", "-C", str(cwd), "hash-object", "-w", "--path", rel, "--stdin"],
                                   input=subject.post_bytes(rel), capture_output=True)
@@ -539,73 +539,7 @@ def record_panel(cwd, args, src, subjects):
     return ledger(cwd, *cmd)
 
 
-def candidate_mandates(blocks, roles):
-    candidates = {}
-    for block in blocks:
-        for rel, reasons in block["fileUnits"].items():
-            mine = candidates.setdefault(rel, set())
-            coherence = (roles.get("coherence") or {}).get("code" if fold_check.is_code_path(rel) else "meta")
-            if "grounding" in reasons and roles.get("grounding"):
-                mine.add(roles["grounding"])
-            if "seam" in reasons and coherence:
-                mine.add(coherence)
-            if "unaccounted" in reasons:
-                mine.update(block.get("fileMandates", {}).get(rel, []))
-                if coherence:
-                    mine.add(coherence)
-            if any(reason.split(":")[0] in ("fold", "ruling", "check", "noTest") for reason in reasons):
-                mine.update(block.get("fileMandates", {}).get(rel, []))
-    return candidates
-
-
-def roster_mandates(candidates, roster):
-    """`candidates` with each seat key the roster names replaced by that seat's mandates: a finding's `agent` is its
-    seat key, and a lens split over several seats has keys no registry lens carries."""
-    by_key = {seat["key"]: seat.get("mandates") or [] for seat in roster if isinstance(seat.get("key"), str)}
-    return {rel: {m for key in mandates for m in by_key.get(key) or [key]} for rel, mandates in candidates.items()}
-
-
-def next_round_uncovered(cwd, args, blocks, roster, rows, roles, candidates=None):
-    """Per lens, the mandates and files unseen units leave uncovered; a mandate no roster lens carries
-    names the lens that declares it."""
-    import review_ledger
-    candidates = candidates if candidates is not None else roster_mandates(candidate_mandates(blocks, roles), roster)
-    wanted = set().union(*candidates.values()) if candidates else set()
-    unit_files = sorted(rel for rel, mandates in candidates.items() if mandates)
-    if not wanted or not unit_files:
-        return [], []
-    seats, taken = [], set()
-    for seat in roster:
-        mine = [m for m in seat.get("mandates") or [] if m in wanted]
-        if mine:
-            seats.append({k: v for k, v in dict(seat, mandates=mine).items() if k != "effort"})
-            taken.update(mine)
-    lenses = review_ledger._lens_sets((*review_ledger.REVIEW_REGISTRIES, "redteam"))
-    for mandate in sorted(wanted - taken):
-        key = next((key for entries in lenses.values() for key, mandates in entries if mandate in mandates), None)
-        if key is None:
-            raise Unusable(f"no lens declares later-round mandate {mandate}")
-        seats.append({"key": key, "mandates": [mandate], "tier": review_ledger._lens_tier(key)})
-    roster_file = Path(str(args.out) + ".candidates.json")
-    _write(roster_file, seats)
-    cmd = ["plan", "--stage", args.stage, "--subject", args.subject, "--roster", str(roster_file),
-           "--files", *unit_files]
-    code, out, err = ledger(cwd, *cmd)
-    if code:
-        raise Unusable(f"review_ledger plan failed: {err.strip()}")
-    try:
-        planned = json.loads(out)["roster"]
-    except (ValueError, KeyError, TypeError) as exc:
-        raise Unusable(f"review_ledger plan output is not a roster: {exc}") from None
-    return [{k: v for k, v in seat.items() if k != "effort"} for seat in planned], []
-
-
 def review(args, *, independent=None):
-    roles = None
-    if args.stage:
-        roles = adaptation.get(REPO / ".claude", "later_round_roles").get(args.stage)
-        if not isinstance(roles, dict):
-            raise Unusable(f"missing adaptation.json later_round_roles row for {args.stage}; add that stage's roles")
     src = read_source(args)
     source = source_flags(args)
     if args.applied:
@@ -614,15 +548,7 @@ def review(args, *, independent=None):
         src.jobs = [applied_job(args, src)]
         src.record = None
     elif args.ruled:
-        views = (fold_check.load_rows(src.findings_path) if src.findings_path else
-                 [row for job in src.jobs for row in job.get('rows') or []])
-        aliases = {row['id']: fold_check._sources(row) for row in views}
-        ruled = {source for value in args.ruled for item in value.split(',') if item
-                 for source in aliases.get(item, [item])}
-        if not src.jobs or ruled - {row['id'] for row in src.rows}:
-            raise Unusable('--ruled requires a fold and known finding ids')
-        for job in src.jobs:
-            job['ruled'] = sorted(ruled)
+        raise Unusable('--ruled requires --applied: a fold applies no ruling')
     rigor = finding_bar.run_rigor(args.task, Path(args.root or REPO))
     for job in src.jobs:
         job['bar'] = rigor
@@ -630,14 +556,13 @@ def review(args, *, independent=None):
     out.parent.mkdir(parents=True, exist_ok=True)
     fold_out = str(out) + ".fold"
     failures = list(src.errors)
-    blocks, fold_report = [], None
+    fold_report = None
     if src.jobs:
         fold_report = fold_check.run(src.findings_path if not args.applied and (args.findings or args.sidecar_dir) else None,
                                      src.jobs, fold_out, independent=independent, original=src.rows)
         _write(fold_out + ".json", fold_report)
         failures += fold_report["failures"]
         independent = {item["id"]: item["verdict"] for item in fold_report["independentVerdicts"]}
-        blocks = fold_report["nextRound"]
     import verify_claims
     if src.jobs:
         checked = verify_claims.check_claims([])
@@ -658,7 +583,8 @@ def review(args, *, independent=None):
     independent = {key: value['verdict'] for key, value in checked['verdicts'].items()}
     subjects = [job["subject"] for job in src.jobs]
     subjects += [fold_check.subject_from_manifest(m) for m in getattr(args, "reviewed_snapshot", None) or []]
-    changed = sorted({rel for block in blocks for rel in block["changedFiles"]})
+    changed = {id(job["subject"]): [rel for rel in entry["changedFiles"] if rel not in entry["designFiles"]]
+               for job, entry in zip(src.jobs, (fold_report or {}).get("jobs") or [])}
     changed_paths = set()
     for job in src.jobs:
         try:
@@ -666,10 +592,7 @@ def review(args, *, independent=None):
         except Unusable:
             pass  # check_job already recorded fold-snapshot-missing for this subject
     changed_paths = sorted(changed_paths)
-    unaccounted = [line for block in blocks for line in block["unaccounted"]]
     ledger_report = {"panelRows": 0, "inlineRows": 0}
-    roles_note, unseated = None, []
-    seats = [seat for block in blocks for seat in block["seats"]]
     if args.stage and args.subject and args.roster:
         home_root = Path(args.root or REPO)
         if not args.root and subjects and _common_dir(home_root) not in {_common_dir(s.root) for s in subjects}:
@@ -686,21 +609,8 @@ def review(args, *, independent=None):
             failures.append({"kind": "ledger-record-failed", "detail": done[2].strip()})
         rows_now = ledger_rows(cwd, args.subject)
         ledger_report["panelRows"] = len(rows_now) - before
-        candidates = roster_mandates(candidate_mandates(blocks, roles), roster)
-        written, _ = record_inline(cwd, args, wanted, blocks, rows_now, candidates,
-                                          failures, subjects, roster)
+        written, _ = record_inline(cwd, args, wanted, changed, failures, subjects, roster)
         ledger_report["inlineRows"] = written
-        seats, unseated = next_round_uncovered(cwd, args, blocks, roster, rows_now, roles, candidates)
-    units = {}
-    for block in blocks:
-        for seat in block["seats"]:
-            units.setdefault(seat["role"], []).extend(seat.get("units") or seat.get("lines") or [])
-    next_round = {"uncovered": seats, "units": units, "change": _merge_change(blocks),
-                  "unaccounted": unaccounted}
-    if roles_note:
-        next_round["roles"] = roles_note
-    if unseated:
-        next_round["unseated"] = unseated
     held = held_rows(src.rows, src.jobs, rigor=rigor, views=fold_check.load_rows(src.findings_path, allow_empty=True)
                      if src.findings_path else None)
     held_ids = {entry["id"] for entry in held}
@@ -711,44 +621,18 @@ def review(args, *, independent=None):
             held_ids.add(entry["id"])
     classes = {"file": "unapplied", "finding": "unrouted"}
     id_classes = {"fold-id-coverage": "unreported"}
-    failed_checks = set()
     for failure in failures:
         failure.setdefault("ids", [failure["id"]] if failure.get("id") else [])
         scope = fold_check.FAILURE_SCOPE.get(failure["kind"], "subject")
         failure.setdefault("files", sorted({rel for subject in subjects for rel in subject.allowed
                                             if scope == "run" or (scope == "subject" and
                                                 failure.get("subject") in (None, subject.root_text))}))
-        if scope == "id":
-            failed_checks.update(failure["ids"])
         held_class = id_classes.get(failure["kind"], failure["kind"]) if scope == "id" else classes.get(scope)
         if held_class:
             for finding_id in failure["ids"]:
                 if finding_id not in held_ids:
                     held.append({"id": finding_id, "class": held_class, "reason": failure["detail"]})
                     held_ids.add(finding_id)
-    import shlex
-    root = subjects[0].root if subjects else Path(args.root or REPO)
-    refold_rows = [row for row in src.rows if row["id"] in held_ids | failed_checks]
-    refold_files = sorted({rel for row in refold_rows if (
-        rel := next((found for subject in subjects if (found := subject.file_of(row))), None)
-        or fold_check.rel_path(fold_check._cited(row.get("file")), root))})
-    manifest = str(out) + ".refold.snapshot.json"
-    digest = str(out) + ".refold.digest.json"
-    findings_path = fold_out + ".findings.json"
-    _write(findings_path, {"findings": refold_rows})
-    snapshot_cmd = ["python3", ".claude/tools/post_check.py", "snapshot", "--root", str(root),
-                    "--files", *refold_files, "--out", manifest]
-    check_cmd = ["python3", ".claude/tools/post_check.py", "review", "--findings", findings_path,
-                 "--digest", digest, "--snapshot", manifest]
-    for flag in ("stage", "subject", "roster", "task"):
-        if getattr(args, flag):
-            check_cmd += ["--" + flag, getattr(args, flag)]
-    if held_ids:
-        check_cmd += ['--ruled', ','.join(sorted(held_ids))]
-    check_cmd += ["--out", str(out) + ".refold.json"]
-    next_round["refold"] = {"findings": findings_path, "held": sorted(held_ids),
-                            "failedCheck": sorted(failed_checks), "files": refold_files,
-                            "snapshot": shlex.join(snapshot_cmd), "check": shlex.join(check_cmd)}
     report = {**checked, "status": "fail" if failures or checked["status"] != "pass" else "pass",
               "outcome": "fail" if checked["errors"] or any(
                   fold_check.FAILURE_SCOPE.get(f["kind"], "subject") not in ("id", "file", "finding")
@@ -757,7 +641,7 @@ def review(args, *, independent=None):
               "unverified": sorted(i for i, v in independent.items() if v == "UNVERIFIED"),
               "held": held, "failures": failures, "ledger": ledger_report, "rigor": rigor,
               "belowBar": below_bar_ids(src.rows, src.jobs, held, rigor),
-              "nextRound": next_round, "changedPaths": changed_paths,
+              "changedPaths": changed_paths,
               "foldReport": fold_out + ".json" if fold_report else None, "mode": "review", "source": source}
     if src.selection is not None:
         report["reviewerSelection"] = src.selection
@@ -769,19 +653,6 @@ def review(args, *, independent=None):
     print(f"post_check: outcome {report['outcome']}, status {report['status']} ({len(failures)} failure(s)); claims {counts.get('VERIFIED', 0)} verified, "
           f"{counts.get('UNVERIFIED', 0)} unverified, {counts.get('UNCHECKED', 0)} unchecked; {len(held)} held -> {out}")
     return 0 if report["outcome"] == "pass" else 1
-
-
-def _merge_change(blocks):
-    measured = [block["change"] for block in blocks if block.get("change")]
-    if not measured:
-        return None
-    keys = ("lines", "changedLines", "units", "unplacedLines", "unitsReached")
-    merged = {key: sum(m.get(key, 0) for m in measured) for key in keys}
-    merged["files"] = {rel: m for part in measured for rel, m in part["files"].items()}
-    return merged
-
-
-# ---- claims ---------------------------------------------------------------------------------------
 
 
 def _journal_results(directory):
@@ -1134,7 +1005,7 @@ def main(argv=None, *, independent=None):
                       "verdicts": {}, "errors": [str(exc)]}
             if args.command == 'review':
                 report.update(held=[], failures=[], ledger={"panelRows": 0, "inlineRows": 0},
-                              nextRound={"uncovered": []}, changedPaths=[], foldReport=None)
+                              changedPaths=[], foldReport=None)
             _write(args.out, report)
         print(f"post_check: {exc}", file=sys.stderr)
         return 2

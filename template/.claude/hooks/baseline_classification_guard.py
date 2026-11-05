@@ -64,7 +64,7 @@ for _p in (_HOOKS_DIR, _TOOLS_DIR):
 
 from _git_commit import (base_rev, commit_invocations, parse_commit_args, resolve_index, run_git, staged_paths,
                          segments, git_invocation, executable_text, git_environ, resolve_cd,
-                         commit_source)  # noqa: E402
+                         commit_source, unexpanded_hint, full_pathspec)  # noqa: E402
 from _command_text import executable_spans, command_words, executable_word, comment_offset  # noqa: E402
 from _commit_scope import writes_index  # noqa: E402
 from _commit_scope import authored_paths, publishes_index  # noqa: E402
@@ -123,6 +123,9 @@ def _committed_lock_text(rest: list, cwd: str, root: str, env: dict | None = Non
     if lock not in committed:
         return "", None
     include_dirty, _amend, pathspec = parse_commit_args(rest)
+    pathspec, failed_spec = full_pathspec(rest, cwd, pathspec)
+    if pathspec is None:
+        return None, failed_spec
     base = base_rev(cwd, env)
     named = run_git(["diff", "--name-only", base, "--"] + pathspec, cwd, env) if pathspec else ""
     if named is None:
@@ -202,7 +205,7 @@ def _judge_commit(rest: list, cwd: str, env: dict | None = None) -> str | None:
     if dropped is None:
         return (
             "BLOCKED git commit -- `git %s` failed; cannot verify baseline.lock.json keeps HEAD's rows."
-            % failed_cmd
+            % failed_cmd + unexpanded_hint(failed_cmd)
         )
     if dropped:
         lines = ["BLOCKED git commit -- baseline.lock.json drops row(s) HEAD holds while the file exists:"]

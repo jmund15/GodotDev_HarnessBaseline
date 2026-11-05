@@ -24,7 +24,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 TOOLS = Path(__file__).resolve().parent
 ROOT = TOOLS.parent.parent
 sys.path.insert(0, str(TOOLS))
@@ -242,9 +243,13 @@ def _read_cache(path, transport, cost_model, now, max_age=CACHE_TTL_SECONDS):
         return None
     if validate_reading(entry, transport, cost_model):
         return None
-    # Old Anthropic captures called a floor crossing exhausted. Re-probe rather than serve that lie.
+    # Old Anthropic OAuth captures called a floor crossing exhausted. Re-probe rather than serve
+    # that lie. A console credit capture carries `storedCostRows` in its credits block, which no
+    # OAuth capture writes, so it is a real reading and is served.
+    credits = ((entry.get("quota") or {}).get("credits")) if isinstance(entry.get("quota"), dict) else None
+    console_credit = isinstance(credits, dict) and "storedCostRows" in credits
     if (cost_model == "plan-quota" and entry.get("status") == "exhausted"
-            and model_registry.route_of(transport) == "anthropic"
+            and model_registry.route_of(transport) == "anthropic" and not console_credit
             and any("dispatchFloorPercent" not in w for w in entry["quota"]["windows"])):
         return None
     if entry.get("status") == "dispatch-floor" and _reset_passed(entry, now):

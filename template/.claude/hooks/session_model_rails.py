@@ -142,7 +142,7 @@ PROVIDER_RAILS_HEAD = """\
 - COVERAGE LIMIT of that deny: it reads statically visible pins in args, the Agent `model`, and quoted literals in the script. A pin COMPUTED at runtime can escape that guard; use native IDs in caller args and validate them before spawning, not literal pins in reusable scripts.
 - Reaching ANOTHER transport (including Anthropic itself) goes through its own sidecar launcher — `reference/sidecar_dispatch.md`, roster above. Workflow/Agent never cross transports.
 - You ARE the orchestrator this session. Gate decisions and the ideal-design verdict still warrant an Anthropic session OR an explicit user sign-off — surface them rather than settling them alone. That floor reserves those DECISIONS, not the work shape (orchestration §5b): a SCOPED judgment, review or architecting lens goes to the ladder's row for that shape, by sidecar hop when it is off-transport.
-- ROLE -> MODEL: `python3 .claude/tools/model_registry.py for-role <orchestrator|architect|executor|fanout|scout>` prints what serves a tier here, what serves it one hop away with the launcher line, and the nearest in-transport row when nothing here does. It picks no effort: take the effort from the ladder's effort cell for the work shape.{lacked_tiers}
+- ROLE -> MODEL: `python3 .claude/tools/model_registry.py for-role <orchestrator|architect|executor|fanout|scout>` prints one plan-filtered table: each surviving plan's quota left and each row fit for the tier, with its ladder cells. A plan it dropped is out. It picks no model and no effort: choose among the listed rows by the job's priority, and take the effort from the ladder's effort cell for the work shape.{lacked_tiers}
 - DISPATCH ROUTING is a judgment you own: a Workflow fan-out here is NOT band-gated, so state the intended model and cost before dispatching, then check the journal's model column against it.
 - COST SHAPE — bound prompts, use args.spillDir, and prefer FEW LONG agents to many short ones: each agent pays a large cold-start toll, so width multiplies it while depth amortizes it.
 """
@@ -294,9 +294,9 @@ def provider_rails(transport: str, source: str, payload: dict) -> str:
     # Named at SessionStart because that is the only surface preceding the first delegation
     # decision -- after it, the seat has already picked whatever was in-transport.
     try:
-        # `for_role` owns in-transport availability, including seat-aware exclusions.
+        # `route_rows` owns in-transport availability, including seat-aware exclusions.
         missing = [t for t in registry.TIER_ORDER
-                   if not registry.for_role(t, transport, data)["inTransport"]]
+                   if not registry.route_rows(t, transport, data)["inTransport"]]
         if missing:
             lacked_tiers = (
                 " NO AVAILABLE %s ROW SERVES: %s — every dispatch at those tiers is one sidecar "

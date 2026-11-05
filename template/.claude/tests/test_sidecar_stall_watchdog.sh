@@ -7,7 +7,9 @@
 #      the launcher's `timeout` guard — the kill itself is proved end-to-end by
 #      test_opencode_run_sidecar.py::test_killed_run_writes_durable_record (SIDECAR_TIMEOUT=2, rc 124).
 #   4. `-R` without `-P` defaults the progress stream to <record>.stream so the watchdog runs; an
-#      explicit `-P` is kept and neither flag keeps the unwatched run.
+#      explicit `-P` is kept and neither flag keeps the unwatched run;
+#   5. a stream-silent child burning CPU is alive: no marker, rc 0;
+#   6. a bench arm (BENCH_ARM=1) silent and idle for the stall window ends rc 124 with the STALLED marker.
 # Every case must produce output; a zero-match run is a failure, never a pass.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

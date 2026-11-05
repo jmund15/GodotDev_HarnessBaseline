@@ -284,6 +284,48 @@ def merged_seat_checks():
           "In `checked.basis`, write one" not in text, "the brief still sends outcomes to the basis")
 
 
+def entry_checks():
+    """`build_briefs` takes params and returns the jobs: no argv, no stdout capture, and a per-call kfm root, so
+    two calls in one process each keep their own snapshot. Real lens registry, real model registry."""
+    registry = json.loads((lens_briefs.REPO / ".claude/reference/external_models.json").read_text(encoding="utf-8"))
+    pin = next(m["id"] for m in registry["models"] if m.get("transport") == "anthropic"
+               and {"architect", "executor", "fanout"} <= set(m.get("roles") or []))
+    key = "plc-memory-alignment"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        context = root / "context.md"
+        context.write_text("context\n", encoding="utf-8")
+        must = root / "must.txt"
+        must.write_text(str(context) + "\n", encoding="utf-8")
+        roster = root / "roster.json"
+        roster.write_text(json.dumps({"roster": [{"key": key}]}), encoding="utf-8")
+        seen = []
+        for name in ("first", "second"):
+            kfm_root = root / ("kfm_" + name)
+            params = lens_briefs.BriefParams(
+                plan=str(roster), out=str(root / name), prefix=name, context_path=str(context), model=pin,
+                effort="medium", target="sidecar", must_read=str(must), kfm_root=str(kfm_root))
+            jobs = lens_briefs.build_briefs(params)
+            written = json.loads((root / name / ("jobs_%s.json" % name)).read_text(encoding="utf-8"))
+            body = (root / name / ("%s_%s.md" % (name, key))).read_text(encoding="utf-8")
+            seen.append((jobs, written, body, kfm_root))
+        check("build_briefs returns the job rows it wrote to jobs_<prefix>.json",
+              all(jobs == (written["jobs"] if isinstance(written, dict) else written) and len(jobs) == 1
+                  for jobs, written, _body, _kfm in seen), repr([s[0] for s in seen]))
+        check("each call's brief names the snapshot under its own kfm_root",
+              all(kfm_root.as_posix() in body.replace("\\", "/") for _j, _w, body, kfm_root in seen)
+              and seen[0][2] != seen[1][2])
+        refusal = None
+        try:
+            lens_briefs.build_briefs(lens_briefs.BriefParams(
+                plan=str(roster), out=str(root / "bad"), prefix="bad", context_path=str(context),
+                model="not-a-pin", target="native", effort="medium", must_read=str(must)))
+        except lens_briefs.ArgumentRefused as exc:
+            refusal = str(exc)
+        check("an invalid native pin raises ArgumentRefused, not SystemExit",
+              refusal is not None and "invalid choice" in refusal, repr(refusal))
+
+
 def lens_briefs_bar(rigor):
     import finding_bar
     return finding_bar.bar_contract(rigor)
@@ -312,6 +354,7 @@ def main():
     packet_seat_checks()
     merged_seat_checks()
     bar_checks()
+    entry_checks()
     import contextlib
     import io
     saved_tier = lens.seat_tier

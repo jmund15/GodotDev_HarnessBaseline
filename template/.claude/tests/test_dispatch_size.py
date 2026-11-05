@@ -31,10 +31,12 @@ class Plant(unittest.TestCase):
         self.root = self.temp.name
         self.login = os.path.join(self.root, "login")
         os.mkdir(self.login)
-        saved = os.environ.get("CLAUDE_CONFIG_DIR")
-        os.environ["CLAUDE_CONFIG_DIR"] = self.login
-        self.addCleanup(lambda: os.environ.pop("CLAUDE_CONFIG_DIR", None) if saved is None
-                        else os.environ.__setitem__("CLAUDE_CONFIG_DIR", saved))
+        for name, value in (("CLAUDE_CONFIG_DIR", self.login),
+                            ("PROVIDER_CAPACITY_CACHE", os.path.join(self.root, "no_capacity_cache.json"))):
+            saved = os.environ.get(name)
+            os.environ[name] = value
+            self.addCleanup(lambda name=name, saved=saved: os.environ.pop(name, None) if saved is None
+                            else os.environ.__setitem__(name, saved))
 
     def file(self, name, kb):
         path = os.path.join(self.root, name)
@@ -300,6 +302,19 @@ class WindowFitTests(Plant):
         return {"label": label, "promptPath": self.file(prompt, kb), "model": model, "effort": "medium",
                 "shape": shape}
 
+    def test_a_review_seat_takes_its_claimant_tier_from_its_own_lens(self):
+        """A `plc-*` seat's tier is `lens.seat_tier`, never a `kind` row's default."""
+        import lens
+        seats = [("plc-memory-alignment", "architect"), ("plc-instruction-quality", "fanout")]
+        agents = [{"key": key, "promptPath": self.file(key + ".md", 4), "model": "claude-opus-5-5",
+                   "effort": "high", "kind": "judge"} for key, _tier in seats]
+        lines = dispatch_size.fact_lines({"agents": agents}, self.root)
+        for key, tier in seats:
+            self.assertEqual(lens.seat_tier(key), tier, key)
+            matching = [text for text in lines if "`%s`" % key in text]
+            self.assertEqual(len(matching), 1, lines)
+            self.assertIn("for `%s`" % tier, matching[0])
+
     def test_a_pricier_pin_gets_a_pre_launch_line_naming_its_cheaper_claimants_with_the_job_reading(self):
         spec = {"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "survey", "a.md"),
                          self.claimant_job("exec", "claude-sonnet-5-5", "author", "b.md"),
@@ -377,11 +392,32 @@ class WindowFitTests(Plant):
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "survey", "a.md")]}, fh)
         done = subprocess.run([sys.executable, os.path.join(TOOLS, "dispatch_size.py"), path], capture_output=True,
-                              text=True, encoding="utf-8", stdin=subprocess.DEVNULL, cwd=self.root)
+                              text=True, encoding="utf-8", stdin=subprocess.DEVNULL, cwd=self.root,
+                              env=dict(os.environ, HARNESS_HOOK_STATE_DIR=self.root))
         out = done.stdout.splitlines()
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertTrue(out[0].startswith("dispatch size:"), out)
         self.assertTrue(any("cheaper claimants" in line and "haiku" in line for line in out[1:]), out)
+
+    def test_the_minus_cell_is_dropped_when_the_tiers_rows_reached_context(self):
+        """A `for-role` receipt or the full ladder in context already carries the `±` cell: state it once."""
+        spec = {"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "survey", "a.md")]}
+        plain = dispatch_size.fact_lines(spec, self.root)[0]
+        self.assertIn("± ", plain)
+        state = os.path.join(self.root, "state")
+        saved = os.environ.get("HARNESS_HOOK_STATE_DIR")
+        os.environ["HARNESS_HOOK_STATE_DIR"] = state
+        try:
+            import _hook_state
+            _hook_state.mark_ladder_slice("size-in-context", ["fanout"])
+            dropped = dispatch_size.fact_lines(spec, self.root, session_id="size-in-context")[0]
+        finally:
+            if saved is None:
+                os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+            else:
+                os.environ["HARNESS_HOOK_STATE_DIR"] = saved
+        self.assertNotIn("± ", dropped)
+        self.assertIn("cheaper there: haiku", dropped)
 
     def test_a_claimant_line_names_another_plan_whose_quota_will_expire_unused(self):
         data = {"transports": {"anthropic": {"costModel": "plan-quota"}, "go": {"costModel": "plan-quota"}},

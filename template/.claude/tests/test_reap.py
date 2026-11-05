@@ -9,8 +9,8 @@ auto-mode classifier's to judge, so no case here reads a stop verb, a keep word,
 The process table and the kill are planted; nothing here touches the OS.
 Run: python3 .claude/tests/test_reap.py
 """
-import atexit, io, json, os, shutil, subprocess, sys, tempfile, time
-from contextlib import redirect_stdout
+import atexit, io, json, os, re, shutil, subprocess, sys, tempfile, time
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -39,9 +39,6 @@ def owner_row(text, sidechain=False):
             "message": {"role": "user", "content": text}}
 
 
-def assistant_row(text):
-    return {"type": "assistant", "sessionId": SID,
-            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
 
 
 def plant_transcript(rows):
@@ -789,6 +786,32 @@ def main():
     rc, killed, out = run(["660", "--reason", "orphan", "--why", "x"], table([leftover, other_launcher]),
                           environ=planted18)
     ck("... and a dead session's seat whose launcher lives is refused", rc == 2 and killed == [], out[-400:])
+    # A dead session's plain child (no launch id): a test runner whose parent died with the session.
+    runner_cmd = (r'"C:\x\Godot_v4.7.1-stable_mono_win64.exe" --path . -s '
+                  r"res://gdunit4_testadapter_v5/GdUnit4TestRunnerScene.cs --pipe-name gdunit4-x")
+    runner = row(680, 7290, "Godot_v4.7.1-stable_mono_win64.exe", runner_cmd)
+    runner_child = row(681, 680, "conhost.exe", "conhost.exe 0x4")
+    envs18.update({680: env18(session=DEAD), 681: env18(session=DEAD)})
+    rc, killed, out = run(["680", "--reason", "orphan", "--why", "x"], table([runner, runner_child]),
+                          environ=planted18)
+    ck("a dead session's orphaned plain child (no launch id, parent gone) is reapable as orphan",
+       rc == 0 and killed == [680] and "dead" in out.lower(), f"rc={rc} killed={killed}\n{out[-500:]}")
+    sibling_console = row(682, 7290, "conhost.exe", r"\??\C:\WINDOWS\system32\conhost.exe 0x4")
+    envs18[682] = env18(session=DEAD)
+    rc, killed, out = run(["680", "--reason", "orphan", "--why", "x"], table([runner, sibling_console]),
+                          environ=planted18)
+    ck("... and a console host carrying the dead session's id does not read as its live host",
+       rc == 0 and killed == [680], f"rc={rc} killed={killed}\n{out[-500:]}")
+    runner_parent = row(7290, 1, "testhost.exe", "testhost.exe --port 1")
+    rc, killed, out = run(["680", "--reason", "orphan", "--why", "x"], table([runner, runner_parent]),
+                          environ=planted18)
+    ck("... and refused while its parent lives", rc == 2 and killed == [], out[-400:])
+    rc, killed, out = run(["680", "--reason", "orphan", "--why", "x"], table([runner, live_host]),
+                          environ=planted18, sessions={910: DEAD})
+    ck("... and refused while a live host serves its session", rc == 2 and killed == [] and "DIFFERENT" in out,
+       out[-400:])
+    rc, killed, out = run(["680", "--reason", "owner", "--why", "x"], table([runner]), environ=planted18)
+    ck("... and the owner reason still does not reach it", rc == 2 and killed == [], out[-400:])
 
     # The duplicate-launch scan: a launch refuses while a live launcher or seat child already runs
     # its prompt file (or resumes its session), naming each PID and the reap command.
@@ -1076,6 +1099,28 @@ def main():
         finally:
             reap.subprocess.run = real_run
         ck(name, got is want, f"got={got}")
+
+    err = io.StringIO()
+    with redirect_stderr(err):
+        rc, killed, out = run(["101", "--reason", "stalled", "--why", "x"], table())
+    ck("a refusal missing the reason's evidence states accepts: and example: on stderr",
+       rc == 2 and killed == [] and "accepts:" in err.getvalue() and "example:" in err.getvalue(),
+       err.getvalue()[-400:])
+
+    err = io.StringIO()
+    with redirect_stderr(err):
+        rc, killed, out = run(["999999", "--reason", "stalled", "--why", "x"], table())
+    ck("a refusal on an observed fact (process gone) prints its verdict without accepts: or example:",
+       rc == 2 and killed == [] and "REFUSED" in out and "accepts:" not in err.getvalue()
+       and "example:" not in err.getvalue(), out[-200:] + err.getvalue()[-300:])
+
+    helped = subprocess.run([sys.executable, str(HERE.parent / "tools" / "reap.py"), "--help"],
+                            capture_output=True, text=True)
+    posted = helped.stdout + helped.stderr
+    ck("reap --help pairs each reason with its evidence flag",
+       helped.returncode == 0 and all(re.search(pattern, posted) for pattern in
+                                      (r"duplicate\s+--twin", r"stalled\s+--log",
+                                       r"superseded\s+--artifact", r"queued\s+no extra flag")), posted[-400:])
 
     print(f"\ntest_reap: {n - fails} passed, {fails} failed")
     return 1 if fails else 0

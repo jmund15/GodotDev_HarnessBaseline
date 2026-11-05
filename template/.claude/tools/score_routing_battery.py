@@ -31,6 +31,9 @@ Optional agent_ids.json (per /routing_battery capture):
 The scorer is **transcript-only**. agent_ids.json is required for
 meaningful grades; without it every row scores NO-TOOL-CALLS (since the
 scorer has no signal channel to verify what tools were actually called).
+E1 and H1 are shape-graded from the captured calls and their arguments
+(complete enumeration, qualified investigation); a sequence the evidence
+cannot settle scores REVIEW-REQUIRED, never PASS.
 
 Rows graded NO-TOOL-CALLS require **orchestrator audit** — the human/agent
 running the battery reads the response prose for those tests and applies
@@ -45,6 +48,7 @@ When --baseline is given, prints per-test deltas alongside.
 """
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -52,7 +56,11 @@ from pathlib import Path
 # Allow importing extract_subagent_tools from same directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
-    from extract_subagent_tools import extract_tool_names
+    from extract_subagent_tools import (
+        extract_tool_names,
+        find_session_jsonl,
+        find_subagent_jsonl,
+    )
     TRANSCRIPT_EXTRACTION_AVAILABLE = True
 except ImportError:
     TRANSCRIPT_EXTRACTION_AVAILABLE = False
@@ -96,18 +104,23 @@ EXPECTED = {
     "C3": {"LSP", "Grep"},
     "D1": {"semantic-search"},
     "D2": {"semantic-search"},
-    "E1": {"semantic-search"},
-    "E2": {"semantic-search"},
-    "E3": {"semantic-search"},
+    # E1 and H1 are shape-graded (SHAPE_ROWS below). Their keys stay here only so
+    # the battery's row-count cross-check (`commands/routing_battery.md` §1) sees
+    # all 44 rows; score_one short-circuits to SHAPE_ROWS and never reads these sets.
+    "E1": {"Grep", "Bash", "Glob"},
+    "E2": {"Grep"},                  # known exact name, whatever its case — Grep owns it (D5)
+    "E3": {"semantic-search"},       # which docs discuss it — location and rank unknown (D5)
     "F1": {"Grep"},
     "F2": {"Grep"},
     "F3": {"Grep"},
     "F4": {"Grep"},
     "G1": {"semantic-search"},
     "G2": {"read_files", "semantic-search"},
-    "H1": {"read_files"},
-    "H2": {"read_files"},
-    "I1": {"semantic-search"},
+    # H1 is shape-graded (SHAPE_ROWS below). Its key stays for the row-count
+    # cross-check only; the set is never read.
+    "H1": {"Read", "Agent", "Task", "read_files"},
+    "H2": {"Skill", "Agent"},        # brainstorming Step 1 dispatches `/explore` or a scout (D1)
+    "I1": {"Grep"},                  # cloud session, no LSP — the known name is the anchor Grep (D5)
     "J1": {"semantic-search", "LSP", "Grep"},
     "J2": {"semantic-search"},
     "K1": {"Grep"},
@@ -348,6 +361,53 @@ def extract_tools_used(
     return [], "none"
 
 
+def extract_tool_calls(agent_info: dict | None = None) -> tuple[list[dict], str]:
+    """Return (calls, signal_source) where each call is {"name", "input"} in call order.
+
+    Reads the same transcript `extract_tools_used` reads. Shape-graded rows need
+    the arguments, not only the names: E1's completeness and H1's causal evidence
+    live in what the call was asked to do.
+    """
+    if (
+        not agent_info
+        or not TRANSCRIPT_EXTRACTION_AVAILABLE
+        or not (agent_info.get("agent_id") or agent_info.get("session_id"))
+    ):
+        return [], "none"
+    agent_id = agent_info.get("agent_id") or ""
+    session_id = agent_info.get("session_id")
+    path = find_subagent_jsonl(agent_id, session_id) if agent_id else find_session_jsonl(session_id)
+    if path is None:
+        return [], "none"
+
+    calls: list[dict] = []
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = entry.get("message")
+                if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                    continue
+                content = msg.get("content")
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        name = block.get("name")
+                        if isinstance(name, str) and name:
+                            calls.append({"name": name, "input": block.get("input") or {},
+                                          "cwd": entry.get("cwd")})
+    except OSError:
+        return [], "none"
+    return calls, ("transcript" if calls else "none")
+
+
 def first_substantive(tools: list[str], expected: set[str] | None = None) -> str:
     """
     Pick the first non-skipped tool call.
@@ -412,6 +472,116 @@ def has_tools_used_header(response: str) -> bool:
     return bool(re.search(r"\[TOOLS-USED:\s*[^\]]*\]", response))
 
 
+# --- Shape grading (D7) ---------------------------------------------------
+#
+# E1 and H1 grade the captured call sequence and its arguments, not the first
+# tool's name: E1 needs one bounded deterministic enumeration of the complete
+# `.tres` population; H1 needs a qualified investigation (direct focused reads
+# or one scoped delegate) and never a worker asked to find the bug. Ranked
+# top-hits cannot establish "every", and a sequence the evidence cannot settle
+# is REVIEW-REQUIRED, never a pass.
+
+TRUNCATION = re.compile(r"\|\s*head\b|--max-count\b|\brg\b[^|&;]*-m\s*\d+")
+DIAGNOSIS = re.compile(
+    r"\b(bug|diagnos\w*|caus(e|ing)|root cause|suspect|failing|broken|why)\b", re.I)
+
+
+def _input_text(call: dict) -> str:
+    return json.dumps(call.get("input") or {}, ensure_ascii=False)
+
+
+def _targets_tres(call: dict) -> bool:
+    name = _normalize(call.get("name", ""))
+    if name == "semantic-search":
+        return True  # a ranked search is the E1 miss shape, not an enumeration
+    inp = call.get("input") or {}
+    if name == "Bash":
+        # An enumeration sweeps a `.tres` glob, never one named file.
+        return "*.tres" in str(inp.get("command", "")).lower()
+    return ".tres" in (str(inp.get("glob", "")) + " " + str(inp.get("pattern", ""))).lower()
+
+
+def _truncated(call: dict) -> bool:
+    inp = call.get("input") or {}
+    if _normalize(call.get("name", "")) == "Grep" and inp.get("head_limit") is not None:
+        return True
+    return bool(TRUNCATION.search(str(inp.get("command", ""))))
+
+
+def _scope_narrows(call: dict) -> bool:
+    """True when the call enumerates a subdirectory instead of the project root.
+
+    Unknown scope fails closed: a `path` the call's own `cwd` does not match is
+    a narrowed scan.
+    """
+    inp = call.get("input") or {}
+    name = _normalize(call.get("name", ""))
+    if name in ("Grep", "Glob"):
+        path = str(inp.get("path") or "")
+        if not path:
+            return False
+        cwd = str(call.get("cwd") or "")
+        return not (cwd and os.path.normcase(os.path.normpath(path))
+                    == os.path.normcase(os.path.normpath(cwd)))
+    return bool(re.search(r"[^\s'\"]+/\*\.tres", str(inp.get("command", ""))))
+
+
+def _complete_enumeration(call: dict) -> bool:
+    return (
+        _targets_tres(call)
+        and _normalize(call.get("name", "")) != "semantic-search"
+        and not _truncated(call)
+        and not _scope_narrows(call)
+    )
+
+
+def _resolves_identity(calls: list[dict]) -> bool:
+    blob = " ".join(_input_text(c) for c in calls).lower()
+    return any(token in blob for token in ("uid://", "ext_resource", "script_class", ".cs"))
+
+
+def grade_complete_enumeration(calls: list[dict]) -> str:
+    tres = [c for c in calls if _targets_tres(c)]
+    if not tres:
+        return "REVIEW-REQUIRED"
+    if not any(_complete_enumeration(c) for c in tres):
+        return "FAIL"
+    if not _resolves_identity(calls):
+        return "REVIEW-REQUIRED"
+    return "PASS"
+
+
+FANOUT_LAUNCH = re.compile(r"sidecar_fanout\.py\s+[^\s|&;]+\.json\b")
+
+
+def _scoped_delegate(call: dict) -> bool:
+    """A `/delegate` dispatch: the skill call, or the fan-out launch over a jobs file (never its --help)."""
+    name = _normalize(call.get("name", ""))
+    inp = call.get("input") or {}
+    if name in ("Agent", "Task"):
+        return True
+    if name == "Skill":
+        return inp.get("skill") == "delegate"
+    return name == "Bash" and bool(FANOUT_LAUNCH.search(str(inp.get("command", ""))))
+
+
+def grade_qualified_investigation(calls: list[dict]) -> str:
+    if any(
+        _normalize(c.get("name", "")) == "read_files" and DIAGNOSIS.search(_input_text(c))
+        for c in calls
+    ):
+        return "FAIL"
+    if any(_normalize(c.get("name", "")) == "Read" or _scoped_delegate(c) for c in calls):
+        return "PASS"
+    return "REVIEW-REQUIRED"
+
+
+SHAPE_ROWS = {
+    "E1": ("complete .tres enumeration", grade_complete_enumeration),
+    "H1": ("qualified investigation", grade_qualified_investigation),
+}
+
+
 # --- Scoring ------------------------------------------------------------
 
 def score_one(
@@ -419,6 +589,24 @@ def score_one(
     response: str,
     agent_info: dict | None = None,
 ) -> dict:
+    if tid in SHAPE_ROWS:
+        expected_label, grader = SHAPE_ROWS[tid]
+        calls, signal_source = extract_tool_calls(agent_info)
+        if signal_source == "none":
+            grade, first, tool_count = "NO-TOOL-CALLS", "(none)", 0
+        else:
+            names = [c["name"] for c in calls]
+            grade, first, tool_count = grader(calls), first_substantive(names), len(calls)
+        return {
+            "test": tid,
+            "category": _category(tid),
+            "first_call": first,
+            "expected": expected_label,
+            "tool_count": tool_count,
+            "grade": grade,
+            "signal_source": signal_source,
+        }
+
     expected = EXPECTED.get(tid, set())
     tools, signal_source = extract_tools_used(response, agent_info)
     first = first_substantive(tools, expected)
@@ -473,7 +661,7 @@ def score_all(
     rows = [
         score_one(tid, resp, agent_ids.get(tid))
         for tid, resp in responses.items()
-        if tid in EXPECTED
+        if tid in EXPECTED or tid in SHAPE_ROWS
     ]
     rows.sort(key=lambda r: (r["category"], r["test"]))
     return rows
@@ -535,6 +723,7 @@ def render_report(rows: list[dict], baseline_rows: list[dict] | None = None) -> 
         f"PASS-ND={by_grade.get('PASS-ND', 0)}, "
         f"PASS-O={by_grade.get('PASS-O', 0)}), "
         f"FAIL={by_grade.get('FAIL', 0)}, "
+        f"REVIEW-REQUIRED={by_grade.get('REVIEW-REQUIRED', 0)}, "
         f"NO-TOOL-CALLS={by_grade.get('NO-TOOL-CALLS', 0)} / total {total}"
     )
     out.append("")
@@ -551,6 +740,8 @@ def render_report(rows: list[dict], baseline_rows: list[dict] | None = None) -> 
     out.append("  PASS-ND       = PASS-D + PASS-NOMINAL (rescued AND the rescued call had an error)")
     out.append("  PASS-O        = wrong tool but agent cited CLAUDE.md §9 + override justification")
     out.append("  FAIL          = wrong tool, no override justification, no rescue")
+    out.append("  REVIEW-REQUIRED = the captured sequence cannot settle the row (E1: no `.tres`")
+    out.append("                  enumeration; H1: neither a direct read nor a scoped delegate)")
     out.append("  NO-TOOL-CALLS = no transcript signal (zero tool calls OR JSONL inaccessible)")
     out.append("                  -> ORCHESTRATOR AUDIT required: read response prose to classify as")
     out.append("                  PASS (planning-style M/N answer), PASS-O (override-justified),")

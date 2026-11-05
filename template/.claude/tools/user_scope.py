@@ -166,9 +166,23 @@ def load_items(scope, home):
             doc = json.loads(path.read_text(encoding="utf-8"))
         except ValueError as exc:
             raise Fail(f"{name}: not valid JSON: {exc}")
-        if not isinstance(doc, dict) or set(doc) != {"version", "items"} \
-                or type(doc["version"]) is not int or doc["version"] != 1 or not isinstance(doc["items"], list):
-            raise Fail(f'{name}: top level must be {{"version": 1, "items": [...]}}')
+        allowed_keys = {"version", "items", "retired"}
+        if not isinstance(doc, dict) or not {"version", "items"} <= set(doc) or set(doc) - allowed_keys \
+                or type(doc["version"]) is not int or doc["version"] != 1 or not isinstance(doc["items"], list) \
+                or ("retired" in doc and not isinstance(doc["retired"], list)):
+            raise Fail(f'{name}: top level must be {{"version": 1, "items": [...], "retired": [...]}}')
+        retired = doc.get("retired", [])
+        for entry in retired:
+            if not isinstance(entry, dict) or set(entry) != {"id", "dest", "event", "matcher", "command"} \
+                    or not all(isinstance(entry[key], str) and entry[key] for key in entry) \
+                    or not entry["dest"].startswith("~/"):
+                raise Fail(f'{name}: a retired entry is {{"id", "dest": "~/...", "event", "matcher", "command"}}, '
+                           'each a non-empty string; command is the registered one, e.g. "python {dest}"')
+            origin_id = entry["id"]
+            if origin_id in origin:
+                raise Fail(f'{name} retired item {origin_id!r}: id is also in {origin[origin_id]}')
+            origin[origin_id] = name
+            items.append({"id": origin_id, "kind": "retired", **entry})
         for raw in doc["items"]:
             item = validate_item(raw, name, scope, home)
             if item["id"] in origin:
@@ -265,6 +279,11 @@ def substitute_dest(text, dest):
     return text.replace("{dest}", f'"{path}"' if " " in path else path)
 
 
+def retired_command(item, home):
+    """The exact hook command a retired item was registered with in `home`."""
+    return substitute_dest(item["command"], dest_path(item, home))
+
+
 def resolve_value(value, dest):
     if isinstance(value, str):
         return substitute_dest(value, dest)
@@ -331,6 +350,13 @@ def inspect_setting(item, home, repo, settings, row):
 def inspect(items, home, scope, settings, repo=REPO):
     rows = []
     for item in items:
+        if item["kind"] == "retired":
+            command = retired_command(item, home)
+            registered = command in hook_commands(settings, item["event"])
+            rows.append({"id": item["id"], "kind": "retired", "note": None, "status": "retired",
+                         "register": "registered" if registered else None,
+                         "detail": [f"remove hook command {command}"] if registered else []})
+            continue
         row = {"id": item["id"], "kind": item["kind"], "note": item.get("note"),
                "status": None, "register": None, "detail": []}
         if item["kind"] == "local":
@@ -364,7 +390,7 @@ def inspect(items, home, scope, settings, repo=REPO):
 
 
 def is_red(row):
-    return row["status"] in RED or row["register"] in RED
+    return row["status"] in RED or row["register"] in RED or (row["kind"] == "retired" and row["register"] == "registered")
 
 
 def render(rows):
@@ -393,6 +419,33 @@ def install(items, home, scope, repo=REPO):
     settings = load_settings(home)
     rows = inspect(items, home, scope, settings, repo)
     actions = []
+    retired = [item for item in items if item["kind"] == "retired"]
+    if settings is not None and retired:
+        changed = False
+        for item in retired:
+            command = retired_command(item, home)
+            groups = settings.get("hooks", {}).get(item["event"])
+            if not groups:
+                continue
+            removed = False
+            for group in groups:
+                if group.get("matcher") != item["matcher"]:
+                    continue
+                hooks = group.get("hooks", [])
+                kept = [hook for hook in hooks if not (isinstance(hook, dict) and hook.get("command") == command)]
+                if len(kept) != len(hooks):
+                    group["hooks"] = kept
+                    removed = True
+            if removed:
+                settings["hooks"][item["event"]] = [group for group in groups if group.get("hooks")]
+                actions.append({"id": item["id"], "action": "unregistered"})
+                changed = True
+        if changed:
+            path = settings_file(home)
+            backup = path.with_name("settings.json.pre-user-scope")
+            if not backup.exists():
+                write_atomic(backup, path.read_bytes())
+            write_atomic(path, serialize_settings(settings))
     for item, row in zip(items, rows):
         if row["status"] == "missing":
             write_atomic(dest_path(item, home), (scope / item["src"]).read_bytes())

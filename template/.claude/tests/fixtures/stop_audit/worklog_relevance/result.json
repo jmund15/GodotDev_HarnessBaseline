@@ -1,0 +1,73 @@
+{
+ "count": 2,
+ "overlaps": [
+  {
+   "title": "Harness stamp survives a peer's red untracked test",
+   "domain": "Harness",
+   "relation": "adjacent",
+   "why": "Both concern harness proof stamps.",
+   "recommendation": "note-only",
+   "evidence": [
+    {
+     "file": ".claude/worklog-titles.md",
+     "quote": "Harness stamp survives a peer's red untracked test"
+    }
+   ],
+   "lens": "worklog:relevance",
+   "index": 1,
+   "verdict": "VERIFIED",
+   "confidence": "verified"
+  },
+  {
+   "title": "Violet clockwork dragon migration",
+   "domain": "Harness",
+   "relation": "adjacent",
+   "why": "Planted fabricated title for the checker test.",
+   "recommendation": "note-only",
+   "evidence": [
+    {
+     "file": ".claude/worklog-titles.md",
+     "quote": "Violet clockwork dragon migration"
+    }
+   ],
+   "lens": "worklog:relevance",
+   "index": 2,
+   "verdict": "UNVERIFIED",
+   "confidence": "unverified"
+  }
+ ],
+ "checked": {
+  "indexRead": true,
+  "obsidianOpened": false,
+  "shortlisted": [
+   "Harness stamp survives a peer's red untracked test",
+   "Violet clockwork dragon migration"
+  ],
+  "stoppedAt": "verified-overlaps",
+  "basis": "fixture relay for the checker test",
+  "evidence": [
+   {
+    "file": ".claude/worklog-titles.md",
+    "quote": "Derived mirror of Obsidian `Claude/TODO/Worklog.md`."
+   }
+  ],
+  "lens": "worklog:relevance",
+  "index": "checked",
+  "verdict": "VERIFIED",
+  "confidence": "verified"
+ },
+ "verification": {
+  "status": "fail",
+  "counts": {
+   "VERIFIED": 2,
+   "UNVERIFIED": 1,
+   "UNCHECKED": 0
+  },
+  "verdicts": {
+   "worklog:relevance#1": "VERIFIED",
+   "worklog:relevance#2": "UNVERIFIED",
+   "worklog:relevance#checked": "VERIFIED"
+  },
+  "report": ".claude/scratch/worklog_relevance_claims-verify-6b6y63.json"
+ }
+}

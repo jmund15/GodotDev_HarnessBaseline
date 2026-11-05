@@ -9,7 +9,7 @@ description: Autonomously execute an approved, converged plan as a TDD slice loo
 **Enters at:** execute.
 **Owner stop:** none, because approval was the gate.
 
-Run the stages, halts, slices and close in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md). This file holds only what executing an approved plan adds.
+Run the stages and halts in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md), slices in [`drive_execution.md`](../skills/_brainstorm_shared/drive_execution.md), and close in [`drive_close.md`](../skills/_brainstorm_shared/drive_close.md). This file holds only what executing an approved plan adds.
 
 Start a fresh session when it cuts context cost or isolates an approved handoff; an inline through-ship drive may keep its planning session and delegate the converged work. For a Part too large for one context, wrap the invocation in `/loop`; the loop body is still this command.
 

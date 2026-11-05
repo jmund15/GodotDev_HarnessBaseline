@@ -28,7 +28,7 @@ dotnet test --settings .runsettings --verbosity quiet --filter "FullyQualifiedNa
 
 On Windows, use `reference/running.md` §Scope-sized runs and §Hang-safe runs for the wrappers; `change_control` §Gate cadence owns when to run them. The bare commands above are the cloud path, where each one runs under `xvfb-run --auto-servernum` (GdUnit4 needs a display).
 
-- **Full prefix `~Tests.<Suite>` is mandatory** — short `~Logic` matches only a subset, mimicking a silent skip. A zero-match run is not a RED, and a unit-only pass does not cover integration. An integration regression's seam test goes RED before GREEN (`_brainstorm_shared/drive_spine.md` §Slices owns the floor rule).
+- **Full prefix `~Tests.<Suite>` is mandatory** — short `~Logic` matches only a subset, mimicking a silent skip. A zero-match run is not a RED, and a unit-only pass does not cover integration. An integration regression's seam test goes RED before GREEN (`skills/_brainstorm_shared/drive_execution.md` §Slices owns the floor rule).
 - **A filter narrower than a whole suite has no count sentinel.** Check count magnitude and duration; the TRX testName list is the arbiter (`change_control` §Green-output trust).
 - **`--filter ~` is SUBSTRING, not regex** — escaped metacharacters (`Visual\.`) match literally and hit nothing, mimicking an empty suite rather than erroring. Disambiguate sibling prefixes with a trailing plain dot (`~Tests.Integration.Visual.` excludes `Visuals`).
 - **ALWAYS `--verbosity quiet`** — the implicit rebuild otherwise floods Bash output with compiler warnings; counts and error messages survive quiet.

@@ -40,6 +40,10 @@ def _isolated(case):
             return "case process died: %s" % exc
 
 
+# Characters of node ids per pytest call: under the 32767-character Windows command line with room for the interpreter.
+_ARGV_BUDGET = 24000
+
+
 def _jobs(jobs):
     if jobs:
         return jobs
@@ -130,9 +134,22 @@ def run_sharded(path):
     shards = [shard for shard in shards if shard]
 
     def run(shard):
-        proc = subprocess.run(base + ["-q", "-s"] + shard, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, encoding="utf-8", errors="replace")
-        return proc.returncode, proc.stdout + proc.stderr
+        # A deep checkout times many ids passes the Windows command-line limit (32767), so a shard runs in batches.
+        batches, batch, size = [], [], 0
+        for node in shard:
+            if batch and size + len(node) + 3 > _ARGV_BUDGET:
+                batches.append(batch)
+                batch, size = [], 0
+            batch.append(node)
+            size += len(node) + 3
+        batches.append(batch)
+        code, text = 0, ""
+        for batch in batches:
+            proc = subprocess.run(base + ["-q", "-s"] + batch, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace")
+            code = code or proc.returncode
+            text += proc.stdout + proc.stderr
+        return code, text
 
     code = 0
     with ThreadPoolExecutor(max_workers=len(shards)) as pool:

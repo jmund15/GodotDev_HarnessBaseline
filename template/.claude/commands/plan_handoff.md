@@ -9,7 +9,7 @@ description: Adopt an approved, converged plan in an executor session
 **Enters at:** execute.
 **Owner stop:** none.
 
-Run the stages, halts, slices and close in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md). This file holds only what a handoff adds.
+Run the stages and halts in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md), slices in [`drive_execution.md`](../skills/_brainstorm_shared/drive_execution.md), and close in [`drive_close.md`](../skills/_brainstorm_shared/drive_close.md). This file holds only what a handoff adds.
 
 Begin only after the plan is approved and converged. Verify the plan and the diff with enough usable context; a fresh session is not a validity gate. Executor role and effort follow `orchestration` and the model registry.
 

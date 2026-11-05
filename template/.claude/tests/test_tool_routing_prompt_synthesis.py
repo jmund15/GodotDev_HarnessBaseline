@@ -10,7 +10,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BASENAME = "tool_routing_prompt_synthesis.py"
 
 
-def registered_hook():
+def shipped_hook():
     """The shared input no longer registers this hook (a consumer opts in from its project file), so
     the proof drives the shipped file with the payload a registration would feed it."""
     hook = os.path.join(ROOT, ".claude", "hooks", BASENAME)
@@ -75,7 +75,7 @@ CROSS_SESSION = f'<cross-session-message from="peer-session">\n{SYNTHESIS}\n</cr
 
 
 def main():
-    hook = registered_hook()
+    hook = shipped_hook()
     output = run(hook, SYNTHESIS)
     lowered = output.lower()
     cases = [

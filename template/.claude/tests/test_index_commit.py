@@ -109,6 +109,8 @@ def scene(tmp, name):
     (root / ".claude" / "hooks").mkdir(parents=True)
     (root / ".claude" / "tests").mkdir(parents=True)
     shutil.copy2(TOOL, root / ".claude" / "tools" / "index_commit.py")
+    shutil.copy2(TOOL.parent / "lock_merge.py", root / ".claude" / "tools" / "lock_merge.py")
+    shutil.copy2(TOOL.parent / "cli_usage.py", root / ".claude" / "tools" / "cli_usage.py")
     for module in ("_hook_state.py", "_file_lock.py"):
         shutil.copy2(HOOKS / module, root / ".claude" / "hooks" / module)
     (root / ".claude" / "tools" / "classify_stub.py").write_text(STUB, encoding="utf-8", newline="\n")
@@ -540,6 +542,11 @@ def case_usage_errors(tmp):
     check("an unknown path exits non-zero with a named error",
           proc.returncode != 0 and "unknown path" in (proc.stdout + proc.stderr),
           proc.stdout + proc.stderr)
+    check("a refused stage states the shape it accepts and one valid call",
+          "accepts:" in proc.stderr and "example:" in proc.stderr, proc.stderr)
+    proc = tool(root, env, ["stage"])
+    check("a stage with no --name states the shape it accepts and one valid call",
+          proc.returncode == 2 and "accepts:" in proc.stderr and "example:" in proc.stderr, proc.stderr)
     proc = tool(root, env, ["stage", "--name", "u", "--", "../outside.py"])
     check("a path outside the repo exits non-zero with a named error",
           proc.returncode != 0 and "outside the repo" in (proc.stdout + proc.stderr),

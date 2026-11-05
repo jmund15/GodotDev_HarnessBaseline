@@ -211,7 +211,7 @@ def main():
     for command in ("git checkout -- f.txt", "git restore f.txt", "git branch -D uniq"):
         rc, msg, crashed = run_hook(command, repo)
         check("%s denial names the observed loss, not an owner go-ahead it cannot check" % command,
-              "owner's explicit go-ahead first" not in msg and "would be lost" in msg or "lose" in msg, msg)
+              "owner's explicit go-ahead first" not in msg and ("would be lost" in msg or "lose" in msg), msg)
     for command in ("git checkout -- f.txt", "git restore f.txt", "git branch -D obsolete"):
         rc, msg, crashed = run_hook(command, repo)
         check("%s denial claims no reply of the owner lets it through" % command,

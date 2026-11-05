@@ -870,6 +870,138 @@ def main():
     spilled_count = sum(1 for line in open(spill, encoding="utf-8") if line.strip()) if os.path.exists(spill) else 0
     check("the spill file keeps every admission", spilled_count == 301, spilled_count)
 
+    # one-call open: the whole record, its requirements, scope and triage land in one transaction
+    repo_root = Path(__file__).resolve().parents[2]
+    spec_proj = os.path.join(root, "spec_proj")
+    spec_skill = os.path.join(spec_proj, ".claude", "skills", "project_subsystems")
+    os.makedirs(spec_skill)
+    with open(os.path.join(spec_skill, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"sensitivity_tags": [
+            {"id": "tool", "paths": [".claude/tools/**"], "sets": {"reach": "shared", "oracle": "new-test"},
+             "source": "t:3"}]}, fh)
+    repo_env = dict(os.environ, CLAUDE_PROJECT_DIR=spec_proj)
+
+    def spec_file(name, **over):
+        spec = {"session": "s-spec", "title": "Spec-opened task",
+                "requirements": ["ship the one-call open"], "exclusions": ["no six-call shell batch"],
+                "scope": {"owner": None, "files": [".claude/tools/example.py"]},
+                "triage": {"fields": {"reach": "shared", "reversibility": "clean", "design": "settled",
+                                      "grounding": "verified", "oracle": ["new-test"], "size": "milestones"},
+                           "paths": [".claude/tools/example.py"], "outward": []}}
+        spec.update(over)
+        path = os.path.join(root, name)
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(spec, fh)
+        return path
+
+    good = spec_file("spec-good.json")
+    out = cli("open", "spec-1", "--spec", good, cwd=root, env=repo_env)
+    rec = tr.load("spec-1") or {}
+    check("open --spec opens, records requirements, exclusions and scope in one call",
+          out.returncode == 0 and rec.get("session_id") == "s-spec" and rec.get("title") == "Spec-opened task"
+          and rec.get("requirements") == ["ship the one-call open"]
+          and rec.get("exclusions") == ["no six-call shell batch"]
+          and rec.get("scope", {}).get("files") == [".claude/tools/example.py"], out.stderr)
+    tri = rec.get("triage") or {}
+    check("open --spec records the triage block with its derived floor",
+          tri.get("fields", {}).get("oracle") == ["new-test"] and tri.get("paths") == [".claude/tools/example.py"]
+          and (tri.get("derived") or {}).get("reach") == "shared", tri)
+
+    malformed = os.path.join(root, "spec-malformed.json")
+    with open(malformed, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("{not json")
+    out = cli("open", "spec-broken", "--spec", malformed, cwd=root, env=repo_env)
+    check("a malformed spec is refused and writes nothing",
+          out.returncode != 0 and "accepts:" in out.stderr and tr.load("spec-broken") is None, out.stderr)
+    partial = os.path.join(root, "spec-partial.json")
+    with open(partial, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"session": "s", "title": "t"}, fh)
+    out = cli("open", "spec-missing", "--spec", partial, cwd=root, env=repo_env)
+    check("a spec missing required keys is refused and writes nothing",
+          out.returncode != 0 and "scope" in out.stderr and tr.load("spec-missing") is None, out.stderr)
+
+    low = spec_file("spec-low.json", triage={"fields": {
+        "reach": "local", "reversibility": "clean", "design": "settled", "grounding": "verified",
+        "oracle": ["new-test"], "size": "milestones"},
+        "paths": [".claude/tools/example.py"], "outward": []})
+    out = cli("open", "spec-floor", "--spec", low, cwd=root, env=repo_env)
+    check("an invalid derived floor is refused and writes nothing",
+          out.returncode != 0 and "below the derived floor" in out.stderr and tr.load("spec-floor") is None, out.stderr)
+
+    before = json.dumps(tr.load("spec-1"), sort_keys=True)
+    out = cli("open", "spec-1", "--spec", good, cwd=root, env=repo_env)
+    check("an identical retry is a no-op",
+          out.returncode == 0 and json.dumps(tr.load("spec-1"), sort_keys=True) == before, out.stderr)
+
+    if tr.load("spec-1"):
+        tr.add_item("spec-1", "decision", "keep the single entry")
+    other = spec_file("spec-other.json", title="A different spec")
+    out = cli("open", "spec-1", "--spec", other, cwd=root, env=repo_env)
+    rec = tr.load("spec-1") or {}
+    check("a conflicting retry is refused with prior decisions intact",
+          out.returncode != 0 and "triage" in out.stderr and "add" in out.stderr
+          and [d.get("text") for d in rec.get("decisions", [])] == ["keep the single entry"], (out.stderr, rec))
+
+    out = cli("open", "spec-1", "--session", "s-new", "--title", "Plain", cwd=root, env=repo_env)
+    check("bare open on an existing record is refused without --reset",
+          out.returncode != 0 and "reset" in out.stderr
+          and [d.get("text") for d in (tr.load("spec-1") or {}).get("decisions", [])] == ["keep the single entry"],
+          out.stderr)
+    out = cli("open", "spec-1", "--reset", "--session", "s-new", "--title", "Plain", cwd=root, env=repo_env)
+    rec = tr.load("spec-1") or {}
+    check("--reset replaces the record",
+          out.returncode == 0 and rec.get("session_id") == "s-new" and rec.get("requirements") == []
+          and "triage" not in rec, rec)
+
+    out = cli("open", "spec-flags", "--spec", good, "--session", "s", "--title", "t", cwd=root, env=repo_env)
+    check("--spec refuses alongside --session and --title",
+          out.returncode != 0 and tr.load("spec-flags") is None, out.stderr)
+
+    spine_path = repo_root / ".claude" / "skills" / "_brainstorm_shared" / "drive_spine.md"
+    body = spine_path.read_text(encoding="utf-8") if spine_path.is_file() else ""
+    example = re.search(r"```json\n(.*?)```", body, re.S)
+    check("drive_spine.md carries a fenced spec example", example is not None)
+    if example:
+        depth = (repo_root / ".claude" / "skills" / "_brainstorm_shared" / "execution_depth.md").read_text(encoding="utf-8")
+        names = ("Reach", "Reversibility", "Design", "Grounding", "Oracle", "Size")
+        vocab = {name: [value.strip() for value in re.search(r"\| %s \| ([^|]+)\|" % name, depth).group(1).split("·")]
+                 for name in names}
+        meets_floor = {"Reach": "shared", "Reversibility": "clean", "Design": "settled",
+                       "Grounding": "verified", "Oracle": "new-test", "Size": "milestones"}
+        fills = {"<%s>" % name.lower(): meets_floor[name] if meets_floor[name] in vocab[name] else vocab[name][0]
+                 for name in names}
+        text = example.group(1)
+        check("the example writes every triage field as a placeholder, never a literal judgment",
+              all(placeholder in text for placeholder in fills), [p for p in fills if p not in text])
+        for placeholder, value in fills.items():
+            text = text.replace(placeholder, value)
+        example_path = os.path.join(root, "spec-example.json")
+        with open(example_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        out = cli("open", "spec-from-example", "--spec", example_path, cwd=root, env=repo_env)
+        check("the drive_spine.md spec example opens a record",
+              "<reach>" not in text and out.returncode == 0 and tr.load("spec-from-example") is not None, out.stderr)
+
+    main_repo = os.path.join(root, "linked-main")
+    os.makedirs(main_repo)
+    git_env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+                   GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    for argv in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "base"],
+                 ["worktree", "add", "-q", "-b", "lane", os.path.join(main_repo, "lane")]):
+        subprocess.run(["git", *argv], cwd=main_repo, env=git_env, check=True, capture_output=True)
+    probe = ("import importlib.util, sys; s = importlib.util.spec_from_file_location('task_record', sys.argv[1]); "
+             "m = importlib.util.module_from_spec(s); s.loader.exec_module(m); print(m.record_dir())")
+    bare_env = {k: v for k, v in os.environ.items() if k not in ("HARNESS_TASK_RECORD_DIR", "CLAUDE_PROJECT_DIR")}
+    out = subprocess.run([sys.executable, "-c", probe, TOOL], cwd=os.path.join(main_repo, "lane"), env=bare_env,
+                         capture_output=True, text=True, encoding="utf-8", timeout=60)
+    want = os.path.join(main_repo, ".claude", "logs", "tasks")
+    check("a linked worktree reads the main checkout's task records",
+          out.returncode == 0 and os.path.normcase(os.path.realpath(out.stdout.strip()))
+          == os.path.normcase(os.path.realpath(want)), (out.stdout, out.stderr))
+    copies = subprocess.run(["git", "grep", "-n", "logs/tasks", "--", ".claude/tools/*.py", ":!.claude/tools/task_record.py"],
+                            cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8").stdout
+    check("no other tool resolves the task record directory itself", not copies.strip(), copies)
+
     print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
     for f in FAILURES:
         print("  " + f)

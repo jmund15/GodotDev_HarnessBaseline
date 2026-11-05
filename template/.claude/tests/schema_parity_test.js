@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Proof that schema_parity.js runs in any project and derives its engine set from disk: each workflow
-// that calls closeCheck( or carries a CLOSE-CHECK / EVIDENCE-SSOT block must carry both blocks byte-equal
-// to dispatch.js. Runs the real script inside a sandbox copy of the template's .claude tree.
+// Proof that schema_parity.js runs in any project and derives its pairs from disk: each workflow with a
+// SCHEMA-SSOT block pairs with its .schema.json, and each engine's inline evidence schema matches
+// schemas/evidence.json in structure. Wording, comments and engine source are not compared.
+// Runs the real script inside a sandbox copy of the template's .claude tree.
 // Run: node .claude/tests/schema_parity_test.js
 const assert = require('node:assert/strict')
 const fs = require('fs')
@@ -31,44 +32,65 @@ function sandboxRun(mutate) {
   }
 }
 
+
 const engineNames = fs.readdirSync(WORKFLOWS)
-  .filter(f => f.endsWith('.js') && f !== 'dispatch.js')
-  .filter(f => {
-    const src = fs.readFileSync(path.join(WORKFLOWS, f), 'utf8')
-    return src.includes('closeCheck(') || src.includes('// CLOSE-CHECK-BEGIN') || src.includes('// EVIDENCE-SSOT-BEGIN')
-  })
+  .filter(f => f.endsWith('.js'))
+  .filter(f => fs.readFileSync(path.join(WORKFLOWS, f), 'utf8').includes('// EVIDENCE-SSOT-BEGIN'))
   .map(f => f.replace(/\.js$/, ''))
 
-// (a) the real engine set: exits 0 and the OK line counts exactly the engines found on disk.
+// (a) the real set: exits 0 and the OK line counts exactly the engines carrying an evidence schema.
 {
   const r = sandboxRun()
   assert.equal(r.status, 0, 'real set exit: ' + r.status + ' stderr=' + r.stderr.slice(0, 400))
-  const ok = r.stdout.match(/^OK {3}CLOSE-CHECK and EVIDENCE-SSOT parity \((\d+) engines\)$/m)
+  const ok = r.stdout.match(/^OK {3}evidence schema parity \((\d+) engines\)$/m)
   assert.ok(ok, 'OK line missing: ' + r.stdout)
   assert.equal(Number(ok[1]), engineNames.length, 'engine count')
-  console.log('ok   (a) real engine set passes and the OK line counts ' + engineNames.length + ' engines')
+  console.log('ok   (a) real set passes and the OK line counts ' + engineNames.length + ' engines')
 }
 
-// (b) an engine that calls closeCheck( without the blocks is DIVERGED, never skipped.
+// (b) a planted engine with no verifier blocks is not a schema pair: the engine suites own its behavior.
 {
   const r = sandboxRun(claude => {
     fs.writeFileSync(path.join(claude, 'workflows', 'rogue_engine.js'),
       '// a planted engine with no verifier blocks\nasync function run() { return closeCheck("claims", {}) }\n')
   })
-  assert.equal(r.status, 1, 'planted engine exit: ' + r.status)
-  assert.match(r.stderr, /DIVERGED CLOSE-CHECK: rogue_engine/)
-  console.log('ok   (b) a planted engine calling closeCheck( without the blocks is DIVERGED')
+  assert.equal(r.status, 0, 'planted engine exit: ' + r.status + ' stderr=' + r.stderr.slice(0, 400))
+  console.log('ok   (b) an engine without the blocks is not a schema divergence')
 }
 
-// (c) an engine whose CLOSE-CHECK block drifts from dispatch.js's is DIVERGED.
+// (c) a CLOSE-CHECK block edit (a comment) is not schema drift.
 {
   const r = sandboxRun(claude => {
     const file = path.join(claude, 'workflows', 'review_fanout.js')
     const src = fs.readFileSync(file, 'utf8')
     assert.ok(src.includes('// CLOSE-CHECK-BEGIN\n'), 'fixture anchor in review_fanout.js')
-    fs.writeFileSync(file, src.replace('// CLOSE-CHECK-BEGIN\n', '// CLOSE-CHECK-BEGIN\n// drifted\n'))
+    fs.writeFileSync(file, src.replace('// CLOSE-CHECK-BEGIN\n', '// CLOSE-CHECK-BEGIN\n// reworded\n'))
   })
-  assert.equal(r.status, 1, 'drifted block exit: ' + r.status)
-  assert.match(r.stderr, /DIVERGED CLOSE-CHECK: review_fanout/)
-  console.log('ok   (c) an engine with an edited CLOSE-CHECK block is DIVERGED')
+  assert.equal(r.status, 0, 'edited block exit: ' + r.status + ' stderr=' + r.stderr.slice(0, 400))
+  console.log('ok   (c) an edited CLOSE-CHECK block is not a schema divergence')
+}
+
+// (d) a structural change to one engine's evidence schema is DIVERGED, naming the engine.
+{
+  const r = sandboxRun(claude => {
+    const file = path.join(claude, 'workflows', 'review_fanout.js')
+    const src = fs.readFileSync(file, 'utf8')
+    assert.ok(src.includes('"type": "array"'), 'fixture anchor in review_fanout.js')
+    fs.writeFileSync(file, src.replace('"type": "array"', '"type": "object"'))
+  })
+  assert.equal(r.status, 1, 'drifted schema exit: ' + r.status)
+  assert.match(r.stderr, /DIVERGED evidence schema: review_fanout/)
+  console.log('ok   (d) an engine whose evidence schema differs in structure is DIVERGED')
+}
+
+// (e) a description-only difference between the inline schema and the file is not DIVERGED.
+{
+  const r = sandboxRun(claude => {
+    const file = path.join(claude, 'schemas', 'evidence.json')
+    const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
+    doc.description = 'reworded'
+    fs.writeFileSync(file, JSON.stringify(doc, null, 2))
+  })
+  assert.equal(r.status, 0, 'description-only exit: ' + r.status + ' stderr=' + r.stderr.slice(0, 400))
+  console.log('ok   (e) a description-only difference is not a schema divergence')
 }

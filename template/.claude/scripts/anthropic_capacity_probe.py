@@ -83,6 +83,8 @@ def outcome(status, *, quota=None, error=None):
 
 
 def _window(name, payload, duration_minutes, now):
+    if payload is None and name == "five_hour":
+        payload = {"utilization": 0.0, "resets_at": None}
     if not isinstance(payload, dict):
         return None
     used = payload.get("utilization")

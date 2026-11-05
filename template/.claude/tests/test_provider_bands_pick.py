@@ -140,8 +140,8 @@ def main():
     case("only the readable plan with allowance left is picked", got.get("transport") == "ok", repr(got))
     case("a 100%-used window and an exhausted status drop as exhausted",
          "exhausted" in str(why.get("full")) and "exhausted" in str(why.get("spent")), repr(why))
-    case("a missing reading and a raising reader drop as unreadable",
-         "unreadable" in str(why.get("blind")) and "unreadable" in str(why.get("broken")), repr(why))
+    case("a missing reading lands in warming and a raising reader drops as unreadable",
+         "warming" in str(why.get("blind")) and "unreadable" in str(why.get("broken")), repr(why))
     case("dropped plans are named in the reason", all(n in got["reason"] for n in ("full", "blind")),
          got["reason"])
     case("a spent window keeps its plain figures in the human reason",
@@ -438,8 +438,8 @@ def main():
              for fn in (pb.plan_entry, pb.window_figures, pb.display_windows)))
     cli_case(case)
     cli_plan_case(case)
-    lean_cases(case)
-    lean_cli_case(case)
+    tier_table_cases(case)
+    retired_cli_cases(case)
     case("every generated pick reason avoids the retired display dialects",
          all(not banned_in(reason) for reason in reasons), reasons)
     pb.pick = real_pick
@@ -843,19 +843,13 @@ def cli_case(case):
     r = subprocess.run([sys.executable, TOOL, "room", "executor"], capture_output=True, text=True,
                        encoding="utf-8", timeout=120, env=env)
     crashed = r.returncode not in (0, 2) or "Traceback" in (r.stderr or "")
-    lines = r.stdout.splitlines()
-    case("CLI `room executor` prints one entry per plan and never a pick", not crashed and r.returncode == 0
-         and any(l.startswith("anthropic Hot: 7d 78% left, 87% to go") for l in lines)
-         and any(l.startswith("go Hot: 7d 70% left, 90% to go") for l in lines)
-         and "pick" not in r.stdout.lower(), (r.stdout + r.stderr)[-400:])
+    case("CLI `room executor` is retired, exits 2 and names `for-role`", not crashed and r.returncode == 2
+         and "retired" in r.stderr and "for-role" in r.stderr and not r.stdout.strip(),
+         (r.stdout + r.stderr)[-400:])
     r = subprocess.run([sys.executable, TOOL, "room", "executor", "--json"], capture_output=True,
                        text=True, encoding="utf-8", timeout=120, env=env)
-    try:
-        got = json.loads(r.stdout)
-    except ValueError:
-        got = {}
-    case("CLI `room executor --json` gives the plans' facts and `low`, no chosen transport",
-         got.get("low") is False and isinstance(got.get("plans"), list) and "transport" not in got,
+    case("CLI `room executor --json` is retired too, naming its `plansLow` replacement",
+         r.returncode == 2 and "plansLow" in r.stderr and not r.stdout.strip(),
          (r.stdout + r.stderr)[-400:])
     r = subprocess.run([sys.executable, TOOL, "pick", "executor", "--json"], capture_output=True,
                        text=True, encoding="utf-8", timeout=120, env=env)
@@ -871,8 +865,8 @@ def cli_case(case):
          (r.stdout + r.stderr)[-300:])
     r = subprocess.run([sys.executable, TOOL, "room", "bogus"], capture_output=True, text=True,
                        encoding="utf-8", timeout=120, env=env)
-    case("CLI `room` with an unknown tier exits 2 naming the legal tiers",
-         r.returncode == 2 and "executor" in r.stderr and "Traceback" not in r.stderr, r.stderr[-300:])
+    case("CLI `room` names its replacement whatever the tier",
+         r.returncode == 2 and "for-role" in r.stderr and "Traceback" not in r.stderr, r.stderr[-300:])
 
 
 LEAN_LADDER = """## Role guidance
@@ -903,14 +897,12 @@ def lean_registry():
                 {"id": "ghost-id", "alias": "ghost", "transport": "go", "roles": ["architect"]}]}
 
 
-def lean_cases(case):
-    """S2: `lean_candidates` states every row claiming a tier, per route, with its cost, `±` cell, effort cell, owner
-    probation mark and each plan's room, in registry order. It never picks one, and an unknown seat is refused."""
-    lean = getattr(pb, "lean_candidates", None)
-    case("provider_bands exposes lean_candidates", callable(lean))
-    if not callable(lean):
-        return
-    folder = tempfile.mkdtemp(prefix="lean_ladder_")
+def tier_table_cases(case):
+    """`tier_table` is the one facts computation behind `for-role` and the brief hook; the drop-first
+    behavior is proved in tests/test_tier_table.py, and the two retired CLIs name their replacement."""
+    case("provider_bands exposes tier_table and no lean_candidates",
+         callable(getattr(pb, "tier_table", None)) and not hasattr(pb, "lean_candidates"))
+    folder = tempfile.mkdtemp(prefix="tier_table_")
     ladder = os.path.join(folder, "model_ladder_evidence.md")
     with open(ladder, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(LEAN_LADDER)
@@ -918,152 +910,40 @@ def lean_cases(case):
     rooms = {"anthropic": reading("anthropic", 22, 6.1 / 7),
              "anthropic-secondary": reading("anthropic-secondary", 60, 0.5, status="exhausted"),
              "go": reading("go", 30, 6.3 / 7)}
-    got = lean("architect", "anthropic", data=data, read=reader(rooms), now=NOW, ladder=ladder)
-    routes = got.get("routes") or {}
-    ids = {t: [r["id"] for r in rows] for t, rows in routes.items()}
-    case("routes group by route with the session's route first, rows in registry order",
-         list(routes) == ["anthropic", "go"] and ids.get("anthropic") == ["opus-id", "sonnet-id"]
-         and ids.get("go") == ["go-model", "ghost-id"], repr(ids))
-    flipped = lean("architect", "go", data=data, read=reader(rooms), now=NOW, ladder=ladder)
-    case("the session's route leads when the session sits on the other route",
-         list(flipped.get("routes") or {}) == ["go", "anthropic"], repr(list(flipped.get("routes") or {})))
-
-    rows = {r["alias"]: r for rs in routes.values() for r in rs}
-    opus = rows.get("opus", {})
+    got = pb.tier_table(["architect"], "anthropic", data=data, read=reader(rooms), now=NOW, ladder=ladder,
+                        draw=lambda *_a: {})
+    routes = [g["route"] for g in got["groups"]]
+    rows = {r["alias"]: r for g in got["groups"] for r in g["rows"]}
+    plans = [(p["plan"], p["left"]) for g in got["groups"] for p in g["plans"]]
+    case("groups are one per route with a surviving plan, in registry order",
+         routes == ["anthropic", "go"], repr(routes))
     case("a row carries its ladder cost, ± cell, effort cell and the owner's mark for this tier",
-         opus.get("cost") == 5 and "+ the strongest architect" in (opus.get("minus") or "")
-         and opus.get("effort") == "`high` to start" and opus.get("probation") == "planted mark", repr(opus))
-    case("a probation mark for another tier is not reported for this one",
-         rows.get("sonnet", {}).get("probation") is None and rows.get("sonnet", {}).get("cost") == 7,
-         repr(rows.get("sonnet")))
-    ghost = rows.get("ghost", {})
-    case("a row with no ladder cell is listed with cost None, never dropped",
-         "ghost" in rows and ghost.get("cost") is None and ghost.get("minus") is None, repr(ghost))
-    plans = [(p["plan"], None if p["room"] is None else round(p["room"], 2)) for p in opus.get("plans") or []]
-    case("each row lists every plan of its route with its room, a dropped plan with room None",
-         plans == [("anthropic", 0.9), ("anthropic-secondary", None)], repr(plans))
-    case("each row's plans carry their projection beside their room",
-         all("unusedAtReset" in p for p in opus.get("plans") or [])
-         and next(p for p in opus["plans"] if p["plan"] == "anthropic")["unusedAtReset"] is None,
-         repr(opus.get("plans")))
-    case("a candidate set names no transport or room of its own, so it never picks",
-         "transport" not in got and "room" not in got and not got.get("refused"), repr(sorted(got)))
-    case("marginal-usd rows stay out of routes while a plan has room, and no pay option is offered",
-         "paid" not in routes and got.get("payOptions") == [], repr(got.get("payOptions")))
-
-    spent = {"anthropic": reading("anthropic", 100, 0.5, status="exhausted"),
-             "anthropic-secondary": reading("anthropic-secondary", 60, 0.5, status="exhausted"),
-             "go": reading("go", 100, 0.5, status="exhausted")}
-    dry = lean("architect", "anthropic", data=data, read=reader(spent), now=NOW, ladder=ladder)
-    case("marginal-usd rows appear only under payOptions, and only when no plan has room",
-         dry.get("payOptions") == [{"alias": "paid-m", "id": "paid-id", "transport": "paid", "supplementary": False}]
-         and "paid" not in (dry.get("routes") or {}), repr(dry.get("payOptions")))
-
-    supp_data = lean_registry()
-    supp_data["models"] += [
-        {"id": "supp-id", "alias": "supp", "transport": "anthropic", "roles": ["fanout"], "supplementary": ["architect"]},
-        {"id": "supp-go-id", "alias": "supp-go", "transport": "go", "roles": ["fanout"], "supplementary": ["architect"]}]
-    for row in supp_data["models"]:
-        if row["alias"] in ("sonnet", "paid-m"):
-            row["supplementary"] = ["architect"]
-    mixed = lean("architect", "anthropic", data=supp_data, read=reader(rooms), now=NOW, ladder=ladder)
-    mixed_ids = {t: [r["id"] for r in rs] for t, rs in (mixed.get("routes") or {}).items()}
-    case("a supplementary-only row is left out of routes: lean never offers it for a lone seat or authoring",
-         "supp-id" not in sum(mixed_ids.values(), []) and "supp-go-id" not in sum(mixed_ids.values(), []),
-         repr(mixed_ids))
-    listed = {t: [r["id"] for r in rs] for t, rs in (mixed.get("supplementary") or {}).items()}
-    case("a supplementary-only row is listed under `supplementary`, per route, in registry order",
-         listed == {"anthropic": ["supp-id"], "go": ["supp-go-id"]}, repr(listed))
-    case("a plain claimant that also holds the tier as supplementary stays in routes, flagged supplementary: true",
-         {r["alias"]: r.get("supplementary") for rs in mixed["routes"].values() for r in rs}
-         == {"opus": False, "sonnet": True, "go-m": False, "ghost": False}, repr(mixed["routes"]))
-    case("a plain+supplementary row is not listed under `supplementary` (it is already a claimant)",
-         "sonnet-id" not in sum(listed.values(), []), repr(listed))
-    supp_dry = lean("architect", "anthropic", data=supp_data, read=reader(spent), now=NOW, ladder=ladder)
-    alone = lean_registry()
-    alone["transports"]["extra"] = {"costModel": "plan-quota"}
-    alone["models"].append({"id": "supp-extra-id", "alias": "supp-extra", "transport": "extra",
-                            "roles": ["fanout"], "supplementary": ["architect"]})
-    for row in alone["models"]:
-        if row["alias"] == "paid-m":
-            row["supplementary"] = ["architect"]
-    stranded = dict(spent, extra=reading("extra", 10, 0.9))
-    lone_dry = lean("architect", "anthropic", data=alone, read=reader(stranded), now=NOW, ladder=ladder)
-    case("a supplementary-only row on a route with room does not hide payOptions: room is judged over claimant routes",
-         [r["alias"] for r in lone_dry.get("payOptions") or []] == ["paid-m"]
-         and list(lone_dry.get("supplementary") or {}) == ["extra"], repr(lone_dry.get("payOptions")))
-    case("payOptions flags a plain+supplementary row supplementary: true",
-         supp_dry.get("payOptions") == [{"alias": "paid-m", "id": "paid-id", "transport": "paid", "supplementary": True}],
-         repr(supp_dry.get("payOptions")))
-    case("a candidate set with no supplementary rows carries an empty `supplementary`",
-         got.get("supplementary") == {}, repr(got.get("supplementary")))
-
-    stranger = lean("architect", "nowhere", data=data, read=reader(rooms), now=NOW, ladder=ladder)
-    case("an unknown seat sets refused and returns no routes or pay options",
-         bool(stranger.get("refused")) and stranger.get("routes") == {} and stranger.get("payOptions") == [],
-         repr(stranger))
+         rows["opus"]["cost"] == 5 and "+ the strongest architect" in (rows["opus"]["minus"] or "")
+         and rows["opus"]["effort"] == "`high` to start" and rows["opus"]["probation"] == "planted mark",
+         repr(rows.get("opus")))
+    case("a dropped plan takes its plan line with it, and a surviving plan prints left",
+         ("anthropic-secondary", None) not in [(p, None) for p, _ in plans]
+         and ("anthropic", 78.0) in plans, repr(plans))
+    case("marginal-usd rows stay out while a plan survives; `pay` lists them",
+         got["payOptions"] == [] and [o["alias"] for o in pb.tier_table(
+             ["architect"], "anthropic", data=data, read=reader(rooms), now=NOW, ladder=ladder,
+             draw=lambda *_a: {}, pay=True)["payOptions"]] == ["paid-m"], repr(got["payOptions"]))
+    stranger = pb.tier_table(["architect"], "nowhere", data=data, read=reader(rooms), now=NOW,
+                             ladder=ladder, draw=lambda *_a: {})
+    case("an unknown seat sets refused and returns no groups",
+         bool(stranger.get("refused")) and stranger["groups"] == [], repr(stranger))
 
 
-def lean_cli_case(case):
-    """`provider_bands.py lean <tier>`: a copy of the live registry with a login dir on the Anthropic plan, the live
-    ladder beside it, and a fresh capacity cache. Asserts invariants only, never a live value."""
-    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
-    import model_registry
-    import shutil
-    folder = tempfile.mkdtemp(prefix="lean_cli_")
-    login = os.path.join(folder, "login-anthropic")
-    reg = os.path.join(folder, "a", "b", "external_models.json")
-    ladder_copy = os.path.join(folder, ".claude", "reference", "model_ladder_evidence.md")
-    data = model_registry.load()
-    data["transports"]["anthropic"]["configDir"] = login
-    os.makedirs(os.path.dirname(reg))
-    with open(reg, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(data, fh)
-    os.makedirs(os.path.dirname(ladder_copy))
-    shutil.copyfile(str(model_registry.ladder_path()), ladder_copy)
-    now = time.time()
-    blob = {}
-    for name, cfg in data["transports"].items():
-        if cfg.get("costModel") != "plan-quota":
-            continue
-        entry = reading(name, 22 if name == "anthropic" else 50, 0.5)
-        entry["quota"]["windows"][0]["resetsAt"] = now + 0.5 * WEEK_MIN * 60
-        entry["observedAt"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-        entry.update(error=None, liveFailure=None, balance=None)
-        blob[name] = entry
-    cache = os.path.join(folder, "provider_capacity.json")
-    with open(cache, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(blob, fh)
-    base = dict(os.environ, PROVIDER_CAPACITY_CACHE=cache, HARNESS_MODEL_REGISTRY=reg)
-    base.pop("ANTHROPIC_BASE_URL", None)
-    base.pop("CLAUDE_CODE_TRANSPORT", None)
-
-    def run(argv, config_dir):
-        env = dict(base, CLAUDE_CONFIG_DIR=config_dir)
-        return subprocess.run([sys.executable, TOOL, *argv], capture_output=True, text=True,
-                              encoding="utf-8", timeout=120, env=env)
-
-    r = run(["lean", "architect"], login)
-    lines = r.stdout.splitlines()
-    case("CLI `lean architect` prints the session's route first, each row with its cost, plans, effort and ± cell",
-         r.returncode == 0 and "Traceback" not in r.stderr and lines[:1] == ["anthropic"]
-         and "cost" in r.stdout and "effort" in r.stdout, (r.stdout + r.stderr)[-400:])
-    r = run(["lean", "architect", "--json"], login)
-    try:
-        got = json.loads(r.stdout)
-    except ValueError:
-        got = {}
-    case("CLI `lean architect --json` names the seat, leads with its route, and picks no transport",
-         r.returncode == 0 and got.get("seat") == "anthropic" and not got.get("refused")
-         and list(got.get("routes") or {})[:1] == ["anthropic"] and "transport" not in got,
-         (r.stdout + r.stderr)[-400:])
-    r = run(["lean", "architect"], os.path.join(folder, "nowhere"))
-    case("CLI `lean` from an unknown session exits 2 naming CLAUDE_CONFIG_DIR, with no stdout",
-         r.returncode == 2 and "CLAUDE_CONFIG_DIR" in r.stderr and "Traceback" not in r.stderr
-         and not r.stdout.strip(), (r.stdout + r.stderr)[-300:])
-    r = run(["lean", "bogus"], login)
-    case("CLI `lean` with an unknown tier exits 2 naming the legal tiers",
-         r.returncode == 2 and "executor" in r.stderr and "Traceback" not in r.stderr, r.stderr[-300:])
+def retired_cli_cases(case):
+    """`lean` and `room` exit 2 and name the command that replaced them."""
+    folder = tempfile.mkdtemp(prefix="retired_cli_")
+    for argv, replacement in ((["lean", "architect"], "for-role <tier>"),
+                              (["room", "architect"], "for-role")):
+        r = subprocess.run([sys.executable, TOOL, *argv], capture_output=True, text=True, encoding="utf-8",
+                           timeout=60, env=dict(os.environ, PROVIDER_CAPACITY_CACHE=os.path.join(folder, "none.json")))
+        case("CLI `%s` exits 2 naming its replacement" % argv[0],
+             r.returncode == 2 and "retired" in r.stderr and replacement in r.stderr
+             and "Traceback" not in r.stderr, (r.stdout + r.stderr)[-300:])
 
 
 def report(cases):

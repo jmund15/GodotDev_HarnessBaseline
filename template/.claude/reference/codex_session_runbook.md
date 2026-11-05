@@ -32,7 +32,7 @@ The sidecar launcher sets those server-wide pins on its own proxy for strict dis
 Pin a **canonical Codex model ID** on each native Workflow job. The transport guard injects the
 legal vocabulary from the registry, so sibling models run in-harness without a sidecar. Resolve
 the work shape with `model_registry.py for-role <tier>` and choose effort from
-`reference/model_ladder_evidence.md`; that command reports rows, not a decision.
+`reference/model_ladder_evidence.md`; that command prints one plan-filtered table, not a decision.
 
 A sidecar's `-m` takes a registry alias; a Codex-hosted Workflow's `model` takes the canonical ID.
 The provider guard denies Anthropic role names on a Codex session and Codex IDs on an Anthropic

@@ -12,7 +12,7 @@ For any C# semantic question — callers of a method, the type of an expression,
   - "Who calls X?" → `findReferences` or `incomingCalls`
   - "What's the type/signature of X?" → `hover`
   - "What's in this file?" → `documentSymbol` (faster + more accurate than Read for structure surveys)
-  - "What does this interface method actually dispatch to?" → `findReferences` (NOT `goToImplementation` unless re-verified working; test first on a known interface before trusting)
+  - "What does this interface method actually dispatch to?" → `goToImplementation` (works on csharp-ls 0.28.0, probed 2026-10-29); `findReferences` adds the consumers
   - Rename / cross-project refactor planning → `findReferences` before editing
 - Still use Grep for: `.tscn` / `.tres` files, StringName keys, editor UIDs, open-ended keyword discovery, or to find an initial anchor when no symbol coordinate is known yet.
 - First LSP call per session costs ~20–30s (Roslyn indexing); subsequent calls are sub-100ms. Don't abandon LSP after one slow call — it's amortized.

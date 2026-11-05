@@ -3,7 +3,7 @@
 
 model_ladder_gate.doctrine_check names each unmet doctrine (the orchestration skill, the ladder: read
 in full, or printed as the slice of each tier the call pins) with its load route; both are observed
-state that skill_load_marker, post_read_dispatch and `model_registry.py ladder-slice` record, and a
+state that skill_load_marker, post_read_dispatch and `model_registry.py for-role` record, and a
 compaction clears them. The route and pin those documents inform stay the agent's.
 The Agent tool is denied in settings.base.json, so no Agent call reaches this hook.
 The size line is a step before the call: `/delegate` runs `tools/dispatch_size.py`.
@@ -171,11 +171,12 @@ def _advise(context):
 
 
 def _call_tiers(payload):
-    """The tiers the call's pins declare or imply, else None (the gate then asks for the full ladder). Loaded only
-    when the full ladder Read is absent, since workflow_provider_guard is the heavier import."""
+    """{tier: the pin labels that need it} for the tiers the call's pins declare or imply, else None (the gate then
+    asks for the full ladder). Loaded only when the full ladder Read is absent, since workflow_provider_guard is the
+    heavier import."""
     try:
         import workflow_provider_guard
-        return workflow_provider_guard.call_tiers(payload)
+        return workflow_provider_guard.call_tier_consumers(payload)
     except Exception:
         return None
 

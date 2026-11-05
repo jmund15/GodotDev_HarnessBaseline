@@ -20,7 +20,6 @@ import os
 import shutil
 import sys
 import tempfile
-import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -40,31 +39,10 @@ def _available_capacity_cache():
         return _CAPACITY_CACHE
     sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
     import model_registry
-    now = time.time()
-    blob = {}
-    for name, cfg in (model_registry.load().get("transports") or {}).items():
-        if not isinstance(cfg, dict) or not cfg.get("capacityProbe"):
-            continue
-        entry = {"schemaVersion": 1, "transport": name, "costModel": cfg.get("costModel"),
-                 "sourceKind": "live", "observedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
-                 "status": "available", "error": None, "liveFailure": None, "quota": None, "balance": None}
-        if cfg.get("costModel") == "plan-quota":
-            # What a real probe emits for 10% of a week used at half-week: pace 0.2, run-out 9.0.
-            entry["quota"] = {"windows": [{"name": "seven_day", "usedPercent": 10.0,
-                                            "resetsAt": now + 302400, "windowDurationMins": 10080,
-                                            "pressure": 0.2, "band": "Surplus",
-                                            "runoutRatio": 9.0}],
-                              "dispatchBand": "Surplus", "routingBand": "Surplus",
-                              "routingWindow": "seven_day", "bindingWindow": "seven_day",
-                              "credits": None}
-        else:
-            entry["balance"] = {"amount": 100.0, "currency": "USD"}
-        blob[name] = entry
+    from _capacity_fixtures import write_capacity_cache
     folder = tempfile.mkdtemp(prefix="transport_fixture_")
     atexit.register(shutil.rmtree, folder, True)
-    _CAPACITY_CACHE = os.path.join(folder, "provider_capacity.json")
-    with open(_CAPACITY_CACHE, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(blob, fh)
+    _CAPACITY_CACHE = write_capacity_cache(os.path.join(folder, "provider_capacity.json"), model_registry.load())
     return _CAPACITY_CACHE
 
 

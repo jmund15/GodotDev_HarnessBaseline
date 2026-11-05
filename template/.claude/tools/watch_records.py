@@ -76,8 +76,9 @@ nothing else remains it prints `NONE`. When nothing at arm can still progress �
 unresolved within its grace — the ended lines and `NONE` print and the watcher exits 0; a job whose fan-out process
 is gone is not "queued", because it will never start. An entry still unresolved
 `UNRESOLVED_GRACE_SECONDS` after its launch prints `UNRESOLVED <label>` and wakes the session. A fan-out entry
-that allocated no record while a later call for the same label and out dir did is that call's leftover (the
-launch refused the first call and the caller re-issued it), and prints nothing (`superseded`).
+that started nothing — a refusal file in its out dir names its label, or a later-issued call for the same label
+allocated a record — is that call's leftover and prints nothing (`superseded`); the out dir plays no part, because
+a corrected relaunch may write elsewhere.
 A launch whose spend-ledger finish row (lib/sidecar_common.sh `sc_write_finish_row`) says
 `ended-before-result` has ended: it prints `ENDED <label> exit=<n> <reason>` once and wakes the
 session like a non-zero DONE; a `finished-without-record` row ends it as `DONE <label> exit=<n>`.
@@ -110,6 +111,11 @@ POLL_SECONDS = float(os.environ.get("WATCH_RECORDS_POLL_SEC", "0.5"))
 # before it reads the cache at a tenth of the input price. `_hook_state.ORCHESTRATOR_CHECKIN_SECONDS` owns the value.
 CHECKIN_SECONDS = float(os.environ.get("WATCH_RECORDS_CHECKIN_SEC", _hook_state.ORCHESTRATOR_CHECKIN_SECONDS))
 UNRESOLVED_GRACE_SECONDS = 300
+# A false "never started" tells the owner a launched fan-out failed; a late notice costs only the wait. So the
+# window is a multiple of the slowest measured preflight (52 s over 57 fan-out runs, issue to inventory write),
+# not its typical time: 600 s is over 10x that. A change in the preflight (process-table scan, machine lock)
+# needs a re-measure before this moves.
+FANOUT_PREFLIGHT_S = 600
 # A Workflow seat whose transcript has not grown for this long while its run is alive is a request that never
 # returned. Basis: a completed Haiku seat compaction, the longest observed gap between rows of a healthy seat,
 # took 3-6 min (A2b rail250 replay, 2026-10-14); the stalled seats of that run and of H3 sat 31+ min.
@@ -439,19 +445,78 @@ def _entry_label(entry):
     return (entry.get("jobs") or [{}])[0].get("label")
 
 
-def superseded(entry, pending):
-    """True for a fan-out entry that allocated no record while a later call for the same label and out dir did: a
-    call the launch refused (the doctrine or tier check) and the caller re-issued. The later call's entry watches
-    the job; this one would wake the session with `UNRESOLVED` for work that runs. A call refused for its out dir
-    never created that dir, so its re-issue elsewhere supersedes it too."""
+REFUSAL_GLOB = "fanout-*.refused.json"
+
+
+def job_identity(entry):
+    """The job a pending entry names, whichever out dir its call wrote: its first label. One identity
+    for the Stop hook, the watcher and the rearm hook, so a relaunch into any out dir is the same job."""
+    return _entry_label(entry)
+
+
+def refusal_cover(entry):
+    """The epoch time of the refusal file in this entry's out dir that names its label and was written
+    at or after its call was issued, else None. A fan-out writes one when it refuses or crashes before
+    starting any seat, so the entries its call registered can leave every reader's view."""
+    out_dir, label, issued = entry.get("fanout_dir"), job_identity(entry), _launch_time(entry)
+    if not out_dir or not label or issued is None:
+        return None
+    for path in glob.glob(os.path.join(glob.escape(str(out_dir)), REFUSAL_GLOB)):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            written = float(data.get("time"))
+            labels = data.get("labels")
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+        if isinstance(labels, list) and str(label) in [str(item) for item in labels] and issued <= written:
+            return written
+    return None
+
+
+def refused_launch(entry):
+    """True when a refusal file in the entry's out dir proves its call started nothing."""
+    return refusal_cover(entry) is not None
+
+
+def call_open(entry, live_ids=frozenset(), now=None):
+    """True while the call that registered `entry` may still launch its job: it is a live background
+    task, or `FANOUT_PREFLIGHT_S` has not passed since its issue. The Stop hook's launched-nothing
+    verdict reads it; `superseded` does not, because a later call's record already proves the job is
+    watched and a foreground call cannot be re-issued before it returns."""
+    now = time.time() if now is None else now
+    if entry.get("task_id") and str(entry["task_id"]) in live_ids:
+        return True
     issued = _launch_time(entry)
-    if entry.get("record") or not entry.get("fanout_dir") or issued is None:
+    return now - (issued if issued is not None else now) < FANOUT_PREFLIGHT_S
+
+
+def superseded(entry, pending, live_ids=frozenset(), resolve=None):
+    """True when nothing watches `entry` any more, so every reader drops it: a refusal file in its out
+    dir names its label at or after its issue (the launch refused or crashed before any seat ran), or
+    it allocated no record, its call is closed, and a later-issued entry of the same label has a
+    record, in any out dir. The out dir plays no part, since a corrected relaunch may write elsewhere.
+    An entry younger than `UNRESOLVED_GRACE_SECONDS` is never superseded: its call may still be
+    starting, so a sibling's record proves nothing yet. A live background task's entry is kept too."""
+    if entry.get("record"):
         return False
-    never_made = not os.path.isdir(entry["fanout_dir"])
-    return any(other is not entry and other.get("record") and other.get("fanout_dir")
-               and _entry_label(other) == _entry_label(entry)
-               and (never_made or _same_dir(other["fanout_dir"], entry["fanout_dir"]))
-               and (_launch_time(other) or 0.0) > issued for other in pending)
+    if refused_launch(entry):
+        return True
+    if entry.get("task_id") and str(entry["task_id"]) in live_ids:
+        return False
+    issued, label = _launch_time(entry), job_identity(entry)
+    if issued is None or not label or not entry.get("fanout_dir"):
+        return False
+    if time.time() - issued <= UNRESOLVED_GRACE_SECONDS:
+        return False
+    for other in pending:
+        if other is entry or job_identity(other) != label:
+            continue
+        other_issued = _launch_time(other)
+        record = (resolve or (lambda item: item.get("record")))(other)
+        if record and other_issued is not None and other_issued > issued:
+            return True
+    return False
 
 
 def failed_finish(row):
@@ -490,6 +555,7 @@ def unreported_ends(pending, rows, acknowledged, stale_seconds, now=None):
     not pruned, and never wakes twice."""
     now = time.time() if now is None else now
     carried = {id(entry["finish"]) for entry in pending if entry.get("finish")}
+    watching = [entry for entry in pending if not superseded(entry, pending)]
     out = []
     for row in rows:
         label = row.get("label")
@@ -498,8 +564,8 @@ def unreported_ends(pending, rows, acknowledged, stale_seconds, now=None):
         if str(row.get("exitCode")) in CALLER_HANDLED:
             continue  # no entry carries it, so a child launch made it (a scoring daemon's seat), and its caller handles it
 
-        if any(_entry_label(entry) == label and (attempt_start(entry) or 0.0) > epoch(row.get("timestamp"))
-               for entry in pending):
+        if any(job_identity(entry) == label and (attempt_start(entry) or 0.0) > epoch(row.get("timestamp"))
+               for entry in watching):
             continue
         out.append({"kind": "sidecar", "id": "finish:%s:%s" % (label, row.get("timestamp")), "record": None,
                     "fanout_dir": None, "task_id": None, "jobs": [{"label": label}], "finish": row,
@@ -1626,10 +1692,14 @@ def _acknowledge(path, identities):
         _hook_state.update_json_locked(path, add)
 
 
-def _still_running(live):
+def _still_running(live, settle=None):
     """The wake's last lines. This watcher exits as it wakes, so with work still live nothing watches until the
-    orchestrator arms the next one: the command closes the output, where the reader acts."""
+    orchestrator arms the next one: the command closes the output, where the reader acts. `settle` runs between
+    the two lines and ends everything that keeps this watcher registered, so the re-arm the second line asks
+    for is not refused as COVERED."""
     print("STILL RUNNING %d" % live, flush=True)
+    if settle:
+        settle()
     if live:
         print("RE-ARM NOW: %s %s" % (ARM_COMMAND, ARM_CALL), flush=True)
 
@@ -1644,8 +1714,11 @@ def _idle_since(source, armed):
         return armed
 
 
-def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
+def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregister=None):
     """Poll `source()` (a `{key: unit}` map) and apply the wake rule. Returns the exit code.
+
+    A wake that ends in `STILL RUNNING` finishes its state writes and calls `unregister()` before it prints
+    `RE-ARM NOW`, so the line never outlives the watcher's registration.
 
     Unacknowledged decision events trigger even at the first poll. After that a non-triggering
     line (a job that succeeded while its unit still runs) is held and printed at the next wake, so
@@ -1677,6 +1750,14 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
         if shells is not None:
             shells.persist()
         return code
+
+    def rearm(live):
+        def settle():
+            leave()
+            if unregister:
+                unregister()
+        _still_running(live, settle)
+        return 0
 
     def close(live=0):
         for text in (closing(live) if closing else ()):
@@ -1730,15 +1811,13 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None):
                 return leave()
         elif woke:
             release(deferred, lines, standing, live)
-            _still_running(live)
-            return leave()
+            return rearm(live)
         elif live and time.time() - _idle_since(source, armed) >= CHECKIN_SECONDS:
             release(deferred, lines, standing, live)
             for text in checkin_lines(grouped):
                 print(text, flush=True)
             print("CHECKIN after %d min: %s" % ((time.time() - _idle_since(source, armed)) // 60, CHECKIN_RULE), flush=True)
-            _still_running(live)
-            return leave()
+            return rearm(live)
         elif not live:
             release(deferred, lines, standing)
             print("NONE", flush=True)
@@ -2012,7 +2091,8 @@ def main(args=None):
         session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
         source = _session_source(session_id, path) if session_wide else _records_source(pending)
         closing = session_closing(session_id) if session_wide else None
-        return wake_loop(source, ack_path=path, await_launch=await_launch, closing=closing) \
+        return wake_loop(source, ack_path=path, await_launch=await_launch, closing=closing,
+                         unregister=lambda: deregister(path, identity)) \
             if wake or any(is_run_dir(p) for p in pending) else _stream(pending)
     finally:
         deregister(path, identity)

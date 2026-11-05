@@ -8,7 +8,7 @@ description: Drive a plan-pending Part to ship or an approval-ready plan
 **Enters at:** intake, through the `/plan_part` brief.
 **Owner stop:** with `--plan-only`, approval of the converged plan; without it, none before land.
 
-Run the stages, halts, slices and close in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md). This file holds only what a Part adds.
+Run the stages and halts in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md), slices in [`drive_execution.md`](../skills/_brainstorm_shared/drive_execution.md), and close in [`drive_close.md`](../skills/_brainstorm_shared/drive_close.md). This file holds only what a Part adds.
 
 Which entry command fits a piece of work (this one, [`/part_execute`](part_execute.md), [`/feature_drive`](feature_drive.md)) follows [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Entry routing.
 

@@ -347,6 +347,8 @@ def _simple_shell_reads(words):
         if found and not args[2].startswith("-") and int(found[1]) >= 1 and int(found[2] or found[1]) >= int(found[1]):
             return [(args[2], [(int(found[1]), int(found[2] or found[1]))])]
         return []
+    if operation == "tail":
+        return []
     if operation == "head":
         count, path = 10, None
         if len(args) == 3 and args[0] == "-n" and args[1].isdigit():
@@ -410,12 +412,23 @@ def _cli_call(entry):
         return None
     name, keys = mapped
     given = {to: state["input"][frm] for frm, to in keys.items() if frm in state["input"]}
-    return (name, given) if _text(given.get(CALL_INPUTS[name])) else None
+    output = state.get("output")
+    return (name, given, output if isinstance(output, str) else "") if _text(given.get(CALL_INPUTS[name])) else None
+
+
+def _result_text(content) -> str:
+    """The text of a `tool_result` block's content: the string itself, or its text parts joined."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text")
+    return ""
 
 
 def _successful_calls(stream_path):
-    """(tool name, input) per `tool_use` of a `CALL_INPUTS` tool whose paired `tool_result` is not an error, or
-    None when the stream is absent or unreadable. The stream may be a `sidecar_fanout` seeAlso pointer."""
+    """(tool name, input, result text) per `tool_use` of a `CALL_INPUTS` tool whose paired `tool_result` is not
+    an error, or None when the stream is absent or unreadable. The stream may be a `sidecar_fanout` seeAlso
+    pointer."""
     if not stream_path or not Path(stream_path).is_file():
         return None
     calls, out = {}, []
@@ -442,7 +455,7 @@ def _successful_calls(stream_path):
                             calls[block["id"]] = (block["name"], given)
                     elif (block.get("type") == "tool_result" and block.get("tool_use_id") in calls
                           and block.get("is_error") is not True):
-                        out.append(calls[block["tool_use_id"]])
+                        out.append((*calls[block["tool_use_id"]], _result_text(block.get("content"))))
     except OSError:
         return None
     return out
@@ -456,23 +469,53 @@ def called_paths(stream_path, toplevel=REPO):
     calls = _successful_calls(stream_path)
     if calls is None:
         return None
-    out = {target_path(f"{name}:{given[CALL_INPUTS[name]]}", toplevel) for name, given in calls}
+    out = {target_path(f"{name}:{given[CALL_INPUTS[name]]}", toplevel) for name, given, _ in calls}
     out.discard("")
     return out
 
 
-def called_reads(stream_path, toplevel=REPO):
-    """`(path, spans)` per successful Read or supported simple shell read, relative to `toplevel`.
-    None when the stream is absent; calls without a successful paired result receive no credit."""
+_NUMBERED = re.compile(r"^\s*\d+\t")
+
+
+def _content_reads(output, must_read, toplevel, cache) -> list:
+    """`(path, [WHOLE])` per must-read entry whose every non-blank line appears in a shell call's `output`, line
+    numbers (`cat -n`, the Read tool) stripped. This credits a read the command parser cannot see (a loop, a
+    pipe): the result shows the file, which is the fact the read leaves. `cache` memoizes each entry's lines."""
+    if not output or not must_read:
+        return []
+    shown = {_NUMBERED.sub("", line.rstrip("\r")) for line in output.split("\n")}
+    found = []
+    for entry in must_read:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not _text(path):
+            continue
+        if path not in cache:
+            target = Path(path) if Path(path).is_absolute() else Path(toplevel, path)
+            try:
+                text = target.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = None
+            cache[path] = None if text is None else [line for line in (x.rstrip("\r") for x in text.split("\n")) if line.strip()]
+        lines = cache[path]
+        if lines and all(line in shown for line in lines):
+            found.append((path, [WHOLE]))
+    return found
+
+
+def called_reads(stream_path, toplevel=REPO, must_read=None):
+    """`(path, spans)` per successful Read or supported simple shell read, relative to `toplevel`, plus, with a
+    `must_read` list, each entry a shell call's result shows whole (`_content_reads`) when the parser reads no
+    file from its command. None when the stream is absent; calls without a successful paired result receive no
+    credit."""
     calls = _successful_calls(stream_path)
     if calls is None:
         return None
-    out = []
-    for name, given in calls:
+    out, cache = [], {}
+    for name, given, output in calls:
         if name == "Read":
             reads = [(given["file_path"], [read_span(given.get("offset"), given.get("limit"))])]
         elif name.lower() in SHELL_TOOLS:
-            reads = _shell_reads(given["command"], toplevel)
+            reads = _shell_reads(given["command"], toplevel) or _content_reads(output, must_read, toplevel, cache)
         else:
             reads = []
         for operand, spans in reads:
@@ -510,8 +553,24 @@ def spans_text(spans) -> str:
 
 
 def claimed_reads(tools) -> list:
-    """`(target_path, target_spans)` per entry of a seat's own `checked.toolsUsed`: the self-reported reads."""
-    return [(target_path(item), target_spans(item)) for item in tools if _text(item)] if isinstance(tools, list) else []
+    """`(path, spans)` per file a seat's own `checked.toolsUsed` entries read: the self-reported reads.
+
+    A shell entry that reads several files (`cat a && sed -n 1,5p b`) yields one pair per file, so no file is
+    credited with another file's spans; every other entry yields its `(target_path, target_spans)`."""
+    if not isinstance(tools, list):
+        return []
+    pairs = []
+    for item in tools:
+        if not _text(item):
+            continue
+        tool, _, name = str(item).partition(":")
+        if tool.strip().lower() in SHELL_TOOLS:
+            reads = _shell_reads(_TARGET_NOTE.sub("", name.strip()))
+            if reads:
+                pairs.extend((target_path("Read:" + path), spans) for path, spans in reads)
+                continue
+        pairs.append((target_path(item), target_spans(item)))
+    return pairs
 
 
 def must_read_spans(must_read, reads):
@@ -731,7 +790,8 @@ def _coverage(body, mandates):
 
 def _seat_status(fatal, failed, shortfall, valid, own_limit_only):
     """`uncovered` for a fatal record, `failed` for a coverage-contract failure, `completed` with no shortfall,
-    else `partial` when the seat kept a valid finding or its only shortfall is its own capability limit."""
+    else `partial` when the seat kept a valid finding, its only shortfall is its own capability limit, or its
+    must-read coverage is unproven (self-reported entries leave a gap no stream can confirm)."""
     if fatal:
         return "uncovered"
     if failed:
@@ -904,7 +964,8 @@ def ingest(seats):
     uncovered, `unread` naming the entries, its findings kept as sources. A `capability` gap leaves the seat
     partial, and `capabilityPartial` marks a seat partial only by its own limit: capability gaps, or a blocked stop its
     mandate map names with `not-reached` keys while a must-read list proves engagement; `outside-lens` and
-    `missing` gaps leave the seat complete."""
+    `missing` gaps leave the seat complete. A valid map's `not-reached` keys stay in `uncoveredMandates` and
+    leave the seat's status alone: each is that mandate's own outcome."""
     sources = []
     coverage = []
     counts = {"seats": 0, "completed": 0, "partial": 0, "failed": 0, "uncovered": 0,
@@ -978,16 +1039,22 @@ def ingest(seats):
             errors.append(f"{len(bad)} gap entr{'y names' if len(bad) == 1 else 'ies name'} no "
                           f"{'listed ' if must_read is not None else ''}item with a legal reason "
                           f"({', '.join(GAP_REASONS)}): " + "; ".join(json.dumps(gap)[:200] for gap in bad))
+        # Observed reads (the transcript) decide an unread entry: it fails the seat. The seat's own entries decide
+        # nothing on their own, so with no stream an unread entry leaves the seat unproven (partial, token
+        # `incomplete`), as `review_fanout.js` reports it; the ledger record judges from the transcript.
+        unproven = bool(unread) and not observed
         if unread:
-            errors.append("must-read entries not read in full, with no legal gap: "
+            errors.append(("must-read entries the seat's own entries do not cover in full, with no legal gap: "
+                           if unproven else "must-read entries not read in full, with no legal gap: ")
                           + unread_text(must_read, reads, unread)
-                          + f"; stoppedAt={checked.get('stoppedAt') if checked else None} does not excuse them")
+                          + f"; stoppedAt={checked.get('stoppedAt') if checked else None} does not excuse them"
+                          + ("; coverage unproven (no observed reads)" if unproven else ""))
         capability = any(gap["reason"] == "capability" for gap in legal)
         if capability:
             errors.append("seat reported capability gaps")
-        failed = bool(bad or unread)
+        failed = bool(bad or (unread and observed))
         # Status comes from these facts; `errors` is only the report text.
-        capability_limited = (not fatal and not failed and not rejected and not provenance_failed
+        capability_limited = (not fatal and not failed and not unproven and not rejected and not provenance_failed
                               and (capability or named_block))
         mapped = typed is not None
         # Capability-partial, the fact `review_fanout.js` computes in `perAgent`: no shape-rejected entry, valid
@@ -999,15 +1066,17 @@ def ingest(seats):
         # so it is partial even with no findings; any other shortfall needs a valid finding. Unaccounted
         # mandates are that other shortfall unless a valid map names them `not-reached`.
         own_limit_only = capability_limited and (mapped or not missing)
-        shortfall = bool(fatal or failed or rejected or provenance_failed or missing or capability)
-        status = _seat_status(fatal, failed, shortfall, valid, own_limit_only)
+        # A valid map's `not-reached` keys are that map's own per-mandate outcomes, so only an unmapped seat's
+        # unaccounted mandates are a seat shortfall, as `review_fanout.js` `perAgent` computes its status.
+        shortfall = bool(fatal or failed or unproven or rejected or provenance_failed or (missing and not mapped) or capability)
+        status = _seat_status(fatal, failed, shortfall, valid, own_limit_only or unproven)
         counts[status] += 1
         coverage.append({"label": label, "mandates": mandates,
                          "model": identity["model"], "modelObserved": identity["modelObserved"],
                          "identityBasis": identity["basis"], "record": seat.get("recordPath"),
                          "tier": record.get("tier") or seat.get("tier"),
                          "effort": record.get("effort") or seat.get("effort"),
-                         "uncoveredMandates": list(mandates) if failed else missing,
+                         "uncoveredMandates": list(mandates) if failed or unproven else missing,
                          "status": status, "received": received, "valid": valid,
                          "rejected": rejected, "checked": checked, "issues": errors + unattributed,
                          "capabilityPartial": capability_partial,
