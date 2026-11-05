@@ -60,6 +60,13 @@ def advice(payload):
                if isinstance(e, dict) and e.get("kind") in ("sidecar", "workflow")]
     if not pending:
         return None
+    for entry in pending:
+        if entry.get("kind") == "sidecar":
+            dispatch_table.resolve_sidecar_record(entry, sid, pending)
+    # The one supersede rule the Stop hook and the watcher apply: a refused call's entry, or one a
+    # later-issued run of the same label supersedes, is not a sidecar to inspect or wake for.
+    pending = [entry for entry in pending
+               if entry.get("kind") != "sidecar" or not watch_records.superseded(entry, pending)]
     watchers = state.get("sidecar_watchers") or []
     groups = {key: [] for key in ("finished", "never started", "died", "unknown")}
     uncovered = []
@@ -68,7 +75,6 @@ def advice(payload):
             if watch_records.workflow_running(entry) and not watch_records.session_watcher_live(state):
                 uncovered.append(entry.get("run_dir"))
             continue
-        dispatch_table.resolve_sidecar_record(entry, sid, pending)
         record = entry.get("record")
         if not record:
             groups["unknown"].append(str(entry.get("id")))

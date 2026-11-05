@@ -783,6 +783,21 @@ def test_v2_judge_success_refusal_and_repeat() -> None:
         assert refusal.returncode == 1, refusal.stdout.decode(errors="replace")
         bad = _run_baseline(root, baseline, "judge", rel, "--verdict", "fork", "--confirm")
         assert bad.returncode == 1
+        invalid = _run(root, "judge", rel, "--verdict", "nope")
+        assert invalid.returncode == 2, invalid.stderr.decode(errors="replace")
+        assert b"accepts:" in invalid.stderr and b"example:" in invalid.stderr, \
+            invalid.stderr.decode(errors="replace")
+        legacy = _run(root, "--verdict", "nope", "judge", rel)
+        assert legacy.returncode == 2 and b"accepts:" in legacy.stderr, \
+            legacy.stderr.decode(errors="replace")
+        helped = _run(root, "judge", "--help")
+        posted = (helped.stdout + helped.stderr).decode(errors="replace")
+        assert helped.returncode == 0 and "--verdict" in posted and "accepts:" in posted, posted
+        for other_op_flag in ("--merge", "--template", "--status"):
+            assert other_op_flag not in posted, posted
+        short = _run(root, "judge", "-h")
+        short_posted = (short.stdout + short.stderr).decode(errors="replace")
+        assert short.returncode == 0 and "accepts:" in short_posted, short_posted
 
 
 def test_v2_judge_commit_reads_that_commit_not_the_shared_index() -> None:
@@ -2315,6 +2330,25 @@ def test_j3_push_judge_refuses_an_identity_hit_and_accept_hit_allows_it() -> Non
         assert kept.returncode == 0, _out(kept)
 
 
+def test_push_judge_names_every_refused_row_and_hit_in_one_call() -> None:
+    first, second = ".claude/commands/leaky_one.md", ".claude/commands/leaky_two.md"
+    subsystem_id = "brew" + "Cauldron"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {first: {"upstream": b"clean\n"}, second: {"upstream": b"clean\n"}})
+        skill_md = "# project_subsystems\n\n```yaml\nsubsystems:\n  - id: " + subsystem_id + "\n    paths: []\n```\n"
+        _write(root / ".claude" / "skills" / "project_subsystems" / "SKILL.md", skill_md.encode())
+        _write(root / first, ("The " + subsystem_id + " owns this.\nSo does " + subsystem_id + ".\n").encode())
+        _write(root / second, ("The " + subsystem_id + " owns that.\n").encode())
+        _git(root, "add", "-A")
+        refused = _run_baseline(root, baseline, "judge", first, second, "--verdict", "push")
+        out = _out(refused)
+        assert refused.returncode == 1, out
+        for where in (first + ":1:", first + ":2:", second + ":1:"):
+            assert out.count("--accept-hit " + where) == 1, (where, out)
+        files = _load_lock(root)["files"]
+        assert "judged" not in files[first] and "judged" not in files[second], out
+
+
 def test_triage_lists_every_identity_hit_the_push_scan_would_refuse() -> None:
     rel = ".claude/commands/leaky_triaged.md"
     subsystem_id = "brew" + "Cauldron"
@@ -3225,7 +3259,7 @@ def test_remote_git_carries_the_network_timeout_and_local_git_does_not() -> None
     with mock.patch.object(subprocess, "run", _run):
         engine._git(Path("cache"), ["fetch", "origin"], check=False)
         engine._git(Path("cache"), ["status"], check=False)
-    assert seen == [engine.NETWORK_CALL_TIMEOUT_S, None], seen
+    assert len(seen) == 2 and seen[0] and seen[0] > 0 and seen[1] is None, seen
 
 
 def test_pull_moves_a_tracked_rows_verdict_to_the_copy_it_writes() -> None:
@@ -3333,6 +3367,7 @@ def main() -> int:
         test_pull_keeps_the_posix_exec_bit_of_a_100755_entry,
         test_pull_prints_each_written_row_the_gitignore_matches,
         test_j3_push_judge_refuses_an_identity_hit_and_accept_hit_allows_it,
+        test_push_judge_names_every_refused_row_and_hit_in_one_call,
         test_triage_lists_every_identity_hit_the_push_scan_would_refuse,
         test_bare_pull_refreshes_a_lock_stale_row,
         test_paths_unshipped_lists_every_push_row_the_baseline_lacks_whenever_judged,

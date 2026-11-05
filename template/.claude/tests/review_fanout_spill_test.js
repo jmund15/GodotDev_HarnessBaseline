@@ -147,8 +147,7 @@ const FOLD = { subjects: [subjectOf([PLAN_P])], templatePath: TEMPLATE, tier: 'f
 const POST_CHECK_LINE = 'python3 .claude/tools/post_check.py review --workflow-dir "<transcriptDir-from-Workflow-result>" --out .claude/scratch/fold_fixture/post_check.json'
 const goodDigest = (over = {}) => Object.assign({
   applied: [{ id: 'F1', change: 'fixed typo in step 3', source: 'finding' }],
-  deferred: [{ id: 'F2', class: 'taste-fork', reason: 'taste fork' }, { id: 'F3', class: 'spike', reason: 'measurement needed' }],
-  designDelta: [],
+  deferred: [{ id: 'F2', reason: 'taste fork' }, { id: 'F3', reason: 'measurement needed' }],
   changedPaths: [PLAN_P],
 }, over)
 const foldReply = ({ digest } = {}) => (prompt, opts) => {
@@ -254,10 +253,9 @@ async function foldCases() {
     clean.result.fold.status === 'skipped' && cleanVerify && cleanVerify.prompt.includes("--reviewed-snapshot '" + SNAPSHOT + "'"),
     JSON.stringify({ fold: clean.result.fold && clean.result.fold.status, prompt: cleanVerify && cleanVerify.prompt.slice(0, 600) }))
   const ruling = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest: goodDigest({
-    applied: [{ id: 'F1', change: 'owner wording', source: 'ruling' }],
-    designDelta: [PLAN_P + ': owner wording'],
+    applied: [{ id: 'F1', change: 'owner wording', source: 'finding' }],
   }) }))
-  check('a ruling with different applied wording is provisional: the post-check owns the old/new facts',
+  check('a digest with different applied wording is provisional: the post-check owns the old/new facts',
     ruling.result.fold.status === 'provisional' && !flagKinds(ruling).some(k => k.startsWith('fold-')),
     JSON.stringify(ruling.result.flags))
   const foldCall = ruling.calls.find(call => call.opts.phase === 'Fold')
@@ -273,8 +271,6 @@ async function foldCases() {
         'Amend: at each item and before returning, Read .claude/scratch/fold_fixture/fold_prompt.md.amend.md with the Read tool (Glob and Grep hide gitignored files); a not-found error means no amendment. A found amendment overrides the brief. Name what you applied.')
       && ruling.calls.find(c => c.opts.phase === 'Fold').prompt.includes('Persist this full engine brief with Write to the Prompt file before any subject action.')
       && ruling.calls.find(c => c.opts.phase === 'Fold').prompt.includes('Prompt file: .claude/scratch/fold_fixture/fold_prompt.md'))
-  check('native digest schema admits ruling without changing designDelta strings',
-    ruling.calls.find(c => c.opts.phase === 'Fold').opts.schema.properties.applied.items.properties.source.enum.includes('ruling'))
   for (const mode of ['full', 'bounded']) {
     const r = await run(noFoldArgs(mode), foldFixtureReply)
     const got = fingerprint(r)
@@ -386,14 +382,14 @@ async function foldCases() {
     fold && !fold.prompt.includes('Read-only: do NOT modify') && fold.prompt.includes('Write only')
       && fold.prompt.includes('fold_findings.json') && fold.prompt.includes('fold_verdicts.json'))
   check('fold schema requires judgment and changed paths only, never a fact the checker computes',
-    fold && ['applied', 'deferred', 'designDelta', 'changedPaths'].every(k => (fold.opts.schema.required || []).includes(k))
-      && ['decisions', 'verdicts', 'verdictPath', 'mechanicalChecks'].every(k => !(k in fold.opts.schema.properties))
-      && ['source', 'noTest'].every(k => k in fold.opts.schema.properties.applied.items.properties)
-      && fold.opts.schema.properties.deferred.items.required.includes('class'),
+    fold && ['applied', 'deferred', 'changedPaths'].every(k => (fold.opts.schema.required || []).includes(k))
+      && ['decisions', 'verdicts', 'verdictPath', 'mechanicalChecks', 'designDelta', 'commits'].every(k => !(k in fold.opts.schema.properties))
+      && 'source' in fold.opts.schema.properties.applied.items.properties
+      && !('noTest' in fold.opts.schema.properties.applied.items.properties)
+      && !('class' in fold.opts.schema.properties.deferred.items.properties),
     fold && JSON.stringify(fold.opts.schema))
-  check('the fold prompt asks for no verdict, verdictPath or question-null filter and applies each resolved PLAN option',
-    fold && !fold.prompt.includes('verdictPath') && !fold.prompt.includes('Return a verdicts row') && !fold.prompt.includes('question null')
-      && fold.prompt.includes('each PLAN') && fold.prompt.includes('options[0]'),
+  check('the fold prompt asks for no verdict, verdictPath or question-null filter',
+    fold && !fold.prompt.includes('verdictPath') && !fold.prompt.includes('Return a verdicts row') && !fold.prompt.includes('question null'),
     fold && fold.prompt.slice(0, 1800))
   check('a well-formed digest validates and is returned',
     ok.result.fold && ok.result.fold.status === 'provisional' && ok.result.fold.digest.applied[0].id === 'F1', JSON.stringify(ok.result.fold))
@@ -426,8 +422,8 @@ async function foldCases() {
       flagKinds(r).includes(kind) && r.result.fold.status === 'invalid', JSON.stringify(r.result.flags))
   }
   for (const [label, digest] of [
-    ['an id absent from applied and deferred', goodDigest({ deferred: [{ id: 'F2', class: 'taste-fork', reason: 'taste fork' }] })],
-    ['an id listed twice', goodDigest({ deferred: [{ id: 'F1', class: 'conflict', reason: 'conflict' }, { id: 'F2', class: 'taste-fork', reason: 'x' }, { id: 'F3', class: 'spike', reason: 'y' }] })],
+    ['an id absent from applied and deferred', goodDigest({ deferred: [{ id: 'F2', reason: 'taste fork' }] })],
+    ['an id listed twice', goodDigest({ deferred: [{ id: 'F1', reason: 'conflict' }, { id: 'F2', reason: 'x' }, { id: 'F3', reason: 'y' }] })],
     ['stale decisions, verdicts and mechanicalChecks fields', goodDigest({ decisions: [], verdicts: [], verdictPath: 'x', mechanicalChecks: [] })],
   ]) {
     const r = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest }))
@@ -439,23 +435,11 @@ async function foldCases() {
     unchangedClaim.result.fold.status === 'provisional' && !flagKinds(unchangedClaim).includes('fold-unchanged-plan'),
     JSON.stringify(unchangedClaim.result.flags))
 
-  const own = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest: goodDigest({
-    applied: [{ id: 'F1', change: 'wrote a better change', source: 'fold' }] }) }))
-  check('a fold-written change is valid', own.result.fold.status !== 'invalid', JSON.stringify(own.result.flags))
-
-  const adapted = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest: goodDigest({
-    applied: [{ id: 'F1', change: 'merged with another finding fix', source: 'adapted' }] }) }))
-  check('an adapted change is valid', adapted.result.fold.status !== 'invalid', JSON.stringify(adapted.result.flags))
-
-  const noTest = await run({ ...noFoldArgs('full'), fold: FOLD }, foldReply({ digest: goodDigest({
-    applied: [{ id: 'F1', change: 'typo', source: 'finding', noTest: 'docs only' }] }) }))
-  check('an applied entry may carry a noTest reason', noTest.result.fold.status === 'provisional', JSON.stringify(noTest.result.flags))
-
   const broad = await run({ agents: [reviewAgent('one')], spillDir: '.claude/scratch/fold_fixture', fold: FOLD },
     (_prompt, opts) => opts.phase === 'Fold'
       ? goodDigest({
         applied: ['F1', 'F3', 'F4'].map(id => ({ id, change: 'applied ' + id, source: 'finding' })),
-        deferred: [{ id: 'F2', class: 'owner-input', reason: 'owner-input' }],
+        deferred: [{ id: 'F2', reason: 'owner-input' }],
       })
       : { findings: [
         finding({ agent: 'one', file: PLAN_P + ':1', description: 'ordinary fix' }),
@@ -664,14 +648,14 @@ async function verificationCases() {
         && JSON.stringify(normal.report.independentVerdicts) === JSON.stringify([{ id: 'F1', verdict: 'VERIFIED' }]),
       normal.proc.stderr + ' ' + JSON.stringify(normal.report))
     fs.writeFileSync(path.join(dir, 'p.md'), 'Step 3: owner-selected wording.\n')
-    const ruling = await checkRun('ruling', {
-      applied: [{ id: 'F1', change: 'owner selected a different fix', source: 'ruling' }],
+    const reworded = await checkRun('reworded', {
+      applied: [{ id: 'F1', change: 'a different fix than the finding states', source: 'finding' }],
     })
-    check('a native ruling with different wording produces the required re-review unit',
-      ruling.r.result.fold.status === 'provisional' && ruling.proc.status === 0 && ruling.report
-        && ruling.report.nextRound.some(block => block.seats.some(seat => seat.role === 're-review'
-          && seat.units.includes('F1') && seat.mandates.includes('one'))),
-      ruling.proc.stderr + ' ' + JSON.stringify(ruling.report))
+    check('a native fold that rewords the finding\'s pair fails the shared checker as not applied and proposes no next round',
+      reworded.r.result.fold.status === 'provisional' && reworded.proc.status === 1 && reworded.report
+        && reworded.report.failures.some(f => f.kind === 'fold-not-applied' && f.ids.includes('F1'))
+        && !('nextRound' in reworded.report),
+      reworded.proc.stderr + ' ' + JSON.stringify(reworded.report))
     fs.writeFileSync(path.join(dir, 'p.md'), 'Step 3: the default.\n')
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
@@ -958,7 +942,7 @@ async function verificationCases() {
         { id: 'F3', change: 'resolved critical correction', source: 'finding' },
         { id: 'F4', change: 'resolved design finding', source: 'finding' },
         { id: 'F5', change: 'completed test-readiness item', source: 'finding' },
-      ], deferred: [{ id: 'F2', class: 'owner-input', reason: 'owner-input' }],
+      ], deferred: [{ id: 'F2', reason: 'owner-input' }],
     })
     : { findings: [
       finding({ agent: 'one', file: PLAN_P + ':1', description: 'ordinary fix' }),
@@ -972,22 +956,14 @@ async function verificationCases() {
       && !flagKinds(broadFold).includes('fold-applied-held'), JSON.stringify(broadFold.result))
 
   const holdPrompt = broadFold.calls.find(c => c.opts.phase === 'Fold')
-  const foldTemplate = fs.readFileSync(path.join(__dirname, '..', 'commands', 'agents', 'review_fold.md'), 'utf8')
-  check('the fold prompt defers its hold list to the template, which names every hold class',
-    holdPrompt && holdPrompt.prompt.includes('Read ' + TEMPLATE) && holdPrompt.prompt.includes('Hold exactly the cases steps 4 and 5 of the template list')
-      && !['owner-input', 'own-design'].some(k => holdPrompt.prompt.includes('(' + k + ')'))
-      && !holdPrompt.prompt.includes('Apply every supported finding')
-      && ['owner-input', 'own-design', 'unbased-number', 'new-mechanism'].every(k => foldTemplate.includes('`' + k + '`')),
+  check('the fold prompt reads the one template brief and carries no inline hold list',
+    holdPrompt && holdPrompt.prompt.includes('Read ' + TEMPLATE) && !holdPrompt.prompt.includes('Apply every supported finding'),
     holdPrompt && holdPrompt.prompt.slice(0, 1600))
-  check('the fold prompt defers the not-VERIFIED hold and its --ruled exception to template step 5',
-    holdPrompt && holdPrompt.prompt.includes('steps 4 and 5') && !holdPrompt.prompt.includes('not VERIFIED (`unverified`)')
-      && foldTemplate.includes('applied only with a VERIFIED verdict') && foldTemplate.includes('--ruled'),
-    holdPrompt && holdPrompt.prompt.slice(0, 400))
 
   const altReply = (_prompt, opts) => opts.phase === 'Fold'
     ? goodDigest({
       applied: [{ id: 'F1', change: 'took A', source: 'finding' }, { id: 'F2', change: 'took C', source: 'finding' }],
-      deferred: [{ id: 'F3', class: 'own-design', reason: 'own-design' }],
+      deferred: [{ id: 'F3', reason: 'own-design' }],
     })
     : { findings: [
       finding({ agent: 'one', file: PLAN_P + ':1', action: 'PLAN', scope: ['plan section'], description: 'with alternative', options: ['Do A', 'Alternative: B; wins when C'] }),

@@ -62,9 +62,14 @@ INDEXED_REFERENCES = {
     "generated/abstraction_families.md": (
         "grep the family rows you need, e.g. "
         "grep -n '<Concern>' .claude/generated/abstraction_families.md",
-        "the matching rows only. The file is ~128KB of 341 families; a plan or "
+        "the matching rows only. A plan or "
         "design question needs the handful whose name or owning folder matches "
         "the domains in scope (plan_check_detail.md §1g states this rule).",
+    ),
+    "skills/project_subsystems/reference/subsystem_details.md": (
+        "python3 .claude/tools/subsys.py index",
+        "one line per entry (id + first sentence). Then "
+        "`subsys.py get <id> [<id> ...]` for the entries whose id bears on the work.",
     ),
 }
 
@@ -75,6 +80,7 @@ INDEXED_REFERENCES = {
 LOCAL_ONLY_TARGETS = frozenset({
     "reference/known_failure_modes_entries.md",
     "generated/abstraction_families.md",
+    "skills/project_subsystems/reference/subsystem_details.md",
 })
 
 
@@ -104,6 +110,8 @@ def process(input_data):
     for suffix, (command, gives) in INDEXED_REFERENCES.items():
         if not path.endswith(suffix):
             continue
+        if not os.path.isfile(tool_input["file_path"]):
+            return None
         try:
             size_kb = os.path.getsize(tool_input["file_path"]) // 1024
             size = f"~{size_kb}KB"

@@ -10,7 +10,7 @@ task, accepted only when `task_record` resolves it as fresh. Past its expiry a l
 `expired` set, so the posture line can say so.
 
 Lean changes pins, never fields, admission or review width. This module states the posture; the rows a pin may
-take are `provider_bands.py lean <tier>`'s facts, and the agent chooses (`orchestration`
+take are `model_registry.py for-role <tier>`'s facts, and the agent chooses (`orchestration`
 reference `spend_lean.md`).
 
     spend_mode.py set lean|normal [--task T] [--until-reset PLAN | --until ISO]

@@ -144,6 +144,8 @@ def main():
         rc, _, err = run(f, "record", *[("approved" if a == "declined" else a) for a in ROW])
         cases.append(("an outcome outside applied|declined is rejected, file unchanged",
                       rc != 0 and "outcome" in err and len(rows(f)) == 1))
+        cases.append(("a rejected row states the shape it accepts and one valid call",
+                      "accepts:" in err and "example:" in err))
         rc, _, err = run(f, "record", *[a for a in ROW if a not in ("--reason", "too costly")])
         cases.append(("a missing reason is rejected", rc != 0 and len(rows(f)) == 1))
         rc, _, err = run(f, "record", *(ROW[:-1] + [" "]))

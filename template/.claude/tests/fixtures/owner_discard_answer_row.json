@@ -1,0 +1,39 @@
+{
+ "type": "user",
+ "isSidechain": false,
+ "message": {
+  "role": "user",
+  "content": [
+   {
+    "type": "tool_result",
+    "content": "Your questions have been answered: \"OK to reset 2 dirty gate-output files in the sync-pr117 worktree? (Tests/regression_baseline.json, Tests/integration_batch_durations.json, written by a gate run on 2026-09-28; copies saved to .claude/scratch/pr_sync_117/preserved/)\"=\"Reset them (Recommended)\". You can now continue with these answers in mind.",
+    "tool_use_id": "toolu_01V3evAKncVfjHdicJ2A78Se"
+   }
+  ]
+ },
+ "toolUseResult": {
+  "questions": [
+   {
+    "question": "OK to reset 2 dirty gate-output files in the sync-pr117 worktree? (Tests/regression_baseline.json, Tests/integration_batch_durations.json, written by a gate run on 2026-09-28; copies saved to .claude/scratch/pr_sync_117/preserved/)",
+    "header": "Reset files",
+    "options": [
+     {
+      "label": "Reset them (Recommended)",
+      "description": "They're regenerated gate output from a 12-day-old run, already copied aside. The merge needs them clean."
+     },
+     {
+      "label": "Stop",
+      "description": "Leave the worktree alone; sync doesn't run."
+     }
+    ],
+    "multiSelect": false
+   }
+  ],
+  "answers": {
+   "OK to reset 2 dirty gate-output files in the sync-pr117 worktree? (Tests/regression_baseline.json, Tests/integration_batch_durations.json, written by a gate run on 2026-09-28; copies saved to .claude/scratch/pr_sync_117/preserved/)": "Reset them (Recommended)"
+  },
+  "annotations": {}
+ },
+ "uuid": "86fb15e2-b1f6-41f6-a852-8ddd1a3de623",
+ "timestamp": "2026-10-11T04:28:42.577Z"
+}

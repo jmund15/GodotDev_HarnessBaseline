@@ -1086,6 +1086,108 @@ def s5_unknown_store_exits_2():
         sb.close()
 
 
+# --------------------------------------------------------------------------- S9: retired registrations
+
+RETIRED = {"id": "large-read-reminder", "dest": "~/.claude/hooks/large_read_reminder.py",
+           "event": "PostToolUse", "matcher": "Read", "command": "python {dest}"}
+
+
+@case
+def s9_install_keeps_a_hook_that_only_names_the_retired_path():
+    sb = Sandbox()
+    try:
+        sb.manifest([], name="manifest.json")
+        doc = json.loads((sb.scope / "manifest.json").read_text(encoding="utf-8"))
+        doc["retired"] = [dict(RETIRED)]
+        (sb.scope / "manifest.json").write_text(json.dumps(doc), encoding="utf-8")
+        path = posix(sb.home / '.claude/hooks/large_read_reminder.py')
+        mention = f"python lint_hooks.py --watch {path}"
+        write_settings(sb, json.dumps({"hooks": {"PostToolUse": [
+            {"matcher": "Read", "hooks": [{"type": "command", "command": f"python {path}"},
+                                             {"type": "command", "command": mention}]}
+        ]}}).encode())
+        done = sb.run("install")
+        expect(done.code == 0, f"install: {done.code} {done.err!r}")
+        commands = [h["command"] for group in read_settings(sb)["hooks"]["PostToolUse"] for h in group["hooks"]]
+        expect(commands == [mention], f"only the exact retired command goes: {commands}")
+        expect(sb.run("check").code == 0, "a hook that only names the path is not the retired registration")
+    finally:
+        sb.close()
+
+
+@case
+def s9_retired_entry_without_its_command_is_refused():
+    sb = Sandbox()
+    try:
+        sb.manifest([], name="manifest.json")
+        doc = json.loads((sb.scope / "manifest.json").read_text(encoding="utf-8"))
+        doc["retired"] = [{key: value for key, value in RETIRED.items() if key != "command"}]
+        (sb.scope / "manifest.json").write_text(json.dumps(doc), encoding="utf-8")
+        done = sb.run("check")
+        expect(done.code != 0 and "command" in done.err + done.out, f"missing command accepted: {done.code} {done.err!r}")
+    finally:
+        sb.close()
+
+
+@case
+def s9_check_fails_when_retired_hook_is_registered():
+    sb = Sandbox()
+    try:
+        sb.manifest([], name="manifest.json")
+        doc = json.loads((sb.scope / "manifest.json").read_text(encoding="utf-8"))
+        doc["retired"] = [dict(RETIRED)]
+        (sb.scope / "manifest.json").write_text(json.dumps(doc), encoding="utf-8")
+        command = f"python {posix(sb.home / '.claude/hooks/large_read_reminder.py')}"
+        write_settings(sb, json.dumps({"hooks": {"PostToolUse": [
+            {"matcher": "Read", "hooks": [{"type": "command", "command": command}]},
+            {"matcher": "Read", "hooks": [{"type": "command", "command": "python sibling.py"}]}
+        ]}}).encode())
+        done = sb.run("check")
+        expect(done.code == 1 and "large-read-reminder" in done.out,
+               f"retired registration check: {done.code} {done.out!r} {done.err!r}")
+    finally:
+        sb.close()
+
+
+@case
+def s9_install_removes_only_retired_command_and_keeps_sibling():
+    sb = Sandbox()
+    try:
+        sb.manifest([], name="manifest.json")
+        doc = json.loads((sb.scope / "manifest.json").read_text(encoding="utf-8"))
+        doc["retired"] = [dict(RETIRED)]
+        (sb.scope / "manifest.json").write_text(json.dumps(doc), encoding="utf-8")
+        (sb.home / ".claude/hooks").mkdir(parents=True)
+        command = f"python {posix(sb.home / '.claude/hooks/large_read_reminder.py')}"
+        write_settings(sb, json.dumps({"theme": "dark", "hooks": {"PostToolUse": [
+            {"matcher": "Read", "hooks": [{"type": "command", "command": command},
+                                             {"type": "command", "command": "python sibling.py"}]}
+        ]}}).encode())
+        done = sb.run("install")
+        expect(done.code == 0, f"install: {done.code} {done.err!r}")
+        after = read_settings(sb)
+        hooks = after["hooks"]["PostToolUse"]
+        commands = [h["command"] for group in hooks for h in group["hooks"]]
+        expect(commands == ["python sibling.py"], f"remaining hooks {commands}")
+        expect(after["theme"] == "dark", "unrelated setting changed")
+        expect(sb.run("check").code == 0, "check after retirement is not green")
+    finally:
+        sb.close()
+
+
+@case
+def s9_retired_row_without_registration_is_green():
+    sb = Sandbox()
+    try:
+        sb.manifest([], name="manifest.json")
+        doc = json.loads((sb.scope / "manifest.json").read_text(encoding="utf-8"))
+        doc["retired"] = [dict(RETIRED)]
+        (sb.scope / "manifest.json").write_text(json.dumps(doc), encoding="utf-8")
+        expect(sb.run("check").code == 0, "unregistered retired row must be green")
+    finally:
+        sb.close()
+
+
 def main():
     failed = 0
     for fn in CASES:

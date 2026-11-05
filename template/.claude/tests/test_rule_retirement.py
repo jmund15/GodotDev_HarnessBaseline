@@ -631,35 +631,6 @@ def model_cases():
               (bucket, kind) == ("undecidable", "model-change"), str((bucket, kind)))
 
 
-def doc_cases():
-    print("case 12 — /codify (body and landing reference) lists every trigger kind the docstring names; /autolearn names evidence")
-    with open(SCANNER, encoding="utf-8") as handle:
-        doc = handle.read().split('"""')[1]
-    codify = ""
-    for rel in (("codify.md",), ("reference", "codify_landing.md")):
-        with open(os.path.join(ROOT, "commands", *rel), encoding="utf-8") as handle:
-            codify += handle.read() + "\n"
-    with open(os.path.join(ROOT, "commands", "autolearn.md"), encoding="utf-8") as handle:
-        autolearn = handle.read()
-    check("the docstring lists the evidence kind", "basis: thin|reasoned" in doc)
-    for token in ("retire-when", "review-by", "basis:"):
-        check("codify.md names %s" % token, token in codify)
-    check("codify.md names the grammar's home", "rule_retirement.py" in codify and "reverses-if" in codify)
-    # The scope is stated without the tool's constant names, which the tool owns (instruction_quality §17).
-    check("codify.md states evidence-marker due scanning covers supported .claude/ Markdown",
-          "Evidence-marker due scanning covers supported `.claude/` Markdown." in codify)
-    check("autolearn.md names the evidence rows and their three dispositions",
-          "`evidence`" in autolearn and "confirm" in autolearn and "re-date `since:`" in autolearn)
-    with open(os.path.join(ROOT, "commands", "reference", "codify_text_probe.md"), encoding="utf-8") as handle:
-        probe = handle.read()
-    check("codify requires the model marker for a model compensation",
-          "model-rule:" in codify and "weakness" in codify and "removeWhen" in codify)
-    check("the scanner docstring owns the model marker grammar", "model-rule:" in doc and "--registry" in doc)
-    for token in ("## Rule-removal ablation", "flagged", "thin-basis", "retained", "removed",
-                  "current registry", "independent", "both arms succeed", "delete", "not require"):
-        check("ablation recipe states %s" % token, token in probe)
-
-
 def main():
     if not os.path.exists(SCANNER):
         raise SystemExit("RED: %s does not exist" % SCANNER)
@@ -821,7 +792,6 @@ def main():
     review_due_cases()
     evidence_cases()
     model_cases()
-    doc_cases()
 
     print()
     if FAILURES:

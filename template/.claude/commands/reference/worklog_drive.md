@@ -8,7 +8,7 @@ disable-model-invocation: true
 **Enters at:** intake (selection), then each item runs the spine.
 **Owner stop:** the 4b packet when the fill-set boundary is contested, and `--plan-only` after 4e.
 
-Run the stages, halts, slices and close in [`drive_spine.md`](../../skills/_brainstorm_shared/drive_spine.md). This file holds only the selection and plan body a worklog item adds.
+Run the stages and halts in [`drive_spine.md`](../../skills/_brainstorm_shared/drive_spine.md), slices in [`drive_execution.md`](../../skills/_brainstorm_shared/drive_execution.md), and close in [`drive_close.md`](../../skills/_brainstorm_shared/drive_close.md). This file holds only the selection and plan body a worklog item adds.
 
 Read at a `/worklog drive` invocation and execute from these steps. Execution continues in `worklog_drive_execute.md` at Step 5; `--plan-only` stops after 4e, before tackle-history is written. This file owns the `drive` form; `commands/worklog.md` owns the tier model and the cross-cutting rules; entry formats live in `worklog_formats.md`.
 

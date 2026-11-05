@@ -333,14 +333,104 @@ def in_process_cases():
           out.get("permissionDecision") is None and "workflow_script_lf_guard" in out.get("additionalContext", ""), out)
 
     names = [getattr(m, "__name__", "") for m, _ in pwd.HOOKS]
-    check("the five Workflow|Agent members are wired, role gate first and the marker arm last",
-          names == ["subagent_dispatch_guard", "workflow_script_lf_guard", "dispatch_mechanism_guard",
-                    "workflow_provider_guard", "readonly_marker_arm"], names)
+    check("the six Workflow|Agent members are wired, the args-file expander first and the marker arm last",
+          names == ["expand_args_file", "subagent_dispatch_guard", "workflow_script_lf_guard",
+                    "dispatch_mechanism_guard", "workflow_provider_guard", "readonly_marker_arm"], names)
+
+
+def args_file_cases():
+    """`args: {argsFile: ...}` expands from a repo-relative file under the session's own `.claude/scratch/`.
+
+    The member runs first, so every later member sees the expanded args; a refusal names the failed
+    condition, the path and the next step."""
+    import pre_workflow_dispatch as pwd
+    root = Path(tempfile.mkdtemp(prefix="pwd_args_"))
+    scratch = root / ".claude" / "scratch" / "run"
+    scratch.mkdir(parents=True)
+    (scratch / "args.json").write_text(json.dumps({"agents": [{"key": "seat-a", "tier": "fanout"}]}),
+                                       encoding="utf-8")
+    other = Path(tempfile.mkdtemp(prefix="pwd_other_"))
+    (other / ".claude" / "scratch" / "run").mkdir(parents=True)
+    (other / ".claude" / "scratch" / "run" / "args.json").write_text(json.dumps({"agents": [{"key": "seat-b"}]}),
+                                                                     encoding="utf-8")
+
+    def payload(args, cwd=root):
+        return {"tool_name": "Workflow", "session_id": "pwdargs1", "cwd": str(cwd),
+                "tool_input": {"scriptPath": "engine.js", "args": args}}
+
+    def expands(path, cwd=root):
+        out = pwd.expand_args_file(payload({"argsFile": path}, cwd))
+        return out if isinstance(out, dict) else None
+
+    got = expands(".claude/scratch/run/args.json")
+    check("argsFile: a valid file expands to its JSON object",
+          got and (got.get("updatedInput") or {}).get("args") == {"agents": [{"key": "seat-a", "tier": "fanout"}]},
+          got)
+    check("argsFile: a call with no argsFile is untouched", pwd.expand_args_file(payload({"agents": []})) is None)
+    check("argsFile: a JSON-string args carrying only argsFile expands the same way",
+          (pwd.expand_args_file({"tool_name": "Workflow", "cwd": str(root),
+                                 "tool_input": {"args": json.dumps({"argsFile": ".claude/scratch/run/args.json"})}})
+           or {}).get("updatedInput", {}).get("args") == {"agents": [{"key": "seat-a", "tier": "fanout"}]})
+
+    for label, path in (("outside scratch", ".claude/other/args.json"),
+                        ("a `..` segment leaving scratch", ".claude/scratch/../other/args.json"),
+                        ("an absolute path", str(scratch / "args.json")),
+                        ("a backslash spelling", ".claude\\scratch\\run\\args.json")):
+        out = expands(path)
+        reason = (out or {}).get("permissionDecisionReason", "")
+        check(f"argsFile: {label} denies and names the path and the next step",
+              (out or {}).get("permissionDecision") == "deny" and path.split("\\")[-1].split("/")[-1]
+              in reason and "lens_briefs.py prepare" in reason, out)
+
+    seen = []
+    pwd.dispatch(json.dumps(payload({"argsFile": ".claude/scratch/run/args.json"})),
+                 hooks=((pwd.EXPAND_ARGS_MEMBER, ()),
+                        (member("workflow_provider_guard", seen=seen), ())))
+    check("argsFile: the member runs first, so a later member sees the expanded tiers",
+          seen and seen[0]["tool_input"]["args"].get("agents", [{}])[0].get("tier") == "fanout", seen)
+
+    if os.path.normcase("A") == os.path.normcase("a"):
+        got = expands(".CLAUDE/SCRATCH/RUN/ARGS.JSON")
+        check("argsFile: must-allow the same file by a case-different spelling",
+              got and (got.get("updatedInput") or {}).get("args", {}).get("agents"),
+              got)
+
+    (scratch / "array.json").write_text("[1, 2]", encoding="utf-8")
+    out = expands(".claude/scratch/run/array.json")
+    check("argsFile: non-object JSON denies naming the parse error",
+          (out or {}).get("permissionDecision") == "deny" and "object" in
+          (out or {}).get("permissionDecisionReason", "").lower(), out)
+    (scratch / "folder").mkdir()
+    out = expands(".claude/scratch/run/folder")
+    check("argsFile: an unreadable file denies", (out or {}).get("permissionDecision") == "deny", out)
+    out = pwd.expand_args_file(payload({"argsFile": ".claude/scratch/run/args.json", "gen": 1}))
+    check("argsFile: beside any other args key it denies",
+          (out or {}).get("permissionDecision") == "deny" and "only" in
+          (out or {}).get("permissionDecisionReason", "").lower(), out)
+
+    got = pwd.expand_args_file(payload({"argsFile": ".claude/scratch/run/args.json"}, cwd=other))
+    check("argsFile: resolved against the session's own root, so a lane reads its own scratch",
+          (got or {}).get("updatedInput", {}).get("args", {}).get("agents") == [{"key": "seat-b"}], got)
+
+    link = scratch / "jlink"
+    try:
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(other)],
+                              capture_output=True, text=True)
+        if made.returncode == 0:
+            out = expands(".claude/scratch/run/jlink/.claude/scratch/args.json")
+            check("argsFile: a junction under scratch that resolves outside it denies",
+                  (out or {}).get("permissionDecision") == "deny", out)
+    except OSError as exc:
+        print("SKIP argsFile: junction case (%s)" % exc)
 
 
 def main():
     check("hooks/pre_workflow_dispatch.py exists", DISPATCH.is_file(), str(DISPATCH))
     real_payload_cases()
+    try:
+        args_file_cases()
+    except ImportError as exc:
+        check("expand_args_file imports for the args-file cases", False, exc)
     try:
         in_process_cases()
     except ImportError as exc:

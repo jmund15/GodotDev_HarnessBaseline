@@ -159,7 +159,7 @@ def is_harness_file(file_path: str) -> bool:
 
 
 def is_doctrine_path(file_path: str) -> bool:
-    """The markdown subset of governed harness files; shared by owed and doctrine review admission."""
+    """The markdown subset of governed harness files: the frozen audit-input packet and the `premises` admission read it."""
     return str(file_path).endswith(".md") and is_harness_file(file_path)
 
 

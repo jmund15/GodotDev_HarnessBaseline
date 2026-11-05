@@ -20,6 +20,32 @@ needs, and the sub-floor ordering claim, live in `controls_and_subfloor.md`.
 - **MONOTONIC / NESTING** — rung *n+1* is strictly harder and contains rung *n*'s material, so an
   adjacent failure is a difficulty step rather than a different question.
 
+## The instrument lint gates paid judge runs
+
+The instrument lint builds each non-exec task's probes in memory and checks them against
+what the judge reads, at no cost: key cites that name no file, a probe's text that carries an item its
+expected figure does not credit, a credit whose own finding the probe does not carry, a derived probe that
+changes more than its declared mutations, and a rule a probe rests on that the judge-items file lacks.
+`succession`, `rejudge-panel` and `probes` refuse a task with a finding. Cite drift prints as `LINT-FACT` and never refuses, because file structure cannot
+tell a wrong line from a right one. A PERFECT claim that quotes a phrase none of its cites carries prints the same
+way, because that slip is the key owner's fix. So does each stored judge vote on the task's current instrument
+version that disagrees with a probe's current expectation (`vote-disagrees`, the share of that item's votes): a
+1-1 split credits nothing, so one such vote is a probe a rerun can flip red, and reading it before a paid retry
+on the same version decides whether the item's wording needs the fix. A builder declares `credits`,
+`derived_from`, `mutations`, `rests_on`, `excludes` and `entails` through `emit`, so a new probe is linted from
+its first build. `excludes` maps an item the probe's text touches but does not earn, and `entails` an item it
+credits through another claim, to the rule marker under which the judge-items file says so, inside that item's
+own block, since a judge decides each item from its block. Without that marker, or with it in another item's block,
+the probe refuses: an expectation the items file does not state is a guess about the judge's reading, and how
+seats happened to rule is not that statement. A marker is a token the items file carries, or
+`line-sha256:<hex>`, the digest of the items line that already states the rule, so no sealed text enters the
+repo.
+
+A paid red the lint did not predict is a lint gap, not only an instrument defect. Extend the lint, a new
+check or a recalibration, until it flags that red from files, then fix the instrument and let the lint pass
+it before any paid retry. A class no file decides (whether prose earns a rubric rung) gets a planted
+builder test instead, never a guard over judgment.
+
 ## What probes cannot prove
 
 **Probes prove satisfiability; only real answers reveal brittleness** — every probe can pass while the

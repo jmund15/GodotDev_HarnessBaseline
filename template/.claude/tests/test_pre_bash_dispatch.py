@@ -6,19 +6,23 @@ Parity, not re-derivation: for each payload the twelve sub-hooks run standalone 
 (their own CLI contract) and the dispatcher runs once; the dispatcher's verdict must equal the
 native aggregation of the standalone results (any block ⇒ blocked; else deny > ask > allow; every
 additionalContext present). A malformed payload and a non-matching tool_name must exit 0 silent.
-Also prints the wall-clock of twelve parallel spawns vs one dispatcher spawn (evidence, not an
-assertion — timing is machine-bound).
+Spawns run on threads: each case owns its session id and state dir.
 
     python3 .claude/tests/test_pre_bash_dispatch.py
 """
+import atexit
 import json
 import os
+import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+
+from _case_pool import _jobs as _case_jobs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS_DIR = os.path.normpath(os.path.join(HERE, "..", "hooks"))
@@ -29,6 +33,14 @@ sys.path.insert(0, HOOKS_DIR)
 import pre_bash_dispatch  # noqa: E402
 
 SUB_HOOKS = [(os.path.basename(m.__file__), list(argv)) for m, argv in pre_bash_dispatch.HOOKS]
+
+
+def pmap(fn, items):
+    """Run fn over items on threads (each case is a subprocess wait); the first failure raises. `_case_pool`
+    owns the width, so the land runner's `HARNESS_CASE_JOBS` cap holds here too."""
+    items = list(items)
+    with ThreadPoolExecutor(max_workers=max(1, min(len(items), _case_jobs(None)))) as pool:
+        return list(pool.map(fn, items))
 
 
 def run(cmd, payload_text, env, timeout=90, cwd=REPO):
@@ -51,8 +63,9 @@ def standalone_verdict(payload_text, env):
     """Native aggregation over the twelve standalone runs."""
     blocked, decision, contexts = False, None, []
     rank = {"deny": 3, "ask": 2, "allow": 1}
-    for name, argv in SUB_HOOKS:
-        p = run([sys.executable, os.path.join(HOOKS_DIR, name)] + argv, payload_text, env)
+    procs = pmap(lambda hook: run([sys.executable, os.path.join(HOOKS_DIR, hook[0])] + hook[1], payload_text, env),
+                 SUB_HOOKS)
+    for p in procs:
         if p.returncode == 2:
             blocked = True
             continue
@@ -146,10 +159,11 @@ def test_each_actual_advisory_import_fault_preserves_git_floor(tmp_path):
     subprocess.run(['git', '-C', str(tmp_path), '-c', 'user.name=t', '-c', 'user.email=t@t',
                     'commit', '-qm', 'base'], check=True, capture_output=True)
     (tmp_path / 'file').write_text('peer edit\n', encoding='utf-8')
-    for name in [member.__name__ for member, _ in pre_bash_dispatch.HOOKS] + ['run_call_router']:
-        if name in ('_git_commit', 'git_guardrails', 'baseline_classification_guard', 'dangerous_shell_guard',
-                    'editor_live_build_guard'):
-            continue
+    names = [member.__name__ for member, _ in pre_bash_dispatch.HOOKS] + ['run_call_router']
+    names = [n for n in names if n not in ('_git_commit', 'git_guardrails', 'baseline_classification_guard',
+                                           'dangerous_shell_guard', 'editor_live_build_guard')]
+
+    def one(name):
         script = (
             "import sys, runpy\n"
             "class Broken:\n"
@@ -167,6 +181,8 @@ def test_each_actual_advisory_import_fault_preserves_git_floor(tmp_path):
         assert proc.returncode == 0 and hso(proc).get('permissionDecision') != 'deny', (name, proc.stderr)
         assert name in hso(proc).get('additionalContext', ''), (name, proc.stdout)
 
+    pmap(one, names)
+
 
 def test_actual_destructive_member_fault_fails_closed(monkeypatch):
     def boom():
@@ -182,18 +198,25 @@ GODOT_MEMBERS = ('cloud_test_enforcer', 'editor_live_build_guard', 'gate_cadence
                  'tres_script_strip_guard', 'wide_test_guard')
 
 
+_PURE = {}
+
+
 def planted_pure_profile(tmp_path):
-    """A project root whose hooks are this tree's, with every godot-layer chain member absent."""
-    import shutil
-    root = tmp_path / 'proj'
-    hooks = root / '.claude' / 'hooks'
-    for sub in ('hooks', 'tools'):
-        shutil.copytree(os.path.join(HERE, '..', sub), root / '.claude' / sub,
-                        ignore=shutil.ignore_patterns('__pycache__'))
-    for name in GODOT_MEMBERS:
-        (hooks / (name + '.py')).unlink(missing_ok=True)
-    subprocess.run(['git', 'init', '-q', str(root)], check=True, capture_output=True)
-    return root
+    """A project root whose hooks are this tree's, with every godot-layer chain member absent.
+    Built once per run; the one test that edits a hook restores it."""
+    if 'root' not in _PURE:
+        base = tempfile.mkdtemp(prefix='pbd_pure_')
+        atexit.register(shutil.rmtree, base, True)
+        root = pathlib.Path(base) / 'proj'
+        hooks = root / '.claude' / 'hooks'
+        for sub in ('hooks', 'tools'):
+            shutil.copytree(os.path.join(HERE, '..', sub), root / '.claude' / sub,
+                            ignore=shutil.ignore_patterns('__pycache__'))
+        for name in GODOT_MEMBERS:
+            (hooks / (name + '.py')).unlink(missing_ok=True)
+        subprocess.run(['git', 'init', '-q', str(root)], check=True, capture_output=True)
+        _PURE['root'] = root
+    return _PURE['root']
 
 
 def pure_dispatch(root, command, tmp_path, transcript=None):
@@ -208,18 +231,25 @@ def pure_dispatch(root, command, tmp_path, transcript=None):
 def test_pure_profile_denies_recursive_delete_without_godot_members(tmp_path):
     root = planted_pure_profile(tmp_path)
     assert not any((root / '.claude' / 'hooks' / (name + '.py')).exists() for name in GODOT_MEMBERS)
-    for command in ('rm -rf /', 'rm -rf ~/peer', 'rm -r /usr/peer', 'rm -f a && rm -rf /usr/peer',
-                    'Remove-Item -Recurse -Force ~/peer', 'format C:'):
+    def one(command):
         proc = pure_dispatch(root, command, tmp_path)
         assert proc.returncode == 2, (command, proc.stdout, proc.stderr)
         assert 'failed to import' not in proc.stderr and 'Traceback' not in proc.stderr, (command, proc.stderr)
         assert 'Dangerous recursive' in proc.stderr or 'Format drive' in proc.stderr, (command, proc.stderr)
 
+    pmap(one, ('rm -rf /', 'rm -rf ~/peer', 'rm -r /usr/peer', 'rm -f a && rm -rf /usr/peer',
+               'Remove-Item -Recurse -Force ~/peer', 'format C:'))
+
 
 def test_pure_profile_destructive_import_fault_denies(tmp_path):
     root = planted_pure_profile(tmp_path)
-    (root / '.claude' / 'hooks' / 'dangerous_shell_guard.py').write_text('raise RuntimeError("planted")\n', encoding='utf-8')
-    proc = pure_dispatch(root, 'rm -rf peer', tmp_path)
+    guard = root / '.claude' / 'hooks' / 'dangerous_shell_guard.py'
+    original = guard.read_bytes()
+    guard.write_text('raise RuntimeError("planted")\n', encoding='utf-8')
+    try:
+        proc = pure_dispatch(root, 'rm -rf peer', tmp_path)
+    finally:
+        guard.write_bytes(original)
     assert proc.returncode == 2 and 'dangerous_shell_guard' in proc.stderr and 'planted' in proc.stderr, proc.stderr
     assert 'destructive-command check' in proc.stderr, proc.stderr
 
@@ -240,10 +270,13 @@ def test_pure_profile_allows_non_destructive_and_owned_cleanup(tmp_path):
         'rm -rf .claude/scratch/%s/out' % sid,
         'D=$(mktemp -d) && touch "$D/x" && rm -rf "$D"',
     )
-    for command in allowed:
+    def one(command):
         proc = pure_dispatch(root, command, tmp_path, transcript=str(root / (sid + '.jsonl')))
         assert proc.returncode == 0 and hso(proc).get('permissionDecision') != 'deny', (command, proc.stdout, proc.stderr)
         assert 'Traceback' not in proc.stderr, (command, proc.stderr)
+
+    # `rm -rf` cases delete their own targets: independent, so run at once.
+    pmap(one, allowed)
 
 
 def test_actual_advisory_runtime_fault_preserves_git_floor(monkeypatch, tmp_path):
@@ -265,17 +298,24 @@ def test_shared_must_allow_cases(tmp_path):
     from _must_allow_cases import must_allow_cases
     cases, cleanup = must_allow_cases('pre_bash_dispatch')
     try:
+        jobs = []
         for label, data, cwd, _ in cases:
             commands = [data['tool_input']['command']]
             if 'closing a merge' in label:
                 commands.append('git merge --continue')
             for command in commands:
-                data['tool_input']['command'] = command
-                proc = run([sys.executable, DISPATCH], json.dumps(data),
-                           dict(os.environ, HARNESS_HOOK_STATE_DIR=str(tmp_path / 'state')), cwd=cwd)
-                assert proc.returncode == 0, (label, proc.stderr)
-                assert hso(proc).get('permissionDecision') != 'deny', (label, proc.stdout)
-                assert 'Traceback' not in proc.stderr, (label, proc.stderr)
+                jobs.append((label, dict(data, tool_input=dict(data['tool_input'], command=command)), cwd))
+
+        def one(job):
+            label, data, cwd = job
+            proc = run([sys.executable, DISPATCH], json.dumps(data),
+                       dict(os.environ, HARNESS_HOOK_STATE_DIR=str(tmp_path / 'state')), cwd=cwd)
+            assert proc.returncode == 0, (label, proc.stderr)
+            assert hso(proc).get('permissionDecision') != 'deny', (label, proc.stdout)
+            assert 'Traceback' not in proc.stderr, (label, proc.stderr)
+
+        # The dispatcher only judges the command, never runs it: the jobs share no state.
+        pmap(one, jobs)
     finally:
         cleanup()
 
@@ -351,22 +391,10 @@ def main():
         if not cond:
             failures.append(label + (": " + detail[:300] if detail else ""))
 
-    # Commit normalizers precede every guard that judges their rewritten publication.
-    # and its module carries a real (non-stub) `main` -- a broken import would otherwise
-    # register a stub silently and this generic parity harness would never notice.
-    names = [os.path.basename(m.__file__) for m, _argv in pre_bash_dispatch.HOOKS]
-    check("baseline_classification_guard.py normalizes before git_guardrails.py",
-          "git_guardrails.py" in names and "baseline_classification_guard.py" in names
-          and names.index("baseline_classification_guard.py") < names.index("git_guardrails.py"),
-          repr(names))
-    check("its import did not fall back to the stub",
+    # A broken import would otherwise register a stub silently and this generic parity harness
+    # would never notice. Hook order is pinned in test_git_guardrails_index_fold.
+    check("baseline_classification_guard import did not fall back to the stub",
           getattr(pre_bash_dispatch, "_BASELINE_GUARD_IMPORT_ERROR", "unset") is None)
-    names = [os.path.basename(m.__file__) for m, _argv in pre_bash_dispatch.HOOKS]
-    check("approving_gates is directly after sidecar dispatch and before backslash fidelity",
-          "sidecar_dispatch_context.py" in names and "approving_gates.py" in names
-          and "bash_backslash_fidelity.py" in names
-          and names.index("approving_gates.py") == names.index("sidecar_dispatch_context.py") + 1
-          and names.index("approving_gates.py") < names.index("bash_backslash_fidelity.py"), repr(names))
     check("approving_gates import did not fall back to its stub",
           getattr(pre_bash_dispatch, "_APPROVING_GATES_IMPORT_ERROR", "unset") is None)
     stub_code, stub_out, stub_err = pre_bash_dispatch.run_hook(
@@ -554,22 +582,6 @@ def main():
     check("malformed payload exits 0 silent", p.returncode == 0 and not p.stdout.strip(), p.stderr)
     p = run([sys.executable, DISPATCH], payload("Read", ""), env)
     check("non-matching tool_name exits 0 silent", p.returncode == 0 and not p.stdout.strip(), p.stderr)
-
-    # Evidence: twelve parallel spawns vs one dispatcher spawn, same benign payload, best of 3.
-    text = payload("Bash", "git status --short | head -3")
-    best_par, best_one = 1e9, 1e9
-    for _ in range(3):
-        t0 = time.time()
-        procs = [subprocess.Popen([sys.executable, os.path.join(HOOKS_DIR, n)] + a, stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=REPO,
-                                  text=True, encoding="utf-8") for n, a in SUB_HOOKS]
-        for pr in procs:
-            pr.communicate(text, timeout=90)
-        best_par = min(best_par, time.time() - t0)
-        t0 = time.time()
-        run([sys.executable, DISPATCH], text, env)
-        best_one = min(best_one, time.time() - t0)
-    print("timing: 12 parallel spawns %.2fs | dispatcher %.2fs (best of 3)" % (best_par, best_one))
 
     if failures:
         print("\nFAILED:\n  " + "\n  ".join(failures))

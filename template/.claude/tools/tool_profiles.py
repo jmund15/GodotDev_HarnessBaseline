@@ -398,7 +398,7 @@ def strict_mcp_config(keys, candidates):
 
 def resolve(shape, tools_csv="", add=(), remove=(), base_builtins=None,
             candidates=None, table=None, registered=None, walk_mcp=True, tier=None):
-    """The resolved profile of one job over a `shapes` row. Removed in S5 with `brief_requirements`;
+    """The resolved profile of one job over a `shapes` row. Removed with `brief_requirements` once no reader outside the launcher contract names a `shape`;
     launchers and the fan-out resolve through `resolve_kind`.
 
     `tier` is the job's written tier: it replaces the shape row's `tier` in the profile, canonicalized
@@ -556,7 +556,7 @@ def resolve_kind(kind, add=(), remove=(), *, route, table=None, base_builtins=No
     profile, _spec, keys = _resolve_row(kind, row, tools_csv, add, remove, base_builtins, candidates, table,
                                         registered, walk_mcp)
     writes = [a for a in profile["add"] if a in ("Edit", "Write")]
-    if writes and kind not in ("author", "arm"):
+    if writes and not row.get("writes"):
         raise ValueError("%s on kind %r: a job that writes is an author: use kind author"
                          % (", ".join(writes), kind))
     del profile["shape"]
@@ -582,7 +582,10 @@ def job_kind_shape(job, table=None):
     Reads only the job dict's `kind` and `shape` keys, never an `inv` record."""
     kind = job.get("kind")
     if kind:
-        return (table or load_table())["kinds"][kind].get("guard") or kind
+        row = (table or load_table())["kinds"].get(kind)
+        if row is None:
+            raise ValueError("unknown kind %r" % kind)
+        return row.get("guard") or kind
     return job.get("shape")
 
 

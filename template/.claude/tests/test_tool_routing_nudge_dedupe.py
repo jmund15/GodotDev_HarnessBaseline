@@ -1,8 +1,8 @@
 """Re-runnable proof for hooks/tool_routing_nudge.py's repeat-suppression (B5).
 
-The PascalCase-Grep advisory reads identically for every pattern in one target FAMILY, so it
-is delivered once per session per family. Read/Obsidian path-shape advisories are retired:
-path is not evidence that the caller needs bulk copyable I/O.
+The PascalCase-Grep advisory is retired (a Grep is never nudged). The bulk-copyable Read advisory is
+delivered once per session until compaction. Read/Obsidian path-shape advisories are retired: path
+is not evidence that the caller needs bulk copyable I/O.
 
 State is redirected with HARNESS_HOOK_STATE_DIR — this never touches ~/.claude/.routing_state/.
 
@@ -67,25 +67,24 @@ def main():
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=tmp, PYTHONIOENCODING="utf-8")
     cases = []
 
-    first = grep("SpellInstance", env)
-    cases.append(("the first bare-PascalCase Grep on .cs nudges", "tool-routing" in first))
+    # D6: the PascalCase-Grep advisory is retired; a Grep is never nudged, on any family.
+    for pattern, glob in (("SpellInstance", "*.cs"), ("TagTier", "*.cs"), ("TagTier", "*.tres"),
+                          ("AreaTemplate", "*.gd")):
+        cases.append(("a bare-PascalCase Grep on %s never nudges" % glob, grep(pattern, env, glob=glob) == ""))
 
-    second = grep("TagTier", env)
-    cases.append(("a different symbol in the same family does not re-nudge", second == ""))
-
-    other = grep("TagTier", env, glob="*.tres")
-    cases.append(("a different target family still nudges once",
-                  "semantic-search" in other))
-
-    cases.append(("that family is then suppressed too",
-                  grep("AreaTemplate", env, glob="*.tres") == ""))
-
+    # The Read advisory keeps its once-per-session dedupe and its compaction re-arm.
+    bulk0 = "Extract the same raw fields from every file and return one copyable entry per input path."
+    plant_prompt(tmp, SID, bulk0)
+    cases.append(("the first bulk-copyable Read nudges",
+                  "tool-routing" in call("Read", {"file_path": "C:/vault/Design/a.md"}, env)))
+    cases.append(("a second bulk-copyable Read does not re-nudge",
+                  call("Read", {"file_path": "C:/vault/Design/b.md"}, env) == ""))
     clear_compaction_keys(SID)
     cases.append(("compaction re-arms advice that left the model context",
-                  "tool-routing" in grep("AbilityBuilder", env)))
-
+                  "tool-routing" in call("Read", {"file_path": "C:/vault/Design/c.md"}, env)))
+    plant_prompt(tmp, "trn00002", bulk0)
     cases.append(("a fresh session starts clean",
-                  "tool-routing" in grep("SpellInstance", env, session="trn00002")))
+                  "tool-routing" in call("Read", {"file_path": "C:/vault/Design/a.md"}, env, session="trn00002")))
 
     # Negatives — dedupe must not swallow a rule that never fired, or widen the trigger.
     cases.append(("an anchored Grep never nudges",
@@ -163,11 +162,10 @@ def main():
 
     verified_unique = "The SpellFactory name is verified unique; locate its authored resource use."
     plant_prompt(tmp, "trn00012", verified_unique)
-    cases.append(("verified-unique cue still exempts a C# symbol Grep",
+    cases.append(("a verified-unique prompt gets no C# symbol Grep advice",
                   grep("SpellFactory", env, glob="*.cs", session="trn00012") == ""))
-    cases.append(("verified-unique cue does not exempt an indexed resource Grep",
-                  "semantic-search" in grep("SpellFactory", env, glob="*.tres",
-                                            session="trn00012")))
+    cases.append(("a verified-unique prompt gets no indexed resource Grep advice",
+                  grep("SpellFactory", env, glob="*.tres", session="trn00012") == ""))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

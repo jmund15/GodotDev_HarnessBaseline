@@ -71,9 +71,11 @@ beside the whole transcript. The tool reads no transcript for it, no stop verb, 
               target: a direct launch exports X after its own bash started, and an MSYS process's block
               holds only what its native parent gave it, so only a fan-out's launchers carry it. One
               carrying SIDECAR_SEAT_LAUNCH_ID=X runs inside the seat and is not its launcher.
-  dead        `orphan` also reaches a process of ANOTHER session when it carries a launch id, is not a
-  session     launcher, has no live launcher, and its owning session (SIDECAR_PARENT_SESSION_ID, else
-              CLAUDE_CODE_SESSION_ID) has no live host: nothing can consume its result. The host test:
+  dead        `orphan` also reaches a process of ANOTHER session when it is not a launcher, its owning
+  session     session (SIDECAR_PARENT_SESSION_ID, else CLAUDE_CODE_SESSION_ID) has no live host, and it
+              has no live launcher (a launch id) or no live parent (none): nothing can consume its
+              result. The targets' own trees and console hosts (conhost.exe) inherit the session id and
+              never count as its host. The host test:
               a session is live when a live process's `<login>/sessions/<pid>.json` row names it (every
               login model_registry.login_dirs declares), when a live process matching the session-host
               patterns of `never` names it after --session-id or --resume, or when a live process with no
@@ -146,11 +148,38 @@ STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # session hook state; watch_r
 sys.path.insert(0, str(REPO / ".claude" / "tools"))
 from model_registry import login_dirs, session_projects_dir  # noqa: E402
 import sidecar_argv  # noqa: E402
+import cli_usage  # noqa: E402
 
 PROJECTS_ROOT = Path(session_projects_dir())
 REASONS = ("duplicate", "orphan", "stalled", "superseded", "queued")
 RETIRED_REASONS = {"owner": "omit --reason: a target that is not never-kill and not another session's needs none, and "
                             "whether the owner ordered the stop is judged on the call, not by this tool"}
+REASON_EVIDENCE = (
+    "  duplicate   --twin <surviving pid> --key <text both command lines carry>\n"
+    "  orphan      no extra flag; the environment proves the owning session is gone\n"
+    "  stalled     --log <file it should be writing> [--idle-min N]\n"
+    "  superseded  --artifact <output that already exists>\n"
+    "  queued      no extra flag; nothing in its tree is in flight")
+REAP_ACCEPTS = ("PIDS... [--reason duplicate|orphan|stalled|superseded|queued] [--why TEXT]\n"
+                "a reason, when given, takes its evidence: " + REASON_EVIDENCE)
+REAP_EXAMPLE = "python3 .claude/tools/reap.py 12345 --dry-run"
+
+
+def build_parser():
+    ap = cli_usage.ShapeParser(description=__doc__.splitlines()[0],
+                               formatter_class=argparse.RawDescriptionHelpFormatter,
+                               epilog="a reason, when given, takes its evidence:\n" + REASON_EVIDENCE)
+    ap.accepts, ap.example = REAP_ACCEPTS, REAP_EXAMPLE
+    ap.add_argument("pids", nargs="+", type=int, help="Windows or MSYS pids")
+    ap.add_argument("--reason", help="only to stop another session's dead leftover or to have a class verified: " + ", ".join(REASONS))
+    ap.add_argument("--why", default="", help="optional note for the ledger, recorded verbatim; never a gate")
+    ap.add_argument("--twin", type=int, help="duplicate: the surviving copy")
+    ap.add_argument("--key", help="duplicate: text both command lines carry (script + campaign, or the cell)")
+    ap.add_argument("--log", help="stalled: the log the target should be writing")
+    ap.add_argument("--idle-min", type=int, default=30, help="stalled: minutes of silence that qualify")
+    ap.add_argument("--artifact", help="superseded: the output that already exists")
+    ap.add_argument("--dry-run", action="store_true")
+    return ap
 # A tree member doing paid or result-bearing work: a model client, a sidecar launcher, or a dispatch shim.
 IN_FLIGHT_RE = re.compile(r"(?:^|[\\/\s\"'])(?:claude|codex|opencode|ollama)(?:\.exe)?(?=[\s\"']|$)|_sidecar\.sh\b|text_only_shim",
                           re.I)
@@ -194,8 +223,37 @@ FANOUT_ENV = b"SIDECAR_FANOUT_ID="
 
 
 # ----------------------------------------------------------------- process table
+def _proc_table():
+    """The POSIX process table from /proc, in process_table's row shape; {} when /proc is unreadable."""
+    try:
+        names = [n for n in os.listdir("/proc") if n.isdigit()]
+        with open("/proc/stat", encoding="utf-8") as fh:
+            boot = next(int(line.split()[1]) for line in fh if line.startswith("btime "))
+        tick = os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, StopIteration):
+        return {}
+    out = {}
+    for name in names:
+        pid = int(name)
+        try:
+            with open("/proc/%s/stat" % name, "rb") as fh:
+                stat = fh.read().decode("utf-8", "replace")
+            with open("/proc/%s/cmdline" % name, "rb") as fh:
+                cmd = fh.read().decode("utf-8", "replace").replace("\0", " ").strip()
+        except OSError:
+            continue  # exited between the listing and the read
+        head, _sep, tail = stat.rpartition(")")
+        fields = tail.split()
+        if not head or len(fields) < 20:
+            continue
+        started = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(boot + int(fields[19]) / tick))
+        out[pid] = {"pid": pid, "ppid": int(fields[1]), "name": head.partition("(")[2],
+                    "cmd": cmd, "start": started}
+    return out
+
+
 def process_table(timeout=60):
-    """{pid: {pid, ppid, name, cmd, start}} for every process, via CIM. Empty dict when unreadable."""
+    """{pid: {pid, ppid, name, cmd, start}} for every process, via CIM, else /proc off Windows. Empty dict when unreadable."""
     ps = ("Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine,"
           " @{n='Start';e={$_.CreationDate.ToString('yyyy-MM-dd HH:mm:ss')}} | ConvertTo-Json -Compress")
     for exe in ("pwsh", "powershell"):
@@ -220,7 +278,7 @@ def process_table(timeout=60):
                 out[pid] = {"pid": pid, "ppid": row.get("ParentProcessId"), "name": row.get("Name") or "",
                             "cmd": row.get("CommandLine") or "", "start": row.get("Start") or ""}
         return out
-    return {}
+    return _proc_table() if os.name != "nt" else {}
 
 
 def winpid_from_ps(text, msys_pid):
@@ -393,7 +451,13 @@ def native_environ(pid):
     """A native Windows process's environment block (NUL-separated, UTF-8), read from its PEB; b'' when
     unreadable. MSYS `/proc` holds only MSYS processes, so without this a native orphan (Godot, python,
     dotnet) whose launcher died has no ownership proof at all."""
-    if os.name != "nt" or ctypes is None or ctypes.sizeof(ctypes.c_void_p) != 8:
+    if os.name != "nt":
+        try:
+            with open("/proc/%d/environ" % pid, "rb") as fh:
+                return fh.read()
+        except OSError:
+            return b""
+    if ctypes is None or ctypes.sizeof(ctypes.c_void_p) != 8:
         return b""
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     ntdll = ctypes.WinDLL("ntdll")
@@ -573,15 +637,19 @@ def registered_sessions(table):
     return out
 
 
-def session_live(table, session):
+def session_live(table, session, exclude=frozenset()):
     """True when a live host serves `session`, False when none does, None when a live Claude Code host's
-    session cannot be read (module docstring, `dead session`)."""
+    session cannot be read (module docstring, `dead session`). `exclude` holds the targets' own trees."""
     cache = _RUN.setdefault("live", {}) if _RUN is not None else {}
-    if session in cache:
-        return cache[session]
+    key = (session, exclude)
+    if key in cache:
+        return cache[key]
     registry = registered_sessions(table)
     verdict = False if not any(session in found for found in registry.values()) else True
     for pid in sorted(table) if verdict is False else ():
+        # A console host inherits the id of whatever console it serves; it is never a shell or a server.
+        if pid in exclude or (table[pid].get("name") or "").lower() == "conhost.exe":
+            continue
         block = launch_block(pid)
         if (_env_value(block, SID_ENV) == session and not _env_value(block, LAUNCH_ENV)
                 and not _env_value(block, PARENT_ENV)):
@@ -599,19 +667,22 @@ def session_live(table, session):
         if pid not in registry and any(_env_value(launch_block(k), SID_ENV)
                                        for k, r in table.items() if r.get("ppid") == pid):
             verdict = None
-    cache[session] = verdict
+    cache[key] = verdict
     return verdict
 
 
-def leftover_proof(table, pid, sid):
-    """The ownership proof for a dead session's leftover (module docstring, `dead session`), else None."""
-    launch = launch_of(pid)
-    if not launch or is_launcher(table[pid]):
+def leftover_proof(table, pid, sid, exclude=frozenset()):
+    """The ownership proof for a dead session's leftover (module docstring, `dead session`), else None.
+    The caller has already proven the orphan reason, so a target with no launch id has no live parent."""
+    if is_launcher(table[pid]):
         return None
+    launch = launch_of(pid)
     block = launch_block(pid)
     owner = _env_value(block, PARENT_ENV) or _env_value(block, SID_ENV)
-    if not owner or owner == sid or session_live(table, owner) is not False:
+    if not owner or owner == sid or session_live(table, owner, exclude) is not False:
         return None
+    if not launch:
+        return "leftover of dead session %s: no live session host serves it, and its parent is gone" % owner[:8]
     if launchers_of(table, launch, pid):
         return None
     return ("leftover of dead session %s: no live session host serves it, and launch %s has no live launcher"
@@ -1385,16 +1456,7 @@ def _main(argv=None, env=None):
         return live_launch_main(argv[1:])
     if argv and argv[0] == "inspect":
         return inspect_main(argv[1:], env)
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("pids", nargs="+", type=int, help="Windows or MSYS pids")
-    ap.add_argument("--reason", help="only to stop another session's dead leftover or to have a class verified: " + ", ".join(REASONS))
-    ap.add_argument("--why", default="", help="optional note for the ledger, recorded verbatim; never a gate")
-    ap.add_argument("--twin", type=int, help="duplicate: the surviving copy")
-    ap.add_argument("--key", help="duplicate: text both command lines carry (script + campaign, or the cell)")
-    ap.add_argument("--log", help="stalled: the log the target should be writing")
-    ap.add_argument("--idle-min", type=int, default=30, help="stalled: minutes of silence that qualify")
-    ap.add_argument("--artifact", help="superseded: the output that already exists")
-    ap.add_argument("--dry-run", action="store_true")
+    ap = build_parser()
     args = ap.parse_args(argv)
     if args.reason in RETIRED_REASONS:
         print("REFUSED: --reason %s is retired; %s" % (args.reason, RETIRED_REASONS[args.reason]))
@@ -1403,11 +1465,17 @@ def _main(argv=None, env=None):
         print("REFUSED: unknown --reason %r; one of %s, or none" % (args.reason, ", ".join(REASONS)))
         return 2
 
+    def refuse(message, shape=False):
+        """A refusal on an observed fact prints its verdict; only a call missing its evidence repeats the accepted shape."""
+        print(message)
+        if shape:
+            sys.stderr.write(cli_usage.refusal(REAP_ACCEPTS, REAP_EXAMPLE))
+
     session_pid = int(env.get("CLAUDE_PID") or 0) or None
     sid = env.get("CLAUDE_CODE_SESSION_ID") or None
     table = process_table()
     if not table:
-        print("REFUSED: process table unreadable — nothing is killed on a guess")
+        refuse("REFUSED: process table unreadable — nothing is killed on a guess")
         return 2
     link_msys_parents(table, ps_text())
 
@@ -1415,7 +1483,7 @@ def _main(argv=None, env=None):
     for raw in args.pids:
         pid = resolve_pid(raw, table)
         if pid is None:
-            print("REFUSED %s: not in the process table — already gone, or a stale number; re-read the list" % raw)
+            refuse("REFUSED %s: not in the process table — already gone, or a stale number; re-read the list" % raw)
             record({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(), "session": sid, "pid": raw,
                     "reason": args.reason, "why": args.why, "result": "refused", "evidence": "not in table"})
             continue
@@ -1428,6 +1496,7 @@ def _main(argv=None, env=None):
     for pid in covered:
         print("COVERED %d: inside another target's tree; killed with it" % pid)
     targets = [t for t in unique if t not in covered]
+    target_trees = frozenset(k for t in targets for k in [t] + descendants(table, t))
     for pid in targets:
         row = table[pid]
         head = "%d %s :: %s" % (pid, row.get("name"), (row.get("cmd") or "")[:110])
@@ -1447,12 +1516,12 @@ def _main(argv=None, env=None):
         # ROOT is refused outright: sparing it and killing its children would destroy a server other
         # sessions are using, and reporting that as "FAILED" reads as a broken kill, not a refusal.
         if root_never:
-            print("REFUSED %s\n   NEVER: %s — not a target, and its own children are not ours to kill" % (head, root_never))
+            refuse("REFUSED %s\n   NEVER: %s — not a target, and its own children are not ours to kill" % (head, root_never))
             entry["result"] = "refused-never"; record(entry); refused += 1
             continue
         # A dead session's leftover: no session can consume its result, so any session may stop it.
         if args.reason == "orphan" and ok and not proof:
-            leftover = leftover_proof(table, pid, sid)
+            leftover = leftover_proof(table, pid, sid, exclude=target_trees)
             if leftover:
                 proof, foreign = leftover, None
                 entry["proof"] = proof
@@ -1464,13 +1533,13 @@ def _main(argv=None, env=None):
             proof = "unclaimed: its environment names no session and no session host sits above it"
             entry["proof"] = proof
         if not proof:
-            print("REFUSED %s\n   %s\n   Another session's process is stopped only by --reason orphan, on the "
-                  "leftover of a dead session; otherwise it is that session's to stop." % (head, foreign))
+            refuse("REFUSED %s\n   %s\n   Another session's process is stopped only by --reason orphan, on the "
+                   "leftover of a dead session; otherwise it is that session's to stop." % (head, foreign))
             entry["result"] = "refused-foreign" if foreign else "refused-not-owned"
             record(entry); refused += 1
             continue
         if not ok:
-            print("REFUSED %s\n   %s: %s" % (head, (args.reason or "").upper(), evidence))
+            refuse("REFUSED %s\n   %s: %s" % (head, (args.reason or "").upper(), evidence), shape=True)
             entry["result"] = "refused-unjustified"; record(entry); refused += 1
             continue
         base = {k: entry[k] for k in ("ts", "session", "reason", "why")}
@@ -1485,7 +1554,7 @@ def _main(argv=None, env=None):
         # The row is written BEFORE the kill: no ledger, no kill.
         entry["result"] = "killing"
         if not record(entry):
-            print("REFUSED %s\n   LEDGER unwritable: %s" % (head, LEDGER))
+            refuse("REFUSED %s\n   LEDGER unwritable: %s" % (head, LEDGER))
             refused += 1
             continue
         if never:

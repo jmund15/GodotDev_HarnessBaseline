@@ -29,20 +29,24 @@ Node must support `node:module.registerHooks` (proved on Node 24.12.0). The prox
 
 C# chunks include classes, structs, interfaces, enums, records (including record structs), methods, constructors and properties. Unlike the stock outermost-only extraction, C# keeps each method, constructor and property as its own chunk, and cuts that member's text out of every enclosing type chunk. A type chunk holds only its own lines: attributes, declaration, fields, comments and gaps between members. Each source line is indexed once. Gap coverage advances over the union of the types. A gap whose every line is a `using`, a `namespace`, a brace, a `#` directive or a `//` comment is dropped: it would match any query on its imports alone. C# parser failures propagate instead of falling back to plaintext. Missing or altered grammar bytes or a changed upstream module turn C# off, not search: the proxy starts the stock backend, ends every search result with a line naming the drift (proof S2.12), and `--check` fails. A failed declaration smoke test stops the backend child.
 
+The hook also patches the embedder: `embedDocuments` embeds texts in length order and returns each vector at its input index. A batch pads every text to its longest member, so index-order batches spent most of a rebuild on padding (§Measured). It changes no chunk, so it needs no rebuild.
+
 The scanner reads `<root>/.searchignore` in gitignore syntax into the same matcher as the root `.gitignore`. A missing file changes nothing. It keeps tracked paths, such as `Tests/`, out of the index without hiding them from git.
 
 A hook change alters chunks without touching file mtimes, so the incremental refresh misses it. After `--install`, run one `rebuild: true` search once the backends that loaded the old hook have exited. Every new backend loads the installed hook file, including one started by an older frontend.
 
 The vendored `tools/tree-sitter-c_sharp.wasm` is the unmodified WASM shipped by npm `tree-sitter-c-sharp@0.23.5`, compatible with the installed `web-tree-sitter@0.26.13`. Source URL, integrity and checksum are in `tools/tree-sitter-c_sharp.provenance.json`; the adjacent `.LICENSE` travels with every install. `node .claude/tools/semantic_search_csharp_hook.mjs --check <plugin-root>` checks source compatibility and parses all requested declaration kinds without loading the embedder.
 
-## Measured (2026-09-25, `measure_semantic_search_shared.ps1`)
+## Measured
 
-One pre-built index per row, frozen by hash between arms; arms ran HEAD, shared, shared, HEAD. Figures are peak private bytes of the backends.
+**Shared backend (2026-09-25, `measure_semantic_search_shared.ps1`).** One pre-built index per row, frozen by hash between arms; arms ran HEAD, shared, shared, HEAD. Figures are peak private bytes of the backends.
 
 | Root, clients | Per-session shim (`3b1193cd`) | Shared shim |
 |---|---|---|
 | 168-file subset, 3 | 3 backends, 0.57–0.59 GB | 1 backend, 0.19–0.20 GB |
 | full repo (70 MB index), 7 | 7 backends, 2.41–2.81 GB; one client failed `database is locked` | 1 backend, 0.56 GB, no errors |
+
+**Rebuild time (`.claude/scratch/navtools/a4_trace.md` §1–§5).** The full repo index holds 37,111 chunks; `Xenova/all-MiniLM-L6-v2` (q8, CPU) embeds them in batches of 32, capped at 512 tokens. In index order the batches padded to 17.4M tokens for 6.3M real ones; a full rebuild took about 21 minutes, matching the busy episode a rebuild caused. Length order cut 1,600 real chunks from 60.5 s to 24.6 s, which projects to about 9 minutes for the whole index; a live full rebuild of 39,511 chunks took 9 min 37 s (2026-10-30). Vectors agree with a single-text embed as closely in either order (mean cosine 0.9923 index order, 0.9925 length order). 4,752 chunks (12.8%) exceed 512 tokens and embed from their first 512 only; C# has 662 of 19,963 (3.3%).
 
 A shim that never searches costs 0.054 GB and starts no backend. Artifacts: `.claude/scratch/semantic_search_shared/compare_n3_subset.json`, `compare_n7_full.json`, `probe_n7_subset.json`, `probe_n7_full.json`.
 

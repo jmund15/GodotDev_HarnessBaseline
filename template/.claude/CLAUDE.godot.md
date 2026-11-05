@@ -10,7 +10,7 @@
 ## Godot Docs and C# Navigation
 - Godot class docs come from `.claude/cache/godot-docs/doc/classes/<Class>.xml`. `reference/source_trust_godot.md` owns the Godot, GdUnit4 and .NET sources.
 - Semantic search covers `.cs` only when its C# hook is installed and running; with no `.cs` hit, use LSP or Grep. `reference/semantic_search.md` §Indexed owns the conditions.
-- **C# navigation:** anchor the declaration, then use LSP; do not mix declarations and mentions with a bare identifier grep. Literal values, regex alternatives, comments, attributes and known unique anchors remain valid Grep uses. If LSP is unavailable, use the supported search fallback and name its coverage limit.
+- **C# navigation:** anchor the declaration, then use LSP; do not mix declarations and mentions with a bare identifier grep. For a C# identifier this overrides the coding layer's exact-name Grep line. Literal values, regex alternatives, comments, attributes and known unique anchors remain valid Grep uses. If LSP is unavailable, use the supported search fallback and name its coverage limit.
 
 ## Godot Conventions
 PascalCase for C# files/types/directories; snake_case for Godot assets. Invoke the engine as `bash .claude/scripts/godot_bin.sh <args>`, never `"$GODOT_BIN"`.

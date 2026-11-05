@@ -30,14 +30,14 @@ Then the parent reviews the diff, chooses what lands, commits by pathspec and ra
 
 ## 1. Normalize and preflight
 
-Check needed model fields through `model_registry.py resolve <model>`, locate rows with `for-role <role>`, and take the effort from the role ladder's cell; `for-role` picks none. Use `available` when selecting a model, not as a repeated full-catalog ritual. Preserve explicit owner overrides as overrides, not capability promotions; availability and permission boundaries still bind.
+Check needed model fields through `model_registry.py resolve <model>`, and locate rows with `for-role <tier>`, which picks no model and no effort. Take the effort from the role ladder's cell. Preserve explicit owner overrides as overrides, not capability promotions; availability and permission boundaries still bind.
 
 Namespace labels `<runKey>-<label>` and reject duplicates. State model, effort, profile and currency before dispatch. Keep unknown effective settings null.
 
 The parent performs this preparation. The engines consume the prepared jobs. Return one state:
 - `PROCEED`: scope, inputs, route, eligibility, pins and currency are established.
 - `HOLD`: a required fact or owner decision is missing.
-- `ABORT`: the route, authorization or availability forbids the job, or the task belongs to a command with its own coverage contract: exploration, plan drafting or plan review.
+- `ABORT`: the route, authorization or availability forbids the job, or the task belongs to a command with its own coverage contract: design grounding, plan drafting or plan review. Lookup shape follows `CLAUDE.core.md` §9.
 
 Do not silently change a pin, role, provider or currency to get past a failure.
 

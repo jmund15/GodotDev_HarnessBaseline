@@ -37,7 +37,7 @@ ARCHIVE_DIR = "Eval Dashboard Archive"
 ROOT = os.path.dirname(os.path.dirname(TOOLS))
 ORCHESTRATION_REL = os.path.join(".claude", "orchestration_metrics.jsonl")
 SELF_EVAL_REL = ".claude/self_evaluate_archive.json"
-ROUTING_REL = ".claude/logs/routing_audit_stats.json"
+ROUTING_REL = "logs/routing_audit_stats.json"
 REGISTRY_REL = ".claude/reference/external_models.json"
 RULES_REL = ".claude/scratch/eval_out/rule_retirement.json"
 STALE_DAYS = 7
@@ -186,6 +186,9 @@ def read_routing(root, today):
         card = {"generated_at": data["generated_at"], "total_entries": int(data["total_entries"]),
                 "silent_misses": int(data.get("silent_misses", 0)), "active_window_days": data.get("active_window_days"),
                 "by_week": dict(data.get("by_week") or {}),
+                "lookup_calls": dict(data.get("lookup_calls") or {}),
+                "vault_writes": dict(data.get("vault_writes") or {}),
+                "legacy_heuristic_events": dict(data.get("legacy_heuristic_events") or {}),
                 "top_5_silent_miss_rules": list(data.get("top_5_silent_miss_rules") or [])}
         age = _days(today, day)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:

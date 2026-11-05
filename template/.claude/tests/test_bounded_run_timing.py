@@ -89,7 +89,7 @@ class BoundedRunTimingTests(unittest.TestCase):
             sdc.PREFLIGHT_TIMEOUT = 1
             try:
                 hook_state, _ = sdc.run_preflight("bash .claude/scripts/slow_sidecar.sh -m x", tmp)
-                launch_state, refusal = sdc.launch_preflight("bash .claude/scripts/slow_sidecar.sh -m x", tmp)
+                launch_state, refusal, _code = sdc.launch_preflight("bash .claude/scripts/slow_sidecar.sh -m x", tmp)
             finally:
                 sdc.PREFLIGHT_TIMEOUT = real
         self.assertEqual("refused", hook_state, "the planted check no longer outlasts the hook deadline")

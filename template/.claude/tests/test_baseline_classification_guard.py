@@ -64,7 +64,7 @@ def _consumer_seed(files: dict | None = None) -> dict:
     guard's own per-case checks."""
     lock = {
         "schema": 2, "profile": "pure,coding,godot", "substitutions": {},
-        "baseline_repo": "https://example.invalid/harness-baseline.git",
+        "baseline_repo": "file:///nonexistent/harness-baseline.git",  # fails at once: no DNS, no retry sleeps
         "baseline_ref": "main", "synced_commit": "0" * 40,
         "identity": {"abbreviations": []},
         "files": dict(files or {}),
@@ -594,6 +594,34 @@ def main(only: int | None = None) -> int:
     @section
     def _s24():
         _shell_words_case(SHELL_WORD_CASES[2], env, cases)
+
+    @section
+    def _s26():
+        # A path list written as `$(cat list)` cannot be expanded by the hook: the deny must say
+        # why and name the literal-list and `--pathspec-from-file` routes (rows F28532, F36935).
+        repo = _make_consumer_repo()
+        _write(repo / "notes.txt", "n\n")
+        _write(repo / "paths.txt", "notes.txt\n")
+        # The list file sits outside the repo (rows F28532, F36935), so git rejects the unexpanded pathspec.
+        proc = _run_dispatch(str(repo), 'git commit -q -m m -- $(cat ../outside_paths.txt)', env)
+        check("26a: `$(cat list)` pathspec cannot be verified -> deny", _classify(proc), "DENY", proc)
+        cases.append(("26a: the deny names the unexpanded `$` and `--pathspec-from-file`",
+                      "before the shell expands" in proc.stderr and "--pathspec-from-file" in proc.stderr,
+                      proc.stderr[:500]))
+        # The route the hint names works: the file lists an ordinary path -> allow.
+        proc = _run_dispatch(str(repo), 'git commit -q -m m --pathspec-from-file=paths.txt', env)
+        check("26b: `--pathspec-from-file` naming an ordinary path -> allow", _classify(proc), "ALLOW", proc)
+
+    @section
+    def _s27():
+        # The route the hint names still denies what the guard exists to deny: a from-file list
+        # naming the lock, whose working copy drops a row HEAD holds while its file exists.
+        repo = dropped_row_repo()
+        _write(repo / "paths.txt", ".claude/baseline.lock.json\n")
+        proc = _run_dispatch(str(repo), 'git commit -q -m m --pathspec-from-file=paths.txt', env)
+        check("27: `--pathspec-from-file` lock commit dropping a HEAD row -> deny", _classify(proc), "DENY", proc)
+        cases.append(("27: the denial names the dropped row",
+                      ".claude/commands/peer.md" in proc.stderr, proc.stderr[:500]))
 
     if only is not None:
         sections[only]()

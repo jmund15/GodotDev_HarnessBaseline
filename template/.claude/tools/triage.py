@@ -49,6 +49,7 @@ if _HOOKS not in sys.path:
     sys.path.insert(0, _HOOKS)
 import adaptation  # noqa: E402
 import _git_commit  # noqa: E402
+from _claude_scope import is_prose_harness_scope  # noqa: E402
 
 FIELDS = {
     "reach": ("local", "shared", "external"),
@@ -175,7 +176,7 @@ def rigor(task_id: str | None = None, root: Path | None = None, session_id: str 
     default's paths is the session's newest record."""
     import task_record
     root = Path(root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
-    directory = Path(os.environ.get("HARNESS_TASK_RECORD_DIR") or root / ".claude/logs/tasks")
+    directory = Path(task_record.record_dir(root))
     session = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if task_id:
         record = task_record._hook_state.read_json_salvage(str(directory / (task_id + ".json")))
@@ -242,7 +243,9 @@ def admits(check: str, fields: Fields, rigor: str, *, gate_green: bool | None = 
         adm = Admission(admitted, None, "decision at the size/rigor reach threshold" if admitted
                         else "mechanical or below the size/rigor reach threshold")
     elif check == "candidate-lenses":
-        if rigor == "thorough":
+        if rigor != "thorough" and is_prose_harness_scope(fields.paths):
+            width, reason = "none", "harness prose and data have no code subject below thorough"
+        elif rigor == "thorough":
             width, reason = "all", "thorough runs the full candidate roster"
         elif not decision and gate_green is True and (small or fields.reach == "local"):
             width, reason = "none", "mechanical change under a green gate"
@@ -726,8 +729,8 @@ def _task_triage(repo, sha):
 
     Task records still require all six fields. Bad evidence is diagnostic, not a guessed triage.
     """
-    directory = Path(os.environ.get("HARNESS_TASK_RECORD_DIR") or
-                     Path(repo) / ".claude" / "logs" / "tasks")
+    import task_record
+    directory = Path(task_record.record_dir(repo))
     try:
         paths = sorted(directory.glob("*.json"), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
     except OSError as exc:
@@ -818,7 +821,7 @@ def current(root: Path, *, rev: str | None = None, staged: bool = False,
     else:
         changes = []
     if recorded is None and (task_id or not rev):
-        directory = Path(os.environ.get("HARNESS_TASK_RECORD_DIR") or root / ".claude/logs/tasks")
+        directory = Path(task_record.record_dir(root))
         if task_id:
             record = task_record._hook_state.read_json_salvage(str(directory / (task_id + ".json")))
         else:
@@ -931,7 +934,7 @@ def _cmd_rigor(args):
             return 0
         print(rigor(args.task, root))
         return 0
-    except (OSError, ValueError, KeyError, task_record.RecordTooLarge, task_record.TriageRefused) as exc:
+    except (OSError, ValueError, KeyError, task_record.RecordTooLarge, task_record.TriageRefused, task_record.OpenRefused) as exc:
         print("error: %s" % exc, file=sys.stderr)
         return 1
 

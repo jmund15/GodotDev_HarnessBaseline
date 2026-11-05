@@ -38,7 +38,7 @@ Batch the complete audit when full context exceeds the bound, per `review_agents
 
 ### 1b. Assemble the seats' file list
 
-Each seat's CONTEXT lists the `uncoveredFiles` `plan` returned for it (§Ledger plan), by path, with each `.tres` beside its Resource class; no subject file is pasted, and the seat reads what it judges (`review_agents.md` *Context fit*). A kept seat reviews every file in its list, including pairs another of its mandates already covers. `sa-holistic` takes its files from `{{UNIT_LIST}}` instead (§Holistic Trigger).
+Each seat's brief carries its must-read list: the files the ledger left uncovered for it, written by `prepare` (§Ledger plan), by path, with each `.tres` beside its Resource class (`review_agents.md` *Context fit*). A kept seat reviews every file in its list, including pairs another of its mandates already covers. `sa-holistic` takes its files from `{{UNIT_LIST}}` instead (§Holistic Trigger).
 
 ---
 
@@ -66,7 +66,7 @@ When session-changed files touch `Wizard/`, `UI/`, `VFX/` or `Prototype/` and th
 
 If 1.5a/b find issues, report them in the shape of [`session_audit_parity.md`](reference/session_audit_parity.md) §Report shape.
 
-If clean, log `Deleted-surface parity: no critical parity finding` and proceed to Phase 2. Report `Behavioural baseline: <proved|unverified|not applicable>` separately, with receipt paths and comparison verdict when proved; `drive_spine.md` §Slices owns its trigger and required before/after receipts.
+If clean, log `Deleted-surface parity: no critical parity finding` and proceed to Phase 2. Report `Behavioural baseline: <proved|unverified|not applicable>` separately, with receipt paths and comparison verdict when proved; `drive_execution.md` §Slices owns its trigger and required before/after receipts.
 
 ---
 
@@ -109,38 +109,39 @@ An unused checklist placeholder's file holds `none`; architecture-, harness- and
 
 `SHORT_PLAN`'s file holds the explicit or task-resolved plan path; include that plan in the architecture seat's must-read list. Without a plan in a standalone audit, it holds `none`. The triggers above name the files for `DESIGN_LIST`, `DOCTRINE_COMMITS`, `HARNESS_HUNKS` and `UNIT_LIST`.
 
-**Ledger plan.** Write the roster the seat map builds to `.claude/scratch/session_audit_<sid8>_roster.json`, one entry per seat: `{key, effort}`, with the effort resolved per `orchestration` §5; `review_ledger.py` fills each seat's mandates and tier from the lens registry. Then run `python3 .claude/tools/review_ledger.py plan --stage candidate --subject session:<sid> --roster <roster.json> --files <subject files> [--ignore-ledger] > .claude/scratch/session_audit_<sid8>_plan.json` and dispatch only the seats it returns; report each `dropped` mandate with its `coveredBy` row. For §1a's admitted harness seat, plan that seat separately with a one-seat roster, `--ignore-ledger` and `inputs.files`, then merge it into the returned roster once. Forward `inputs.mustRead` even for an empty file subject; earlier coverage narrows what it reads, not whether it runs.
+**Ledger plan.** `prepare` composes the ledger plan, the harness freeze, each seat's must-read list, the fold snapshot and the engine args. Write `<run dir>/spec.json`:
 
-Each seat's must-read list is the diff of its §1b files (`git diff <base>..HEAD` plus the uncommitted `git diff`, written to scratch) and each new file whole; `sa-holistic`'s is its units' diffs. Write it to a list file per seat (`agents/review_agents.md` *Seat coverage contract*).
-
-Materialize the returned seats, never assemble a prompt by hand:
+```json
+{
+  "mode": "session-audit",
+  "prefix": "sa",
+  "topic": "<audit subject>",
+  "context": ".claude/scratch/session_audit_<sid8>_context.md",
+  "seats": [{"key": "<seat key>", "effort": "<rung>"}],
+  "pins": {"panel": "<row>"},
+  "efforts": {"panel": "<rung>"},
+  "fold": {"tier": "<fold tier>", "model": "<row>", "effort": "<rung>"},
+  "subjectFiles": ["<subject files>"],
+  "task": "<task id>",
+  "sessionAudit": {"sessionBase": "<session base>", "baseRef": "<base>", "files": ["<subject files>"], "session": "<sid>", "plan": "<resolved plan path>", "widen": false, "committedOnly": []}
+}
+```
 
 ```bash
-python3 .claude/tools/lens_briefs.py --plan .claude/scratch/session_audit_<sid8>_plan.json --out .claude/scratch/session_audit_<sid8>_briefs --prefix sa --context-path <absolute context.md> --model <pin> --effort <effort> --must-read-for <seat>=<list> --sub <PLACEHOLDER>=<file>
+python3 .claude/tools/lens_briefs.py prepare --spec <run dir>/spec.json --out <run dir>
 ```
 
-Repeat `--must-read-for` per seat and `--sub` per placeholder file above; pass seat pin overrides with `--model-for` and `--effort-for`. Each seat takes its lenses' `seat_tier`. The tool writes `jobs_sa.json` and the brief files it names.
-
-Snapshot the subject files as a blob subject ([protocol Step 4 *Fold subject*](agents/orchestrator_action_protocol.md#fold-subject)): root `.`, files `<subject files>`, out `.claude/scratch/session_audit_<sid8>_snapshot.json`. Dispatch through the engine, mapping each generated job to an agent `{key: job.seat, label: job.label, mandates: job.mandates, mustRead: job.mustRead, promptPath: job.promptPath, model: job.model, effort: job.effort, agentType: job.agentType}`:
-
 ```
-Workflow({
-  scriptPath: ".claude/workflows/review_fanout.js",
-  args: { agents: [<one entry per job in jobs_sa.json>],
-    contextPrefixPath: "<absolute context.md>",
-    spillDir: ".claude/scratch/session_audit_<sid8>_spill",
-    fold: { tier: "<fold tier>", model: "<row>", effort: "<effort>", subjects: [{ root: ".", snapshot: ".claude/scratch/session_audit_<sid8>_snapshot.json", files: [<native-legal harness subject files>] }] },
-    ledger: { stage: "candidate", subject: "session:<sid>", roster: ".claude/scratch/session_audit_<sid8>_roster.json", task: "<id>", premiseCommits: "<inputs.premiseCommits>", head: "<inputs.head>", blobs: "<inputs.blobs, else the snapshot path>" } }
-})
+Workflow({scriptPath: ".claude/workflows/review_fanout.js", args: {argsFile: "<run dir>/args.json"}})
 ```
 
-`ledger.blobs` names the reviewed files whenever `args.fold` holds no subject for them, as for production code: without it the ledger row covers nothing. Consume the result per [protocol Step 1.5](agents/orchestrator_action_protocol.md). For a harness seat, its ledger arguments carry the frozen `premiseCommits`, `head` and `blobs` paths unchanged into `review_ledger.py record`; the path fields must pass the engine's `safePath` validation. Omit those three fields when no harness packet exists. Check the report's ledger rows against the frozen packet; missing forwarding stops premise recording and is reported, never inferred from current HEAD or replaced with an inline substitute audit row. The parent omits production-code subjects from native `args.fold`, then snapshots and dispatches those findings on the serialized sidecar or solo route. That executor runs the project's tests and regression gate; the native engine does not reroute or hand them off automatically (`review_fold.md` code clause).
+`prepare` briefs only the mandates the ledger returns (add `"ignoreLedger": true` inside `ledger` for an owner-named scope) and prints each `dropped` mandate with its `coveredBy` row. Each seat's must-read list is the diff of its §1b files (`git diff <base>..HEAD` plus the uncommitted `git diff`) and each new file whole; `sa-holistic`'s is its units' diffs. Write one list file per seat and name it in the spec's `seatFiles` (`agents/review_agents.md` *Seat coverage contract*); a placeholder the checklists do not fill (`TRANSCRIPT_CORRECTIONS`) rides in `subs` as `<NAME>=<file>`. Each seat takes its lenses' `seat_tier`; a written tier cannot override it. For §1a's admitted harness seat, `sessionAudit` runs `session_audit_inputs.py freeze` and fills that seat's must-read list from its mandate views; `inputs.mustRead` is forwarded even for an empty file subject, since earlier coverage narrows what it reads, not whether it runs. The frozen `premiseCommits`, `head` and `blobs` paths ride unchanged into `args.ledger`; missing forwarding stops premise recording and is reported, never inferred from current HEAD or replaced with an inline substitute audit row. Prep writes `<run dir>/roster.json` (the filled roster the post-check records against) and `<run dir>/args.json`; never hand-build either. Consume the result per [protocol Step 1.5](agents/orchestrator_action_protocol.md), each subject's fold per [Step 4 *Fold subject*](agents/orchestrator_action_protocol.md#fold-subject). `prepare` leaves the code set (`*.cs`, `*.tres`) out of a native `args.fold` and prints those paths; their findings are the parent's: it applies them itself or through one executor job that keeps RED→GREEN (`orchestrator_action_protocol.md` Step 4).
 
 ---
 
 ## Phase 3: Consolidate & Report
 
-The workflow already performed **Step 1** (lossless source ingestion and sorted/grouped views) of the [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md). Consume the result per **Step 1.5** (the subject is a blob subject over the audit's files in the main checkout). Then run **Steps 2–4** (report, NOTE synthesis, FIX/ASK/PLAN execution under §Execute Actions) yourself. After recording a harness audit, recheck the outgoing population with `python3 .claude/tools/review_ledger.py owed --mandates harness-quality --doctrine --roster <harness one-seat roster.json>`. A commit added during the audit remains owed; report it and seat the existing lens over new frozen inputs before claiming outgoing premise coverage.
+The workflow already performed **Step 1** (lossless source ingestion and sorted/grouped views) of the [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md). Consume the result per **Step 1.5** (the subject is a blob subject over the audit's files in the main checkout). Then run **Steps 2–4** (report, NOTE synthesis, FIX/ASK/PLAN execution under §Execute Actions) yourself.
 
 ### Report Format
 

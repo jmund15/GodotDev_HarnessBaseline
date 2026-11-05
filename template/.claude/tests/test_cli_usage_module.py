@@ -34,5 +34,9 @@ class CliUsageTests(unittest.TestCase):
         self.assertEqual(cli_usage.usage(None), "")
         self.assertEqual(cli_usage.usage(""), "")
 
+    def test_refusal_states_the_shape_and_one_valid_call(self):
+        self.assertEqual(cli_usage.refusal("PID... --reason X", "tool.py 7 --reason X"),
+                         "accepts: PID... --reason X\nexample: tool.py 7 --reason X\n")
+
 if __name__ == "__main__":
     unittest.main()

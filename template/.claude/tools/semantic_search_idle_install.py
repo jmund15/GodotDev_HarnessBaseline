@@ -338,6 +338,18 @@ def check(paths: Paths, plugin_root: Path | None = None) -> list[str]:
         elif sha256_file(asset) != (state.get("csharp_sha256") or {}).get(name):
             problems.append(f"C# asset content changed or unpinned: {asset}")
 
+    # Run from a checkout, the sources are present: an install older than them serves the old hook.
+    # It is reported beside the contract checks, never in place of them.
+    behind: list[str] = []
+    root = repo_root()
+    if (root / PROXY_SOURCE).exists():
+        sources = {paths.proxy: root / PROXY_SOURCE, paths.checker: root / CHECKER_SOURCE,
+                   **{paths.state_dir / name: root / PROXY_SOURCE.parent / name for name in CSHARP_ASSETS}}
+        stale = [str(copy) for copy, source in sources.items()
+                 if copy.exists() and source.exists() and sha256_file(copy) != sha256_file(source)]
+        if stale:
+            behind.append(f"installed copy differs from this repo's source, run --install: {', '.join(stale)}")
+
     manifest_path = Path(state.get("manifest", install_path / ".mcp.json"))
     if not manifest_path.exists():
         problems.append(f"plugin manifest missing: {manifest_path}")
@@ -355,8 +367,9 @@ def check(paths: Paths, plugin_root: Path | None = None) -> list[str]:
         if paths.check_command() not in commands:
             problems.append("the SessionStart checker is not registered in settings.json")
 
-    if not (install_path / "dist" / "mcp-server.js").exists() or not (install_path / "node_modules").exists():
-        problems.append(f"backend not ready under {install_path}: run the plugin's install once")
+    if not backend_ready(install_path):
+        problems.append(f"backend not ready under {install_path}: `--install` builds it from a built version "
+                        "that declares the same packages; with none, run the plugin's install once")
 
     if paths.user_config.exists():
         servers = (read_json(paths.user_config).get("mcpServers") or {})
@@ -364,23 +377,65 @@ def check(paths: Paths, plugin_root: Path | None = None) -> list[str]:
             problems.append(f"duplicate user-scope MCP registration named {MCP_ENTRY} in {paths.user_config}")
 
     if problems:
-        return problems
+        return problems + behind
 
     try:
         csharp_contract(paths, paths.state_dir / CSHARP_HOOK_NAME, install_path)
         shim = proxy_contract(paths, install_path)
         live = stock_contract(paths, install_path)
     except Drift as exc:
-        return [str(exc)]
-    return contract_drift(shim, live)
+        return [str(exc)] + behind
+    return contract_drift(shim, live) + behind
 
 
 # --------------------------------------------------------------------------- install / rollback
+DEPENDENCY_KEYS = ("dependencies", "devDependencies", "optionalDependencies")
+
+
+def backend_ready(root: Path) -> bool:
+    return (Path(root) / "dist" / "mcp-server.js").exists() and (Path(root) / "node_modules").is_dir()
+
+
+def repair_backend(install_path: Path, node: str) -> str | None:
+    """Build an unbuilt install from the newest built version beside it that declares the same packages:
+    copy its node_modules, then compile with its TypeScript. A first launch cut short leaves an empty
+    node_modules, which the plugin's own bootstrap reads as installed, so it never builds. Returns the
+    version used, or None when the install is ready or no version beside it qualifies."""
+    install_path = Path(install_path)
+    if backend_ready(install_path) or not (install_path / "package.json").exists():
+        return None
+
+    def declared(root: Path) -> dict:
+        package = read_json(root / "package.json")
+        return {key: package.get(key) or {} for key in DEPENDENCY_KEYS}
+
+    def version(root: Path) -> tuple:
+        return tuple(int(part) if part.isdigit() else -1 for part in root.name.split("."))
+
+    wanted = declared(install_path)
+    siblings = sorted((p for p in install_path.parent.iterdir()
+                       if p.is_dir() and p != install_path and backend_ready(p)
+                       and (p / "package.json").exists()), key=version, reverse=True)
+    for sibling in siblings:
+        if declared(sibling) != wanted:
+            continue
+        shutil.copytree(sibling / "node_modules", install_path / "node_modules", dirs_exist_ok=True)
+        tsc = install_path / "node_modules" / "typescript" / "bin" / "tsc"
+        out = subprocess.run([node, str(tsc), "-p", "tsconfig.build.json"], cwd=install_path,
+                             capture_output=True, text=True, timeout=600)
+        if out.returncode != 0 or not backend_ready(install_path):
+            raise Drift(f"building {install_path} from {sibling.name} failed: {(out.stdout + out.stderr).strip()[-400:]}")
+        return str(sibling)
+    return None
+
+
 def install(paths: Paths, plugin_root: Path | None = None) -> dict:
-    """Back up, write the shim and the single manifest entry, register the checker."""
+    """Build an unbuilt backend from a matching built version, back up, write the shim and the single
+    manifest entry, register the checker."""
     install_path, version = active_install(paths.registry)
     if plugin_root is not None:
         install_path = Path(plugin_root)
+    repaired_from = repair_backend(install_path, paths.node)
 
     root = repo_root()
     source_proxy = root / PROXY_SOURCE
@@ -436,7 +491,7 @@ def install(paths: Paths, plugin_root: Path | None = None) -> dict:
     if problems:
         raise Drift("install did not verify: " + "; ".join(problems))
     return {"installed": str(paths.proxy), "manifest": str(manifest_path),
-            "backup": str(backup), "version": version}
+            "backup": str(backup), "version": version, "repaired_from": repaired_from}
 
 
 def stock_backup(paths: Paths, version: str) -> Path:

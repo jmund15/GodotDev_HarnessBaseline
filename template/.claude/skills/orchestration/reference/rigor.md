@@ -21,10 +21,9 @@ A finding's optional `minRigor` is the lowest level whose row admits it, and it 
 ## Every panel
 
 - Width: the size rule of [`review_width.md`](review_width.md) (thorough seats every admitted mandate; below it, merge what one reader can judge at the bar), never below the stage's own floor.
-- Seats are told the bar and report every finding the Reporting Filter admits, tagged `minRigor`. The fold applies a below-bar finding only as a verbatim FIX (`commands/agents/review_fold.md` step 5) and defers the rest `below-bar`.
-- A later round is owed only by units that answer counting findings, since a below-bar finding applied verbatim keeps its reviewer's coverage. Its seat is told the same bar.
+- Seats are told the bar and report every finding the Reporting Filter admits, tagged `minRigor`.- A later round is owed only by units that answer counting findings, since a below-bar finding applied verbatim keeps its reviewer's coverage. Its seat is told the same bar.
 - Stop when coverage is complete, every counting finding has a disposition and no supported critical stands. No count of rounds stops it.
-- The report opens `rigor <level>` and closes `below bar: <N> noted` with one offer to apply them. That close is the Do-now gate's "declined with a reason and an offer", so a below-bar finding needs no defer reason. The caller applies offered ids through a standalone fold with `--ruled <ids>` and no `Bar:` line.
+- The report opens `rigor <level>` and closes `below bar: <N> noted` with one offer to apply them. That close is the Do-now gate's "declined with a reason and an offer", so a below-bar finding needs no defer reason. The caller applies offered ids per `orchestrator_action_protocol.md` Step 4; an offer-apply fold carries no `Bar:` line.
 
 ## Per stage
 

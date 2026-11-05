@@ -75,8 +75,8 @@ class BarFoldTests(unittest.TestCase):
         self.assertIn('fold-not-applied', self._kinds('light', after='Subject bytes', old='bytes', new=''))
 
     def test_below_bar_fix_labelled_finding_but_reworded_fails_its_id(self):
-        failures = self._check('light', after='Thing bytes')
-        self.assertEqual([failure.get('ids') for failure in failures], [['F1']])
+        failures = self._check('light', after='Thing bytes', kind=None)
+        self.assertEqual([(failure['kind'], failure.get('ids')) for failure in failures], [('fold-not-applied', ['F1'])])
 
     def test_below_bar_plan_or_pairless_fix_fails_its_id(self):
         for row in ({'action': 'PLAN', 'options': ['do it'], 'old': None, 'new': None}, {'old': None, 'new': None}):

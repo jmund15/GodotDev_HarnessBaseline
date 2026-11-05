@@ -1,4 +1,4 @@
-"""post_check honors the finding bar: a below-bar finding is never held, never a failed check and never a refold
+"""post_check honors the finding bar: a below-bar finding is never held, never a failed check and never held for the parent
 target; the report names the run's rigor and lists the below-bar ids. The archive merge keeps the strongest tag."""
 import json
 import os
@@ -50,10 +50,10 @@ class HeldBarTests(unittest.TestCase):
         held = post_check.held_rows(rows, [job(deferred_rows=[deferred("F1", "below-bar")])], rigor="light")
         self.assertEqual(held, [])
 
-    def test_below_bar_class_on_a_counting_row_is_held(self):
+    def test_a_deferred_counting_row_is_held(self):
         rows = [row("F1", minRigor="light")]
-        held = post_check.held_rows(rows, [job(deferred_rows=[deferred("F1", "below-bar")])], rigor="light")
-        self.assertEqual([(entry["id"], entry["class"]) for entry in held], [("F1", "below-bar")])
+        held = post_check.held_rows(rows, [job(deferred_rows=[deferred("F1", "any")])], rigor="light")
+        self.assertEqual([(entry["id"], entry["class"]) for entry in held], [("F1", "deferred")])
 
     def test_unfolded_below_bar_fix_is_not_held_unfolded(self):
         self.assertEqual(post_check.held_rows([row("F1", minRigor="thorough")], [], rigor="light"), [])
@@ -62,6 +62,12 @@ class HeldBarTests(unittest.TestCase):
         rows = [row("F1", action="ASK", question="Keep it?", options=["keep"], minRigor="thorough")]
         held = post_check.held_rows(rows, [], rigor="light")
         self.assertEqual([(entry["id"], entry["class"]) for entry in held], [("F1", "ask")])
+
+    def test_applied_ids_is_the_one_set_both_readers_subtract(self):
+        jobs = [job(applied=["F1"]), {"digestValue": None}, {}, job(applied=["F2"])]
+        self.assertEqual(post_check._applied_ids(jobs), {"F1", "F2"})
+        rows = [row("F1", minRigor="thorough"), row("F2", minRigor="thorough"), row("F3", minRigor="thorough")]
+        self.assertEqual(post_check.below_bar_ids(rows, jobs, [], "light"), ["F3"])
 
     def test_no_resolvable_rigor_counts_every_finding(self):
         held = post_check.held_rows([row("F1", minRigor="thorough")], [], rigor=None)
@@ -102,7 +108,6 @@ class ReportBarTests(unittest.TestCase):
             held_ids = [entry["id"] for entry in report["held"]]
             self.assertNotIn("F1", held_ids)
             self.assertIn("F2", held_ids)
-            self.assertNotIn("F1", report["nextRound"]["refold"]["held"])
 
 
 if __name__ == "__main__":

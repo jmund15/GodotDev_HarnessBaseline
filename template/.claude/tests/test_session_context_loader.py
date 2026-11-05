@@ -165,6 +165,22 @@ def main():
               "GODOT_BIN" not in output and "Jmodot" not in output and "lsp-early-load" not in output
               and "Session step modules" not in output, output[-700:])
 
+        check("a project with no document roots gets no locations line", "[locations]" not in output)
+        # The locations line is this project's addition to a keep-local hook; a checkout whose hook lacks it skips.
+        roots_cases = (("startup", False), ("compact", False), ("startup", True)) \
+            if hasattr(scl, "locations_line") else ()
+        with tempfile.TemporaryDirectory(prefix="scl_roots_") as roots_dir:
+            roots_root = Path(roots_dir)
+            (roots_root / ".claude" / "skills" / "project_subsystems").mkdir(parents=True)
+            (roots_root / ".claude" / "skills" / "project_subsystems" / "adaptation.json").write_text(
+                json.dumps({"doc_roots": ["D:/Vault/DOCROOT-MARKER"]}), encoding="utf-8")
+            for roots_source, roots_sidecar in roots_cases:
+                roots_out = run_main(roots_root, patches, source=roots_source, sidecar=roots_sidecar)
+                check("%s%s: the project's document roots print as one locations line"
+                      % (roots_source, " sidecar" if roots_sidecar else ""),
+                      roots_out.count("[locations] document roots outside the repo: D:/Vault/DOCROOT-MARKER") == 1,
+                      roots_out[-900:])
+
         # A cloud VM has no user or local settings, so the autoMemoryDirectory index does not
         # reach the model unless SessionStart injects it.
         (main_root / ".claude" / "auto-memory").mkdir(parents=True)

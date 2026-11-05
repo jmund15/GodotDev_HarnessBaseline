@@ -33,8 +33,10 @@ CLI:
     model_registry.py --check                       validate; exit 0 ok, 2 invalid
     model_registry.py resolve pro --field id        print one field; exit 0 / 2
     model_registry.py resolve pro                   print the whole entry as JSON
-    model_registry.py for-role executor             rows serving a tier, in-transport and across
-    model_registry.py for-role fanout --from codex  ...as seen from another seat
+    model_registry.py for-role executor             one plan-filtered tier table: surviving plans, then
+                                                    the rows fit for the tier(s); the ladder cut to those tiers
+    model_registry.py for-role fanout architect --from codex   ...as seen from another seat
+                                                    [--json] prints that table as JSON; [--pay] adds the pay options
     model_registry.py context-window <model> [--max]  print the effective default or max window
     model_registry.py max-output <model> [--max]    print the child's output cap: the row's maxOutputTokens,
                                                     at most a quarter of its effective window
@@ -47,14 +49,13 @@ CLI:
     model_registry.py sidecar-fields <model> [--plan <plan>]   launcher fields; 8-10 are the plan's
     model_registry.py plan-for-launcher <path>      plan, configDir, default flag, credential source; exit 1 if none
     model_registry.py review-state <alias> <tier>   probation basis or none
-    model_registry.py ladder-slice <tier> [<tier>...]   the ladder cut to the rows claiming those tiers;
-                                                    records the tiers for the dispatch gate (needs CLAUDE_CODE_SESSION_ID)
+    model_registry.py ladder-slice <tier>...        RETIRED (exit 2): `for-role <tier>...` prints the same cut
 """
 
 import sys as _cli_usage_sys
 from pathlib import Path as _cli_usage_path
 _cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
-from cli_usage import usage
+from cli_usage import refusal, usage
 
 
 import hashlib
@@ -1700,13 +1701,14 @@ def role_tiers(path=None, start=None, data=None):
     return tiers
 
 
-def ladder_slice(tiers, path=None, data=None):
+def ladder_slice(tiers, path=None, data=None, only=None):
     """The ladder a dispatcher needs to pin `tiers`: everything from `## Role definitions` on, with the Role
-    guidance rows cut to those whose registry `roles` claim a named tier. Raises when no row claims one or the
-    table schema drifted, so an empty slice never reads as a ladder with nothing to say."""
+    guidance rows cut to those whose registry `roles` claim a named tier, and to the ladder names in `only`
+    when given (the rows `for-role` lists on surviving plans). Raises when no row claims one or the table
+    schema drifted, so an empty slice never reads as a ladder with nothing to say."""
     tiers = {canonical_tier(t) for t in tiers}
     if not tiers:
-        raise RegistryError("ladder-slice needs at least one tier")
+        raise RegistryError("for-role needs at least one tier")
     path = path or ladder_path()
     try:
         lines = Path(path).read_text(encoding="utf-8").splitlines()
@@ -1715,6 +1717,8 @@ def ladder_slice(tiers, path=None, data=None):
     data = data if data is not None else load()
     cells = [row["model"] for row in parse_ladder_rows(lines, ("model",))]
     keep = {c for c in cells if tiers & set(ladder_cell_tiers(c, data, supplementary=True))}
+    if only is not None:
+        keep &= set(only)
     if not cells or not keep:
         raise RegistryError(f"{path} has no Role guidance row claiming: {', '.join(sorted(tiers))}")
     out, section = [], None
@@ -1914,8 +1918,11 @@ def _sidecar_line(m, data, launcher=None):
             "-P <progress.jsonl> -l <label> -d <repo-root>")
 
 
-def for_role(role, seat_plan, data=None):
+def route_rows(role, seat_plan, data=None):
     """{tier, seat, inTransport, crossTransport, otherPlans, nearest, note, supplementary} -- a REPORT, never a pin.
+
+    The guard callers (`session_model_rails`, `workflow_provider_guard`) read this dict; the pick-facing
+    text is `for-role` over `provider_bands.tier_table`.
 
     `seat_plan` is the plan paying for this session; its route's rows are in-transport. `otherPlans`
     holds (row, plan, launcher) for each other live plan that can pay a serving row, except a
@@ -2331,24 +2338,54 @@ def transport_projects_root(transport, data=None):
 _TRANSCRIPT_INDEX = {}
 
 
+def _project_stamp(root):
+    """(path, mtime_ns) of each project directory under `root`: a new transcript bumps its directory's mtime."""
+    stamp = []
+    with os.scandir(root) as projects:
+        for project in projects:
+            if project.is_dir():
+                stamp.append((project.path, os.stat(project.path).st_mtime_ns))
+    return tuple(sorted(stamp))
+
+
+def _scan_transcripts(root):
+    """(stamp, {file name: [paths]}). Each directory is stamped before its files are read, so a file written
+    during the scan changes the stamp and the next miss rescans."""
+    index, stamp = {}, []
+    try:
+        with os.scandir(root) as projects:
+            for project in projects:
+                if project.is_dir():
+                    stamp.append((project.path, os.stat(project.path).st_mtime_ns))
+                    with os.scandir(project.path) as files:
+                        for entry in files:
+                            if entry.name.endswith('.jsonl'):
+                                index.setdefault(entry.name, []).append(Path(entry.path))
+    except OSError:
+        pass
+    return tuple(sorted(stamp)), index
+
+
 def _transcript_matches(root, name):
     """Sorted `<root>/*/<name>` files. One directory scan per root serves every lookup in the process (a
-    repricing pass looks up hundreds of sessions); a miss rescans once, so a transcript written since is found."""
+    repricing pass looks up hundreds of sessions). A miss rescans only when a project directory changed
+    since the last scan, or when the wanted file now sits in a scanned project directory (a directory mtime
+    ticks coarsely, so a file written right after a scan can leave the stamp equal). A transcript written since
+    is found, and a run of absent sessions costs one scan."""
+    cached = _TRANSCRIPT_INDEX.get(root)
+    if cached is None:
+        cached = _TRANSCRIPT_INDEX[root] = _scan_transcripts(root)
     for rescan in (False, True):
-        index = _TRANSCRIPT_INDEX.get(root)
-        if index is None or rescan:
-            index = _TRANSCRIPT_INDEX[root] = {}
+        if rescan:
             try:
-                with os.scandir(root) as projects:
-                    for project in projects:
-                        if project.is_dir():
-                            with os.scandir(project.path) as files:
-                                for entry in files:
-                                    if entry.name.endswith('.jsonl'):
-                                        index.setdefault(entry.name, []).append(Path(entry.path))
+                changed = (_project_stamp(root) != cached[0]
+                           or any(os.path.isfile(os.path.join(project, name)) for project, _ in cached[0]))
             except OSError:
-                pass
-        found = sorted(path for path in index.get(name, ()) if path.is_file())
+                changed = False
+            if not changed:
+                break
+            cached = _TRANSCRIPT_INDEX[root] = _scan_transcripts(root)
+        found = sorted(path for path in cached[1].get(name, ()) if path.is_file())
         if found:
             return found
     return []
@@ -2544,7 +2581,7 @@ def reprice_record(record, path, data=None, events=None):
     if hit and hit[0] is data and hit[1] == stamp:
         return dict(hit[2])
     rec = _reprice_record(record, path, data, events)
-    if len(_reprice_cache) >= 256:
+    if len(_reprice_cache) >= 8192:
         _reprice_cache.clear()
     _reprice_cache[key] = (data, stamp, rec)
     return dict(rec)
@@ -2714,25 +2751,34 @@ def _cmd_resolve(argv):
     return 0
 
 
+FOR_ROLE_ACCEPTS = ("for-role <" + "|".join(TIER_ORDER) + "|validation> [<tier>...] [--from <transport>] "
+                    "[--json] [--pay]")
+FOR_ROLE_EXAMPLE = "python3 .claude/tools/model_registry.py for-role executor"
+
+
+def _refuse_for_role(message):
+    """Refuse a `for-role` call in the shared shape: the reason, then what it accepts and one valid call."""
+    print(message, file=sys.stderr)
+    print(refusal(FOR_ROLE_ACCEPTS, FOR_ROLE_EXAMPLE), file=sys.stderr, end="")
+
+
 def _cmd_for_role(argv):
-    """Rows serving a role tier, from this seat and across the hop. Reports; never resolves a pin."""
-    # Strip `--from <name>` BEFORE the arity check: `for-role --from codex` (no role) used to pass
-    # a check run on the unstripped list and then raise IndexError at args[0]. `main()` catches only
-    # RegistryError, so the caller got a traceback instead of the usage line.
-    seat = None
+    """One plan-filtered tier table in the owner's order: surviving plans, then the rows fit for every
+    requested tier; the ladder cut to those tiers prints above it. Facts only, never a pick, and the
+    hop recipe, transport label and pin spelling stay with dispatch."""
     argv = list(argv)
+    seat = None
     seat_given = "--from" in argv
     if seat_given:
         i = argv.index("--from")
         if i + 1 >= len(argv):
-            print("--from needs a transport name", file=sys.stderr)
+            _refuse_for_role("--from needs a transport name")
             return 2
         seat = argv[i + 1]
         del argv[i:i + 2]
     args = [a for a in argv if not a.startswith("--")]
     if not args:
-        print(f"usage: for-role <{'|'.join(TIER_ORDER)}|validation> [--from <transport>]",
-              file=sys.stderr)
+        _refuse_for_role("for-role needs at least one tier")
         return 2
     data = load()
     if seat is None:
@@ -2740,91 +2786,37 @@ def _cmd_for_role(argv):
         import _session_transport                                       # noqa: E402
         seat = _session_transport.session_plan()
     if seat not in data["transports"]:
-        print(f"unknown transport {seat!r}; registered: {', '.join(transports(data))}",
-              file=sys.stderr)
+        _refuse_for_role(f"unknown transport {seat!r}; registered: {', '.join(transports(data))}")
         return 2
-
-    res = for_role(args[0], seat, data)
+    tiers = list(dict.fromkeys(canonical_tier(a) for a in args))
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import provider_bands                                                # noqa: E402
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    got = provider_bands.tier_table(tiers, seat, data=data, pay="--pay" in argv)
+    if got["refused"]:
+        print(got["refused"], file=sys.stderr)
+        return 2
+    if "--json" in argv:
+        print(json.dumps(got, indent=2))
+        return 0
+    listed = {row.get("ladder") for group in got["groups"] for row in group["rows"]}
+    parts = []
     try:
-        tiers = role_tiers()
-    except RegistryError:
-        tiers = None
-    heading = f"role `{res['tier']}`"
-    if tiers:
-        heading += f" -- ladder row(s): {', '.join(tiers[res['tier']])}"
-    print(heading)
-    print(f"seat: {seat}" + ("" if seat_given else "  (resolved from this session)"))
-    if res["note"]:
-        print(f"note: {res['note']}")
-    print("Every row claims the tier; the order is the registry's, not a pick. Choose by the ladder's selection "
-          "line: `±` fit and quality set the floor; then the plan, one whose quota goes unused at reset first "
-          "([budget-posture]); then the cheapest fit row on that plan.")
-
-    costs = ladder_costs(data)
-
-    def describe(m, marked=None):
-        # The phrase follows `effort.evidence`, the field that says WHERE the rung lives -- never
-        # the transport. A rung printed from the row would be the ladder cell's second home, and
-        # keying this on the host transport is what made a codex row read differently from an
-        # Anthropic row serving the same tier.
-        eff = m.get("effort") or {}
-        evidence = eff.get("evidence")
-        measured = evidence == "measured"
-        rungs = "/".join(f"{k}={eff[k]}" for k in ("converged", "open") if measured and eff.get(k))
-        if not rungs:
-            rungs = ("per the ladder row" if evidence == "see-ladder"
-                     else "owner-claimed" if evidence == "owner"
-                     else "measured, rung unstated" if measured else "unmeasured")
-        cost = (data["transports"].get(m["transport"]) or {}).get("costModel", "unstated")
-        ladder = ladder_cost(m, costs=costs)
-        cost = f"cost {ladder if ladder is not None else '?'} (ladder; higher = cheaper), {cost}"
-        held_supp = set(supplementary_tiers(m))
-        claims = ",".join(f"{r}(supplementary)" if r in held_supp else r
-                          for r in m.get("roles") or []) or "-"
-        if m["transport"] != "anthropic":
-            pin = f"provider pin: {m['id']}"
-        elif m.get("family") and m["alias"] != m["family"]:
-            pin = f"host pin: {m['id']} (a versioned alias does not resolve natively)"
-        else:
-            pin = f"host pin: {m['alias']} or {m['id']}"
-        tier = tier_phrase(long_context_tier(m, data), m)
-        mark = next((k["text"] for k in m.get("probation") or []
-                     if isinstance(k, dict) and k.get("tier") == marked), None)
-        return (f"  {m['alias']:8s} {m['id']:22s} {m['transport']:10s} effort {rungs}; "
-                f"{cost}; claims {claims}; {pin}" + (f"; long context: {tier}" if tier else "")
-                + (f'; probation "{mark}"' if mark else ""))
-
-    print("\nIN-TRANSPORT (no hop; use each row's native Workflow/Agent pin):")
-    if res["inTransport"]:
-        for m in res["inTransport"]:
-            print(describe(m, res["tier"]))
-    else:
-        print(f"  (none -- no available {seat} row serves `{res['tier']}`)")
-
-    only = [m for m in res["supplementary"] if res["tier"] not in (m.get("roles") or [])]
-    if only:
-        print("\nSUPPLEMENTARY (added review seats only: never lone, never author; seat beside a qualified "
-              "seat that carries the same mandates):")
-        for m in only:
-            print(describe(m))
-
-    print("\nCROSS-TRANSPORT (sidecar hop; spends the TARGET's currency, so read its band):")
-    if res["crossTransport"] or res["otherPlans"]:
-        for m in res["crossTransport"]:
-            print(describe(m, res["tier"]))
-            print(f"           {_sidecar_line(m, data)}")
-        for m, plan, launcher in res["otherPlans"]:
-            print(describe(m, res["tier"]) + f"  [paid by plan {plan}]")
-            print(f"           {_sidecar_line(m, data, launcher)}")
-    else:
-        print("  (none -- every serving row is already on this seat)")
-
-    if res["nearest"]:
-        print("\nNEAREST IN-TRANSPORT (a DIFFERENT tier -- state the trade before taking it):")
-        for m, other, delta in res["nearest"]:
-            direction = "below" if delta > 0 else "above"
-            plural = "" if abs(delta) == 1 else "s"
-            print(describe(m) + f"  [`{other}`, {abs(delta)} tier{plural} {direction}]")
+        parts.append(ladder_slice(tiers, data=data,
+                                  only=None if got["plansLow"] or got.get("payOptions") else listed))
+    except RegistryError as err:
+        print(f"for-role: {err}; delivery not staged for the dispatch gate: read the ladder in full instead",
+              file=sys.stderr)
+        sys.stdout.write(provider_bands.render_tier_table(got) + "\n")
+        return 0
+    parts.append(provider_bands.render_tier_table(got) + "\n")
+    text = "".join(parts)
+    staged = _stage_ladder_receipt(text, tiers)
+    sys.stdout.write(text)
+    if not staged:
+        print("for-role: delivery not staged for the dispatch gate (no CLAUDE_CODE_SESSION_ID, or the "
+              "session state was unwritable); read the ladder in full instead", file=sys.stderr)
     return 0
 
 
@@ -3113,7 +3105,7 @@ def anthropic_window(entry, use_max=False, max_output=None, compact_override=Non
 
 def _cmd_anthropic_window(argv):
     flags = argv[1:]
-    if len(flags) >= 2 and flags[-2] == "--shape":  # accepted for anthropic_sidecar.sh, which passes it; no effect
+    if len(flags) >= 2 and flags[-2] == "--shape":  # accepted and ignored: no launcher passes it any more
         flags = flags[:-2]
     if not argv or flags not in ([], ["--max"]):
         print("usage: model_registry.py anthropic-window <model> [--max] [--shape <shape>]", file=sys.stderr)
@@ -3305,29 +3297,24 @@ def _cmd_review_state(argv):
     return 0
 
 
-def _record_ladder_slice(tiers):
-    """True when the covered tiers reached this session's compaction-scoped hook state."""
+def _stage_ladder_receipt(text, tiers):
+    """Stage the hash of the stdout this run is about to deliver, with the tiers it prints. The Bash
+    PostToolUse entry (`model_ladder_gate.mark_loaded`) credits them only when that exact text reaches the
+    context; a pipe, filter, redirect or failed run leaves the tiers uncredited. True when staged."""
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session_id:
         return False
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
     import _hook_state
-    return _hook_state.mark_ladder_slice(session_id, tiers)
+    return _hook_state.stage_ladder_receipt(session_id, _hook_state.stdout_sha256(text), tiers)
 
 
 def _cmd_ladder_slice(argv):
-    """The ladder cut to the named tiers' rows; the dispatch gate reads the tiers it recorded."""
-    if not argv:
-        print("usage: model_registry.py ladder-slice <tier> [<tier>...]", file=sys.stderr)
-        return 2
-    tiers = sorted({canonical_tier(t) for t in argv})
-    text = ladder_slice(tiers)
-    recorded = _record_ladder_slice(tiers)
-    sys.stdout.write(text)
-    if not recorded:
-        print("ladder-slice: tiers not recorded for the dispatch gate (no CLAUDE_CODE_SESSION_ID, or the "
-              "session state was unwritable); read the ladder in full instead", file=sys.stderr)
-    return 0
+    """Retired: `for-role <tier>...` prints the same doctrine above its table."""
+    print("model_registry.py ladder-slice is retired: run "
+          "`python3 .claude/tools/model_registry.py for-role <tier>...` (it prints the ladder cut to those tiers)",
+          file=sys.stderr)
+    return 2
 
 
 _COMMANDS = {

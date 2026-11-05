@@ -109,7 +109,8 @@ def arm_skill(env, session):
 
 def names_ladder_route(reason):
     """A ladder deny names the full Read when the launch's tiers are unknown, else carries the slice (or names its command)."""
-    return "model_ladder_evidence.md" in reason or "model_registry.py ladder-slice" in reason or "## Role definitions" in reason
+    return ("model_ladder_evidence.md" in reason or "model_registry.py for-role" in reason
+            or "## Role definitions" in reason)
 
 
 def arm_slice(env, session, tiers):
@@ -120,7 +121,35 @@ def arm_slice(env, session, tiers):
         assert _hook_state.mark_ladder_slice(session, tiers)
 
 
-def run(command, env, session=SID, run_in_background=False, ladder=True, cwd=None, skill=True):
+def hook_in_process(payload, env, cwd):
+    """The hook's `main()` called here with the payload on stdin and `env` as the whole environment;
+    a fresh interpreter per call costs the same imports again and tests no more logic."""
+    previous_cwd = os.getcwd()
+    out = io.StringIO()
+    os.chdir(cwd)
+    real_bounded = sidecar.run_bounded
+
+    def bounded(args, *rest, **kwargs):
+        # ok_sidecar.sh's `--check` is `echo OK; exit 0`: answering it here skips a bash start that
+        # proves nothing. The refusing launchers and `real=True` calls still run the real shell.
+        if os.path.basename(str(args[1])) == "ok_sidecar.sh" and args[2:3] == ["--check"]:
+            return types.SimpleNamespace(returncode=0, stdout="OK\n", stderr="")
+        return real_bounded(args, *rest, **kwargs)
+
+    try:
+        with patch.dict(os.environ, env, clear=True), patch.object(sys, "stdin", io.StringIO(json.dumps(payload))), \
+                patch.object(sys, "stdout", out), patch.object(sys, "stderr", io.StringIO()), \
+                patch.object(sidecar, "run_bounded", bounded):
+            try:
+                sidecar.main()
+            except Exception:
+                pass
+    finally:
+        os.chdir(previous_cwd)
+    return out.getvalue().strip()
+
+
+def run(command, env, session=SID, run_in_background=False, ladder=True, cwd=None, skill=True, real=False):
     # Relative jobs belong to the planted project, not the checkout running this proof.
     cwd = cwd or env["CLAUDE_PROJECT_DIR"]
     if ladder:
@@ -133,9 +162,12 @@ def run(command, env, session=SID, run_in_background=False, ladder=True, cwd=Non
     payload = {"tool_name": "Bash", "session_id": session, "tool_input": tool_input}
     if cwd:
         payload["cwd"] = cwd
-    r = checked_run([sys.executable, HOOK], input=json.dumps(payload),
-                    capture_output=True, text=True, timeout=90, env=env, cwd=cwd)
-    out = (r.stdout or "").strip()
+    if real:
+        r = checked_run([sys.executable, HOOK], input=json.dumps(payload),
+                        capture_output=True, text=True, timeout=90, env=env, cwd=cwd)
+        out = (r.stdout or "").strip()
+    else:
+        out = hook_in_process(payload, env, cwd)
     if not out:
         return {}
     return json.loads(out).get("hookSpecificOutput") or {}
@@ -408,6 +440,67 @@ def plan_cases(tmp):
                 cases.append(("...and `transport` naming a plan still fails agreement",
                               sidecar._safe_fanout_job(dict(job, transport="anthropic-secondary"),
                                                        root, forced) is False))
+                # A `rows` job lists every row that meets its bar: each row is a legal pin, and the job is as
+                # auto-approvable and as tier-checkable as the one-alias job it replaces.
+                other = next(m["alias"] for m in model_registry.available_models(forced)
+                             if m["transport"] == "anthropic" and m["alias"] != host_exec)
+                rows_job = {"label": "rows-a", "rows": {host_exec: "medium", other: "low"}, "promptFile": prompt,
+                            "kind": "lens", "wakeWith": "grp", "window": "full"}
+                alias_job = {"label": "rows-a", "alias": host_exec, "effort": "medium", "promptFile": prompt,
+                             "kind": "lens", "wakeWith": "grp", "window": "full"}
+
+                plain = {k: v for k, v in rows_job.items() if k not in ("wakeWith", "window")}
+
+                fans = iter(range(100))
+
+                def fan_of(*listed):
+                    path = os.path.join(scratch, "rows_jobs_%d.json" % next(fans))
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump(list(listed), fh)
+                    return sidecar.fanout_launch("python3 .claude/tools/sidecar_fanout.py %s"
+                                                 % path.replace("\\", "/"))
+                rows_fan, alias_fan = fan_of(rows_job), fan_of(alias_job)
+                rows_contracts = sidecar.fanout_contract(rows_fan, root)
+                cases.append(("a `rows` job (with wakeWith and window) gets one contract per row, in listed order",
+                              [(c["job"][0], c["job"][1], c["effort"]) for c in rows_contracts]
+                              == [("rows-a", host_exec, "medium"), ("rows-a", other, "low")]))
+                cases.append(("an alias job carrying wakeWith and window keeps its one contract",
+                              [(c["job"][1], c["effort"]) for c in sidecar.fanout_contract(alias_fan, root)]
+                              == [(host_exec, "medium")]))
+                rows_tiers = sidecar.launch_tiers(None, rows_fan, root)
+                cases.append(("a `rows` job implies its kind's tier, as the alias job does",
+                              rows_tiers is not None and rows_tiers == sidecar.launch_tiers(None, alias_fan, root)))
+                cases.append(("a `rows` job on a plan that serves none of its rows reads no contract",
+                              sidecar.fanout_contract(fan_of(dict(rows_job, plan="codex")), root) == []))
+                codex_exec = next(m["alias"] for m in model_registry.available_models(forced)
+                                  if m["transport"] == "codex" and "executor" in model_registry.entry_tiers(m))
+                mixed_rows_job = dict(rows_job, rows={host_exec: "medium", codex_exec: "low"},
+                                      plan="anthropic-secondary")
+                mixed_plain = {k: v for k, v in mixed_rows_job.items() if k not in ("wakeWith", "window")}
+                mixed_contracts = sidecar.fanout_contract(fan_of(mixed_rows_job), root)
+                cases.append(("a named plan keeps only rows served by that plan",
+                              len(mixed_contracts) == 1
+                              and mixed_contracts[0]["job"][1] == host_exec
+                              and mixed_contracts[0]["effort"] == "medium"))
+                cases.append(("a named plan approves a rows job when it serves at least one row",
+                              sidecar._safe_fanout_job(mixed_plain, root, forced) is True))
+                cases.append(("a `rows` job approves like an alias job",
+                              sidecar._safe_fanout_job(plain, root, forced) is True))
+                cases.append(("...not with `alias` beside `rows`",
+                              sidecar._safe_fanout_job(dict(plain, alias=host_exec), root, forced) is False))
+                cases.append(("...not with `effort` beside `rows`",
+                              sidecar._safe_fanout_job(dict(plain, effort="medium"), root, forced) is False))
+                cases.append(("...not with a row the registry does not know",
+                              sidecar._safe_fanout_job(dict(plain, rows={host_exec: "medium", "no-such-row": None}),
+                                                       root, forced) is False))
+                cases.append(("...not with a row effort outside the safe set",
+                              sidecar._safe_fanout_job(dict(plain, rows={host_exec: "turbo"}),
+                                                       root, forced) is False))
+                cases.append(("...not with an empty `rows` object",
+                              sidecar._safe_fanout_job(dict(plain, rows={}), root, forced) is False))
+                cases.append(("a job naming neither `alias` nor `rows` does not approve",
+                              sidecar._safe_fanout_job({k: v for k, v in alias_job.items() if k != "alias"},
+                                                       root, forced) is False))
         finally:
             sidecar._dispatch_checks.set_deadline(None)
     return cases
@@ -432,7 +525,7 @@ def long_context_cases(tmp, ok, env):
     cases.append(("a resuming -M launch carries none either", late_advice(out) == []))
     return cases
 
-def test_preflight_gets_its_full_timeout_and_no_check_reads_capacity(tmp_path):
+def test_preflight_runs_once_bounded_and_no_check_reads_capacity(tmp_path):
     project = tmp_path / "project"
     scripts = project / ".claude" / "scripts"
     scripts.mkdir(parents=True)
@@ -453,7 +546,7 @@ def test_preflight_gets_its_full_timeout_and_no_check_reads_capacity(tmp_path):
             patch.object(sidecar.sys, "stdin", io.StringIO(json.dumps(payload))), \
             patch.object(sidecar.sys, "stdout", io.StringIO()):
         sidecar.main()
-    assert asked == [sidecar.PREFLIGHT_TIMEOUT], asked
+    assert len(asked) == 1 and asked[0] > 0, asked
 
 def test_first_launch_injects_no_recipe_card_or_pointer(tmp_path, monkeypatch):
     ref = tmp_path / ".claude/reference/sidecar_dispatch.md"
@@ -618,6 +711,22 @@ def test_the_launcher_checks_the_doctrine_for_a_launch_no_hook_checked(monkeypat
     assert calls == ["launch01"], calls
 
 
+def test_the_launcher_keeps_a_pause_refusals_exit_code(monkeypatch, capsys):
+    # A spent allowance (10) or a peak window (11) is a pause its caller waits out; any other refusal is 2.
+    sys.path.insert(0, HOOKS)
+    import dispatch_table
+    monkeypatch.setattr(dispatch_table, "sidecar_entries", lambda payload: ([], []))
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "tracking_session", lambda: None)
+    argv = ["-m", "fake", "-f", "brief.md", "-G", "author"]
+    launcher = os.path.join(REPO, "scripts", "codex_proxy_sidecar.sh")
+    for rc, want in ((sidecar.CAPACITY_REFUSAL_EXIT, 10), (sidecar.PEAK_EXIT, 11), (3, 2)):
+        monkeypatch.setattr(sidecar, "launch_preflight",
+                            lambda cmd, root, rc=rc: ("refused", "REFUSED at preflight (x --check exit %d)" % rc, rc))
+        assert sidecar.launcher_launch(launcher, argv) == want, rc
+        assert "REFUSED at preflight" in capsys.readouterr().err
+
+
 import pytest
 from pathlib import Path
 import shlex
@@ -626,6 +735,7 @@ import shlex
 @pytest.fixture(autouse=True)
 def isolated_session_state(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "session-state"))
+    monkeypatch.setenv("CLAUDE_PROJECTS_ROOT", str(tmp_path / "projects"))
     monkeypatch.delenv("SIDECAR_FANOUT_ID", raising=False)
 
 
@@ -806,6 +916,28 @@ def test_large_fanout_keeps_the_first_queued_childs_receipt(checked_fanout, caps
     assert launch("pc-queued-0", "anthropic-secondary") == 0, capsys.readouterr().err
 
 
+def test_a_receipt_from_another_hook_version_never_crashes_a_launch(checked_fanout, capsys):
+    """A receipt another checkout's hook stored with a longer job tuple stays in the session state."""
+    import time
+    import _hook_state
+    check, compact, launch, _path, _out = checked_fanout
+    assert check() is None
+    path = _hook_state.state_path("fold0001")
+
+    def plant(state):
+        group = json.loads(json.dumps(state[sidecar.CHECKS_KEY][0]))
+        foreign = group["children"][0]
+        foreign["fanout"]["job"] = ["other-version-job", *foreign["fanout"]["job"][1:4], "architect"]
+        foreign["at"] = time.time()
+        group["children"] = [foreign]
+        state[sidecar.CHECKS_KEY].insert(0, group)
+        return state
+
+    _hook_state.update_json_locked(path, plant, raising=True)
+    compact()
+    assert launch("pc-plc-test-readiness", "anthropic-secondary") == 0, capsys.readouterr().err
+
+
 def test_refold_call_receipts_cover_authors_but_no_seat(checked_fanout, capsys):
     import _hook_state
     check, compact, launch, _path, out = checked_fanout
@@ -824,7 +956,7 @@ def test_fold_requires_executor_doctrine_even_with_only_survey_seats(checked_fan
     jobs[0]["kind"] = "lens"
     path.write_text(json.dumps(jobs), encoding="utf-8")
     arm_slice(dict(os.environ), "fold0001", ["fanout"])
-    assert "ladder-slice executor" in check(loaded=False)
+    assert "for-role executor" in check(loaded=False)
 
 
 def test_fanout_attempt_receipt_cannot_be_consumed_twice(checked_fanout, capsys):
@@ -857,7 +989,8 @@ def main():
         reference = source.read()
     with open(os.path.join(reference_dir, "sidecar_dispatch.md"), "w", encoding="utf-8") as target:
         target.write(reference)
-    env = dict(_transport_fixture.hook_env(), HARNESS_HOOK_STATE_DIR=tmp, CLAUDE_PROJECT_DIR=project)
+    env = dict(_transport_fixture.hook_env(), HARNESS_HOOK_STATE_DIR=tmp, CLAUDE_PROJECT_DIR=project,
+               CLAUDE_PROJECTS_ROOT=os.path.join(tmp, "projects"))
     env.pop("HARNESS_SIDECAR_PREFLIGHT", None)
     ok = fdir + "/ok_sidecar.sh"
     refusing = fdir + "/hot_sidecar.sh"
@@ -886,8 +1019,8 @@ def main():
             check(Path(tmp) / "ctx", monkeypatch)
         cases.append((label, True))
     try:
-        test_preflight_gets_its_full_timeout_and_no_check_reads_capacity(Path(tmp) / "s13")
-        cases.append(("the preflight gets its full timeout and the tier check reads no capacity", True))
+        test_preflight_runs_once_bounded_and_no_check_reads_capacity(Path(tmp) / "s13")
+        cases.append(("the preflight runs once, bounded, and the tier check reads no capacity", True))
     except Exception as exc:
         cases.append(("preflight timeout: " + repr(exc), False))
     for label, source in (

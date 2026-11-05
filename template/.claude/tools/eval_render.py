@@ -517,8 +517,14 @@ const lg=addTab('log','Log');lg.appendChild(correctionsCard());lg.appendChild(bo
 INPUTS_JS = r"""function inputsCard(){const rows=(B.inputs||[]).map(i=>'<tr><td>'+esc(i.source)+'</td><td>'+esc(i.path)+'</td><td class="num">'+i.rows+'</td><td>'+esc(i.first||'n/a')+'</td><td>'+esc(i.last||'n/a')+'</td><td class="num">'+(i.age_days==null?'n/a':i.age_days)+'</td><td><b>'+esc(i.status)+'</b>'+(i.detail?' <span class="note">'+esc(i.detail)+'</span>':'')+'</td></tr>').join('');
 const t=B.agents.totals,covered=t.rows-t.rows_without_task;
 return '<div class="card"><h2>Inputs</h2><p class="sub">One row per producer. ok, absent (optional producer not present), stale (older than its limit) or unparseable; stale and unparseable degrade the run.</p><table><thead><tr><th>source</th><th>path</th><th class="num">rows</th><th>first</th><th>last</th><th class="num">age days</th><th>status</th></tr></thead><tbody>'+rows+'</tbody></table><p class="note">task-id coverage: '+covered+' of '+t.rows+' archived agent rows carry a task id.</p></div>'}
+function censusLine(R){const L=R.lookup_calls||{},V=R.vault_writes||{},G=R.legacy_heuristic_events||{};
+const sum=o=>Object.values(o).reduce((a,b)=>a+b,0);const parts=[];
+if(Object.keys(L).length)parts.push('lookups: bash recognized '+(L.bash_recognized||0)+', bash opaque '+(L.bash_opaque||0)+', lsp '+(L.lsp||0));
+if(Object.keys(V).length)parts.push('vault writes: '+Object.keys(V).sort().map(k=>esc(k)+' '+V[k]).join(', '));
+if(sum(G))parts.push('legacy heuristic events (retired verdicts, not misses): '+sum(G));
+return parts.length?'<p class="note">'+parts.join(' · ')+'</p>':''}
 function routingCard(){const R=B.routing;if(!R)return '';const weeks=Object.keys(R.by_week||{}).sort().slice(-4);
-return '<div class="card"><h2>Routing card</h2><p class="sub">From routing_audit_stats.json, generated '+esc(R.generated_at||'?')+': '+R.silent_misses+' silent misses in '+R.total_entries+' entries over '+R.active_window_days+' days.</p><p>'+weeks.map(w=>esc(w)+': '+(R.by_week[w].silent_miss||0)+' silent misses').join(' · ')+'</p><table><thead><tr><th>rule</th><th class="num">silent misses</th><th>trend vs prior 4 weeks</th></tr></thead><tbody>'+
+return '<div class="card"><h2>Routing card</h2><p class="sub">From routing_audit_stats.json, generated '+esc(R.generated_at||'?')+': '+R.silent_misses+' silent misses in '+R.total_entries+' entries over '+R.active_window_days+' days.</p><p>'+weeks.map(w=>esc(w)+': '+(R.by_week[w].silent_miss||0)+' silent misses').join(' · ')+'</p>'+censusLine(R)+'<table><thead><tr><th>rule</th><th class="num">silent misses</th><th>trend vs prior 4 weeks</th></tr></thead><tbody>'+
 (R.top_5_silent_miss_rules||[]).map(r=>'<tr><td>'+esc(r.rule)+'</td><td class="num">'+r.count+'</td><td>'+esc(r.trend_vs_prior_4wk_avg)+'</td></tr>').join('')+'</tbody></table></div>'}
 const inp=addTab('inputs','Inputs');inp.innerHTML=inputsCard()+routingCard();"""
 

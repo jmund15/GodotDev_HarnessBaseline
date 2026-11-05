@@ -7,12 +7,15 @@ channel (deny via stderr + exit 2, or allow via exit 0).
     python3 .claude/tests/test_git_guardrails_harness_commit.py
 """
 import atexit
+import importlib.util
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 
 _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_TESTS_DIR)
@@ -76,20 +79,54 @@ _SLOT_DIR = tempfile.mkdtemp(prefix="ggharness_slots_")
 atexit.register(shutil.rmtree, _SLOT_DIR, ignore_errors=True)
 
 
-def run_hook(command, repo, env_extra=None, unguarded=False):
+def run_hook(command, repo, env_extra=None, unguarded=False, process=False):
+    """The hook's verdict on a Bash payload: `process` feeds it on a real stdin to a child, else `main()` runs in
+    this process (a floor guard's crash is a deny when guarded, a traceback when `unguarded`)."""
     payload = {"tool_name": "Bash", "session_id": "s1", "cwd": repo,
                "tool_input": {"command": command}}
     env = dict(os.environ, HARNESS_SLOT_DIR=_SLOT_DIR, HARNESS_NO_PASS_CACHE="1")
     if env_extra:
         env.update(env_extra)
-    argv = [sys.executable, "-c", _UNGUARDED, HOOK] if unguarded else [sys.executable, HOOK]
-    r = subprocess.run(argv, input=json.dumps(payload),
-                        capture_output=True, text=True, timeout=120, env=env, cwd=repo)
-    if r.returncode == 2:
-        return DENY, r.stderr
-    if r.returncode != 0 or (unguarded and "Traceback (most recent call last)" in r.stderr):
-        return CRASH, r.stderr[-400:]
-    return ALLOW, r.stdout
+    if process:
+        argv = [sys.executable, "-c", _UNGUARDED, HOOK] if unguarded else [sys.executable, HOOK]
+        r = subprocess.run(argv, input=json.dumps(payload),
+                           capture_output=True, text=True, timeout=120, env=env, cwd=repo)
+        code, out, err = r.returncode, r.stdout, r.stderr
+    else:
+        saved = (sys.stdin, sys.stdout, sys.stderr, sys.argv, dict(os.environ), os.getcwd())
+        out_io, err_io = io.StringIO(), io.StringIO()
+        sys.stdin, sys.stdout, sys.stderr, sys.argv = io.StringIO(json.dumps(payload)), out_io, err_io, [HOOK]
+        os.environ.clear()
+        os.environ.update(env)
+        os.chdir(repo)
+        code = 0
+        try:
+            _hook().main()
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+        except Exception:
+            err_io.write(traceback.format_exc())
+            code = 1 if unguarded else 2
+        finally:
+            sys.stdin, sys.stdout, sys.stderr, sys.argv = saved[:4]
+            os.chdir(saved[5])
+            os.environ.clear()
+            os.environ.update(saved[4])
+        out, err = out_io.getvalue(), err_io.getvalue()
+    if code == 2:
+        return DENY, err
+    if code != 0 or (unguarded and "Traceback (most recent call last)" in err):
+        return CRASH, err[-400:]
+    return ALLOW, out
+
+
+def _hook():
+    if "git_guardrails_inproc" not in sys.modules:
+        spec = importlib.util.spec_from_file_location("git_guardrails_inproc", HOOK)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["git_guardrails_inproc"] = module
+        spec.loader.exec_module(module)
+    return sys.modules["git_guardrails_inproc"]
 
 
 def case(label, got, expected, needle=""):
@@ -510,8 +547,10 @@ def push_base_cases():
                          run_hook('git push origin HEAD:new', repo), ALLOW))
     write(repo, '.claude/hooks/base.py', 'BASE = 2\n')
     git(repo, ['commit', '-qam', 'new harness'])
-    failures.append(case('unpublished ref with new harness changes still needs close',
-                         run_hook('git push origin HEAD:new', repo), DENY, 'harness_tests.py --close'))
+    got = run_hook('git push origin HEAD:new', repo)
+    failures.append(case('unpublished ref with new harness changes still needs close', got, DENY,
+                         'the runner runs the close' if 'the runner runs the close' in got[1]
+                         else 'harness_tests.py --close'))
     head = git(repo, ['rev-parse', 'HEAD']).strip()
     stamp = os.path.join(repo, 'stamp.json')
     with open(stamp, 'w', encoding='utf-8') as source:
@@ -539,7 +578,7 @@ def test_string_constants_advise_but_branch_denies():
             assert "if a changed string is a pattern" in context
         write(repo, path, 'MESSAGE = "old"\nPATTERN = r"^old$"\nif MESSAGE:\n    print(MESSAGE)\n')
         git(repo, ["add", path])
-        verdict, output = run_hook("git commit -F msg -- " + path, repo)
+        verdict, output = run_hook("git commit -F msg -- " + path, repo, process=True)  # the one real stdin payload
         assert verdict == DENY and "no re-runnable proof" in output
     finally:
         shutil.rmtree(repo, ignore_errors=True)
@@ -596,6 +635,11 @@ def commit_proof_cases():
         finally:
             shutil.rmtree(repo, ignore_errors=True)
     return failures
+
+
+def mark_loaded(skill_state, skills):
+    with open(os.path.join(skill_state, "s1.json"), "w", encoding="utf-8") as fh:
+        json.dump({"skills_loaded": skills}, fh)
 
 
 def inline_cases():
@@ -667,16 +711,12 @@ def inline_cases():
     skill_state = tempfile.mkdtemp(prefix="ggskill_")
     skill_env = {"HARNESS_HOOK_STATE_DIR": skill_state}
 
-    def mark_loaded(skills):
-        with open(os.path.join(skill_state, "s1.json"), "w", encoding="utf-8") as fh:
-            json.dump({"skills_loaded": skills}, fh)
-
-    mark_loaded(["something_else"])
+    mark_loaded(skill_state, ["something_else"])
     failures.append(case(
         "staged harness commit, skill not loaded -> allow with an advisory naming instruction_quality",
         run_hook('git commit -F msg -- .claude', repo, skill_env), ALLOW,
         ("instruction_quality", "rules/harness_tooling.md", "Load the skill, check the edits")))
-    mark_loaded(["instruction_quality"])
+    mark_loaded(skill_state, ["instruction_quality"])
     failures.append(case(
         "staged harness commit, skill loaded -> allow",
         run_hook('git commit -F msg -- .claude', repo, skill_env), ALLOW))
@@ -686,12 +726,12 @@ def inline_cases():
                  {"HARNESS_HOOK_STATE_DIR": tempfile.mkdtemp(prefix="ggnosess_")}), ALLOW))
     write(repo, ".claude/hooks/guide.md", "# guide\n")
     git(repo, ["add", ".claude/hooks/guide.md"])
-    mark_loaded(["something_else"])
+    mark_loaded(skill_state, ["something_else"])
     failures.append(case(
         "a staged harness .md without instruction_quality is allowed with an advisory citing the skill",
         run_hook('git commit -F msg -- .claude', repo, skill_env), ALLOW,
         ("skills/instruction_quality/SKILL.md", "Load the skill, check the edits")))
-    mark_loaded(["instruction_quality"])
+    mark_loaded(skill_state, ["instruction_quality"])
     write(repo, ".claude/hooks/guide.md", "# guide\n\n**A packed rule.** " + ("padding words " * 40) + "\n")
     git(repo, ["add", ".claude/hooks/guide.md"])
     failures.append(case(
@@ -700,7 +740,7 @@ def inline_cases():
         ("audit trigger", ".claude/hooks/guide.md")))
     # 2c. The skill advisory names harness surfaces: a plan, a memory or the worklog mirror is not one
     #     (harness_edit_skill_reminder.is_harness_file), though the commit still runs its bound proofs.
-    mark_loaded(["something_else"])
+    mark_loaded(skill_state, ["something_else"])
     for rel in (".claude/plans/p.md", ".claude/auto-memory/m.md", ".claude/worklog-titles.md"):
         repo = make_repo()
         write(repo, rel, "# note\n")
@@ -774,6 +814,12 @@ def inline_cases():
         run_hook('git commit -F msg -- .claude', repo,
                   {"HARNESS_ALLOW_UNSTAMPED_HARNESS": "1"}),
         ALLOW))
+
+    return failures
+
+
+def inline_cases_b():
+    failures = []
 
     # 10. directory pathspec: an untouched tracked hook without a proof is NOT demanded;
     #     a changed untested hook under the same pathspec still is.
@@ -944,6 +990,12 @@ def inline_cases():
         got = (DENY, r.stderr) if r.returncode == 2 else (ALLOW, r.stdout)
         failures.append(case(label, got, expected, needle))
 
+    return failures
+
+
+def inline_cases_c():
+    failures = []
+
     # 20. Merge and cherry-pick do not re-author source content. The commit closing a
     #     --no-commit merge is judged only on what it authors beyond MERGE_HEAD.
     repo = make_repo()
@@ -1024,6 +1076,22 @@ def inline_cases():
         "a hook still in the index but gone from the worktree needs its proof -> deny",
         run_hook("git commit -F msg", repo), DENY,
         "no re-runnable proof"))
+    # Live block 2026-11-03: a pathspec commit publishes the worktree, so a tracked tool deleted there and named
+    # in the pathspec is a deletion even while the index still lists it.
+    repo = make_repo()
+    write(repo, ".claude/tools/gone_unstaged.py", "x = 1\n")
+    git(repo, ["add", "-A"])
+    git(repo, ["commit", "-q", "-m", "add gone_unstaged"])
+    os.remove(os.path.join(repo, ".claude", "tools", "gone_unstaged.py"))
+    failures.append(case(
+        "unstaged deletion of a tool, pathspec commit naming it -> allow",
+        run_hook("git commit -F msg -- .claude/tools/gone_unstaged.py", repo), ALLOW))
+    spec_file = os.path.join(repo, "paths.txt")
+    with open(spec_file, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(".claude/tools/gone_unstaged.py\n")
+    failures.append(case(
+        "unstaged deletion of a tool, --pathspec-from-file naming it -> allow",
+        run_hook("git commit -F msg --pathspec-from-file=paths.txt", repo), ALLOW))
 
     # A proof guards behavior. A docstring- or comment-only edit to an unproven hook changes none,
     # so demanding a new proof file for it is friction (live block 2026-09-23 on a docstring-only edit).
@@ -1086,14 +1154,16 @@ def inline_cases():
         "the default index, with nothing staged, still allows",
         run_hook("git commit -F msg", repo), ALLOW))
     # 21. A settings surface takes the same skill-load check as harness code.
+    skill_state = tempfile.mkdtemp(prefix="ggskill_")
+    skill_env = {"HARNESS_HOOK_STATE_DIR": skill_state}
     repo = make_repo()
     write(repo, ".claude/settings.base.json", '{"permissions": {"allow": []}}\n')
     git(repo, ["add", "-A"])
-    mark_loaded(['something_else'])
+    mark_loaded(skill_state, ['something_else'])
     failures.append(case('settings.base.json without instruction_quality -> allow with the advisory',
                          run_hook('git commit -F msg -- .claude/settings.base.json', repo, skill_env),
                          ALLOW, 'instruction_quality'))
-    mark_loaded(['instruction_quality'])
+    mark_loaded(skill_state, ['instruction_quality'])
     failures.append(case('settings.base.json with instruction_quality -> allow',
                          run_hook('git commit -F msg -- .claude/settings.base.json', repo, skill_env), ALLOW))
     return failures
@@ -1164,6 +1234,38 @@ def retargeted_merge_cases():
     return failures
 
 
+def missing_cwd_cases():
+    """A command that `cd`s into a worktree an earlier step of the same command creates names a directory
+    that does not exist when the hook reads it (rows F31899, F25663). A bare cherry-pick re-commits content
+    judged where it was committed, so it passes; a `git commit` there cannot be judged, and its deny says the
+    directory does not exist yet and to run the creating step in its own call, not that a `$` went unexpanded."""
+    failures = []
+    repo = make_repo()
+    try:
+        git(repo, ["checkout", "-q", "-b", "feat"])
+        write(repo, ".claude/hooks/feat_hook.py", "y = 1\n")
+        git(repo, ["add", "-A"])
+        git(repo, ["commit", "-q", "-m", "feat"])
+        pick = git(repo, ["rev-parse", "--short", "HEAD"]).strip()
+        git(repo, ["checkout", "-q", "-"])
+        make = "git worktree add -q --detach .claude/worktrees/wt HEAD && cd .claude/worktrees/wt && "
+        for label, command, expected, needle in (
+            ("a cherry-pick in a worktree the same command creates -> allow",
+             make + "git cherry-pick " + pick, ALLOW, ""),
+            ("a commit in a worktree the same command creates -> deny, naming the missing directory",
+             make + "git commit -q -m m", DENY,
+             ("does not exist yet", "in its own call")),
+            ("a commit in a directory nothing creates -> deny, naming the missing directory",
+             "cd .claude/worktrees/nowhere && git commit -q -m m", DENY, "does not exist yet"),
+            ("a cherry-pick in a directory nothing creates -> allow (git itself fails there, nothing publishes)",
+             "cd .claude/worktrees/nowhere && git cherry-pick " + pick, ALLOW, ""),
+        ):
+            failures.append(case(label, run_hook(command, repo, unguarded=True), expected, needle))
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+    return failures
+
+
 def baseline_owned_cases():
     """A hook committed exactly as the baseline lock records it was authored (and owes its proof) upstream."""
     import hashlib
@@ -1229,9 +1331,9 @@ def baseline_owned_cases():
     return failures
 
 
-GROUPS = (string_constants_cases, commit_proof_cases, inline_cases, index_cases, push_base_cases,
+GROUPS = (string_constants_cases, commit_proof_cases, inline_cases, inline_cases_b, inline_cases_c, index_cases, push_base_cases,
           same_command_write_cases, staged_blob_cases, must_allow_proof, retargeted_merge_cases,
-          baseline_owned_cases)
+          baseline_owned_cases, missing_cwd_cases)
 
 
 def main():

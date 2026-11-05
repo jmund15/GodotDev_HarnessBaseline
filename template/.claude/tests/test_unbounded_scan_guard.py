@@ -16,7 +16,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(HERE, "..", "hooks")
-HOOK = os.path.join(HOOKS, "unbounded_scan_guard.py")
+HOOK = os.environ.get("USG_HOOK") or os.path.join(HOOKS, "unbounded_scan_guard.py")
 PRECOMPACT = os.path.join(HOOKS, "transcript_backup.py")
 
 SID = "usg00001"
@@ -119,6 +119,64 @@ def outside_git_cases(env):
                            ("a file with a redirect", "grep -rn \"s9_h\\|headless\" notes/ledger.md 2>/dev/null | head -5")):
         cmd, note, decision = verdict(command, env, repo)
         cases.append((label + " is neither rewritten nor denied", cmd == "" and decision == ""))
+    return cases
+
+
+def rewrite_reach_cases(env):
+    """The git grep rewrite keeps a file operand a file, stays under the command-line limit, and reaches a nested repository."""
+    import shlex
+    repo = os.path.normpath(os.path.join(HERE, "..", ".."))
+    claude = os.path.join(repo, ".claude")
+    cases = []
+
+    def ran(cmd, cwd):
+        if len(cmd) > 32000:
+            return subprocess.CompletedProcess(cmd, 1, "", "command line too long")
+        return subprocess.run(shlex.split(cmd), capture_output=True, text=True, cwd=cwd, timeout=60)
+
+    # Item 1: a file operand with --include is searched as the file.
+    # The targets are hooks and tools, never `.claude/tests/`: a consumer gitignores its proofs, and an older git's
+    # `--untracked` skips a tracked file a .gitignore rule matches.
+    target = ".claude/hooks/unbounded_scan_guard.py"
+    cmd, _, decision = verdict("grep -rn --include=*.py REWRITE_NOTE " + target + " .claude/tools", env, repo)
+    done = ran(cmd, repo) if cmd.startswith("git grep") else None
+    cases.append(("a file operand with --include is searched as the file, not <file>/**/*.py",
+                  done is not None and done.returncode == 0 and "REWRITE_NOTE" in done.stdout and decision == ""))
+
+    # Item 2: a wide shell glob stays short and still returns its matches.
+    cmd, _, decision = verdict("grep -rn --include=*.py REWRITE_NOTE tests/*.py hooks scripts",
+                               env, claude)
+    done = ran(cmd, claude) if cmd.startswith("git grep") else None
+    cases.append(("a wide glob operand rewrites under 30000 chars and returns the matches",
+                  0 < len(cmd) < 30000 and done is not None and "hooks/unbounded_scan_guard.py" in done.stdout))
+    cmd, _, decision = verdict("grep -rn REWRITE_NOTE tests/*.py hooks", env, claude)
+    cases.append(("a wide glob without --include also rewrites under 30000 chars",
+                  0 < len(cmd) < 30000 and "hooks/unbounded_scan_guard.py" in ran(cmd, claude).stdout))
+    cmd, _, decision = verdict("grep -rn foo tests/*.py hooks $(echo x)", env, claude)
+    cases.append(("a wide glob with a substitution operand stays denied", cmd == "" and decision == "deny"))
+
+    # Item 3: a directory inside another git repository runs as git -C <toplevel> grep.
+    other = os.path.realpath(tempfile.mkdtemp(prefix="usgnested_")).replace("\\", "/")
+    subprocess.run(["git", "-C", other, "init", "-q"], capture_output=True)
+    os.makedirs(other + "/sub")
+    with open(other + "/sub/a.txt", "w", encoding="utf-8") as handle:
+        handle.write("nested_needle\n")
+    with open(other + "/.gitignore", "w", encoding="utf-8") as handle:
+        handle.write("ign/\n")
+    os.makedirs(other + "/ign")
+    with open(other + "/ign/b.txt", "w", encoding="utf-8") as handle:
+        handle.write("nested_needle\n")
+    cmd, note, decision = verdict("grep -rln nested_needle %s/sub 2>/dev/null | head -5" % other, env, repo)
+    cases.append(("a nested-repo operand is rewritten to git -C <toplevel> grep --untracked",
+                  cmd.startswith("git -C %s grep --untracked" % other) and decision == "" and "git grep" in note
+                  and cmd.endswith("2>/dev/null | head -5")))
+    body = cmd.split(" 2>/dev/null")[0]
+    done = ran(body, repo) if cmd else None
+    cases.append(("the nested-repo rewrite finds the file", done is not None and "a.txt" in done.stdout))
+    cmd, _, decision = verdict("grep -rn nested_needle %s/sub %s/ign" % (other, other), env, repo)
+    cases.append(("a nested-repo operand that git ignores is not sent to git grep", "git -C" not in cmd))
+    cmd, _, decision = verdict("grep -rn nested_needle %s/sub .claude/hooks" % other, env, repo)
+    cases.append(("operands spanning two repositories stay denied", cmd == "" and decision == "deny"))
     return cases
 
 
@@ -231,6 +289,7 @@ def main():
                   'GITIGNORE-BLIND SCAN' in scan('f=$(find . -name "*.md")', env, session=SID + '-subst')))
 
     cases += outside_git_cases(env)
+    cases += rewrite_reach_cases(env)
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

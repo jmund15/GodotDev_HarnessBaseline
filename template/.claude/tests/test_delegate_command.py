@@ -26,7 +26,7 @@ REQUIRED = {
     "route and job kind stay separate": r"route[\s\S]+single\|parallel\|chain\|review[\s\S]+kind[\s\S]+scout\|lens\|reviewer\|author\|judge",
     "native engine owner": r"Native `Workflow` runs only an engine the fan-out lacks: `review_fanout\.js`",
     "fan-out owner": r"`sidecar_fanout\.py` runs the file[^\n]+picks each job's paying plan",
-    "specialized command refusal": r"own coverage contract[\s\S]+exploration, plan drafting or plan review",
+    "specialized command refusal": r"own coverage contract[\s\S]+design grounding, plan drafting or plan review",
     "jobs defer to the orchestration owner": r"Jobs follow `orchestration` §0; a review lens is one mandate",
     "comparison defers to its orchestration owner": r"Same-task comparisons follow `orchestration` reference `model_evidence\.md`",
     "manifest finalization": r"--manifest-seed[\s\S]+--manifest-out[\s\S]+--session",

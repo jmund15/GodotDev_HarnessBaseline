@@ -1,5 +1,5 @@
 """post_check `_archive_rows` keeps a finding's `agent` only when it names its seat or one of the seat's lens keys;
-any other value (a seat that wrote its own label) becomes the seat key, so `roster_mandates` maps it to the roster
+any other value (a seat that wrote its own label) becomes the seat key, which the roster maps to the
 seat's mandates instead of reading it as a lens no registry declares. Items are cut from a captured
 `session_digest.build_workflow_result_archive` result."""
 import sys
@@ -45,11 +45,6 @@ class SeatAttributionTests(unittest.TestCase):
         agents = self.rows()
         self.assertEqual(agents["F2"], SEAT)
         self.assertEqual(agents["F4"], "rt-boundary")
-
-    def test_the_seat_key_maps_to_the_roster_seats_mandates(self):
-        roster = [{"key": SEAT, "mandates": ["rt-boundary", "rt-failuremode"]}]
-        mapped = post_check.roster_mandates({"a.md": {self.rows()["F2"]}}, roster)
-        self.assertEqual(mapped, {"a.md": {"rt-boundary", "rt-failuremode"}})
 
 
 if __name__ == "__main__":

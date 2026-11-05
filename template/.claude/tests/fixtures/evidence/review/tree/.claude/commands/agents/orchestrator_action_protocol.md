@@ -1,0 +1,5 @@
+Run the dispatch's `postCheck` command with the Workflow `transcriptDir` (a sidecar already wrote `post_check.json`). It re-derives quote verdicts from the original findings, runs `fold_check.py` per subject when the run folded, records the ledger rows and computes the next round's seats. A fold is accepted only when the report passes: a `provisional` status, an author's digest or its exit is never acceptance. The report's verdict counts must cover the received findings.
+
+A fit-for-tier seat's finding whose quotes are VERIFIED is accepted without a parent source read. The parent reads the cited source first-party for every id in the report's `held` and for any UNVERIFIED quote. `held` carries every id the fold deferred (the hold classes of `review_fold.md` step 4) and every ASK and open PLAN; for a run with no fold it also carries every FIX and resolved PLAN as `unfolded`. A VERIFIED quote proves presence, never support.
+
+For grouped views, resolve the original source IDs. Different edit pairs are separate actions; do not concatenate snippets or treat one applied patch as completion of the entire group.

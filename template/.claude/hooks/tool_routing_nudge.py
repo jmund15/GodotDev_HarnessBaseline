@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 """PreToolUse routing advice for evidence-backed decisions.
 
-Retained checks:
-- Bare PascalCase Grep over C# gets the C# anchor/LSP navigation advice (or
-  semantic search when LSP is unavailable).
+Retained check:
 - A native Read while the user's request asks for bulk copyable extraction across inputs
   points at `read_files`. The verdict comes from the prompt, not the path or file type;
   a dispatched subagent is the bundling delegate and gets no advisory.
 
 Retired checks:
+- The PascalCase-Grep advice. Neither the name's shape nor the prompt's cue words show whether the
+  name was known or verified unique, and the advice restated `CLAUDE.coding.md` after the call.
+  The routing audit counts lookups as census rows instead.
 - Read/Obsidian path shape and broad-search argument defaults. A directory name
   cannot distinguish known focused evidence, bulk copyable I/O, or derived
   judgment. `tool_routing_prompt_synthesis.py` presents that litmus once at the
@@ -30,12 +31,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_state import read_json_salvage, state_path, update_json_locked
-from routing_classifier import (
-    classify_call,
-    grep_target_family,
-    is_cloud_session,
-    is_pascal_identifier,
-)
+from routing_classifier import classify_call
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
 
@@ -62,40 +58,6 @@ def _read_last_prompt(session_id: str) -> str:
     return str(state.get("last_prompt") or "")
 
 
-def _nudge_grep(tool_input: dict, last_prompt: str, agent_id: str = "") -> str | None:
-    pattern = tool_input.get("pattern") or ""
-    if not is_pascal_identifier(pattern):
-        return None
-
-    family = grep_target_family(tool_input)
-    if family == "other":
-        return None
-    classification = classify_call("Grep", tool_input, last_prompt, agent_id)
-    if classification.severity != "nudge-warranted":
-        return None
-    if family == "cs":
-        if is_cloud_session():
-            return (
-                f"[tool-routing] `Grep('{pattern}')` on `.cs` bypasses C# navigation. "
-                "LSP is unavailable in this cloud session; use "
-                f"`mcp__plugin_semantic-search_semantic-search__search(query='{pattern}')`. "
-                "CLAUDE.core.md §9."
-            )
-        return (
-            f"[tool-routing] Bare `Grep('{pattern}')` on `.cs` bypasses C# navigation. "
-            f"Anchor with `Grep('class {pattern}\\b' -g '*.cs')`, then use "
-            "`LSP documentSymbol` and `LSP findReferences`. CLAUDE.core.md §9."
-        )
-
-    target_label = "indexed types" if family == "indexed-other" else "an unrestricted target"
-    return (
-        f"[tool-routing] `Grep('{pattern}')` against {target_label} is a symbol-shaped "
-        "lookup. When the name or its location is unknown, use "
-        "`mcp__plugin_semantic-search_semantic-search__search`; Grep owns known literal names "
-        "and patterns. CLAUDE.coding.md §Semantic Search MCP."
-    )
-
-
 def _nudge_native_read(tool_input: dict, last_prompt: str, agent_id: str = "") -> str | None:
     classification = classify_call("Read", tool_input, last_prompt, agent_id)
     if classification.severity != "nudge-warranted" or classification.rule != "native-read-bulk-copyable":
@@ -111,19 +73,12 @@ def _nudge_native_read(tool_input: dict, last_prompt: str, agent_id: str = "") -
 
 
 _DISPATCH = {
-    "Grep": _nudge_grep,
     "Read": _nudge_native_read,
 }
 
 
 def _nudge_target_key(tool_name: str, tool_input: dict) -> str:
-    if tool_name == "Grep":
-        target = grep_target_family(tool_input)
-    elif tool_name == "Read":
-        target = "bulk-copyable"  # the advice reads identically for every input: once per session
-    else:
-        target = ""
-    return f"{tool_name}:{str(target).replace(chr(92), '/').lower()}"
+    return f"{tool_name}:bulk-copyable"  # the advice reads identically for every input: once per session
 
 
 def _seen_before(session_id: str, key: str) -> bool:
@@ -142,17 +97,7 @@ def _seen_before(session_id: str, key: str) -> bool:
     return bool(seen_before) if written else False
 
 
-def _classification_rule(tool_name: str, tool_input: dict) -> str:
-    if tool_name == "Grep":
-        return "pascal-grep-on-cs" if grep_target_family(tool_input) == "cs" else "pascal-grep-on-indexed"
-    if tool_name == "Read":
-        return "native-read-bulk-copyable"
-    return ""
-
-
 def _record_pre_nudge(session_id: str, rule: str) -> None:
-    if not rule:
-        return
     path = state_path(session_id)
 
     def update(state):
@@ -187,7 +132,7 @@ def process(input_data: dict) -> tuple[str | None, str | None]:
 
     if _seen_before(session_id, _nudge_target_key(tool_name, tool_input)):
         return (None, None)
-    _record_pre_nudge(session_id, _classification_rule(tool_name, tool_input))
+    _record_pre_nudge(session_id, "native-read-bulk-copyable")
     return (None, nudge)
 
 

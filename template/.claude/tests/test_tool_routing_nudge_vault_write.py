@@ -6,8 +6,8 @@ direct Write; templated → `write_doc`) reaches the agent in `CLAUDE.core.md` �
 routing audit's census row records the route from the call itself, so an advisory that asked the agent to
 name the class afterwards changed no decision (`instruction_quality` §3: a note on an admitted call is
 deleted, and a class the checked agent writes is never a pass condition). The hook stays silent on every
-vault Write, large or small, with or without ai-worker, and never blocks. Grep and Read advisories keep
-their own proofs.
+vault Write, large or small, with or without ai-worker, and never blocks. The Read advisory keeps
+its own proof.
 
 State is redirected with HARNESS_HOOK_STATE_DIR — this never touches ~/.claude/.routing_state/.
 
@@ -79,11 +79,9 @@ def main():
     outside = call({"file_path": "C:/repo/.claude/scratch/spill.md", "content": "x" * 9000}, env)
     cases.append(("a large write outside the vault is silent", outside == ""))
 
-    # The Grep advisory is a different decision (it names the NEXT call) and stays: a positive control
-    # that the hook still emits advisories at all.
+    # The Grep advisory is retired (D6): a bare PascalCase Grep gets nothing.
     grep = call({"pattern": "SpellCaster", "glob": "*.cs"}, env, tool_name="Grep")
-    cases.append(("positive control: a bare PascalCase Grep on .cs still gets its advisory",
-                  "[tool-routing]" in grep and not grep.startswith("CRASH")))
+    cases.append(("a bare PascalCase Grep on .cs gets no advisory", grep == ""))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

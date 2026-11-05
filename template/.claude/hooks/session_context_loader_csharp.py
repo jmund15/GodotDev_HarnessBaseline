@@ -96,11 +96,10 @@ def nudge_lines(setup_results: dict[str, str], cloud: bool) -> list[str]:
     return [
         "",
         "<lsp-early-load>",
-        "csharp-lsp healthy. Load the LSP tool schema as one of your first actions: "
+        "csharp-lsp installed. Load the LSP tool schema as one of your first actions: "
         "ToolSearch(query=\"select:LSP\", max_results=1); then default to LSP for C# "
-        "symbol/caller/type questions. Anchor-then-navigate (semantic-search or "
-        "Grep(\"class X\") -> LSP documentSymbol -> findReferences); schema quirks "
-        "(filePath required on every op; workspaceSymbol has no query param) live in "
-        "rules/csharp_lsp.md, which auto-loads on the first .cs read.",
+        "symbol/caller/type questions: workspaceSymbol with a query finds a declaration, then "
+        "findReferences or goToImplementation from it. The first call pays a ~30 s solution load. "
+        "rules/csharp_lsp.md, which auto-loads on the first .cs read, holds the rest.",
         "</lsp-early-load>",
     ]

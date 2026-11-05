@@ -42,8 +42,7 @@ other reply the closing words of the assistant message before it, where a packet
 synthetic rows are skipped. That text is
 the assistant's, labeled apart from the owner's words, and shares each message's clip.
 
-After the messages, the project's document roots outside the repo (`adaptation.json` `doc_roots`)
-ride on one `[locations]` line, then the session's active task record (`tools/task_record.py`, written by the parent at
+After the messages, the session's active task record (`tools/task_record.py`, written by the parent at
 phase boundaries) is re-injected as one bounded block that shares TOTAL_BYTES with the messages. A
 session with no record gets one line naming the command that opens one instead: a drive long enough
 to compact is a drive that wanted the record. When this session has unrated dispatches, one
@@ -312,19 +311,6 @@ def reply_contexts(transcript: Path, messages: list) -> dict:
     if state["wanted"] != reached:
         state = _scan().scan(transcript, scanner, fresh=True)
     return {int(i): text for i, text in state["found"].items()}
-
-
-def locations_line(project: Path) -> str:
-    """The project's document roots outside the repo, or '' when it names none."""
-    try:
-        tools = str(HERE.parent / "tools")
-        if tools not in sys.path:
-            sys.path.insert(0, tools)
-        import adaptation
-        roots = [r for r in adaptation.get(str(project / ".claude"), "doc_roots") or [] if isinstance(r, str)]
-    except Exception:
-        return ""
-    return f"[locations] document roots outside the repo: {'; '.join(roots)}" if roots else ""
 
 
 def _whole(entry) -> int:
@@ -603,7 +589,7 @@ def plan(transcript: Path, sid: str, project: Path, messages: list, where: str, 
     if rating_line is None:
         elapsed = time.monotonic() - started if started is not None else 0
         rating_line = rating_debt_line(sid, RATING_DEADLINE_SEC - elapsed)
-    record_block = "\n".join(b for b in (locations_line(project), task_block(sid, project), rating_line) if b)
+    record_block = "\n".join(b for b in (task_block(sid, project), rating_line) if b)
     budget = (TOTAL_BYTES - sum(len(line.encode("utf-8")) + 1 for line in lines) - reserve
               - (len(record_block.encode("utf-8")) + 2 if record_block else 0))
     messages = [dict(m, context=contexts[m["index"]]) if m["index"] in contexts else m for m in messages]

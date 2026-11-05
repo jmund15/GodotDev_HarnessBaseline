@@ -13,7 +13,7 @@ reads it keyed on `-l`. Passing `-R` and `-l` per job is the whole attribution s
 `-l` is REQUIRED here: an unlabelled row is skipped by that reader, so a job without one is spend
 you cannot account for.
 
-IT NEVER AUTO-RETRIES A BILLED CALL. Memory admission waits before each launch; exit 12
+IT NEVER AUTO-RETRIES A BILLED CALL THAT FINISHED OR FAILED; only a run a usage limit stopped mid-run is continued (below). Memory admission waits before each launch; exit 12
 means nothing ran, so it waits and retries. Exit 5, 6, 8 or 10 from a detached launcher's OWN call (the
 launch, before it spawned), or from its detached job with no `-P` stream written, likewise means nothing ran, so a job that named no plan moves to the next plan
 with room. Exit 10 that arrives later, from the running job, is a usage limit hit mid-run: work was done
@@ -176,6 +176,9 @@ EXIT: 0 every job exited 0; under --review, coverage is complete and the post-ch
       2 jobs, arguments or source IDs are unusable, or a launcher would refuse a job (above).
       13 a live launcher or seat child already runs this job (its prompt file under its label or record) or
          resumes its session; nothing was dispatched, and stderr names each PID with the reap command that stops it.
+A launch that refuses or crashes before starting any seat (exit 2 or 13, or an exception) writes
+`<out-dir>/fanout-<id>.refused.json` naming its labels, the refusal text and its time; the Stop hook, the
+watcher and the rearm hook drop the entries that call registered from it, so one failure gives one report.
 """
 import argparse
 import hashlib
@@ -253,6 +256,42 @@ USAGE_LIMIT_EXIT = 10
 # A detached launch that exits one of these from its own call refused before it spawned (band gate, balance
 # floor, capacity read, dispatch floor, spent allowance or usage-limit marker): nothing ran and nothing was billed.
 PLAN_REFUSAL_EXITS = frozenset({5, 6, 8, USAGE_LIMIT_EXIT})
+
+
+class RefusedLaunch:
+    """`<out dir>/fanout-<id>.refused.json` for a launch that refused or crashed before starting any
+    seat. It names the call's labels, the refusal text and its time, so every reader (the Stop hook,
+    the watcher, the rearm hook) drops the entries that call registered: one failure, one report."""
+
+    def __init__(self, out_dir, labels):
+        self.out_dir = Path(out_dir)
+        self.labels = [str(label) for label in labels if label]
+        self.path = None
+
+    def write(self, text):
+        if self.path is not None or not self.labels:
+            return self.path
+        path = self.out_dir / ("fanout-%s.refused.json" % uuid.uuid4())
+        try:
+            with open(path, "x", encoding="utf-8", newline="\n") as fh:
+                json.dump({"schemaVersion": 1, "labels": self.labels, "refusal": str(text), "time": time.time()}, fh)
+        except OSError:
+            return None
+        self.path = path
+        return path
+
+
+REFUSED = None  # the launch's RefusedLaunch once its out dir and labels are known; the wrapper writes it
+
+
+def _refused(text, code=2, stream=None):
+    """Print a pre-start refusal and record it on disk for every reader of this call's entries.
+    `stream` defaults to stderr; the doctrine deny keeps stdout, the channel its text has always
+    reached the session on."""
+    print(text, file=stream or sys.stderr)
+    if REFUSED is not None:
+        REFUSED.write(text)
+    return code
 
 # How often `_wait_detached` re-checks a detached job's `<record>.exit`. No timeout gates this
 # loop (Design §3, sidecar-detach.md: "The fan-out has no timeout today, so it gets none") -- only
@@ -771,9 +810,10 @@ def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, 
 
 
 def _decides_nothing(row):
-    """True for a plan row whose reading could not be taken, so its launcher's own gate decides."""
+    """True for a plan row whose reading could not be taken, so its launcher's own gate decides. A `stale`
+    row is a cache-only reading that returned nothing yet: it is warming, never a refusal."""
     why = row.get("why") or ""
-    return not why or why.startswith("unreadable")
+    return not why or row.get("stale") or why.startswith("unreadable")
 
 
 def _pick_facts(row):
@@ -878,7 +918,7 @@ def check_job_kind(job, label):
     return kind
 
 
-IN_FLIGHT_SHARE = 0.5  # a job still running is taken to have drawn half of what it will
+IN_FLIGHT_SHARE = 0.5  # unmeasured assumption: a running job has drawn half of what it will; a recorded mid-run drain replaces it
 
 
 class Verdict(NamedTuple):
@@ -2527,7 +2567,8 @@ def _seat_payer(seat, data):
         return seat["plan"]
     try:
         transport = model_registry.resolve(seat["alias"], data)["transport"]
-        return pick_plan(seat.get("label", "?"), transport, model_registry.plans_of(transport, data), data, job=seat)
+        return pick_plan(seat.get("label", "?"), transport, model_registry.plans_of(transport, data), data,
+                         job=seat, quiet=True)
     except Exception:
         return None
 
@@ -2577,7 +2618,7 @@ def run_review_fold(review, args, data, out_dir, seats=()):
     for job in jobs:
         if not job["rows"]:
             with open(job["digest"], "w", encoding="utf-8", newline="\n") as stream:
-                json.dump({"applied": [], "deferred": [], "designDelta": [], "changedPaths": []}, stream)
+                json.dump({"applied": [], "deferred": [], "changedPaths": []}, stream)
             continue
         subject = job["subject"]
         rows = finding_bar.stamp(job["rows"], rigor)
@@ -2595,7 +2636,7 @@ def run_review_fold(review, args, data, out_dir, seats=()):
             f"Findings file: {_posix(findings)}",
             f"Verdicts file: {_posix(verdicts)}",
             f"Digest file: {_posix(job['digest'])}",
-            f"Bar: {rigor} — each finding's `counts` says whether it counts at it (review_fold.md step 5)." if rigor else None,
+            f"Bar: {rigor} — each finding's `counts` says whether it counts at it (review_fold.md step 3)." if rigor else None,
             "The findings and verdicts files already exist: read them and never rewrite them. The snapshot is the "
             "caller's: never write it.",
             f"Write only: {', '.join(writes + [_posix(job['digest'])])}.",
@@ -3014,9 +3055,11 @@ def await_admission(driver, out_dir, planned, fallbacks, max_parallel, since, wa
                 continue
             if label in seen and record != seen[label]:
                 before = plan_of(label)
-                attempt[label] += 1
+                if len(fallbacks.get(label) or []) > attempt[label] and label in pending:
+                    attempt[label] += 1
                 refusal = f"refused on {before}, nothing ran: {pending.pop(label)}; " if label in pending else ""
-                print(f"[fanout] {label}: {refusal}moved to {plan_of(label)}", flush=True)
+                if refusal:
+                    print(f"[fanout] {label}: {refusal}moved to {plan_of(label)}", flush=True)
             seen[label] = record
             state, code = _admission_state(record, stream_of(label), since)
             if state == "refused":
@@ -3113,7 +3156,10 @@ def _write_refused(out_dir, code, tees):
 
 
 def main(argv=None):
-    """Run the fan-out; an exit before an inventory exists also lands its text in `<out-dir>/launch-refused.txt`."""
+    """Run the fan-out; an exit before an inventory exists also lands its text in `<out-dir>/launch-refused.txt`,
+    and a refusal or a crash before the first seat lands `<out-dir>/fanout-<id>.refused.json` for the readers."""
+    global REFUSED
+    REFUSED = None
     argv = list(sys.argv[1:] if argv is None else argv)
     _LAUNCH.update(inventory=False, out_dir=None)
     tees = (_Tee(sys.stdout), _Tee(sys.stderr))
@@ -3124,8 +3170,13 @@ def main(argv=None):
         code = _main(argv)
     except SystemExit as err:
         exit_raised, code = err, err.code if isinstance(err.code, int) else (0 if err.code is None else 1)
+    except BaseException as exc:
+        if REFUSED is not None:
+            REFUSED.write("%s: %s" % (type(exc).__name__, exc))
+        raise
     finally:
         sys.stdout, sys.stderr = real
+        REFUSED = None
     if code and not _LAUNCH["inventory"]:
         _write_refused(_called_out_dir(argv), code, tees)
     if exit_raised is not None:
@@ -3134,6 +3185,7 @@ def main(argv=None):
 
 
 def _main(argv):
+    global REFUSED
     ap = build_parser()
     retired =[flag for flag in (argv if argv is not None else sys.argv[1:])
                if flag.split("=", 1)[0] in ("--merge-alias", "--merge-effort")]
@@ -3243,20 +3295,20 @@ def _main(argv):
                 if not isinstance(selection, dict):
                     raise JobError("jobs reviewerSelection must be an object")
         data = model_registry.load()
-        jobs = [normalize_job(j, data, shared_context) for j in jobs]
         if spill_dir:
             spill_dir = Path(spill_dir) if Path(spill_dir).is_absolute() else REPO / spill_dir
             if args.out_dir and Path(args.out_dir).resolve() != spill_dir.resolve():
                 raise JobError(f"--out-dir {args.out_dir} and the jobs file's spillDir {_posix(spill_dir)} "
                                f"name different directories. Drop one of the two.")
+        # resolved against the caller's cwd: children run with cwd=REPO, where a relative path names another directory
+        out_dir = Path(sidecar_argv.fanout_out_dir(args.jobs, args.out_dir, str(spill_dir) if spill_dir else None,
+                                                   str(REPO))).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        _LAUNCH["out_dir"] = out_dir
+        REFUSED = RefusedLaunch(out_dir, [j.get("label") for j in jobs])
+        jobs = [normalize_job(j, data, shared_context) for j in jobs]
     except (JobError, model_registry.RegistryError) as err:
-        print(str(err), file=sys.stderr)
-        return 2
-    # resolved against the caller's cwd: children run with cwd=REPO, where a relative path names another directory
-    out_dir = Path(sidecar_argv.fanout_out_dir(args.jobs, args.out_dir, str(spill_dir) if spill_dir else None,
-                                               str(REPO))).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    _LAUNCH["out_dir"] = out_dir
+        return _refused(str(err))
     saved_review = None
     if args.refold:
         try:
@@ -3268,6 +3320,8 @@ def _main(argv):
             print(f"--refold: {err}", file=sys.stderr)
             return 2
         out_dir = refold_dir(out_dir)
+    _LAUNCH["out_dir"] = out_dir
+    REFUSED = RefusedLaunch(out_dir, [job.get("label") for job in jobs])
 
     try:
         if args.review and not args.refold:
@@ -3296,8 +3350,7 @@ def _main(argv):
                 raise JobError("review artifacts already exist (" + ", ".join(occupied)
                                + "); use a new --out-dir to preserve their evidence")
     except (JobError, ValueError) as err:
-        print(str(err), file=sys.stderr)
-        return 2
+        return _refused(str(err))
 
     try:
         FALLBACKS.clear()
@@ -3314,13 +3367,11 @@ def _main(argv):
         if args.fold and not args.refold:
             plan_job(fold_probe(args, jobs, data), data, out_dir, args.authorize)
     except (JobError, model_registry.RegistryError) as err:
-        print(str(err), file=sys.stderr)
-        return 2
+        return _refused(str(err))
 
     fit = launcher_fit_refusal(argv if argv is not None else sys.argv[1:])
     if fit:
-        print(fit)
-        return 2
+        return _refused(fit)
     for fact in fit_facts(jobs):
         print(fact)
     if not args.refold:
@@ -3332,9 +3383,8 @@ def _main(argv):
         # `<label>.md` sanitizes like dispatch.js, so two labels can share one deliverable file.
         key = dispatch_result.deliverable_path(out_dir, label).name.lower()
         if label in seen or key in seen:
-            print(f"duplicate label {label!r}: outputs, ledger rows or <label>.md deliverables "
-                  f"would overwrite each other", file=sys.stderr)
-            return 2
+            return _refused(f"duplicate label {label!r}: outputs, ledger rows or <label>.md deliverables "
+                            f"would overwrite each other")
         seen.update((label, key))
     if lanes:
         planned = add_chain_handoff(add_lane_guard(planned, jobs, lanes, out_dir), lanes, out_dir)
@@ -3350,12 +3400,11 @@ def _main(argv):
             if why:
                 bad.append(f"  {label}: {why}")
         if bad:
-            print("--compare: these arms would not read a frozen input, so the comparison would "
-                  "measure nothing:\n" + "\n".join(bad)
-                  + "\n\nFreeze it:  git worktree add --detach .claude/worktrees/<slug> HEAD"
-                  + "\n(orchestration section 0 -- arms that will be compared read a frozen input)",
-                  file=sys.stderr)
-            return 2
+            return _refused(
+                "--compare: these arms would not read a frozen input, so the comparison would "
+                "measure nothing:\n" + "\n".join(bad)
+                + "\n\nFreeze it:  git worktree add --detach .claude/worktrees/<slug> HEAD"
+                + "\n(orchestration section 0 -- arms that will be compared read a frozen input)")
 
         # Each arm being frozen is not the same as the arms sharing ONE input. Two detached
         # worktrees at different commits each pass the check above, and the run then measures the
@@ -3369,12 +3418,10 @@ def _main(argv):
         if len(prints) > 1:
             listed = "\n".join("  %s\n    %s" % (fp, "\n    ".join(labels))
                                for fp, labels in sorted(prints.items()))
-            print("--compare: the arms do NOT share one input, so any difference between them is "
-                  "confounded with the difference between their inputs:\n" + listed
-                  + "\n\nEvery arm needs the SAME detached worktree AND the same prompt, context "
-                    "and schema files. The groups above differ in at least one of those.",
-                  file=sys.stderr)
-            return 2
+            return _refused("--compare: the arms do NOT share one input, so any difference between them is "
+                            "confounded with the difference between their inputs:\n" + listed
+                            + "\n\nEvery arm needs the SAME detached worktree AND the same prompt, context "
+                              "and schema files. The groups above differ in at least one of those.")
 
     if args.dry_run:
         _clear_refused()
@@ -3383,8 +3430,7 @@ def _main(argv):
                 out_dir.mkdir(parents=True, exist_ok=False)
                 run_review_fold(saved_review, args, data, out_dir, jobs)
             except (OSError, ValueError, JobError, fold_check.Unusable) as err:
-                print(f"--refold: {err}", file=sys.stderr)
-                return 2
+                return _refused(f"--refold: {err}")
         else:
             fanout_waves(planned, data)
             print_plan(planned, args.max_parallel)
@@ -3392,28 +3438,29 @@ def _main(argv):
 
     duplicates = duplicate_launches(planned)
     if duplicates:
-        print("DUPLICATE LAUNCH refused (exit %d): a live launch already runs these jobs; nothing was "
-              "dispatched.\n%s\nStop the previous attempt's whole tree (fan-out driver, launchers, seat, "
-              "servers), confirm none remain, then relaunch." % (DUPLICATE_LAUNCH_EXIT, duplicates), file=sys.stderr)
-        return DUPLICATE_LAUNCH_EXIT
+        return _refused("DUPLICATE LAUNCH refused (exit %d): a live launch already runs these jobs; nothing was "
+                        "dispatched.\n%s\nStop the previous attempt's whole tree (fan-out driver, launchers, seat, "
+                        "servers), confirm none remain, then relaunch." % (DUPLICATE_LAUNCH_EXIT, duplicates),
+                        DUPLICATE_LAUNCH_EXIT)
 
+    # The doctrine check runs before the claim: a launch it refuses ran nothing, so it leaves the out dir free
+    # for the corrected call.
+    if args.detach:
+        refusal = doctrine_refusal(argv if argv is not None else sys.argv[1:])
+        if refusal:
+            return _refused(refusal, stream=sys.stdout)
     if args.review and not args.refold and not os.environ.get("SIDECAR_REVIEW_CLAIM"):
         token = str(uuid.uuid4())
         try:
             with open(out_dir / REVIEW_CLAIM, "x", encoding="utf-8", newline="\n") as fh:
                 fh.write(token)
         except FileExistsError:
-            print(f"review artifacts already exist ({REVIEW_CLAIM}): another review launch claimed "
-                  f"{_posix(out_dir)}; use a new --out-dir to preserve their evidence", file=sys.stderr)
-            return 2
+            return _refused(f"review artifacts already exist ({REVIEW_CLAIM}): another review launch claimed "
+                            f"{_posix(out_dir)}; use a new --out-dir to preserve their evidence")
     else:
         token = None
     _clear_refused()
     if args.detach:
-        refusal = doctrine_refusal(argv if argv is not None else sys.argv[1:])
-        if refusal:
-            print(refusal)
-            return 2
         extra = {"log_path": out_dir.with_name(out_dir.name + "-driver.log")} if args.refold else {}
         code = detach_driver(argv if argv is not None else sys.argv[1:], args.jobs, out_dir, claim=token, **extra)
         driver = _LAUNCH.pop("driver", None)
@@ -3427,6 +3474,7 @@ def _main(argv):
                                 ('after_seats', bool(args.review)), ('wake_groups', groups),
                                 ('waves', None if args.refold else fanout_waves(planned, data)))
               if v}
+    REFUSED = None  # seats are about to start: from here a failure is a run's, not a launch's refusal
     results = {} if args.refold else run_jobs(planned, args.max_parallel, out_dir, **extras)
     text, code = summarize(planned, results, args.compare)
     if not args.review:

@@ -115,7 +115,7 @@ def main():
     unread = qd.build(data=REGISTRY, read=lambda t, _d=None: None, session_plan="anthropic", now=NOW)
     row = {r["plan"]: r for r in unread["plans"]}.get("codex", {})
     case("an unreadable plan says why instead of printing a number",
-         "unreadable" in (row.get("note") or ""), row)
+         "warming" in (row.get("note") or "") and not row.get("windows"), row)
 
     dual = plan_reading("codex", 40, 0.2, "prolite")
     dual["quota"]["windows"].append({"name": "five_hour", "usedPercent": 96,

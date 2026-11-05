@@ -15,7 +15,7 @@ Follow the **Agent Spawn Rules** in [`review_agents.md`](review_agents.md). Five
 
 - **State, never advice.** A lens reports what IS. Recommendations, designs, and priorities are the orchestrator's to derive from claims. A mandate that starts proposing is out of scope, and the engine's contract says so at every tier.
 - **The pushed CONTEXT orients, it never caps.** It is a starting seed and every fact in it is an unverified claim to confirm first-party. A lens that trusts the brief inherits the orchestrator's blind spots — the exact failure exploration exists to prevent.
-- **Absence needs git-aware proof.** For `polarity: "absent"`, cite a git-aware enumeration supplied in CONTEXT or run it when this seat's profile grants Bash. An empty Grep/Glob is not proof. Without either route, return `polarity: "unclear"` and name the missing enumeration in `gaps`; see `guards/survey.md`.
+- **Absence needs git-aware proof.** For `polarity: "absent"`, cite a git-aware enumeration supplied in CONTEXT or run it when this seat's profile grants Bash, in the shape `{"command": "git grep -n <pattern> <branch> -- <path>", "output": ""}`. An empty Grep/Glob is not proof. Without either route, return `polarity: "unclear"` and name the missing enumeration in `gaps`; see `guards/survey.md`.
 - **Memory-file resolution:** entries cited by bare filename (`feedback_*`, `gotcha_*`, `arch_rule_*`) resolve under `.claude/auto-memory/` or `.claude/auto-memory/archive/`.
 - **Weight evidence targets by recent churn.** Use relevant recent changes in the topic's folders to order reads; state the history window chosen and why it reaches the current change. Churn is an ordering hint, never evidence of absence.
 

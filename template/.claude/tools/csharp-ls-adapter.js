@@ -158,7 +158,7 @@ const INTERCEPTED_METHODS = new Set([
 // [Export]/[Signal] attributes trigger source generation. The flood is
 // structural (two on-disk files declare the same partial), not a server bug,
 // so the v0.24 fix can't address it. dotnet build is authoritative per
-// csharp_lsp.md §Known-broken surface — push diagnostics buy nothing here.
+// csharp_lsp.md §Diagnostics — push diagnostics buy nothing here.
 const DROPPED_NOTIFICATIONS = new Set([
   "textDocument/publishDiagnostics",
 ]);
@@ -184,13 +184,9 @@ function fixFileUri(uri) {
 
 // Client (Claude Code) → Server (csharp-ls): fix URIs, then forward
 const clientParser = new LspParser();
+// Only whole parsed messages are forwarded: a chunk that ends mid-frame stays in the parser until it completes.
 process.stdin.on("data", (data) => {
-  const messages = clientParser.feed(data);
-  if (messages.length === 0) {
-    server.stdin.write(data);
-    return;
-  }
-  for (const msg of messages) {
+  for (const msg of clientParser.feed(data)) {
     if (msg.method === "initialize" && msg.params) {
       if (msg.params.rootUri) msg.params.rootUri = fixFileUri(msg.params.rootUri);
       if (msg.params.workspaceFolders) {
@@ -259,7 +255,17 @@ server.stdout.on("data", (data) => {
 // Handle process lifecycle
 server.on("close", (code) => {
   log("csharp-ls exited with code:", code);
-  process.exit(code || 0);
+  // A request csharp-ls never answered would hold its client for the whole watchdog window.
+  for (const [id, entry] of PENDING_REQUESTS) {
+    clearTimeout(entry.timer);
+    process.stdout.write(encodeMessage({
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32603, message: `csharp-ls exited with code ${code} before answering ${entry.method}` },
+    }));
+  }
+  PENDING_REQUESTS.clear();
+  process.stdout.write("", () => process.exit(code || 0));
 });
 
 process.on("SIGTERM", () => server.kill("SIGTERM"));

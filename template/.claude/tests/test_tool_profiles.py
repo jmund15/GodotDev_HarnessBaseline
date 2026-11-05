@@ -597,6 +597,15 @@ with tempfile.TemporaryDirectory() as _wd, tempfile.TemporaryDirectory() as _hom
     check("...and a review seat's --context file is not scanned", (0, False),
           (_ctx("review")[0], "Bash" in _ctx("review")[1]))
 
+# The exec scorer's driver (daemon_lib.EXEC_DRIVER_TOOLS) writes mutants and runs tests in its arm worktree.
+check("the bench-score driver takes the exec scorer's write delta", ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Workflow"],
+      tp.resolve_kind("bench-score", add=["Edit", "Write", "Bash"], route="launcher", candidates=CANDIDATES)[0]["builtins"])
+try:
+    tp.resolve_kind("lens", add=["Write"], route="fanout", candidates=CANDIDATES)
+    check("+Write on a lens is refused, naming author", "refused", "accepted")
+except ValueError as exc:
+    check("+Write on a lens is refused, naming author", True, "use kind author" in str(exc))
+
 if RAN < 110:
     print("FAIL expected >= 110 cases, ran %d" % RAN)
     FAIL = 1

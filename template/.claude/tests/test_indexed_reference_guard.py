@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
@@ -17,6 +18,12 @@ sys.path.insert(0, os.path.join(ROOT, ".claude", "hooks"))
 import indexed_reference_guard as guard  # noqa: E402
 
 CATALOG = os.path.join(ROOT, ".claude", "commands", "agents", "plan_check_agents.md")
+SUBSYS_REL = ("skills", "project_subsystems", "reference", "subsystem_details.md")
+PLANTED = tempfile.TemporaryDirectory()  # the catalog is project-generated; the proof plants its own
+SUBSYS = os.path.join(PLANTED.name, ".claude", *SUBSYS_REL)
+os.makedirs(os.path.dirname(SUBSYS))
+with open(SUBSYS, "w", encoding="utf-8", newline="\n") as _fh:
+    _fh.write("# planted subsystem catalog\n" * 40)
 
 
 def run(payload):
@@ -58,6 +65,11 @@ def main():
         cases.append((f"bounded Read passes for {actor}", rc == 0 and not err))
     for suffix, (accessor, _gives) in guard.INDEXED_REFERENCES.items():
         path = os.path.join(ROOT, ".claude", suffix.replace("/", os.sep))
+        if not os.path.isfile(path):  # project-generated catalog a published template never holds: plant it
+            path = os.path.join(PLANTED.name, ".claude", suffix.replace("/", os.sep))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write("# planted catalog\n" * 40)
         rc, out, err = run_dispatch({"tool_name": "Read", "tool_input": {"file_path": path}})
         try:
             advice = json.loads(out)["hookSpecificOutput"]["additionalContext"]
@@ -81,12 +93,15 @@ def main():
     rc, err = run({"tool_name": "Read", "agent_id": "delegate-proof",
                    "tool_input": {"file_path": CATALOG.replace("\\", "/")}})
     cases.append(("forward-slash path still matches the delegate block", rc == 2))
-    variant = os.path.join(ROOT, ".CLAUDE", "commands", "agents", "..", "agents",
-                           "PLAN_CHECK_AGENTS.MD")
+    dotted = os.path.join(ROOT, ".claude", "commands", "agents", "..", "agents", "plan_check_agents.md")
     rc, err = run({"tool_name": "Read", "agent_id": "delegate-proof",
-                   "tool_input": {"file_path": variant}})
-    cases.append(("Windows case and dot-segment variants cannot bypass the same indexed file",
-                  rc == 2 and "BLOCKED" in err))
+                   "tool_input": {"file_path": dotted}})
+    cases.append(("a dot-segment variant cannot bypass the same indexed file", rc == 2 and "BLOCKED" in err))
+    variant = os.path.join(ROOT, ".CLAUDE", "commands", "agents", "..", "agents", "PLAN_CHECK_AGENTS.MD")
+    if os.path.isfile(variant):  # only a case-insensitive filesystem makes this the same file
+        rc, err = run({"tool_name": "Read", "agent_id": "delegate-proof",
+                       "tool_input": {"file_path": variant}})
+        cases.append(("a case variant cannot bypass the same indexed file", rc == 2 and "BLOCKED" in err))
     rc, err = run("{not json")
     cases.append(("malformed payload fails open (exit 0)", rc == 0))
     rc, err = run('"a json string, not an object"')
@@ -98,6 +113,32 @@ def main():
                       for s in guard.INDEXED_REFERENCES)))
     cases.append(("process() returns None for a payload without tool_input",
                   guard.process({"tool_name": "Read"}) is None))
+
+    rc, out, err = run_dispatch({"tool_name": "Read", "tool_input": {"file_path": SUBSYS}})
+    try:
+        subsys_advice = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    except (KeyError, ValueError):
+        subsys_advice = ""
+    cases.append(("main whole-file Read of the subsystem catalog gets the subsys.py accessor advice",
+                  rc == 0 and not err and "subsys.py index" in subsys_advice))
+    rc, out, err = run_dispatch({"tool_name": "Read", "agent_id": "delegate-proof",
+                                 "tool_input": {"file_path": SUBSYS}})
+    cases.append(("delegate whole-file Read of the subsystem catalog is blocked with the accessor",
+                  rc == 2 and "subsys.py index" in err and "guards/any.md" in err))
+    for actor, extra in (("main", {}), ("delegate", {"agent_id": "delegate-proof"})):
+        rc, out, err = run_dispatch({"tool_name": "Read", **extra,
+                                     "tool_input": {"file_path": SUBSYS, "offset": 1, "limit": 5}})
+        cases.append((f"bounded Read of the subsystem catalog passes for {actor}", rc == 0 and not err))
+    near = os.path.join(os.path.dirname(SUBSYS), "subsystem_details_notes.md")
+    with open(near, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("notes\n")
+    rc, err = run({"tool_name": "Read", "tool_input": {"file_path": near}})
+    cases.append(("a near-name path beside the subsystem catalog passes", rc == 0 and not err))
+    for actor, extra in (("main", {}), ("delegate", {"agent_id": "delegate-proof"})):
+        absent = os.path.join(ROOT, "no-such-checkout", ".claude", "skills", "project_subsystems",
+                              "reference", "subsystem_details.md")
+        rc, err = run({"tool_name": "Read", **extra, "tool_input": {"file_path": absent}})
+        cases.append((f"an absent subsystem catalog is allowed for {actor}", rc == 0 and not err))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

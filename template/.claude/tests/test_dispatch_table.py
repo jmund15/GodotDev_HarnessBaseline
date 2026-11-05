@@ -8,6 +8,7 @@ asserts the emitted channel: `--launch` is `systemMessage` only (user-visible, z
 `--complete` may add `decision`/`reason`. Negatives are the point: a Bash line that only mentions a
 launcher, a computed Workflow pin, an Agent call with no model, a covered or Workflow-only pending set.
 """
+import importlib.util
 import json
 import os
 import subprocess
@@ -23,14 +24,39 @@ PROJECT = os.path.dirname(CLAUDE_DIR)
 HOOK = os.path.join(CLAUDE_DIR, "hooks", "dispatch_table.py")
 SID = "dtproof1-0000-0000-0000-000000000000"
 WATCH_COMMAND = "python3 .claude/tools/watch_records.py --session --wake"
+MTIME_LAG_S = 0.05
 sys.path.insert(0, os.path.join(CLAUDE_DIR, "tools"))
 import model_registry
 FLASH_VERSION = model_registry.resolve("flash")["version"]
 
 
-def test_stop_verification_audit_contract():
-    import test_dispatch_table_verification
-    assert not test_dispatch_table_verification.run_tests(), "Stop verification audit proof failed"
+def in_process(mode, stdin_text, env):
+    """The hook's `main()` called here with `env` as the whole environment and the payload on stdin.
+    A fresh interpreter per case re-pays the hook's imports and tests no more logic; `real=True` on
+    `Env.run` keeps the real stdin-payload path for the cases that name it. Same contract as `__main__`:
+    a crash prints its traceback to stderr and exits 0."""
+    import contextlib
+    import io
+    import traceback
+    import types
+    from unittest.mock import patch
+    spec = importlib.util.spec_from_file_location("dispatch_table_probe", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    # Text wrappers over bytes: a tool the hook imports calls `sys.stdout.reconfigure(...)`.
+    out_bytes, err_bytes = io.BytesIO(), io.BytesIO()
+    out = io.TextIOWrapper(out_bytes, encoding="utf-8", write_through=True)
+    err = io.TextIOWrapper(err_bytes, encoding="utf-8", write_through=True)
+    with patch.dict(os.environ, env, clear=True), patch.object(sys, "argv", [HOOK, mode]), \
+            patch.object(sys, "stdin", io.StringIO(stdin_text)), contextlib.redirect_stdout(out), \
+            contextlib.redirect_stderr(err):
+        try:
+            sys.path.insert(0, os.path.dirname(HOOK))
+            spec.loader.exec_module(module)
+            module.main()
+        except Exception:
+            traceback.print_exc()
+    return types.SimpleNamespace(returncode=0, stdout=out_bytes.getvalue().decode("utf-8"),
+                                 stderr=err_bytes.getvalue().decode("utf-8"))
 
 
 def live_process():
@@ -66,19 +92,22 @@ class Env:
         state["sidecar_watchers"] = [watch]
         json.dump(state, open(self.state_path(), "w", encoding="utf-8"))
 
-    def run(self, payload, mode, projects_root=None, issue=True):
+    def run(self, payload, mode, projects_root=None, issue=True, real=False):
         payload = dict(payload)
         payload.setdefault("session_id", SID)
         payload.setdefault("transcript_path", self.transcript)
         payload.setdefault("cwd", PROJECT)
         if issue and mode == "--launch" and payload.get("tool_name") == "Bash":
             self.issue(payload)
-        out = subprocess.run([sys.executable, HOOK, mode], input=json.dumps(payload), capture_output=True,
-                             text=True, timeout=30, encoding="utf-8",
-                             env=hook_env(HARNESS_HOOK_STATE_DIR=self.state, SIDECAR_LEDGER_PATH=self.ledger,
-                                          CLAUDE_PROJECTS_ROOT=projects_root or os.path.join(self.root, "none"),
-                                          DISPATCH_TABLE_LAUNCH_WAIT="0", DISPATCH_TABLE_UNRESOLVED_WAIT="0",
-                                          CC_CACHESTAT_DIR=self.root, **self.extra))
+        env = hook_env(HARNESS_HOOK_STATE_DIR=self.state, SIDECAR_LEDGER_PATH=self.ledger,
+                       CLAUDE_PROJECTS_ROOT=projects_root or os.path.join(self.root, "none"),
+                       DISPATCH_TABLE_LAUNCH_WAIT="0", DISPATCH_TABLE_UNRESOLVED_WAIT="0",
+                       CC_CACHESTAT_DIR=self.root, **self.extra)
+        if real:
+            out = subprocess.run([sys.executable, HOOK, mode], input=json.dumps(payload), capture_output=True,
+                                 text=True, timeout=30, encoding="utf-8", env=env)
+        else:
+            out = in_process(mode, json.dumps(payload), env)
         assert out.returncode == 0 and "Traceback" not in out.stderr, "CRASH rc=%s %s" % (out.returncode, out.stderr)
         body = json.loads(out.stdout) if out.stdout.strip() else {}
         allowed = {"systemMessage"} if mode == "--launch" else {"systemMessage", "decision", "reason"}
@@ -92,7 +121,10 @@ class Env:
         with open(self.transcript, encoding="utf-8") as fh:
             if call in fh.read():
                 return
-        _plant_call(self, call, time.time())
+        # A file's mtime lags time.time() by up to a kernel tick (~4-8 ms on Linux), so an inventory the case
+        # writes right after this row would read as older than its call. The harness's row precedes the
+        # command by far more than that.
+        _plant_call(self, call, time.time() - MTIME_LAG_S)
 
     def pending(self):
         path = os.path.join(self.state, SID[:8] + ".json")
@@ -1754,6 +1786,15 @@ def test_an_ended_row_never_answers_for_a_later_launch_on_the_same_record():
     assert watch_records.finish_row(entry, [ended]) is None
 
 
+def test_the_preflight_window_has_one_definition_in_watch_records():
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "tools"))
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "hooks"))
+    import dispatch_table
+    import watch_records
+    assert dispatch_table.FANOUT_PREFLIGHT_S == watch_records.FANOUT_PREFLIGHT_S
+    assert dispatch_table.DEFERRED_GIVE_UP_S == watch_records.FANOUT_PREFLIGHT_S
+
+
 def test_stop_follows_a_refused_jobs_relaunch_until_it_finishes():
     e = Env()
     first, second = _refused_then_relaunched(e)
@@ -2060,6 +2101,56 @@ def test_a_sidecar_record_without_transport_reads_its_paying_plan_from_the_inven
     assert seen == [("child-1", "anthropic-secondary")], seen
 
 
+def _refusal_file(out_dir, labels, when, why="review launch refused before any seat ran"):
+    """The `<out dir>/fanout-<id>.refused.json` a fan-out writes when it refuses before any seat."""
+    path = os.path.join(out_dir, "fanout-%d.refused.json" % int(when * 1000))
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"labels": list(labels), "refusal": why, "time": when}, fh)
+    return path
+
+
+def test_a_refusal_file_drops_the_calls_entries_without_a_never_started_line():
+    e = Env()
+    _refused_fanout(e, "gate-a", 700)
+    dead = e.pending()[0]
+    _refusal_file(dead["fanout_dir"], ["gate-a"], time.time())
+    e.watch()
+    msg = e.run(stop_payload(), "--complete")
+    assert "never started" not in (msg or ""), msg
+    assert e.pending() == [], e.pending()
+
+
+def test_a_refusal_file_covers_only_its_own_labels_and_only_calls_issued_before_it():
+    for labels, when in ((["another-label"], None), (["gate-b"], "before")):
+        e = Env()
+        _refused_fanout(e, "gate-b", 700)
+        dead = e.pending()[0]
+        _refusal_file(dead["fanout_dir"], labels,
+                      dead["issued_at"] - 1 if when == "before" else time.time())
+        e.watch()
+        msg = e.run(stop_payload(), "--complete")
+        assert "gate-b: never started" in msg, (labels, when, msg)
+
+
+def test_a_corrected_relaunch_into_the_same_out_dir_keeps_its_entry_after_a_refusal_file():
+    e = Env()
+    _refused_fanout(e, "gate-d", 700)
+    dead = e.pending()[0]
+    out_dir = dead["fanout_dir"]
+    _refusal_file(out_dir, ["gate-d"], time.time() - 690)
+    jobs = os.path.join(e.root, "jobs.json")
+    json.dump([{"label": "gate-d", "alias": "muse", "promptFile": "a.md"}], open(jobs, "w"))
+    e.run(bash_payload("python3 .claude/tools/sidecar_fanout.py %s --out-dir %s" %
+                       (jobs.replace("\\", "/"), out_dir.replace("\\", "/")), "toolu_relaunch"), "--launch")
+    relaunch = [p for p in e.pending() if str(p.get("id", "")).endswith(":toolu_relaunch")][0]
+    record = os.path.join(out_dir, "gate-d.record.json")
+    open(record + ".pid", "w").write(_pid_line(os.getpid()) + "\n")
+    e.watch()
+    msg = e.run(stop_payload(), "--complete")
+    assert "never started" not in (msg or ""), msg
+    assert any(p.get("id") == relaunch.get("id") for p in e.pending()), e.pending()
+
+
 def test_a_sidecar_that_ended_before_a_result_reaches_the_model_through_the_block_reason():
     e = Env()
     e.watch()
@@ -2104,8 +2195,8 @@ def test_a_fanout_job_that_never_started_reaches_the_model_through_the_block_rea
 def test_a_clean_sidecar_finish_and_a_running_one_add_no_failed_end_to_the_block_reason():
     e = Env()
     e.watch()
-    e.run(bash_payload("bash .claude/scripts/codex_proxy_sidecar.sh -l fine -f p.md"), "--launch")
-    e.run(stop_payload(), "--complete")
+    e.run(bash_payload("bash .claude/scripts/codex_proxy_sidecar.sh -l fine -f p.md"), "--launch", real=True)
+    e.run(stop_payload(), "--complete", real=True)
     assert "ended" not in e.body.get("reason", ""), e.body
 
 

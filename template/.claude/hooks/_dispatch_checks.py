@@ -303,7 +303,7 @@ def spare_plan_fact(tier, transport, data=None, now=None, read=None):
             if plan == transport:
                 continue
             rows = tier_rows(tier, plan, data)
-            if plan == transport or not rows:
+            if not rows:
                 continue
             row = provider_bands.plan_room(plan, data, read, now)
             pct = provider_bands.spare_pct(row) if row.get("room") is not None else None

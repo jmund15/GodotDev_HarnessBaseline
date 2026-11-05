@@ -508,7 +508,9 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
         for command in _runner_cmds(path):
             # pytest's exit 2 is an interrupted run or a collection error, a red; only a proof's own exit 2 means cannot-run.
             pytest_run = command[1:3] == ["-m", "pytest"]
-            returncode, part = _run_child(command, env, timeout, os.path.join(temp_root, "proof_output.txt"), cwd=root)
+            # A proof resolves `.claude/` paths from its working directory: run it from its checkout, never the caller's.
+            returncode, part = _run_child(command, env, timeout, os.path.join(temp_root, "proof_output.txt"),
+                                          cwd=root or REPO_ROOT)
             out += part
             if returncode != 0:
                 break

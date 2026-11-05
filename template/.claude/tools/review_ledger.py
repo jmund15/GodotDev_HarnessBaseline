@@ -19,7 +19,7 @@ Usage:
                             [--escaped <finding id>=<sha>[:<mandate key>]...] [--base-ref <ref>]
     review_ledger.py uncovered (--files <path>... | --files-from <file>) --mandates <keys | candidate> [--roster <roster.json>]
                                [--base-ref <ref>]
-    review_ledger.py owed [--roster <roster.json>] [--base-ref <ref>] [--mandates <keys | candidate>] [--doctrine]
+    review_ledger.py owed [--roster <roster.json>] [--base-ref <ref>] [--mandates <keys | candidate>]
     review_ledger.py whole-scope --subject <s> (--files <path>... | --files-from <file> | --scope-json <file>)
                                 [--mandates <keys | candidate>] [--roster <roster.json>] [--base-ref <ref>]
     review_ledger.py rows (--subject <s> | --task <id> | --model <id>)... [--json | --units]
@@ -34,8 +34,7 @@ writes a tombstone only for a named subject path absent at the reviewed head wit
 uncommitted removals and never-created paths are not recorded. Panel engagement still applies to deletions.
 `premise_commits` holds only the frozen full commit IDs supplied through `record --premise-commits`,
 bound to the explicit `--head` and optional `--blobs` manifest. Missing inputs cover no premises.
-Final text reuse never covers new doctrine commits' premises; `uncovered_premises` checks that duty
-with the same row clauses and roster depth, independently of content hashes.
+A commit a rebase or land rewrote matches the frozen commit whose `git patch-id --stable` it shares.
 A row covers mandate `m` on file `f` only when
 every clause of `CLAUSES` holds. Clause 9 (standing) is the one clause that reads another row: a panel row whose model
 holds the row's tier in registry `supplementary` covers a pair only when another panel row, whose model is qualified at
@@ -84,8 +83,10 @@ each must-read file whose every line it read, and each file whose `diff --git` s
 diffs lies inside the lines it read of that diff (`_must_read_engaged`), unless a gap names the file. A diff taken inside a submodule names files relative to it; `_diff_subject` maps them to the reviewed `<gitlink>/<file>` path. A path under a submodule hashes from that submodule's object store (`Ctx._batch_check`, `owning_repo`). `_engaged` owns that rule. The `--result` and `--sidecar-result` routes, a `dispatch.js`
 `--run` and an engine seat with no transcript have no observed calls, so the seat's own targets stand: that
 is the residual. On `--run`, a seat with a `mustRead` list and a transcript has its must-read coverage judged
-from the transcript's Read ranges (`review_result.called_reads`), and an entry they leave unread fails the seat
-(`_engine_seats`, `_dispatch_review`); without a transcript its own `checked.toolsUsed` ranges stand. Each
+from the transcript's reads (`review_result.called_reads`: Read ranges, parsed shell reads, and a shell result
+showing an entry whole), and an entry they leave unread fails the seat (`_engine_seats`, `_dispatch_review`);
+without a transcript its own `checked.toolsUsed` ranges credit reads, and an entry they leave uncovered is unproven
+(the seat is partial, its mandates non-covering), never failed. Each
 row's `mustReadEvidence` is `observed`, `self-reported`, or null with no `mustRead`. A bounded return records from
 `delivery.coverage.seats` when that holds every seat. `--run` reads the run's journal: an engine run whose
 return shed `sources` rebuilds them from each seat's journaled result, and a `dispatch.js` run becomes one
@@ -106,7 +107,8 @@ record. `--run` keeps the completed-run path.
 `whole-scope` reports whether one candidate panel recording (`call`, at one head) for the exact subject
 covers every requested current file/mandate at the supplied roster depth. It never unions task units or
 separate recordings, and absent files remain uncovered. No roster means panel depth is unchecked, so the
-answer is false. Rows without a recording identity establish no whole-scope fact. `rows --units` is a
+answer is false. A prose-only harness scope owes no candidate mandate: it answers true with `owed: false` and
+no `call`, so no holistic seat follows. Rows without a recording identity establish no whole-scope fact. `rows --units` is a
 diagnostic grouping, not evidence of a whole-scope review.
 
 `rows --units` lists one line per review unit, `<unit>\\t<file>,<file>...`, over the picked rows with
@@ -121,10 +123,7 @@ or resolve those commits' files. A merge commit counts only the files it resolve
 (`git log --cc`). A commit that moves a gitlink counts the files its submodule changed between the two pins
 (`<gitlink>/<file>`, a deletion tombstoned by the submodule commit that deleted it), never the gitlink; a pin
 whose submodule history is not local raises `LedgerUnreadable`.
-`--mandates` selects catalog keys (default `candidate`); `--doctrine` uses the shared
-markdown predicate and judges each path's final range blob, attributed to its last changing commit.
-`owed_range` shares that logic with the push guard, whose `exclude_remotes` skips remote ancestors;
-the CLI never excludes them. Unreadable ledger/escape state raises `LedgerUnreadable`.
+`--mandates` selects catalog keys (default `candidate`). Unreadable ledger/escape state raises `LedgerUnreadable`.
 It applies clause 6 as `uncovered` does: without `--roster`, a commit whose only owed pairs
 are covered by panel rows alone is listed with `(depth-unchecked: no --roster)`, never as covered. `plan` adds `crossFamily` for the
 pre-merge stages: the families the covering rows used and the registry rows that can seat a second opinion.
@@ -422,6 +421,19 @@ def is_excluded(path: str, scope_config: dict) -> bool:
 
 def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     return _git(repo, ["merge-base", "--is-ancestor", ancestor, descendant]).returncode == 0
+
+
+def _patch_id(repo: Path, sha: str, cache: dict) -> str | None:
+    """`git patch-id --stable` of `sha`'s own change; None for a commit absent here or with no patch."""
+    if sha not in cache:
+        cache[sha] = None
+        if _commit_present(repo, sha):
+            show = _git(repo, ["show", "--no-color", "--format=", sha])
+            if show.returncode == 0 and show.stdout.strip():
+                out = _git(repo, ["patch-id", "--stable"], stdin=show.stdout)
+                words = out.stdout.decode("ascii", errors="replace").split()
+                cache[sha] = words[0] if out.returncode == 0 and words else None
+    return cache[sha]
 
 
 def _commit_present(repo: Path, sha: str) -> bool:
@@ -1128,10 +1140,58 @@ class Ctx:
     def hash(self, path: str):
         return self.hash_files([path])[path]
 
-    def is_ancestor(self, sha: str) -> bool:
+    def reaches(self, sha: str, path: str | None = None) -> bool:
+        """HEAD holds the history `sha` reviewed of `path` (of every file when None): `sha` is an ancestor, or a
+        rebase or land replayed its line onto HEAD's and every commit of it that touched `path` has a
+        patch-equivalent in HEAD (`git cherry`). A commit a conflict resolution changed is paired with HEAD's
+        commit of the same subject, and only the files whose own patch differs stay owed; with no such commit,
+        every file it touched does."""
         if sha not in self._ancestor:
-            self._ancestor[sha] = sha == self.head or _is_ancestor(self.repo, sha, "HEAD")
-        return self._ancestor[sha]
+            unmatched = None
+            if sha == self.head or _is_ancestor(self.repo, sha, "HEAD"):
+                unmatched = set()
+            elif _commit_present(self.repo, sha):
+                cherry = _git(self.repo, ["cherry", "HEAD", sha])
+                if cherry.returncode == 0:
+                    unmatched = set()
+                    replays = self._unmatched_by_subject(sha)
+                    for line in cherry.stdout.decode("ascii", errors="replace").splitlines():
+                        if line.startswith("+"):
+                            unmatched.update(self._changed_paths(line[2:].strip(), replays))
+            self._ancestor[sha] = unmatched
+        unmatched = self._ancestor[sha]
+        return unmatched is not None and (not unmatched if path is None else path not in unmatched)
+
+    def _unmatched_by_subject(self, sha: str) -> dict:
+        """{subject: commit} for HEAD's commits with no patch-equivalent on `sha`'s line; a subject two of them
+        share maps to None, so neither pairs."""
+        cherry = _git(self.repo, ["cherry", sha, "HEAD"])
+        found: dict = {}
+        if cherry.returncode != 0:
+            return found
+        for line in cherry.stdout.decode("ascii", errors="replace").splitlines():
+            if line.startswith("+"):
+                commit = line[2:].strip()
+                subject = _git_text(self.repo, ["log", "-1", "--format=%s", commit]).strip()
+                found[subject] = None if subject in found else commit
+        return found
+
+    def _changed_paths(self, old: str, replays: dict) -> set:
+        """The files of `old` whose own patch its replay in HEAD does not carry unchanged."""
+        paths = set(_git_lines(self.repo, ["show", "--no-renames", "--name-only", "--format=", old]))
+        new = replays.get(_git_text(self.repo, ["log", "-1", "--format=%s", old]).strip())
+        if not new:
+            return paths
+        paths |= set(_git_lines(self.repo, ["show", "--no-renames", "--name-only", "--format=", new]))
+        return {path for path in paths if self._file_patch_id(old, path) != self._file_patch_id(new, path)}
+
+    def _file_patch_id(self, commit: str, path: str):
+        show = _git(self.repo, ["show", "--no-color", "--no-renames", "--format=", commit, "--", path])
+        if show.returncode != 0 or not show.stdout.strip():
+            return None
+        out = _git(self.repo, ["patch-id", "--stable"], stdin=show.stdout)
+        words = out.stdout.decode("ascii", errors="replace").split()
+        return words[0] if out.returncode == 0 and words else "unreadable:" + commit
 
     def merge_touched(self, sha: str, path: str) -> bool:
         """True when a merge between `sha` and HEAD rewrote `path` in its conflict resolution."""
@@ -1310,17 +1370,29 @@ class Cover:
 
     def _premise_row_covers(self, row: dict, mandate: str, path: str, premise: str) -> bool:
         inputs = row.get("premise_commits")
-        if not isinstance(inputs, list) or premise not in inputs or not row.get("head"):
+        if not isinstance(inputs, list) or not row.get("head"):
             return False
         if not all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40,64}", sha) for sha in inputs):
             return False
-        pair = (premise, row["head"])
+        reviewed = premise if premise in inputs else self._rebased_from(premise, inputs)
+        if reviewed is None:
+            return False
+        pair = (reviewed, row["head"])
         if pair not in self._premise_ancestors:
             self._premise_ancestors[pair] = _is_ancestor(self.ctx.repo, *pair)
         if not self._premise_ancestors[pair]:
             return False
         return row.get("mandate") == mandate and all(
             fn(self, row, mandate, path) for number, fn in CLAUSES if number != 3)
+
+    def _rebased_from(self, premise: str, inputs: list) -> str | None:
+        """The audited commit `premise` replays: a rebase or land rewrites a commit's id but keeps its patch.
+        A conflict resolution changes the patch, so that commit matches nothing and owes its audit."""
+        cache = self.__dict__.setdefault("_patch_ids", {})
+        want = _patch_id(self.ctx.repo, premise, cache)
+        if want is None:
+            return None
+        return next((sha for sha in inputs if _patch_id(self.ctx.repo, sha, cache) == want), None)
 
     def fold_applied(self, mandate: str, path: str, commit: str) -> bool:
         """True when a fold row of `mandate` recorded `path` at the bytes `commit` holds: the commit applies that
@@ -1427,7 +1499,7 @@ def _clause_reach(cover, row, mandate, path):
     target = cover.design if cover.exception(row) else path
     if not head:
         return str(row.get("subject", "")).startswith("doc:")
-    return cover.ctx.is_ancestor(head) and not cover.ctx.merge_touched(head, target)
+    return cover.ctx.reaches(head, target) and not cover.ctx.merge_touched(head, target)
 
 
 def _clause_no_escape(cover, row, mandate, path):
@@ -1604,12 +1676,20 @@ def reviewed_blob(cover: Cover, path: str, mandates, seats):
     return None
 
 
-def _owes(path: str, mandate: str) -> bool:
+def _prose_harness_scope(files, subject_kind: str, rigor: str) -> bool:
+    """A session or PR scope of harness paths none of which runs, below thorough rigor. Triage's
+    `candidate-lenses` admission (`execution_depth.md` §Candidate width) applies the same rule."""
+    if subject_kind not in ("session", "pr") or rigor == "thorough":
+        return False
+    return _import("_claude_scope", CLAUDE_DIR / "hooks").is_prose_harness_scope(files)
+
+
+def _owes(path: str, mandate: str, *, prose_scope: bool = False) -> bool:
     if path.endswith(".md") and (mandate.startswith("cq.") or mandate == "tq"):
         return False
     if mandate == "harness-quality":
         return path.startswith(".claude/") or path.rsplit("/", 1)[-1] in ("CLAUDE.md", "MEMORY.md")
-    return True
+    return not prose_scope
 
 
 def uncovered_pairs(cover: Cover, files: list[str], mandates: list[str], roster: list | None = None) -> list[tuple]:
@@ -1618,12 +1698,14 @@ def uncovered_pairs(cover: Cover, files: list[str], mandates: list[str], roster:
 
     A file owes only the mandates that judge its kind, per `execution_depth.md` §Mandate admission: a `.md`
     file owes no code-quality (`cq.*`) or test-quality (`tq`) mandate, and a file outside the harness set
-    (`.claude/**`, `CLAUDE.md`, `MEMORY.md`) owes no `harness-quality` mandate."""
+    (`.claude/**`, `CLAUDE.md`, `MEMORY.md`) owes no `harness-quality` mandate. A session or PR scope whose
+    every path is a non-executable harness path owes no other mandate below thorough rigor."""
     cover.ctx.hash_files(files)
+    prose = _prose_harness_scope(files, cover.subject_kind, cover.request_rigor)
     pairs = []
     for path in files:
         for mandate in mandates:
-            if not _owes(path, mandate):
+            if not _owes(path, mandate, prose_scope=prose):
                 continue
             state = cover.pair_state(mandate, path, _depth_seats(roster or [], mandate))
             if state:
@@ -2020,41 +2102,47 @@ def _freshness(selection, required, cover, roster, ignored, candidates):
     return out
 
 
-def cmd_plan(args, repo: Path) -> int:
-    if args.no_new_decision and not args.design:
+def plan(repo: Path, *, stage, subject, roster, base_ref="origin/main", task=None, files=(), scope_json=None,
+         ignore_ledger=False, design=None, no_new_decision=False) -> dict:
+    """The review plan `plan` prints: the kept `roster`, the `dropped` mandates and `reviewerSelection`;
+    a required stage adds `crossFamily`, a later round `laterRound`. `roster` is the roster file's path."""
+    if no_new_decision and not design:
         raise ToolError("--no-new-decision needs --design")
-    if args.design and args.stage != "plan-check":
+    if design and stage != "plan-check":
         raise ToolError("--design applies only to --stage plan-check")
-    kind = _subject_kind(args.subject)
+    kind = _subject_kind(subject)
     catalog = load_catalog()
-    roster = _load_roster(args.roster, catalog)
-    files_in = list(args.files or [])
+    roster = _load_roster(roster, catalog)
+    files_in = list(files or [])
     waived = False
-    if args.scope_json:
-        scope = _load_scope(args.scope_json)
+    if scope_json:
+        scope = _load_scope(scope_json)
         waived = bool(scope.get("waived"))
         # The owner vouched for every file at the waived head, so only what changed since it is owed.
         files_in += [str(p) for p in scope.get("delta_files" if waived else "files") or []]
-    cover, problem = _make_cover(repo, args.base_ref, kind, task_id=getattr(args, "task", None))
+    cover, problem = _make_cover(repo, base_ref, kind, task_id=task)
     files = normalize_files(cover.ctx.toplevel, files_in)
-    design = normalize_files(cover.ctx.toplevel, [args.design])[0] if args.design and args.no_new_decision else None
+    design = normalize_files(cover.ctx.toplevel, [design])[0] if design and no_new_decision else None
     cover.design = design
-    required = args.stage == "pre-merge" or (args.stage == "pr-review" and kind == "pr")
+    required = stage == "pre-merge" or (stage == "pr-review" and kind == "pr")
     kept, dropped, families, models = [], [], [], []
     if waived and not files:
         print("nothing changed since the owner-waived head: no seat planned", file=sys.stderr)
         roster = []
-    elif args.ignore_ledger:
+    elif ignore_ledger:
         print("ledger ignored (--ignore-ledger): every seat kept", file=sys.stderr)
     elif not files:
         print("no files named (--files or --scope-json): every seat kept", file=sys.stderr)
     cover.ctx.hash_files(files + ([design] if design else []))
     owed_pairs = []
+    prose = not ignore_ledger and _prose_harness_scope(files, kind, cover.request_rigor)
     for seat in roster:
         cover.seat = {"tier": seat.get("tier"), "effort": seat.get("effort"), "load": len(seat["mandates"])}
         left, owed, ruled = [], set(), []
         for mandate in seat["mandates"]:
-            covering = [] if args.ignore_ledger or not files else [
+            if prose and not _owes(files[0], mandate, prose_scope=True):
+                continue
+            covering = [] if ignore_ledger or not files else [
                 cover.covering_row(mandate, path) for path in files]
             if covering and all(covering):
                 ids = list(dict.fromkeys(row.get("id", "") for row in covering))
@@ -2076,7 +2164,7 @@ def cmd_plan(args, repo: Path) -> int:
                              **({"ruleDelta": ruled} if ruled else {})))
     result = {"roster": kept, "dropped": dropped}
     earlier = {(index, mandate, path): cover.earlier_blob(mandate, path, _depth_seats(roster, mandate))
-               for index, mandate, path in owed_pairs} if files and not args.ignore_ledger else {}
+               for index, mandate, path in owed_pairs} if files and not ignore_ledger else {}
     if kept and earlier and all(earlier.values()):
         result["laterRound"] = True
         for index, seat in enumerate(kept):
@@ -2088,7 +2176,7 @@ def cmd_plan(args, repo: Path) -> int:
     currency_tier = ("executor" if any(seat["key"] == CODE_REVIEW_SEAT for seat in roster)
                      else _strongest([seat.get("tier") for seat in roster])) if required else "architect"
     pick = _pick(currency_tier)
-    selection = subject_lineage(repo, getattr(args, "task", None), args.subject, files, args.stage)
+    selection = subject_lineage(repo, task, subject, files, stage)
     tiers = registry.TIER_ORDER
     for seat in roster:
         tier = seat.get("tier")
@@ -2102,16 +2190,16 @@ def cmd_plan(args, repo: Path) -> int:
         except OSError:
             policy_owners[rel] = None
             selection["unknown"].append({"file": rel, "reason": "unreadable review policy owner"})
-    selection["policyFingerprint"] = _fingerprint({"stage": args.stage, "reviewGroups": data.get("reviewGroups"),
+    selection["policyFingerprint"] = _fingerprint({"stage": stage, "reviewGroups": data.get("reviewGroups"),
         "owners": policy_owners,
         "mandates": sorted({m for seat in roster for m in seat["mandates"]}),
         "depth": _canonical_rows([dict(key=seat["key"], tier=seat.get("tier"), effort=seat.get("effort"),
                                        mandates=sorted(set(seat["mandates"]))) for seat in roster]),
         "rules": {m: rule_hash(m, catalog=catalog) for m in sorted({m for seat in roster for m in seat["mandates"]})},
-        "noNewDecision": bool(args.no_new_decision), "design": design,
+        "noNewDecision": bool(no_new_decision), "design": design,
         "designBlob": cover.ctx.hash(design) if design else None})
     covering = []
-    if not args.ignore_ledger:
+    if not ignore_ledger:
         for seat in roster:
             cover.seat = {"tier": seat.get("tier"), "effort": seat.get("effort"), "load": len(seat["mandates"])}
             for mandate in seat["mandates"]:
@@ -2137,11 +2225,18 @@ def cmd_plan(args, repo: Path) -> int:
             bandFacts=facts, currencyReason=pick.get("reason"), headroomVerified=verified,
             payAvailable=row["id"] in paid))
     selection["candidates"] = candidates
-    selection["freshness"] = _freshness(selection, required, cover, roster, args.ignore_ledger, candidates)
+    selection["freshness"] = _freshness(selection, required, cover, roster, ignore_ledger, candidates)
     if required:
         result["crossFamily"] = dict(selection["freshness"], usedFamilies=sorted(set(families)))
     result["reviewerSelection"] = selection
-    print(json.dumps(result))
+    return result
+
+
+def cmd_plan(args, repo: Path) -> int:
+    print(json.dumps(plan(
+        repo, stage=args.stage, subject=args.subject, roster=args.roster, base_ref=args.base_ref,
+        task=getattr(args, "task", None), files=args.files, scope_json=args.scope_json,
+        ignore_ledger=args.ignore_ledger, design=args.design, no_new_decision=args.no_new_decision)))
     return 0
 
 
@@ -2291,7 +2386,7 @@ def _live_journal_source(directory: str, seats_file: str, toplevel: Path):
                 if isinstance(observed, str) and observed:
                     row["served_model"] = observed
             transcript = directory / f"agent-{agent_id}.jsonl"
-            reads = review_result.called_reads(transcript, toplevel)
+            reads = review_result.called_reads(transcript, toplevel, seat.get("mustRead"))
             if reads is not None:
                 row["reads"] = reads
         served[label] = row
@@ -2349,15 +2444,16 @@ def _journal_source(run_id: str, toplevel: Path):
     for agent_id, label in labels.items():
         agent_of.setdefault(label, agent_id)
     review_result = _import("review_result")
+    for agent in _journal_args(journal).get("agents") or []:
+        if isinstance(agent, dict) and agent.get("key") and review_result.valid_must_read(agent.get("mustRead")):
+            served.setdefault(ENGINE_LABEL + agent["key"], {})["mustRead"] = agent["mustRead"]
     for label, agent_id in agent_of.items():
         transcript = Path(session, "subagents", "workflows", run_id, f"agent-{agent_id}.jsonl")
         called = review_result.called_paths(transcript, toplevel)
         if called is not None:
+            must_read = (served.get(label) or {}).get("mustRead")
             served.setdefault(label, {}).update(called=sorted(called),
-                                                reads=review_result.called_reads(transcript, toplevel))
-    for agent in _journal_args(journal).get("agents") or []:
-        if isinstance(agent, dict) and agent.get("key") and review_result.valid_must_read(agent.get("mustRead")):
-            served.setdefault(ENGINE_LABEL + agent["key"], {})["mustRead"] = agent["mustRead"]
+                                                reads=review_result.called_reads(transcript, toplevel, must_read))
     return journal, metrics.efforts_for(journal), metrics.tiers_for(journal), served, results
 
 
@@ -2539,7 +2635,8 @@ def _sidecar_seats(prepared: dict, catalog: dict) -> list[dict]:
     A job mandate's token is the seat's typed `checked.mandates` value when that map is valid
     (`review_result.mandate_map`), else `not-reached` for an `uncoveredMandates` key, `findings` when a source
     finding names it and `clean` otherwise; `_seat_outcome` bounds it by the seat status and the entry's
-    `capabilityPartial` (absent reads as false). A lens key's catalog keys take the lens key's outcome."""
+    `capabilityPartial` (absent reads as false). A catalog key the valid map keys takes its own token, as
+    `review_fanout.js` `seatMandates` reads it; any other catalog key of a lens key takes the lens key's outcome."""
     sources = prepared.get("sources") or []
     seats = []
     for entry in prepared.get("coverage") or []:
@@ -2548,6 +2645,7 @@ def _sidecar_seats(prepared: dict, catalog: dict) -> list[dict]:
         missing = set(entry.get("uncoveredMandates") or [])
         keys = list(entry.get("mandates") or [])
         typed = _import("review_result").mandate_map(checked, keys)
+        raw = checked.get("mandates") if typed else {}
         mandates = {}
         for mandate in keys:
             found = sum(1 for s in sources if s.get("seat") == label
@@ -2555,7 +2653,7 @@ def _sidecar_seats(prepared: dict, catalog: dict) -> list[dict]:
             token = (typed[mandate] if typed else "not-reached" if mandate in missing
                      else "findings" if found else "clean")
             for key in _catalog_keys(mandate, catalog):
-                mandates[key] = _seat_outcome(entry.get("status"), token, checked.get("stoppedAt"),
+                mandates[key] = _seat_outcome(entry.get("status"), raw.get(key, token), checked.get("stoppedAt"),
                                               entry.get("capabilityPartial") is True)
         seats.append({"seat": label, "status": entry.get("status"), "stopped": checked.get("stoppedAt"),
                       "mustReadEvidence": entry.get("mustReadEvidence"), "mustReadSpans": entry.get("mustReadSpans"),
@@ -2648,7 +2746,7 @@ def _ledger_new(ctx: Ctx, earlier, mandates: list, paths: list[str]):
                 and str(row.get("subject") or "").split(":", 1)[0] in ("session", "pr")
                 and row.get("outcome") == "findings"
                 and keys & set(row.get("seatMandates") or []) and row.get("head")
-                and ctx.is_ancestor(row["head"])):
+                and ctx.reaches(row["head"])):
             continue
         if not isinstance(row.get("findingFiles"), list):
             return None
@@ -2983,28 +3081,7 @@ def is_doctrine_path(path: str) -> bool:
     return _import("harness_edit_skill_reminder", CLAUDE_DIR / "hooks").is_doctrine_path(path)
 
 
-def uncovered_premises(cover: Cover, commits: list[dict], roster: list | None = None) -> dict[str, list[tuple]]:
-    """Premise pairs keyed by exact supplied commit IDs; content coverage is checked separately.
-
-    Commit dictionaries carry `sha` and the doctrine `files` supplied to the audit. The same row clauses
-    and roster depth apply, except content (3): a commit's premises do not change with later file bytes.
-    """
-    owed = {}
-    for commit in commits:
-        pairs = []
-        for path in commit["files"]:
-            if cover.fold_applied("harness-quality", path, commit["sha"]):
-                continue
-            state = cover.pair_state("harness-quality", path, _depth_seats(roster or [], "harness-quality"),
-                                     commit["sha"])
-            if state:
-                pairs.append((path, "harness-quality") + (("depth-unchecked",) if state == "depth-unchecked" else ()))
-        if pairs:
-            owed[commit["sha"]] = pairs
-    return owed
-
-
-def range_commits(repo: Path, base: str, rev: str, *, exclude_remotes: bool = False) -> list[dict]:
+def range_commits(repo: Path, base: str, rev: str) -> list[dict]:
     """Commits in base..rev as {sha, subject, files}, oldest first; merges list only authored resolutions.
 
     A gitlink change lists the files its submodule changed between the pins (`gitlink_files`), not the gitlink:
@@ -3012,7 +3089,7 @@ def range_commits(repo: Path, base: str, rev: str, *, exclude_remotes: bool = Fa
     its resolved pin changed against every parent's pin."""
     rng = f"{base}..{rev}"
     log = _git(repo, ["log", "--reverse", "--cc", "--no-renames", "--diff-filter=ACDMR", "--raw", "--no-abbrev",
-                      "--format=@@%H\t%s", rng] + (["--not", "--remotes"] if exclude_remotes else []))
+                      "--format=@@%H\t%s", rng])
     if log.returncode != 0:
         raise ToolError(f"cannot list commits in {rng}: {log.stderr.decode('utf-8', errors='replace').strip()}")
     commits, current = [], None
@@ -3034,51 +3111,14 @@ def range_commits(repo: Path, base: str, rev: str, *, exclude_remotes: bool = Fa
     return commits
 
 
-def _admits_harness_seat(triage, repo: Path, sha: str, task_id: str | None = None) -> bool:
-    """Whether a commit's triage admits the harness-quality seat. An unreadable Triage trailer admits it:
-    the audit then names that commit instead of the whole range check going unavailable."""
-    try:
-        fields = triage.current(repo, rev=sha)
-    except ValueError:
-        return True
-    return triage.admits("harness-quality-seat", fields, triage.rigor(task_id, root=repo)).admitted
-
-
 def owed_range(repo: Path, base: str, rev: str, mandates: list[str], roster: list | None = None,
-               paths=None, *, exclude_remotes: bool = False, coverage_base: str | None = None,
-               task_id: str | None = None) -> list[dict]:
-    """Uncovered commits in base..rev. `paths` filters paths with a predicate or a collection.
+               *, coverage_base: str | None = None, task_id: str | None = None) -> list[dict]:
+    """Uncovered commits in base..rev, judged per commit as `owed` lists them.
 
-    With a path filter, judge final text states at rev and attribute them to the last changing commit.
-    Every admitted doctrine commit also owes exact frozen premise coverage under harness-quality.
-    Deletions use `deleted:<deleting commit>`; paths absent at both base and rev owe no text, only premises.
-    Without one, preserve owed's per-commit semantics. Only the push guard excludes remote ancestors.
     State read errors raise LedgerUnreadable; missing ledger rows cover nothing.
     """
-    commits = range_commits(repo, base, rev, exclude_remotes=exclude_remotes)
-    premise_inputs = []
-    if paths is not None:
-        admits = paths if callable(paths) else lambda path: path in paths
-        commits = [dict(commit, files=[path for path in commit["files"] if admits(path)]) for commit in commits]
-        commits = [commit for commit in commits if commit["files"]]
-        if "harness-quality" in mandates:
-            sys.path.insert(0, str(TOOLS_DIR))
-            try:
-                triage = _import("triage")
-                commits = [commit for commit in commits
-                           if _admits_harness_seat(triage, repo, commit["sha"], task_id)]
-            finally:
-                sys.path.remove(str(TOOLS_DIR))
-        for commit in commits:
-            commit["files"] = [path for path in commit["files"] if admits(path)]
-            if "harness-quality" in mandates:
-                doctrine = [path for path in commit["files"] if is_doctrine_path(path)]
-                if doctrine:
-                    premise_inputs.append(dict(commit, files=doctrine))
-        last = {path: commit["sha"] for commit in commits for path in commit["files"]}
-        for commit in commits:
-            commit["files"] = [path for path in commit["files"] if last.get(path) == commit["sha"]]
-    queries = [f"{rev if paths is not None else c['sha']}:{f}" for c in commits for f in c["files"]]
+    commits = range_commits(repo, base, rev)
+    queries = [f"{c['sha']}:{f}" for c in commits for f in c["files"]]
     blobs = {}
     if queries:
         check = _git(repo, ["cat-file", "--batch-check"], stdin=("\n".join(queries) + "\n").encode("utf-8"))
@@ -3106,25 +3146,22 @@ def owed_range(repo: Path, base: str, rev: str, mandates: list[str], roster: lis
         raise LedgerUnreadable(escape_problem)
     cover = Cover(Ctx(repo, coverage_base or base, snapshot=rev), load_catalog(), rows, escapes, "session",
                   task_id=task_id)
-    base_ctx = Ctx(repo, coverage_base or base, snapshot=base)
-    premise_pairs = uncovered_premises(cover, premise_inputs, roster)
     owed = []
     for commit in commits:
-        tip = rev if paths is not None else commit["sha"]
+        tip = commit["sha"]
         cover.ctx.overrides = {}
         for file in commit["files"]:
             blob = blobs.get(f"{tip}:{file}")
             if blob is not None:
                 cover.ctx.overrides[file] = blob
-            elif paths is None or base_ctx.hash(file) is not None:
+            else:
                 state = Ctx(repo, coverage_base or base, snapshot=tip).deleted_hash(file)
                 if state is not None:
                     cover.ctx.overrides[file] = state
         files = list(cover.ctx.overrides)
         pairs = uncovered_pairs(cover, files, mandates, roster) if files else []
-        premises = premise_pairs.get(commit["sha"], [])
-        if pairs or premises:
-            owed.append(dict(commit, pairs=list(dict.fromkeys(pairs + premises))))
+        if pairs:
+            owed.append(dict(commit, pairs=list(dict.fromkeys(pairs))))
     return owed
 
 
@@ -3138,8 +3175,7 @@ def cmd_owed(args, repo: Path) -> int:
     upstream = _git(repo, ["rev-parse", "--verify", "-q", "@{u}"])
     no_upstream = upstream.returncode != 0
     base = args.base_ref if no_upstream else "@{u}"
-    for commit in owed_range(repo, base, "HEAD", mandates, roster, is_doctrine_path if args.doctrine else None,
-                             coverage_base=args.base_ref, task_id=args.task):
+    for commit in owed_range(repo, base, "HEAD", mandates, roster, coverage_base=args.base_ref, task_id=args.task):
         unchecked = all(len(pair) == 3 for pair in commit["pairs"])
         print(f"{commit['sha'][:7]} {commit['subject']}" + (" (no upstream)" if no_upstream else "")
               + (" (depth-unchecked: no --roster)" if unchecked else ""))
@@ -3159,6 +3195,9 @@ def whole_scope(cover: Cover, subject: str, files: list[str], mandates: list[str
         if (row.get("subject") == subject and row.get("stage") == "candidate"
                 and row.get("reviewer") == "panel" and isinstance(call, str) and call and row.get("head")):
             groups.setdefault((call, row["head"]), []).append(row)
+    if _prose_harness_scope(files, _subject_kind(subject), cover.request_rigor) and not any(
+            _owes(path, mandate, prose_scope=True) for path in files for mandate in mandates):
+        return {"wholeScope": True, "call": None, "files": files, "mandates": mandates, "runs": [], "owed": False}
     runs = []
     for (call, head), rows in reversed(list(groups.items())):
         candidate = Cover(cover.ctx, cover.catalog, rows, cover.escapes, _subject_kind(subject),
@@ -3248,7 +3287,7 @@ class _Parser(argparse.ArgumentParser):
 def _build_parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="review_ledger.py", usage=USAGE,
                      formatter_class=argparse.RawDescriptionHelpFormatter,
-                     description="The review ledger and PR review scope.")
+                     description="The review ledger and PR review scope.", fromfile_prefix_chars="@")
     subs = parser.add_subparsers(dest="command", required=True, parser_class=_Parser)
 
     def common(sub, repo=False):
@@ -3321,7 +3360,6 @@ def _build_parser() -> argparse.ArgumentParser:
     owed = subs.add_parser("owed")
     owed.add_argument("--roster")
     owed.add_argument("--mandates", default="candidate")
-    owed.add_argument("--doctrine", action="store_true")
     owed.add_argument("--task", help="task whose rigor the coverage bar reads; absent, the session's newest record")
     common(owed)
 

@@ -123,9 +123,9 @@ def test_owed_range_reads_the_named_tasks_rigor():
         ledger.write_text(json.dumps(row_at(repo, base, "light")) + "\n", encoding="utf-8")
         with env(HARNESS_REVIEW_LEDGER=str(ledger), HARNESS_TASK_RECORD_DIR=str(records),
                  CLAUDE_CODE_SESSION_ID=None):
-            owed = review_ledger.owed_range(repo, base, "HEAD", [MANDATE], None, None, task_id="thorough-task")
+            owed = review_ledger.owed_range(repo, base, "HEAD", [MANDATE], None, task_id="thorough-task")
             assert len(owed) == 1, owed
-            owed = review_ledger.owed_range(repo, base, "HEAD", [MANDATE], None, None, task_id="light-task")
+            owed = review_ledger.owed_range(repo, base, "HEAD", [MANDATE], None, task_id="light-task")
             assert owed == [], owed
 
 
@@ -140,7 +140,7 @@ def test_normal_row_covers_normal_request_through_owed_range():
         ledger.write_text(json.dumps(row_at(repo, base, "normal")) + "\n", encoding="utf-8")
         with env(HARNESS_REVIEW_LEDGER=str(ledger), HARNESS_TASK_RECORD_DIR=str(records),
                  CLAUDE_CODE_SESSION_ID=session):
-            owed = review_ledger.owed_range(repo, base, "HEAD", [MANDATE], None, None)
+            owed = review_ledger.owed_range(repo, base, "HEAD", [MANDATE], None)
             assert owed == [], owed
 
 

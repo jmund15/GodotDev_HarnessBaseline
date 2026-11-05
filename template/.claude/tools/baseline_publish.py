@@ -182,7 +182,8 @@ def _step(journal: dict, path: Path, index: int, action) -> object:
 # Step 1: collect
 # ---------------------------------------------------------------------------
 
-def _validate_rows(root: Path, source: dict, rows: list[str], lock: dict) -> list[str]:
+def _validate_rows(root: Path, source: dict, rows: list[str], lock: dict) -> list[tuple[str, str]]:
+    """(relpath, op) per row: `A` publishes the source commit's content, `D` a push row's committed deletion."""
     if len(set(rows)) != len(rows):
         raise PublishError("rows must be unique")
     collected = []
@@ -190,15 +191,20 @@ def _validate_rows(root: Path, source: dict, rows: list[str], lock: dict) -> lis
         entry = lock.get("files", {}).get(relpath)
         if entry is None:
             raise PublishError(f"row has no lock entry: {relpath}")
-        content = _git_show(Path(source["repo"]), source["commit"], relpath)
-        if content is None:
-            raise PublishError(f"source commit has no row: {relpath}")
         judged = entry.get("judged") or {}
         if judged.get("verdict") != "push":
             raise PublishError(f"row is not judged push: {relpath}")
+        content = _git_show(Path(source["repo"]), source["commit"], relpath)
+        if content is None:
+            deleted = _git_text(Path(source["repo"]), ["log", "-1", "--diff-filter=D", "--format=%H",
+                                                       source["commit"], "--", relpath])
+            if not deleted:
+                raise PublishError(f"source commit has no row: {relpath}")
+            collected.append((relpath, "D"))
+            continue
         if judged.get("sha") != sync.content_sha(relpath, content):
             raise PublishError(f"judged sha does not match source commit: {relpath}")
-        collected.append(relpath)
+        collected.append((relpath, "A"))
     return collected
 
 
@@ -212,8 +218,8 @@ def _collect_commit(root: Path, source: dict, requested: list[str] | None,
         relpaths = _validate_rows(root, source, rows, lock)
     return [
         {"relpath": relpath, "source_path": relpath, "dest_path": "template/" + relpath,
-         "kind": "lock", "op": "A"}
-        for relpath in relpaths
+         "kind": "lock", "op": op}
+        for relpath, op in relpaths
     ]
 
 
@@ -403,7 +409,7 @@ def _materialize(root: Path, source: dict, records: list[dict], lock: dict,
             executable = mode == "100755"
             if os.name == "posix":
                 os.chmod(destination, 0o755 if executable else 0o644)
-            _git(worktree, ["add", "--", record["dest_path"]])
+            _git(worktree, ["add", "-f", "--", record["dest_path"]])
             _git(worktree, ["update-index", "--chmod=+x" if executable else "--chmod=-x", "--", record["dest_path"]])
     _record_layers_and_regenerate_manifest(worktree, layers)
     return _git_text(worktree, ["rev-parse", "HEAD"])
@@ -883,8 +889,16 @@ def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
 # Steps 7-8: update-lock, check
 # ---------------------------------------------------------------------------
 
-def _update_lock(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
+def _update_lock(root: Path, records: list[dict], baseline_repo: Path,
                   baseline_sha_after: str, source: dict) -> str:
+    # The lock is read here, under its mutex, not at publish start: a `judge` during the
+    # publish's minutes writes verdicts a saved start-time snapshot would erase.
+    return sync.mutate_lock(root, lambda lock: _apply_published_rows(
+        root, lock, records, baseline_repo, baseline_sha_after, source))
+
+
+def _apply_published_rows(root: Path, lock: dict, records: list[dict], baseline_repo: Path,
+                          baseline_sha_after: str, source: dict) -> str:
     # §5: a `--from-worktree` publication authors upstream first, so the consumer's local
     # copy of an existing tracked row still holds the pre-publication content until the
     # consumer's own `pull`. Only rewrite `hash` there when local content already equals
@@ -938,7 +952,6 @@ def _update_lock(root: Path, lock: dict, records: list[dict], baseline_repo: Pat
             entry.pop("base", None)
         updated += 1
     lock["synced_commit"] = baseline_sha_after
-    sync.save_lock(root, lock)
     return f"lock updated ({updated} row(s))"
 
 
@@ -1122,8 +1135,8 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
     after = journal["baseline_sha_after"]
     _git(baseline_cache, ["fetch", "origin", "main"])
     lock_records = [r for r in records if r["kind"] == "lock"]
-    _step(journal, journal_path, 6, lambda: _update_lock(root, lock, lock_records, baseline_cache, after, source))
-    _step(journal, journal_path, 7, lambda: _check(root, lock, records, baseline_cache, after, source))
+    _step(journal, journal_path, 6, lambda: _update_lock(root, lock_records, baseline_cache, after, source))
+    _step(journal, journal_path, 7, lambda: _check(root, sync.load_lock(root), records, baseline_cache, after, source))
     journal["finished_at"] = _now()
     _write_json_atomic(journal_path, journal)
 

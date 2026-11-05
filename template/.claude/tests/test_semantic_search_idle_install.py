@@ -241,6 +241,19 @@ class InstallerProof(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("installed shim content changed", proc.stdout)
 
+    def test_24_an_install_older_than_the_repo_source_is_drift(self):
+        """A landed hook change reaches no backend until --install; the repo's check names the stale copy."""
+        self.install()
+        hook = self.fx.paths.state_dir / "semantic_search_csharp_hook.mjs"
+        hook.write_bytes(hook.read_bytes() + b"\n// an older release\n")
+        state = json.loads(self.fx.paths.state.read_text(encoding="utf-8"))
+        state["csharp_sha256"][hook.name] = inst.sha256_file(hook)
+        inst.write_json_atomic(self.fx.paths.state, state)
+        proc = self.check()
+        self.assertEqual(proc.returncode, 1, proc.stdout)
+        self.assertIn("differs from this repo's source", proc.stdout)
+        self.assertIn(hook.name, proc.stdout)
+
     def test_10_a_stale_schema_is_reported_even_when_the_hash_matches(self):
         """The static snapshot must be compared with the LIVE upstream contract, not trusted."""
         self.install()
@@ -413,6 +426,47 @@ class ContractParityProof(unittest.TestCase):
         shim = dict(self.SHIM, instructions="use search")
         problems = inst.contract_drift(shim, dict(self.SHIM, instructions="use search first"))
         self.assertTrue(any(p.startswith("instructions differs") for p in problems), problems)
+
+
+class RepairBackendProof(unittest.TestCase):
+    """An unbuilt install is built from a built version beside it that declares the same packages."""
+
+    STUB_TSC = ("const fs = require('fs'); fs.mkdirSync('dist', {recursive: true}); "
+                "fs.writeFileSync('dist/mcp-server.js', '');\n")
+
+    def setUp(self):
+        self.cache = Path(tempfile.mkdtemp(prefix="repair-backend-proof-"))
+        self.addCleanup(shutil.rmtree, self.cache, True)
+
+    def version(self, name: str, deps: dict, built: bool) -> Path:
+        root = self.cache / name
+        (root / "node_modules").mkdir(parents=True)
+        (root / "package.json").write_text(json.dumps({"version": name, "dependencies": deps}), encoding="utf-8")
+        (root / "tsconfig.build.json").write_text("{}", encoding="utf-8")
+        if built:
+            tsc = root / "node_modules" / "typescript" / "bin" / "tsc"
+            tsc.parent.mkdir(parents=True)
+            tsc.write_text(self.STUB_TSC, encoding="utf-8")
+            (root / "dist").mkdir()
+            (root / "dist" / "mcp-server.js").write_text("", encoding="utf-8")
+        return root
+
+    def test_same_packages_builds_from_the_built_sibling(self):
+        self.version("1.0.0", {"sdk": "^1"}, built=True)
+        unbuilt = self.version("1.1.0", {"sdk": "^1"}, built=False)
+        used = inst.repair_backend(unbuilt, shutil.which("node") or "node")
+        self.assertEqual(Path(used).name, "1.0.0")
+        self.assertTrue(inst.backend_ready(unbuilt))
+
+    def test_different_packages_leave_it_unbuilt(self):
+        self.version("1.0.0", {"sdk": "^1"}, built=True)
+        unbuilt = self.version("1.1.0", {"sdk": "^2"}, built=False)
+        self.assertIsNone(inst.repair_backend(unbuilt, shutil.which("node") or "node"))
+        self.assertFalse(inst.backend_ready(unbuilt))
+
+    def test_a_ready_install_is_left_alone(self):
+        built = self.version("1.0.0", {"sdk": "^1"}, built=True)
+        self.assertIsNone(inst.repair_backend(built, shutil.which("node") or "node"))
 
 
 if __name__ == "__main__":

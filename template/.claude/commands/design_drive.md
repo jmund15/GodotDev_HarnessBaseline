@@ -9,7 +9,7 @@ description: Drive multi-Part design work to shipped code or design-only
 **Enters at:** ground, then design.
 **Owner stop:** design-lock (`design_contract.md` clause 8); the spine's halts apply.
 
-Run the stages, halts, slices and close in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md). This file holds only what a design topic adds.
+Run the stages and halts in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md), slices in [`drive_execution.md`](../skills/_brainstorm_shared/drive_execution.md), and close in [`drive_close.md`](../skills/_brainstorm_shared/drive_close.md). This file holds only what a design topic adds.
 
 **Invocation:** `/design_drive <topic-or-part> [--design-only]`
 

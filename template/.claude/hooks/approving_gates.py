@@ -725,8 +725,8 @@ def sidecar_launch_shape(command, root):
             return False, "sidecar flag `-%s` is not approved" % letter
         if letter in sidecar_argv.SIDECAR_VALUE_FLAGS and not isinstance(value, str):
             return False, "sidecar flag `-%s` is missing its value" % letter
-        if letter == "G" and value not in _allowed_kinds():
-            return False, "`-G` must be a read-only kind: %s" % ", ".join(sorted(_allowed_kinds()))
+        if letter == "G" and value not in (kinds := _allowed_kinds()):
+            return False, "`-G` must be a read-only kind: %s" % ", ".join(sorted(kinds))
         if letter == "t":
             tools = set(value.split(",")) if isinstance(value, str) else set()
             if not tools or not tools <= _ALLOWED_TOOLS:

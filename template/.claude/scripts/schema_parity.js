@@ -15,8 +15,10 @@
 //     const NAME = { ... }
 //     // SCHEMA-SSOT-END
 //
-// Comparison is key-order-insensitive (both sides canonicalized). Exit 0 identical, 1 diverged,
-// 2 bad usage / missing marker.
+// Comparison is key-order-insensitive and ignores string `description`s (both sides canonicalized). With no
+// arguments, and after an explicit pair, it also checks each workflow's EVIDENCE-SSOT schema against
+// .claude/schemas/evidence.json, and that every such workflow's EVIDENCE_RULES sentence is one text.
+// Exit 0 identical, 1 diverged, 2 bad usage / missing marker.
 
 const fs = require('fs')
 const path = require('path')
@@ -47,10 +49,12 @@ function extractInline(jsPath) {
   return new Function((evidence ? evidence[1] : '') + '\nreturn (' + expr + ')')()
 }
 
+// Key-order-insensitive, and blind to prose: a string `description` is documentation, not schema.
 function canon(v) {
   if (Array.isArray(v)) return v.map(canon)
   if (v && typeof v === 'object') {
-    return Object.keys(v).sort().reduce((o, k) => { o[k] = canon(v[k]); return o }, {})
+    return Object.keys(v).sort().filter(k => !(k === 'description' && typeof v[k] === 'string'))
+      .reduce((o, k) => { o[k] = canon(v[k]); return o }, {})
   }
   return v
 }
@@ -100,35 +104,32 @@ for (const [js, json] of pairs) {
     failed = failed || 1
   }
 }
-// An engine is any other workflow that calls closeCheck( or carries a verifier block; each must carry both
-// blocks byte-equal to dispatch.js's. A workflow that calls closeCheck( without the blocks is DIVERGED.
-const canonical = fs.readFileSync(path.join(ROOT, '.claude/workflows/dispatch.js'), 'utf8')
-const engines = fs.readdirSync(path.join(ROOT, '.claude/workflows')).sort()
-  .filter(f => f.endsWith('.js') && f !== 'dispatch.js')
-  .filter(f => {
-    const src = fs.readFileSync(path.join(ROOT, '.claude/workflows', f), 'utf8')
-    return src.includes('closeCheck(') || src.includes('// CLOSE-CHECK-BEGIN') || src.includes('// EVIDENCE-SSOT-BEGIN')
-  })
+// Every workflow carrying an EVIDENCE-SSOT block must hold the same evidence schema as schemas/evidence.json.
+// Only what a validator consumes is compared; the engines' close-check source is covered by their behavioral suites.
+const evidenceFile = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude/schemas/evidence.json'), 'utf8'))
+const workflowDir = path.join(ROOT, '.claude/workflows')
+const engines = fs.readdirSync(workflowDir).sort().filter(f => f.endsWith('.js'))
+  .filter(f => fs.readFileSync(path.join(workflowDir, f), 'utf8').includes('// EVIDENCE-SSOT-BEGIN'))
   .map(f => f.replace(/\.js$/, ''))
-for (const marker of ['CLOSE-CHECK', 'EVIDENCE-SSOT']) {
-  const pattern = new RegExp('// ' + marker + '-BEGIN[\\s\\S]*?// ' + marker + '-END')
-  const expected = canonical.match(pattern)
-  for (const name of engines) {
-    const source = fs.readFileSync(path.join(ROOT, '.claude/workflows', name + '.js'), 'utf8')
-    const actual = source.match(pattern)
-    if (!expected || !actual || actual[0] !== expected[0]) {
-      console.error('DIVERGED ' + marker + ': ' + name)
-      failed = failed || 1
-    }
-  }
-  if (marker === 'EVIDENCE-SSOT' && expected) {
-    const twin = new Function(expected[0] + '\nreturn {schema: EVIDENCE_SCHEMA, rules: EVIDENCE_RULES}')()
-    const file = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude/schemas/evidence.json'), 'utf8'))
-    if (JSON.stringify(canon(twin.schema)) !== JSON.stringify(canon(file)) || twin.rules !== file.description) {
-      console.error('DIVERGED evidence schema/rules owner')
-      failed = failed || 1
-    }
+for (const name of engines) {
+  const source = fs.readFileSync(path.join(workflowDir, name + '.js'), 'utf8')
+  const block = source.match(/\/\/ EVIDENCE-SSOT-BEGIN[\s\S]*?\/\/ EVIDENCE-SSOT-END/)
+  let schema
+  try { schema = block && new Function(block[0] + '\nreturn EVIDENCE_SCHEMA')() } catch (e) { schema = undefined }
+  if (!schema || JSON.stringify(canon(schema)) !== JSON.stringify(canon(evidenceFile))) {
+    console.error('DIVERGED evidence schema: ' + name)
+    failed = failed || 1
   }
 }
-if (!failed) console.log('OK   CLOSE-CHECK and EVIDENCE-SSOT parity (' + engines.length + ' engines)')
+// The rules sentence each engine shows its agents has one copy per engine; every copy must be one text.
+const rulesOf = name => {
+  const m = fs.readFileSync(path.join(workflowDir, name + '.js'), 'utf8').match(/^const EVIDENCE_RULES = (.*)$/m)
+  return m ? m[1].trim() : null
+}
+const ruleTexts = new Map(engines.map(name => [name, rulesOf(name)]))
+if (new Set(ruleTexts.values()).size > 1) {
+  console.error('DIVERGED EVIDENCE_RULES text: ' + [...ruleTexts].map(([n, t]) => n + '=' + (t ? t.length + ' chars' : 'absent')).join(', '))
+  failed = failed || 1
+}
+if (!failed) console.log('OK   evidence schema parity (' + engines.length + ' engines)')
 process.exit(failed)

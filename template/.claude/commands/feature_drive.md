@@ -9,7 +9,7 @@ description: Ship one-plan work with no roadmap Part, its design settled or open
 **Enters at:** ground (design capture), then plan.
 **Owner stop:** remaining owner forks batched at entry through `AskUserQuestion`, because the owner just spoke and this is the batching point `/part_drive` lacks; a fork found mid-run follows spine H3.
 
-Run the stages, halts, slices and close in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md). This file holds only what a one-plan drive adds.
+Run the stages and halts in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md), slices in [`drive_execution.md`](../skills/_brainstorm_shared/drive_execution.md), and close in [`drive_close.md`](../skills/_brainstorm_shared/drive_close.md). This file holds only what a one-plan drive adds.
 
 Which entry command fits a piece of work follows [`_brainstorm_shared/execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Entry routing.
 

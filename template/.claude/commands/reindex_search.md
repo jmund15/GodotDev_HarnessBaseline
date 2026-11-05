@@ -23,7 +23,7 @@ For indexed file types and tool guidance, see CLAUDE.core.md §9.
    - `searchDir`: project root — derive from `$CLAUDE_PROJECT_DIR` (or the session's working directory / repo root); do NOT hardcode, the path differs per machine.
    - `limit`: `1`
 
-   Every search compares each file's mtime with its stored record, then re-chunks and re-embeds only new or changed files and drops deleted ones, so the refresh costs the files changed since the last search. Add `rebuild: true` only for a named cause: a plugin or C# hook upgrade, a corrupt db, or a `.gitignore` change that drops indexed paths. A rebuild drops `search.db` and re-embeds the whole corpus, which takes tens of minutes at this repo's size.
+   Every search compares each file's mtime with its stored record, then re-chunks and re-embeds only new or changed files and drops deleted ones, so the refresh costs the files changed since the last search. Add `rebuild: true` only for a named cause: a plugin or C# hook upgrade, a corrupt db, or a `.gitignore` change that drops indexed paths. A rebuild drops `search.db` and re-embeds the whole corpus, and every search of that root waits behind it.
 
 3. Run the project's index prebuild commands — generated files that go stale on the same window as the index:
    ```bash

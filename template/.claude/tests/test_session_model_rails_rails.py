@@ -294,7 +294,7 @@ CASES = [
      lambda: _compact_notice() is not None
              and "Skill(skill=\"orchestration\")" in _compact_notice()
              and "re-attached whole" in _compact_notice()
-             and "ladder-slice <tier>" in _compact_notice()
+             and "for-role <tier>..." in _compact_notice()
              and "in full" in _compact_notice()),
     # The edit guard denies a harness edit while instruction_quality is not in context (6 denies in session 9c1a9920,
     # 2026-10-14), so the compact start names it in the re-attach rule, and never claims a skill was cleared.

@@ -1,0 +1,20 @@
+{
+ "type": "assistant",
+ "message": {
+  "role": "assistant",
+  "content": [
+   {
+    "type": "tool_use",
+    "id": "toolu_01CsZ5wFhVRWCR8EetcJb7H3",
+    "name": "Bash",
+    "input": {
+     "command": "cd \"C:/work/project\" && git status --short -- .claude/scripts/harness_tests.py .claude/adaptation.json .claude/rules/harness_tooling.md .claude/hooks/foreground_wait_guard.py .claude/tests/test_harness_tests_*.py .claude/tests/test_harness_close_cadence.py; git worktree add -q -b scratch/cut-runner .claude/worktrees/cut-runner HEAD && git -C .claude/worktrees/cut-runner log --oneline -1",
+     "description": "Check runner files are clean and create the runner job's worktree"
+    },
+    "caller": {
+     "type": "direct"
+    }
+   }
+  ]
+ }
+}

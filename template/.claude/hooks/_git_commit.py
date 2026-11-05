@@ -624,7 +624,17 @@ def _includes_index(rest):
     return False
 
 
-def _full_pathspec(rest, cwd, pathspec):
+def unexpanded_hint(text):
+    """The sentence a "cannot verify" deny appends when `text` (a cwd or the failed git step) still holds a `$`:
+    a hook reads the command before the shell expands a substitution, so a path list written as one is unreadable."""
+    if "$" not in str(text or ""):
+        return ""
+    return (" The guard reads the command before the shell expands `$`; write the ref, directory and paths "
+            "literally (a long path list: `--pathspec-from-file=<file>` with the file inside the repo; "
+            "a loop over refs: one call per ref).")
+
+
+def full_pathspec(rest, cwd, pathspec):
     """(pathspec plus the lines of `--pathspec-from-file`, None) | (None, the failing step)."""
     spec_file = _pathspec_file(rest)
     if spec_file is None:
@@ -660,7 +670,7 @@ def staged_paths(rest, cwd, env=None):
     include_dirty, amend, pathspec = parse_commit_args(rest)
     paths = set()
 
-    pathspec, problem = _full_pathspec(rest, cwd, pathspec)
+    pathspec, problem = full_pathspec(rest, cwd, pathspec)
     if problem:
         return None, problem
 
@@ -718,7 +728,7 @@ def index_sourced_paths(rest, cwd, env, paths):
     has_spec = bool(pathspec) or _pathspec_file(rest) is not None
     if include_dirty or not paths or (has_spec and not _includes_index(rest)):
         return set()
-    pathspec, problem = _full_pathspec(rest, cwd, pathspec)
+    pathspec, problem = full_pathspec(rest, cwd, pathspec)
     if problem:
         return None
     if not pathspec:
@@ -733,7 +743,7 @@ def index_sourced_paths(rest, cwd, env, paths):
 def _mixed_publication(rest, cwd, env):
     """True when a `-i` commit stages a path outside its pathspec whose working copy differs from the index, or
     when git cannot say."""
-    pathspec, problem = _full_pathspec(rest, cwd, parse_commit_args(rest)[2])
+    pathspec, problem = full_pathspec(rest, cwd, parse_commit_args(rest)[2])
     if problem or not pathspec:
         return bool(problem)
     cached = run_git(["diff", "--cached", "--name-only"], cwd, env)

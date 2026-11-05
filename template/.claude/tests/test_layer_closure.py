@@ -103,6 +103,37 @@ def main():
     check("a skill-scoped citation resolves to the shipped file, never a test fixture's copy",
           got == [width], got)
 
+    proof = ".claude/tests/test_reader.py"
+    fixture, stream, corpus = (".claude/tests/fixtures/reader_row.json", ".claude/tests/fixtures/run/trim.stream",
+                               ".claude/tests/reader_corpus.json")
+    data, planted_doc = ".claude/scripts/domain_map.json", ".claude/commands/agents/review_agents.md"
+    proof_text = ("from pathlib import Path\nROW = Path(__file__).parent / 'fixtures/reader_row.json'\n"
+                  "STREAM = 'fixtures/run/trim.stream'\nCORPUS = Path(__file__).parent / 'reader_corpus.json'\n"
+                  "MAP = '.claude/scripts/domain_map.json'\nPLANTED = 'commands/agents/review_agents.md'\n")
+    got = dependencies({proof: proof_text, fixture: "{}\n", stream: "x\n", corpus: "{}\n", data: "{}\n",
+                        planted_doc: "# r\n"}, {proof: "pure", planted_doc: "pure"}, proof)
+    check("a proof depends on the fixture and sibling corpus it reads, never on a .claude path it plants",
+          got == sorted([fixture, stream, corpus]), got)
+    joined = ".claude/tests/test_joined.py"
+    rows, evidence, gate_map = (".claude/tests/fixtures/state/rows.jsonl", ".claude/tests/fixtures/evidence",
+                                ".claude/scripts/gate_map.json")
+    joined_text = ("from pathlib import Path\nHERE = Path(__file__).resolve().parent\nROOT = HERE.parents[1]\n"
+                   "ROWS = HERE / 'fixtures' / 'state' / 'rows.jsonl'\n"
+                   "EVIDENCE = ROOT / '.claude' / 'tests' / 'fixtures' / 'evidence'\nTESTS = ROOT / '.claude' / 'tests'\n"
+                   "def plant(tmp):\n    (tmp / '.claude/scripts/domain_map.json').write_text('{}')\n"
+                   "    return ROOT / '.claude/scripts/gate_map.json'\n")
+    joined_tree = {joined: joined_text, rows: "{}\n", evidence + "/r1/a.json": "{}\n", gate_map: "{}\n",
+                   data: "{}\n", ".claude/tests/other.json": "{}\n", ".claude/baseline.lock.json": "{}\n"}
+    joined_text += "LOCK = ROOT / '.claude' / 'baseline.lock.json'\nOWN = ROOT / '.claude/CLAUDE.md'\n"
+    joined_tree[".claude/CLAUDE.md"] = "@CLAUDE.core.md\n"
+    joined_tree[joined] = joined_text
+    got = dependencies(joined_tree, {joined: "pure"}, joined)
+    check("a proof depends on a file it joins onto a name bound from __file__, never one joined onto a temp root",
+          got == sorted([rows, gate_map]), got)
+    got = [f for f in kinds(planted(joined_tree, {joined: "pure"})) if f[0] == joined]
+    check("a fixture folder a proof joins onto __file__ is a read; the tests folder, the lock and CLAUDE.md are not",
+          got == sorted((joined, "local-only", t) for t in ("fixtures/state/rows.jsonl", evidence, gate_map)), got)
+
     shipped_copy = ".claude/tests/fixtures/evidence/r1/tree/.claude/tools/helper.py"
     got = dependencies({row: "import helper\n", shipped_copy: "x = 1\n"}, {row: "pure", shipped_copy: "pure"}, row)
     check("a python import never resolves to a shipped test fixture's same-named copy", got == [], got)
@@ -113,6 +144,9 @@ def main():
                    ".claude/commands/regression_gate.md": "# g\n"},
                   {fixture_doc: "pure", ".claude/commands/regression_gate.md": "godot"})
     check("a shipped fixture-tree copy is test data, never a citer", got == [], kinds(got))
+    got = dependencies({fixture_doc: "Run `/regression_gate`.\n", ".claude/commands/regression_gate.md": "# g\n"},
+                       {fixture_doc: "pure"}, fixture_doc)
+    check("a fixture-tree copy depends on nothing, so judging it push never waits on what it quotes", got == [], got)
 
     skill = ".claude/skills/testing/SKILL.md"
     cmd =".claude/commands/regression_gate.md"
@@ -206,6 +240,9 @@ def main():
     got = planted({doc: "Record it in `tools/load_census.project.json` or `index_composition_baseline.json`.\n"},
                   {doc: "pure"})
     check("a project data file a harness step writes is exempt", got == [], kinds(got))
+    got = planted({doc: "Each consumer keeps its own `tools/vault_sync.project.json` and `.claude/tools/x.project.json`.\n"},
+                  {doc: "pure"})
+    check("a tool's per-consumer *.project.json config is exempt", got == [], kinds(got))
     writer = ".claude/tools/writer.py"
     got = planted({writer: 'OUT = "families.md"\n'}, {writer: "pure"}, extra=(".claude/generated/families.md",))
     check("a bare data literal whose only local match is generated output is exempt", got == [], kinds(got))

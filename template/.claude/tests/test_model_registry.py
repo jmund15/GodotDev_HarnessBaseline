@@ -17,9 +17,15 @@ import contextlib
 import copy
 import importlib.util
 import io
+import json
 import os
 import shutil
 import sys
+import tempfile
+
+# `for-role` stages its delivery receipt in hook state: keep it under this proof's own temp root, never the
+# session's live file.
+os.environ["HARNESS_HOOK_STATE_DIR"] = tempfile.mkdtemp(prefix="model_registry_state_")
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -92,7 +98,7 @@ def aliases(rows):
 
 
 def res(role, seat):
-    return mr.for_role(role, seat, data=DATA)
+    return mr.route_rows(role, seat, data=DATA)
 
 
 def raises(fn):
@@ -318,13 +324,33 @@ def _missing_ladder_route():
         mr.role_tiers = original
 
 
+@contextlib.contextmanager
+def _planted_capacity(data):
+    """A temp capacity cache with one available reading per plan-quota transport of `data`: `for-role` reads
+    cache-first, and the proof never touches the machine's cache or starts a probe."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    from _capacity_fixtures import write_capacity_cache
+    with tempfile.TemporaryDirectory(prefix="mreg_capacity_") as tmp:
+        path = write_capacity_cache(os.path.join(tmp, "capacity.json"), data)
+        saved = os.environ.get("PROVIDER_CAPACITY_CACHE")
+        os.environ["PROVIDER_CAPACITY_CACHE"] = path
+        try:
+            yield
+        finally:
+            if saved is None:
+                os.environ.pop("PROVIDER_CAPACITY_CACHE", None)
+            else:
+                os.environ["PROVIDER_CAPACITY_CACHE"] = saved
+
+
 def _capture_for_role(role, seat, data=DATA):
     original_load, original_tiers = mr.load, mr.role_tiers
     mr.load = lambda *_a, **_k: data
     mr.role_tiers = lambda *_a, **_k: TIERS
     output = io.StringIO()
     try:
-        with contextlib.redirect_stdout(output):
+        with _planted_capacity(data), contextlib.redirect_stdout(output):
             code = mr._cmd_for_role([role, '--from', seat])
     finally:
         mr.load, mr.role_tiers = original_load, original_tiers
@@ -337,21 +363,6 @@ def _marked_for_role(role_tier, mark_tier):
     next(m for m in d["models"] if m["alias"] == "sonnet")["probation"] = [
         {"tier": mark_tier, "text": "owner-planted-mark", "evidenceRef": "planted"}]
     return _capture_for_role(role_tier, "anthropic", data=d)[1]
-
-
-def _owner_display():
-    d = copy.deepcopy(mr.load())
-    row = next(m for m in d["models"] if m["alias"] == "flash")
-    row["effort"] = {"evidence": "owner", "evidenceRef": "2026-09-25 transcript:owner/42"}
-    original = mr.load
-    mr.load = lambda *_a, **_k: d
-    stream = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(stream):
-            mr._cmd_for_role(["executor", "--from", "codex"])
-    finally:
-        mr.load = original
-    return "owner-claimed" in next(line for line in stream.getvalue().splitlines() if "flash " in line)
 
 
 def _ladder_disagreement(tokens="`architect` `executor` `scout`"):
@@ -410,7 +421,6 @@ CASES = [
         ["executor"], "owner", "transcript:owner/42")
         and "evidenceRef" in _role_validation(["executor"], "owner", 'owner: "I trust this tier"')),
     ("T2 bare-date owner reference fails", lambda: "evidenceRef" in _role_validation(["executor"], "owner", "2026-09-25")),
-    ("T2 owner claim displays owner-claimed", _owner_display),
     ("T1 registered claims are the row's tiers", lambda: mr.row_tier_claims(
         "opus", DATA) == ["architect", "executor"]),
     # ---- the ladder reader -------------------------------------------------
@@ -432,16 +442,16 @@ CASES = [
 
     # A non-Anthropic row claims a tier by naming it in registry `roles`, beside the alias route.
     ("a registry row naming a tier in `roles` serves that tier",
-     lambda: aliases(mr.for_role("architect", "codex", _with_sol())["inTransport"]) == ["sol"]),
+     lambda: aliases(mr.route_rows("architect", "codex", _with_sol())["inTransport"]) == ["sol"]),
 
     ("...and only that tier: the architect claim does not make it an executor",
      lambda: "sol" not in aliases(
-         mr.for_role("executor", "codex", _with_sol())["inTransport"])),
+         mr.route_rows("executor", "codex", _with_sol())["inTransport"])),
 
     # An architect-only claimant is the nearest in-transport row for executor work on its seat. The
     # offer names its tier and direction, so the dispatcher weighs its `±` cell before taking it.
     ("codex seat with an architect claimant, executor: it is offered as nearest, ONE tier ABOVE",
-     lambda: [(m["alias"], t, d) for m, t, d in mr.for_role("executor", "codex", _with_sol())["nearest"]]
+     lambda: [(m["alias"], t, d) for m, t, d in mr.route_rows("executor", "codex", _with_sol())["nearest"]]
              == [("sol", "architect", -1)]),
 
     # ---- a tier's listing is facts, never a pick ------------------------------
@@ -453,17 +463,18 @@ CASES = [
          costs={"a": 5, "b": None, "c": 10, "d": 5})] == ["c", "a", "d", "b"]),
 
     ("for_role keeps registry order in each section: no sort stands in for the choice",
-     lambda: all([m["id"] for m in mr.for_role(t, "anthropic")["inTransport"]]
+     lambda: all([m["id"] for m in mr.route_rows(t, "anthropic")["inTransport"]]
                  == [m["id"] for m in mr.rows_for_tier(t, seat="anthropic") if m["transport"] == "anthropic"]
                  for t in ("fanout", "executor", "architect"))),
 
-    ("the for-role report says its order is not a pick and names the selection line",
-     lambda: "not a pick" in _capture_for_role("fanout", "anthropic", data=mr.load())[1]
-             and "selection line" in _capture_for_role("fanout", "anthropic", data=mr.load())[1]),
+    ("the for-role output prints the ladder cut above the table, and no listing is a pick",
+     lambda: (lambda text: "## Role guidance" in text and "for-role: tiers" in text
+              and text.index("## Role guidance") < text.index("for-role: tiers"))(
+                  _capture_for_role("fanout", "anthropic", data=mr.load())[1])),
 
-    ("the for-role report prints each row's ladder cost",
-     lambda: __import__("re").search(r"cost (\d+|\?) \(ladder; higher = cheaper\)",
-                                     _capture_for_role("fanout", "anthropic", data=mr.load())[1]) is not None),
+    ("the for-role report prints each ladder cost once, in the ladder table, never again on a row line",
+     lambda: (lambda head, table: "| cost |" in head and "| cost " not in table)(
+         *_capture_for_role("fanout", "anthropic", data=mr.load())[1].split("for-role: tiers", 1))),
 
 
     ("the for-role row carries the owner's probation mark for the requested tier",
@@ -543,12 +554,12 @@ CASES = [
      lambda: aliases(res("executor", "anthropic")["inTransport"]) == ["opus"]
              and res("executor", "anthropic")["crossTransport"] == []),
 
-    ("a provider for-role report names its canonical native Workflow pin, not the sidecar alias",
-     lambda: (lambda rc, text: rc == 0 and "gpt-5.6-luna" in text
-              and "a Workflow/Agent pin takes the first column, the alias" not in text
-              and "provider pin: gpt-5.6-luna" in text)(*_capture_for_role("fanout", "codex"))),
-    ("a host for-role report names its legal native alias or ID",
-     lambda: (lambda rc, text: rc == 0 and "host pin: sonnet or claude-sonnet-5" in text)(
+    ("a provider for-role report prints no pin spelling, hop recipe or transport label",
+     lambda: (lambda rc, text: rc == 0 and "bash " not in text and "host pin:" not in text
+              and "provider pin:" not in text and "IN-TRANSPORT" not in text
+              and "CROSS-TRANSPORT" not in text)(*_capture_for_role("fanout", "codex"))),
+    ("a host for-role report prints no pin spelling either",
+     lambda: (lambda rc, text: rc == 0 and "host pin:" not in text and "provider pin:" not in text)(
          *_capture_for_role("fanout", "anthropic"))),
     ("a sidecar recipe includes disclosure, shape, effort, record, stream and workdir",
      lambda: all(s in mr._sidecar_line(DATA["models"][-1], DATA)
@@ -584,11 +595,11 @@ CASES = [
          "executor", DATA, seat="codex"))),
 
     ("for_role threads the seat, so a codex seat sees its own sidecar-scoped row",
-     lambda: "astra" in aliases(mr.for_role(
+     lambda: "astra" in aliases(mr.route_rows(
          "executor", "codex", _astra_sidecar_scoped())["inTransport"])),
 
     ("...and an anthropic seat is not offered it across the hop",
-     lambda: "astra" not in aliases(mr.for_role(
+     lambda: "astra" not in aliases(mr.route_rows(
          "executor", "anthropic", _astra_sidecar_scoped())["crossTransport"])),
 
     ("seat=None keeps the seat-blind answer for callers reporting on no session",
@@ -600,7 +611,7 @@ CASES = [
     # Sorting on abs(distance) alone let list position decide, which could offer the weaker row --
     # a silent downgrade, the exact failure for_role exists to make visible.
     ("an equidistant nearest tie offers the STRONGER tier, not list order",
-     lambda: set(t for _, t, _ in mr.for_role(
+     lambda: set(t for _, t, _ in mr.route_rows(
          "fanout", "codex", _only_tiers(("executor", "scout")))["nearest"])
          == {"executor"}),
 
@@ -1154,7 +1165,7 @@ def _identity_cases(live):
             os.environ[mr.ENV_OVERRIDE] = tmp
         out = io.StringIO()
         try:
-            with contextlib.redirect_stdout(out):
+            with _planted_capacity(data or mr.load()), contextlib.redirect_stdout(out):
                 code = mr.main(argv)
         finally:
             if old is None:
@@ -1169,7 +1180,7 @@ def _identity_cases(live):
         hits = []
         for tier in mr.TIER_ORDER:
             for seat in live["transports"]:
-                res = mr.for_role(tier, seat, live)
+                res = mr.route_rows(tier, seat, live)
                 named = [m["id"] for m in res["inTransport"] + res["crossTransport"]]
                 named += [m["id"] for m, _t, _d in res["nearest"]]
                 if model_id in named:
@@ -1397,22 +1408,23 @@ def _identity_cases(live):
                          for ln in cli(["for-role", r, "--from", "anthropic"])[1].splitlines())),
         ("`for-role executor --from codex` supplies no chosen effort on the opus hop",
          lambda: not RUNG_FLAG.search(cli(["for-role", "executor", "--from", "codex"])[1])),
-        ("`for-role architect` on the live ladder lists opus in-transport and sol across the hop",
-         lambda: (lambda r: r[0] == 0 and "claude-opus-5-5" in r[1] and "gpt-6.1-sol" in r[1])(
+        ("`for-role architect` prints the ladder cut above the table",
+         lambda: (lambda r: r[0] == 0 and "## Role guidance" in r[1]
+                  and r[1].index("## Role guidance") < r[1].index("for-role: tiers"))(
              cli(["for-role", "architect", "--from", "anthropic"]))),
-        ("`for-role orchestrator --from codex` offers sol as nearest with its tier and direction",
-         lambda: (lambda r: r[0] == 0 and any(
-             "gpt-6.1-sol" in ln and "[`architect`, 1 tier below]" in ln
-             for ln in r[1].splitlines()))(cli(["for-role", "orchestrator", "--from", "codex"]))),
-        ("`for-role executor --from codex` lists sol in-transport (sol claims executor)",
-         lambda: (lambda r: r[0] == 0 and "gpt-6.1-sol" in r[1].split("CROSS-TRANSPORT")[0])(
+        ("`for-role orchestrator --from codex` marks the seat as the session plan",
+         lambda: (lambda r: r[0] == 0 and "session plan codex" in r[1])(
+             cli(["for-role", "orchestrator", "--from", "codex"]))),
+        ("`for-role executor --from codex` prints no hop recipe or pin spelling",
+         lambda: (lambda r: r[0] == 0 and "bash " not in r[1]
+                  and "host pin:" not in r[1] and "provider pin:" not in r[1])(
              cli(["for-role", "executor", "--from", "codex"]))),
         ("`--from` never reports the seat as resolved from this session",
          lambda: "resolved from this session" not in cli(["for-role", "executor", "--from", "codex"])[1]),
         ("`--check` runs the ladder check: the live ladder passes it",
          lambda: mr.check_ladder() is None),
-        ("`for-role executor` on the live ladder still lists opus",
-         lambda: (lambda r: r[0] == 0 and "claude-opus-5-5" in r[1])(
+        ("`for-role executor` on the live ladder prints one table for the tier",
+         lambda: (lambda r: r[0] == 0 and "for-role: tiers executor" in r[1])(
              cli(["for-role", "executor", "--from", "anthropic"]))),
 
         # ---- validation of the new fields ----
@@ -1432,12 +1444,11 @@ def _identity_cases(live):
         ("a codex row takes `see-ladder`: the ladder cell owns a non-host row's rung too",
          lambda: mr.resolve("sol", live)["effort"].get("evidence") == "see-ladder"
                  and mr.resolve("flash", live)["effort"].get("evidence") == "see-ladder"),
-        ("`for-role` prints the same effort phrase for a host row and a codex row",
-         lambda: (lambda lines: len(lines) >= 2 and any("gpt-6.1-sol" in l for l in lines)
-                  and any("claude-opus-5-5" in l for l in lines)
-                  and all("effort per the ladder row" in l for l in lines))(
-             [l for l in cli(["for-role", "executor", "--from", "codex"])[1].splitlines()
-              if l.startswith("  ") and "claims " in l])),
+        ("`for-role` prints each effort cell once, in the ladder table, and no row line repeats it",
+         lambda: (lambda text: "| effort |" in text and bool(
+             [l for l in text.split("for-role: tiers", 1)[1].splitlines() if ":qualified" in l])
+                  and "| effort " not in text.split("for-role: tiers", 1)[1])(
+             cli(["for-role", "executor", "--from", "codex"])[1])),
         ("`see-ladder` validates on a non-host transport: the rung home is not host-only",
          lambda: accepts(lambda d: row(d, "sol").update(effort={"evidence": "see-ladder"}))),
         ("a `see-ladder` row carrying `converged`/`open` is rejected - two homes is the defect",
@@ -1839,7 +1850,7 @@ def _ladder_family_cases(live):
         return sorted(m["id"] for m in mr.ladder_rows(cell, FAMILY_DATA))
 
     def cross(role):
-        return {m["alias"] for m in mr.for_role(role, "anthropic", live)["crossTransport"]}
+        return {m["alias"] for m in mr.route_rows(role, "anthropic", live)["crossTransport"]}
 
     cases = [
         ("a family row resolves to its versions on two transports",
@@ -1964,8 +1975,8 @@ def _supplementary_cases(live):
         ("supplementary_rows lists the row",
          lambda: "haiku" in aliases(run(mr.supplementary_rows, "architect", d))),
         ("for_role lists the supplementary row apart from the claimants", lambda: (
-            "haiku" in aliases(run(lambda: mr.for_role("architect", "anthropic", d)["supplementary"]))
-            and "haiku" not in aliases(mr.for_role("architect", "anthropic", d)["inTransport"]))),
+            "haiku" in aliases(run(lambda: mr.route_rows("architect", "anthropic", d)["supplementary"]))
+            and "haiku" not in aliases(mr.route_rows("architect", "anthropic", d)["inTransport"]))),
         ("check_ladder demands a ladder row for a supplementary-only claim", lambda: rejects_ladder(d)),
     ]
 
@@ -1993,7 +2004,7 @@ def _supplementary_cases(live):
         os.environ[mr.ENV_OVERRIDE] = tmp
         out = io.StringIO()
         try:
-            with contextlib.redirect_stdout(out):
+            with _planted_capacity(data), contextlib.redirect_stdout(out):
                 mr.main(["for-role", "architect", "--from", "anthropic"])
         finally:
             if old is None:
@@ -2022,8 +2033,8 @@ def _supplementary_cases(live):
         return out.getvalue()
 
     cases += [
-        ("for-role prints the supplementary block under its header",
-         lambda: "added review seats only: never lone, never author" in cli_for_role(d)),
+        ("for-role prints one table naming the tiers it was asked for",
+         lambda: "for-role: tiers architect" in cli_for_role(d)),
         ("available prints supplementary= beside roles=",
          lambda: "supplementary=architect" in cli_available(d)),
     ]
@@ -2156,15 +2167,14 @@ def main():
     failed += not ok
     print("%s a well-formed for-role still exits 0" % ("ok  " if ok else "FAIL"))
 
-    # The header points at each row's native pin: Anthropic accepts alias or ID; provider seats
-    # require the canonical ID. A blanket "alias" rule breaks off-transport Workflow calls.
+    # The table's route header marks the session's route; every row is listed once with its facts.
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
+    with _planted_capacity(mr.load()), contextlib.redirect_stdout(buf):
         mr._cmd_for_role(["executor", "--from", "anthropic"])
-    header = next((l for l in buf.getvalue().splitlines() if l.startswith("IN-TRANSPORT")), "")
-    ok = "native Workflow/Agent pin" in header and "alias, not the id" not in header
+    header = next((l for l in buf.getvalue().splitlines() if l.startswith("route ")), "")
+    ok = "(session route)" in header
     failed += not ok
-    print("%s the in-transport header defers to each row's native pin (%r)"
+    print("%s the route header marks the session's route (%r)"
           % ("ok  " if ok else "FAIL", header))
 
     # ---- time-of-day pricing, peak gate policy, version-bound evidence, effort vocabulary ----

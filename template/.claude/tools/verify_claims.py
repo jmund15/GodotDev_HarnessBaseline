@@ -182,8 +182,6 @@ class _Context:
         self.timeout = COMMAND_TIMEOUT if command_timeout is None else command_timeout
         self.bodies = {}
         self.hashes = {}
-        self.turns = {}
-        self.answers = {}
 
     @cached_property
     def main_root(self):
@@ -262,6 +260,7 @@ def resolve_path(root, value):
 # Process-wide, and prepared only when an exact hit misses: callers check one claim per check_claims call,
 # and cited sources include live transcripts of tens of MB (an explore journal took 21 minutes in normalize).
 _LOADED = {}
+_OWNER_TURNS = {}
 BINARY = "binary"
 _BINARY_PROBE = 8000  # git's buffer_is_binary window: a NUL byte in it marks the file binary
 
@@ -582,30 +581,40 @@ def _command_inputs(ctx, cwd, pathspecs):
 
 
 def _owner_turns(ctx):
-    """`(turns, why, answers)`: the owner's turns, and the answer rows keyed by uuid with their (question, label) pairs."""
+    """`(turns, why, answers, prepared)`: the owner's turns, the answer rows keyed by uuid with their (question,
+    label) pairs, and each turn's prepared text by uuid, filled lazily."""
     sid = ctx.session_id or os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
     if not sid:
-        return None, "no-session", {}
-    if sid not in ctx.turns:
-        import _owner_text
-        import task_record
-        path = task_record._session_transcript(sid)
-        ctx.turns[sid] = _owner_text.owner_turns(path)
-        ctx.answers[sid] = dict(_owner_text.owner_answer_pairs(path) or [])
-    turns = ctx.turns[sid]
-    return turns, None if turns is not None else "transcript-unreadable", ctx.answers[sid]
+        return None, "no-session", {}, {}
+    import _owner_text
+    import task_record
+    path = task_record._session_transcript(sid)
+    try:
+        key = str(Path(path).resolve())
+        stat = Path(path).stat()
+        stamp = (stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        key, stamp = str(path), None
+    entry = _OWNER_TURNS.get(key)
+    if entry is None or entry[0] != stamp:
+        entry = (stamp, _owner_text.owner_turns(path), dict(_owner_text.owner_answer_pairs(path) or []), {})
+        _OWNER_TURNS[key] = entry
+    _, turns, answers, prepared = entry
+    return turns, None if turns is not None else "transcript-unreadable", answers, prepared
 
 
 def _check_owner(item, ctx):
     quote = item.get("owner")
     if not quote.strip():
         return _result("owner", UNVERIFIED, "empty-quote")
-    turns, why, answers = _owner_turns(ctx)
+    turns, why, answers, prepared = _owner_turns(ctx)
     question = item.get("question")
     bare_label = False
     answered = []
     for uuid, text in turns or []:
-        if not _match(prepare(text), quote, whole_words=True):
+        if uuid not in prepared:
+            prepared[uuid] = prepare(text)
+        if not _match(prepared[uuid], quote, whole_words=True):
             continue
         if uuid not in answers:
             return _result("owner", VERIFIED, "owner-turn")
