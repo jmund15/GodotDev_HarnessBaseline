@@ -237,12 +237,14 @@ def mark_skill_in_context(session_id, name, agent_id=""):
     fire_once_since_compaction(session_id, "skill_in_context:" + name + _agent_suffix(agent_id))
 
 
-def skill_in_context(session_id, name, agent_id="", transcript_path=None):
+def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=None):
     """True when skill `name` was loaded since the session started or last compacted, in the subagent's own
     context when `agent_id` is given. With the main thread's `transcript_path`, a skill the client re-attached
-    whole after the latest compaction counts too (`_compaction_record.reattached_whole`); the first such read
-    marks every whole skill of that attachment. An attachment not yet on disk, or an unreadable transcript,
-    counts as not re-attached."""
+    whole after the latest compaction counts too, but only while that copy's body still matches the skill's
+    `SKILL.md` under `root` (`_compaction_record.skill_file_digest`); the attachment is a session-start snapshot,
+    so a whole copy can be stale. The first such read marks every current skill of that attachment. A skill with
+    no `SKILL.md` on disk (bundled or plugin) cannot go stale, so it counts. An attachment not yet on disk, or an
+    unreadable transcript, counts as not re-attached."""
     key = "skill_in_context:" + name + _agent_suffix(agent_id)
     state = read_json_salvage(state_path(session_id))
     fired = state.get(_COMPACTION_KEY)
@@ -257,9 +259,12 @@ def skill_in_context(session_id, name, agent_id="", transcript_path=None):
         return False
     if not whole:
         return False
-    for skill in whole:
+    root = root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    current = [skill for skill, digest in whole.items()
+               if _compaction_record.skill_file_digest(skill, root) in (None, digest)]
+    for skill in current:
         mark_skill_in_context(session_id, skill)
-    return name in whole
+    return name in current
 
 
 def mark_ladder_slice(session_id, tiers, clear_receipt_failure=False):
@@ -479,9 +484,9 @@ def is_subagent_payload(payload):
 
 def clear_compaction_keys(session_id):
     """Re-arm every compaction-scoped advisory key, skill markers included, and stamp the clear's time. Called
-    from the PreCompact hook. A skill the client re-attaches whole regains its marker from the attachment, which
-    the client writes after this clear (`skill_in_context`); the stamp keeps an older attachment from counting.
-    True when a key was cleared."""
+    from the PreCompact hook. A skill the client re-attaches whole and still current with its `SKILL.md` on disk
+    regains its marker from the attachment, which the client writes after this clear (`skill_in_context`); the
+    stamp keeps an older attachment from counting. True when a key was cleared."""
     path = state_path(session_id)
 
     def update(state):

@@ -170,7 +170,8 @@ def doctrine_rule(payload):
     """The whole dispatch-doctrine demand `doctrine_check` applies, for a line printed before any dispatch."""
     return ('Before the next dispatch, load each skill governing its brief and artifacts in this context '
             '(orchestration §0 Governing skills). The dispatch doctrine must also be in this context: the orchestration skill (a '
-            'copy re-attached whole after the compaction counts), else ' + SKILL_STEP + '; and, since each '
+            'copy re-attached whole and still current with its SKILL.md on disk after the compaction counts), else '
+            + SKILL_STEP + '; and, since each '
             'compaction clears the ladder, for a call whose jobs pin tiers, '
             + SLICE_STEP.format(which='each tier it pins', tiers='<tier>...')
             + '; for a call naming no tier, ' + READ_STEP.format(path=expected_path(payload)) + '.')
@@ -232,7 +233,7 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
     required, faults = skill_dispatch_gate.required_skills(payload)
     for name in sorted(set(required) | {'orchestration'}):
         if not skill_in_context(session_id, name, agent_id=payload.get('agent_id') or '',
-                                transcript_path=payload.get('transcript_path')):
+                                transcript_path=payload.get('transcript_path'), root=str(_root(payload))):
             unmet.append(SKILL_STEP if name == 'orchestration' else
                          f'invoke Skill(skill="{name}") (orchestration §0 Governing skills)')
     fault = ('Governing-skill check incomplete: ' + '; '.join(faults)

@@ -8,14 +8,18 @@ the whole batch. `position` tells the two apart: a boundary followed by a Sessio
 assistant row is a previous one; a boundary followed by neither is the current one, already written.
 
 `invoked_skills` holds the skills the client re-attached after the boundary, each as `{name, path, content}`; a
-copy the client cut ends with a notice containing TRUNCATION_NOTICE. Only a whole copy puts the skill back in the
-main thread's context; a subagent's context is never this attachment.
+copy the client cut ends with a notice containing TRUNCATION_NOTICE. The attachment is a session-start snapshot,
+so a copy can be whole and stale after the skill's file changed on disk. Only a whole copy whose body still
+matches the skill's `SKILL.md` puts the skill back in the main thread's context; a subagent's context is never
+this attachment.
 
 A dispatch is a main-thread Workflow call or a Bash call that `sidecar_dispatch_context` reads as a sidecar or
 fan-out launch: the calls `model_ladder_gate.doctrine_check` gates.
 """
+import hashlib
 import json
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -28,11 +32,51 @@ import _transcript_scan  # noqa: E402
 
 TRUNCATION_NOTICE = "truncated for compaction"
 _NOTICE_TAIL_CHARS = 300
+_BASE_LINE = re.compile(r"\ABase directory for this skill:[^\n]*\n+")
+_FRONTMATTER = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.S)
+# The client appends a skill's invocation arguments after the body; they are the caller's text, not SKILL.md.
+_ARGUMENTS = re.compile(r"\n\n+ARGUMENTS: .*", re.S)
 _launch_checks = []
 
 
+def skill_body(text):
+    """The skill body both a `SKILL.md` on disk and the client's attached copy carry: frontmatter and the
+    `Base directory for this skill:` line removed, a trailing `ARGUMENTS:` block removed, blank edges trimmed.
+    A current skill matches on this body whichever of the two shapes the client wrote."""
+    text = _BASE_LINE.sub("", str(text or ""), count=1)
+    text = _FRONTMATTER.sub("", text, count=1)
+    return _ARGUMENTS.sub("", text).strip()
+
+
+def skill_body_digest(text):
+    """The digest of `skill_body(text)`: what the attachment records and what the file on disk compares to."""
+    return hashlib.sha256(skill_body(text).encode("utf-8")).hexdigest()
+
+
+def skill_file_digest(name, root):
+    """`skill_body_digest` of skill `name`'s `SKILL.md` under `root`, else under the user skills dir; None when
+    neither file exists (a bundled or plugin skill no disk change can stale)."""
+    name = str(name or "")
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        return None
+    config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    roots = [(os.path.join(str(root), ".claude", "skills") if root else None),
+             os.path.join(config, "skills"), os.path.expanduser("~/.claude/skills")]
+    seen = set()
+    for base in roots:
+        if not base or os.path.normcase(base) in seen:
+            continue
+        seen.add(os.path.normcase(base))
+        try:
+            with open(os.path.join(base, name, "SKILL.md"), encoding="utf-8") as fh:
+                return skill_body_digest(fh.read())
+        except OSError:
+            continue
+    return None
+
+
 def _initial():
-    return {"count": 0, "times": [], "settled": True, "attached": False, "whole": [], "dispatches": 0}
+    return {"count": 0, "times": [], "settled": True, "attached": False, "whole": {}, "dispatches": 0}
 
 
 def _bare(name):
@@ -82,12 +126,17 @@ def _feed(state, _index, line):
         return
     if boundary and entry.get("subtype") == "compact_boundary":
         state.update(count=state["count"] + 1, times=(state["times"] + [entry.get("timestamp")])[-2:],
-                     settled=False, attached=False, whole=[])
+                     settled=False, attached=False, whole={})
         return
     kind = (entry.get("attachment") or {}).get("type") if entry.get("type") == "attachment" else None
     if kind == "invoked_skills":
         skills = entry["attachment"].get("skills") or []
-        state.update(attached=True, whole=sorted({_bare(s.get("name")) for s in skills if _whole(s)} - {""}))
+        whole = {}
+        for skill in skills:
+            name = _bare(skill.get("name"))
+            if name and _whole(skill):
+                whole[name] = skill_body_digest(skill.get("content"))
+        state.update(attached=True, whole=whole)
         return
     if isinstance(kind, str) and kind.startswith("hook_") and (
             entry["attachment"].get("hookEvent") == "SessionStart"
@@ -130,12 +179,14 @@ def position(transcript_path):
 
 
 def reattached_whole(transcript_path, after_epoch=None):
-    """Skill names the client re-attached whole after the latest written boundary, or None when no attachment
-    for a boundary stamped after `after_epoch` (the PreCompact clear) is on disk yet."""
+    """`{skill: body digest}` for each copy the client re-attached whole after the latest written boundary, or
+    None when no attachment for a boundary stamped after `after_epoch` (the PreCompact clear) is on disk yet.
+    The digest is of `skill_body`, so a caller credits only a copy whose body still matches the file on disk."""
     state = record(transcript_path)
     if not state["count"] or not state["attached"]:
         return None
     stamp = _epoch(state["times"][-1])
     if after_epoch is not None and (stamp is None or stamp < after_epoch):
         return None
-    return list(state["whole"])
+    whole = state["whole"]
+    return dict(whole) if isinstance(whole, dict) else None

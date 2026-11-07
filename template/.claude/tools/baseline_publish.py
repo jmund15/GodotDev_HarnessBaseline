@@ -34,6 +34,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 import baseline_sync as sync  # noqa: E402
 import baseline_identity  # noqa: E402
+import autolearn_outcomes  # noqa: E402
 
 STEP_NAMES = (
     "collect", "classify", "materialize", "scrub",
@@ -435,8 +436,8 @@ def _judged_accepted_hits(records: list[dict], lock: dict) -> set[str]:
     return accepted
 
 
-def _scrub(root: Path, worktree: Path, records: list[dict], lock: dict,
-           accept_hits: list[str], baseline_dir: Path) -> str:
+def _scrub(worktree: Path, records: list[dict], lock: dict,
+           accept_hits: list[str], profile: dict) -> str:
     for record in records:
         if record["op"] == "D":
             continue  # deletions have no content
@@ -454,7 +455,6 @@ def _scrub(root: Path, worktree: Path, records: list[dict], lock: dict,
             _write_lf(destination, stripped)
     _git(worktree, ["add", "-A"])
     diff_text = _lf(_git(worktree, ["diff", "--cached"]).stdout).decode("utf-8", errors="replace")
-    profile = baseline_identity.build_profile_for_repo(root, baseline_dir=str(baseline_dir))
     hits = baseline_identity.scan_changed(diff_text, profile)
     accepted = set(accept_hits) | _judged_accepted_hits(records, lock)
     remaining = [hit for hit in hits if _hit_id(hit) not in accepted]
@@ -718,17 +718,101 @@ def _carried_rows(lock: dict, rows: list[str]) -> list[str]:
     return carried
 
 
+def _row_lines(rows: list[str], row_meta: dict[str, dict] | None = None) -> list[str]:
+    """One line per published row, naming its op: the PR body and the commit message share it."""
+    meta = row_meta or {}
+    return [f"- {relpath} ({meta.get(relpath, {}).get('op', 'A')})" for relpath in rows]
+
+
+def _source_subject(source: dict) -> str:
+    return _git_text(Path(source["repo"]), ["log", "-1", "--format=%s", source["commit"]])
+
+
+def _row_reasons(root: Path, rows: list[str]) -> list[tuple[str, str]]:
+    """The newest `autolearn_outcomes.jsonl` reason per row whose target is a published relpath, in
+    publication order; a row with no matching ledger row or no reason gets no line."""
+    records, _bad = autolearn_outcomes.read_rows(str(root / ".claude" / "autolearn_outcomes.jsonl"))
+    newest: dict[str, str] = {}
+    for record in records:
+        target = str(record.get("target") or "")
+        reason = str(record.get("reason") or "").strip()
+        if target and reason:
+            newest[target] = reason
+    return [(relpath, newest[relpath]) for relpath in rows if relpath in newest]
+
+
+def _message_hits(profile: dict, texts: list[str]) -> list[list]:
+    """Per-text identity hits, through the same engine `_scrub` uses: one synthetic
+    added-line diff, so each hit's line number is its text's 1-based index."""
+    diff = "--- a/message\n+++ b/message\n@@ -0,0 +1,%d @@\n" % len(texts)
+    diff += "".join(f"+{text}\n" for text in texts)
+    per_text: list[list] = [[] for _ in texts]
+    for hit in baseline_identity.scan_changed(diff, profile):
+        line = getattr(hit, "line", 0)
+        if isinstance(line, int) and 1 <= line <= len(texts):
+            per_text[line - 1].append(hit)
+    return per_text
+
+
+def _withhold_identity_lines(profile: dict, entries: list[tuple[str, str]]
+                             ) -> tuple[list[tuple[str, str]], list[dict]]:
+    """Split `(row, text)` free-text lines into kept and withheld. A withheld line is named in the
+    journal by its row and hit kinds only: the text itself never enters the shared baseline."""
+    hits = _message_hits(profile, [text for _row, text in entries])
+    kept: list[tuple[str, str]] = []
+    withheld: list[dict] = []
+    for (row, text), line_hits in zip(entries, hits):
+        if line_hits:
+            withheld.append({"row": row,
+                             "hit_kinds": sorted({hit.token_kind for hit in line_hits})})
+        else:
+            kept.append((row, text))
+    return kept, withheld
+
+
+def _publish_message(root: Path, journal: dict, profile: dict, label: str) -> tuple[str, str]:
+    """The publish commit's title and body: what shipped, from where, and why. The body is what a
+    consumer's `git log --grep` finds when it looks for a fix's origin in the baseline clone, so the
+    source is the hashed consumer label -- never the local checkout path -- and a free-text line
+    the identity profile flags is left out and recorded on the journal instead."""
+    source = journal["source"]
+    rows = journal["rows_published"]
+    subject = _source_subject(source)
+    reasons = _row_reasons(root, rows)
+    kept, withheld = _withhold_identity_lines(
+        profile, [("source_subject", subject), *((relpath, f"- {relpath}: {reason}") for relpath, reason in reasons)]
+    )
+    kept_rows = {row for row, _text in kept}
+    lines = [f"Source: {source['kind']} {label} @ {source['commit']}"]
+    if "source_subject" in kept_rows:
+        lines.append(f"Source subject: {subject}")
+    lines.append("Rows:")
+    lines.extend(_row_lines(rows, journal.get("row_meta")))
+    why_lines = [text for row, text in kept if row != "source_subject"]
+    if why_lines:
+        lines.append("Why:")
+        lines.extend(why_lines)
+    journal["message_withheld"] = withheld
+    return f"feat(baseline): publish {journal['id']}", "\n".join(lines)
+
+
 def _write_pr_body(path: Path, journal_id: str, source: dict, rows: list[str],
-                    step_evidence: list[dict], carried: list[str] | None = None) -> None:
+                    step_evidence: list[dict], carried: list[str] | None = None,
+                    row_meta: dict[str, dict] | None = None, label: str = "",
+                    withheld: list[dict] | None = None) -> None:
+    withheld = withheld or []
     lines = [
         f"# baseline publish {journal_id}",
         "",
-        f"Source: {source['kind']} `{source['repo']}` @ `{source['commit']}`",
+        f"Source: {source['kind']} `{label}` @ `{source['commit']}`",
         "",
         "## Rows",
-        *(f"- {row}" for row in rows),
+        *_row_lines(rows, row_meta),
         "",
         *(["## Carried rows", *carried, ""] if carried else []),
+        *(["## Withheld message lines",
+           f"- {len(withheld)} withheld: " + ", ".join(entry["row"] for entry in withheld), ""]
+          if withheld else []),
         "## Steps 1-5",
         *(f"- {step['name']}: {step['evidence']}" for step in step_evidence),
     ]
@@ -798,8 +882,14 @@ def _ci_run_url(worktree: Path, pr_url: str) -> str | None:
     return None
 
 
+def _consumer_label_for(root: Path) -> str:
+    """The hashed consumer id the baseline already uses in place of a local checkout path."""
+    lock = sync.load_lock(root)
+    return baseline_identity._consumer_label(lock.get("baseline_repo") or "", root.name)
+
+
 def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
-             no_ci: bool, branch: str, journal_id: str) -> str:
+             no_ci: bool, branch: str, journal_id: str, profile: dict) -> str:
     if not journal["worktree"].get("committed"):
         _git(worktree, ["add", "-A"])
         status = _git(worktree, ["status", "--porcelain"])
@@ -808,8 +898,9 @@ def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
         # A linked worktree shares `.git/config` with the cache clone and every other
         # author worktree off it -- `git config user.*` here would alter their identity.
         # Pass the identity on the commit command instead of writing shared config.
+        title, message = _publish_message(root, journal, profile, _consumer_label_for(root))
         _git(worktree, ["-c", "user.name=baseline-publisher", "-c", "user.email=baseline@invalid",
-                         "commit", "-q", "-m", f"feat(baseline): publish {journal_id}"])
+                         "commit", "-q", "-m", title, "-m", message])
         journal["worktree"]["committed"] = True
     head = _git_text(worktree, ["rev-parse", "HEAD"])
     journal["worktree"]["head"] = head
@@ -819,9 +910,12 @@ def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
     if not pr_url:
         _git(worktree, ["push", "-q", "-f", "origin", f"HEAD:refs/heads/{branch}"])
         body_path = _journal_dir(root) / f"{journal_id}.pr.md"
+        lock = sync.load_lock(root)
+        label = baseline_identity._consumer_label(lock.get("baseline_repo") or "", root.name)
         _write_pr_body(body_path, journal_id, journal["source"], journal["rows_published"],
                        journal["steps"][:5],
-                       _carried_rows(sync.load_lock(root), journal["rows_published"]))
+                       _carried_rows(lock, journal["rows_published"]),
+                       journal.get("row_meta"), label, journal.get("message_withheld"))
         listed = _gh_text(worktree, ["pr", "list", "--head", branch, "--state", "all",
                                       "--json", "url,state"])
         matches = []
@@ -1112,6 +1206,9 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
                        source: dict, records: list[dict], worktree: Path, branch: str,
                        baseline_cache: Path, baseline_before: str, accept_hits: list[str],
                        no_ci: bool, full_battery: bool, dry_run: bool, start: int) -> None:
+    # One profile for both the published diff and the commit message: the same identity facts
+    # govern what a consumer pulls and what its history records.
+    profile = baseline_identity.build_profile_for_repo(root, baseline_dir=str(baseline_cache))
     if start <= 2:
         materialized_head = _step(journal, journal_path, 2, lambda: _materialize(
             root, source, records, lock, baseline_cache, baseline_before, worktree, branch
@@ -1121,7 +1218,7 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
             _write_json_atomic(journal_path, journal)
     if start <= 3:
         _step(journal, journal_path, 3, lambda: _scrub(
-            root, worktree, records, lock, accept_hits, baseline_cache
+            worktree, records, lock, accept_hits, profile
         ))
     if start <= 4:
         _step(journal, journal_path, 4, lambda: _validate(worktree, records, full_battery))
@@ -1130,7 +1227,7 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
         return
 
     _step(journal, journal_path, 5, lambda: _publish(
-        worktree, journal, journal_path, root, no_ci, branch, journal["id"]
+        worktree, journal, journal_path, root, no_ci, branch, journal["id"], profile
     ))
     after = journal["baseline_sha_after"]
     _git(baseline_cache, ["fetch", "origin", "main"])
