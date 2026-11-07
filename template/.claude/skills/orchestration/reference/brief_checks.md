@@ -4,7 +4,7 @@ Read before building a brief (`orchestration` §0 Governing skills and Pre-Dispa
 
 ## Governing skills
 
-Before building a brief, load each skill whose workflow the job uses in this session's current context; repeat after compaction unless the client reattached the whole skill. Keep its source paths in the brief. The dispatch doctrine guard observes skill-directory references in prompts and listed context, plus external artifact ownership in the optional project owner map read by `hooks/skill_dispatch_gate.py` (`owners`: skill name → artifact path globs). An absent project file adds no external ownership. It checks the dispatching session's recorded loads, never a job's load claim. Weakness: sessions have skipped skill-load pointers and resumed from partial summaries. Remove this check when live dispatch evidence shows those skips no longer recur.
+Before building a brief, load each skill whose workflow the job uses in this session's current context; repeat after compaction unless the client reattached the whole skill and that copy still matches the skill's `SKILL.md` on disk. Keep its source paths in the brief. The dispatch doctrine guard observes skill-directory references in prompts and listed context, plus external artifact ownership in the optional project owner map read by `hooks/skill_dispatch_gate.py` (`owners`: skill name → artifact path globs). An absent project file adds no external ownership. It checks the dispatching session's recorded loads, never a job's load claim. Weakness: sessions have skipped skill-load pointers and resumed from partial summaries. Remove this check when live dispatch evidence shows those skips no longer recur.
 
 ## Brief checks
 

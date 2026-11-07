@@ -398,8 +398,9 @@ def compaction_lines(payload):
                      "ordinal and the session's dispatch history are unknown." % type(exc).__name__)
     # The edit guard (harness_edit_skill_reminder.py) and the dispatch gate deny on a skill not in context; this
     # line is the earlier surface those denies back up (instruction_quality §3).
-    lines.append("[compaction] An invoked skill the client re-attached whole after this compaction is still loaded; "
-                 "a copy marked truncated for compaction is not, so invoke that skill again before an action that "
+    lines.append("[compaction] An invoked skill the client re-attached whole and still matching its `SKILL.md` on "
+                 "disk after this compaction is still loaded; a copy marked truncated for compaction, or one that "
+                 "no longer matches the file on disk, is not, so invoke that skill again before an action that "
                  "needs it (an edit of a `.claude/` file needs instruction_quality).")
     if dispatches != 0:
         try:

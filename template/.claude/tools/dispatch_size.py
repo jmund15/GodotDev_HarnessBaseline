@@ -63,10 +63,17 @@ root when it gives none). A hit names its anchor: `against project root` or `aga
 
 `dispatch_size(jobs)` takes the jobs list or the whole jobs file / Workflow args object, is pure, and raises
 only on a spec that holds no job list. `line(spec, root)` is its one-line form, None when the spec holds no
-job or cannot be sized. `/delegate` runs it on the jobs file before launch; it informs a launch and never blocks one.
+job or cannot be sized. `/delegate` runs it on the jobs file before launch. It never blocks a launch; instead
+`preflight_lines(spec)` prints every unmet launch precondition as a fact: each job the fan-out would refuse by
+`kind` (in the fan-out's own text), each pinned tier with no ladder slice in this context, and each governing
+skill the briefs need that is not in context. Each names its load step and never the ladder itself; a check that
+cannot run prints `preflight: not checked`, and one `preflight: clean` line is the launch's go.
 """
 from __future__ import annotations
 
+import contextlib
+import copy
+import io
 import json
 import math
 import os
@@ -583,6 +590,113 @@ def denied_lines(size: dict) -> list:
     return ["fit: `%s` %s" % (job["label"], _denied_text(job["denied"])) for job in size["perJob"] if job.get("denied")]
 
 
+def _kind_refusals(jobs: list) -> list:
+    """Each job the fan-out would refuse by its `kind`, in the fan-out's own refusal text. The check runs the
+    same predicates `sidecar_fanout.plan_job` runs, on a copy, so the caller's spec is not widened."""
+    try:
+        import sidecar_fanout
+    except Exception as exc:
+        return ["preflight: not checked: job kind (the fan-out reader did not import: %s)" % exc]
+    refusals = []
+    for index, job in enumerate(jobs):
+        if not isinstance(job.get("promptFile"), str):
+            continue
+        label = job.get("label") or "job%d" % (index + 1)
+        probe = copy.deepcopy(job)
+        try:
+            kind = sidecar_fanout.check_job_kind(probe, label)
+            with contextlib.redirect_stdout(io.StringIO()):
+                sidecar_fanout.cover_brief_tools(probe, label, kind)
+            sidecar_fanout.job_builtins(probe)
+        except Exception as exc:
+            text = str(exc)
+            refusals.append("preflight: unmet: " + (text if text.startswith("job ") else "job %s: %s" % (label, text)))
+    return refusals
+
+
+def _session_transcript(session_id: str):
+    """The session's transcript path the dispatch gate reads, or None when it cannot be found."""
+    try:
+        import dispatch_table
+        return dispatch_table._transcript(session_id)
+    except Exception:
+        return None
+
+
+def _credit_lines(spec, root: Path, session_id: str, transcript_path) -> list:
+    """One line per pinned tier with no ladder slice in this context, and per governing skill the briefs need
+    that is not in context. Each names the load step only; the ladder itself is not printed."""
+    out = []
+    jobs = _jobs_of(spec)
+    tiers = {}
+    for index, job in enumerate(jobs):
+        kind = job.get("kind") or job.get("shape")
+        try:
+            tier = (_dispatch_checks.job_tier(kind, job.get("tier"))[0]
+                    if _dispatch_checks is not None else job.get("tier"))
+        except Exception:
+            tier = None
+        if tier:
+            tiers.setdefault(tier, []).append(job.get("label") or "job%d" % (index + 1))
+    if model_ladder_gate is not None:
+        for tier in sorted(tiers):
+            try:
+                credited = model_ladder_gate.tier_in_context(session_id, tier)
+            except Exception:
+                credited = None
+            if credited is False:
+                out.append("preflight: unmet: tier `%s` (%s) has no ladder slice in this context: %s" % (
+                    tier, ", ".join(tiers[tier]),
+                    model_ladder_gate.SLICE_STEP.format(which=tier, tiers=tier)))
+    try:
+        import skill_dispatch_gate
+        required, faults = skill_dispatch_gate.required_skills(
+            {"tool_name": "Workflow", "tool_input": {"args": spec}, "cwd": str(root),
+             "session_id": session_id, "transcript_path": transcript_path})
+    except Exception as exc:
+        return out + ["preflight: not checked: governing skills (%s)" % exc]
+    for fault in faults:
+        out.append("preflight: not checked: governing skills (%s)" % fault)
+    if model_ladder_gate is None:
+        out.append("preflight: not checked: skill credit (the gate reader did not import)")
+        return out
+    for name in sorted(set(required) | {"orchestration"}):
+        try:
+            credited = model_ladder_gate.skill_in_context(
+                session_id, name, transcript_path=transcript_path, root=str(root))
+        except Exception:
+            credited = None
+        if credited is False:
+            step = (model_ladder_gate.SKILL_STEP if name == "orchestration"
+                    else 'invoke Skill(skill="%s") (orchestration §0 Governing skills)' % name)
+            out.append("preflight: unmet: skill `%s` is not in this context: %s" % (name, step))
+    return out
+
+
+def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> list:
+    """Every unmet launch precondition, as facts, in the output `/delegate` already reads before a launch: each
+    job the fan-out would refuse by `kind`, each pinned tier with no ladder slice in this context, and each
+    governing skill the briefs need that is not in context. One `preflight: clean: ...` line means every check
+    ran and passed, so a clean preflight is the launch's go. A check that cannot run prints `preflight: not
+    checked: ...`, never a pass. Facts only; no check denies on these lines."""
+    root = Path(root) if root else Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    try:
+        jobs = _jobs_of(spec)
+    except ValueError:
+        return ["preflight: not checked: launch preconditions (the spec holds no job list)"]
+    out = _kind_refusals(jobs)
+    session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not session_id:
+        return out + ["preflight: not checked: ladder and skill credit (CLAUDE_CODE_SESSION_ID is unset)"]
+    transcript_path = transcript_path or _session_transcript(session_id)
+    if not transcript_path:
+        out.append("preflight: not checked: re-attached skill copies (no transcript for session %s)" % session_id)
+    out.extend(_credit_lines(spec, root, session_id, transcript_path))
+    if out:
+        return out
+    return ["preflight: clean: every launch precondition is met"]
+
+
 def _job_tier(job: dict, by_shape: dict, by_kind: dict):
     """The tier a job's own data names: its seat's lens tier, else the tier it writes, else its shape or kind
     row. A seat keyed by registry lenses takes `lens.seat_tier`, never a `kind` row's role (a `judge` kind
@@ -704,6 +818,8 @@ def main(argv=None) -> int:
         for fact in denied_lines(size):
             print(fact)
         for fact in fact_lines(spec, session_id=os.environ.get("CLAUDE_CODE_SESSION_ID")):
+            print(fact)
+        for fact in preflight_lines(spec, session_id=os.environ.get("CLAUDE_CODE_SESSION_ID")):
             print(fact)
     except (OSError, ValueError) as exc:
         print("dispatch_size: %s" % exc, file=sys.stderr)

@@ -113,15 +113,19 @@ class SizeTests(Plant):
         spec = os.path.join(self.root, "jobs.json")
         with open(spec, "w", encoding="utf-8") as fh:
             json.dump({"jobs": [self.job("j%d" % i, "p%d.md" % i, must=[shared]) for i in range(2)]}, fh)
+        env = dict(os.environ)
+        env.pop("CLAUDE_CODE_SESSION_ID", None)
+        env["HARNESS_HOOK_STATE_DIR"] = os.path.join(self.root, "state")
         result = subprocess.run([sys.executable, os.path.join(TOOLS, "dispatch_size.py"), spec],
-                                capture_output=True, text=True, encoding="utf-8")
+                                capture_output=True, text=True, encoding="utf-8", env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines()[0],
                          "dispatch size: 2 jobs (opus·high ×2); reading 151/151 KB; 150 KB read by all 2 (300 KB total); "
                          "heaviest reading 6% of its compaction point, 967000 tokens (j0)")
         self.assertEqual(result.stdout.splitlines()[1:], [
             "cheaper claimants: `j0` (opus) not compared: neither its shape row nor its own tier names one",
-            "cheaper claimants: `j1` (opus) not compared: neither its shape row nor its own tier names one"])
+            "cheaper claimants: `j1` (opus) not compared: neither its shape row nor its own tier names one",
+            "preflight: not checked: ladder and skill credit (CLAUDE_CODE_SESSION_ID is unset)"])
 
 
 class NamedFileTests(Plant):
@@ -779,6 +783,70 @@ class DenyTests(Plant):
     def test_a_missing_settings_file_is_no_rules_and_says_nothing(self):
         size = dispatch_size.dispatch_size([self.job("j", "p.md")], root=self.root)
         self.assertNotIn("settings unreadable", dispatch_size.format_line(size))
+
+
+class PreflightTests(Plant):
+    """The preflight states every unmet launch precondition in the output `/delegate` already reads before a launch."""
+
+    def setUp(self):
+        super().setUp()
+        state = os.path.join(self.root, "state")
+        os.makedirs(state, exist_ok=True)
+        saved = os.environ.get("HARNESS_HOOK_STATE_DIR")
+        os.environ["HARNESS_HOOK_STATE_DIR"] = state
+        self.addCleanup(lambda: os.environ.pop("HARNESS_HOOK_STATE_DIR", None) if saved is None
+                        else os.environ.__setitem__("HARNESS_HOOK_STATE_DIR", saved))
+        self.sid = "pf000001"
+        self.transcript = self.text("t.jsonl", "")
+
+    def lines(self, spec, **kwargs):
+        kwargs.setdefault("session_id", self.sid)
+        kwargs.setdefault("transcript_path", self.transcript)
+        return dispatch_size.preflight_lines(spec, root=self.root, **kwargs)
+
+    def workflow_job(self, body):
+        return {"label": "j1", "promptPath": self.text("p.md", body), "model": "opus", "effort": "high",
+                "tier": "executor", "kind": "author"}
+
+    def test_a_job_the_fan_out_refuses_by_kind_is_named_in_its_own_text(self):
+        brief = self.text("brief.md", "Write the report to `reports/out.md`.\n")
+        job = {"label": "codify-derive", "promptFile": brief, "kind": "lens", "model": "opus",
+               "effort": "high", "tier": "executor"}
+        lines = self.lines([job])
+        self.assertTrue(any("job codify-derive: Write on kind 'lens': a job that writes is an author: "
+                            "use kind author" in line for line in lines), lines)
+
+    def test_a_pinned_tier_without_a_ladder_slice_is_named_with_its_load_step(self):
+        lines = self.lines([self.workflow_job("Do the work.")])
+        tier = [line for line in lines if "tier `executor`" in line]
+        self.assertEqual(len(tier), 1, lines)
+        self.assertIn("for-role executor", tier[0])
+
+    def test_a_governing_skill_the_brief_needs_is_named_with_its_load_step(self):
+        os.makedirs(os.path.join(self.root, ".claude", "skills", "product_ui"))
+        self.text(".claude/skills/product_ui/SKILL.md", "# Product UI\n")
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        lines = self.lines([self.workflow_job("Follow `.claude/skills/product_ui/SKILL.md`.")])
+        skill = [line for line in lines if "skill `product_ui`" in line]
+        self.assertEqual(len(skill), 1, lines)
+        self.assertIn('Skill(skill="product_ui")', skill[0])
+
+    def test_a_credited_tier_and_skill_report_one_clean_line(self):
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        self.assertEqual(self.lines([self.workflow_job("Do the work.")]),
+                         ["preflight: clean: every launch precondition is met"])
+
+    def test_without_a_session_id_the_credit_checks_are_not_checked_never_clean(self):
+        saved = os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.addCleanup(lambda: os.environ.__setitem__("CLAUDE_CODE_SESSION_ID", saved) if saved else None)
+        lines = self.lines([self.workflow_job("Do the work.")], session_id="")
+        self.assertTrue(any(line.startswith("preflight: not checked: ladder and skill credit") for line in lines),
+                        lines)
+        self.assertFalse(any(line.startswith("preflight: clean") for line in lines), lines)
 
 
 if __name__ == "__main__":

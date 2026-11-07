@@ -10,7 +10,8 @@ Read records nothing. The ladder note fires once per compaction.
 Each load also sets the compaction-scoped `skill_in_context:<name>` key, which a compaction clears. A subagent
 shares its parent's session_id, so its load (payload `agent_id`) sets `skill_in_context:<name>@<agent_id>` and
 leaves `skills_loaded` and the ladder note to the parent: one agent's load never puts a skill in another's context.
-After a compaction, a skill the client re-attached whole counts as loaded again (`_hook_state.skill_in_context`).
+After a compaction, a skill the client re-attached whole counts as loaded again only while that copy's body
+still matches the skill's `SKILL.md` (`_hook_state.skill_in_context`).
 Consumers: harness_edit_skill_reminder.py denies harness-file edits until `skill_in_context` holds for
 "instruction_quality"; workflow_provider_guard.py skips its ladder fallback once "orchestration" is in
 `skills_loaded`, which survives compaction (keyed by session_id, which persists across /compact).

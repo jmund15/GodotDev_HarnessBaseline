@@ -2197,6 +2197,116 @@ def test_pr_body_lists_each_carried_row() -> None:
     assert ".claude/tools/b.py: judged" not in text, text
     assert "## Carried rows" not in plain_text, plain_text
 
+def test_publish_commit_message_names_rows_subject_and_ledger_reason() -> None:
+    publish = _load_publish()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        repo = root / "source"
+        _init_repo(repo)
+        _write(repo / "a.txt", b"a\n")
+        sha = _commit(repo, "feat: seed the source commit")
+        ledger = root / ".claude" / "autolearn_outcomes.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {"date": "2026-11-01", "session": "s", "target": ".claude/tools/a.py",
+             "signal": "old", "recommended": "apply", "outcome": "applied", "reason": "old reason"},
+            {"date": "2026-11-02", "session": "s", "target": ".claude/tools/a.py",
+             "signal": "new", "recommended": "apply", "outcome": "applied", "reason": "newest reason"},
+            {"date": "2026-11-02", "session": "s", "target": ".claude/tools/elsewhere.py",
+             "signal": "x", "recommended": "apply", "outcome": "applied", "reason": "not published"},
+        ]
+        ledger.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8", newline="\n")
+        journal = {
+            "id": "20260101T000000Z-aaaaaaaa",
+            "source": {"kind": "commit", "repo": str(repo), "commit": sha},
+            "rows_published": [".claude/tools/a.py", ".claude/tools/b.py"],
+            "row_meta": {".claude/tools/a.py": {"op": "M"}, ".claude/tools/b.py": {"op": "A"}},
+        }
+        profile = publish.baseline_identity.build_profile()
+        label = publish.baseline_identity._consumer_label("", root.name)
+        title, body = publish._publish_message(root, journal, profile, label)
+        ledger.unlink()
+        _title2, body2 = publish._publish_message(root, journal, profile, label)
+        empty = root / "empty"
+        _init_repo(empty)
+        _write(empty / "kept.txt", b"kept\n")
+        _commit(empty, "seed")
+        with _raises_publish_error(publish, "publication has no changes"):
+            publish._publish(empty, {"id": "x", "source": journal["source"], "worktree": {"committed": False},
+                                     "rows_published": [], "row_meta": {}},
+                             root / "journal.json", root, False, "b", "x", profile)
+    assert title == "feat(baseline): publish 20260101T000000Z-aaaaaaaa", title
+    assert "Source: commit %s @ %s" % (label, sha) in body, body
+    assert str(repo) not in body, body
+    assert "Source subject: feat: seed the source commit" in body, body
+    assert "- .claude/tools/a.py (M)" in body and "- .claude/tools/b.py (A)" in body, body
+    assert "Why:\n- .claude/tools/a.py: newest reason" in body, body
+    assert body.count("Why:") == 1 and "old reason" not in body and "elsewhere" not in body, body
+    assert "Why:" not in body2, body2
+
+
+def test_publish_message_withholds_identity_lines_and_names_the_consumer_label() -> None:
+    """The message enters the shared baseline's history: the source is the hashed consumer label,
+    never the local checkout path, and any free-text line the identity profile flags is left out
+    and recorded in the journal -- its text never reaching either the commit body or the PR body."""
+    publish = _load_publish()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        repo = root / "source"
+        _init_repo(repo)
+        _write(repo / "a.txt", b"a\n")
+        sha = _commit(repo, "feat: ship ZenithOrb to the guild")
+        lock = {"baseline_repo": "git@example.invalid:org/baseline.git",
+                "substitutions": {"acme": "ZenithOrb"}}
+        _write(root / ".claude" / "baseline.lock.json", json.dumps(lock).encode())
+        ledger = root / ".claude" / "autolearn_outcomes.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        rows = [
+            {"date": "2026-11-02", "session": "s", "target": ".claude/tools/a.py",
+             "signal": "x", "recommended": "apply", "outcome": "applied",
+             "reason": "rename ZenithOrb everywhere"},
+            {"date": "2026-11-02", "session": "s", "target": ".claude/tools/b.py",
+             "signal": "y", "recommended": "apply", "outcome": "applied",
+             "reason": "clean reason"},
+        ]
+        ledger.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8", newline="\n")
+        journal = {
+            "id": "20260101T000000Z-bbbbbbbb",
+            "source": {"kind": "commit", "repo": str(repo), "commit": sha},
+            "rows_published": [".claude/tools/a.py", ".claude/tools/b.py"],
+            "row_meta": {".claude/tools/a.py": {"op": "M"}, ".claude/tools/b.py": {"op": "A"}},
+        }
+        profile = publish.baseline_identity.build_profile_for_repo(root)
+        label = publish.baseline_identity._consumer_label(lock["baseline_repo"], root.name)
+        title, body = publish._publish_message(root, journal, profile, label)
+        pr_body = root / "pr.md"
+        publish._write_pr_body(pr_body, journal["id"], journal["source"], journal["rows_published"],
+                               [], [], journal["row_meta"], label, journal["message_withheld"])
+        text = pr_body.read_text(encoding="utf-8")
+    assert f"Source: commit {label} @ {sha}" in body, body
+    assert str(repo) not in body, body
+    assert "ZenithOrb" not in body, body
+    assert "Source subject:" not in body, body
+    assert "- .claude/tools/a.py (M)" in body and "- .claude/tools/b.py (A)" in body, body
+    assert "Why:\n- .claude/tools/b.py: clean reason" in body, body
+    assert "rename" not in body, body
+    assert [entry["row"] for entry in journal["message_withheld"]] == [
+        "source_subject", ".claude/tools/a.py"], journal["message_withheld"]
+    assert all(entry["hit_kinds"] for entry in journal["message_withheld"]), journal["message_withheld"]
+    assert label in text and str(repo) not in text and "ZenithOrb" not in text, text
+    assert "2 withheld" in text and "source_subject" in text and ".claude/tools/a.py" in text, text
+
+
+@contextlib.contextmanager
+def _raises_publish_error(publish, match: str):
+    try:
+        yield
+    except publish.PublishError as exc:
+        assert match in str(exc), str(exc)
+    else:
+        raise AssertionError("expected PublishError naming %r" % match)
+
+
 _RESET_STDERR = b"fatal: unable to access 'https://example.invalid/x.git/': Recv failure: Connection was reset\n"
 
 
@@ -2340,6 +2450,8 @@ def main() -> int:
         test_publishing_a_binary_row_records_the_sha_of_its_bytes,
         test_unknown_check_bucket_fails_step_six_closed,
         test_pr_body_lists_each_carried_row,
+        test_publish_commit_message_names_rows_subject_and_ledger_reason,
+        test_publish_message_withholds_identity_lines_and_names_the_consumer_label,
         test_scoped_validate_runs_bound_proof_and_records_evidence,
         test_battery_mode_triggers,
         test_validate_reports_every_red_in_one_evidence_string,

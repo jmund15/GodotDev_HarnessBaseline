@@ -57,11 +57,39 @@ def row(label, **overrides):
     return out
 
 
+def skill_copy(name):
+    """The content the client attaches for skill `name`: a `Base directory for this skill:` line, then the
+    SKILL.md body with its frontmatter removed. That is the shape cut from the captured attachment at
+    transcript line 2799."""
+    path = CLAUDE / "skills" / name / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            text = text[end + 4:].lstrip("\n")
+    return "Base directory for this skill: %s\n\n%s" % (path.parent, text)
+
+
+def current_attachment(*names, fixture="invoked_skills"):
+    """An `invoked_skills` attachment carrying the current bytes of each named skill. A skill with no
+    project SKILL.md (a bundled one) keeps the fixture's whole copy, which no disk change can stale."""
+    by_name = {s["name"]: s["content"] for s in row(fixture)["attachment"]["skills"]}
+    skills = []
+    for name in names:
+        try:
+            content = skill_copy(name)
+        except OSError:
+            content = by_name[name]
+        skills.append({"name": name, "path": "projectSettings:" + name, "content": content})
+    return {"type": "attachment", "attachment": {"type": "invoked_skills", "skills": skills}}
+
+
 def segment(boundary_ts, attachment="invoked_skills", settled=True):
     """One compaction as the client writes it: boundary, summary, its api-request-blob copy, the skills
-    attachment, then (once the hooks ran and the session continued) a SessionStart hook row and a turn."""
+    attachment (a fixture label or a row), then (once the hooks ran and the session continued) a
+    SessionStart hook row and a turn."""
     rows = [row("boundary_manual", timestamp=boundary_ts), row("compact_summary"), row("api_request_blob"),
-            row(attachment)]
+            attachment if isinstance(attachment, dict) else row(attachment)]
     if settled:
         rows += [row("sessionstart_hook"), row("assistant_text")]
     return rows
@@ -154,7 +182,7 @@ class RetentionTest(unittest.TestCase):
     sync_subsystems whole; plan_check and instruction_quality truncated. The earlier one (line 40781) carried
     autolearn whole, which the latest dropped."""
 
-    def compacted(self, sid, *invoked, boundary_after_clear=True, settled=True):
+    def compacted(self, sid, *invoked, boundary_after_clear=True, settled=True, attachment="invoked_skills"):
         for name in invoked:
             _hook_state.mark_skill_in_context(sid, name)
         now = time.time()
@@ -164,11 +192,13 @@ class RetentionTest(unittest.TestCase):
         else:
             latest = iso(now - 60)
             _hook_state.clear_compaction_keys(sid)
-        rows = segment(iso(now - 3600), attachment="invoked_skills_prev") + segment(latest, settled=settled)
+        rows = segment(iso(now - 3600), attachment="invoked_skills_prev") + segment(
+            latest, attachment=attachment, settled=settled)
         return Planted(self, rows).path
 
     def test_a_skill_reattached_whole_keeps_its_marker(self):
-        path = self.compacted("ret00001", "orchestration", "workflow-authoring")
+        current = current_attachment("orchestration", "workflow-authoring")
+        path = self.compacted("ret00001", "orchestration", "workflow-authoring", attachment=current)
         self.assertTrue(_hook_state.skill_in_context("ret00001", "orchestration", transcript_path=path))
         self.assertTrue(_hook_state.skill_in_context("ret00001", "workflow-authoring", transcript_path=path))
 
@@ -205,17 +235,14 @@ class RetentionTest(unittest.TestCase):
 
         _hook_state.mark_skill_in_context("ret00011", "instruction_quality")
         _hook_state.clear_compaction_keys("ret00011")
-        attached = row("invoked_skills")
-        for skill in attached["attachment"]["skills"]:
-            if skill["name"] == "instruction_quality":
-                skill["content"] = skill["content"].rsplit("\n\n", 1)[0]
+        attached = current_attachment("instruction_quality")
         rows = [row("boundary_manual", timestamp=iso(time.time() + 60)), row("compact_summary"), attached]
         whole = Planted(self, rows).path
         edit = dict(edit, session_id="ret00011", transcript_path=whole)
         self.assertNotIn("deny", harness_edit_skill_reminder.process(edit) or {})
 
     def test_the_dispatch_gate_agrees_with_the_attachment(self):
-        path = self.compacted("ret00009", "orchestration")
+        path = self.compacted("ret00009", "orchestration", attachment=current_attachment("orchestration"))
         deny, _ = model_ladder_gate.doctrine_check({"session_id": "ret00009", "transcript_path": path,
                                                     "cwd": str(CLAUDE.parent)})
         self.assertNotIn(model_ladder_gate.SKILL_STEP, deny)
@@ -231,6 +258,45 @@ class RetentionTest(unittest.TestCase):
         self.assertIn(model_ladder_gate.SKILL_STEP, deny)
 
 
+class FreshnessTest(unittest.TestCase):
+    """A re-attached copy earns its marker only while its body still matches the skill's SKILL.md on disk.
+    The stale arm replays the attachment the client wrote at transcript line 2799, trimmed to `orchestration`."""
+
+    ROOT = str(CLAUDE.parent)
+
+    def planted(self, sid, attachment):
+        _hook_state.clear_compaction_keys(sid)
+        rows = [row("boundary_manual", timestamp=iso(time.time() + 60)), row("compact_summary"), attachment]
+        return Planted(self, rows).path
+
+    def test_the_captured_stale_copy_is_not_credited(self):
+        path = self.planted("fresh001", row("invoked_skills_stale"))
+        self.assertFalse(_hook_state.skill_in_context("fresh001", "orchestration", transcript_path=path,
+                                                      root=self.ROOT))
+
+    def test_the_current_bytes_are_credited(self):
+        path = self.planted("fresh002", current_attachment("orchestration"))
+        self.assertTrue(_hook_state.skill_in_context("fresh002", "orchestration", transcript_path=path,
+                                                     root=self.ROOT))
+
+    def test_a_truncated_copy_of_the_current_bytes_is_not_credited(self):
+        truncated = skill_copy("instruction_quality")[:800] + \
+            "\n[... truncated for compaction; use Read on the skill path ...]"
+        attachment = {"type": "attachment", "attachment": {"type": "invoked_skills", "skills": [
+            {"name": "instruction_quality", "path": "projectSettings:instruction_quality", "content": truncated}]}}
+        path = self.planted("fresh003", attachment)
+        self.assertFalse(_hook_state.skill_in_context("fresh003", "instruction_quality", transcript_path=path,
+                                                      root=self.ROOT))
+
+    def test_an_edited_body_is_not_credited(self):
+        content = skill_copy("orchestration").replace("a pipe, `head`", "an OLD SENTENCE", 1)
+        attachment = {"type": "attachment", "attachment": {"type": "invoked_skills", "skills": [
+            {"name": "orchestration", "path": "projectSettings:orchestration", "content": content}]}}
+        path = self.planted("fresh004", attachment)
+        self.assertFalse(_hook_state.skill_in_context("fresh004", "orchestration", transcript_path=path,
+                                                      root=self.ROOT))
+
+
 class ReattachTest(unittest.TestCase):
     """A session whose compaction cleared every marker; the client re-attached `orchestration` whole after the
     clear when `whole`, else not at all. The ladder read is armed so only the skill decides."""
@@ -238,13 +304,14 @@ class ReattachTest(unittest.TestCase):
     def planted(self, sid, whole):
         state = tempfile.mkdtemp(prefix="reattach_state_")
         self.addCleanup(shutil.rmtree, state, True)
-        env = patch.dict(os.environ, {"HARNESS_HOOK_STATE_DIR": state})
+        env = patch.dict(os.environ, {"HARNESS_HOOK_STATE_DIR": state, "CLAUDE_PROJECT_DIR": str(CLAUDE.parent)})
         env.start()
         self.addCleanup(env.stop)
         now = time.time()
         _hook_state.clear_compaction_keys(sid)
+        attachment = current_attachment("orchestration") if whole else "invoked_skills_prev"
         rows = (segment(iso(now - 3600), attachment="invoked_skills_prev")
-                + segment(iso(now + 60), attachment="invoked_skills" if whole else "invoked_skills_prev"))
+                + segment(iso(now + 60), attachment=attachment))
         path = Planted(self, rows).path
         arm_ladder({"HARNESS_HOOK_STATE_DIR": state}, sid)
         import dispatch_table

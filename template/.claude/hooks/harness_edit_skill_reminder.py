@@ -6,7 +6,8 @@ What it does:
 - Classifies the tool's file_path: only .claude/ harness surfaces (see PATH RULES).
 - DENIES the edit until `instruction_quality` is in this context window: a Skill call, or a full Read of
   its SKILL.md, recorded by skill_load_marker.py as `skill_in_context`, which a compaction clears unless the
-  client re-attached the skill whole (`_hook_state.skill_in_context` reads the attachment). A subagent
+  client re-attached the skill whole and that copy's body still matches the skill's `SKILL.md`
+  (`_hook_state.skill_in_context` reads both). A subagent
   (payload `agent_id`) needs its own load: the parent's does not put the skill in the subagent's context.
   An injection cannot carry the skill: the client saves a hook value over 10,000 characters to a file and
   shows a 2,000-character preview, and the skill is larger. Only the Skill tool delivers it whole.
