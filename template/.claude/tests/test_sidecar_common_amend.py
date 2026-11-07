@@ -22,7 +22,7 @@ def amend_prompt(cwd, prompt_file, shape="author"):
 
 
 def amend_path(cwd, prompt_file, shape="author"):
-    found = re.search(r"Read (.+?)\.amend\.md with the Read tool", amend_prompt(cwd, prompt_file, shape))
+    found = re.search(r"delivers (.+?)\.amend\.md to you", amend_prompt(cwd, prompt_file, shape))
     return found.group(1) if found else None
 
 

@@ -443,6 +443,26 @@ check("plain engine instruction still matches", True,
       bool(tp.nested_fanout_hits("Run dispatch.js now.", CMD_ROOT)))
 check("malformed JSON cannot hide an instruction", True,
       bool(tp.nested_fanout_hits(json.dumps(_FINDING_F24)[:-1], CMD_ROOT)))
+# Cut from the survey brief the provider guard denied on 2026-11-01 (route-split scout.md line 15,
+# before its terms were rewritten): a list of search terms read as an order to dispatch.
+_SEARCH_TERMS_BRIEF = (
+    "Search beyond these. Run `git grep` over `.claude/` (skills, commands, rules, reference, hooks, "
+    "tools, workflows, tests, CLAUDE*.md) for: `sidecar_fanout`, `fan-out`, `fanout`, `dispatch.js`, "
+    "`Workflow`, `--detach`, `watch_records`, `jobs file`, `the Agent tool is denied`, "
+    "`one-native-job`, `currencyReason`, `transport`. Also find any hook registered in "
+    "`settings*.json` that inspects a `Workflow` or a `sidecar_fanout` call.")
+check("a brief naming the engine as a search term is no dispatch order", [],
+      tp.nested_fanout_hits(_SEARCH_TERMS_BRIEF, CMD_ROOT))
+check("...the same list under `rg` is a search too", [],
+      tp.nested_fanout_hits("Run `rg` over `.claude/` for: `fanout`, `dispatch.js`.", CMD_ROOT))
+check("...a brief that reads or changes the engine file is no order", [],
+      tp.nested_fanout_hits("Search for dispatch.js with `rg`. Read dispatch.js and change its spill path.", CMD_ROOT))
+check("a brief that searches, then tells the child to launch the engine, is an order", True,
+      bool(tp.nested_fanout_hits("Run `git grep` for the term, then launch dispatch.js for each lens.", CMD_ROOT)))
+check("...so is a second imperative sentence after the search terms", True,
+      bool(tp.nested_fanout_hits(_SEARCH_TERMS_BRIEF + " Then run dispatch.js with the jobs file.", CMD_ROOT)))
+check("...and a Workflow call after a search stays an order", True,
+      bool(tp.nested_fanout_hits("Run `rg` for the lenses. Use Workflow({ to dispatch them.", CMD_ROOT)))
 
 _hit = attempt(lambda: tp.nested_fanout_hit("Next, run /planted_wf.", CMD_ROOT))
 check("nested_fanout_hit matches a derived fan-out command", "Next, run /planted_wf", _hit)
@@ -597,6 +617,22 @@ with tempfile.TemporaryDirectory() as _wd, tempfile.TemporaryDirectory() as _hom
     check("...and a review seat's --context file is not scanned", (0, False),
           (_ctx("review")[0], "Bash" in _ctx("review")[1]))
 
+_live = tp.load_table()
+_engine_kinds = [k for k, r in _live["kinds"].items() if "engine" in r["routes"]]
+check("the live table declares engine kinds", True, len(_engine_kinds) > 0)
+for _k in _engine_kinds:
+    _row = _live["kinds"][_k]
+    _shape = _live["shapes"].get(tp.kind_guard(_k, _live), {})
+    check("engine kind %s: its guard shape carries the kind's own agentType" % _k,
+          _row.get("agentType"), _shape.get("agentType"))
+    check("engine kind %s: engine_job is the guard shape on a general-purpose start" % _k,
+          {"shape": tp.kind_guard(_k, _live), "agentType": "general-purpose"}, tp.engine_job(_k, _live))
+raises("engine_job refuses a kind with no engine route", "engine", lambda: tp.engine_job("arm", _live))
+raises("engine_job refuses an unknown kind", "unknown kind", lambda: tp.engine_job("nope", _live))
+_inexact = json.loads(json.dumps(_live))
+_inexact["kinds"]["scout"]["agentType"] = "lane-review"
+raises("engine_job refuses a kind whose guard shape names another agentType", "exact",
+       lambda: tp.engine_job("scout", _inexact))
 # The exec scorer's driver (daemon_lib.EXEC_DRIVER_TOOLS) writes mutants and runs tests in its arm worktree.
 check("the bench-score driver takes the exec scorer's write delta", ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Workflow"],
       tp.resolve_kind("bench-score", add=["Edit", "Write", "Bash"], route="launcher", candidates=CANDIDATES)[0]["builtins"])

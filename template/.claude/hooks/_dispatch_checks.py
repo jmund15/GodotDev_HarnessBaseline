@@ -35,13 +35,18 @@ the job's written `tier`, else its kind row's.
 Capacity is read through `provider_bands.read_capacity`: the fresh cache, else one live read while
 the caller's deadline (`set_deadline`) leaves room for `provider_capacity.LIVE_BUDGET_SECONDS`.
 """
+import datetime
+import json
 import os
+import re
 import shlex
+import subprocess
 import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+import quota_bands  # noqa: E402
 from _dispatch_pins import _tp, tier_rows  # noqa: E402
 try:
     import model_registry  # noqa: E402
@@ -49,6 +54,223 @@ try:
     import provider_capacity  # noqa: E402
 except Exception:  # no registry reader: tier fit cannot be judged, currency says nothing
     model_registry = provider_bands = provider_capacity = None
+
+# A started agent whose transcript has not changed for this long is not counted as live.
+LIVE_SECONDS = 15 * 60
+# Bytes read from the end of a standalone agent transcript to find its last record.
+TAIL_BYTES = 256 * 1024
+# Bytes read from the end of the session transcript to find subagent completion notifications, and how
+# far before an agent's last write a notification may be stamped and still mean that write was its last.
+NOTIFY_TAIL_BYTES = 8 * 1024 * 1024
+NOTIFY_SLACK_SECONDS = 5.0
+
+_TERMINAL = ("result", "failed", "error")
+_AGENT_FILE = re.compile(r"^agent-(a[0-9a-f]+)\.jsonl$")
+_NOTIFY_ID = re.compile(r"<task-id>(a[0-9a-f]+)</task-id>")
+STAMP_RE = re.compile(r'"timestamp"\s*:\s*"([^"]+)"')
+
+
+def _run_live(run_dir, cutoff):
+    """[{run, agentId, label}] started in this run's journal, not ended there, and fresh: its transcript,
+    or the journal while it has none yet, changed at or after `cutoff`."""
+    seen = {}
+    with os.scandir(run_dir) as entries:
+        for e in entries:
+            if e.name.startswith("agent-") and e.name.endswith(".jsonl"):
+                seen[e.name[len("agent-"):-len(".jsonl")]] = e.stat().st_mtime
+    journal = os.path.join(run_dir, "journal.jsonl")
+    journal_mtime = os.path.getmtime(journal)
+    if journal_mtime < cutoff and not any(t >= cutoff for t in seen.values()):
+        return []
+    started, ended = {}, set()
+    with open(journal, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            aid = rec.get("agentId") if isinstance(rec, dict) else None
+            if not aid:
+                continue
+            if rec.get("type") == "started":
+                started[aid] = str(rec.get("label") or aid)
+            elif rec.get("type") in _TERMINAL:
+                ended.add(aid)
+    run = os.path.basename(run_dir)
+    return [{"run": run, "agentId": aid, "label": label} for aid, label in started.items()
+            if aid not in ended and seen.get(aid, journal_mtime) >= cutoff]
+
+
+def _ended(transcript):
+    """Is the last message record of a standalone agent transcript an assistant turn that stopped?"""
+    with open(transcript, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        fh.seek(max(0, fh.tell() - TAIL_BYTES))
+        lines = fh.read().decode("utf-8", errors="replace").splitlines()
+    for line in reversed(lines):
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("type") in ("assistant", "user"):
+            return rec["type"] == "assistant" and \
+                (rec.get("message") or {}).get("stop_reason") in ("end_turn", "stop_sequence")
+    return False
+
+
+def _notifications(transcript):
+    """{agent id: epoch of its latest completion notification} from the session transcript's tail, or {}.
+
+    A background agent's completion reaches the session as a `<task-notification>` naming its
+    `<task-id>`; a resumed agent keeps writing after its old notification, so the caller compares times.
+    """
+    try:
+        with open(transcript, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - NOTIFY_TAIL_BYTES))
+            text = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return {}
+    out = {}
+    for line in text.splitlines():
+        if "<task-notification>" not in line:
+            continue
+        stamp = STAMP_RE.search(line)
+        try:
+            when = datetime.datetime.fromisoformat(stamp.group(1).replace("Z", "+00:00")).timestamp()
+        except (AttributeError, ValueError):
+            continue
+        for aid in _NOTIFY_ID.findall(line):
+            out[aid] = max(out.get(aid, 0.0), when)
+    return out
+
+
+def _meta_label(meta_path, fallback):
+    try:
+        with open(meta_path, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        return str(meta.get("description") or meta.get("agentType") or fallback)
+    except (OSError, ValueError, AttributeError):
+        return fallback
+
+
+def live_jobs(session, now=None, deadline=None):
+    """([{run, agentId, label}], note): the live native jobs under the session directory `session`, and what
+    could not be read.
+
+    A Workflow agent is live while its run journal holds its `started` line and no terminal line. An
+    agent under `subagents/` itself (an Agent-tool child, or a resumed agent) has no journal: it is live
+    unless its last message record is a stopped assistant turn or the session transcript holds a
+    completion notification for it stamped after its last write. Either counts only while its
+    transcript changed in the last LIVE_SECONDS. No tree is none live, with the reason as `note`.
+    `deadline` is a `time.monotonic()` mark the scan stops a second before.
+    """
+    sub = os.path.join(session, "subagents")
+    if not os.path.isdir(sub):
+        return [], None if os.path.exists(session + ".jsonl") or os.path.isdir(session) else "session dir absent"
+    cutoff = (time.time() if now is None else now) - LIVE_SECONDS
+    live, seen, note = [], set(), None
+    workflows = os.path.join(sub, "workflows")
+    if os.path.isdir(workflows):
+        with os.scandir(workflows) as runs:
+            for run in runs:
+                if deadline is not None and time.monotonic() > deadline - 1.0:
+                    note = "scan stopped at the hook's time budget; runs after it were not read"
+                    break
+                if run.is_dir() and os.path.exists(os.path.join(run.path, "journal.jsonl")):
+                    for job in _run_live(run.path, cutoff):
+                        live.append(job)
+                        seen.add(job["agentId"])
+    notified = None
+    with os.scandir(sub) as entries:
+        for e in entries:
+            m = _AGENT_FILE.match(e.name)
+            if not m or m.group(1) in seen:
+                continue
+            aid, mtime = m.group(1), e.stat().st_mtime
+            if mtime < cutoff or _ended(e.path):
+                continue
+            if notified is None:
+                notified = _notifications(session + ".jsonl")
+            if notified.get(aid, 0.0) >= mtime - NOTIFY_SLACK_SECONDS:
+                continue
+            live.append({"run": "agent-" + aid, "agentId": aid,
+                         "label": _meta_label(os.path.join(sub, "agent-%s.meta.json" % aid), "(no description)")})
+    return live, note
+
+
+
+
+def session_dir(transcript, session_id=None):
+    """`<transcript dir>/<session id>`, or None when no transcript is named. A transcript path already inside
+    the session's tree (a subagent's) is cut back to the session directory."""
+    transcript = str(transcript or "")
+    if not transcript:
+        return None
+    sid = str(session_id or os.path.splitext(os.path.basename(transcript))[0])
+    norm = os.path.normpath(transcript)
+    marker = os.sep + sid + os.sep
+    cut = norm.find(marker)
+    return norm[:cut + len(marker) - 1] if cut >= 0 else os.path.join(os.path.dirname(norm), sid)
+
+
+def band_run(session_id=None, budget=10.0):
+    """(CompletedProcess, None) of `budget_posture.py --band --pressure --five-hour --used`, or (None, why) when
+    it timed out or could not start. `session_id` makes it read this session's capture, not all of TEMP."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "budget_posture.py")
+    cmd = [sys.executable, script, "--band", "--pressure", "--five-hour", "--used"]
+    if session_id:
+        cmd += ["--session", str(session_id)]
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=budget), None
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, "%s: %s" % (type(exc).__name__, str(exc)[:200])
+
+
+def five_hour_fields(fields, used_field=()):
+    """{"pressure", "resets_at", "used"} from the band read's 5h fields, or {} when they are absent or empty.
+    `used` is the capture's 5h used percent from 0 to 100, None when the read did not carry it."""
+    try:
+        window = {"pressure": float(fields[0]), "resets_at": float(fields[1])}
+    except (IndexError, ValueError):
+        return {}
+    try:
+        window["used"] = float(used_field[0])
+    except (IndexError, ValueError):
+        window["used"] = None
+    return window
+
+
+def five_hour_read(session_id=None, budget=10.0):
+    """({"pressure", "resets_at", "used"} or {}, why or None) for this session's 5-hour window."""
+    out, err = band_run(session_id, budget)
+    if out is None:
+        return {}, err
+    parts = out.stdout.strip("\r\n").split("\t")
+    window = five_hour_fields(parts[2:4], parts[5:6])
+    return window, None if window else "the band read carried no 5h window"
+
+
+def native_room(pressure, live_count):
+    """The one five-hour width rule (orchestration §5b): None while the window is cool or unread, else how many
+    native jobs this session may still add: one live at a time, so `1 - live_count`, never below zero.
+    RULE 5 denies a call wider than this; the fan-out keeps at most this many native units."""
+    if pressure is None or pressure <= quota_bands.FIVE_HOUR_NARROW_PRESSURE:
+        return None
+    return max(0, 1 - live_count)
+
+
+def native_width(session_id, session, deadline=None, now=None, budget=10.0):
+    """{"pressure", "resets_at", "used", "live", "room", "note"} for the session whose directory is `session`:
+    the window read, this session's live native jobs (scanned only while the window is hot) and `native_room`.
+    `room` None means no limit, `note` says what could not be read."""
+    window, why = five_hour_read(session_id, budget)
+    pressure = window.get("pressure")
+    live, note = [], None
+    if native_room(pressure, 0) is not None:
+        live, note = live_jobs(session, now=now, deadline=deadline) if session else ([], "no session directory")
+    return {"pressure": pressure, "resets_at": window.get("resets_at"), "used": window.get("used"),
+            "live": live, "room": native_room(pressure, len(live)), "note": why or note}
 
 EFFORT_HOP = "add `-e` from the ladder's effort cell for each job's work shape"
 _live_until = None

@@ -186,7 +186,7 @@ def transcript_path(session_id):
 
 
 def new_shell_scan():
-    return {"offset": 0, "launched": {}, "ended": set(), "watchers": set(), "notices": []}
+    return {"offset": 0, "launched": {}, "ended": set(), "delivered": set(), "watchers": set(), "notices": []}
 
 
 def _epoch(stamp):
@@ -214,6 +214,12 @@ def _scan_row(raw, pos, scan):
                 scan["ended"].add(notice["task_id"])
     if row.get("isSidechain"):
         return
+    attachment = row.get("attachment")
+    if (row.get("type") == "attachment" and isinstance(attachment, dict)
+            and attachment.get("type") == "queued_command"
+            and attachment.get("commandMode") == "task-notification"):
+        scan["delivered"].update(n["task_id"] for n in _background_tasks.ended_notices(
+            {"content": attachment.get("prompt")}))
     result = row.get("toolUseResult")
     if isinstance(result, dict) and result.get("task_id") and str(result.get("message", "")).startswith("Successfully stopped"):
         scan["ended"].add(result["task_id"])
@@ -231,7 +237,8 @@ def _scan_row(raw, pos, scan):
 
 def advance_shell_scan(path, scan):
     """Parse the transcript bytes after `scan["offset"]` once, in bounded chunks of whole lines: ended notices (with
-    their byte position), TaskStop results, launched background tasks and watcher launches. Returns the file size,
+    their byte position), delivered task-notification attachments, TaskStop results, launched background tasks and
+    watcher launches. Returns the file size,
     None when it cannot be read."""
     try:
         size = os.path.getsize(path)
@@ -262,7 +269,9 @@ def shell_notices(path, scan, offset):
     """(ended shell notices whose row starts at or after byte `offset`, the offset to resume from).
 
     Reads only whole lines, so a row still being written is read on the next call. An offset past the file's
-    end (a replaced transcript) restarts at its end. A watcher's own shell is not a notice."""
+    end (a replaced transcript) restarts at its end. A watcher's own shell is not a notice: it is recognized by its
+    launch `tool_use` id being a `watch_records` command, the fact `running_shells` uses, and by its output's last
+    line only when the scan never saw its launch row."""
     size = advance_shell_scan(path, scan)
     if size is None:
         return [], offset
@@ -272,7 +281,12 @@ def shell_notices(path, scan, offset):
     for pos, notice in scan["notices"]:
         if pos >= offset and not any(n["task_id"] == notice["task_id"] for n in found):
             found.append(notice)
-    return [n for n in found if not _is_watcher(n)], scan["offset"]
+    return [n for n in found if not _launched_watcher(scan, n)], scan["offset"]
+
+
+def _launched_watcher(scan, notice):
+    launch = scan["launched"].get(notice["task_id"])
+    return launch[0] in scan["watchers"] if launch else _is_watcher(notice)
 
 
 def running_shells(path, scan, now=None):

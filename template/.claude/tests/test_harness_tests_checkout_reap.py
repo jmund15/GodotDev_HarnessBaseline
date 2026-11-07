@@ -95,9 +95,32 @@ def case_a_checkout_with_no_lock_file_is_left_alone():
     git(repo, "worktree", "remove", "--force", foreign)
 
 
+def case_a_proof_corpus_outside_claude_is_checked_out():
+    repo = make_repo()
+    for rel in ("design/record.jsonl", "other/big.bin"):
+        os.makedirs(os.path.join(repo, os.path.dirname(rel)), exist_ok=True)
+        with open(os.path.join(repo, rel), "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "data")
+    saved = dict(harness_tests.PROOF_CORPUS)
+    harness_tests.PROOF_CORPUS.update({"test_t.py": ["design"], "test_u.py": [".claude/tools"]})
+    try:
+        with harness_tests._revision_checkout(repo, "HEAD") as snap:
+            check("a proof's declared corpus outside .claude is in the close's checkout",
+                  os.path.isfile(os.path.join(snap, "design", "record.jsonl")))
+            check("a directory no proof declares stays out of the close's checkout",
+                  not os.path.exists(os.path.join(snap, "other", "big.bin")))
+            check("the .claude tree is still checked out", os.path.isfile(os.path.join(snap, ".claude", "x.txt")))
+    finally:
+        harness_tests.PROOF_CORPUS.clear()
+        harness_tests.PROOF_CORPUS.update(saved)
+
+
 def main():
     case_a_killed_close_checkout_is_removed_by_the_next()
     case_a_checkout_with_no_lock_file_is_left_alone()
+    case_a_proof_corpus_outside_claude_is_checked_out()
     print()
     if FAILURES:
         for f in FAILURES:

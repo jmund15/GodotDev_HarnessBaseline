@@ -325,8 +325,8 @@ def _scratch_bases(root: str, cwd: str | None) -> list[str]:
 
 def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | None = None,
                            reasons: list[str] | None = None) -> bool:
-    """A pushed clone, a lossless orphaned worktree directory (needs no approval: nothing in it is
-    unheld by git or a non-regenerable ignored file), an empty leftover directory under scratch (no file,
+    """A pushed clone, a lossless orphaned worktree directory of this repository wherever it sits (needs
+    no approval: nothing in it is unheld by git or a non-regenerable ignored file), an empty leftover directory under scratch (no file,
     no `.git`), a scratch entry holding no git repository or worktree, or a retired worktree (ignored files
     go only when this session created it); optionally explain failure."""
     root = _project_root()
@@ -684,7 +684,8 @@ def _normalize_git_globals(scan: str) -> str:
 
 
 def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> str:
-    """Why the first worktree or scratch target this delete names is not removable, or ''."""
+    """Why the first worktree, scratch or worktree-shaped (a `.git` file) target this delete names is not
+    removable, or ''."""
     assignments = literal_assignments(raw)
     here = cwd or _project_root()
     home = _norm(os.path.join(_project_root(), '.claude', 'worktrees'))
@@ -713,6 +714,9 @@ def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> st
                 if not (is_regenerable_clone(value, here, _project_root(), clone_reasons)
                         or _is_regenerable_target(value, here, transcript_path, reasons)):
                     return ' %s is not removable: %s; %s.' % (value, clone_reasons[0], reasons[0])
+            elif os.path.isfile(os.path.join(target, '.git')) \
+                    and not _is_regenerable_target(value, here, transcript_path, reasons):
+                return ' %s is not removable: %s.' % (value, '; '.join(dict.fromkeys(reasons)))
     return ''
 
 

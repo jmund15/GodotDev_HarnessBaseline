@@ -162,7 +162,7 @@ def alias_lines(text, alias):
 
 
 NOTE = "draw ratios compare models within one plan (list-price ratio, one measured point); across plans compare room"
-ROW_SHAPE = re.compile(r"\| draw \d+\.\d{2}x \| \S+ \| \S+ \| (fits|over by|window unjudged)")
+ROW_SHAPE = re.compile(r"\| (?:text[^|]*) \| (?:verified|unverified) \| draw \d+\.\d{2}x \| \S+ \| \S+ \| (fits|over by|window unjudged)")
 PLANT_LIMITS = {"contextTokens": 200000, "maxOutputTokens": 32000}
 
 
@@ -183,11 +183,13 @@ def planted_facts(module, brief_path, groups, pay, seat="alpha", warming=()):
         sys.path.insert(0, TOOLS)
     import provider_bands
     import model_registry
-    models, transports = [], {"alpha": {"costModel": "plan-quota"}, "beta": {"costModel": "plan-quota"},
-                              "ds": {"costModel": "marginal-usd"}}
+    models, transports = [], {"alpha": {"costModel": "plan-quota", "imageRoute": {"state": "unverified"}},
+                              "beta": {"costModel": "plan-quota", "imageRoute": {"state": "unverified"}},
+                              "ds": {"costModel": "marginal-usd", "imageRoute": {"state": "unverified"}}}
     for transport, alias, out in [("alpha", "a-top", 10), ("alpha", "a-half", 5), ("beta", "b-only", 2),
                                   ("ds", "d-pay", 4)]:
         models.append({"transport": transport, "id": alias, "alias": alias, "roles": ["executor"],
+                       "input": ["text", "image"],
                        "limits": PLANT_LIMITS, "price": {"cacheMissPer1M": out / 5, "outputPer1M": out,
                                                          "cacheHitPer1M": out / 50}})
     data = {"transports": transports, "models": models}
@@ -272,6 +274,10 @@ def _main(tmp):
     case("each alias row quotes its ladder ± cell's first + and first − clause",
          expected and all(any('+ "' in line and '− "' in line for line in alias_lines(text, alias))
                           for alias in expected))
+    case("each alias row states its catalog input types and its route's image fact",
+         expected and all(any(re.search(r"\| (?:text|unknown)", line)
+                              and re.search(r"\| (?:verified|unverified|unstated) \|", line)
+                              for line in alias_lines(text, alias)) for alias in expected))
     case("a plan row prints no USD figure, and every plan row's ratio is labelled draw",
          plan_aliases and all(alias_lines(text, alias) and all("$" not in line and "draw " in line
                                                                for line in alias_lines(text, alias))
@@ -386,6 +392,8 @@ def _main(tmp):
              and "| draw 1.00x |" in rows["b-only"][0])
         case("a plan row prints no USD in the planted table", all(rows[a] and "$" not in rows[a][0]
                                                                   for a in ("a-top", "a-half", "b-only")))
+        case("each planted row states its input types and its route's unverified image fact",
+             all(rows[a] and "| text,image | unverified |" in rows[a][0] for a in rows))
         case("a pay-per-token row prints spend with its USD figure",
              bool(rows["d-pay"]) and "| spend " in rows["d-pay"][0] and "$" in rows["d-pay"][0])
         case("each route header names its plan room once, with its route",
@@ -424,18 +432,18 @@ def _main(tmp):
             arch = (module.process(written(arch_path, "", session=sess)) or {}).get("context") or ""
             _hook_state.clear_compaction_keys(sess)
             after = (module.process(written(brief_path, BRIEF, session=sess)) or {}).get("context") or ""
-        case("the first brief of a tier in a session prints the full table", "model | draw or spend" in first)
+        case("the first brief of a tier in a session prints the full table", "model | input | image route | draw or spend" in first)
         case("a second brief of that tier in the session prints one short line, not the table",
-             "table as earlier this session" in second and "model | draw or spend" not in second
+             "table as earlier this session" in second and "model | input | image route | draw or spend" not in second
              and "reading" in second and len(second) < len(first) / 2)
         case("a bigger reading whose rows all still fit prints no fit row: only a verdict change is news",
              "fits as earlier" in bigger and "fit changed" not in bigger and "table as earlier this session" in bigger)
         case("a short line names the fit of a row whose fit changed: a wider reading reports the excess",
-             "over by" in wide and "table as earlier this session" in wide and "model | draw or spend" not in wide)
+             "over by" in wide and "table as earlier this session" in wide and "model | input | image route | draw or spend" not in wide)
         case("a brief of a new tier in the session prints its full table",
-             "model | draw or spend" in arch and "table as earlier" not in arch)
+             "model | input | image route | draw or spend" in arch and "table as earlier" not in arch)
         case("after a compaction the executor brief prints its full table again",
-             "model | draw or spend" in after and "table as earlier" not in after)
+             "model | input | image route | draw or spend" in after and "table as earlier" not in after)
     if module is not None and callable(getattr(module, "process", None)):
         sys.path.insert(0, HOOKS)
         import _hook_state
@@ -456,7 +464,7 @@ def _main(tmp):
                             or {}).get("context") or ""
         case("a delivered for-role receipt credits the tier at delivery", credited)
         case("after a delivered receipt the brief prints the reading, each row's fit and draw, not the table",
-             "model | draw or spend" not in receipt_line and "table as earlier this session" in receipt_line
+             "model | input | image route | draw or spend" not in receipt_line and "table as earlier this session" in receipt_line
              and "reading" in receipt_line and "draw " in receipt_line)
 
     if text:

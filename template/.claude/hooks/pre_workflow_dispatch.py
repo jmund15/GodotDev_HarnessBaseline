@@ -27,6 +27,8 @@ Merge:
   deny            every member's reason, each once, in member order. One reason is emitted verbatim; several
                   are numbered under a one-line header.
   additionalContext  every note, each once, in member order.
+  jobsFile        a Workflow call whose `args.jobsFile` names a file under .claude/scratch/ is expanded first (the
+                  engines cannot read files); a refused file denies alone, since no member can read the call.
   updatedInput    chained: after a member rewrites the input, later members receive the rewritten call, so a
                   later rewrite is a superset of an earlier one. A partial rewrite overlays the call's own
                   `tool_input` keys. A denied call carries none.
@@ -210,11 +212,35 @@ def _joined(reasons):
             % (len(reasons), "\n".join("%d. %s" % (i, r) for i, r in enumerate(reasons, 1))))
 
 
+def _jobs_file(tool_input):
+    """(refusal, None) when `args.jobsFile` cannot be expanded; (None, args) with the file's jobs in place of
+    the path, in the form the call carried them (a JSON string stays a string); (None, None) without one."""
+    try:
+        import _dispatch_pins
+        reason = _dispatch_pins.jobs_file_refusal(tool_input)
+        expanded = None if reason else _dispatch_pins.expanded_args(tool_input)
+    except Exception as exc:
+        return "args.jobsFile could not be checked (%s: %s). Nothing was dispatched." % (type(exc).__name__, exc), None
+    if reason or expanded is None:
+        return reason, None
+    return None, json.dumps(expanded) if isinstance(tool_input.get("args"), str) else expanded
+
+
 def dispatch(raw_payload, hooks=HOOKS):
     """Run the chain and return (exit_code, stdout_text, stderr_text) for the dispatcher process."""
     payload = json.loads(raw_payload)
     reasons, contexts, user_stderr = [], [], []
     decision, rewritten = None, None
+    if payload.get("tool_name") == "Workflow":
+        refusal, expanded = _jobs_file(payload.get("tool_input") or {})
+        if refusal:
+            return 0, json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": refusal + " Correct that and re-issue the call."}}), ""
+        if expanded is not None:
+            rewritten = dict(payload["tool_input"], args=expanded)
+            payload["tool_input"] = rewritten
+            raw_payload = json.dumps(payload)
     for module, argv_tail in hooks:
         name = module.__name__
         if name == _RUNS_WHEN_ALLOWED and reasons:

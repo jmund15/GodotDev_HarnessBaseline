@@ -103,7 +103,7 @@ _LEFT_UNDONE_ROW = re.compile(r"^- .+ — blocked by Q(?P<number>\d+) — worklo
 
 
 def _validate_left_undone(text, q_numbers, root):
-    """Each Left undone row names a Q row of this doc and an item in the worklog titles mirror."""
+    """Each Left undone row names a Q row of this doc and an item in the worklog titles mirror or the cloud pending queue."""
     section = re.search(r"^## Left undone\s*$(?P<body>.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
     rows = [line for line in section.group("body").splitlines() if line.startswith("- ")] if section else []
     rows = [row for row in rows if row.strip() != "- None."]
@@ -116,12 +116,19 @@ def _validate_left_undone(text, q_numbers, root):
     # A Ledger line ends in its `[after: <condition>]`; the title is the text before it.
     titles = {re.sub(r"\s*\[after: [^\]]*\]$", "", line.rsplit(" · ", 1)[-1].strip())
               for line in mirror.splitlines() if line.startswith("- ")}
+    # On cloud the vault is absent: `/worklog add` queues the item here for a local replay (worklog_cloud.md).
+    try:
+        pending = Path(root, ".claude", "worklog-pending.md").read_text(encoding="utf-8")
+    except OSError:
+        pending = ""
+    titles |= {m.group(1) for m in re.finditer(r"^- ADD \w+: (.+?) \([^()]*\)\s*$", pending, re.MULTILINE)}
     for row in rows:
         match = _LEFT_UNDONE_ROW.match(row)
         if not match or int(match.group("number")) not in q_numbers or match.group("title") not in titles:
             raise ValueError(
                 "Each Left undone row reads '- <work> — blocked by Q<n> — worklog: <title>': Q<n> is a Q row "
-                "of this doc and <title> an item in .claude/worklog-titles.md (overnight.md §Step 4). "
+                "of this doc and <title> an item in .claude/worklog-titles.md, or an ADD queued in "
+                ".claude/worklog-pending.md on a cloud session (overnight.md §Step 4). "
                 f"Failing row: {row}")
 
 

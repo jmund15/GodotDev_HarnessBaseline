@@ -36,6 +36,8 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            default — and a recorded dispatch whose profile cannot be read says `unknown`.
            Registers the dispatch as pending. The shared launcher also registers before spending,
            through the same sidecar_entries builder; record path and label dedupe both observations.
+           A fan-out needs a background task id, its detached-driver launch line, or an owned inventory.
+           Missing jobs files defer only for a background task; unresolved shell paths never register.
 --complete Stop. Checks each finished pending dispatch against what actually served it and prints a
            line ONLY for a contradiction: `⚠ lens ran sonnet-5 · medium, asked opus · high`. A
            dispatch that ran as requested finishes silently. A sidecar whose launcher process, named
@@ -43,7 +45,15 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            without an exit file` and leaves. A sidecar whose spend-ledger finish row says
            `ended-before-result` prints `⚠ sidecar <label> ended before a result (exit <n>): <reason>`
            once and leaves. A fan-out job that never started prints `<label>: never started (<why>)`: its
-           fan-out process ended before launching it, or its call wrote no inventory within FANOUT_PREFLIGHT_S.
+           fan-out process ended before launching it, or its call wrote no inventory within FANOUT_PREFLIGHT_S,
+           or wrote launch-refused.txt after its issue and no inventory naming the label.
+           A job the fan-out handed to a Workflow call (`<out-dir>/native.args.json`) is a pending `handoff`,
+           never a sidecar: the Workflow launch whose `args.jobsFile` names that file (or whose jobs carry
+           its labels) clears it; one still pending after FANOUT_PREFLIGHT_S prints the same
+           `<labels>: never started (...)` line. A `handoff` is never uncovered, so it blocks no Stop.
+           A fan-out job's model and effort are its `alias` + `effort`, else its only listed row, else the
+           placement the fan-out printed for its label, else its listed rows as candidates (`a|b`), which no
+           finished run contradicts (`orchestration_metrics.fanout_job_pin`).
            No event fires when background work ends, but its
            completion notification gives the main model a turn and every turn ends in Stop.
            Last, while any registered dispatch is unfinished: `⏳ still running · N · ctx 250k (25%)`
@@ -116,7 +126,7 @@ from watch_records import (ENDED, _covered, _launcher_gone, _process_line_gone, 
                            inventory_written, ledger_path, read_journal, writer_launcher_running)
 from _dispatch_pins import (  # noqa: E402
     STRICT, agent_profile_request, dispatch_jobs, profile_line, profile_request, resolve_request,
-    script_blobs, script_jobs, writes, author_writes)
+    script_blobs, script_jobs, writes, author_writes, _call_args)
 
 STATE_KEY = "dispatch_table_pending"
 GONE_KEY = "dispatch_table_gone"  # expand_deferred's report lines (dropped or revived fan-outs) for complete
@@ -898,9 +908,14 @@ def _jobs(payload):
     default, the inherited session level, or UNKNOWN."""
     tool = payload.get("tool_name")
     if tool == "Bash":
+        resp = payload.get("tool_response")
+        output = "\n".join(str(resp.get(k) or "") for k in ("stdout", "stderr")) if isinstance(resp, dict) else str(resp or "")
         launches = _om().sidecar_launches(str((payload.get("tool_input") or {}).get("command") or ""),
-                                         payload.get("cwd"))
-        return [{"label": s.get("label") or UNLABELED, "model": s.get("model") or DEFAULT,
+                                         payload.get("cwd"), output=output)
+        handoffs = [{"kind": "handoff", "label": s.get("label"), "labels": s.get("labels"),
+                     "jobs_file": s.get("jobs_file")} for s in launches if s.get("kind") == "handoff"]
+        launches = [s for s in launches if s.get("kind") != "handoff"]
+        return handoffs + [{"label": s.get("label") or UNLABELED, "model": s.get("model") or DEFAULT,
                  "effort": s.get("effort") or DEFAULT, "launcher": s.get("launcher"),
                  "plan": _launch_plan(s),
                  "record": s.get("record") if s.get("kind") != "fanout" else None,
@@ -993,10 +1008,13 @@ def sidecar_entries(payload, jobs=None, now=None):
     jobs = _jobs(payload) if jobs is None else jobs
     now = time.time() if now is None else now
     resp = payload.get("tool_response") or {}
+    unresolved = [j for j in jobs if any(_SHELL_VAR.search(str(j.get(k) or ""))
+                  for k in ("record", "label", "jobs_path", "out_dir", "fanout_dir"))]
+    jobs = [j for j in jobs if j not in unresolved]
     unreadable = [j for j in jobs if j.get("kind") == "fanout" and not j.get("fanout_dir") and not j.get("missing")]
     deferred = [j for j in jobs if j.get("kind") == "fanout" and not j.get("fanout_dir") and j.get("missing")]
-    trackable = [j for j in jobs if not _SHELL_VAR.search(j.get("record") or j["label"])
-                 and (j.get("record") or j["label"] != UNLABELED) and j not in unreadable and j not in deferred]
+    trackable = [j for j in jobs if (j.get("record") or j["label"] != UNLABELED)
+                 and j not in unreadable and j not in deferred]
     call = payload.get("tool_use_id") or str(now)
     issued = _call_issued_at(payload.get("session_id"), call, payload.get("transcript_path"))
     if issued is None and payload.get("tool_use_id"):
@@ -1017,13 +1035,97 @@ def sidecar_entries(payload, jobs=None, now=None):
         entry["writes"] = writes("Bash", payload.get("tool_input") or {})
         if issued is not None:
             entry["issued_at"] = issued
-    untracked = ["⚠ %s: not tracked — its record path names a shell variable the hook cannot expand"
-                 % j["label"] for j in jobs if _SHELL_VAR.search(j.get("record") or j["label"])]
+    output = str(resp.get("stdout") or "")
+    driver_started = bool(re.search(r"(?m)^fan-out detached: driver pid \d+;", output))
+    admitted = []
+    for entry in entries:
+        job = entry["jobs"][0]
+        if (payload.get("hook_event_name") != "PostToolUse" or job.get("kind") != "fanout"
+                or resp.get("backgroundTaskId")
+                or (not entry.get("deferred") and (driver_started or
+                    (issued is not None and _owned_records(entry, payload.get("session_id"), entries))))):
+            admitted.append(entry)
+    untracked = ["⚠ %s: not tracked — its job path names a shell variable the hook cannot expand"
+                 % j["label"] for j in unresolved]
+    untracked += ["⚠ %s: not tracked — no fan-out launch was observed" % _label(entry)
+                  for entry in entries if entry not in admitted]
+    entries = admitted
     untracked += ["⚠ %s: not tracked — sidecar_fanout cannot read this jobs file, so it launches nothing"
                   % j["label"] for j in unreadable]
-    untracked += ["%s: not written yet when this call returned; its jobs are tracked once it appears" % j["label"]
-                  for j in deferred]
+    untracked += ["%s: not written yet when this call returned; its jobs are tracked once it appears" % _label(entry)
+                  for entry in entries if entry.get("deferred")]
     return entries, untracked
+
+
+def _same_file(left, right, cwd=None):
+    def norm(path):
+        return os.path.normcase(os.path.abspath(os.path.join(cwd or _om()._PROJECT_DIR, str(path))))
+    return bool(left and right) and norm(left) == norm(right)
+
+
+def _handoff_entries(payload, handoffs, now):
+    """One pending `handoff` entry per native args file: the jobs the fan-out left for a Workflow call. The
+    matching Workflow launch clears it; a Stop past FANOUT_PREFLIGHT_S without one reports the jobs never started."""
+    call = payload.get("tool_use_id") or str(now)
+    issued = _call_issued_at(payload.get("session_id"), call, payload.get("transcript_path"))
+    return [{"kind": "handoff", "id": "handoff:" + os.path.normcase(os.path.abspath(h["jobs_file"])),
+             "jobs_file": h["jobs_file"], "labels": list(h["labels"]), "task_id": None, "launched_at": now,
+             "issued_at": issued if issued is not None else now, "call": call,
+             "jobs": [{"label": label, "launcher": "native", "kind": "handoff"} for label in h["labels"]]}
+            for h in handoffs]
+
+
+def _handoff_line(entry):
+    return "↪ %s: native, not a sidecar. Issue the Workflow call with args.jobsFile %s" % (
+        ", ".join(entry["labels"]), str(entry["jobs_file"]).replace("\\", "/"))
+
+
+def _register_handoffs(payload, entries):
+    """Add `entries` to the pending table, one per id. True when every one was already there from this call."""
+    repeat = []
+
+    def merge(pending):
+        for entry in entries:
+            same = next((old for old in pending if old.get("kind") == "handoff" and old.get("id") == entry["id"]), None)
+            repeat.append(bool(same and same.get("call") == entry["call"]))
+            if same is None:
+                pending.append(entry)
+            else:
+                pending[pending.index(same)] = entry
+        return pending
+    _update_pending(payload, merge, raising=True)
+    return bool(repeat) and all(repeat)
+
+
+def _clear_handoffs(payload, jobs):
+    """Drop the pending hand-offs a Workflow launch took: the call's `args.jobsFile` names the native args file, or
+    the call's jobs carry the labels (a hand-off keeps only the labels the call did not take)."""
+    named = _call_args(payload.get("tool_input") or {}).get("jobsFile")
+    labels = {j.get("label") for j in jobs}
+
+    def drop(pending):
+        kept = []
+        for entry in pending:
+            if entry.get("kind") == "handoff":
+                if _same_file(named, entry.get("jobs_file"), payload.get("cwd")):
+                    continue
+                left = [label for label in entry.get("labels") or [] if label not in labels]
+                if len(left) < len(entry.get("labels") or []):
+                    if not left:
+                        continue
+                    entry = dict(entry, labels=left, jobs=[j for j in entry.get("jobs") or [] if j.get("label") in left])
+            kept.append(entry)
+        return kept
+    _update_pending(payload, drop)
+
+
+def _handoff_unissued(entry, now):
+    """Why this hand-off's jobs will never start, or None while the session may still issue its Workflow call."""
+    since = float(entry.get("issued_at") or entry.get("launched_at") or now)
+    if now - since < FANOUT_PREFLIGHT_S:
+        return None
+    return ("the fan-out handed them to a Workflow call with args.jobsFile %s, and none was issued within %d min"
+            % (str(entry.get("jobs_file")).replace("\\", "/"), FANOUT_PREFLIGHT_S // 60))
 
 
 def same_sidecar(left, right, session_id, pending):
@@ -1048,6 +1150,7 @@ def register_sidecars(payload, entries, actual=False):
             existing = next((old for old in pending if same_sidecar(old, entry, payload.get("session_id"),
                                                                    pending + entries)), None)
             if actual:
+                entry["actual"] = True
                 entry["call"] = existing.get("call") if existing else None
             repeat.append(bool(existing and entry.get("call") and existing.get("call") == entry["call"]))
             if existing is None:
@@ -1057,11 +1160,14 @@ def register_sidecars(payload, entries, actual=False):
                 existing["call"] = entry["call"]
             if actual:
                 if existing.get("fanout_dir"):
-                    existing.update(record=entry["record"], jobs=entry["jobs"], writes=entry["writes"])
+                    existing.update(record=entry["record"], jobs=entry["jobs"], writes=entry["writes"], actual=True)
                 else:
                     pending[pending.index(existing)] = entry
             elif entry.get("fanout_dir") and not existing.get("fanout_dir"):
                 entry["launched_at"] = existing["launched_at"]
+                if existing.get("actual"):
+                    entry.update(record=existing["record"], jobs=existing["jobs"], writes=existing["writes"],
+                                 actual=True)
                 pending[pending.index(existing)] = entry
         return pending
     _update_pending(payload, merge, raising=True)
@@ -1077,6 +1183,7 @@ def launch(payload):
     now = time.time()
     session = _session_dir(payload)
     if tool == "Workflow":
+        _clear_handoffs(payload, jobs)
         run_id = resp.get("runId")
         run_dir = resp.get("transcriptDir") or os.path.join(session or "", "subagents", "workflows", str(run_id))
         agents = _wait_for_agents(run_dir, len(jobs) or None) if run_id else []
@@ -1126,17 +1233,22 @@ def launch(payload):
         rows = [_row(j["label"], short(served) if served else _shown(j["model"]), j["effort"], j["agentType"],
                      recorded=effort, responded=responded, model_for_effort=served or j["model"]) for j in jobs]
     else:
-        if not jobs:
+        handoffs = [j for j in jobs if j.get("kind") == "handoff"]
+        jobs = [j for j in jobs if j.get("kind") != "handoff"]
+        if not jobs and not handoffs:
             return None
         launchers = {j["launcher"] for j in jobs}
         title = "%s sidecar" % (launchers.pop() if len(launchers) == 1 else "mixed")
-        entries, untracked = sidecar_entries(payload, jobs, now)
+        entries, untracked = sidecar_entries(payload, jobs, now) if jobs else ([], [])
+        entries += _handoff_entries(payload, handoffs, now)
         rows = [_row(j["label"], _sidecar_shown(j["model"]),
                      j["effort"], "sidecar", model_for_effort=j["model"]) for j in jobs]
     for entry in entries:
         entry["writes"] = writes(tool, payload.get("tool_input") or {})
-    lines = [_table(title, rows) if rows else
-             "▶ %s — the script computes its pins; each agent's row prints when it starts" % title]
+    handoff_only = bool(entries) and all(e["kind"] == "handoff" for e in entries)
+    lines = [] if handoff_only else [_table(title, rows) if rows else
+                                     "▶ %s — the script computes its pins; each agent's row prints when it starts" % title]
+    lines.extend(_handoff_line(e) for e in entries if e["kind"] == "handoff")
     lines.extend(_profile_lines(payload))
     lines.extend(untracked if tool == "Bash" else [])
     still_pending = []
@@ -1153,9 +1265,15 @@ def launch(payload):
             lines.extend(found)
             if _audit_source(entry, session, payload) is not None:
                 still_pending.append(entry)
+    handed = [e for e in still_pending if e["kind"] == "handoff"]
+    still_pending = [e for e in still_pending if e["kind"] != "handoff"]
+    if handed:
+        again = _register_handoffs(payload, handed)
+        if again and not still_pending and len(handed) == len(entries):
+            return None
     if still_pending:
         if tool == "Bash":
-            if register_sidecars(payload, still_pending) and len(still_pending) == len(entries):
+            if register_sidecars(payload, still_pending) and len(still_pending) == len(entries) - len(handed):
                 return None
         else:
             fresh = {(e["kind"], e["id"]) for e in still_pending}
@@ -1168,7 +1286,7 @@ def launch(payload):
 
 def _model_ok(requested, resolved, served, transport=None):
     """True / False, or None when there is nothing to compare."""
-    if not served or requested in NOT_A_PIN:
+    if not served or requested in NOT_A_PIN or _candidates(requested):
         return None
     strip = lambda m: re.sub(r"\[[^\]]*\]$", "", str(m or ""))
     if resolved and strip(resolved) == strip(served):
@@ -1185,8 +1303,13 @@ def _model_ok(requested, resolved, served, transport=None):
     return not _om().model_mismatches([{"model": requested, "served_model": served}])
 
 
+def _candidates(pin):
+    """True for a pin that lists a fan-out job's candidate rows (`a|b`): no placement was printed, so nothing is asked."""
+    return "|" in str(pin)
+
+
 def _effort_ok(requested, served):
-    if not served or requested in NOT_A_PIN:
+    if not served or requested in NOT_A_PIN or _candidates(requested):
         return None
     return served == requested
 
@@ -1401,14 +1524,20 @@ def _expanded(entry, labeled):
     # The launch read no spillDir from a file not yet written; sidecar_fanout refuses an --out-dir that differs from it.
     spill = _spill_dir(d["jobs_path"])
     out_dir = sidecar_argv.fanout_out_dir(d["jobs_path"], None, spill, _om()._PROJECT_DIR) if spill else d["out_dir"]
-    return [{"kind": "sidecar", "id": _fanout_entry_id(out_dir, job.get("label"), d["call"]),
+    native_file, native = _om().native_handoff(out_dir, {job.get("label") for job in labeled})
+    handoff = [{"kind": "handoff", "id": "handoff:" + os.path.normcase(os.path.abspath(native_file)),
+                "jobs_file": native_file, "labels": native, "task_id": None, "launched_at": entry.get("launched_at"),
+                "issued_at": entry.get("issued_at") or entry.get("launched_at"), "call": d["call"],
+                "writes": bool(entry.get("writes")),
+                "jobs": [{"label": label, "launcher": "native", "kind": "handoff"} for label in native]}] if native else []
+    return handoff + [{"kind": "sidecar", "id": _fanout_entry_id(out_dir, job.get("label"), d["call"]),
              "record": None, "fanout_dir": out_dir, "task_id": None,
              "writes": bool(entry.get("writes") or author_writes(job)),
              "launched_at": entry.get("launched_at"), "issued_at": entry.get("issued_at"),
-             "jobs": [{"label": job.get("label"), "model": job.get("alias") or DEFAULT,
-                       "effort": job.get("effort") or DEFAULT,
-                       "launcher": str(job.get("transport") or "sidecar_fanout"), "record": None,
-                       "fanout_dir": out_dir, "kind": "fanout"}]} for job in labeled]
+             "jobs": [dict(zip(("model", "effort"), (p or DEFAULT for p in _om().fanout_job_pin(job))),
+                           label=job.get("label"), launcher=str(job.get("transport") or "sidecar_fanout"),
+                           record=None, fanout_dir=out_dir, kind="fanout")]}
+            for job in labeled if job.get("label") not in native]
 
 
 def expand_deferred(session_id, now=None, live=None):
@@ -1587,31 +1716,45 @@ def _never_started(entry, payload):
 
 def _launched_nothing(entry, payload):
     """The reason when the fan-out call that registered `entry` ended and nothing it launched names the
-    job's label: the fan-out refused in preflight. None while that call may still write an inventory
-    (a live background task, or inside FANOUT_PREFLIGHT_S of its issue). SUPERSEDED when `watch_records.superseded`
-    answers for it: a refusal file in its out dir names its label, or a later-issued run of the same label
-    allocated a record in any out dir."""
+    job's label: the fan-out refused in preflight. None while that call may still write an inventory: a live
+    background task, or inside FANOUT_PREFLIGHT_S of its issue with no launch-refused.txt written since. That file
+    is the observed refusal, so it ends the window early. SUPERSEDED when `watch_records.superseded` answers for
+    it: a refusal file in its out dir names its label, or a later-issued run of the same label allocated a record
+    in any out dir."""
     pending = payload.get("_pending_sidecars") or []
     issued = _issued_at(entry, payload.get("session_id"))
     if issued is not None:
         entry["issued_at"] = issued
+    since = issued if issued is not None else float(entry.get("launched_at") or time.time())
+    refused = os.path.join(entry["fanout_dir"], "launch-refused.txt")
     live = _background_ids(payload, None)
     if watch_records.superseded(
             entry, pending, live_ids=live,
             resolve=lambda other: resolve_sidecar_record(other, payload.get("session_id"), pending)):
         return SUPERSEDED
-    if watch_records.call_open(entry, live):
+    if entry.get("task_id") and str(entry["task_id"]) in live:
+        return None
+    if watch_records.call_open(entry, live) and not _refusal_since(refused, since):
         return None
     label = _label(entry)
     for written, path in _inventories(entry["fanout_dir"]):
         if (issued is None or written >= issued) and any(
                 job.get("label") == label for job in _read_json(path).get("jobs") or []):
             return None
-    refused = os.path.join(entry["fanout_dir"], "launch-refused.txt")
-    where = ("%s names the refusal" % refused.replace("\\", "/") if os.path.isfile(refused)
+    left_refusal = _refusal_since(refused, since)
+    where = ("%s names the refusal" % refused.replace("\\", "/") if left_refusal
              else "the call's output names the refusal")
+    if left_refusal:
+        return "its fan-out call wrote no inventory and left a refusal, so it launched nothing; %s" % where
     return ("its fan-out call wrote no inventory within %d min, so it launched nothing; %s"
             % (FANOUT_PREFLIGHT_S // 60, where))
+
+
+def _refusal_since(path, since):
+    try:
+        return os.path.getmtime(path) >= since
+    except OSError:
+        return False
 
 
 def _sidecar_record(entry, payload):
@@ -1860,6 +2003,13 @@ def complete(payload):
             else:
                 audited.add(key)
             continue
+        if key[0] == "handoff":
+            unissued = _handoff_unissued(entry, now)
+            if unissued:
+                lines.append("%s: never started (%s)" % (", ".join(entry.get("labels") or [UNLABELED]), unissued))
+                failed.append(lines[-1])
+                done.add(key)
+            continue
         try:
             never_started = _never_started(entry, payload) if key[0] == "sidecar" else None
             if never_started == SUPERSEDED:
@@ -1958,6 +2108,8 @@ def _running_line(entry, now):
             parts.append("%d agent%s" % (len(jobs), "" if len(jobs) == 1 else "s"))
             parts.append(workflow_pins(jobs))
         return "  " + " · ".join(parts + [age])
+    if kind == "handoff":
+        return "  " + " · ".join(["native hand-off", ", ".join(entry.get("labels") or []), "Workflow call not issued", age])
     job = jobs[0] if jobs else {}
     if kind == "sidecar":
         shown = _sidecar_shown(job.get("model") or UNKNOWN)

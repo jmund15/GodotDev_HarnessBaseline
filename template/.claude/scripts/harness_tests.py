@@ -200,7 +200,8 @@ def _policy_from(claude_dir):
 # of the mention rule: a file every commit touches but that most proofs only name as a fixture.
 PROOF_BINDINGS = {}
 
-# {proof basename: directories it scans whole}, a project's own entries beside `_CORPUS_SCANNING`.
+# {proof basename: directories it scans whole}, a project's own entries beside `_CORPUS_SCANNING`. A directory
+# outside .claude joins the close's sparse checkout, so a proof that reads project data finds it there.
 PROOF_CORPUS = {}
 
 
@@ -2193,7 +2194,9 @@ def _revision_checkout(repo_root, rev, proofs=()):
                                 capture_output=True, text=True, env=env)
         if result.returncode != 0:
             raise RuntimeError("git worktree add failed: %s%s" % (result.stderr.strip(), _admin_gaps(repo_root)))
-        git("sparse-checkout", "set", "--cone", ".claude")
+        corpus = sorted({_norm(d).strip("/") for dirs in PROOF_CORPUS.values() for d in dirs
+                         if not _norm(d).startswith(".claude")} - {""})
+        git("sparse-checkout", "set", "--cone", ".claude", *corpus)
         git("checkout", "-q", "-f", rev)
         for path in proofs:
             rel = _norm(os.path.relpath(path, repo_root))

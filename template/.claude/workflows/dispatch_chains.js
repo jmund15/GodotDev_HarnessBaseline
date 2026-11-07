@@ -282,6 +282,9 @@ if (unpinned.length > 0) {
     badJobs: unpinned.map(([, j]) => j.label || '(unlabeled)'),
   }
 }
+if (chains.length === 0 && A.jobsFile) {
+  return { error: 'dispatch-chains: args.jobsFile is set (' + A.jobsFile + ') and args.chains is empty. hooks/pre_workflow_dispatch.py expands the file into args.chains before the engine runs; it did not, so this call skipped the PreToolUse chain or the file holds no chains. Re-issue the call once; if it repeats, read the file.' }
+}
 const badChain = chains.filter(c => !c || !c.name || !Array.isArray(c.jobs) || c.jobs.length === 0)
 const badJob = allJobs.filter(([, j]) => !j || !j.label || !j.promptPath || !VALID_AGENT_TYPES.includes(j.agentType))
 if (chains.length === 0 || badChain.length > 0 || badJob.length > 0) {
@@ -444,11 +447,11 @@ const NO_WRITE_AGENT_TYPES = ['Explore', 'Plan', 'lane-review', 'lane-survey']
 // where the brief's own paths point, not under the worktree it runs in.
 const projectRootOf = (a) => repoRootOf(a).replace(/\/\.claude\/worktrees\/[^/]+$/, '')
 const SPILL_DIR = SPILL_REL && projectRootOf(A) ? projectRootOf(A) + '/' + NORMAL_SPILL_DIR : SPILL_REL
-const spills = (j) => !!SPILL_DIR && !NO_WRITE_AGENT_TYPES.includes(effectiveType(j))
+const spills = (j) => !!SPILL_DIR && !j.schema && !NO_WRITE_AGENT_TYPES.includes(effectiveType(j))
 const spillPath = (label) => SPILL_DIR + '/' + String(label).replace(/[^A-Za-z0-9._-]/g, '_') + '.md'
 // A writing job names what it wrote beyond its spec, so review routes those units as design no
 // reviewer saw (orchestration §2 *Later rounds*); `dispatch_result.py check --block choices=unit,why` validates it.
-const choicesContract = (j) => NO_WRITE_AGENT_TYPES.includes(effectiveType(j)) ? '' : [
+const choicesContract = (j) => (j.schema || NO_WRITE_AGENT_TYPES.includes(effectiveType(j))) ? '' : [
   '',
   '=== CHOICES (orchestration/reference/writer_returns.md) ===',
   'End your deliverable with a fenced block opened by ```choices holding one JSON object per line, {"unit": "<what you wrote>", "why": "<its reason>"}, for each unit whose content your brief or plan does not state. Leave the block empty when there is none. With Bash, run `python3 .claude/tools/dispatch_result.py check <your deliverable file> --block choices=unit,why` before returning; the parent runs it otherwise, and a missing block fails it.',
@@ -470,7 +473,7 @@ if (SPILL_DIR) {
   }
   log('SPILL-DIR ' + SPILL_DIR + ' (digest cap ' + DIGEST_WORDS + ' words/job)')
   if (INLINE_LABELS.length > 0) {
-    log('SPILL-EXEMPT (' + NO_WRITE_AGENT_TYPES.join('/') + ' have no Write tool; these return in full INLINE and cost orchestrator context): ' + INLINE_LABELS.join(', '))
+    log('SPILL-EXEMPT (' + NO_WRITE_AGENT_TYPES.join('/') + ' have no Write tool and a job with a schema returns its object; these return in full INLINE and cost orchestrator context): ' + INLINE_LABELS.join(', '))
   }
 }
 
@@ -486,17 +489,17 @@ const handoff = (c, idx) => idx === 0 ? '' : ['',
 // The platform relays the triggering user message to every agent as authoritative; a job whose
 // brief looks unrelated can answer that message instead of its brief.
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
-// How a parent corrects a running author job: Workflow agents have no inbox (orchestration §4).
-const AMEND_LINE = (promptPath) => 'Amend: at each item and before returning, Read ' + promptPath + '.amend.md with the Read tool (Glob and Grep hide gitignored files); a not-found error means no amendment. A found amendment overrides the brief. Name what you applied.'
+// The key hooks/amend_delivery.py reads to deliver a parent's amendment to a running author job.
+const AMEND_LINE = (promptPath) => 'Amendments: the harness delivers ' + promptPath + '.amend.md to you when your parent writes or changes it; a delivered amendment overrides the brief, and your report names what you applied.'
 
 phase('Chains')
 const results = await parallel(chains.map(c => async () => {
   const out = []
   for (let i = 0; i < c.jobs.length; i++) {
     const j = c.jobs[i]
-    const ctx = A.contextPath
-      ? 'SHARED CONTEXT for this dispatch is at: ' + A.contextPath + ' — read it with the Read tool FIRST (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it).\n\n'
-      : ''
+    const ctx = [A.contextPath].concat(Array.isArray(j.contextPaths) ? j.contextPaths : []).filter(p => typeof p === 'string' && p)
+      .map(p => 'SHARED CONTEXT for this dispatch is at: ' + p + ' — read it with the Read tool FIRST (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it).\n\n')
+      .join('')
     const prompt = ctx
       + 'Evidence: ' + EVIDENCE_RULES + '\n'
       + 'Your full task brief is at: ' + j.promptPath + ' — read it with the Read tool and execute it exactly (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it). Your final message is the deliverable: return the result the brief asks for, self-contained, no meta-commentary.'
@@ -508,6 +511,7 @@ const results = await parallel(chains.map(c => async () => {
       + spillContract(j)
       + choicesContract(j)
     const opts = { label: j.label, phase: 'Chains', model: PIN(j.model), effort: EFF(j.effort), agentType: j.agentType }
+    if (j.schema) opts.schema = j.schema
     let r
     try {
       r = await leanAgent(prompt, opts, swapOf(j), RECORDED)
@@ -535,7 +539,7 @@ const results = await parallel(chains.map(c => async () => {
 
 const out = Object.fromEntries(results.filter(Boolean).flat().filter(Boolean))
 const inlineRecover = INLINE_LABELS.length > 0
-  ? 'No Write tool for ' + INLINE_LABELS.join(', ') + ': their deliverables came back inline. Land them with: python3 .claude/tools/dispatch_result.py <this run\'s transcript dir> --out-dir ' + SPILL_DIR
+  ? 'No Write tool or a schema return for ' + INLINE_LABELS.join(', ') + ': their deliverables came back inline. Land them with: python3 .claude/tools/dispatch_result.py <this run\'s transcript dir> --out-dir ' + SPILL_DIR
   : null
 const CLAIM_FENCE = /```(?:claims|findings)[ \t]*\r?\n([\s\S]*?)```/g
 const inlineClaims = []

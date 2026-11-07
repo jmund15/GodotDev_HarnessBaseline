@@ -46,6 +46,21 @@ compact at for that job and its long-context price point; a `not compared` line 
 `pin is the cheapest claimant` line for the compared jobs with nothing cheaper. `format_line` names each job whose window
 fit cannot be judged under `not sized`. These are facts read before a pin is chosen; no check denies on them.
 
+A path a job's brief names, and the job's `workdir`, are also tested against the `permissions.deny` rules of the
+project's `.claude/settings.json`, its `settings.local.json` and the user settings (under `CLAUDE_CONFIG_DIR`, else
+`~/.claude`). A hit prints in the job's fit line as `denied: <path> (Read, rule "Read(.claude/worktrees/**)")`; nothing
+prints when none hits. A settings file that exists and cannot be read or parsed is named in the line, never read as no rules.
+Grammar (code.claude.com/docs/en/permissions, read 2026-11-01): "Read and Edit rules both use gitignore pattern syntax";
+`//path` is absolute, `~/path` is from home, `/path` is "relative to the settings source" (the primary working directory for
+project and local settings, `~/.claude` for user settings), `path` or `./path` is "relative to current directory"; "Write(path),
+NotebookEdit(path), and Glob(path) rules never match", so only Read and Edit rules are tested; a deny rule with "a single
+directory segment, such as src/**" matches "a directory named secrets at any depth"; "paths are normalized to POSIX form
+before matching" (`/c/Users/...`). Every path a brief names is tested, whether or not it exists on disk. A job's route is
+what `sidecar_fanout.py` would launch: a job with a `promptFile` or a `workdir` is a sidecar job (a fan-out jobs file), a
+job with `promptPath` and neither is a Workflow job (a `dispatch.js` args file). A Workflow job runs from the session's
+project root, so a relative rule anchors there; a sidecar job runs from its `workdir`, so it anchors there (the project
+root when it gives none). A hit names its anchor: `against project root` or `against workdir`. Facts only.
+
 `dispatch_size(jobs)` takes the jobs list or the whole jobs file / Workflow args object, is pure, and raises
 only on a spec that holds no job list. `line(spec, root)` is its one-line form, None when the spec holds no
 job or cannot be sized. `/delegate` runs it on the jobs file before launch; it informs a launch and never blocks one.
@@ -90,6 +105,7 @@ LARGEST_SHOWN = 3
 MAX_SCAN_BYTES = 8 * KB * KB
 BACKTICKED = re.compile(r"`([^`\n]+)`")
 LINE_SUFFIX = re.compile(r"(?::\d+(?:[-–]\d+)?)+$")
+PATH_LIKE = re.compile(r"^[^\s<>{}*$|\\]*/[^\s<>{}*$|\\]*$")
 PATH_SHAPED = re.compile(r"^[^\s<>{}*$|\\]*/[^\s<>{}*$|\\]*\.[A-Za-z0-9]{1,5}$")
 
 
@@ -128,14 +144,17 @@ def _size(path: str, root: Path):
         return None
 
 
-def _named_in(text: str, root: Path, missing=None, cites=None) -> dict:
+def _named_in(text: str, root: Path, missing=None, cites=None, spans=None) -> dict:
     """{normalized key: absolute path} of every existing file a backticked span of `text` names. A path-shaped span
     (a `/` and a file extension, no URL) that is no file is added to the `missing` set when one is passed. `cites`,
-    when passed, gets `key: [cited bare, cited with a line suffix]`."""
+    when passed, gets `key: [cited bare, cited with a line suffix]`. `spans`, when passed, gets every backticked span
+    that holds a `/` and no URL, extension or not, existing or not: the paths the deny check tests."""
     found = {}
     for span in BACKTICKED.findall(text):
         raw = span.strip()
         candidate = LINE_SUFFIX.sub("", raw)
+        if spans is not None and candidate and "://" not in candidate and PATH_LIKE.match(candidate):
+            spans.add(candidate)
         try:
             path = os.path.abspath(root / candidate)
             if candidate and os.path.isfile(path):
@@ -151,19 +170,19 @@ def _named_in(text: str, root: Path, missing=None, cites=None) -> dict:
 
 
 def _scan(path: str, root: Path, cache: dict) -> tuple:
-    """(named files, unresolved path-shaped names, citations) of the text file at `path`, read once per `cache`."""
+    """(named files, unresolved path-shaped names, citations, path-like spans) of the text file at `path`, read once per `cache`."""
     key = os.path.normcase(os.path.abspath(root / path))
     if key not in cache:
         try:
             target = os.path.abspath(root / path)
             if os.stat(target).st_size > MAX_SCAN_BYTES:
-                cache[key] = ({}, set(), {})
+                cache[key] = ({}, set(), {}, set())
             else:
-                missing, cites = set(), {}
+                missing, cites, spans = set(), {}, set()
                 with open(target, encoding="utf-8", errors="replace") as fh:
-                    cache[key] = (_named_in(fh.read(), root, missing, cites), missing, cites)
+                    cache[key] = (_named_in(fh.read(), root, missing, cites, spans), missing, cites, spans)
         except (OSError, ValueError):
-            cache[key] = ({}, set(), {})
+            cache[key] = ({}, set(), {}, set())
     return cache[key]
 
 
@@ -196,6 +215,137 @@ def _in_write_set(path: str, root: Path, write_set: list) -> bool:
         return False
     return (dispatch_result is not None and not relative.startswith("..")
             and dispatch_result._inside(relative, write_set))
+
+
+RULE = re.compile(r"^(Read|Edit)\((.*)\)$")
+
+
+def _posix(path) -> str:
+    text = os.path.abspath(str(path)).replace("\\", "/")
+    if len(text) > 1 and text[1] == ":":
+        text = "/" + text[0] + text[2:]
+    return text.lower() if os.name == "nt" else text
+
+
+def _glob_re(pattern: str) -> str:
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("/**", i) and i + 3 == len(pattern):
+            out.append("/.*")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return "".join(out)
+
+
+def _config_dir() -> Path:
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+
+def _deny_rules(root: Path) -> tuple:
+    """([(source, tool, rule text, spec)], [settings file named with its failure]): the Read and Edit deny rules of the
+    project and user settings. A missing file holds no rules; one that exists and fails to read or parse is an error."""
+    rules, errors = [], []
+    for source, path in (("project", root / ".claude" / "settings.json"),
+                         ("project", root / ".claude" / "settings.local.json"),
+                         ("user", _config_dir() / "settings.json")):
+        name = path.name if source == "project" else "user " + path.name
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as err:
+            errors.append("%s (%s)" % (name, type(err).__name__))
+            continue
+        try:
+            deny = json.loads(raw).get("permissions", {}).get("deny", [])
+            if not isinstance(deny, list):
+                raise ValueError("permissions.deny is not a list")
+        except (ValueError, AttributeError) as err:
+            errors.append("%s (unparseable: %s)" % (name, err))
+            continue
+        for text in deny:
+            found = RULE.match(text.strip()) if isinstance(text, str) else None
+            if found:
+                rules.append((source, found.group(1), text.strip(), found.group(2).strip()))
+    return rules, errors
+
+
+def _rule_hits(rule: tuple, target: str, cwd: Path, project: Path) -> bool:
+    """Whether `rule` matches `target` (a `_posix` path). A bare or `./` rule anchors at `cwd`, the directory the job's
+    process runs from; a `/` rule anchors at the settings source (the project root, or `~/.claude` for user settings)."""
+    source, _tool, _text, spec = rule
+    anywhere = False
+    if spec.startswith("//"):
+        anchor, pattern = "/", spec[2:]
+    elif spec.startswith("~/"):
+        anchor, pattern = _posix(Path.home()), spec[2:]
+    elif spec.startswith("/"):
+        anchor, pattern = _posix(_config_dir() if source == "user" else project), spec[1:]
+    else:
+        anchor, pattern = _posix(cwd), spec[2:] if spec.startswith("./") else spec
+        segments = pattern.strip("/").split("/")
+        anywhere = len(segments) == 1 or (len(segments) == 2 and segments[1] == "**" and "*" not in segments[0])
+    pattern = pattern.rstrip("/").lower() if os.name == "nt" else pattern.rstrip("/")
+    regex = re.compile(("(?:.*/)?" if anywhere else "") + _glob_re(pattern))
+    base = anchor.rstrip("/")
+    if target != base and not target.startswith(base + "/"):
+        return False
+    parts = target[len(base):].strip("/").split("/")
+    return parts != [""] and any(regex.fullmatch("/".join(parts[:n])) for n in range(1, len(parts) + 1))
+
+
+def _is_sidecar(job: dict) -> bool:
+    """`sidecar_fanout.py` launches a job that names its brief `promptFile` or gives a `workdir`; a `dispatch.js` job
+    names `promptPath` and has no `workdir`, and runs in the session."""
+    return isinstance(job.get("promptFile"), str) or (isinstance(job.get("workdir"), str) and bool(job["workdir"].strip()))
+
+
+def _denied(job: dict, root: Path, paths: list, rules: list) -> list:
+    """[{path, tool, rule, note}] for each of `paths` (read) and the job's `workdir` (read and edited) that a deny rule
+    hits; one entry per target, the first rule that hits it. A Workflow job anchors relative rules at the project root,
+    a sidecar job at its `workdir` (the project root when it gives none); `note` names that anchor."""
+    workdir = job.get("workdir") if isinstance(job.get("workdir"), str) and job["workdir"].strip() else None
+    work = Path(os.path.abspath(root / workdir)) if workdir else None
+    project = Path(os.path.abspath(root))
+    cwd = work if _is_sidecar(job) and work else project
+    note = " against workdir" if cwd is work and work else " against project root"
+    carves = [(r[0], r[1], r[3][1:]) for r in rules if r[3].startswith("!")]
+    targets = [(p, False) for p in paths] + ([(work, True)] if work else [])
+    out = []
+    for path, is_workdir in targets:
+        full = os.path.abspath(root / path)
+        target = _posix(full)
+        for rule in rules:
+            if rule[3].startswith("!") or (rule[1] == "Edit" and not is_workdir):
+                continue
+            if not _rule_hits(rule, target, cwd, project) or any(
+                    _rule_hits((c[0], c[1], "", c[2]), target, cwd, project) for c in carves if c[:2] == rule[:2]):
+                continue
+            out.append({"path": full.replace("\\", "/"), "workdir": is_workdir, "tool": rule[1], "rule": rule[2],
+                        "note": note})
+            break
+    return out
+
+
+def _denied_text(denied: list) -> str:
+    shown = ["%s (%s%s, rule \"%s\")%s" % (d["path"], "workdir; " if d["workdir"] else "", d["tool"], d["rule"], d["note"])
+             for d in denied[:UNREADABLE_SHOWN]]
+    more = len(denied) - UNREADABLE_SHOWN
+    return "denied: " + "; denied: ".join(shown) + (" +%d more" % more if more > 0 else "")
 
 
 def _tokens_of(characters) -> int:
@@ -231,11 +381,24 @@ def fit_tokens(model, tokens: int, data=None, job=None) -> dict:
     return fit
 
 
+def _pin_of(job, data=None):
+    """(model, effort) a job's window is judged on: its pin, else (a fan-out job listing `rows`) the listed row with
+    the tightest window, since a reading that fits that row fits every row the job may run on."""
+    pin = job.get("model") or job.get("alias")
+    rows = job.get("rows")
+    if pin or not isinstance(rows, dict) or not rows:
+        return pin, job.get("effort")
+    usable = {alias: fit_tokens(alias, 0, data, job)["usable"] for alias in rows}
+    known = {alias: window for alias, window in usable.items() if window}
+    alias = min(known, key=known.get) if known else next(iter(rows))
+    return alias, rows[alias]
+
+
 def dispatch_size(jobs, root=None, data=None) -> dict:
     """`{jobs, perJob: [{label, model, effort, kb, namedKb, tokens, usable, pointSource, over, fitError, unresolved,
     lowerTokens, upperTokens, ceilingOver, searchSources, largest: [{path, tokens}]}],
     duplicated: [{path, kb, readBy}], duplicatedKb, totalKb, unreadable, named: [{path, kb, namedBy}], namedKb,
-    unresolved: [name]}` for one dispatch; a job's `tokens` and `readingTokens` are its `lowerTokens` and `upperTokens`
+    unresolved: [name], settingsErrors: [name]}` for one dispatch; a job's `denied` is `[{path, workdir, tool, rule, note}]`; a job's `tokens` and `readingTokens` are its `lowerTokens` and `upperTokens`
     adds its named spans (see the module docstring). `root` resolves relative paths (default: the working directory); `data` is the registry for the window fit (default: the live one)."""
     root = Path(root) if root else Path.cwd()
     shared = [spec.get(key) for spec in [jobs] if isinstance(spec, dict) for key in SHARED_KEYS
@@ -243,15 +406,17 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
     rows = _jobs_of(jobs)
     sizes, characters, names, readers, unreadable, per_job = {}, {}, {}, {}, [], []
     scanned, named_by, named_paths, unresolved = {}, {}, {}, set()
+    deny_rules, settings_errors = _deny_rules(root)
     for index, job in enumerate(rows):
         paths = {os.path.normcase(a): a for a in (os.path.abspath(root / p) for p in _paths_of(job) + shared)}
         total = len(job["prompt"].encode("utf-8")) if isinstance(job.get("prompt"), str) else 0
         total_characters = len(job["prompt"]) if isinstance(job.get("prompt"), str) else 0
         sources = _paths_of(job, keys=("contextFiles",)) + shared
-        missing, cites = set(), {}
-        named = _named_in(job["prompt"], root, missing, cites) if isinstance(job.get("prompt"), str) else {}
+        missing, cites, pathlike = set(), {}, set()
+        named = _named_in(job["prompt"], root, missing, cites, pathlike) if isinstance(job.get("prompt"), str) else {}
         for source in sources:
-            found, absent, found_cites = _scan(source, root, scanned)
+            found, absent, found_cites, found_spans = _scan(source, root, scanned)
+            pathlike |= found_spans
             named.update(found)
             missing |= absent
             for key, (bare, suffixed) in found_cites.items():
@@ -275,7 +440,7 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
             total += sizes[key] or 0
             total_characters += characters[key] or 0
             readers.setdefault(key, []).append(index)
-        model = job.get("model") or job.get("alias")
+        model, effort = _pin_of(job, data)
         point = fit_tokens(model, 0, data, job)["usable"]
         write_set = _write_set(job, root)
         inputs, spans, searched = [], [], []
@@ -294,14 +459,15 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
         fit = window_fit(model, lower_characters, data, job)
         upper = _tokens_of(upper_characters)
         per_job.append({"label": job.get("label") or job.get("key") or "job%d" % (index + 1),
-                        "model": model, "effort": job.get("effort"), "kb": round(total / KB),
+                        "model": model, "effort": effort, "kb": round(total / KB),
                         "namedKb": named_kb, "bytes": total, "characters": total_characters,
                         "namedCharacters": named_characters, "tokens": fit["tokens"], "usable": fit["usable"],
                         "pointSource": fit["source"], "over": fit["over"], "fitError": fit["error"],
                         "unresolved": len(missing), "lowerTokens": fit["tokens"], "upperTokens": upper,
                         "ceilingOver": bool(fit["usable"]) and not fit["over"] and upper > fit["usable"],
                         "searchSources": searched, "largest": counted[:LARGEST_SHOWN],
-                        "readingTokens": fit["tokens"]})
+                        "readingTokens": fit["tokens"],
+                        "denied": _denied(job, root, [*paths.values(), *named.values(), *sorted(pathlike)], deny_rules)})
     duplicated = [{"path": names[key], "kb": round((sizes[key] or 0) / KB), "readBy": len(who)}
                   for key, who in readers.items() if len(who) > 1 and sizes[key]]
     named = [{"path": named_paths[key], "kb": round((sizes[key] or 0) / KB), "namedBy": len(who)}
@@ -309,7 +475,7 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
     return {"jobs": len(rows), "perJob": per_job, "duplicated": duplicated,
             "duplicatedKb": sum(d["kb"] for d in duplicated), "totalKb": sum(j["kb"] for j in per_job),
             "unreadable": unreadable, "named": named, "namedKb": sum(n["kb"] for n in named),
-            "unresolved": sorted(unresolved)}
+            "unresolved": sorted(unresolved), "settingsErrors": settings_errors}
 
 
 def format_line(size: dict) -> str:
@@ -361,6 +527,8 @@ def format_line(size: dict) -> str:
         names = [os.path.basename(p) for p in size["unreadable"]]
         more = len(names) - UNREADABLE_SHOWN
         line += "; unreadable, counted 0: " + ", ".join(names[:UNREADABLE_SHOWN]) + (" +%d more" % more if more > 0 else "")
+    if size.get("settingsErrors"):
+        line += "; settings unreadable, deny rules not checked: " + ", ".join(size["settingsErrors"])
     return line
 
 
@@ -381,10 +549,13 @@ def fit_lines(size: dict) -> list:
     out = []
     for job in size["perJob"]:
         if not job["model"]:
+            if job.get("denied"):
+                out.append("fit: `%s` %s" % (job["label"], _denied_text(job["denied"])))
             continue
         who = "`%s` (%s)" % (job["label"], job["model"])
+        denied = ["; " + _denied_text(job["denied"])] if job.get("denied") else []
         if job["fitError"]:
-            out.append("fit: %s not sized: %s" % (who, job["fitError"]))
+            out.append("fit: %s not sized: %s" % (who, job["fitError"]) + "".join(denied))
             continue
         percent = round(100 * job["lowerTokens"] / job["usable"]) if job["usable"] else 0
         text = "fit: %s reading %d tokens (%d if every named file is read whole), %s of its compaction point, %d tokens (%s)" % (
@@ -403,8 +574,13 @@ def fit_lines(size: dict) -> list:
                 ", ".join(_display_name(p) for p in job["searchSources"][:UNREADABLE_SHOWN]))
         if job["unresolved"]:
             text += "; %d named path%s not resolved, counted 0" % (job["unresolved"], "" if job["unresolved"] == 1 else "s")
-        out.append(text)
+        out.append(text + "".join(denied))
     return out
+
+
+def denied_lines(size: dict) -> list:
+    """One `fit: `label` denied: ...` fact per job that a deny rule hits; [] when none does."""
+    return ["fit: `%s` %s" % (job["label"], _denied_text(job["denied"])) for job in size["perJob"] if job.get("denied")]
 
 
 def _job_tier(job: dict, by_shape: dict, by_kind: dict):
@@ -523,7 +699,10 @@ def main(argv=None) -> int:
         return 2
     try:
         spec = json.loads(Path(argv[0]).read_text(encoding="utf-8"))
-        print(format_line(dispatch_size(spec)))
+        size = dispatch_size(spec)
+        print(format_line(size))
+        for fact in denied_lines(size):
+            print(fact)
         for fact in fact_lines(spec, session_id=os.environ.get("CLAUDE_CODE_SESSION_ID")):
             print(fact)
     except (OSError, ValueError) as exc:

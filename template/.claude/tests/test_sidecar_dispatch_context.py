@@ -759,10 +759,13 @@ def checked_fanout(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_SIDECAR_PREFLIGHT", "0")
     jobs = [{"label": "pc-plc-test-readiness", "alias": "sonnet", "effort": "medium",
              "kind": "reviewer", "promptFile": str(tmp_path / "pc_plc-test-readiness.md")}]
+    Path(jobs[0]["promptFile"]).write_text("Review the test readiness.\n", encoding="utf-8")
     path = tmp_path / "jobs.json"
     path.write_text(json.dumps(jobs), encoding="utf-8")
     out = tmp_path / "run"
     out.mkdir()
+    for label in ("review-fold-1", "review-fold-2", "pc-plc-test-readiness"):
+        (out / (label + "_prompt.md")).write_text("Review the test readiness.\n", encoding="utf-8")
     command = shlex.join(["python3", ".claude/tools/sidecar_fanout.py", str(path),
                           "--review", "--out-dir", str(out), "--max-parallel", "1",
                           "--fold-alias", "sonnet", "--fold-effort", "medium",
@@ -852,6 +855,7 @@ def test_explicit_seat_plan_binds_the_inherited_fold_plan(checked_fanout, capsys
 def test_direct_launch_receipt_remains_one_use(checked_fanout, capsys):
     _check, compact, launch, _path, out = checked_fanout
     arm_slice(dict(os.environ), "fold0001", ["executor"])
+    (out / "brief.md").write_text("Review the test readiness.\n", encoding="utf-8")
     command = shlex.join(["bash", ".claude/scripts/anthropic_sidecar.sh", "-m", "sonnet", "-e", "medium",
                           "-G", "author", "-l", "review-fold-1", "-f", str(out / "brief.md"),
                           "-R", str(out / "review-fold-1.record.json")])

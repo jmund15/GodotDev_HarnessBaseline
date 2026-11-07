@@ -87,6 +87,23 @@ case("a label is sanitized the way dispatch.js names its spill file",
      lambda: os.path.isfile(os.path.join(SPILL, "odd_label_x.md")))
 case("a structured result is written as JSON",
      lambda: json.loads(read(os.path.join(SPILL, "odd_label_x.md")) or "null") == {"structured": True})
+sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+sys.path.insert(0, os.path.join(HERE, "..", "hooks"))
+import dispatch_result  # noqa: E402
+import post_check  # noqa: E402
+
+_NATIVE_SCHEMA_RETURN = {"verdict": "ok", "claims": [{"id": "c1", "claim": "x", "file": "a.py", "line": 1}]}
+_SIDECAR_STREAM = json.dumps({"type": "result", "result": "prose", "structured_output": _NATIVE_SCHEMA_RETURN})
+_NATIVE_SPILL = os.path.join(TMP, "native_schema_spill")
+os.makedirs(_NATIVE_SPILL)
+_NATIVE_RUN = plant_run("native_schema", [started("sch", "s1"), result("s1", _NATIVE_SCHEMA_RETURN)],
+                        record={"runId": "wf_test-1", "args": {"spillDir": _NATIVE_SPILL}})
+cli(_NATIVE_RUN)
+case("a native schema job's object lands as the text a sidecar's structured_output lands as",
+     lambda: read(os.path.join(_NATIVE_SPILL, "sch.md")) == dispatch_result.final_message(_SIDECAR_STREAM))
+case("post_check reads the claims of that landed deliverable and of the raw native return alike",
+     lambda: post_check.result_claims("sch", json.loads(read(os.path.join(_NATIVE_SPILL, "sch.md"))))
+     == post_check.result_claims("sch", _NATIVE_SCHEMA_RETURN) and post_check.result_claims("sch", _NATIVE_SCHEMA_RETURN)[0])
 case("a job with no result is reported, not written",
      lambda: not os.path.exists(os.path.join(SPILL, "dead.md")) and "dead" in _out)
 case("the tool prints each written path",
@@ -449,6 +466,49 @@ case("a successful Read of the amend file, in either slash spelling, prints noth
 case("no amend file prints nothing",
      lambda: _am_absent[0] == 0 and "AMEND UNREAD" not in _am_absent[1])
 
+os.environ["HARNESS_HOOK_STATE_DIR"] = os.path.join(TMP, "hook_state")
+import amend_delivery  # noqa: E402
+
+
+def receipt_scene(name, delivered_text):
+    """An amend file never Read in the stream, with a hooks/amend_delivery.py receipt for `delivered_text`."""
+    def stream(brief):
+        payload = {"session_id": "job-" + name, "transcript_path": "", "cwd": TMP}
+        os.makedirs(os.path.dirname(amend_delivery.receipt_path(brief + ".amend.md")), exist_ok=True)
+        current = open(brief + ".amend.md", encoding="utf-8").read()
+        open(brief + ".amend.md", "w", encoding="utf-8").write(delivered_text)
+        amend_delivery.claim(payload, brief + ".amend.md")
+        open(brief + ".amend.md", "w", encoding="utf-8").write(current)
+        return ""
+    return amend_scene(name, stream)
+
+
+_am_delivered = receipt_scene("am_delivered", "Amendment 1\n")
+_am_stale = receipt_scene("am_stale", "Amendment 0\n")
+os.environ.pop("HARNESS_HOOK_STATE_DIR")
+case("an amendment the hook delivered (a receipt for its current text) prints nothing, with no Read in the stream",
+     lambda: _am_delivered[0] == 0 and "AMEND UNREAD" not in _am_delivered[1])
+case("a receipt for an earlier revision only still prints AMEND UNREAD",
+     lambda: "AMEND UNREAD" in _am_stale[1])
+
+
+def stop_feedback_stream(feedback):
+    """Report, then a Stop hook's feedback turn, then a second report: event shapes cut from the live amendment proof's
+    `w1.record.json.out` (session 9660e6b7), text trimmed."""
+    def text(role, body):
+        return json.dumps({"type": role, "message": {"role": role, "content": [{"type": "text", "text": body}]}})
+    return "\n".join([text("assistant", "Report one."), text("user", "Stop hook feedback:\n" + feedback),
+                      text("assistant", "Report two, in full.")]) + "\n"
+
+
+case("a job that re-issued its report after an amendment's blocked stop is not flagged as answering a later turn",
+     lambda: not dispatch_result.answered_after_report(stop_feedback_stream(
+         "[amendment] Your parent amended your brief after your last tool call: C:\\b.md.amend.md (revision 0adf3fc0). "
+         "Apply it now; it overrides the brief where they differ. Then end with your full report again, naming what "
+         "you applied. Full text:\n\nAmendment R3.\n")))
+case("other stop feedback before a later reply is still flagged",
+     lambda: dispatch_result.answered_after_report(stop_feedback_stream("Run the tests before you finish.")))
+
 
 def git_in(work, *args):
     subprocess.run(["git", "-C", work, *args], check=True, capture_output=True,
@@ -603,6 +663,19 @@ case("a chains run dir resolves each lane's last job by label: its brief's check
      lambda: _c_g2[0] == 0 and "CHECK 1 PASS" in _c_g2[1] and _c_b1[0] == 0 and "CHECK 1 PASS" in _c_b1[1])
 case("a chains lane's last job writes its deliverable to the chains spill dir",
      lambda: read(os.path.join(_chains_spill, "g2.md")) == "g2 text\n")
+
+_nat_dir = os.path.join(TMP, "native_out")
+os.makedirs(_nat_dir)
+with open(os.path.join(_nat_dir, "native.args.json"), "w", encoding="utf-8") as _fh:
+    json.dump({"jobs": [{"label": "nat1", "model": "m", "effort": "low", "promptPath": "p.md"}],
+               "spillDir": _nat_dir}, _fh)
+_nat = cli("consume", _nat_dir, "--label", "nat1", "--check-timeout", "20")
+_nat_other = cli("consume", _nat_dir, "--label", "other", "--check-timeout", "20")
+case("a native label given the out dir is refused (exit 2), naming the Workflow run dir to give instead",
+     lambda: _nat[0] == 2 and "native Workflow job" in _nat[2] and "subagents/workflows/" in _nat[2]
+     and "record.json" not in _nat[2])
+case("a label native.args.json does not list keeps the sidecar record refusal",
+     lambda: _nat_other[0] == 2 and "native Workflow job" not in _nat_other[2])
 
 
 def main():

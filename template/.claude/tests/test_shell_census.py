@@ -276,6 +276,38 @@ proc = subprocess.run([sys.executable, hook_path], input="not json{{{", capture_
 case("malformed stdin exits 0", proc.returncode == 0, "rc=%r stderr=%r" % (proc.returncode, proc.stderr))
 case("malformed stdin produces no traceback", "Traceback" not in proc.stderr, proc.stderr)
 
+# 14b. a process whose command line holds a byte cp1252 leaves undefined (UTF-8 of the hourglass is E2 8F B3)
+# must not empty the census. The real PowerShell emits UTF-8 only under a UTF-8 console, so the census's own
+# subprocess.run is redirected to a stub that writes the UTF-8 bytes PowerShell writes there; the decoding
+# kwargs the census passes are the thing under test.
+STUB = (
+    "import json, sys\n"
+    "rows = [{'pid': 7, 'ppid': 1, 'name': 'python.exe', 'age': 3, 'cmd': 'python.exe -c x \\u23f3'},\n"
+    "        {'pid': 8, 'ppid': 7, 'name': 'node.exe', 'age': None, 'cmd': None}]\n"
+    "sys.stdout.buffer.write(json.dumps(rows, ensure_ascii=False).encode('utf-8'))\n"
+)
+PROBE = (
+    "import json, subprocess, sys\n"
+    "sys.path.insert(0, sys.argv[1]); import shell_census\n"
+    "real = subprocess.run\n"
+    "def run(args, **kw):\n"
+    "    return real([sys.executable, '-c', sys.argv[2]], **kw)\n"
+    "shell_census.subprocess.run = run\n"
+    "print(json.dumps(shell_census.list_processes(), ensure_ascii=True))\n"
+)
+penv = dict(os.environ)
+penv["PYTHONUTF8"] = "0"  # a session without UTF-8 mode decodes `text=True` output in the ANSI code page
+pr = subprocess.run([sys.executable, "-c", PROBE, os.path.join(HERE, "..", "hooks"), STUB], capture_output=True,
+                    encoding="utf-8", errors="replace", env=penv, timeout=60)
+try:
+    listed = json.loads(pr.stdout)
+except Exception:
+    listed = []
+case("a UTF-8 process list with an hourglass in a command line keeps the census populated",
+     len(listed) == 2 and listed[0]["pid"] == 7 and "python.exe -c x" in (listed[0]["cmd"] or ""),
+     "listed=%r stderr=%r" % (listed, pr.stderr[-300:]))
+case("a UTF-8 process list raises no reader-thread exception", "Exception in thread" not in pr.stderr, pr.stderr[-300:])
+
 # 15. no CLAUDE_PROJECT_DIR: the cache lands under the hook's own checkout root, never under cwd.
 # The hook runs from a copy inside a temp checkout so that root is not this one.
 import shutil  # noqa: E402
@@ -288,7 +320,7 @@ with tempfile.TemporaryDirectory() as cwd_tmp, tempfile.TemporaryDirectory() as 
     env.pop("CLAUDE_PROJECT_DIR", None)
     env["HARNESS_HOOK_STATE_DIR"] = _state_dir
     subprocess.run([sys.executable, os.path.join(fake_hooks, "shell_census.py")], input="{}", capture_output=True, text=True,
-                   env=env, cwd=cwd_tmp, timeout=60)
+                   encoding="utf-8", errors="replace", env=env, cwd=cwd_tmp, timeout=60)
     case("without CLAUDE_PROJECT_DIR the cache is not written under cwd",
          not os.path.exists(os.path.join(cwd_tmp, ".claude", ".cache", "shell-census.json")))
     case("without CLAUDE_PROJECT_DIR the cache lands under the hook's checkout root",

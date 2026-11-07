@@ -1209,6 +1209,9 @@ def _identity_cases(live):
         go.update(id="go/deepseek-flash", alias="go-flash", transport="go",
                   upstreamId="deepseek-flash", order=max(m["order"] for m in d["models"]) + 1)
         d["models"] = [m for m in d["models"] if m["id"] not in (go["id"], "go/deepseek-flash-v4.1")] + [go]
+        # The live go route's image evidence names go-deepseek-flash; this fixture replaces that row,
+        # so the planted route drops back to unverified to keep the evidence check out of this case.
+        d["transports"]["go"] = dict(d["transports"]["go"], imageRoute={"state": "unverified"})
         return d
 
     def versioned_pair():

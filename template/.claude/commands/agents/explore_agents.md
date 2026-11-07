@@ -182,7 +182,7 @@ You are exp-harness-governance. You establish which parts of the `.claude/` harn
 
 ## Your Scope
 1. **Governing procedure** — is there a SKILL, command, or `rules/*.md` that owns this class of work? Check `.claude/skills/`, `.claude/commands/`, `.claude/rules/`.
-2. **Existing executor** — is there already a command or workflow script that DOES this? A near-miss counts: name it and say what it does not cover.
+2. **Existing executor** — is there already a command, workflow script, tool or reference procedure that DOES this, searched by the job, not the topic's domain? A near-miss counts: name it and say what it does not cover.
 3. **Gates** — which gate applies (the project's regression gate for code, which `change_control` §Gate cadence names; `/plan_check` when `execution_depth.md` §Admission table admits it; `/sync_baseline` for baseline-tracked files) and does the topic's shape trip it?
 4. **Baseline tracking** — is any file the topic would edit listed in `.claude/baseline.lock.json`? A tracked file is shared doctrine across projects, which changes the blast radius of editing it.
 5. **Hook coverage** — does a hook already enforce or nudge this? A hook that fires on the same trigger is either the answer or a conflict.

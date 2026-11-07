@@ -210,9 +210,13 @@ class HookTests(Plant):
         for args in (named, gone):
             decision, text = self.run_hook(args)
             self.assertEqual(decision, guard_proof.ALLOW)
-            self.assertNotIn("dispatch size", text)
-            self.assertNotIn("names 157 KB", text)
-            self.assertNotIn("gone.md", text)
+            # The governing-skill gate's lost-check note names an unreadable path on purpose
+            # (test_skill_dispatch_gate.py); this proof owns only the size output.
+            size_text = "\n".join(line for line in text.splitlines()
+                                  if not line.startswith("Governing-skill check incomplete"))
+            self.assertNotIn("dispatch size", size_text)
+            self.assertNotIn("names 157 KB", size_text)
+            self.assertNotIn("gone.md", size_text)
 
     def test_workflow_hook_exits_0_and_stays_silent_on_args_it_cannot_size(self):
         for args in ({"jobs": "nonsense"}, {"jobs": [42, None]}, "{not json", {"chains": [{"jobs": 3}]}):
@@ -273,6 +277,22 @@ class WindowFitTests(Plant):
         for size in (fits, unknown):
             self.assertNotIn("usable window", dispatch_size.format_line(size))
 
+    def test_a_job_listing_rows_is_sized_against_its_tightest_row(self):
+        import model_registry
+        data = model_registry.load()
+        windows = {alias: model_registry.usable_window(model_registry.resolve(alias, data))
+                   for alias in ("haiku", "opus")}
+        self.assertNotEqual(windows["haiku"], windows["opus"], "the proof needs two rows with different windows")
+        small = self.file("small.md", 10)
+        job = {"label": "multi", "promptFile": self.file("p.md", 1), "contextFiles": [small],
+               "rows": {"opus": "high", "haiku": "low"}}
+        sized = dispatch_size.dispatch_size([job])["perJob"][0]
+        self.assertEqual(sized["usable"], min(windows.values()))
+        listed = dispatch_size.dispatch_size([dict(job, rows={"opus": "high"})])["perJob"][0]
+        pinned = dispatch_size.dispatch_size([{k: v for k, v in job.items() if k != "rows"} | {
+            "alias": "opus", "effort": "high"}])["perJob"][0]
+        self.assertEqual((listed["usable"], listed["effort"]), (pinned["usable"], "high"))
+
     def reading_of(self, name, share):
         """A file that, with the 1 KB prompt file, is `share` of the haiku window in tokens exactly."""
         path = os.path.join(self.root, name)
@@ -321,7 +341,7 @@ class WindowFitTests(Plant):
         spec = {"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "survey", "a.md"),
                          self.claimant_job("exec", "claude-sonnet-5-5", "author", "b.md"),
                          self.claimant_job("cheap", "claude-haiku-5-5", "survey", "c.md")]}
-        lines = dispatch_size.fact_lines(spec, self.root)
+        lines = dispatch_size.fact_lines(spec, self.root, read=lambda name, _data=None: None)
         self.assertEqual(len(lines), 3, lines)
         survey, execute, closing = lines
         for text, tier in ((survey, "fanout"), (execute, "executor")):
@@ -362,7 +382,7 @@ class WindowFitTests(Plant):
         for job in spec["jobs"]:
             job["promptPath"] = self.text(job["promptPath"], "x" * 6 * KB)
         size = dispatch_size.dispatch_size(spec, self.root)
-        lines = dispatch_size.fact_lines(spec, self.root)
+        lines = dispatch_size.fact_lines(spec, self.root, read=lambda name, _data=None: None)
         sonnet = [job["label"] for job in spec["jobs"] if job["model"].startswith("claude-sonnet-5-5")]
         for label in sonnet:
             matching = [text for text in lines if "`%s`" % label in text]
@@ -643,6 +663,122 @@ class BucketTests(Plant):
         text = dispatch_size.fit_lines(size)[0]
         self.assertIn("over its point", text)
         self.assertNotIn("ceiling over", text)
+
+
+class DenyTests(Plant):
+    """A path a brief names, and a job's workdir, are reported when a deny rule of the effective settings hits them."""
+
+    def settings(self, *deny, name="settings.json", root=None):
+        folder = os.path.join(root or self.root, ".claude")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, name), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"permissions": {"deny": list(deny)}}, fh)
+
+    def planted(self, relative, kb=1):
+        path = os.path.join(self.root, *relative.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(b"x" * (kb * KB))
+        return path.replace("\\", "/")
+
+    def facts(self, job):
+        return dispatch_size.denied_lines(dispatch_size.dispatch_size([job], root=self.root))
+
+    def test_a_denied_path_is_named_with_its_tool_and_rule_text(self):
+        self.settings("Read(.claude/worktrees/**)", "Grep(.claude/worktrees/**)")
+        target = self.planted(".claude/worktrees/ui-sit1/design/live/build.mjs")
+        facts = self.facts(self.job("j", "p.md", must=[target]))
+        self.assertEqual(len(facts), 1)
+        self.assertIn("denied: %s (Read, rule \"Read(.claude/worktrees/**)\")" % target, facts[0])
+        self.assertIn("`j`", facts[0])
+
+    def test_the_fit_line_of_a_pinned_job_carries_the_denial(self):
+        self.settings("Read(.claude/worktrees/**)")
+        target = self.planted(".claude/worktrees/w/a.md")
+        size = dispatch_size.dispatch_size([self.job("j", "p.md", must=[target])], root=self.root)
+        text = dispatch_size.fit_lines(size)[0]
+        self.assertIn("denied: %s (Read, rule" % target, text)
+
+    def test_a_path_no_rule_matches_stays_unmarked(self):
+        self.settings("Read(.claude/worktrees/**)", "Edit(/secrets/**)")
+        target = self.planted(".claude/scratch/a.md")
+        job = self.job("j", "p.md", must=[target])
+        size = dispatch_size.dispatch_size([job], root=self.root)
+        self.assertEqual(dispatch_size.denied_lines(size), [])
+        self.assertNotIn("denied", " ".join(dispatch_size.fit_lines(size)))
+        self.assertNotIn("settings unreadable", dispatch_size.format_line(size))
+
+    def test_a_workflow_job_is_anchored_at_the_project_root_and_says_so(self):
+        self.settings("Read(.claude/worktrees/**)")
+        target = self.planted(".claude/worktrees/ui-sit1/design/a.md")
+        fact = self.facts(self.job("flow", "p.md", must=[target]))[0]
+        self.assertIn("%s (Read, rule \"Read(.claude/worktrees/**)\") against project root" % target, fact)
+
+    def test_a_sidecar_job_whose_workdir_sits_in_the_denied_folder_is_not_flagged_by_that_rule(self):
+        self.settings("Read(.claude/worktrees/**)")
+        workdir = os.path.join(self.root, ".claude", "worktrees", "ui-sit1")
+        inside = self.planted(".claude/worktrees/ui-sit1/design/a.md")
+        job = {"label": "side", "promptFile": self.file("p.md", 1), "workdir": workdir,
+               "mustRead": [{"path": inside, "lines": 10}]}
+        os.makedirs(workdir, exist_ok=True)
+        self.assertEqual(self.facts(job), [])
+
+    def test_a_sidecar_job_is_anchored_at_its_workdir_and_says_so(self):
+        self.settings("Read(vault/notes/**)")
+        inside = self.planted("sub/vault/notes/a.md")
+        beside = self.planted("vault/notes/b.md")
+        job = {"label": "side", "promptFile": self.file("p.md", 1), "workdir": os.path.join(self.root, "sub"),
+               "mustRead": [{"path": inside, "lines": 10}, {"path": beside, "lines": 10}]}
+        fact = self.facts(job)[0]
+        self.assertIn("%s (Read, rule \"Read(vault/notes/**)\") against workdir" % inside, fact)
+        self.assertNotIn(beside, fact)
+
+    def test_a_workdir_an_absolute_rule_denies_is_named_as_the_workdir(self):
+        folder = os.path.join(self.root, "closed").replace("\\", "/")
+        self.settings("Edit(//" + folder.replace(":", "").lstrip("/") + "/**)")
+        workdir = os.path.join(self.root, "closed", "w")
+        os.makedirs(workdir)
+        job = {"label": "w", "promptFile": self.file("p.md", 1), "workdir": workdir}
+        self.assertIn("(workdir; Edit, rule", self.facts(job)[0])
+
+    def test_a_named_path_that_does_not_exist_is_still_tested(self):
+        self.settings("Read(.claude/worktrees/**)")
+        gone = os.path.join(self.root, ".claude", "worktrees", "gone", "design", "a.md").replace("\\", "/")
+        job = {"label": "j", "promptPath": self.file("p.md", 1), "model": "opus", "effort": "high",
+               "prompt": "Read `%s` first." % gone}
+        self.assertFalse(os.path.exists(gone))
+        fact = self.facts(job)[0]
+        self.assertIn("denied: %s (Read, rule \"Read(.claude/worktrees/**)\") against project root" % gone, fact)
+
+    def test_a_directory_a_brief_file_names_is_tested_though_it_has_no_extension_and_does_not_exist(self):
+        self.settings("Read(.claude/worktrees/**)")
+        gone = os.path.join(self.root, ".claude", "worktrees", "ui-sit1").replace("\\", "/")
+        brief = self.text("common.md", "- Worktree `%s`, branch `ui-sit1`. Edit only files under it.\n" % gone)
+        job = {"label": "j", "promptPath": brief, "model": "opus", "effort": "high"}
+        self.assertFalse(os.path.exists(gone))
+        self.assertIn("denied: %s (Read, rule" % gone, self.facts(job)[0])
+
+    def test_a_local_settings_rule_and_a_user_settings_rule_count(self):
+        self.settings("Read(a_dir/**)", name="settings.local.json")
+        with open(os.path.join(self.login, "settings.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"permissions": {"deny": ["Read(//" + self.root.replace("\\", "/").replace(":", "").lstrip("/") + "/b_dir/**)"]}}, fh)
+        one = self.planted("a_dir/x.md")
+        two = self.planted("b_dir/x.md")
+        facts = self.facts(self.job("j", "p.md", must=[one, two]))[0]
+        self.assertIn("denied: %s" % one, facts)
+        self.assertIn("denied: %s" % two, facts)
+
+    def test_an_unreadable_settings_file_is_named_not_read_as_no_rules(self):
+        folder = os.path.join(self.root, ".claude")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "settings.json"), "w", encoding="utf-8") as fh:
+            fh.write("{ not json")
+        size = dispatch_size.dispatch_size([self.job("j", "p.md")], root=self.root)
+        self.assertIn("settings unreadable, deny rules not checked: settings.json (unparseable", dispatch_size.format_line(size))
+
+    def test_a_missing_settings_file_is_no_rules_and_says_nothing(self):
+        size = dispatch_size.dispatch_size([self.job("j", "p.md")], root=self.root)
+        self.assertNotIn("settings unreadable", dispatch_size.format_line(size))
 
 
 if __name__ == "__main__":

@@ -539,11 +539,11 @@ sc_read_prompt() {
   if [ -n "$SC_PROMPT_FILE" ]; then
     [ -f "$SC_PROMPT_FILE" ] || sc_die 2 "prompt file not found: $SC_PROMPT_FILE"
     SC_PROMPT="$(cat "$SC_PROMPT_FILE")"
-    # How a parent corrects a running author job (orchestration §4); same text as dispatch.js.
+    # The key hooks/amend_delivery.py reads to deliver a parent's amendment; same text as dispatch.js.
     # Absolute: the job's cwd may be a worktree, where a relative brief path names a missing file.
     local brief_abs
     brief_abs="$(sc_to_native "$(cd "$(dirname "$SC_PROMPT_FILE")" && pwd)/$(basename "$SC_PROMPT_FILE")")"
-    [ "${SC_SHAPE:-}" = "author" ] && SC_PROMPT+=$'\n\n'"Amend: at each item and before returning, Read $brief_abs.amend.md with the Read tool (Glob and Grep hide gitignored files); a not-found error means no amendment. A found amendment overrides the brief. Name what you applied."
+    [ "${SC_SHAPE:-}" = "author" ] && SC_PROMPT+=$'\n\n'"Amendments: the harness delivers $brief_abs.amend.md to you when your parent writes or changes it; a delivered amendment overrides the brief, and your report names what you applied."
   else
     SC_PROMPT="${*:-}"
   fi
@@ -991,14 +991,21 @@ if sys.argv[4]:
                 for hook in row.get("hooks", [])) for row in rows_):
             row = {"hooks": [{"type": "command", "command": command, "timeout": 15}]}
             rows_.append({"matcher": matcher, **row} if matcher else row)
+    # The author prompt promises amendment delivery; the child's own checkout may predate the hook, so the
+    # launcher's root supplies it. Its receipts dedupe a second registration from the checkout's settings.
+    if sys.argv[3] == "author":
+        command = 'python3 "%s"' % (root / "hooks/amend_delivery.py").as_posix()
+        for event, matcher in (("PreToolUse", "*"), ("Stop", None)):
+            row = {"hooks": [{"type": "command", "command": command, "timeout": 10}]}
+            base.setdefault("hooks", {}).setdefault(event, []).append({"matcher": matcher, **row} if matcher else row)
 try:
     project = json.loads((root / "skills/project_subsystems/adaptation.json").read_text(encoding="utf-8"))
 except (OSError, ValueError):
     project = {}
 rows = project.get("sidecar_hook_rows", []) if isinstance(project, dict) else []
-# The launcher's own row: a child in a linked worktree may write only its workdir and spill dir.
+# The launcher's own row: a child in a linked worktree may write only its workdir, spill dir and brief's writeSet.
 builtin = {"matcher": "Write|Edit|NotebookEdit|Bash", "when": {"SC_MAIN_ROOT": None},
-           "command": "python3 {root}/hooks/sidecar_workdir_guard.py {workdir} {main_root} {spill_dir}"}
+           "command": "python3 {root}/hooks/sidecar_workdir_guard.py {workdir} {main_root} {spill_dir} {prompt}"}
 rows = [builtin] + [row for row in (rows if isinstance(rows, list) else [])
                     if not (isinstance(row, dict) and "sidecar_workdir_guard.py" in str(row.get("command", "")))]
 env = dict(os.environ, SC_SHAPE=sys.argv[3], SC_PROMPT_FILE=sys.argv[4],

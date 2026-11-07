@@ -150,6 +150,16 @@ _LEGAL_LIFECYCLES = ("current", "superseded", "retired")
 # Intake input (bench intake), never a measurement.
 _LEGAL_PRIORS = ("frontier", "mid", "small")
 
+# What a model can RECEIVE, as the catalog publishes it (`modalities.input` in models.dev). A row
+# states its list, or an `inputGap` naming where the catalog was checked: a row the catalog does not
+# list is UNKNOWN, never assumed text-only or image-capable. The separate `imageRoute` fact on a
+# TRANSPORT says whether OUR route to those rows has been shown to deliver an image end to end -- a
+# catalog `image` does not prove the client and proxy carry one, and a route with no passing probe
+# stays `unverified` rather than inferred.
+_LEGAL_INPUT_TYPES = ("text", "image", "pdf", "audio", "video")
+_LEGAL_IMAGE_ROUTE_STATES = ("verified", "unverified")
+_ROUTE_EVIDENCE_FIELDS = ("verifiedAt", "row", "probe", "evidence")
+
 # The one-model-table fields every row carries; consumers derive their order and rank tables from
 # these instead of hand-copying a constant per view.
 _ROW_TABLE_FIELDS = ("label", "family", "version", "lifecycle", "order", "costRank", "prior")
@@ -310,6 +320,56 @@ def _pub_score_valid(score):
             and isinstance(score.get("date"), str) and _iso_date_valid(score["date"]))
 
 
+def _validate_image_route(route, where):
+    """A transport's image-delivery fact: a state, and (only when verified) its evidence."""
+    if not isinstance(route, dict):
+        raise RegistryError(f"{where} needs an 'imageRoute' object stating whether an image has been "
+                            f"shown to reach models on this route")
+    state = route.get("state")
+    if state not in _LEGAL_IMAGE_ROUTE_STATES:
+        raise RegistryError(f"{where} imageRoute.state {state!r} must be one of "
+                            f"{', '.join(_LEGAL_IMAGE_ROUTE_STATES)}")
+    if state == "unverified":
+        stray = [k for k in _ROUTE_EVIDENCE_FIELDS if k in route]
+        if stray:
+            raise RegistryError(f"{where} imageRoute is unverified but carries {', '.join(stray)}; "
+                                f"only a passing probe records evidence")
+        return
+    missing = [k for k in _ROUTE_EVIDENCE_FIELDS if not str(route.get(k) or "").strip()]
+    if missing:
+        raise RegistryError(f"{where} imageRoute is verified but is missing {', '.join(missing)}")
+    if not _iso_date_valid(route["verifiedAt"]):
+        raise RegistryError(f"{where} imageRoute.verifiedAt must be an ISO date")
+
+
+def _validate_input(entry, target, mid):
+    """`input` (catalog modalities) or `inputGap` (unknown, with where it was checked) -- never both."""
+    types = entry.get("input")
+    gap = entry.get("inputGap")
+    if types is not None and gap is not None:
+        raise RegistryError(f"{target}: model {mid} carries both 'input' and 'inputGap'; a gap says "
+                            f"the catalog lists no entry")
+    if types is not None:
+        if not isinstance(types, list) or not types:
+            raise RegistryError(f"{target}: model {mid} input must be a non-empty array of modality "
+                                f"names")
+        unknown = [t for t in types if t not in _LEGAL_INPUT_TYPES]
+        if unknown:
+            raise RegistryError(
+                f"{target}: model {mid} input has unknown modalit{'y' if len(unknown) == 1 else 'ies'} "
+                f"{unknown!r}; legal: {', '.join(_LEGAL_INPUT_TYPES)}")
+        if len(types) != len(set(types)):
+            raise RegistryError(f"{target}: model {mid} input must not repeat a modality")
+        return
+    if gap is None:
+        raise RegistryError(f"{target}: model {mid} states no 'input' (the catalog modalities it "
+                            f"accepts) and no 'inputGap' naming where the catalog was checked")
+    if not isinstance(gap, dict) or not all(
+            isinstance(gap.get(k), str) and gap[k].strip() for k in ("reason", "checked", "asOf")):
+        raise RegistryError(f"{target}: model {mid} inputGap must be an object with non-empty string "
+                            f"'reason', 'checked' (the source) and 'asOf'")
+
+
 def _validate(data, target):
     if not isinstance(data, dict):
         raise RegistryError(f"{target}: top level must be an object")
@@ -336,6 +396,7 @@ def _validate(data, target):
         if not isinstance(tcfg, dict):
             raise RegistryError(f"{target}: transport {tname!r} must be an object")
         _validate_driver_notes(tcfg.get("driverNotes"), f"{target}: transport {tname}")
+        _validate_image_route(tcfg.get("imageRoute"), f"{target}: transport {tname}")
         if "longContextTier" in tcfg:
             _validate_long_context_tier(tcfg["longContextTier"], f"{target}: transport {tname}")
         cost = tcfg.get("costModel")
@@ -371,6 +432,8 @@ def _validate(data, target):
             raise RegistryError(
                 f"{target}: transport {tname} capacityUnsupported needs a non-empty reason")
         _validate_schedule(tname, tcfg, cost, target)
+        if "maxChildren" in tcfg:
+            _validate_max_children(tcfg["maxChildren"], f"{target}: transport {tname}")
         status = tcfg.get("status")
         if status is None:
             continue
@@ -421,6 +484,7 @@ def _validate(data, target):
             raise RegistryError(f"{target}: duplicate upstreamId {upstream!r} on transport {transport}")
         seen_upstreams[upstream_key] = mid
         _validate_table_fields(entry, target)
+        _validate_input(entry, target, mid)
 
         # Same shape as transport-level status (line ~195), and consumed the same way by
         # model_available() -- but until now nothing validated it, so a malformed model-level
@@ -677,6 +741,23 @@ def _validate(data, target):
         _validate_driver_notes(entry.get("driverNotes"), f"{target}: model {mid}")
         _validate_probation(entry.get("probation"), f"{target}: model {mid}")
 
+    # A verified route's evidence row must exist on that transport AND state an image input. Checked
+    # after the row loop so `input`/`inputGap` are validated: an evidence row that cannot read images
+    # proves nothing about delivery, and a name that does not resolve is a stale record.
+    for tname, tcfg in transports.items():
+        route = tcfg.get("imageRoute") or {}
+        if route.get("state") != "verified":
+            continue
+        name = route["row"]
+        evidence = next((m for m in models if m.get("transport") == tname
+                         and name in (m.get("id"), m.get("alias"), *(m.get("servedIds") or []))), None)
+        if evidence is None:
+            raise RegistryError(f"{target}: transport {tname} imageRoute.row {name!r} names no row on "
+                                f"that transport")
+        if "image" not in (evidence.get("input") or []):
+            raise RegistryError(f"{target}: transport {tname} imageRoute evidence row {name!r} does not "
+                                f"state an image input, so it cannot prove the route delivers one")
+
     current_by_family = {}
     order_owner = {}
     for entry in models:
@@ -742,6 +823,20 @@ def refresh_pin_problems(data):
             problems.append(f"transport {tname} capacityProbe.refresh.model {model!r} is not a row id on "
                             f"route {route}")
     return problems
+
+
+def _validate_max_children(cap, where):
+    count = cap.get("count") if isinstance(cap, dict) else None
+    basis = cap.get("basis") if isinstance(cap, dict) else None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1 \
+            or not isinstance(basis, str) or not basis.strip():
+        raise RegistryError(f"{where} maxChildren needs a positive integer count and a non-empty basis")
+
+
+def child_cap(name, data=None):
+    """(count, basis) of the concurrent child CLIs transport `name` holds, or None when it has no cap."""
+    cap = (transport_meta(name, data) or {}).get("maxChildren")
+    return (cap["count"], cap["basis"]) if cap else None
 
 
 def _validate_plans(transports, target):
@@ -1071,6 +1166,35 @@ def row_for_model(model, data=None):
             return m
     prefixed = [m for m in rows if m.get("id") and name.startswith(str(m["id"]).lower())]
     return max(prefixed, key=lambda m: len(m["id"])) if prefixed else None
+
+
+def input_types(entry):
+    """The catalog modality input types a row accepts; None when its catalog entry is unknown.
+
+    None means UNKNOWN (`inputGap`), never text-only: a renderer says `unknown`, and the choice to
+    dispatch an image at such a row stays the session's judgment. The route fact is separate --
+    `image_route` says whether our transport has been shown to carry an image to it.
+    """
+    value = entry.get("input") if isinstance(entry, dict) else None
+    return list(value) if isinstance(value, list) else None
+
+
+def canonical_input_types(types):
+    """`types` in the canonical display/record order (text, image, pdf, audio, video)."""
+    return [t for t in _LEGAL_INPUT_TYPES if t in (types or [])]
+
+
+def image_route(entry, data=None):
+    """The `imageRoute` fact of the row's TRANSPORT, or None when the transport states none.
+
+    Route-level, not row-level: the launcher/client/proxy path is what a probe exercises, and it
+    serves every model on the transport. Validation requires the object on every transport, so None
+    is only reachable from an unvalidated fixture.
+    """
+    data = data if data is not None else load()
+    transport = entry.get("transport") if isinstance(entry, dict) else None
+    route = ((data.get("transports") or {}).get(transport) or {}).get("imageRoute")
+    return route if isinstance(route, dict) else None
 
 
 def rail_tier(model, data=None):

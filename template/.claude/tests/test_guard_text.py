@@ -188,6 +188,8 @@ def main():
     live.pop("aliasHistory", None)
     for tcfg in live.get("transports", {}).values():
         tcfg.pop("driverNotes", None)
+        # Every row that carried image evidence is replaced above; no route can stay verified.
+        tcfg["imageRoute"] = {"state": "unverified"}
     with open(registry, "w", encoding="utf-8") as fh:
         json.dump(live, fh)
     env = dict(os.environ, HARNESS_MODEL_REGISTRY=registry)

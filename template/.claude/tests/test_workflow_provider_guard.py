@@ -1238,6 +1238,20 @@ def five_hour_cases():
         case("5h hot, no live job -> a single-job dispatch is allowed",
              run(with_transcript(arch, none_live), HOT_5H), "allow",
              absent=("5h used faster", "one native job", "cross-transport row"))
+        handoff = tempfile.mkdtemp(prefix="wpg_handoff_")
+        with open(os.path.join(handoff, "native.jobs.json"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("{}")
+        two = jobs([("h-arch", "architect"), ("h-exec", "executor")])
+        two["tool_input"]["args"]["spillDir"] = handoff
+        case("5h hot, a fan-out hand-off call: the deny names the fan-out's native.jobs.json, not one Bash call per job",
+             run(with_transcript(two, none_live), HOT_5H), "deny",
+             (os.path.join(handoff, "native.jobs.json"), "sidecar_fanout.py", "--detach"),
+             ("one Bash call each", "off_sidecar.sh"))
+        two_plain = jobs([("h-arch", "architect"), ("h-exec", "executor")])
+        two_plain["tool_input"]["args"]["spillDir"] = tempfile.mkdtemp(prefix="wpg_nohand_")
+        case("5h hot, a spillDir with no native.jobs.json keeps the per-job steps",
+             run(with_transcript(two_plain, none_live), HOT_5H), "deny",
+             ("one Bash call each", "o-arch"), ("native.jobs.json",))
         case("the 5h figures print the capture's used percent, never one back-derived from the pace",
              run(with_transcript(arch, one_live), HOT_5H, used=50.0), "deny",
              ("5h 50% left, 40% to go",), ("5h 14% left",))

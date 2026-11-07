@@ -9,7 +9,8 @@ surviving plan's quota left, read cache-only with no probe; a plan with no fresh
 `warming` and its rows wait for that reading. A plan row states its draw: the
 output-rate ratio to the cheapest row on its own route, one measured point, never compared across plans. A
 pay-per-token row states its spend: its priced reading ratio to the cheapest row on its route, with the USD figure.
-Every row also states the ladder's intel and speed, whether the reading fits its usable window, and the first `+` and
+Every row also states the catalog's input modalities (`unknown` on an inputGap), the transport's image-route fact,
+the ladder's intel and speed, whether the reading fits its usable window, and the first `+` and
 first `−` clause of its `±` cell, quoted verbatim. A later brief of the same tier in the same session, with no
 compaction between, gets one short line instead: its reading, the fit of each row whose fit changed, and `table as
 earlier this session`. A tier whose `for-role` table already reached this context (a delivered receipt,
@@ -37,7 +38,7 @@ TOOL_NAMES = ("Write", "Edit")
 FENCE = "```task"
 NOTE = ("draw ratios compare models within one plan (list-price ratio, one measured point); "
         "across plans compare room")
-HEADER = "model | draw or spend | intel | speed | window | first + | first −"
+HEADER = "model | input | image route | draw or spend | intel | speed | window | first + | first −"
 
 
 def _owners():
@@ -113,6 +114,17 @@ def _money(price):
     return "unpriced" if price is None else "$%.4f" % price
 
 
+def _input_cell(model_registry, entry):
+    """The catalog's input modalities, or `unknown` when the row records an inputGap."""
+    types = model_registry.input_types(entry)
+    return ",".join(types) if types else "unknown"
+
+
+def _image_cell(model_registry, entry, data):
+    """The transport's image-delivery fact: `verified`, `unverified`, or `unstated` on a bare fixture."""
+    return ((model_registry.image_route(entry, data) or {}).get("state") or "unstated")
+
+
 def _route_labels(route, entries, data, tokens, owners):
     """(is_plan, {row id: draw or spend label}) for one route: ratios restart per route, so a plan's draw is
     taken against the cheapest priced row of that plan's route and a pay-per-token row's spend against its own."""
@@ -136,6 +148,7 @@ def _route_lines(route, entries, seat, data, tokens, owners, ladder, fits, plans
     """One route's header line, then one row per entry."""
     suffix = ", session route" if route == seat else ""
     plan, labels = _route_labels(route, entries, data, tokens, owners)
+    model_registry = owners[0]
     if plan:
         room = "; ".join("%s %s" % (p["plan"], _left(p["left"])) for p in plans) or "no plan"
         lines = ["route %s (plan%s): %s" % (route, suffix, room)]
@@ -144,8 +157,11 @@ def _route_lines(route, entries, seat, data, tokens, owners, ladder, fits, plans
     for entry in entries:
         cell = ladder.get(entry["id"], {})
         plus, minus = _clauses(cell.get("±"))
-        cells = [entry.get("alias") or entry["id"], labels[entry["id"]], cell.get("intel", "?"),
-                 cell.get("speed", "?"), fits[entry["id"]], _quoted("+", plus), _quoted("−", minus)]
+        model_row = model_registry.resolve(entry["id"], data)
+        cells = [entry.get("alias") or entry["id"], _input_cell(model_registry, model_row),
+                 _image_cell(model_registry, model_row, data), labels[entry["id"]],
+                 cell.get("intel", "?"), cell.get("speed", "?"),
+                 fits[entry["id"]], _quoted("+", plus), _quoted("−", minus)]
         if entry.get("probation"):
             cells.append('probation "%s"' % entry["probation"])
         lines.append(" | ".join(cells))

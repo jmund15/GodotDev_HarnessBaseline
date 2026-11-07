@@ -312,7 +312,8 @@ def retired_worktree_cases():
     os.makedirs(proj_seed)
     git("init", "-q", "-b", "main", cwd=proj_seed)
     write(os.path.join(proj_seed, "a.txt"), "a\n")
-    write(os.path.join(proj_seed, ".gitignore"), ".claude/worktrees/\n.claude/scratch/\n.godot/\n")
+    write(os.path.join(proj_seed, ".gitignore"),
+          ".claude/worktrees/\n.claude/scratch/\n.godot/\n.devdb/\n.env.local\ndist-preview/\nlogs/\ntest-results/\n")
     git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub_remote, "Sub", cwd=proj_seed)
     git("add", ".", cwd=proj_seed)
     git("commit", "-q", "-m", "a", cwd=proj_seed)
@@ -577,9 +578,97 @@ def retired_worktree_cases():
                          edit=lambda p: write(os.path.join(p, "Sub", "s.txt"), "edited in the submodule\n"))
     expect_wt("orphan, submodule file edited", o_sub_dirty, False, proj, allow_ignored=True)
 
+    # An orphan that sits beside the project (a build worktree made as a sibling folder) is judged like one
+    # under `.claude/worktrees/` when its `.git` file names this repository's gone admin directory.
+    def sibling(name, repo=proj, edit=None):
+        path = os.path.join(FIX, name)
+        git("worktree", "add", "-q", "--detach", path, cwd=repo)
+        if edit:
+            edit(path)
+        with open(os.path.join(path, ".git"), encoding="utf-8") as fh:
+            admin = fh.read().split("gitdir:", 1)[1].strip()
+        force_rmtree(admin if os.path.isabs(admin) else os.path.join(path, admin))
+        return path
+
+    s_clean = sibling("s_clean")
+    expect_wt("sibling orphan of this repository, content held by git", s_clean, True, proj)
+    s_godot = sibling("s_godot", edit=lambda p: (os.makedirs(os.path.join(p, ".godot", "imported")),
+                                                   write(os.path.join(p, ".godot", "imported", "c.ctex"), "c\n")))
+    expect_wt("sibling orphan, ignored .godot cache", s_godot, True, proj)
+    s_new = sibling("s_new", edit=lambda p: write(os.path.join(p, "notes.md"), "unsaved notes\n"))
+    expect_wt("sibling orphan, authored file git never saw", s_new, False, proj)
+    s_json = sibling("s_json", edit=lambda p: (os.makedirs(os.path.join(p, ".claude", "scratch")),
+                                                 write(os.path.join(p, ".claude", "scratch", "n.json"), "{}\n")))
+    expect_wt("sibling orphan, ignored non-regenerable file", s_json, False, proj)
+    other = fresh_clone("other", proj_remote)
+    s_other = sibling("s_other", repo=other)
+    expect_wt("sibling orphan of another repository", s_other, False, proj)
+    s_live = os.path.join(FIX, "s_live")
+    git("worktree", "add", "-q", "--detach", s_live, cwd=proj)
+    expect_wt("sibling worktree still registered", s_live, False, proj)
+    expect_wt("the project itself", proj, False, proj)
+    s_path = lambda path: path.replace("\\", "/")
+    expect_wt_channel("sibling orphan of this repository", "rm -rf " + s_path(s_clean), "allow", proj)
+    expect_wt_channel("sibling orphan with an ignored .godot cache", "rm -rf " + s_path(s_godot), "allow", proj)
+    expect_wt_deny_names("sibling orphan with unsaved work names the file", "rm -rf " + s_path(s_new), "notes.md", proj)
+    expect_wt_channel("sibling orphan with an ignored non-regenerable file", "rm -rf " + s_path(s_json), "deny", proj)
+    expect_wt_channel("sibling orphan of another repository", "rm -rf " + s_path(s_other), "deny", proj)
+    expect_wt_channel("sibling worktree still registered", "rm -rf " + s_path(s_live), "deny", proj)
+
+    # A project lists its own regenerable outputs in `adaptation.json` `regenerable_ignored`
+    # (paths from the worktree root; a listed directory covers everything under it).
+    def outputs(p):
+        for name, text in ((".devdb/local/default/backend.sqlite3", "db\n"),
+                           (".devdb/preview.env", "DEVDB_TARGET=local\n"),
+                           (".env.local", "APP_BACKEND_URL=http://127.0.0.1:1\n"),
+                           ("dist-preview/index.html", "<html>\n"), ("logs/screens/a.png", "png\n"),
+                           ("test-results/r.txt", "r\n")):
+            os.makedirs(os.path.dirname(os.path.join(p, name)), exist_ok=True)
+            write(os.path.join(p, name), text)
+
+    s_out = sibling("s_out", edit=outputs)
+    s_out_dirty = sibling("s_out_dirty", edit=lambda p: (outputs(p), write(os.path.join(p, "a.txt"), "unsaved edit\n")))
+    s_out_extra = sibling("s_out_extra", edit=lambda p: (outputs(p), os.makedirs(os.path.join(p, ".devdb", "tmp")),
+                                                           write(os.path.join(p, ".devdb", "tmp", "an.py"), "x\n")))
+    s_out_nested = sibling("s_out_nested", edit=lambda p: (os.makedirs(os.path.join(p, "src", ".devdb", "local")),
+                                                             write(os.path.join(p, "src", ".devdb", "local", "x.db"), "x\n")))
+    s_out_other = sibling("s_out_other", repo=other, edit=outputs)
+    live_out = add_wt("live_out")
+    outputs(live_out)
+    live_extra = add_wt("live_extra")
+    outputs(live_extra)
+    os.makedirs(os.path.join(live_extra, ".devdb", "tmp"))
+    write(os.path.join(live_extra, ".devdb", "tmp", "an.py"), "x\n")
+    expect_wt("sibling orphan with build outputs, project lists none", s_out, False, proj)
+    expect_wt_channel("sibling orphan with build outputs, project lists none", "rm -rf " + s_path(s_out), "deny", proj)
+    adaptation_dir = os.path.join(proj, ".claude", "skills", "project_subsystems")
+    os.makedirs(adaptation_dir)
+    adaptation_file = os.path.join(adaptation_dir, "adaptation.json")
+    write(adaptation_file, json.dumps({"regenerable_ignored": [
+        ".devdb/local", ".devdb/preview*", ".env.local", "dist-preview", "logs", "test-results"]}))
+    expect_wt("sibling orphan with listed build outputs", s_out, True, proj)
+    expect_wt("sibling orphan, listed outputs and an unsaved tracked edit", s_out_dirty, False, proj)
+    expect_wt("sibling orphan, listed outputs and an unlisted ignored file", s_out_extra, False, proj)
+    expect_wt("sibling orphan, a listed name nested below the root", s_out_nested, False, proj)
+    expect_wt("sibling orphan of another repository, listed outputs", s_out_other, False, proj)
+    expect_wt("registered worktree with listed build outputs", live_out, True, proj)
+    expect_wt("registered worktree, listed outputs and an unlisted ignored file", live_extra, False, proj)
+    expect_wt_channel("sibling orphan with listed build outputs", "rm -rf " + s_path(s_out), "allow", proj)
+    expect_wt_deny_names("sibling orphan with an unsaved tracked edit names the file", "rm -rf " + s_path(s_out_dirty),
+                         "a.txt", proj)
+    expect_wt_deny_names("sibling orphan with an unlisted ignored file names it", "rm -rf " + s_path(s_out_extra),
+                         ".devdb/tmp/an.py", proj)
+    expect_wt_channel("sibling orphan of another repository, listed outputs", "rm -rf " + s_path(s_out_other), "deny", proj)
+    expect_wt_channel("registered worktree with listed build outputs", "rm -rf " + s_path(live_out), "allow", proj)
+    for bad, label in (('{"regenerable_ignored": ".devdb/local"}', "not a list"), ('{"regenerable_ignored": ["*"]}', "a bare wildcard"),
+                       ('{"regenerable_ignored": ["../**", "/c/x", ""]}', "escaping and empty entries"), ("{not json", "unparseable")):
+        write(adaptation_file, bad)
+        expect_wt("sibling orphan with build outputs, the list is " + label, s_out, False, proj)
+    os.remove(adaptation_file)
+
     # A worktree's submodule clone keeps its own remote refs, which go stale: its HEAD is pushed when
     # the main checkout's same submodule sees it on a remote.
-    sub_main = os.path.join(proj, "Sub")
+    sub_main =os.path.join(proj, "Sub")
     before = subprocess.run(["git", "rev-parse", "HEAD"], cwd=sub_main, env=ENV, capture_output=True,
                             text=True, check=True).stdout.strip()
     write(os.path.join(sub_main, "s2.txt"), "pushed from the main checkout\n")

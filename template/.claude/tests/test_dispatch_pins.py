@@ -216,6 +216,74 @@ def test_writer_classification():
         assert pins().writes(payload["tool_name"], payload["tool_input"]) is expected, payload
 
 
+def _scratch_file(name, body, root=None):
+    import json
+    root = root or tempfile.mkdtemp(prefix="pins_jf_")
+    d = os.path.join(root, ".claude", "scratch", "t")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, name)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(body if isinstance(body, str) else json.dumps(body))
+    return root, path
+
+
+def _with_root(root, fn):
+    saved = os.environ.get("CLAUDE_PROJECT_DIR")
+    os.environ["CLAUDE_PROJECT_DIR"] = root
+    try:
+        return fn()
+    finally:
+        if saved is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = saved
+
+
+JOB = {"label": "a", "promptPath": "a.md", "model": "m", "effort": "low", "agentType": "Explore"}
+
+
+def test_jobs_file_expands():
+    root, path = _scratch_file("native.args.json", {"jobs": [JOB], "spillDir": ".claude/scratch/t"})
+    ti = {"scriptPath": ".claude/workflows/dispatch.js", "args": {"jobsFile": path}}
+    assert _with_root(root, lambda: pins().jobs_file_refusal(ti)) is None
+    got = _with_root(root, lambda: pins()._args(ti))
+    assert got.get("jobs") == [JOB] and "jobsFile" not in got, got
+    rel = {"args": {"jobsFile": ".claude/scratch/t/native.args.json"}}
+    assert _with_root(root, lambda: pins()._args(rel)).get("jobs") == [JOB]
+    as_str = {"args": __import__("json").dumps({"jobsFile": path})}
+    assert _with_root(root, lambda: pins()._args(as_str)).get("jobs") == [JOB]
+    assert pins()._args({"args": {"jobs": [JOB]}}) == {"jobs": [JOB]}
+
+
+def test_jobs_file_refusals():
+    root, good = _scratch_file("g.json", {"jobs": [JOB]})
+    outside = os.path.join(tempfile.mkdtemp(prefix="pins_out_"), "o.json")
+    with open(outside, "w", encoding="utf-8") as fh:
+        fh.write('{"jobs": []}')
+    _r, bad_key = _scratch_file("k.json", {"jobs": [JOB], "__transport": {"ids": ["x"]}}, root=root)
+    _r, cur = _scratch_file("c.json", {"jobs": [JOB], "currency": "paid"}, root=root)
+    _r, curr = _scratch_file("r.json", {"jobs": [JOB], "currencyReason": "why"}, root=root)
+    _r, junk = _scratch_file("j.json", "{not json", root=root)
+    _r, arr = _scratch_file("a.json", "[1]", root=root)
+    cases = [
+        ("jobs beside jobsFile", {"jobsFile": good, "jobs": [JOB]}, "beside"),
+        ("chains beside jobsFile", {"jobsFile": good, "chains": []}, "beside"),
+        ("outside scratch", {"jobsFile": outside}, ".claude/scratch/"),
+        ("dotdot escape", {"jobsFile": ".claude/scratch/../plans/x.json"}, ".claude/scratch/"),
+        ("missing file", {"jobsFile": ".claude/scratch/t/none.json"}, "read"),
+        ("not json", {"jobsFile": junk}, "read as JSON"),
+        ("array file", {"jobsFile": arr}, "JSON object"),
+        ("__ key", {"jobsFile": bad_key}, "__transport"),
+        ("currency", {"jobsFile": cur}, "currency"),
+        ("currencyReason", {"jobsFile": curr}, "currencyReason"),
+        ("non-string path", {"jobsFile": 5}, "jobsFile"),
+    ]
+    for name, args, needle in cases:
+        reason = _with_root(root, lambda: pins().jobs_file_refusal({"args": args}))
+        assert isinstance(reason, str) and needle in reason, (name, reason)
+    assert pins().jobs_file_refusal({"args": {"jobs": [JOB]}}) is None
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):

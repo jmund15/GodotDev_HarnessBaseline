@@ -1532,11 +1532,13 @@ def accept_rest(session_dir, note=None):
     """Write `clean` for every remaining pending Workflow dispatch the rater asserts was consumed and
     accepted. Skips what cannot be accepted by assertion: unfinished or failed agents, unresolved
     effort pins, review-panel seats (their mandates need --rate), and sampled-out pairs. Sidecar
-    dispatches are rated only by --rate, so none is accepted unseen."""
-    detail = pending_detail(session_dir, with_sidecar=False)
+    dispatches are rated only by --rate or --rate-batch, so none is accepted unseen; each one still
+    pending is named, so the rater sees what this call left."""
+    detail = pending_detail(session_dir, priced=False)
     by_pair = {(c['run'], c['label']): c for c in detail['rows']}
+    sidecar_left = [f'{run}:{label}' for run, label in detail['remaining'] if (run, label) not in by_pair]
     written, skipped = {}, {}
-    for r in (by_pair[p] for p in detail['remaining']):
+    for r in (by_pair[p] for p in detail['remaining'] if p in by_pair):
         pair = f"{r['run']}:{r['label']}"
         if _manifest_status(r.get('state')) != 'completed':
             reason = 'not completed'
@@ -1563,6 +1565,11 @@ def accept_rest(session_dir, note=None):
             continue
         w(f'skipped {len(pairs)} ({reason}): ' + ', '.join(pairs[:10])
           + (f' +{len(pairs) - 10}' if len(pairs) > 10 else ''))
+    if sidecar_left:
+        w(f'left {len(sidecar_left)} sidecar dispatch(es) unrated (rate each by --rate or --rate-batch): '
+          + ', '.join(sidecar_left[:10]) + (f' +{len(sidecar_left) - 10}' if len(sidecar_left) > 10 else ''))
+    if detail['sidecar_error']:
+        w(f"sidecar census unreadable, its debt not shown: {detail['sidecar_error']}")
     if detail['sampled_out']:
         w(f"sampled out (saturated lens, no rating needed): {len(detail['sampled_out'])}")
     return 0
@@ -2162,10 +2169,60 @@ def _launcher_calls(command):
     return [(kind, args) for kind, _, args in _resolved_launcher_calls(command, _PROJECT_DIR)[1]]
 
 
-def sidecar_launches(command, cwd=None):
+NATIVE_ARGS = 'native.args.json'
+_PLACED = re.compile(r'^\[fanout\] (?P<label>[^:\n]+): admitted on \S+ \((?P<alias>[^,)\n]+), (?P<effort>[^)\n]+)\)',
+                     re.M)
+
+
+def fanout_placements(output):
+    """{label: (alias, effort)} the fan-out printed for each job it admitted (`[fanout] <label>: admitted on
+    <plan> (<alias>, <effort>)`); effort is None where it printed `?`."""
+    return {m.group('label'): (m.group('alias'), None if m.group('effort') == '?' else m.group('effort'))
+            for m in _PLACED.finditer(output if isinstance(output, str) else '')}
+
+
+def fanout_job_pin(job, placements=None):
+    """(model, effort) a normalized fan-out job runs at: its `alias` + `effort`, else its only listed row, else the
+    placement the call printed for its label, else its listed rows as candidates (`a|b`, `high|medium`). (None,
+    effort) for a job listing neither; the reader labels it."""
+    if job.get('alias'):
+        return job['alias'], job.get('effort')
+    rows = job.get('rows') or {}
+    if len(rows) == 1:
+        return next(iter(rows.items()))
+    placed = (placements or {}).get(job.get('label'))
+    if placed:
+        return placed
+    if rows:
+        return '|'.join(rows), '|'.join(dict.fromkeys(e for e in rows.values() if e)) or None
+    return None, job.get('effort')
+
+
+def native_handoff(out_dir, labels):
+    """(path, [label]) of the jobs the fan-out handed to a Workflow call: those of `labels` that
+    `<out_dir>/native.args.json` lists, as `dispatch.js` jobs or `dispatch_chains.js` chains. (None, []) when the
+    file is absent, unreadable or lists none of them."""
+    path = os.path.join(out_dir, NATIVE_ARGS)
+    try:
+        with open(path, encoding='utf-8') as fh:
+            spec = json.load(fh)
+    except (OSError, ValueError):
+        return None, []
+    if not isinstance(spec, dict):
+        return None, []
+    jobs = spec.get('jobs') or [j for c in spec.get('chains') or [] if isinstance(c, dict)
+                                for j in c.get('jobs') or []]
+    native = [j['label'] for j in jobs if isinstance(j, dict) and j.get('label') in labels]
+    return (path, native) if native else (None, [])
+
+
+def sidecar_launches(command, cwd=None, output=None):
     """[{kind, launcher, label, model, effort, record}] per sidecar job this shell command EXECUTES:
     a registered `.claude/scripts/*_sidecar.sh` launcher, or each job of a `sidecar_fanout.py` jobs
-    file. [] for a command that only mentions one, or a `<launcher> --check` probe. Omitted values are None; the reader labels them."""
+    file. A fan-out job's model and effort follow `fanout_job_pin`, with `output` (the call's printed lines) naming
+    the placement of a job that listed several rows. A job the fan-out handed to a Workflow call
+    (`native_handoff`) is not a sidecar: one `{kind: 'handoff', label, labels, jobs_file}` row stands for them.
+    [] for a command that only mentions one, or a `<launcher> --check` probe. Omitted values are None; the reader labels them."""
     cwd, calls = _resolved_launcher_calls(command, cwd or _PROJECT_DIR)
     scripts = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts')
     out = []
@@ -2201,10 +2258,18 @@ def sidecar_launches(command, cwd=None):
                             model='unresolved', effort='unresolved', record=None, jobs_path=jobs_path,
                             out_dir=out_dir, missing=not os.path.exists(jobs_path)))
             continue
+        handoff, native = native_handoff(out_dir, {j.get('label') for j in jobs})
+        if native:
+            out.append(dict(kind='handoff', launcher='native', label=', '.join(native), labels=native,
+                            model=None, effort=None, record=None, jobs_file=handoff))
+        placements = fanout_placements(output)
         for job in jobs:
             label = job.get('label')
+            if label in native:
+                continue
+            model, effort = fanout_job_pin(job, placements)
             out.append(dict(kind='fanout', launcher=str(job.get('transport') or 'sidecar_fanout'),
-                            label=label, model=job.get('alias'), effort=job.get('effort'),
+                            label=label, model=model, effort=effort,
                             record=os.path.join(out_dir, '%s.record.json' % label) if label else None))
     return out
 

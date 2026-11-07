@@ -421,6 +421,7 @@ def main():
     drain_cases(case)
     credit_cases(case)
     facts_cases(case)
+    reopen_cases(case)
     names = [pb.window_name(w) for w in ({"windowDurationMins": 43200}, {"windowDurationMins": 300},
                                          {"windowDurationMins": 90, "name": "ninety"}, {"name": "seven_day"},
                                          {"name": "five_hour"}, {"name": "odd"}, {})]
@@ -867,6 +868,48 @@ def cli_case(case):
                        encoding="utf-8", timeout=120, env=env)
     case("CLI `room` names its replacement whatever the tier",
          r.returncode == 2 and "for-role" in r.stderr and "Traceback" not in r.stderr, r.stderr[-300:])
+
+
+def reopen_cases(case):
+    """S3: a readable plan a short window drops keeps its windows and long-window room, and `reopen` reads that
+    short window's reset as a wait rather than a rejection."""
+    reopen = getattr(pb, "reopen", None)
+    case("provider_bands exposes reopen, a short window's reset as a wait", callable(reopen))
+    if not callable(reopen):
+        return
+
+    def add_short(row, used, reset_in_s, floor=98):
+        row["quota"]["windows"].append({"name": "five_hour", "usedPercent": used,
+                                        "resetsAt": NOW + reset_in_s, "windowDurationMins": 5 * 60,
+                                        "dispatchFloorPercent": floor})
+        return row
+
+    roomy = add_short(reading("secondary", 30, 0.5), 99, 600)   # 7d room 1.40, 5h at its floor
+    row = pb.plan_room("secondary", registry(["secondary"]), reader({"secondary": roomy}), NOW)
+    info = pb.reopen(row, NOW)
+    case("a plan a short window blocks keeps the long window's room, and reopens at that window's reset",
+         row.get("headroom") == -1.0 and round(row.get("longRoom") or 0, 2) == 1.40
+         and row.get("longWindow") == "seven_day"
+         and info == {"room": row["longRoom"], "at": NOW + 600, "window": "five_hour",
+                      "longWindow": "seven_day"}, repr((row, info)))
+
+    one = {"schemaVersion": 1, "transport": "one", "costModel": "plan-quota", "status": "available",
+           "quota": {"windows": [{"name": "five_hour", "usedPercent": 100, "windowDurationMins": 5 * 60,
+                                  "resetsAt": NOW + 600, "dispatchFloorPercent": 98}],
+                     "routingWindow": "five_hour"}}
+    blocked = pb.plan_room("one", registry(["one"]), reader({"one": one}), NOW)
+    case("an exhausted plan keeps its windows and long-window room for a caller that may wait",
+         blocked.get("why") == "exhausted" and blocked.get("windows") and blocked.get("longRoom") == 0.0,
+         repr(blocked))
+    case("a plan blocked by its longest window is not a wait: it has no room to reopen into",
+         pb.reopen(blocked, NOW) is None, repr(blocked))
+
+    late = add_short(reading("secondary", 30, 0.5), 99, -60)     # its reset already passed
+    case("a short window whose reset already passed is not a wait",
+         pb.reopen(pb.plan_room("secondary", registry(["secondary"]), reader({"secondary": late}), NOW), NOW) is None)
+
+    case("`reopen` names no plan for a row that holds now",
+         pb.reopen(pb.plan_room("ok", registry(["ok"]), reader({"ok": reading("ok", 10, 0.9)}), NOW), NOW) is None)
 
 
 LEAN_LADDER = """## Role guidance

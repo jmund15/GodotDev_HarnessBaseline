@@ -143,7 +143,7 @@ PROVIDER_RAILS_HEAD = """\
 - Reaching ANOTHER transport (including Anthropic itself) goes through its own sidecar launcher — `reference/sidecar_dispatch.md`, roster above. Workflow/Agent never cross transports.
 - You ARE the orchestrator this session. Gate decisions and the ideal-design verdict still warrant an Anthropic session OR an explicit user sign-off — surface them rather than settling them alone. That floor reserves those DECISIONS, not the work shape (orchestration §5b): a SCOPED judgment, review or architecting lens goes to the ladder's row for that shape, by sidecar hop when it is off-transport.
 - ROLE -> MODEL: `python3 .claude/tools/model_registry.py for-role <orchestrator|architect|executor|fanout|scout>` prints one plan-filtered table: each surviving plan's quota left and each row fit for the tier, with its ladder cells. A plan it dropped is out. It picks no model and no effort: choose among the listed rows by the job's priority, and take the effort from the ladder's effort cell for the work shape.{lacked_tiers}
-- DISPATCH ROUTING is a judgment you own: a Workflow fan-out here is NOT band-gated, so state the intended model and cost before dispatching, then check the journal's model column against it.
+- DISPATCH ROUTING: `/delegate` places each job by the ladder's selection line (orchestration §0), and a job placed on this session's plan runs as a Workflow agent. A Workflow fan-out here is NOT band-gated, so state the intended model and cost before dispatching, then check the journal's model column against it.
 - COST SHAPE — bound prompts, use args.spillDir, and prefer FEW LONG agents to many short ones: each agent pays a large cold-start toll, so width multiplies it while depth amortizes it.
 """
 
@@ -348,7 +348,7 @@ def effort_line(payload: dict, delegate: bool = False) -> str:
     it when the harness exposes it, and state the safe assumption when it doesn't.
     Printed for EVERY session model (the rails filter applies only to RAILS).
 
-    A sidecar DELEGATE gets the opposite advice: the Workflow-first dispatch rule is
+    A sidecar DELEGATE gets the opposite advice: the dispatch rule that routes a job to Workflow is
     unreachable for it (deepseek_sidecar.sh withholds Task/Agent), so telling it how
     to pin fan-outs invites it to attempt a spawn it cannot make."""
     if delegate:
@@ -370,13 +370,13 @@ def effort_line(payload: dict, delegate: bool = False) -> str:
         return (
             f"[session] Your session effort is '{effort}'. Delegates never inherit it: "
             "fan-outs and judgment stages dispatch with explicit model+effort pins on the "
-            "route you choose by the model ladder's selection line (§0 Workflow-first, §5 pins)."
+            "route you choose by the model ladder's selection line (§0 dispatch shape, §5 pins)."
         )
     return (
         "[session] Your session effort is not visible to you — assume nothing about it. "
         "Fan-outs and judgment stages dispatch with explicit model+effort pins on the route "
         "you choose by the model ladder's selection line; never let a dispatch inherit session effort "
-        "(§0 Workflow-first, §5 pins)."
+        "(§0 dispatch shape, §5 pins)."
     )
 
 

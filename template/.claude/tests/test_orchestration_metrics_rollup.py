@@ -54,6 +54,8 @@ def planted_registry(path):
     row["price"] = dict(cacheMissPer1M=4, outputPer1M=20, cacheHitPer1M=0.2, cacheWrite5mPer1M=5,
                         cacheWrite1hPer1M=8, currency="USD", asOf="2026-09-24", source="planted")
     data.update(models=[row], aliasHistory={})
+    # The live go route's image evidence names a row this fixture replaces; drop it back to unverified.
+    data["transports"]["go"]["imageRoute"] = {"state": "unverified"}
     write_json(path, data)
 
 

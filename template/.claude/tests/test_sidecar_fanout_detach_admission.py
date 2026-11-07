@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+from unittest import mock
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -119,20 +120,102 @@ def inventory(out, jobs):
         json.dump({"schemaVersion": 1, "jobs": [{"label": l, "recordPath": os.path.abspath(r)} for l, r in jobs]}, fh)
 
 
-def watch(out, labels, fallbacks=None, alive=True, wait=1.5, **kw):
+def watch(out, labels, fallbacks=None, alive=True, wait=1.5, max_parallel=None, script=None, **kw):
     """(printed text, outcome dict, seconds) for sf.await_admission over `labels` planted in `out`."""
-    planned = [(l, job_argv(out, l, REFUSER), os.path.join(out, l + ".out.json")) for l in labels]
+    planned = [(l, job_argv(out, l, script or REFUSER), os.path.join(out, l + ".out.json")) for l in labels]
     real = sf._pid_alive
     sf._pid_alive = lambda pid: alive
     buf = io.StringIO()
     t0 = time.time()
     try:
         with contextlib.redirect_stdout(buf):
-            outcome = sf.await_admission(Driver(), out, planned, fallbacks or {}, 4, time.time() - 5,
+            outcome = sf.await_admission(Driver(), out, planned, fallbacks or {}, max_parallel, time.time() - 5,
                                          wait=wait, poll=0.05, settle=0.3, **kw)
     finally:
         sf._pid_alive = real
     return buf.getvalue(), outcome, time.time() - t0
+
+
+CAPPED = launcher("capped_t", "admit")
+FREE = launcher("free_t", "admit")
+
+
+def registry(cap=None):
+    capped = {"launcher": os.path.basename(CAPPED)}
+    if cap:
+        capped["maxChildren"] = {"count": cap, "basis": "test"}
+    return {"transports": {"capped-t": capped, "free-t": {"launcher": os.path.basename(FREE)}}}
+
+
+def run_pool(script, count, max_parallel, cap=None, hold=0.25):
+    """(peak jobs at once, results) for `count` flat jobs on `script`, each held `hold` seconds."""
+    out = fresh()
+    planned = [("j%d" % n, [a for a in job_argv(out, "j%d" % n, script) if a != "-X"], os.path.join(out, "j%d.out.json" % n))
+               for n in range(count)]
+    live, peak, guard = [0], [0], threading.Lock()
+
+    def call(argv, **kwargs):
+        with guard:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        time.sleep(hold)
+        with guard:
+            live[0] -= 1
+        return 0
+
+    with mock.patch.object(sf.model_registry, "load", return_value=registry(cap)), \
+            mock.patch.object(sf.subprocess, "call", side_effect=call), \
+            mock.patch.object(sf, "supervised_launch", side_effect=lambda label, child, env, argv=None: child()), \
+            contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+        results = sf.run_jobs(planned, max_parallel, out)
+    return peak[0], results
+
+
+def seven_jobs_on_an_uncapped_transport_start_at_once():
+    peak, results = run_pool(FREE, 7, None)
+    return peak == 7 and len(results) == 7
+
+
+def jobs_beyond_a_transport_cap_wait_for_a_running_one():
+    peak, results = run_pool(CAPPED, 7, None, cap=4)
+    return peak == 4 and len(results) == 7 and all(r.get("exit") == 0 for r in results.values())
+
+
+def an_explicit_max_parallel_bounds_the_total():
+    peak, results = run_pool(FREE, 5, 2)
+    return peak == 2 and len(results) == 5
+
+
+def the_real_registry_caps_only_codex():
+    real = sf.model_registry.load()
+    caps = {name: (cfg.get("maxChildren") or {}).get("count") for name, cfg in real["transports"].items()}
+    return caps.pop("codex") == 4 and not any(caps.values())
+
+
+def the_registry_rejects_a_cap_without_a_count_or_basis():
+    bad = []
+    for cap in ({"count": 0, "basis": "x"}, {"count": True, "basis": "x"}, {"count": 4}, {"count": 4, "basis": " "}, 4):
+        data = json.loads(json.dumps(sf.model_registry.load()))
+        data["transports"]["codex"]["maxChildren"] = cap
+        path = os.path.join(fresh(), "reg.json")
+        open(path, "w", encoding="utf-8").write(json.dumps(data))
+        try:
+            sf.model_registry._validate(data, path)
+            bad.append(cap)
+        except sf.model_registry.RegistryError:
+            pass
+    return not bad
+
+
+def a_queued_job_names_the_transport_cap_that_held_it():
+    out = fresh()
+    labels = ["a", "b", "c"]
+    for label in labels[:2]:
+        plant(out, label, stream=True)
+    inventory(out, [(l, os.path.join(out, l + ".record.json")) for l in labels])
+    with mock.patch.object(sf.model_registry, "load", return_value=registry(2)):
+        text, outcome, _ = watch(out, labels, wait=5, script=CAPPED)
+    return outcome["c"] == "queued" and "[fanout] c: queued" in text and "capped-t cap of 2" in text and "--max-parallel" not in text
 
 
 CASES = []
@@ -212,8 +295,8 @@ def queued_job_says_why():
     out = fresh()
     plant(out, "a", stream=True)
     inventory(out, [("a", os.path.join(out, "a.record.json")), ("b", os.path.join(out, "b.record.json"))])
-    text, outcome, took = watch(out, ["a", "b"], wait=5)
-    return outcome == {"a": "admitted", "b": "queued"} and "[fanout] b: queued" in text and "--max-parallel 4" in text and took < 4
+    text, outcome, took = watch(out, ["a", "b"], wait=5, max_parallel=1)
+    return outcome == {"a": "admitted", "b": "queued"} and "[fanout] b: queued" in text and "--max-parallel 1" in text and took < 4
 
 
 def dead_driver_is_reported():
@@ -240,6 +323,12 @@ case("a stream older than the launch is not an admission", stale_stream_before_l
 case("(b) a refused job the driver moved prints `moved to <plan>` and then its admission on the new plan", moved_job_is_reported_refused_then_admitted)
 case("a job the driver has not started is reported queued with why, without waiting out the bound", queued_job_says_why)
 case("a driver that exited before deciding is reported with its exit code", dead_driver_is_reported)
+case("seven jobs on a transport with no cap and plan room all start at once", seven_jobs_on_an_uncapped_transport_start_at_once)
+case("jobs on a capped transport beyond its cap wait for a running one", jobs_beyond_a_transport_cap_wait_for_a_running_one)
+case("an explicit --max-parallel 2 still bounds the total", an_explicit_max_parallel_bounds_the_total)
+case("the real registry caps codex at 4 and no other transport", the_real_registry_caps_only_codex)
+case("the registry rejects a cap that is not a positive integer with a basis", the_registry_rejects_a_cap_without_a_count_or_basis)
+case("a queued job's line names the transport cap that held it", a_queued_job_names_the_transport_cap_that_held_it)
 
 failed = []
 for name, fn in CASES:

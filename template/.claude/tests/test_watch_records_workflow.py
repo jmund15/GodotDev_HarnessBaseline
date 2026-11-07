@@ -85,21 +85,17 @@ class WorkflowOnDisk(unittest.TestCase):
         self.s.start_run()
         self.assertEqual(outcome(proc, 5)[0], "ALIVE")
 
-    def test_nothing_running_still_exits_none(self):
-        text, _ = outcome(self.s.watch(), 6)
-        self.assertEqual(text, "NONE")
+    def test_nothing_running_keeps_session_watcher_armed(self):
+        self.assertEqual(outcome(self.s.watch(), 1)[0], "ALIVE")
 
-    def test_ended_run_is_not_live(self):
+    def test_ended_run_does_not_open_a_bookkeeping_turn(self):
         self.s.start_run()
         self.s.end_run()
-        text, _ = outcome(self.s.watch(), 6)
-        self.assertTrue(text.endswith("NONE"), text)
-        self.assertNotIn("ALIVE", text)
+        self.assertEqual(outcome(self.s.watch(), 1)[0], "ALIVE")
 
-    def test_run_dir_idle_past_the_stall_window_twice_over_is_a_dead_run(self):
+    def test_run_dir_idle_past_the_stall_window_twice_over_is_not_a_wake(self):
         self.s.start_run(age=2 * 600 + 60)
-        text, _ = outcome(self.s.watch(), 6)
-        self.assertEqual(text, "NONE")
+        self.assertEqual(outcome(self.s.watch(), 1)[0], "ALIVE")
 
 
 if __name__ == "__main__":

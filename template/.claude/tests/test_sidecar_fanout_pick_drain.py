@@ -64,11 +64,13 @@ with open(PROMPT, "w", encoding="utf-8") as fh:
     fh.write("Draft the plan.\n")
 
 
-def reading(plan, used, hours_left=3.0, seven=None):
+def reading(plan, used, hours_left=3.0, seven=None, floor=None):
     """An available reading whose routing window is a 5h window `used`% spent; `seven` adds a 7-day window that
-    much spent."""
+    much spent; `floor` sets the 5h window's dispatch floor."""
     window = {"name": "five_hour", "usedPercent": used, "resetsAt": NOW + hours_left * 3600,
               "windowDurationMins": 300, "pressure": 1.0, "band": "Hot"}
+    if floor is not None:
+        window["dispatchFloorPercent"] = floor
     windows = [window]
     if seven is not None:
         windows.append({"name": "seven_day", "usedPercent": seven, "resetsAt": NOW + 6 * 86400,
@@ -80,8 +82,11 @@ def reading(plan, used, hours_left=3.0, seven=None):
 
 
 def read_as(plan, value):
-    """The reading of a planted `value`: a number is the 5h window's used%, a (five, seven) tuple adds the 7-day window."""
-    return reading(plan, value[0], seven=value[1]) if isinstance(value, tuple) else reading(plan, value)
+    """The reading of a planted `value`: a number is the 5h window's used%; a tuple is (five, seven) or
+    (five, seven, floor), adding the 7-day window and the 5h dispatch floor."""
+    if isinstance(value, tuple):
+        return reading(plan, value[0], seven=value[1], floor=value[2] if len(value) > 2 else None)
+    return reading(plan, value)
 
 
 def reader(readings):
@@ -327,6 +332,35 @@ def zero_headroom_on_every_plan_still_refuses():
     return picked.startswith("REFUSED") and pinned.startswith("REFUSED") and bool(admitted) and bool(named)
 
 
+def _drained_long_window():
+    """The captured 2026-11-05 placement: PA holds now on a 7-day window 92% spent (room 0.09), while PB is
+    blocked only by its 5-hour window at a 98% dispatch floor and keeps 70% of its 7-day allowance (room 1.05)."""
+    return {PA: reading(PA, 20, seven=92), PB: reading(PB, 99, seven=10, floor=98)}
+
+
+def a_roomy_plan_blocked_by_a_short_window_is_waited_for_over_a_drained_long_window():
+    """The owner saw ten jobs placed on `anthropic` (7-day nearly out) rather than later on `anthropic-secondary`
+    (5-hour at its floor, resetting in minutes, 7-day roomy). Waiting costs minutes; the quota costs days."""
+    plant(PA, PB)
+    got, err = run_pick([PA, PB], _drained_long_window())
+    return got == PB and "reopens" in err and PA in err and "waits for the reset" in err
+
+
+def the_placement_line_names_an_unreadable_plan_once_and_drops_it():
+    """Both console plans are unreadable on this machine; the old line repeated both on every placement. Name
+    each once, then leave it out of the viable options."""
+    plant(PA)
+    bad = {"schemaVersion": 1, "transport": PC, "status": "malformed",
+           "error": {"message": "no credit block"}}
+    readings = {PA: reading(PA, 20), PC: bad}
+    getattr(sf, "_REPORTED_UNREADABLE", set()).clear()
+    first, err1 = run_pick([PA, PC], readings)
+    second, err2 = run_pick([PA, PC], readings)
+    lines = [line for line in err1.splitlines() if line.startswith("[fanout] j: plan")]
+    return (first == PA and second == PA and len(lines) == 1 and PC not in lines[0]
+            and err1.count("unreadable") == 1 and "unreadable" not in err2)
+
+
 def hook_admits_forecasts_but_refuses_spent_allowance():
     import sidecar_dispatch_context as hook
     from types import SimpleNamespace
@@ -416,6 +450,30 @@ def a_spent_plan_moves_a_job_to_a_route_sibling_with_room_at_its_decision():
     waves.pace()
     got = waves.decide("x").kind, waves.plan_of("x")
     return got == ("launch", PB) and waves.plan_of("y") == PA and any(PB in line for line in said)
+
+
+def a_short_window_blocked_plan_waits_at_its_decision_instead_of_moving_to_the_drained_plan():
+    """A job placed on the roomy plan must wait for its 5-hour reset, not be moved off it to the plan whose long
+    window is nearly out."""
+    both = (PA, PB)
+    slots = {"x": slot(PB, candidates=both), "y": slot(PB, candidates=both)}
+    waves, said = waves_over(slots, {PB: (99, 10, 98), PA: (20, 92)}, both)
+    waves.pace()
+    verdict = waves.decide("x")
+    return (verdict.kind == "wait" and verdict.until is not None
+            and abs(verdict.until - (NOW + 3 * 3600)) < 5
+            and waves.plan_of("x") == PB and any("wait %s" % PB in line for line in said))
+
+
+def a_short_window_blocked_plan_moves_its_job_when_the_sibling_long_window_is_at_even_pace():
+    """The wait buys long-window quota only when the sibling is spending its own faster than time; a sibling
+    whose long window is at or above even pace takes the job now instead of holding it for the reset."""
+    both = (PA, PB)
+    slots = {"x": slot(PB, candidates=both), "y": slot(PB, candidates=both)}
+    waves, said = waves_over(slots, {PB: (99, 10, 98), PA: (20, 10)}, both)
+    waves.pace()
+    verdict = waves.decide("x")
+    return verdict.kind == "launch" and waves.plan_of("x") == PA and not any("wait %s" % PB in line for line in said)
 
 
 def a_named_plan_job_never_moves_and_stops_when_its_plan_is_spent():
@@ -923,11 +981,15 @@ for fn in (incident_goes_to_the_plan_that_holds_it, incident_alone_is_admitted_w
            plan_job_counts_placements_without_refusing_a_forecast, live_launchers_charge_their_own_estimate,
            pick_and_admission_agree_on_the_same_readings, zero_headroom_on_every_plan_still_refuses,
            hook_admits_forecasts_but_refuses_spent_allowance,
+           a_roomy_plan_blocked_by_a_short_window_is_waited_for_over_a_drained_long_window,
+           the_placement_line_names_an_unreadable_plan_once_and_drops_it,
            plan_job_records_each_jobs_plan_signature_and_route_candidates,
            each_plan_gets_its_own_first_wave_from_its_own_rate,
            a_plan_with_nothing_in_flight_launches_even_when_its_headroom_is_under_one_forecast,
            a_bigger_forecast_job_is_priced_bigger_under_the_same_observed_rate,
            a_spent_plan_moves_a_job_to_a_route_sibling_with_room_at_its_decision,
+           a_short_window_blocked_plan_waits_at_its_decision_instead_of_moving_to_the_drained_plan,
+           a_short_window_blocked_plan_moves_its_job_when_the_sibling_long_window_is_at_even_pace,
            a_named_plan_job_never_moves_and_stops_when_its_plan_is_spent,
            a_route_with_every_plan_spent_stops_the_job_naming_the_reset,
            a_sibling_that_reads_blind_takes_a_moved_job_and_the_launcher_decides,

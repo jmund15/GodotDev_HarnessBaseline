@@ -185,11 +185,15 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
                       "launched_at": time.time(), "jobs": []}
     state_file.write_text(json.dumps({"dispatch_table_pending": [workflow_entry]}))
     output = run_hook("killed")
-    check(WATCH_COMMAND in output and GROUP in output and str(run_dir) in output,
-          "workflow-only session gets the re-arm reminder for its running run", output)
+    check(output == "", "a running Workflow run alone never lists a run or asks for an arm: it reports its own end", output)
+    state_file.write_text(json.dumps({"dispatch_table_pending": [workflow_entry, entry]}))
+    output = run_hook("killed")
+    group = output.split(GROUP, 1)[-1]
+    check(str(record) in group and str(run_dir) not in output,
+          "with a sidecar beside it, only the sidecar is listed as uncovered", output)
     watched = {"process": process(os.getpid()), "records": [], "session": True}
     state_file.write_text(json.dumps({"dispatch_table_pending": [workflow_entry], "sidecar_watchers": [watched]}))
-    check("watch_records.py" not in run_hook("killed"), "a live session watcher covers the running workflow")
+    check("watch_records.py" not in run_hook("killed"), "a live session watcher keeps a Workflow-only session silent")
     state_file.write_text(json.dumps({"dispatch_table_pending": [workflow_entry]}))
     (session_dir / "workflows").mkdir()
     (session_dir / "workflows" / (run_id + ".json")).write_text(json.dumps({"status": "completed"}))

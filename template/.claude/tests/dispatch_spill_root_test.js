@@ -71,6 +71,14 @@ const argsFor = (script, spillDir, jobs) => script === 'dispatch.js'
       JSON.stringify(none.result))
   }
 
+  // A call carrying only `jobsFile` reaches the engine unexpanded when the PreToolUse chain did not run: say so.
+  for (const script of ['dispatch.js', 'dispatch_chains.js']) {
+    const r = await run(script, { jobsFile: '.claude/scratch/x/native.args.json' })
+    check(script + ' names the unexpanded jobsFile when it gets no jobs',
+      !r.result.crash && typeof r.result.error === 'string' && r.result.error.includes('jobsFile')
+        && r.result.error.includes('pre_workflow_dispatch') && r.calls.length === 0, JSON.stringify(r.result))
+  }
+
   // One shared source for the single-flight guard text.
   const src = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'guards', 'single_flight.json'), 'utf8'))
   const render = (shell) => [src.header, src.rule + (shell ? src.withShell : src.noShell) + src.stop].join('\n')
