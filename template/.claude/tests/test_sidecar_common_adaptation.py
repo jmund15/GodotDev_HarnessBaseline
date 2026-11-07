@@ -62,6 +62,14 @@ class SettingsProof(unittest.TestCase):
             self.assertEqual(merge({}), with_prompt)
             self.assertEqual(merge({"sidecar_hook_rows": rows}, shape="review", armed=""), with_prompt)
             self.assertEqual(merge({"sidecar_hook_rows": rows}, prompt="", armed=""), base)
+            # An author child in a checkout whose branch predates the amend hook still gets it, from the launcher's root.
+            author = merge({}, shape="author", armed="")
+            amend = [(event, row.get("matcher"), hook["command"]) for event in ("PreToolUse", "Stop")
+                     for row in author["hooks"].get(event, []) for hook in row["hooks"]
+                     if "amend_delivery.py" in hook["command"]]
+            self.assertEqual([(e, m) for e, m, _ in amend], [("PreToolUse", "*"), ("Stop", None)])
+            self.assertTrue(all(root.as_posix() in c.replace("\\", "/") for _, _, c in amend), amend)
+            self.assertEqual(merge({}, shape="author", prompt="", armed=""), base)
             # A launcher env with MSYS_NO_PATHCONV=1 hands Python the root unconverted; the rows must still load.
             self.assertEqual([g["matcher"] for g in merge({"sidecar_hook_rows": rows}, MSYS_NO_PATHCONV="1")
                               ["hooks"]["PreToolUse"]], ["Read", "Workflow", "*", "Read"])
@@ -89,6 +97,27 @@ class RecordTierProof(unittest.TestCase):
         self.assertEqual(profile_tier("reviewer", ""), "executor")
         self.assertEqual(profile_tier("reviewer", "architect"), "architect")
         self.assertEqual(profile_tier("scout", "validation"), "fanout")
+
+
+class AmendLineProof(unittest.TestCase):
+    def test_author_prompt_carries_the_amendment_key_the_hook_parses(self):
+        """hooks/amend_delivery.py delivers the file this line names; the line orders no poll."""
+        bash = git_bash()
+        self.assertIsNotNone(bash)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        brief = Path(tmp, "brief.md")
+        brief.write_text("task", encoding="utf-8")
+        script = 'source "$1"; SC_PROMPT_FILE="$2"; SC_SHAPE=author; sc_read_prompt; printf "%s" "$SC_PROMPT"'
+        proc = subprocess.run([bash, "-c", script, "_", (CLAUDE / "scripts/lib/sidecar_common.sh").as_posix(),
+                               brief.as_posix()], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        sys.path.insert(0, str(CLAUDE / "hooks"))
+        import amend_delivery
+        named = amend_delivery.amend_path_in(proc.stdout)
+        self.assertIsNotNone(named, proc.stdout[-300:])
+        self.assertEqual(os.path.normcase(os.path.abspath(named)), os.path.normcase(os.path.abspath(str(brief) + ".amend.md")))
+        self.assertNotIn("before returning, Read", proc.stdout)
 
 
 class CheckFactsTierProof(unittest.TestCase):

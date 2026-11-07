@@ -67,6 +67,7 @@ _WALK_LIMIT = 12
 _OWN_ROOT_KEY = "shell_census_own_root"
 
 _PS = (
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
     "$now=Get-Date; Get-CimInstance Win32_Process | ForEach-Object { "
     "$isCand = $_.Name -match '^(bash|python)'; "
     "$age = if ($isCand) { [int]($now - $_.CreationDate).TotalMinutes } else { $null }; "
@@ -83,7 +84,7 @@ def list_processes():
     process still carries pid/ppid/name so `session_root_pid` can walk through it."""
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command", _PS], capture_output=True,
-                             text=True, timeout=20).stdout.strip()
+                             encoding="utf-8", errors="replace", timeout=20).stdout.strip()
         if not out:
             return []
         data = json.loads(out)

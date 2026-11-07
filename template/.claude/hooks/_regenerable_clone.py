@@ -20,7 +20,9 @@ import os
 import re
 import shlex
 import subprocess
+import sys
 from datetime import datetime
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from _git_commit import (resolve_cd, segments, git_invocation, cd_target,
@@ -489,10 +491,55 @@ _REGENERABLE_IGNORED_SEGMENTS = frozenset({".godot", "__pycache__", ".pytest_cac
 _REGENERABLE_IGNORED_PAIRS = frozenset({(".claude", "cache"), (".claude", "logs")})
 
 
-def _regenerable_ignored(entry: str) -> bool:
+def _project_patterns(project_root: Path) -> tuple[str, ...]:
+    """The project's `adaptation.json` `regenerable_ignored` patterns for `project_root`. A non-list, an
+    unreadable file and an entry that is empty, absolute, climbs with `..` or opens with a wildcard
+    contribute nothing, so a broken list only narrows what may go."""
+    tools = str(Path(__file__).resolve().parent.parent / "tools")
+    sys.path.insert(0, tools)
+    try:
+        import adaptation
+        listed = adaptation.load(project_root / ".claude").get("regenerable_ignored")
+    except Exception:
+        return ()
+    finally:
+        sys.path.remove(tools)
+    return tuple(p for p in (listed if isinstance(listed, list) else [])
+                 if isinstance(p, str) and p and not p.startswith(("/", "*", "\\")) and ".." not in p.split("/")
+                 and ":" not in p)
+
+
+def _listed(entry: str, patterns: tuple[str, ...]) -> bool:
+    parts = entry.split("/")
+    return any(fnmatchcase("/".join(parts[:n]), pattern) for n in range(1, len(parts) + 1) for pattern in patterns)
+
+
+def _only_listed_files(path: Path, entry: str, patterns: tuple[str, ...]) -> bool:
+    """True when every file under the ignored directory `path` (`entry` from the worktree root) is listed. A link
+    inside it is a loss: it is not followed."""
+    if not patterns or path.is_symlink() or not path.is_dir():
+        return False
+    try:
+        with os.scandir(path) as children:
+            for child in children:
+                name = entry + "/" + child.name
+                if _listed(name, patterns):
+                    continue
+                if child.is_symlink() or not child.is_dir(follow_symlinks=False) \
+                        or not _only_listed_files(Path(child.path), name, patterns):
+                    return False
+    except OSError:
+        return False
+    return True
+
+
+def _regenerable_ignored(entry: str, patterns: tuple[str, ...] = (), root: Path | None = None) -> bool:
+    """A shared cache, a path the project lists, or (given `root`) an ignored directory whose every file is listed."""
     parts = entry.split("/")
     return (bool(_REGENERABLE_IGNORED_SEGMENTS & set(parts))
-            or any(pair in _REGENERABLE_IGNORED_PAIRS for pair in zip(parts, parts[1:])))
+            or any(pair in _REGENERABLE_IGNORED_PAIRS for pair in zip(parts, parts[1:]))
+            or _listed(entry, patterns)
+            or (root is not None and _only_listed_files(root / entry, entry, patterns)))
 
 
 def _holds_no_file(path: Path) -> bool:
@@ -520,24 +567,25 @@ def _format_losses(losses: list[str]) -> str:
     return "; ".join(losses[:_LOSS_LIST_CAP]) + (" (and %d more)" % more if more > 0 else "")
 
 
-def _losses(status: str, root: Path, allow_ignored: bool = False) -> list[str]:
+def _losses(status: str, root: Path, allow_ignored: bool = False, patterns: tuple[str, ...] = ()) -> list[str]:
     """Every `git status --porcelain --ignored=matching` line whose deletion loses work.
-    Untracked Godot `.import` files, ignored regenerable caches and ignored directories holding no file
-    lose nothing; `allow_ignored` (this session created the worktree) lets every ignored entry go."""
+    Untracked Godot `.import` files, ignored regenerable caches, the project's `regenerable_ignored` paths and
+    ignored directories holding no file lose nothing; `allow_ignored` (this session created the worktree) lets every ignored entry go."""
     out = []
     for line in status.splitlines():
         entry = line[3:].rstrip("/")
         if line.startswith("?? ") and entry.endswith(_GENERATED_UNTRACKED_SUFFIXES):
             continue
-        if line.startswith("!! ") and (allow_ignored or _regenerable_ignored(entry) or _holds_no_file(root / entry)):
+        if line.startswith("!! ") and (allow_ignored or _regenerable_ignored(entry, patterns, root)
+                                       or _holds_no_file(root / entry)):
             continue
         out.append(line)
     return out
 
 
-def _first_loss(status: str, root: Path, allow_ignored: bool = False) -> str | None:
+def _first_loss(status: str, root: Path, allow_ignored: bool = False, patterns: tuple[str, ...] = ()) -> str | None:
     """The first line `_losses` reports, or None."""
-    return next(iter(_losses(status, root, allow_ignored)), None)
+    return next(iter(_losses(status, root, allow_ignored, patterns)), None)
 
 
 def _unstored_losses(status: str, root: Path) -> list[str]:
@@ -693,7 +741,7 @@ def _unheld_file(*args, **kwargs) -> str | None:
 
 
 def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path,
-                  ignored_ok: bool = True) -> list[str]:
+                  ignored_ok: bool = True, patterns: tuple[str, ...] = ()) -> list[str]:
     """Every non-ignored file under `work_tree` whose content `git_dir`'s object store lacks (an empty
     list when none). `absent_index` names no file, so git reads an empty index and writes nothing. A nested
     checkout (a submodule) is judged against `root`'s `.git/modules/<path>` store. Unless `ignored_ok`
@@ -722,7 +770,7 @@ def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path
         if not store.is_dir():
             found.append(sub + "/ (a populated submodule with no store at .git/modules/" + sub + ")")
             continue
-        found.extend(sub + "/" + loss for loss in _unheld_files(store, work_tree / sub, root, absent_index, ignored_ok))
+        found.extend(sub + "/" + loss for loss in _unheld_files(store, work_tree / sub, root, absent_index, ignored_ok, patterns))
     if not ignored_ok:
         ignored = run(["ls-files", "--others", "--ignored", "--exclude-standard", "-z"])
         if ignored is None:
@@ -730,7 +778,7 @@ def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path
         for entry in filter(None, ignored.split("\0")):
             if any(entry == sub or entry.startswith(sub + "/") for sub in subs):
                 continue
-            if not (entry.endswith(_GENERATED_UNTRACKED_SUFFIXES) or _regenerable_ignored(entry)):
+            if not (entry.endswith(_GENERATED_UNTRACKED_SUFFIXES) or _regenerable_ignored(entry, patterns)):
                 found.append(entry + " (ignored, and not a regenerable cache)")
     listed = run(["ls-files", "--others", "--exclude-standard", "-z"])
     if listed is None:
@@ -748,9 +796,31 @@ def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path
     return found + missing
 
 
+_NOT_A_WORKTREE = ('target is not a linked worktree directly under .claude/worktrees, nor an orphaned worktree '
+                   'of this repository')
+
+
+def _common_git_dir(root: Path) -> Path | None:
+    """The repository's shared git directory: `root/.git`, unless `root` is itself a linked worktree."""
+    found = (_git(["rev-parse", "--path-format=absolute", "--git-common-dir"], root) or "").strip()
+    return Path(found) if found else None
+
+
+def _orphan_of_repo(target: Path, root: Path) -> bool:
+    """True when `target`'s `.git` file names `<this repository's git dir>/worktrees/<name>` and git pruned
+    that admin directory: an orphaned worktree of this repository, wherever it sits. A directory that holds
+    the project is never one."""
+    admin = _orphan_admin(target)
+    common = _common_git_dir(root)
+    if admin is None or common is None or any(_same_path(parent, target) for parent in (root, *root.parents)):
+        return False
+    return _same_path(admin.parent.resolve(), (common / "worktrees").resolve())
+
+
 def _worktree_target(token: str, cwd: str, project_root: str, reject) -> tuple[Path, Path] | None:
     """`(target, project root)` when `token` is a literal path to a directory directly under
-    `<project>/.claude/worktrees/`, else None after `reject(reason)`."""
+    `<project>/.claude/worktrees/`, or to an orphaned worktree of the project's repository
+    (`_orphan_of_repo`), else None after `reject(reason)`."""
     def refuse(reason):
         reject(reason)
         return None
@@ -763,11 +833,11 @@ def _worktree_target(token: str, cwd: str, project_root: str, reject) -> tuple[P
     try:
         target = Path(resolve_cd(cwd, token)).resolve(strict=True)
         root = Path(project_root).resolve(strict=True)
-        home = (root / ".claude" / "worktrees").resolve(strict=True)
+        home = (root / ".claude" / "worktrees").resolve()
     except OSError:
         return refuse('target or worktree home cannot be resolved')
-    if not _same_path(target.parent, home):
-        return refuse('target is not a linked worktree directly under .claude/worktrees')
+    if not _same_path(target.parent, home) and not _orphan_of_repo(target, root):
+        return refuse(_NOT_A_WORKTREE)
     return target, root
 
 
@@ -783,8 +853,9 @@ def _orphan_verdict(target: Path, root: Path, allow_ignored: bool, reject) -> bo
         if admin is None:
             return None
     else:
-        return reject('target is not a linked worktree directly under .claude/worktrees')
-    loss = _unheld_file(root / ".git", target, root, admin / "index", allow_ignored)
+        return reject(_NOT_A_WORKTREE)
+    loss = _unheld_file(_common_git_dir(root) or root / ".git", target, root, admin / "index", allow_ignored,
+                        _project_patterns(root))
     if loss is None:
         return True
     return reject('orphaned worktree holds content git does not have: ' + loss
@@ -793,12 +864,14 @@ def _orphan_verdict(target: Path, root: Path, allow_ignored: bool, reject) -> bo
 
 def lossless_orphan_worktree(token: str, cwd: str, project_root: str, reasons: list[str] | None = None) -> bool:
     """True only for an orphaned worktree directory (git pruned its admin directory, or no `.git` link
-    remains) directly under `<project>/.claude/worktrees/` that holds nothing git lacks: every
+    remains) directly under `<project>/.claude/worktrees/`, or a directory anywhere whose `.git` file names
+    a pruned admin directory of this repository (`_orphan_of_repo`), that holds nothing git lacks: every
     non-ignored file, submodules included, is a blob in the object store, and every ignored file is a
     regenerable cache. An orphan needs no creation proof. A worktree with a live `.git` link never qualifies. `reasons` receives the loss for an orphan and
     the 'not a linked worktree' reason for a target that is neither an orphan nor a live worktree;
     for a live worktree, or a target `_worktree_target` rejects (not a literal path, path traversal,
-    unresolvable, or not directly under `.claude/worktrees/`), it receives nothing."""
+    unresolvable, or neither under `.claude/worktrees/` nor an orphan of this repository), it receives
+    nothing."""
     def reject(reason):
         if reasons is not None:
             reasons.append(reason)
@@ -862,7 +935,8 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
     if status is None:
         return reject('cannot read worktree status')
     failed: list[str] = []
-    loss = _unstored_losses(status, target) if allow_ignored else _losses(status, target)
+    patterns = _project_patterns(root)
+    loss = _unstored_losses(status, target) if allow_ignored else _losses(status, target, patterns=patterns)
     if loss:
         failed.append('worktree has local files or changes: ' + _format_losses(loss))
     _pushed(target, failed)
@@ -901,7 +975,7 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
             failed.append('submodule ' + name + ': cannot read status')
             continue
         _pushed(sub, failed, 'submodule ' + name + ': ', also=root / name)
-        loss = _unstored_losses(sub_status, sub) if allow_ignored else _losses(sub_status, sub)
+        loss = _unstored_losses(sub_status, sub) if allow_ignored else _losses(sub_status, sub, patterns=patterns)
         if loss:
             failed.append('submodule ' + name + ' has local files or changes: ' + _format_losses(loss))
     if reasons is not None:

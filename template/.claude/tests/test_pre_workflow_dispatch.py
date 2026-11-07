@@ -222,6 +222,55 @@ def real_payload_cases():
     check("the proof classifies a crashing hook process as CRASH, never allow", classify(crash) == "CRASH")
 
 
+
+def jobs_file_cases():
+    import shutil
+    world = World("available", True, "pwdjf001")
+    scratch = REPO / ".claude" / "scratch" / ("pwd_jobsfile_%d" % os.getpid())
+    scratch.mkdir(parents=True)
+    brief = scratch / "a.md"
+    brief.write_text("Read one file.\n", encoding="utf-8")
+
+    def put(name, body):
+        path = scratch / name
+        path.write_text(json.dumps(body), encoding="utf-8")
+        return str(path)
+
+    def call(args):
+        return world.run(world.payload(tool_input={"scriptPath": ".claude/workflows/dispatch.js", "args": args}))
+
+    try:
+        job = {"label": "a", "promptPath": str(brief), "model": "no-such-model-xyz", "effort": "low",
+               "agentType": "Explore"}
+        proc = call({"jobsFile": put("bad_pin.json", {"jobs": [job]})})
+        check("a pin outside the vocabulary inside the jobs file is denied by RULE 1",
+              classify(proc) == "deny" and "no-such-model-xyz" in reason_of(proc), (proc.stdout[:400], proc.stderr[-300:]))
+
+        proc = call({"jobsFile": put("ok.json", {"jobs": [dict(job, model="haiku", effort="medium")], "spillDir": ".claude/scratch/x"})})
+        out = hso(proc.stdout)
+        sent = (out.get("updatedInput") or {}).get("args") or {}
+        check("a clean jobs file reaches the engine expanded, with the guard's injections beside it",
+              classify(proc) != "CRASH" and "jobsFile" not in sent and isinstance(sent.get("jobs"), list)
+              and "__transport" in sent, (proc.stdout[:500], proc.stderr[-300:]))
+
+        proc = call({"jobsFile": put("cur.json", {"jobs": [job], "currency": "paid"})})
+        check("a jobs file carrying `currency` is denied with the owner-lift reason",
+              classify(proc) == "deny" and "currency" in reason_of(proc), proc.stdout[:400])
+
+        proc = call({"jobsFile": put("both.json", {"jobs": [job]}), "jobs": [job]})
+        check("jobs beside jobsFile is denied", classify(proc) == "deny" and "beside" in reason_of(proc), proc.stdout[:400])
+
+        proc = call({"jobsFile": str(world.root / "outside.json")})
+        check("a jobs file outside .claude/scratch/ is denied",
+              classify(proc) == "deny" and ".claude/scratch/" in reason_of(proc), proc.stdout[:400])
+
+        proc = world.run(world.payload(tool_name="Agent", tool_input={"description": "x", "args": {"jobsFile": "/etc/x"}}))
+        check("an Agent call is never expanded or refused for jobsFile", ".claude/scratch/" not in reason_of(proc),
+              proc.stdout[:300])
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 # ---- in-process cases over stub members ------------------------------------------------------------------
 def member(name, out=None, code=0, err="", raises=None, seen=None):
     """A member module: prints `out` (a hookSpecificOutput dict) and returns `code`, or raises."""
@@ -427,6 +476,7 @@ def args_file_cases():
 def main():
     check("hooks/pre_workflow_dispatch.py exists", DISPATCH.is_file(), str(DISPATCH))
     real_payload_cases()
+    jobs_file_cases()
     try:
         args_file_cases()
     except ImportError as exc:

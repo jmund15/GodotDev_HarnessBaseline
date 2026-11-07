@@ -58,13 +58,13 @@ a caller should use depends on whether a backgrounded job wakes it:
 8. Session-watcher arm outside run_in_background (denies, interactive orchestrator only). A Bash call without
    `run_in_background` whose segment runs `watch_records.py` with `--session` is denied (`foreground_watch_arm`):
    in the foreground, or detached with `&`/`nohup`/`disown`, its wake reaches no task notification, and while it lives
-   every correct arm exits COVERED. Rule home: reference/sidecar_dispatch.md step 6.
+   every correct arm waits to take over. Rule home: reference/sidecar_dispatch.md step 6.
 9. Trailing background `&` (advises, never denies). A Bash call without `run_in_background` whose command ends a line
    in a single `&` (not `&&`, `2>&1`, `>&`) draws one advisory naming `run_in_background` (`DETACHED_ADVICE`).
    Rule home: CLAUDE.core.md §Shell Discipline. Class: process guard, advisory first.
 10. Covered session-watcher arm (denies, interactive orchestrator only). A `run_in_background` call whose segment
    runs `watch_records.py --session` while the session's hook state (key `sidecar_watchers`) lists a live
-   session-wide watcher is denied (`COVERED_REASON`): the arm exits COVERED and its wake is waste. A gone watcher
+   session-wide watcher is denied (`COVERED_REASON`): the redundant arm would only wait to take over. A gone watcher
    or a record watcher passes. Rule home: reference/sidecar_dispatch.md step 6. Class: process guard.
 
 Matches the ACTION, never the noun: a command that only names `sleep` passes, and a Monitor (except item 7) or a
@@ -154,12 +154,12 @@ NO_WAKE_ADVICE = (
 
 WATCH_REASON = (
     "BLOCKED session-watcher arm outside run_in_background: a watcher started in a foreground call, or detached with "
-    "&, nohup or disown, delivers its wake to no task notification, and while it lives every correct arm exits COVERED. "
+    "&, nohup or disown, delivers its wake to no task notification, and while it lives every correct arm waits to take over. "
     "Run `%s` %s (reference/sidecar_dispatch.md step 6)."
 )
 COVERED_REASON = (
     "BLOCKED session-watcher arm: this session's watcher is already armed and live, and it covers every job this "
-    "session launches, so this arm would exit COVERED and spend a wake on nothing. Launch the job without an arm "
+    "session launches, so this arm would only wait to take over. Launch the job without an arm "
     "(reference/sidecar_dispatch.md step 6)."
 )
 BATCH_ADVICE = (

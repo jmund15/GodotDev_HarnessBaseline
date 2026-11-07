@@ -340,12 +340,62 @@ def standing_census(root: Path, home: Path | None = None) -> dict:
         if not exists and not any(str(f) in error for error in source_errors):
             source_errors.append(f"missing standing file: {f}")
         rows.append({"path": str(f), "bytes": size, "exists": exists})
+    rows.extend(_import_rows(files, source_errors))
     style_row, style_errors = _output_style_row(root, home)
     source_errors.extend(style_errors)
     if style_row:
         rows.append(style_row)
     return {"rows": rows, "total_bytes": sum(r["bytes"] for r in rows),
             "source_errors": source_errors}
+
+
+IMPORT_MAX_HOPS = 4
+
+
+def _import_targets(importer: Path) -> list[Path]:
+    """Paths of the `@path` lines in a file, outside fenced code blocks; a backslash-space continues a path."""
+    targets = []
+    fence = None
+    for line in importer.read_text(encoding="utf-8", errors="replace").splitlines():
+        marker = line.lstrip()[:3]
+        if marker in ("```", "~~~"):
+            fence = None if fence == marker else (fence or marker)
+            continue
+        if fence or not line.startswith("@"):
+            continue
+        raw = re.match(r"(?:\\ |\S)+", line[1:])
+        if raw:
+            path = Path(raw.group(0).replace("\\ ", " ")).expanduser()
+            targets.append((importer.parent / path).resolve())
+    return targets
+
+
+def _import_rows(files: list[Path], source_errors: list[str]) -> list[dict]:
+    """One row per file a standing file pulls in by an `@path` line, each once, up to four hops deep.
+
+    Claude Code (https://code.claude.com/docs/en/memory): "Relative paths resolve relative to the file
+    containing the import, not the working directory. Imported files can recursively import other files,
+    with a maximum depth of four hops." and "Import parsing skips Markdown code spans and fenced code
+    blocks." An imported file loads with its importer, so it is standing text; missing it undercounts
+    every always-loaded budget. A file reached twice (a cycle) is counted once.
+    """
+    seen = {f.resolve() for f in files if f.is_file()}
+    queue = [(f, 0) for f in files if f.is_file()]
+    rows = []
+    while queue:
+        importer, hops = queue.pop(0)
+        if hops >= IMPORT_MAX_HOPS:
+            continue
+        for target in _import_targets(importer):
+            if target in seen:
+                continue
+            seen.add(target)
+            if not target.is_file():
+                source_errors.append(f"missing standing import: {target} (imported by {importer})")
+                continue
+            rows.append({"path": str(target), "bytes": target.stat().st_size, "exists": True})
+            queue.append((target, hops + 1))
+    return rows
 
 
 def _output_style_row(root: Path, home: Path) -> tuple[dict | None, list[str]]:

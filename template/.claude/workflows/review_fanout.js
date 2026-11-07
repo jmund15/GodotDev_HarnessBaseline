@@ -1267,7 +1267,7 @@ const DIGEST_SCHEMA = {
   },
   required: ['applied', 'deferred', 'changedPaths'],
 }
-const AMEND_LINE = (promptPath) => 'Amend: at each item and before returning, Read ' + promptPath + '.amend.md with the Read tool (Glob and Grep hide gitignored files); a not-found error means no amendment. A found amendment overrides the brief. Name what you applied.'
+const AMEND_LINE = (promptPath) => 'Amendments: the harness delivers ' + promptPath + '.amend.md to you when your parent writes or changes it; a delivered amendment overrides the brief, and your report names what you applied.'
 const authorRef = (label, model, writes, promptPath) => {
   const tier = tierOf(model)
   const contract = [

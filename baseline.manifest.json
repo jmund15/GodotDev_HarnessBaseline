@@ -1777,6 +1777,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/amend_delivery.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/analyze_godot_logs.py",
       "layer": "godot",
       "sync": "auto"
@@ -2183,6 +2188,11 @@
     },
     {
       "path": ".claude/hooks/sidecar_workdir_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/skill_dispatch_gate.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3592,6 +3602,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/dispatch_native_fields_test.js",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/dispatch_no_return_test.js",
       "layer": "pure",
       "sync": "auto"
@@ -3668,6 +3683,11 @@
     },
     {
       "path": ".claude/tests/fixtures/dispatch_readonly/m4_survey_args.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/dispatch_table/fanout_detach_output.txt",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4128,6 +4148,11 @@
     },
     {
       "path": ".claude/tests/test_ai_worker_metrics.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_amend_delivery.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4643,6 +4668,11 @@
     },
     {
       "path": ".claude/tests/test_fanout_jobs_object_form.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_fanout_needs.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5907,6 +5937,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_fanout_native_split.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_fanout_outdir.py",
       "layer": "pure",
       "sync": "auto"
@@ -6063,6 +6098,11 @@
     },
     {
       "path": ".claude/tests/test_sidecar_workdir_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_skill_dispatch_gate.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -6388,6 +6428,11 @@
     },
     {
       "path": ".claude/tests/test_wake_digest_amend.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_wake_digest_watcher_shell.py",
       "layer": "pure",
       "sync": "auto"
     },

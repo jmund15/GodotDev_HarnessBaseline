@@ -24,6 +24,9 @@ PROJECT = os.path.dirname(CLAUDE_DIR)
 HOOK = os.path.join(CLAUDE_DIR, "hooks", "dispatch_table.py")
 SID = "dtproof1-0000-0000-0000-000000000000"
 WATCH_COMMAND = "python3 .claude/tools/watch_records.py --session --wake"
+with open(os.path.join(CLAUDE_DIR, "tests", "fixtures", "dispatch_table", "fanout_detach_output.txt"),
+          encoding="utf-8") as _fixture:
+    FANOUT_OUTPUT = _fixture.read()
 MTIME_LAG_S = 0.05
 sys.path.insert(0, os.path.join(CLAUDE_DIR, "tools"))
 import model_registry
@@ -99,6 +102,9 @@ class Env:
         payload.setdefault("cwd", PROJECT)
         if issue and mode == "--launch" and payload.get("tool_name") == "Bash":
             self.issue(payload)
+            if ((payload.get("tool_input") or {}).get("run_in_background")
+                    and (payload.get("tool_response") or {}).get("stdout") == FANOUT_OUTPUT):
+                payload["tool_response"].setdefault("backgroundTaskId", "bg-" + payload["tool_use_id"])
         env = hook_env(HARNESS_HOOK_STATE_DIR=self.state, SIDECAR_LEDGER_PATH=self.ledger,
                        CLAUDE_PROJECTS_ROOT=projects_root or os.path.join(self.root, "none"),
                        DISPATCH_TABLE_LAUNCH_WAIT="0", DISPATCH_TABLE_UNRESOLVED_WAIT="0",
@@ -201,7 +207,8 @@ def workflow_payload(tool_input, run_id="wf_proof-1"):
 
 def bash_payload(command, tool_use_id=None):
     payload = {"hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": command},
-               "tool_response": {"stdout": "", "stderr": "", "interrupted": False}}
+               "tool_response": {"stdout": FANOUT_OUTPUT if "sidecar_fanout.py" in command else "",
+                                 "stderr": "", "interrupted": False}}
     if tool_use_id:
         payload["tool_use_id"] = tool_use_id
     return payload
@@ -630,6 +637,49 @@ def test_never_started_line_without_the_file_keeps_the_call_output_pointer():
     assert "unnamed: never started" in msg and "output names the refusal" in msg, msg
 
 
+def _launch_refused_txt(e, age_vs_issue):
+    """Plant launch-refused.txt in the pending entry's dir, `age_vs_issue` seconds after (negative: before) its issue."""
+    entry = e.pending()[0]
+    path = os.path.join(entry["fanout_dir"], "launch-refused.txt")
+    open(path, "w").write("launch refused (exit 2)\njob refused-fast: needs a kind\n")
+    stamp = entry["issued_at"] + age_vs_issue
+    os.utime(path, (stamp, stamp))
+    return entry
+
+
+def test_a_refusal_file_written_at_the_call_resolves_it_inside_the_preflight_window():
+    e = Env()
+    _refused_fanout(e, "refused-fast", 30)
+    _launch_refused_txt(e, 1)
+    e.watch()
+    msg = e.run(stop_payload(), "--complete")
+    assert "refused-fast: never started" in msg and "launch-refused.txt" in msg, msg
+    assert e.pending() == [], e.pending()
+
+
+def test_a_refusal_file_older_than_the_call_does_not_resolve_it_early():
+    e = Env()
+    _refused_fanout(e, "stale-refusal", 30)
+    _launch_refused_txt(e, -100)
+    e.watch()
+    msg = e.run(stop_payload(), "--complete")
+    assert "stale-refusal: never started" not in (msg or ""), msg
+    assert len(e.pending()) == 1, e.pending()
+
+
+def test_an_inventory_naming_the_label_after_the_refusal_keeps_it_live():
+    e = Env()
+    _refused_fanout(e, "relaunched", 30)
+    entry = _launch_refused_txt(e, 1)
+    json.dump({"parentSessionId": SID, "fanoutId": "after", "fanoutProcess": _pid_line(os.getpid()),
+               "jobs": [{"label": "relaunched", "recordPath": os.path.join(entry["fanout_dir"], "relaunched.record.json")}]},
+              open(os.path.join(entry["fanout_dir"], "fanout-after.inventory.json"), "w"))
+    e.watch()
+    msg = e.run(stop_payload(), "--complete")
+    assert "relaunched: never started" not in (msg or ""), msg
+    assert len(e.pending()) == 1, e.pending()
+
+
 def test_a_refused_call_whose_label_a_later_call_launched_is_dropped_without_a_never_started_line():
     e = Env()
     _refused_fanout(e, "again", 700)
@@ -871,12 +921,138 @@ def test_the_launchers_own_registration_does_not_silence_the_first_table():
     assert len(e.pending()) == 1, e.pending()
 
 
+_MERGE_SCRIPT = r"""
+import json, os, sys, time
+sys.path.insert(0, %(hooks)r)
+import dispatch_table as t
+spec = json.loads(sys.stdin.read())
+fanout_payload = spec["fanout_payload"]
+def register(kind):
+    if kind == "fanout":
+        t.register_sidecars(fanout_payload, t.sidecar_entries(fanout_payload)[0])
+    else:
+        entry = {"kind": "sidecar", "id": spec["record"], "record": spec["record"], "fanout_dir": None,
+                 "task_id": None, "launched_at": time.time(), "call": None, "writes": [],
+                 "jobs": [{"label": spec["label"], "model": "opus-5-5", "effort": "high",
+                           "launcher": "anthropic", "record": spec["record"]}]}
+        t.register_sidecars(fanout_payload, [entry], actual=True)
+for kind in spec["order"]:
+    register(kind)
+state = json.load(open(t._hook_state.state_path(fanout_payload["session_id"]), encoding="utf-8"))
+pending = state[t.STATE_KEY]
+print(json.dumps({"n": len(pending), "fanout_dir": [p.get("fanout_dir") for p in pending],
+                  "lines": [t._running_line(p, time.time()) for p in pending]}))
+"""
+
+
+def _merge_order(order):
+    """Register the fan-out's PostToolUse entry and the launcher's actual one in `order`; return the
+    running lines. The inventory is planted so the two entries resolve to one record."""
+    e = Env()
+    jobs = os.path.join(e.root, "jobs.json")
+    json.dump([{"label": "pin", "alias": "muse", "promptFile": "a.md"}], open(jobs, "w"))
+    out_dir = os.path.join(e.root, "out")
+    os.makedirs(out_dir)
+    payload = bash_payload("python3 .claude/tools/sidecar_fanout.py %s --out-dir %s" %
+                           (jobs.replace("\\", "/"), out_dir.replace("\\", "/")), "toolu_merge")
+    e.issue(payload)
+    payload.update(session_id=SID, transcript_path=e.transcript, cwd=PROJECT)
+    record = os.path.join(out_dir, "pin.record.json")
+    inventory = os.path.join(out_dir, "fanout-merge.inventory.json")
+    json.dump({"parentSessionId": SID, "jobs": [{"label": "pin", "recordPath": record}]}, open(inventory, "w"))
+    later = time.time() + 5  # written after the call was issued, whatever the clock's granularity
+    os.utime(inventory, (later, later))
+    spec = {"fanout_payload": payload, "record": record, "label": "pin", "order": order}
+    done = subprocess.run([sys.executable, "-c", _MERGE_SCRIPT % {"hooks": os.path.join(CLAUDE_DIR, "hooks")}],
+                          input=json.dumps(spec), capture_output=True, text=True, encoding="utf-8",
+                          env=hook_env(HARNESS_HOOK_STATE_DIR=e.state, SIDECAR_LEDGER_PATH=e.ledger,
+                                       CLAUDE_PROJECTS_ROOT=os.path.join(e.root, "none")))
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_a_fanout_job_keeps_the_launchers_pins_when_the_launcher_registers_first():
+    got = _merge_order(["launcher", "fanout"])
+    assert got["n"] == 1 and got["fanout_dir"][0], got
+    assert "opus-5-5" in got["lines"][0] and "high" in got["lines"][0], got
+
+
+def test_a_fanout_job_keeps_the_launchers_pins_when_the_fanout_registers_first():
+    got = _merge_order(["fanout", "launcher"])
+    assert got["n"] == 1 and got["fanout_dir"][0], got
+    assert "opus-5-5" in got["lines"][0] and "high" in got["lines"][0], got
+
+
 def test_sidecar_record_behind_an_unexpandable_variable_is_not_tracked():
     e = Env()
     cmd = ("while read n; do bash .claude/scripts/deepseek_sidecar.sh -m flash -e low -f p.md "
            "-R $n.json -l w-$n; done < seats.txt")
     msg = e.run(bash_payload(cmd), "--launch")
     assert "not tracked" in msg and e.pending() == [], (msg, e.pending())
+
+
+def _watcher_pending(e):
+    code = ("import sys; sys.path.insert(0, %r); import watch_records; "
+            "print(__import__('json').dumps(watch_records.pending_sidecars(%r)))" %
+            (os.path.join(CLAUDE_DIR, "tools"), SID))
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30,
+                            env=hook_env(HARNESS_HOOK_STATE_DIR=e.state, SIDECAR_LEDGER_PATH=e.ledger))
+    assert result.returncode == 0 and "Traceback" not in result.stderr, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_completed_fanout_without_launch_evidence_never_reaches_watcher():
+    for status in (0, 2):
+        e = Env()
+        jobs = os.path.join(e.root, "jobs.json")
+        json.dump([{"label": "not-launched", "alias": "muse", "effort": "max", "promptFile": "a.md"}],
+                  open(jobs, "w"))
+        payload = bash_payload("python3 .claude/tools/sidecar_fanout.py %s --detach" % jobs.replace("\\", "/"))
+        payload["tool_response"] = {"stdout": "", "stderr": "", "exit_code": status}
+        e.run(payload, "--launch")
+        assert e.pending() == [], e.pending()
+        assert _watcher_pending(e) == [], "a never-launched job could wake UNRESOLVED"
+
+
+def test_refused_real_fanout_with_unresolved_shell_path_never_reaches_watcher():
+    e = Env()
+    jobs = os.path.join(e.root, "jobs.json")
+    prompt = os.path.join(e.root, "prompt.md")
+    with open(prompt, "w") as fh:
+        fh.write("This dispatch must be refused before launch.")
+    json.dump([{"label": "refused", "kind": "review", "alias": "muse", "effort": "max", "promptFile": prompt}],
+              open(jobs, "w"))
+    refused = subprocess.run([sys.executable, os.path.join(CLAUDE_DIR, "tools", "sidecar_fanout.py"),
+                              jobs, "--detach"], capture_output=True, text=True, timeout=30)
+    assert refused.returncode != 0 and "unknown kind" in refused.stderr, (refused.stdout, refused.stderr)
+    for variable in ("$D", "${D}"):
+        payload = bash_payload("python3 .claude/tools/sidecar_fanout.py %s/jobs.json --detach" % variable)
+        payload["tool_response"] = {"stdout": refused.stdout, "stderr": refused.stderr,
+                                    "exit_code": refused.returncode}
+        e.run(payload, "--launch")
+        assert e.pending() == [], e.pending()
+        assert _watcher_pending(e) == [], "the refused call could wake UNRESOLVED"
+
+
+def test_unexpanded_fanout_path_is_not_deferred_even_for_background_call():
+    e = Env()
+    payload = bash_payload("python3 .claude/tools/sidecar_fanout.py $UNSET/jobs.json --detach")
+    payload["tool_input"]["run_in_background"] = True
+    payload["tool_response"] = {"backgroundTaskId": "real-shell-task", "stdout": ""}
+    e.run(payload, "--launch")
+    assert e.pending() == [] and _watcher_pending(e) == [], e.pending()
+
+
+def test_captured_real_fanout_launch_still_reaches_watcher():
+    e = Env()
+    jobs = os.path.join(e.root, "jobs.json")
+    json.dump([{"label": "bb-fx16", "alias": "sonnet", "effort": "high", "promptFile": "a.md"}], open(jobs, "w"))
+    payload = bash_payload("python3 .claude/tools/sidecar_fanout.py %s --detach" % jobs.replace("\\", "/"))
+    with open(os.path.join(CLAUDE_DIR, "tests", "fixtures", "dispatch_table", "fanout_detach_output.txt"),
+              encoding="utf-8") as fh:
+        payload["tool_response"]["stdout"] = fh.read()
+    e.run(payload, "--launch")
+    assert len(e.pending()) == 1 and len(_watcher_pending(e)) == 1, e.pending()
 
 
 def test_sidecar_fanout_with_an_unreadable_jobs_file_is_not_tracked():
@@ -1007,6 +1183,8 @@ def _expired_producer(e, task_id):
     state = json.load(open(e.state_path(), encoding="utf-8"))
     for entry in state["dispatch_table_pending"]:
         entry["launched_at"] = time.time() - 3600
+        if task_id is None:
+            entry["task_id"] = None
     json.dump(state, open(e.state_path(), "w", encoding="utf-8"))
     return jobs
 
@@ -2200,6 +2378,134 @@ def test_a_clean_sidecar_finish_and_a_running_one_add_no_failed_end_to_the_block
     assert "ended" not in e.body.get("reason", ""), e.body
 
 
+def _real_fanout_output():
+    with open(os.path.join(CLAUDE_DIR, "tests", "fixtures", "dispatch_table", "fanout_detach_output.txt"),
+              encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _fanout_launch(e, jobs_spec, output=FANOUT_OUTPUT):
+    jobs = os.path.join(e.root, "jobs.json")
+    out = os.path.join(e.root, "out")
+    json.dump(jobs_spec, open(jobs, "w"))
+    payload = bash_payload("python3 .claude/tools/sidecar_fanout.py %s --out-dir %s --detach" % (
+        jobs.replace("\\", "/"), out.replace("\\", "/")))
+    payload["tool_response"]["stdout"] = output
+    return e.run(payload, "--launch"), out
+
+
+def test_fanout_rows_job_shows_the_placement_the_call_printed_not_default():
+    e = Env()
+    msg, _out = _fanout_launch(e, [{"label": "bb-fx16", "promptFile": "a.md", "kind": "scout",
+                                    "rows": {"sonnet": "high", "opus": "high"}}], _real_fanout_output())
+    assert cells(msg, "bb-fx16") == ["bb-fx16", short_version("sonnet"), "high", "sidecar"], msg
+    assert "default" not in msg, msg
+
+
+def test_fanout_rows_job_with_one_row_shows_that_row():
+    e = Env()
+    msg, _out = _fanout_launch(e, [{"label": "ul-one", "promptFile": "a.md", "kind": "scout",
+                                    "rows": {"flash": "low"}}])
+    assert cells(msg, "ul-one") == ["ul-one", FLASH_VERSION, "low", "sidecar"], msg
+
+
+def test_fanout_queued_rows_job_shows_its_listed_rows_as_candidates():
+    e = Env()
+    msg, _out = _fanout_launch(e, [{"label": "ul-q", "promptFile": "a.md", "kind": "scout",
+                                    "rows": {"flash": "low", "muse": "max"}}])
+    assert cells(msg, "ul-q") == ["ul-q", "flash|muse", "low|max", "sidecar"], msg
+    assert "default" not in msg, msg
+
+
+def test_a_candidate_pin_is_never_a_contradiction_when_the_job_finishes():
+    e = Env()
+    _fanout_launch(e, [{"label": "ul-c", "promptFile": "a.md", "kind": "scout",
+                        "rows": {"flash": "low", "muse": "max"}}])
+    entry = e.pending()[0]
+    os.makedirs(os.path.join(e.root, "out"), exist_ok=True)
+    os.makedirs(os.path.join(e.root, "out"), exist_ok=True)
+    record = os.path.join(e.root, "out", "ul-c.record.json")
+    json.dump({"servedModel": FLASH_VERSION, "requestedModel": "flash", "exitCode": 0, "transport": "anthropic"},
+              open(record, "w"))
+    open(record + ".exit", "w").write("0")
+    e.watch()
+    state = json.load(open(e.state_path(), encoding="utf-8"))
+    state["dispatch_table_pending"][0]["record"] = record
+    json.dump(state, open(e.state_path(), "w"))
+    msg = e.run(stop_payload(), "--complete")
+    assert "asked" not in msg, (msg, entry)
+
+
+def short_version(alias):
+    version = model_registry.resolve(alias)["version"]
+    return version[len("claude-"):] if version.startswith("claude-") else version
+
+
+def _native_out(e, labels):
+    out = os.path.join(e.root, "out")
+    os.makedirs(out, exist_ok=True)
+    path = os.path.join(out, "native.args.json")
+    json.dump({"jobs": [{"label": l, "model": "sonnet", "effort": "high", "promptPath": "a.md"} for l in labels],
+               "spillDir": out}, open(path, "w"))
+    return path
+
+
+def test_fanout_native_jobs_register_one_handoff_and_no_sidecar():
+    e = Env()
+    native = _native_out(e, ["nat-a", "nat-b"])
+    msg, _out = _fanout_launch(e, [{"label": "nat-a", "promptFile": "a.md", "alias": "flash"},
+                                   {"label": "nat-b", "promptFile": "b.md", "alias": "flash"}])
+    assert [p["kind"] for p in e.pending()] == ["handoff"], e.pending()
+    entry = e.pending()[0]
+    assert os.path.normcase(os.path.abspath(entry["jobs_file"])) == os.path.normcase(os.path.abspath(native)), entry
+    assert entry["labels"] == ["nat-a", "nat-b"], entry
+    assert "▶ native" not in msg and "nat-a, nat-b" in msg and native.replace("\\", "/") in msg, msg
+    e.run(stop_payload(), "--complete")
+    assert e.body.get("decision") != "block" and "never started" not in json.dumps(e.body), e.body
+
+
+def test_a_handoff_the_session_never_issued_prints_never_started_after_the_window():
+    e = Env()
+    _native_out(e, ["nat-lost"])
+    _fanout_launch(e, [{"label": "nat-lost", "promptFile": "a.md", "alias": "flash"}])
+    state = json.load(open(e.state_path(), encoding="utf-8"))
+    for entry in state["dispatch_table_pending"]:
+        entry["launched_at"] = entry["issued_at"] = time.time() - 3600
+    json.dump(state, open(e.state_path(), "w"))
+    msg = e.run(stop_payload(), "--complete")
+    assert "nat-lost: never started (" in msg and "Workflow" in msg, msg
+    assert e.body.get("decision") == "block" and "nat-lost: never started" in e.body["reason"], e.body
+    assert e.pending() == [], e.pending()
+
+
+def test_a_workflow_launch_with_the_matching_jobs_file_clears_the_handoff():
+    e = Env()
+    native = _native_out(e, ["nat-ok"])
+    _fanout_launch(e, [{"label": "nat-ok", "promptFile": "a.md", "alias": "flash"}])
+    assert [p["kind"] for p in e.pending()] == ["handoff"], e.pending()
+    e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
+                            "args": {"jobsFile": native.replace("\\", "/")}}), "--launch")
+    assert [p["kind"] for p in e.pending()] == ["workflow"], e.pending()
+
+
+def test_a_workflow_launch_naming_the_handed_off_labels_clears_the_handoff():
+    e = Env()
+    _native_out(e, ["nat-lab"])
+    _fanout_launch(e, [{"label": "nat-lab", "promptFile": "a.md", "alias": "flash"}])
+    e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
+                            "args": {"jobs": [{"label": "nat-lab", "model": "flash", "effort": "low"}]}}), "--launch")
+    assert "handoff" not in [p["kind"] for p in e.pending()], e.pending()
+
+
+def test_an_unrelated_workflow_launch_leaves_the_handoff_pending():
+    e = Env()
+    _native_out(e, ["nat-keep"])
+    _fanout_launch(e, [{"label": "nat-keep", "promptFile": "a.md", "alias": "flash"}])
+    e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
+                            "args": {"jobs": [{"label": "other", "model": "flash", "effort": "low"}]}}), "--launch")
+    assert "handoff" in [p["kind"] for p in e.pending()], e.pending()
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
@@ -2211,3 +2517,12 @@ if __name__ == "__main__":
                 fails += 1
                 print("FAIL", name, "-", str(exc)[:300])
     sys.exit(1 if fails else 0)
+
+
+def test_never_started_line_ignores_a_refusal_file_older_than_the_call():
+    e = Env()
+    _refused_fanout(e, "older-refusal", 700)
+    _launch_refused_txt(e, -100)
+    e.watch()
+    msg = e.run(stop_payload(), "--complete")
+    assert "older-refusal: never started" in msg and "output names the refusal" in msg and "launch-refused.txt" not in msg, msg

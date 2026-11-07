@@ -112,6 +112,8 @@ def plant_registry(roles=("executor",)):
     row.update(id="proof-a", alias="proofa", family="proof-a", roles=list(roles), order=1)
     data["models"] = [row]
     data.pop("aliasHistory", None)
+    # The live go route's image evidence names a row this fixture replaces; drop it back to unverified.
+    data["transports"]["go"]["imageRoute"] = {"state": "unverified"}
     path = os.path.join(tempfile.mkdtemp(prefix="evaldash_registry_"), "external_models.json")
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(data, handle)

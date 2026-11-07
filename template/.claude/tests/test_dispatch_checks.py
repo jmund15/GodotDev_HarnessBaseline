@@ -328,6 +328,36 @@ def main():
     else:
         case("spare_plan_fact cases ran", False, "no spare_plan_fact")
 
+    # ---- the five-hour width predicate RULE 5 and the fan-out's split share ----
+    if hasattr(dc, "native_room"):
+        case("a cool or unreadable window leaves the native count unbounded",
+             dc.native_room(None, 0) is None and dc.native_room(0.5, 3) is None
+             and dc.native_room(dc.quota_bands.FIVE_HOUR_NARROW_PRESSURE, 3) is None)
+        hot = dc.quota_bands.FIVE_HOUR_NARROW_PRESSURE + 0.01
+        case("a hot window leaves room for one native job less the live ones, never below zero",
+             (dc.native_room(hot, 0), dc.native_room(hot, 1), dc.native_room(hot, 4)) == (1, 0, 0),
+             repr((dc.native_room(hot, 0), dc.native_room(hot, 1), dc.native_room(hot, 4))))
+    else:
+        case("native_room cases ran", False, "no native_room")
+    if hasattr(dc, "live_jobs") and hasattr(dc, "native_width"):
+        root = tempfile.mkdtemp(prefix="dc_live_")
+        run_dir = os.path.join(root, "subagents", "workflows", "wf_1")
+        os.makedirs(run_dir)
+        with open(os.path.join(run_dir, "journal.jsonl"), "w", encoding="utf-8", newline=chr(10)) as fh:
+            fh.write(json.dumps({"type": "started", "agentId": "a1", "label": "x"}) + chr(10))
+        live, note = dc.live_jobs(root)
+        case("live_jobs reads a started agent with no terminal line from a session dir",
+             [j["agentId"] for j in live] == ["a1"] and note is None, repr((live, note)))
+        dc.five_hour_read = lambda session_id=None, budget=10.0: ({"pressure": 1.5, "resets_at": 9e9, "used": 80.0}, None)
+        got = dc.native_width("sid", root)
+        case("native_width joins the window read and the live count into the room",
+             got["room"] == 0 and len(got["live"]) == 1 and got["pressure"] == 1.5, repr(got))
+        dc.five_hour_read = lambda session_id=None, budget=10.0: ({}, "planted: no read")
+        got = dc.native_width("sid", root)
+        case("an unreadable window is no room limit and says why", got["room"] is None and got["note"], repr(got))
+    else:
+        case("live_jobs and native_width cases ran", False, "missing live_jobs or native_width")
+
     return report(cases)
 
 

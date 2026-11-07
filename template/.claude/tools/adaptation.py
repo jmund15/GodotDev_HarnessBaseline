@@ -46,6 +46,9 @@ read by `scripts/sync_plan_config.py`; an absent key means no project benchmark 
 (empty: no runner), read by `hooks/git_guardrails.py` and `/commit_push` step 6.
 `land_watch` is the command `/commit_push` step 6 starts after a land push to wait on the land and report it
 (`<land branch>` and `<pushed sha>` filled in; empty: no watcher).
+`regenerable_ignored` lists the project's ignored build outputs that a delete of an orphaned or retired worktree may
+discard: paths from the worktree root, `fnmatch` patterns, a listed directory covering everything under it; read by
+`hooks/_regenerable_clone.py` from the project root it judges for (empty: only the shared caches).
 
 Unknown keys are ignored everywhere.
 """
@@ -92,6 +95,7 @@ DEFAULTS: dict = {
     "usage_reset": {"weekday": "sunday", "hour": 13},
     "land_prefix": "",
     "land_watch": "",
+    "regenerable_ignored": [],
     "rigor_defaults": {
         "harness": {"paths": [".claude/**"], "level": "normal"},
         "side-tools": {"paths": ["tools/**", "scripts/**", ".claude/tools/**", ".claude/scripts/**"], "level": "light"},
@@ -136,6 +140,7 @@ _TYPES: dict = {
     "usage_reset": dict,
     "land_prefix": str,
     "land_watch": str,
+    "regenerable_ignored": list,
     "rigor_defaults": dict,
 }
 

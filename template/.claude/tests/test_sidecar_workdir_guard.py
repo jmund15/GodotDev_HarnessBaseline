@@ -24,7 +24,7 @@ from _sidecar_launch import bash_exe  # noqa: E402
 
 CLAUDE = Path(__file__).resolve().parents[1]
 # The merge runs over a root with no adaptation.json, so the guard's registration must be the launcher's own.
-MERGE = '. "$CLAUDE_DIR/scripts/lib/sidecar_common.sh" >/dev/null 2>&1; SC_ROOT="$PLANT_ROOT"; sc_settings_with_bench_guard ""'
+MERGE = '. "$CLAUDE_DIR/scripts/lib/sidecar_common.sh" >/dev/null 2>&1; SC_ROOT="$PLANT_ROOT"; SC_PROMPT_FILE="${PLANT_PROMPT:-}"; sc_settings_with_bench_guard ""'
 
 
 def bare_root(tmp):
@@ -42,18 +42,20 @@ def ck(name, ok, detail=''):
         FAILS.append(name)
 
 
-def run(workdir, main, spill, tool, path, cwd=None, field='file_path'):
+def run(workdir, main, spill, tool, path, cwd=None, field='file_path', prompt=None):
     stdin = json.dumps({'cwd': str(cwd or workdir), 'hook_event_name': 'PreToolUse', 'tool_name': tool,
                         'tool_input': {field: str(path), 'content': 'x'}})
-    r = subprocess.run([sys.executable, str(GUARD), str(workdir), str(main), str(spill)], input=stdin,
+    extra = [str(prompt)] if prompt else []
+    r = subprocess.run([sys.executable, str(GUARD), str(workdir), str(main), str(spill)] + extra, input=stdin,
                        capture_output=True, text=True, encoding='utf-8', timeout=60)
     return r.returncode, r.stderr
 
 
-def run_bash(workdir, main, spill, command, cwd=None):
+def run_bash(workdir, main, spill, command, cwd=None, prompt=None):
     stdin = json.dumps({'cwd': str(cwd or workdir), 'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',
                         'tool_input': {'command': command}})
-    r = subprocess.run([sys.executable, str(GUARD), str(workdir), str(main), str(spill)], input=stdin,
+    extra = [str(prompt)] if prompt else []
+    r = subprocess.run([sys.executable, str(GUARD), str(workdir), str(main), str(spill)] + extra, input=stdin,
                        capture_output=True, text=True, encoding='utf-8', timeout=60)
     return r.returncode, r.stderr
 
@@ -158,6 +160,29 @@ def main():
         rc, err = run_bash(main_root, main_root, spill, 'echo x > %s/a.py' % M)
         ck('allow a Bash write in a main-checkout job', rc == 0, (rc, err))
 
+        deck = main_root / '.claude' / 'scratch' / 'deck'
+        brief = outside / 'brief.md'
+        brief.write_text('# t\n\n```task\n%s\n```\n' % json.dumps(
+            {'check': ['true'], 'writeSet': [W + '/**', deck.as_posix() + '/**', M + '/notes/one.txt']}),
+            encoding='utf-8')
+        bare = outside / 'bare.md'
+        bare.write_text('# no task block\n', encoding='utf-8')
+
+        def declared(name, want, tool, path, prompt=brief):
+            rc, err = run(work, main_root, spill, tool, path, prompt=prompt)
+            ck(name, rc == want, (rc, err))
+
+        declared('allow a Write under a declared writeSet glob', 0, 'Write', deck / 'pieces.jsonl')
+        declared('allow an Edit of a declared writeSet file', 0, 'Edit', main_root / 'notes' / 'one.txt')
+        declared('deny a main file the writeSet does not name', 2, 'Write', main_root / 'notes' / 'two.txt')
+        declared('deny a prefix-sibling of a declared dir', 2, 'Write', main_root / '.claude' / 'scratch' / 'deck2' / 'a')
+        declared('deny with a brief that declares no writeSet', 2, 'Write', deck / 'pieces.jsonl', prompt=bare)
+        declared('deny with an unreadable brief', 2, 'Write', deck / 'pieces.jsonl', prompt=outside / 'gone.md')
+        rc, err = run_bash(*a, 'cp a.jsonl %s/pieces.jsonl' % deck.as_posix(), prompt=brief)
+        ck('allow a Bash cp into a declared writeSet dir', rc == 0, (rc, err))
+        rc, err = run_bash(*a, 'cp a.jsonl %s/b.jsonl' % M, prompt=brief)
+        ck('deny a Bash cp to an undeclared main path with a brief', rc == 2, (rc, err))
+
     with tempfile.TemporaryDirectory() as tmp:
         repo, linked = Path(tmp, 'repo'), Path(tmp, 'linked')
         git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@t']
@@ -185,17 +210,21 @@ def main():
         subprocess.run(git + ['init', '-q', str(repo)], check=True)
         subprocess.run(git + ['-C', str(repo), 'commit', '-q', '--allow-empty', '-m', 'init'], check=True)
         subprocess.run(git + ['-C', str(repo), 'worktree', 'add', '-q', '-b', 'w', str(linked)], check=True)
+        brief = Path(tmp, 'the brief.md')
+        brief.write_text('# b\n', encoding='utf-8')
         env = dict(os.environ, CLAUDE_DIR=CLAUDE.as_posix(), SC_WORKDIR=str(linked), SC_RECORD='', SC_PROGRESS='',
-                   PLANT_ROOT=bare_root(tmp))
+                   PLANT_ROOT=bare_root(tmp), PLANT_PROMPT=str(brief))
         r = subprocess.run([bash_exe(), '-c', MERGE], capture_output=True, text=True, encoding='utf-8', env=env, timeout=60, cwd=str(linked))
     try:
-        commands = [h['command'] for e in json.loads(r.stdout)['hooks']['PreToolUse'] for h in e['hooks']
+        commands =[h['command'] for e in json.loads(r.stdout)['hooks']['PreToolUse'] for h in e['hooks']
                     if 'sidecar_workdir_guard.py' in h['command']]
     except Exception as ex:
         commands = []
         r.stderr += repr(ex)
     ck('merge arms the guard for a checkout path with a space',
        len(commands) == 1 and repo.as_posix() in commands[0].replace(chr(92), '/'), (commands, r.stderr[:200]))
+    ck('merge hands the guard the job brief, whose writeSet it allows',
+       len(commands) == 1 and brief.as_posix() in commands[0].replace(chr(92), '/'), (commands, r.stderr[:200]))
 
 
 main()

@@ -828,8 +828,12 @@ def fanout_doctrine_refusal(fanout_args, root):
     contracts = fanout_contract(fanout, root)
     import dispatch_table
     refusal, _fault = model_ladder_gate.doctrine_check(
-        {"session_id": sid, "transcript_path": dispatch_table._transcript(sid)},
+        {"session_id": sid, "transcript_path": dispatch_table._transcript(sid),
+         "cwd": str(root), "tool_name": "Bash", "tool_input": {"command": shlex.join([
+             "python3", str(Path(root) / ".claude/tools/sidecar_fanout.py"), *fanout_args])}},
         tiers=lambda: launch_tiers(None, fanout, root, contracts), embed_slice=True)
+    if _fault and not refusal:
+        print(_fault, file=sys.stderr)
     return refusal
 
 

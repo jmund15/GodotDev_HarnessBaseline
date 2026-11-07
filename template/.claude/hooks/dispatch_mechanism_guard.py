@@ -133,8 +133,9 @@ OWN_EVIDENCE_RE = re.compile(r"""\bevidence['"]?\s*:\s*\{\s*['"]?type['"]?\s*:""
 OWN_EVIDENCE_REASON = (
     "Dispatch denied: {label} types its own `evidence` schema, so the claims verifier can check none of "
     "its claims and each returns UNCHECKED. Dispatch the pinned jobs through `/delegate`, which owns the "
-    "jobs-file format and the paying plan (orchestration section 0). A hand-written script is for an engine "
-    "the fan-out lacks (skills/orchestration/reference/workflow_authoring.md); the claims fence a job "
+    "jobs-file format and the paying plan, and hands the jobs placed on this session's plan to `dispatch.js` "
+    "(orchestration section 0). A hand-written script is for an engine neither the fan-out nor `dispatch.js` "
+    "provides (skills/orchestration/reference/workflow_authoring.md); the claims fence a job "
     "returns is reference/evidence_contract.md."
 )
 

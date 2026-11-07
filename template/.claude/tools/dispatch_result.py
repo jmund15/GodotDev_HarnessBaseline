@@ -38,8 +38,8 @@ lane), a sidecar fan-out out dir or a `-R` record (which needs `--brief`, since 
 `<label>.md`, prints a bounded digest, reads the brief's one `task` block, runs each `check` in order from the repo root
 under a deadline and stops at the first failure, so later checks print NOT-RUN, lists changed paths (`git status`
 over `writeSet` and the deliverable's `changedPaths:` line, flagging paths outside `writeSet`, and a gitignored
-file written after the run start), prints the diff, prints `AMEND UNREAD <path>` when the brief's amend file exists
-and a sidecar job's stream holds no successful Read of it (`amend_unread`), and writes `<label>.seed.json` and `<label>.manifest.json`
+file written after the run start), prints the diff, prints `AMEND UNREAD <path>` when the brief's amend file exists,
+no job holds a `hooks/amend_delivery.py` receipt for its current text and the stream holds no successful Read of it (`amend_unread`), and writes `<label>.seed.json` and `<label>.manifest.json`
 beside the deliverable. It prints facts only. EXIT 0 every check passed; 1 a check failed, timed
 out, or was HELD (the brief was written after the run started, so no check ran); 2 refused, with nothing run.
 A check matching a floor guard (an index write, a commit, a push, a process kill outside tools/reap.py) is
@@ -193,11 +193,20 @@ def _same_file(a, b):
 
 
 def amend_unread(brief, stdout_text):
-    """The amend file's path when `<brief>.amend.md` exists and the stream holds no successful Read of it, else
-    None: an amendment the job never saw (`orchestration` §4). A Read that errored ran before the file existed."""
+    """The amend file's path when `<brief>.amend.md` exists, no job holds a `hooks/amend_delivery.py` receipt for
+    its current text, and the stream holds no successful Read of it, else None: an amendment the job never saw
+    (`orchestration` reference `integration.md`). A Read that errored ran before the file existed."""
     amend = Path(str(brief) + ".amend.md")
     if not amend.is_file():
         return None
+    if str(HOOKS) not in sys.path:
+        sys.path.insert(0, str(HOOKS))
+    try:
+        import amend_delivery
+        if amend_delivery.text_sha(amend.read_text(encoding="utf-8", errors="replace")) in amend_delivery.delivered_shas(amend):
+            return None
+    except (ImportError, OSError):
+        pass
     reads, ok = set(), set()
     for event in _stream_events(stdout_text):
         for block in _blocks(event):
@@ -214,7 +223,14 @@ def answered_after_report(stdout_text):
     """True when a Claude stream holds a text-only assistant message, then a user turn carrying text (a
     notification or hook feedback, not a tool result), then another assistant text: the final message
     answered that later turn and may not be the job's report. Structure only, never length. A codex
-    stream narrates between tool calls in agent messages, so it never reports this."""
+    stream narrates between tool calls in agent messages, so it never reports this. A `hooks/amend_delivery.py`
+    blocked stop is no later turn: its reason asks for the full report again, so the reply after it is the report."""
+    if str(HOOKS) not in sys.path:
+        sys.path.insert(0, str(HOOKS))
+    try:
+        from amend_delivery import STOP_HEAD
+    except ImportError:
+        STOP_HEAD = None
     state = None
     for event in _stream_events(stdout_text):
         kind, blocks = event.get("type"), _blocks(event)
@@ -225,7 +241,8 @@ def answered_after_report(stdout_text):
                 return True
             state = "text_only" if has_text and not has_tool else (None if has_tool else state)
         elif kind == "user":
-            if any(b.get("type") == "tool_result" for b in blocks):
+            if any(b.get("type") == "tool_result" for b in blocks) or (STOP_HEAD and any(
+                    b.get("type") == "text" and STOP_HEAD in str(b.get("text", "")) for b in blocks)):
                 state = None
             elif state == "text_only" and any(b.get("type") == "text" for b in blocks):
                 state = "new_turn"
@@ -616,11 +633,26 @@ def _inventory_job(out_dir, label):
     return merged
 
 
+def _is_native_label(out_dir, label):
+    """True when `<out_dir>/native.args.json`, the fan-out's hand-off to a Workflow call, lists `label`."""
+    try:
+        spec = json.loads((Path(out_dir) / "native.args.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    units = spec.get("jobs") or [j for c in spec.get("chains") or [] if isinstance(c, dict)
+                                 for j in c.get("jobs") or []] if isinstance(spec, dict) else []
+    return any(isinstance(j, dict) and j.get("label") == label for j in units)
+
+
 def _sidecar_origin(root, source, label, brief):
     paths = _sidecar_source(source, label)
     if paths is None:
         raise Refused("consume reads a Workflow run dir, a sidecar fan-out out dir or a -R record")
     record_path, stdout_path, out_dir = paths
+    if Path(source).is_dir() and _is_native_label(out_dir, label):
+        raise Refused(f"label {label} ran as a native Workflow job, so this out dir holds its {label}.md and no "
+                      f"sidecar record. Give consume the Workflow run dir instead: "
+                      f"<session dir>/subagents/workflows/<run id> (the run id is in the Workflow call's result)")
     job = _inventory_job(out_dir, label) if Path(source).is_dir() else {}
     workdir = job.get("workdir")
     brief = brief or job.get("brief")

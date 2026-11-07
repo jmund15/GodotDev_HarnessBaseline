@@ -620,10 +620,13 @@ def main():
                       "unrated dispatches: 4" in shown and f"{done_run}:done" in shown))
         cases.append(("--pending reports the launch failure beside the debt",
                       "launch-failed" in shown))
-        with contextlib.redirect_stdout(io.StringIO()):
+        accept_out = io.StringIO()
+        with contextlib.redirect_stdout(accept_out):
             om.accept_rest(sc_session)
         cases.append(("--accept-rest never accepts a sidecar pair unseen",
                       not any(k.startswith("sidecar-") for k in om.load_pending_verdicts())))
+        cases.append(("--accept-rest names each sidecar pair it leaves for --rate",
+                      f"{done_run}:done" in accept_out.getvalue() and "--rate-batch" in accept_out.getvalue()))
 
         def raising_collect(*_):
             raise RuntimeError("sidecar read failed")

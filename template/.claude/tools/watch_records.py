@@ -31,7 +31,7 @@ Bash/PowerShell background tasks (a main-session launch row with no `<task-notif
 Workflow runs (a pending `workflow` entry whose host record `<session>/workflows/<id>.json` is absent or not
 in `DONE_STATES`, or a run dir under `<session>/subagents/workflows/` with no entry, no host record and a write
 within `DISCOVERED_RUN_SECONDS`: the launch hook's entry can land after the arm), each printed as `RUNNING workflow <name> <runId> <pins> for <n> min, agents <k> of <m> done`;
-a run's end wakes nobody, and a watcher with nothing live exits `NONE`. A running
+a run's end wakes nobody, and a session watcher with nothing live stays armed. A running
 seat that compacts (a `compact_boundary` row in its transcript: a Workflow agent's `agent-<id>.jsonl`, a Claude sidecar's
 `<record>.stream`, a live roster's running bench cell's `<cell>.progress.jsonl`) adds `<label> compacted <n> (<m> min compacting)` to its check-in line, and one that compacted again after
 re-reading a file it had read before the previous compaction (the cycle: a seat that loses its subject, refills its window and
@@ -39,9 +39,9 @@ compacts again) wakes the session with `COMPACTING [workflow <runId>] <label> co
 new compaction count. A running Workflow seat whose `agent-<id>.jsonl` has not grown for `WORKFLOW_STALL_SECONDS`
 (`WATCH_RECORDS_STALL_SEC` overrides it) wakes with `STALLED workflow <runId> <label> idle=<n> min`, once per stall: the
 client's request for that seat never returned, and no engine watchdog ends it. A `--session --wake` call made while
-another live session-wide watcher is registered prints `COVERED by <process>` and exits 0. A bare `--await-launch`
-(or `--await-launch=<seconds>`) makes an arm that finds nothing running wait that long for this session's launch entry
-before it exits `NONE`; the bare form waits `dispatch_table.launch_grace()`.
+another live session-wide watcher is registered waits to take over without exiting. A bare `--await-launch`
+(or `--await-launch=<seconds>`) makes an explicit record watch that finds nothing running wait that long
+before it exits `NONE`; the bare form waits `dispatch_table.launch_grace()`. Session watches stay armed without it.
 A child no call of this session issued (a scoring daemon, a study's ruler, a delegate's own test launch: no `call` or `issued_at` on its entry, no fan-out, no bench campaign) ending cleanly wakes nobody: its parent reports its own end, and a failed child still wakes, except a memory-admission refusal (exit 12), which its caller retries.
 A zero-cost end before a result written while its transport's usage-limit marker was live (`refused_while_exhausted`) prints
 as context and wakes nobody: the job that hit the limit spent and woke, and the unit's end still wakes.
@@ -49,7 +49,9 @@ A wake prints, under each ended job's `DONE`/`DONE workflow` line, the lines of 
 verification status with its counts and the report path of a sidecar, fan-out job or Workflow run. A background shell
 that ended since the transcript byte offset saved in session hook state (`sidecar_wake_shell_offset`; a session with none starts at the transcript's end) arrives as
 `SHELL <id> <status> exit=<n>` with its output path, failure-marker lines and tail; a shell that ran this watcher is skipped.
-Ended Workflow runs and shells never wake the watcher: they print with the next wake, once. The last lines before `STILL RUNNING`
+A shell end whose task-notification already appears as a delivered main-session attachment is omitted. If that
+leaves no work or unreported event, the armed watcher stays idle: exiting it would send a duplicate notification.
+Ended Workflow runs and undelivered shells never trigger a decision wake: they print with the next wake, once. The last lines before `STILL RUNNING`
 or `NONE` are `UNRATED <n>: <run:label>, ...` when the session has unrated dispatches.
 Usage: python3 .claude/tools/watch_records.py --pane. The owner's live view: a background shell that polls the session's
 `checkin_lines` every `PANE_SECONDS` (`WATCH_RECORDS_PANE_SEC` overrides it) and appends a frame, closed by a stamp line,
@@ -71,9 +73,9 @@ carries this session's `CLAUDE_CODE_SESSION_ID`: one `roster` unit per roster, l
 on `ROSTER <state> <name>: <last line>` when it ends, except a clean end (`DONE`) while another roster of this session is live, which prints at the next wake (a roster not live at arm is `bench.py wait`'s). An event already present
 at arm prints once; only an event acknowledged in session hook state suppresses the exit. A wake acknowledges
 the decision events it reports, so a watcher armed in any later turn does not exit on them (it still prints
-them as context), and every clean `DONE <label> exit=0` line it prints, which a later watcher omits; when
-nothing else remains it prints `NONE`. When nothing at arm can still progress — nothing running, queued or
-unresolved within its grace — the ended lines and `NONE` print and the watcher exits 0; a job whose fan-out process
+them as context), and every clean `DONE <label> exit=0` line it prints, which a later watcher omits.
+An explicit record watch with nothing that can still progress prints `NONE` and exits 0; a session watch stays
+armed until a new decision event or a live-work check-in. A job whose fan-out process
 is gone is not "queued", because it will never start. An entry still unresolved
 `UNRESOLVED_GRACE_SECONDS` after its launch prints `UNRESOLVED <label>` and wakes the session. A fan-out entry
 that started nothing — a refusal file in its out dir names its label, or a later-issued call for the same label
@@ -1785,6 +1787,8 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
         polled = time.time()
         grouped = source()
         lines, live, standing = _wake(grouped)
+        current = {identity for _, identity, _, _ in lines}
+        deferred = [line for line in deferred if line[0] != "shell" or line[1] in current]
         cleared = standing_stalls - standing
         seen = {item for item in seen if item[0] not in cleared}
         standing_stalls = standing
@@ -1807,6 +1811,11 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
                     say(kind, identity, text, triggers)
                 else:
                     deferred.append((kind, identity, text, triggers))
+        if not live and not woke and getattr(source, "shells", None) is not None:
+            # A session watch exits only with a decision event; an idle exit is itself a paid notification.
+            first = False
+            time.sleep(POLL_SECONDS)
+            continue
         if first and not woke and live == 0 and polled - armed < await_launch:
             pass  # a poll that began inside the grace re-polls, so a launch landing during a slow poll is still seen
         elif first and not woke:
@@ -1838,11 +1847,12 @@ class ShellEnds:
     The offset lives in session hook state (`SHELL_OFFSET_KEY`) and is saved when a wake prints, so a shell that
     ended between two watchers arrives with the next wake. A session with no saved offset starts at the
     transcript's end: shells that ended before the first arm reached the orchestrator through their own
-    notification. `wake_digest` reads each appended byte of the transcript once, for these notices and for `running`."""
+    notification. Delivered ends are removed even when delivery follows an earlier poll; `delivered` records
+    that an idle exit would duplicate the client's notification. `wake_digest` reads each appended byte once."""
 
     def __init__(self, session_id, state_path):
         self.session_id, self.state_path = session_id, state_path
-        self.path, self.notices = None, {}
+        self.path, self.notices, self.delivered = None, {}, False
         self.scan = _digest().new_shell_scan()
         saved = (_hook_state.read_json_salvage(state_path) or {}).get(SHELL_OFFSET_KEY) if state_path else None
         self.offset = saved if isinstance(saved, int) and not isinstance(saved, bool) else None
@@ -1857,6 +1867,9 @@ class ShellEnds:
         found, self.offset = _digest().shell_notices(self.path, self.scan, self.offset)
         for notice in found:
             self.notices.setdefault(notice["task_id"], notice)
+        for task_id in self.scan["delivered"].intersection(self.notices):
+            self.delivered = True
+            del self.notices[task_id]
         return self.notices
 
     def running(self):
@@ -2065,7 +2078,7 @@ def main(args=None):
                and a != "--await-launch" and not a.startswith("--await-launch=")]
     if unknown:
         if "--covered" in unknown:
-            print("--covered is retired: arm `--session --wake` directly; beside a live watcher it prints COVERED and exits.", file=sys.stderr)
+            print("--covered is retired: arm `--session --wake` directly; beside a live watcher it waits to take over.", file=sys.stderr)
         print("Usage: watch_records.py <record> [<record> ...] | --session --wake [--await-launch[=<seconds>]]"
               " | --digest <record|stream|transcript> (unknown: %s)" % " ".join(unknown), file=sys.stderr)
         return 2
@@ -2091,6 +2104,9 @@ def main(args=None):
         print("Usage: watch_records.py <record> [<record> ...] | --session [--wake]", file=sys.stderr)
         return 2
     path, identity, covering = registration(pending, session_wide=session_wide)
+    while covering and session_wide:
+        time.sleep(POLL_SECONDS)
+        path, identity, covering = registration(pending, session_wide=True)
     if covering:
         print("COVERED by %s: a live session watcher is registered, so nothing to do" % covering, flush=True)
         return 0

@@ -56,8 +56,21 @@ def contract(temp_root):
     real = run(*refresh)
     assert real.returncode == 0 and "1 added" in real.stdout, (real.returncode, real.stdout[-300:], real.stderr[-300:])
     written = json.loads(registry.read_text(encoding="utf-8"))
-    assert any(m.get("upstreamId") == MODEL or m.get("id") == MODEL for m in written["models"]), "row not written"
+    row = next((m for m in written["models"] if m.get("upstreamId") == MODEL or m.get("id") == MODEL), None)
+    assert row is not None, "row not written"
+    assert "inputGap" in row and "input" not in row, row
     assert json.loads(REGISTRY.read_text(encoding="utf-8")) == json.loads(before.decode("utf-8")), "live registry changed"
+
+    # The catalog's modalities are copied in the catalog's canonical order; a rerun updates the row
+    # rather than leaving a stale gap, so `--check` keeps accepting what the refresher writes.
+    modelsdev.write_text(json.dumps({"opencode-go": {"id": "opencode-go", "models": {
+        MODEL: {"modalities": {"input": ["image", "text"]},
+                "limit": {"context": 100000, "output": 20000}}}}}, indent=2), encoding="utf-8", newline="\n")
+    again = run(*refresh)
+    assert again.returncode == 0, (again.returncode, again.stderr[-300:])
+    row = next(m for m in json.loads(registry.read_text(encoding="utf-8"))["models"]
+               if m.get("upstreamId") == MODEL or m.get("id") == MODEL)
+    assert row.get("input") == ["text", "image"] and "inputGap" not in row, row
 
 
 if __name__ == "__main__":

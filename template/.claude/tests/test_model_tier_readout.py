@@ -46,6 +46,8 @@ def plant_registry(roles_by_id):
         models.append(row)
     data["models"] = models
     data.pop("aliasHistory", None)
+    # The live go route's image evidence names a row this fixture replaces; drop it back to unverified.
+    data["transports"]["go"]["imageRoute"] = {"state": "unverified"}
     path = os.path.join(tempfile.mkdtemp(prefix="mtr_registry_"), "external_models.json")
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         json.dump(data, handle)

@@ -10,7 +10,8 @@
 A path is a Claude Code result (single JSON, a stream-json capture or a verbose array), a sidecar
 `.out.json`, `.stream` or `.record.json`, or a Workflow run directory (`<session>/subagents/workflows/<runId>/`,
 one row per agent transcript, read through `orchestration_metrics.agent_usage`). A sidecar `.out.json`
-that is only a DETACHED stub reads its sibling `.record.json`.
+that is only a DETACHED stub reads its sibling `.record.json`. Empty, malformed or incomplete records
+fall back to stream usage with a partial label; a run without recoverable usage remains an unpriced row.
 
 Each row prints label, model, fresh input, cache-read, cache-write and output tokens, list USD, wall
 minutes, API minutes when recorded, turns, output tokens per API second (per wall second, marked `w`,
@@ -213,9 +214,24 @@ def load_runs(path, data=None):
         if 'inputTokens' in event and ('servedModel' in event or 'requestedModel' in event):
             return _from_record(event, path, data=data)
     sibling = _sibling_record(path)
-    if sibling and os.path.abspath(sibling) != os.path.abspath(path):
-        with open(sibling, encoding='utf-8', errors='replace') as fh:
-            return _from_record(json.load(fh), sibling, data=data)
+    record_problem = None
+    if sibling:
+        try:
+            if os.path.abspath(sibling) == os.path.abspath(path):
+                record_text = text
+            else:
+                with open(sibling, encoding='utf-8', errors='replace') as fh:
+                    record_text = fh.read()
+            record = json.loads(record_text)
+        except OSError as exc:
+            record_problem = 'record unreadable: %s' % exc.strerror
+        except ValueError:
+            record_problem = 'record empty' if not record_text.strip() else 'record unparseable'
+        else:
+            if isinstance(record, dict) and 'inputTokens' in record and (
+                    record.get('servedModel') or record.get('requestedModel')):
+                return _from_record(record, sibling, data=data)
+            record_problem = 'record incomplete'
     requests = model_registry.request_usage(events)
     if not requests:
         requests, _source = model_registry.sibling_requests(path)
@@ -233,21 +249,30 @@ def load_runs(path, data=None):
                                    output='outputTokens').items():
                 rec[field] = sum(r[key] for r in runs)
             rec['cacheWriteTokens'] += rec['cacheWrite1hTokens']
-            return _from_record(rec, path, data=data, events=events)
+            runs = _from_record(rec, path, data=data, events=events)
         if runs:
+            if record_problem:
+                for run in runs:
+                    if 'partial' not in run['tier_basis']:
+                        run['tier_basis'] += ' (stream-partial-output)'
+                    run['tier_basis'] += '; ' + record_problem
             return runs
     if requests:
         runs = _from_requests(requests, path)
         final_transcript = any('parentUuid' in e and 'sessionId' in e for e in events)
         for run in runs:
             run['tier_basis'] = 'per-request' if final_transcript else 'per-request (stream-partial-output)'
+            if record_problem:
+                run['tier_basis'] += '; ' + record_problem
         return runs
-    sibling = _sibling_record(path)
     if sibling:
-        with open(sibling, encoding='utf-8', errors='replace') as fh:
-            for event in _events(fh.read()):
-                return _from_record(event, sibling, data=data)
-    return [_run(_stem(path), None, problem='no usage in the file')]
+        runs = _from_sibling_stream(sibling, _stem(path))
+        if runs:
+            for run in runs:
+                run['tier_basis'] = 'untiered (stream-partial-output; %s)' % record_problem
+            return runs
+    return [_run(_stem(path), None, problem='no usage in the file' + (
+        '; ' + record_problem if record_problem else ''))]
 
 
 def _usd_parts(run, data):

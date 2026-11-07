@@ -265,10 +265,10 @@ async function foldCases() {
   check('the fold stage\'s PINS log carries the fold tier',
     foldCall && / tier:fanout$/.test(pinsFor(ruling, foldCall.opts.label) || ''),
     JSON.stringify({ label: foldCall && foldCall.opts.label, pins: ruling.logs.filter(l => l.startsWith('PINS ')) }))
-  check('native fold has a stable promptPath and polls its amendment before action',
+  check('native fold has a stable promptPath and carries its amendment key line',
     ruling.result.fold.files.promptPath === '.claude/scratch/fold_fixture/fold_prompt.md'
       && ruling.calls.find(c => c.opts.phase === 'Fold').prompt.includes(
-        'Amend: at each item and before returning, Read .claude/scratch/fold_fixture/fold_prompt.md.amend.md with the Read tool (Glob and Grep hide gitignored files); a not-found error means no amendment. A found amendment overrides the brief. Name what you applied.')
+        'Amendments: the harness delivers .claude/scratch/fold_fixture/fold_prompt.md.amend.md to you when your parent writes or changes it; a delivered amendment overrides the brief, and your report names what you applied.')
       && ruling.calls.find(c => c.opts.phase === 'Fold').prompt.includes('Persist this full engine brief with Write to the Prompt file before any subject action.')
       && ruling.calls.find(c => c.opts.phase === 'Fold').prompt.includes('Prompt file: .claude/scratch/fold_fixture/fold_prompt.md'))
   for (const mode of ['full', 'bounded']) {

@@ -54,6 +54,44 @@ def main():
         if got != [os.path.normcase(os.path.join(spill, "lens-a.record.json"))]:
             failures.append("spillDir with no --out-dir: records %r, want them under the spillDir %s" % (got, spill))
 
+    out_text = open(os.path.join(HERE, "fixtures", "dispatch_table", "fanout_detach_output.txt"),
+                    encoding="utf-8").read()
+    for name, rows, output, want in (
+            ("one listed row is the pin", {"fixture-alias": "high"}, "", ("fixture-alias", "high")),
+            ("several rows take the placement the call printed", {"fixture-alias": "high", "fixture-alt": "high"}, out_text,
+             ("sonnet", "high")),
+            ("several rows with no printed placement are candidates", {"fixture-alias": "high", "fixture-alt": "medium"}, "",
+             ("fixture-alias|fixture-alt", "high|medium")),
+            ("candidates with one shared effort show it once", {"fixture-alias": "high", "fixture-alt": "high"}, "",
+             ("fixture-alias|fixture-alt", "high"))):
+        with tempfile.TemporaryDirectory() as tmp:
+            jobs = os.path.join(tmp, "jobs.json")
+            with open(jobs, "w", encoding="utf-8", newline="\n") as fh:
+                json.dump([{"label": "bb-fx16", "promptFile": "a.md", "rows": rows}], fh)
+            rows_out = om.sidecar_launches("python3 .claude/tools/sidecar_fanout.py %s --detach"
+                                           % jobs.replace("\\", "/"), tmp, output=output)
+        got = [(r.get("model"), r.get("effort")) for r in rows_out]
+        if got != [want]:
+            failures.append("rows job, %s: sidecar_launches -> %r, want %r" % (name, got, [want]))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        jobs, out = os.path.join(tmp, "jobs.json"), os.path.join(tmp, "out")
+        os.makedirs(out)
+        with open(jobs, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump([job_a, dict(job_b, label="lens-b")], fh)
+        native = os.path.join(out, "native.args.json")
+        with open(native, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"jobs": [{"label": "lens-a", "model": "fixture-alias", "effort": "medium", "promptPath": "a.md"}],
+                       "spillDir": out}, fh)
+        rows_out = om.sidecar_launches("python3 .claude/tools/sidecar_fanout.py %s --out-dir %s --detach" % (
+            jobs.replace("\\", "/"), out.replace("\\", "/")), tmp)
+        kinds = sorted((r.get("kind"), r.get("label")) for r in rows_out)
+        if kinds != [("fanout", "lens-b"), ("handoff", "lens-a")]:
+            failures.append("native split: sidecar_launches -> %r, want lens-a only as one handoff" % kinds)
+        hand = next((r for r in rows_out if r.get("kind") == "handoff"), {})
+        if os.path.normcase(os.path.abspath(hand.get("jobs_file") or "x")) != os.path.normcase(os.path.abspath(native)):
+            failures.append("handoff row names %r, want the native args file %s" % (hand.get("jobs_file"), native))
+
     rows, _out = _launches({"jobs": "not a list"})
     if [r.get("model") for r in rows] != ["unresolved"]:
         failures.append("unreadable spec: want one `unresolved` row, got %r" % rows)

@@ -596,6 +596,25 @@ def kind_guard(kind, table=None):
     return None if row is None else (row.get("guard") or kind)
 
 
+def engine_job(kind, table=None):
+    """The `dispatch.js` job fields a kind translates to: its guard as `shape`, on a `general-purpose`
+    start that the engine swaps for the shape's lane type. Only a kind that lists the `engine` route
+    translates, and only exactly: the guard shape must carry the kind's own `agentType`, else the swap
+    would run the job on a different tool set than its row declares."""
+    table = table or load_table()
+    row = (table.get("kinds") or {}).get(kind)
+    if row is None:
+        raise ValueError("unknown kind %r: a job names one of: %s" % (kind, ", ".join(public_kinds(table))))
+    if "engine" not in row["routes"]:
+        raise ValueError("kind %r does not list the engine route: its job stays a sidecar" % kind)
+    shape = kind_guard(kind, table)
+    declared = (table.get("shapes") or {}).get(shape, {}).get("agentType")
+    if declared != row.get("agentType"):
+        raise ValueError("kind %r has no exact engine translation: its %r shape carries agentType %r, the "
+                         "kind %r" % (kind, shape, declared, row.get("agentType")))
+    return {"shape": shape, "agentType": "general-purpose"}
+
+
 def tool_spec(profile, keys):
     """The `-t`-grammar spec for a resolved profile: built-ins, then `mcp__<server>` per key.
 
@@ -911,6 +930,24 @@ def _path_list_label(text, match):
 _VERB_ANY = re.compile(r"(?<![\w/\-])(?:dispatch|fan[- ]?out|spawn|launch|invoke|execute|run|use|follow)\b", re.I)
 
 
+# A verb followed at once by a closed read/search command span ("Run `git grep` over … for:") orders
+# that search; an engine named after the span is a search term, unless another verb stands between.
+READ_SPAN_RE = re.compile(r"(?:" + VERB_WORD + r")\s+`\s*(?:git\s+(?:grep|log|show|diff)|rg|grep|cat|sed|head|tail|ls|diff)\b[^`\n]*`", re.I)
+
+
+_SECOND_ORDER = re.compile(DISPATCH_VERB, re.I)
+
+
+def _searched_target(match, target_re):
+    """True when the match's verb orders a read command and the first target is a term of that
+    search: no second dispatch verb between the command span and the target."""
+    body = match.group(0)
+    span = READ_SPAN_RE.search(body)
+    first = target_re.search(body)
+    return bool(span and first and first.start() >= span.end()
+                and not _SECOND_ORDER.search(body[span.end():first.start()]))
+
+
 def _negated_dispatch(text, match, target_re):
     """True when the match's dispatch verb sits in a negated clause ("do not run it")."""
     body = match.group(0)
@@ -952,7 +989,7 @@ def nested_fanout_hits(text, root=None, fanout=True):
     hits = []
     for m in nested.finditer(body):
         if (_shell_argument(body, m, named) or _negated_dispatch(body, m, named)
-                or _path_list_label(body, m)):
+                or _path_list_label(body, m) or _searched_target(m, named)):
             continue
         targets = list(named.finditer(m.group(0)))
         target = targets[-1] if targets[-1].end() == len(m.group(0)) else targets[0]

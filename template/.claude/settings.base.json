@@ -218,6 +218,16 @@
       {
         "hooks": [
           {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/amend_delivery.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "*"
+      },
+      {
+        "hooks": [
+          {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/overnight_ask_guard.py\"",
             "type": "command"
           }
@@ -290,6 +300,26 @@
         "hooks": [
           {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/denial_coach.py\" --coach",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/amend_delivery.py\"",
+            "timeout": 10,
+            "type": "command"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/amend_delivery.py\"",
             "timeout": 10,
             "type": "command"
           }

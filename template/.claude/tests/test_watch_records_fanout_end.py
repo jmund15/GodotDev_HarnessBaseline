@@ -208,10 +208,10 @@ class FanoutEnd(unittest.TestCase):
         text, exited = outcome(self.s.watch(), 8)
         self.assertTrue(exited, "an unreported failed end wakes the session")
         self.assertIn("ENDED %s exit=2 %s" % (ENDED, ENDED_REASON), text)
-        again, exited = outcome(self.s.watch(), 8)
-        self.assertTrue(exited)
+        again, exited = outcome(self.s.watch(), 1)
+        self.assertFalse(exited)
         self.assertNotIn("ENDED", again)
-        self.assertEqual(again.splitlines()[-1], "NONE")
+        self.assertNotIn("NONE", again)
 
     def test_end_reported_through_its_entry_is_not_reported_again_after_the_entry_is_consumed(self):
         now = self.s.now
@@ -226,8 +226,8 @@ class FanoutEnd(unittest.TestCase):
         self.assertTrue(exited)
         self.assertIn("ENDED %s exit=2" % ENDED, text)
         self.s.pending([])
-        again, exited = outcome(self.s.watch(), 8)
-        self.assertTrue(exited)
+        again, exited = outcome(self.s.watch(), 1)
+        self.assertFalse(exited)
         self.assertNotIn("ENDED", again)
 
     def test_clean_old_and_foreign_rows_report_nothing(self):
@@ -236,9 +236,9 @@ class FanoutEnd(unittest.TestCase):
         self.s.ledger(self.s.finish_row("old-ended", now - 25 * 3600),
                       self.s.finish_row("clean", now - 60, outcome="finished-without-record", code=0),
                       self.s.finish_row("someone-elses", now - 60, session="00000000-0000-0000-0000-000000000000"))
-        text, exited = outcome(self.s.watch(), 8)
-        self.assertTrue(exited)
-        self.assertEqual(text, "NONE")
+        text, exited = outcome(self.s.watch(), 1)
+        self.assertFalse(exited)
+        self.assertEqual(text, "")
 
     def test_a_job_that_ended_nonzero_after_the_watcher_armed_wakes_with_its_exit(self):
         now = self.s.now
@@ -394,6 +394,8 @@ class WakeUnit(unittest.TestCase):
         self.finish("a")
         self.finish("b")
         self.assertAsleep(proc, "ended seats of a fan-out that still runs its fold stage wake nobody")
+        _, exited = outcome(proc, 0.1)
+        self.assertFalse(exited)
 
     def test_ends_in_one_poll_arrive_in_one_wake(self):
         self.fanout({"a": None, "b": None, "c": None})

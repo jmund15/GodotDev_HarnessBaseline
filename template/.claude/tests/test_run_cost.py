@@ -153,6 +153,63 @@ class RunCostTests(unittest.TestCase):
         self.assertIsNone(run.get("usd"), out)
         self.assertIn("several served models", run.get("problem") or "", out)
 
+    def test_damaged_records_recover_live_requests_for_every_entry_path(self):
+        # Captured r7-e2e-a.stream request; message content and unrelated metadata removed.
+        event = {"type": "assistant", "message": {
+            "model": "claude-sonnet-5-5", "id": "msg_011CgfEDqeo84maNAcbgMtQ8",
+            "type": "message", "role": "assistant", "content": [],
+            "usage": {"input_tokens": 2, "cache_creation_input_tokens": 30997,
+                      "cache_read_input_tokens": 0,
+                      "cache_creation": {"ephemeral_5m_input_tokens": 30997, "ephemeral_1h_input_tokens": 0},
+                      "output_tokens": 6}},
+            "parent_tool_use_id": None, "session_id": "dbf7e4ef-9663-4b58-a73d-a650abebba9c"}
+        good = self.put("good.record.json", self.sol_record("good"))
+        for body in ("", "{", "[]", "null", "{}"):
+            for entry in ("live.stream", "live.record.json", "live.out.json"):
+                with self.subTest(body=body, entry=entry):
+                    self.put("live.record.json", body)
+                    self.put("live.stream", json.dumps(event) + "\n")
+                    self.put("live.out.json", "DETACHED pid=1\n")
+                    code, out = self.run_tool("--json", str(self.tmp / entry), good)
+                    doc = json.loads(out)
+                    self.assertEqual(code, 0, out)
+                    self.assertEqual(len(doc["runs"]), 2)
+                    live = doc["runs"][0]
+                    self.assertGreater(live["usd"], 0)
+                    self.assertEqual((live["fresh"], live["cache_write"], live["output"]), (2, 30997, 6))
+                    self.assertIn("partial", live["tier_basis"])
+                    self.assertAlmostEqual(doc["total_usd"], 4 + live["usd"])
+
+    def test_damaged_record_without_usage_stays_visible_and_batch_continues(self):
+        bad = self.put("bad.record.json", "{")
+        stub = self.put("bad.out.json", "DETACHED pid=1\n")
+        good = self.put("good.record.json", self.sol_record("good"))
+        for entry in (bad, stub):
+            with self.subTest(entry=entry):
+                code, out = self.run_tool("--json", entry, good)
+                doc = json.loads(out)
+                self.assertEqual(code, 1)
+                self.assertEqual(doc["unpriced"], 1)
+                self.assertEqual(len(doc["runs"]), 2)
+                self.assertIsNone(doc["runs"][0]["usd"])
+                self.assertIn("no usage", doc["runs"][0]["problem"])
+                self.assertEqual(doc["total_usd"], 4)
+
+    def test_damaged_record_with_result_only_stream_is_marked_partial(self):
+        record = self.put("result.record.json", "")
+        for session_id in (None, "run-cost-proof-result-session"):
+            result = self.sonnet_result()
+            if session_id:
+                result["session_id"] = session_id
+            stream = self.put("result.stream", result)
+            for entry in (record, stream):
+                with self.subTest(entry=entry, session_id=session_id):
+                    code, out = self.run_tool("--json", entry)
+                    run = json.loads(out)["runs"][0]
+                    self.assertEqual(code, 0, out)
+                    self.assertGreater(run["usd"], 0)
+                    self.assertIn("partial", run["tier_basis"])
+
     def test_a_detached_stub_reads_its_sibling_record(self):
         self.put("sol-b.record.json", self.sol_record("sol-b"))
         stub = self.put("sol-b.out.json", "DETACHED pid=1\nOUT=x\n")

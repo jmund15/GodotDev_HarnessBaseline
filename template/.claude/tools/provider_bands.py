@@ -339,10 +339,75 @@ def read_capacity(transport, data=None, live=True):
     return got
 
 
+def _usable(w):
+    """Points left before the launcher's dispatch floor: the launcher refuses a job once a window reaches it,
+    so a window's room ends there."""
+    floor = w.get("dispatchFloorPercent")
+    return (floor if isinstance(floor, (int, float)) and not isinstance(floor, bool) else 100.0) - w["usedPercent"]
+
+
+def _window_facts(windows):
+    """Each readable window's {name, headroom, resetsAt, minutes}, the units a job's fit is priced in."""
+    return [{"name": w.get("name"), "headroom": _usable(w),
+             "resetsAt": provider_capacity._epoch(w.get("resetsAt")),
+             "minutes": w.get("windowDurationMins")}
+            for w in windows
+            if isinstance(w.get("usedPercent"), (int, float)) and not isinstance(w["usedPercent"], bool)]
+
+
+def _long_room(windows, now):
+    """(room, name) of the plan's longest readable window, the quota that is scarce over days, or (None, None).
+    A plan's routing window can be a short one; this is what survives a short window's reset."""
+    timed = [w for w in windows
+             if isinstance(w.get("windowDurationMins"), (int, float))
+             and not isinstance(w.get("windowDurationMins"), bool) and w["windowDurationMins"] > 0]
+    if not timed:
+        return None, None
+    longest = max(timed, key=lambda w: w["windowDurationMins"])
+    return room(longest, now), longest.get("name")
+
+
+def reopen(row, now=None):
+    """{room, at, window} when a plan row's only shortfall is a short window that resets: every window with no
+    headroom left is shorter than the row's longest window and has a future reset, and the longest window still
+    has room. `room` is that longest window's room (the quota that is scarce over days) and `at` the earliest
+    such reset. None when the row holds now, is unreadable, or is blocked by its longest window."""
+    if not isinstance(row, dict):
+        return None
+    windows = row.get("windows")
+    if not isinstance(windows, list) or len(windows) < 2:
+        return None
+    longest = max(windows, key=lambda w: w.get("minutes") or 0)
+    span = longest.get("minutes") or 0
+    if span <= 0:
+        return None
+    short = [w for w in windows
+             if isinstance(w.get("headroom"), (int, float)) and not isinstance(w.get("headroom"), bool)
+             and w["headroom"] <= 0]
+    if not short:
+        return None
+    now = time.time() if now is None else now
+    for w in short:
+        reset = w.get("resetsAt")
+        if w is longest or (w.get("minutes") or 0) >= span:
+            return None
+        if isinstance(reset, bool) or not isinstance(reset, (int, float)) or reset <= now:
+            return None
+    value = row.get("longRoom")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return {"room": value, "at": min(w["resetsAt"] for w in short),
+            "window": min(short, key=lambda w: w["resetsAt"]).get("name"),
+            "longWindow": row.get("longWindow")}
+
+
 def plan_room(transport, data, read, now):
-    """{transport, room, window, left, headroom, headroomWindow, headroomResetsAt, windows, daysLeft, planType, unusedAtReset when it projects} for a plan with allowance left, else
-    {transport, room: None, why}; `stale: True` when the reader had no fresh reading at all. `headroom` is the window with the fewest points left; `windows` lists every window's own
-    {name, headroom, resetsAt}, because points of two windows are different units and a job's draw is priced per window."""
+    """{transport, room, window, left, headroom, headroomWindow, headroomResetsAt, windows, longRoom, longWindow, daysLeft, planType, unusedAtReset when it projects} for a plan with allowance left, else
+    {transport, room: None, why, windows, longRoom, longWindow} for a readable plan a window drops (exhausted or
+    at its dispatch floor); `stale: True` when the reader had no fresh reading at all. `headroom` is the window with
+    the fewest points left; `windows` lists every window's own {name, headroom, resetsAt, minutes}, because points
+    of two windows are different units and a job's draw is priced per window; `longRoom` is the room of the longest
+    window, which survives a short window's reset."""
     try:
         got = read(transport, data)
     except Exception as exc:
@@ -352,46 +417,44 @@ def plan_room(transport, data, read, now):
         return {"transport": transport, "room": None, "stale": True,
                 "why": "warming: no fresh reading"}
     status = got.get("status")
+    quota = got.get("quota") if isinstance(got.get("quota"), dict) else {}
+    windows = [w for w in quota.get("windows") or [] if isinstance(w, dict)]
+    facts = _window_facts(windows)
+    long_value, long_name = _long_room(windows, now)
     if status == "dispatch-floor":
-        return {"transport": transport, "room": None, "why": provider_capacity.floor_refusal(got, now)}
+        return {"transport": transport, "room": None, "why": provider_capacity.floor_refusal(got, now),
+                "windows": facts, "longRoom": long_value, "longWindow": long_name}
     if status == "exhausted":
-        return {"transport": transport, "room": None, "why": "exhausted"}
+        return {"transport": transport, "room": None, "why": "exhausted",
+                "windows": facts, "longRoom": long_value, "longWindow": long_name}
     if status != "available":
         cause = str((got.get("error") or {}).get("message") or "") if isinstance(got.get("error"), dict) else ""
         return {"transport": transport, "room": None,
                 "why": "unreadable: status %s" % status + (": %s" % cause if cause else "")}
-    quota = got.get("quota") if isinstance(got.get("quota"), dict) else {}
     name = quota.get("routingWindow")
-    window = next((w for w in quota.get("windows") or []
-                   if isinstance(w, dict) and w.get("name") == name), None)
+    window = next((w for w in windows if w.get("name") == name), None)
     if window is None:
         return {"transport": transport, "room": None, "why": "unreadable: no routing window"}
-    windows = [w for w in quota.get("windows") or [] if isinstance(w, dict)]
     for w in [window] + [w for w in windows if w is not window]:
         if quota_bands.is_exhausted(w.get("usedPercent"), quota.get("credits")):
             return {"transport": transport, "room": None,
-                    "why": "exhausted" if w is window else "exhausted: %s window" % w.get("name")}
+                    "why": "exhausted" if w is window else "exhausted: %s window" % w.get("name"),
+                    "windows": facts, "longRoom": long_value, "longWindow": long_name}
     value = room(window, now)
     if value is None:
         return {"transport": transport, "room": None,
                 "why": "unreadable: routing window %s has no used share, length or future reset" % name}
     reset = provider_capacity._epoch(window.get("resetsAt"))
-    def usable(w):
-        # The launcher refuses a job once a window reaches its dispatch floor, so room ends there.
-        floor = w.get("dispatchFloorPercent")
-        return (floor if isinstance(floor, (int, float)) and not isinstance(floor, bool) else 100.0) - w["usedPercent"]
 
     tightest_window = min((w for w in windows
                            if isinstance(w.get("usedPercent"), (int, float)) and not isinstance(w["usedPercent"], bool)),
-                          key=usable)
+                          key=_usable)
     row = {"transport": transport, "room": value, "window": name,
            "left": 100.0 - window["usedPercent"],
-           "headroom": usable(tightest_window), "headroomWindow": tightest_window.get("name"),
+           "headroom": _usable(tightest_window), "headroomWindow": tightest_window.get("name"),
            "headroomResetsAt": provider_capacity._epoch(tightest_window.get("resetsAt")),
-           "windows": [{"name": w.get("name"), "headroom": usable(w),
-                        "resetsAt": provider_capacity._epoch(w.get("resetsAt"))}
-                       for w in windows
-                       if isinstance(w.get("usedPercent"), (int, float)) and not isinstance(w["usedPercent"], bool)],
+           "windows": facts,
+           "longRoom": long_value, "longWindow": long_name,
            "daysLeft": (reset - now) / 86400.0 if reset is not None else None,
            "planType": got.get("planType")}
     projection = unused_at_reset(transport, window, now, windows=windows)
@@ -923,7 +986,8 @@ def tier_table(tier, session_plan, data=None, read=None, now=None, ladder=None, 
                 "standing": dict(info["standing"]),
                 "cost": cells["cost"].get(rid), "speed": cells["speed"].get(rid),
                 "intel": cells["intel"].get(rid), "minus": cells["minus"].get(rid), "effort": effort,
-                "probation": probation,
+                "probation": probation, "input": model_registry.input_types(row),
+                "imageRoute": model_registry.image_route(row, data),
                 "draw": _draw_cells(draw, row.get("alias"), effort, [room["transport"] for room in surviving])})
         groups.append({"route": route, "seat": route == seat, "plans": plans, "rows": group_rows})
     out["groups"] = groups
@@ -945,6 +1009,16 @@ def _unused_cell(projection):
     if not isinstance(projection, dict) or projection.get("pct") is None:
         return "unused at reset unknown"
     return "~%d%% unused at reset" % int(round(projection["pct"]))
+
+
+def _input_text(row):
+    return ",".join(row.get("input") or []) or "unknown"
+
+
+def _image_text(row):
+    route = row.get("imageRoute") or {}
+    state = route.get("state") or "unstated"
+    return "%s (%s probe)" % (state, route["row"]) if state == "verified" and route.get("row") else state
 
 
 def render_tier_table(got):
@@ -973,9 +1047,10 @@ def render_tier_table(got):
             # Its cost, speed, intel, ± and effort cells print once, in the ladder table above, under `ladder`.
             name = row.get("alias") or row["id"]
             ladder = row.get("ladder")
-            lines.append("  %s%s %s%s%s" % (
+            lines.append("  %s%s %s%s%s%s" % (
                 name, "" if ladder == name else " (ladder %s)" % (ladder or "none"),
                 ", ".join("%s:%s" % (tier, kind) for tier, kind in row["standing"].items()),
+                " | input %s | image route %s" % (_input_text(row), _image_text(row)),
                 " | draw %s" % draw if draw else "",
                 ' | probation "%s"' % row["probation"] if row.get("probation") else ""))
     for plan in got.get("warming") or []:

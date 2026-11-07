@@ -392,6 +392,19 @@ def main():
                   {optional: "pure", agents: "godot"})
     check("a source the OPTIONAL_DATA table lists tolerates its named files absent", got == [], kinds(got))
 
+    dispatch_guard = ".claude/hooks/skill_dispatch_gate.py"
+    owner_map = ".claude/hooks/skill_dispatch.project.json"
+    owner_literal = 'OWNER_MAP = ".claude/hooks/skill_dispatch.project.json"\n'
+    got = planted({dispatch_guard: owner_literal}, {dispatch_guard: "pure"}, extra=(owner_map,))
+    check("the dispatch guard's optional project owner map is not a shipped dependency",
+          got == [], kinds(got))
+    got = planted({dispatch_guard: owner_literal}, {dispatch_guard: "pure"})
+    check("the dispatch guard closes without a project owner map", got == [], kinds(got))
+    got = planted({dispatch_guard: 'OTHER = ".claude/hooks/required.project.json"\n'},
+                  {dispatch_guard: "pure"}, extra=(".claude/hooks/required.project.json",))
+    check("the dispatch guard's optional-data declaration exempts only its owner map",
+          kinds(got) == [(dispatch_guard, "local-only", ".claude/hooks/required.project.json")], kinds(got))
+
     other = ".claude/tools/lens_briefs.py"
     got = planted({other: 'REGISTRIES = ("scene_agents.md",)\n', agents: "# a\n"}, {other: "pure", agents: "godot"})
     check("a source OPTIONAL_DATA names for other files still fails on this one",

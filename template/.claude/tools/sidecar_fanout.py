@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Fan a job list across sidecar launchers -- the cross-transport `dispatch.js`.
+"""Fan a job list across plans: the cross-transport `dispatch.js`. A job on the session's own plan runs
+as a native Workflow agent (NATIVE SPLIT below); a job on any other plan runs through its sidecar launcher.
 
-WHY THIS EXISTS. `Workflow` and `Agent` run on the session's own endpoint, so a provider seat
-reaches every other model through a sidecar Bash call, one job per call. Hand-rolling that loop is
+WHY THIS EXISTS. `Workflow` and `Agent` run on the session's own endpoint, so a job on another plan
+reaches its model through a sidecar Bash call, one job per call. Hand-rolling that loop is
 what makes a seat quietly downgrade itself to whatever is in-transport: the correct row is one hop
 away and the hop costs a bespoke script every time. This makes the hop cost what an in-harness
 fan-out costs. `model_registry.py for-role <tier>` names the row; this dispatches to it.
@@ -42,7 +43,7 @@ two windows are different units: each window's headroom is held against that win
 (`provider_bands.job_drain`), and the plan holds the job only while every window does. Every readable plan is paced,
 whatever its jobs' summed forecast, because a forecast is wrong by what nothing has measured yet. Every job end and
 launch decision fresh-reads the plan: a job launches while each window holds it beside the jobs still running (at least
-one job per plan), `--max-parallel` still bounds the total, and once a job has ended and a window's reading has moved,
+one job per plan), `--max-parallel` (when given) still bounds the total, and once a job has ended and a window's reading has moved,
 the observed drain per job replaces that window's forecast for the plan's remaining jobs (scaled by each job's own
 forecast). A job its plan cannot hold moves to a route sibling that holds it now, else waits for a running job to end.
 A plan that reads spent, or whose job ended in a usage limit, moves a job that named no plan to a route sibling with
@@ -64,6 +65,28 @@ USAGE
                                             [--fold-subject ...] [--fold-plan PLAN] [--detach] [--ledger-* ...]
     python3 .claude/tools/sidecar_fanout.py --review-artifact <review.json> --select <F-or-M-id>
     python3 .claude/tools/sidecar_fanout.py --status <out-dir>
+
+NATIVE SPLIT. One selection step places every job; then a job placed on the SESSION's own plan
+(`provider_bands.session_plan`) runs as a native Workflow agent through `workflows/dispatch.js`
+(`dispatch_chains.js` for whole lanes), and a job on any other plan stays a sidecar. After planning, this tool
+writes `<out-dir>/native.args.json` (the Workflow call's args), `native.jobs.json` (the same jobs in these
+field names, `excludePlans` the session plan) and, while sidecar jobs remain, `sidecar.jobs.json` (the
+remainder; each job a placement moved off the session plan carries `excludePlans: [<session plan>]`, which the
+driver that runs it honours), and prints the one call:
+`NATIVE <n> on <plan>: Workflow({"scriptPath": ..., "args": {"jobsFile": "<out-dir>/native.args.json"}})`.
+Every job prints one `[fanout] <label>: native on <plan>` or `stays a sidecar (<reason>)` line. A job stays a
+sidecar when its plan is not the session's, its kind lists no `engine` route (`tool_profiles.engine_job`), its row
+names no effort, it carries a field only a sidecar expresses (`SIDECAR_ONLY_FIELDS`, or a `workdir` naming a checkout other
+than the repo root; `schemaFile` and `contextFiles` beyond the shared `contextPath` go native as the job's
+`schema` and `contextPaths`), the out dir is not under .claude/scratch/, or a lane-mate stays one. Every job stays a
+sidecar when the session's plan is unreadable, `CLAUDE_CODE_SESSION_ID` is unset, `CLAUDE_CODE_SIDECAR` is set
+(a sidecar child has no Workflow tool), or the run uses --review, --fold, --refold, --compare, --authorize or
+--max-parallel. With nothing left for sidecars, no driver starts. While the five-hour window is hot, the split
+keeps at most `_dispatch_checks.native_room` native units (a lane is one), the rule RULE 5 of
+`hooks/workflow_provider_guard.py` enforces at the Workflow call; the cut jobs go to another plan through the
+remainder file, and a cut job no other plan holds prints `not run: native width` and goes to `resume-jobs.json`.
+`--dry-run` prints the routing and writes no file. Results land in `<out-dir>/<label>.md` on both routes; `dispatch_result.py consume` takes the Workflow run
+dir for a native label and the out dir for a sidecar one.
 
 JOBS FILE -- a JSON list of jobs, or `workflows/dispatch.js`'s args object `{jobs, contextPath?,
 spillDir?}`, or `workflows/dispatch_chains.js`'s `{chains: [{name, jobs}], contextPath?, spillDir?}`, so one
@@ -114,6 +137,8 @@ fields this route has no use for (`readOnly`) are ignored; `agentType` refuses, 
                           through its own `launcher`; it never moves, and a usage limit that stops the job is reported
                           with the command that resumes it after that plan's reset. Omitted, the plan `provider_bands.pick_key` ranks first among
                           those that hold the forecast pays; if none fits, most positive headroom pays
+    excludePlans          list of plan names the pick may not use. The native split writes it into the remainder
+                          for a job it moved off the session plan; a job whose every plan is excluded refuses
     pick, spec            both -> `-Y <pick>,<spec>`, the pin basis (`orchestration` reference `slice_pins.md`)
     extraArgs             list, appended verbatim, for a flag this wrapper does not model
     wakeWith              a group name -> the job's inventory row. The session watcher wakes the orchestrator
@@ -132,7 +157,7 @@ that ends has its final message (the stdout `result` event its `-R` record summa
 deliverable; the result's `deliveryFlag` warns when that message answered a later turn. `tools/dispatch_result.py`
 owns the extraction.
 
-CONCURRENCY -- more than one flat job at --max-parallel above 1 hands every child the single-flight
+CONCURRENCY -- more than one flat job allowed at once (no --max-parallel, or one above 1) hands every child the single-flight
 guard dispatch.js injects, as a `-C` file rendered from `guards/single_flight.json` (the shell or
 no-shell wording by the job's resolved built-ins). A chain lane instead gets dispatch_chains.js's lane
 guard: it owns its lane (a chain's `exclusiveResource`, such as its worktree, so it may build and run its
@@ -218,12 +243,10 @@ import sidecar_completion  # noqa: E402 -- shared source keys and fail-closed ve
 
 GUARD_SOURCE = ROOT / "guards" / "single_flight.json"
 
-# A PROCESS cap, chosen here rather than read from the registry's `limits.concurrency`: that field
-# is a vendor API/token ceiling (or null), not a count of child CLIs. The default rests on one
-# 7-wide codex fan-out that died 403 at a single instant, cause unverified
-# (`gotcha_luna_sidecar_concurrency_cap`). That is a hypothesis, not a measurement, so the number
-# is a flag rather than a rule.
-DEFAULT_MAX_PARALLEL = 4
+# A cap on concurrent child CLIs is the registry's `transports.<name>.maxChildren` (count and basis),
+# not `limits.concurrency`: that field is a vendor API/token ceiling (or null). A transport without one
+# has no count cap; its plan's room and Windows memory headroom bound it. `--max-parallel` is a total
+# cap a caller sets; absent, there is none.
 
 # The review deliverable's shape, shipped so `-S` needs no caller decision. Structurally identical
 # to `review_fanout.js` FINDINGS_SCHEMA: both engines return one object, so a consumer never has to
@@ -501,6 +524,11 @@ def normalize_job(job, data=None, shared_context=None):
                 isinstance(k, str) and k.strip() and (v is None or isinstance(v, str)) for k, v in rows.items()):
             raise JobError(f"job {label}: `rows` must be a non-empty object of {{alias: effort}}")
         out["rows"] = {_bare_model(k): v for k, v in rows.items()}
+    needs = out.get("needs")
+    if needs is not None:
+        legal = model_registry._LEGAL_INPUT_TYPES
+        if not isinstance(needs, list) or not needs or any(n not in legal for n in needs):
+            raise JobError(f"job {label}: `needs` must be a non-empty list of input types ({', '.join(legal)})")
     # The launcher appends `[1m]` itself for a 1M-window row (`model_registry anthropic-window`), so the
     # bare row carries the long-context intent; the suffix would only fail the registry lookup.
     if "alias" in out:
@@ -511,6 +539,39 @@ def normalize_job(job, data=None, shared_context=None):
                                               for p in mine):
             out["contextFiles"] = [shared_context] + mine
     return out
+
+
+def _missing_inputs(alias, needs, data):
+    """Input types the row's catalog entry lacks; [] when it declares them or its input is unknown (`inputGap`):
+    unknown is not proven wrong, so the session's listing stands."""
+    types = model_registry.input_types(model_registry.resolve(alias, data))
+    return [] if types is None else [n for n in needs if n not in types]
+
+
+def _drop_unfit_rows(jobs, data):
+    """Each job with its listed rows that cannot serve its `needs` dropped, each drop named once on stderr. A job
+    whose every listed row drops, or a single-row job whose row cannot serve, refuses: nothing it asked for runs."""
+    kept = []
+    for job in jobs:
+        needs, label = job.get("needs"), job.get("label")
+        if needs and job.get("rows"):
+            rows = dict(job["rows"])
+            for alias in list(rows):
+                missing = _missing_inputs(alias, needs, data)
+                if missing:
+                    del rows[alias]
+                    print(f"[fanout] {label}: dropping row {alias} for needs {','.join(needs)}: "
+                          f"its catalog input lacks {','.join(missing)}", file=sys.stderr)
+            if not rows:
+                raise JobError(f"job {label}: no listed row can serve needs {','.join(needs)}")
+            job = {**job, "rows": rows}
+        elif needs and job.get("alias"):
+            missing = _missing_inputs(job["alias"], needs, data)
+            if missing:
+                raise JobError(f"job {label}: row {job['alias']} declares no {','.join(missing)} input, "
+                               f"which the job needs")
+        kept.append(job)
+    return kept
 
 
 def _posix(p):
@@ -619,11 +680,16 @@ def job_on(job, plan, data):
 
 def job_routes(job, data):
     """(route text, plans): the transports of the rows a job lists, joined, and the union of their plans, deduped in
-    listed order. Raises where a listed row does not resolve."""
+    listed order, less the job's `excludePlans`. Raises where a listed row does not resolve or every plan is excluded."""
     transports = list(dict.fromkeys(model_registry.resolve(alias, data)["transport"]
                                     for alias, _effort in listed_rows(job)))
     plans = list(dict.fromkeys(plan for t in transports for plan in model_registry.plans_of(t, data)))
-    return ", ".join(transports), plans
+    excluded = job.get("excludePlans") or []
+    kept = [plan for plan in plans if plan not in excluded]
+    if plans and not kept:
+        raise JobError(f"job {job.get('label')}: every plan that pays for {', '.join(transports)} "
+                       f"({', '.join(plans)}) is in its excludePlans")
+    return ", ".join(transports), kept
 
 
 def plan_signature(job, data):
@@ -734,6 +800,7 @@ class Placement(NamedTuple):
     fit: list
     blind: bool
     load: dict
+    reopen: list = ()
 
 
 def place_job(candidates, data, read, now, load, signature):
@@ -741,7 +808,8 @@ def place_job(candidates, data, read, now, load, signature):
     plans `candidates`: every plan's room row, `held` (plan ->
     (holds, drain, committed)) and `unfit` (plan -> its `_unfit_text`) for the readable ones, `fit` the holding rows
     best first (`provider_bands.pick_key`), or positive-headroom rows most headroom first when none fits,
-    `blind` when some plan's reading decides nothing, and the `load` used
+    `reopen` the rows a short window blocks that `provider_bands.reopen` says will have room again at its reset
+    (most room first), `blind` when some plan's reading decides nothing, and the `load` used
     ({plan: [signature]}, `plan_load` when None, read only once a plan is readable). The one ranking `pick_plan`
     and `admission_refusal` share; charging the winner to a load is the caller's."""
     rows = [plan_room(name, data, read, now) for name in candidates]
@@ -761,12 +829,53 @@ def place_job(candidates, data, read, now, load, signature):
     if not fit:
         fit = sorted((row for row in rows if row.get("headroom", 0) > 0),
                      key=lambda row: row["headroom"], reverse=True)
-    return Placement(rows, held, unfit, fit, blind, load)
+    reopen = []
+    for row in rows:
+        name = row["transport"]
+        if name in held and held[name][0]:
+            continue
+        info = provider_bands.reopen(row, now)
+        if info:
+            reopen.append({"transport": name, "row": row, **info})
+    reopen.sort(key=lambda r: (-r["room"], r["at"]))
+    return Placement(rows, held, unfit, fit, blind, load, reopen)
+
+
+def worth_waiting(fit, reopen_room):
+    """True when holding a job for a short window's reset beats `fit`, the best plan that takes it now: there is
+    none, or it spends its long window faster than time (`longRoom` below 1.0, even pace) and the reopening
+    plan's long window has more room. Spending a scarce long window costs days; the reset costs minutes."""
+    if fit is None:
+        return True
+    scarcer = fit.get("longRoom")
+    return (isinstance(scarcer, (int, float)) and not isinstance(scarcer, bool) and scarcer < 1.0
+            and reopen_room > scarcer)
+
+
+def choose_plan(placed):
+    """(row, reopening) the plan `pick_plan` and `admission_refusal` choose: the best fitting row, unless the
+    first reopening plan is `worth_waiting` for. `reopening` is the reopen entry then, else None."""
+    best = placed.fit[0] if placed.fit else None
+    if placed.reopen and worth_waiting(best, placed.reopen[0]["room"]):
+        return placed.reopen[0]["row"], placed.reopen[0]
+    return best, None
+
+
+# plans whose unreadable reading was named once this run, so every later placement line drops them.
+_REPORTED_UNREADABLE = set()
+
+
+def _why_text(row):
+    """A dropped row's reason, without repeating the transport name a floor refusal already starts with."""
+    why = row.get("why") or ""
+    return why if why.startswith(str(row.get("transport")) + " ") else f"{row['transport']} {why}"
 
 
 def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, load=None, job=None):
     """The paying plan, or a JobError when every candidate has no room. Forecast fits rank as before;
-    otherwise most positive headroom wins. A caller restricting `plans` to a named plan keeps it named.
+    otherwise most positive headroom wins. A plan a short window blocks while its long window has more room
+    than the fit is chosen and waited for at its reset (`choose_plan`). A caller restricting `plans` to a
+    named plan keeps it named.
     `load` is {plan: [signature]}, default `plan_load`; `job` is priced by `provider_bands.job_drain`.
     `read` is the capacity reader (default `provider_bands.read_capacity`); a caller with a deadline passes
     its own. A list `rest` receives other forecast fits, or other positive-headroom plans when none fits:
@@ -779,32 +888,59 @@ def pick_plan(label, transport, plans, data, read=None, rest=None, quiet=False, 
     rows, held, fit, load = placed.rows, placed.held, placed.fit, placed.load
     if len(plans) == 1 and not held and placed.blind:
         return plans[0]
-    if not held:
-        raise JobError(f"job {label}: no plan of {transport} has room -- "
-                       + "; ".join(f"{row['transport']}: {row.get('why')}" for row in rows)
-                       + ". Name a `plan` only once one has room, or pick a row on another route.")
-    if not fit:
+    best, reopening = choose_plan(placed)
+    if best is None:
+        if not held:
+            raise JobError(f"job {label}: no plan of {transport} has room -- "
+                           + "; ".join(f"{row['transport']}: {row.get('why')}" for row in rows)
+                           + ". Name a `plan` only once one has room, or pick a row on another route.")
         raise JobError(f"job {label}: no plan of {transport} holds this job -- "
                        + "; ".join(placed.unfit[row["transport"]] for row in rows if row["transport"] in held)
                        + ". Wait for the reset, or move the job to a plan with room.")
-    best = fit[0]
+    # A job held for a reopening plan falls back only to plans that hold it now; the fit plans are the safe spare.
     if rest is not None:
-        rest.extend(row["transport"] for row in fit[1:])
+        rest.extend(row["transport"] for row in (fit if reopening else fit[1:]))
     if not quiet:
+        reopening_by_name = {entry["transport"]: entry for entry in placed.reopen}
+
         def clause(row):
+            name = row["transport"]
+            info = reopening_by_name.get(name)
+            if info is not None:
+                return (f"{name} reopens {provider_bands.reset_text(info['at'], now)}, "
+                        f"room {info['room']:.2f} on {provider_bands.window_name({'name': info.get('longWindow')})}")
             if row.get("room") is None:
-                return f"{row['transport']} {row.get('why')}"
-            ok, drain, committed = held[row["transport"]]
+                return None if _decides_nothing(row) else _why_text(row)
+            ok, drain, committed = held[name]
             if not ok:
-                return f"{row['transport']} does not hold it: {_headroom_text(drain)}, {_drain_text(drain)}"
-            return f"{row['transport']} {_pick_facts(row)}, {_headroom_text(drain)}, {_drain_text(drain)}"
+                return f"{name} does not hold it: {_headroom_text(drain)}, {_drain_text(drain)}"
+            return f"{name} {_pick_facts(row)}, {_headroom_text(drain)}, {_drain_text(drain)}"
+
+        # An unreadable plan decides nothing and is not a viable option: name it once, then leave it out.
+        for row in rows:
+            if row.get("room") is None and _decides_nothing(row) and row["transport"] not in _REPORTED_UNREADABLE:
+                _REPORTED_UNREADABLE.add(row["transport"])
+                detail = (row.get("why") or "unreadable").removeprefix("unreadable: ")
+                print(f"[fanout] plan {row['transport']} unreadable ({detail}); leaving it out of placement lines",
+                      file=sys.stderr)
         on = len(load.get(best["transport"], ()))
-        others = ", ".join(clause(row) for row in rows if row is not best)
+        others = ", ".join(text for text in (clause(row) for row in rows if row is not best) if text)
         ran = row_on_plan(job or {}, best["transport"], data)
         named = f", row {ran[0]}" + (f" ({ran[1]})" if ran[1] else "") if ran and ran[0] else ""
-        drain = held[best["transport"]][1]
-        print(f"[fanout] {label}: plan {best['transport']}{named} ({_pick_facts(best)}, {_headroom_text(drain)}, "
-              f"{_drain_text(drain)}" + (f", {on} jobs on it" if on else "")
+        if reopening:
+            fact = (f"reopens {provider_bands.reset_text(reopening['at'], now)}, "
+                    f"room {reopening['room']:.2f} on "
+                    f"{provider_bands.window_name({'name': reopening.get('longWindow')})}")
+            if fit:
+                waits_on = fit[0]
+                fact += (f"; {waits_on['transport']} room {waits_on.get('longRoom'):.2f} on "
+                         f"{provider_bands.window_name({'name': waits_on.get('longWindow')})} is spent faster "
+                         f"than time, so this job waits for the reset")
+        else:
+            drain = held[best["transport"]][1]
+            fact = f"{_pick_facts(best)}, {_headroom_text(drain)}, {_drain_text(drain)}"
+        print(f"[fanout] {label}: plan {best['transport']}{named} ({fact}"
+              + (f", {on} jobs on it" if on else "")
               + (f"; {others}" if others else "") + ")", file=sys.stderr)
     return best["transport"]
 
@@ -856,11 +992,14 @@ def admission_refusal(jobs, data, read=None, now=None, load=None):
             continue
         signature = plan_signature(normalize_job(job, data), data)
         placed = place_job(candidates, data, reader, now, counted, signature)
-        if placed.blind and not placed.fit:
+        winner, _reopening = choose_plan(placed)
+        if placed.blind and winner is None:
             continue
-        counted = placed.load
-        if placed.fit:
-            won = placed.fit[0]["transport"]
+        counted = placed.load if placed.load is not None else counted
+        if winner is not None:
+            if counted is None:
+                counted = plan_load(data)
+            won = winner["transport"]
             counted.setdefault(won, []).append(signature(won) if callable(signature) else signature)
             continue
         room_left = bool(placed.held)
@@ -872,7 +1011,7 @@ def admission_refusal(jobs, data, read=None, now=None, load=None):
                 continue
             got = seen.get(name)
             entry = provider_bands.plan_entry(name, got, now) if isinstance(got, dict) else ""
-            states.append(entry if entry and "band unknown" not in entry else f"{name}: {row['why']}")
+            states.append(entry if entry and "band unknown" not in entry else _why_text(row))
         if not room_left:
             reason = (f"plan {named} has no room -- {states[0]}" if named
                       else f"no plan of {transport} has room -- " + "; ".join(states))
@@ -922,10 +1061,11 @@ IN_FLIGHT_SHARE = 0.5  # unmeasured assumption: a running job has drawn half of 
 
 
 class Verdict(NamedTuple):
-    """`Waves.decide`'s answer: `launch`, `wait` (a job of the plan is running; its end re-decides) or `stop`
-    (`error` is the job's `not run` text)."""
+    """`Waves.decide`'s answer: `launch`, `wait` (a job of the plan is running, or its short window resets at
+    `until`; either re-decides) or `stop` (`error` is the job's `not run` text)."""
     kind: str
     error: str = None
+    until: float = None
 
 
 LAUNCH = Verdict("launch")
@@ -998,6 +1138,7 @@ class Waves:
         self.slots, self.data, self.states, self.limited = dict(slots), data, {}, {}
         self.queued = list(self.slots)
         self._read, self._reads = read, {}
+        self._waits = set()  # (plan, reset) whose wait line was printed, one per plan
         self._say = say or (lambda line: print(line, file=sys.stderr, flush=True))
 
     def round(self):
@@ -1121,17 +1262,23 @@ class Waves:
         self.queued.remove(label)
         return LAUNCH
 
+    def _siblings(self, slot, tried):
+        """`place_job` over the job's route siblings not yet tried or limited, or None when there are none."""
+        candidates = [name for name in slot.candidates if name not in tried and name not in self.limited]
+        if not candidates:
+            return None
+        load = {plan: [self.slots[running].signature for running in state.flying]
+                for plan, state in self.states.items()}
+        sign = (lambda name: slot.picks[name][2]) if slot.picks else slot.signature
+        return place_job(candidates, self.data, self._reader, time.time(), load, sign)
+
     def _move(self, label, slot, tried, holds=False):
         """Move a job with route siblings to the one `place_job` ranks first among those with room (an unreadable
         one too: its launcher decides), or with `holds`, among those that hold it now beside their running jobs;
         False when there is none."""
-        candidates = [name for name in slot.candidates if name not in tried and name not in self.limited]
-        if not candidates:
+        placed = self._siblings(slot, tried)
+        if placed is None:
             return False
-        load = {plan: [self.slots[running].signature for running in state.flying]
-                for plan, state in self.states.items()}
-        sign = (lambda name: slot.picks[name][2]) if slot.picks else slot.signature
-        placed = place_job(candidates, self.data, self._reader, time.time(), load, sign)
         if holds:
             target = next((row for row in placed.fit if placed.held[row["transport"]][0]), None)
         else:
@@ -1174,6 +1321,19 @@ class Waves:
                     return self._start(label, state, forecast)
                 return Verdict("wait")
             tried.add(plan)
+            # A plan its short window blocks is waited for when no sibling is a better spend (`worth_waiting`).
+            # A named plan never moves, so it keeps the old stop-and-name-the-reset path.
+            info = None if (self.limited.get(plan) or not slot.candidates) else provider_bands.reopen(row, time.time())
+            siblings = self._siblings(slot, tried) if info else None
+            if (info and time.time() < info["at"]
+                    and worth_waiting(siblings.fit[0] if siblings and siblings.fit else None, info["room"])):
+                key = (plan, info["at"])
+                if key not in self._waits:
+                    self._waits.add(key)
+                    self._say(f"[fanout] wait {plan}: {provider_bands.window_name({'name': info.get('window')})} "
+                              f"resets {provider_bands.reset_text(info['at'], time.time())}; holding its jobs for "
+                              f"the reset rather than spending a plan whose long window is running out")
+                return Verdict("wait", until=info["at"])
             reset = self.limited.get(plan) or self._reset(plan)
             if self._move(label, slot, tried):
                 continue
@@ -1269,6 +1429,50 @@ def check_row(job, label, alias, effort, data):
     return transport
 
 
+def nested_brief_refusal(label, prompt):
+    """Refuses a brief that tells its delegate to run a fan-out. A native job's Workflow call would be denied whole
+    for it, a sidecar's launcher would refuse it later; either way it fails here, before anything starts."""
+    try:
+        with open(prompt, encoding="utf-8", errors="replace") as fh:
+            hits = tool_profiles.nested_fanout_hits(fh.read(), str(REPO))
+    except OSError:
+        return
+    if hits:
+        lines = "\n".join(f"  line {h['line']}: {h['snippet']}" for h in hits)
+        raise JobError(f"job {label}: the brief tells its delegate to run a fan-out ({', '.join(sorted({t for h in hits for t in h['tools']}))}):\n{lines}\n"
+                       "No delegate profile carries Workflow or Agent, so the orchestrator dispatches every lens of a "
+                       "nested fan-out itself (orchestration §0): drop the line and dispatch those lenses from the parent.")
+
+
+def cover_brief_tools(job, label, kind):
+    """Adds to the job's `tools` delta each built-in its brief runs that its kind lacks, as the launcher's shape
+    path does (`tool_profiles._cover_brief`), since `resolve-kind` reads no brief. A need no delta may grant
+    (a tool the job removed) is refused here, before anything starts. An `arm`'s task row is the measured
+    variable, never widened."""
+    if kind == "arm":
+        return
+    try:
+        add, remove = tool_profiles.tools_delta(job.get("tools"))
+    except ValueError as err:
+        raise JobError(f"job {label}: {err}") from None
+    texts = []
+    for path in tool_profiles.brief_files(tool_profiles.job_kind_shape(job), job["promptFile"], job.get("contextFiles")):
+        try:
+            texts.append((path, tool_profiles.read_brief(path)))
+        except OSError as exc:
+            raise JobError(f"job {label}: brief file unreadable: {path} ({exc})") from None
+    builtins = job_builtins(job)
+    report = tool_profiles.brief_requirements(texts, job.get("workdir") or str(REPO))
+    needed = tool_profiles.widenable_needs(builtins, report, set(remove))
+    if needed:
+        job["tools"] = tool_profiles.signed_csv(add + needed, remove)
+        print(f"[fanout] {label}: tools widened by {','.join('+' + t for t in needed)}: its brief runs them")
+        return
+    refusal = tool_profiles.brief_refusal(builtins, report)
+    if refusal:
+        raise JobError(f"job {label}: {refusal}")
+
+
 def plan_job(job, data, out_dir, authorize, stage=None):
     """One job -> (label, argv, stdout path). Validates everything BEFORE any process starts.
 
@@ -1293,6 +1497,8 @@ def plan_job(job, data, out_dir, authorize, stage=None):
     if not os.path.exists(prompt):
         raise JobError(f"job {label}: promptFile not found: {prompt}")
     kind = check_job_kind(job, label)
+    nested_brief_refusal(label, job["promptFile"])
+    cover_brief_tools(job, label, kind)
     # Children run with cwd=REPO: a caller-relative path must reach them resolved, or it names another file.
     prompt = job["promptFile"] = os.path.abspath(prompt)
     # `label` names four output files AND keys the spend ledger, so it must be a bare filename:
@@ -1331,6 +1537,11 @@ def plan_job(job, data, out_dir, authorize, stage=None):
     # launcher runs the job; the model vocabulary stays the route's. A job naming none pays with
     # the plan `pick_plan` ranks first, never the route's default login by omission. A job listing
     # `rows` ranks the plans of every listed row's route, and runs the cheapest listed row on the winner.
+    excluded = job.get("excludePlans")
+    if excluded is not None and not (isinstance(excluded, list) and all(isinstance(p, str) for p in excluded)):
+        raise JobError(f"job {label}: `excludePlans` must be a list of plan names")
+    if job.get("plan") and job["plan"] in (excluded or []):
+        raise JobError(f"job {label}: `plan` {job['plan']!r} is also in `excludePlans`. Keep one of the two.")
     transport, plans = job_routes(job, data)
     refusal = admission_refusal([job], data) if job.get("plan") else None
     if refusal:
@@ -1476,7 +1687,7 @@ def concurrency_guard_text(shell):
 
 def add_concurrency_guard(planned, jobs, max_parallel, out_dir):
     """`planned` with the guard's `-C` file inserted before each `-P` when the jobs run at once."""
-    if len(planned) < 2 or max_parallel < 2:
+    if len(planned) < 2 or (max_parallel is not None and max_parallel < 2):
         return planned
     guarded = []
     for (label, argv, out_path), job in zip(planned, jobs):
@@ -1555,7 +1766,7 @@ def continuation_text(attempt, stopped, plan, brief, workdir, start_head, report
             f"A provider usage limit stopped the earlier run of this job on plan {stopped} partway through its work. "
             f"You are a fresh session on plan {plan} (attempt {attempt}), with none of that run's memory. "
             "\n"
-            f"- Read the brief {brief} in full first, then its `.amend.md` beside it if present.\n"
+            f"- Read the brief {brief} in full first; the harness delivers its amendment, if any, at your next tool call.\n"
             f"- {where} holds the earlier run's commits (`{log}`) and its uncommitted edits (`git status --short`). "
             "Keep both: read each uncommitted diff, finish or correct it, and commit it under the brief's rules. "
             "Never discard it.\n"
@@ -1711,7 +1922,7 @@ def workdir_of(argv):
 
 
 def brief_of(argv):
-    """The `-f` operand: the prompt file the launcher reads, whose `.amend.md` the job is told to re-read."""
+    """The `-f` operand: the prompt file the launcher reads, whose `.amend.md` hooks/amend_delivery.py delivers."""
     try:
         return argv[argv.index("-f") + 1]
     except (ValueError, IndexError):
@@ -1911,11 +2122,17 @@ def _inventory_job(label, argv, launch_id, record_path, wake_with=None):
     return job
 
 
+def transport_of(argv, data):
+    """(transport name, (count, basis) cap or None) of the transport whose launcher `argv` runs, else (None, None)."""
+    name = model_registry.plan_for_launcher(argv[1], data) if len(argv) > 1 else None
+    return name, (model_registry.child_cap(name, data) if name else None)
+
+
 def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_seats=False, waves=None,
              wake_groups=None):
-    # A bounded pool: `max_parallel` workers draining a queue. The previous shape started one OS
-    # thread per job and used the semaphore only to cap concurrent SUBPROCESSES, so a 200-job file
-    # spawned 200 threads to run 4 at a time -- and N is caller-controlled from the jobs JSON.
+    # A bounded pool: `max_parallel` workers (None: one per unit) draining a queue, so a 200-job file under
+    # --max-parallel 4 spawns 4 threads, not 200 -- and N is caller-controlled from the jobs JSON.
+    # A job also holds one seat of its transport's `maxChildren` cap (if any) while its launcher runs.
     # `waves` (a `Waves`, or None when no plan reads a window) picks which queued unit starts next and when a
     # job waits, moves or stops; every call into it runs under `lock`, and a job end wakes the workers waiting on it.
     results = {}
@@ -1959,6 +2176,32 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
     lock = threading.Lock()
     turn = threading.Condition(lock)
     threads = []
+    registry = model_registry.load()
+    seated = {}
+
+    def seat(argv):
+        """Wait for a seat under the job's transport cap and return the transport name to free (None: no cap)."""
+        name, cap = transport_of(argv, registry)
+        if not cap:
+            return None
+        with turn:
+            while seated.get(name, 0) >= cap[0]:
+                turn.wait()
+            seated[name] = seated.get(name, 0) + 1
+        return name
+
+    def unseat(name):
+        if name:
+            with turn:
+                seated[name] -= 1
+                turn.notify_all()
+
+    def run_seated(job, **kwargs):
+        name = seat(job[1])
+        try:
+            one(*job, **kwargs)
+        finally:
+            unseat(name)
 
     def save_inventory():
         tmp = inventory_path.with_suffix('.tmp')
@@ -2102,21 +2345,28 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
             inventory['jobs'] = [job for job in inventory['jobs'] if job['label'] not in gone]
             save_inventory()
 
+    def wake(verdicts):
+        """Wait for a job end, or for the soonest short-window reset a waiting job names."""
+        until = min((v.until for v in verdicts if v.until is not None), default=None)
+        turn.wait(None if until is None else max(0.05, until - time.time()))
+
     def claim():
         """The next unit to run and its verdict: with `waves`, the first pending unit whose head launches or stops
-        now. While every head waits, some job of its plan is running, and its end wakes this worker."""
+        now. While every head waits, a running job's end or the soonest named reset wakes this worker."""
         with turn:
             while pending:
                 if waves is None:
                     lane, unit = pending.pop(0)
                     return lane, unit, LAUNCH
                 waves.round()
+                waiting = []
                 for at, (lane, unit) in enumerate(pending):
                     verdict = waves.decide(unit[0][0])
                     if verdict.kind != "wait":
                         del pending[at]
                         return lane, unit, verdict
-                turn.wait()
+                    waiting.append(verdict)
+                wake(waiting)
         return None
 
     def acquire(label):
@@ -2129,7 +2379,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
                 verdict = waves.decide(label)
                 if verdict.kind != "wait":
                     return verdict
-                turn.wait()
+                wake([verdict])
 
     def retarget(job):
         """`job` with the launcher of the plan `waves` left it on: a job moved before it started."""
@@ -2205,7 +2455,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
                 done(label)
                 raise
             try:
-                one(*retarget(nxt), continuing=True)
+                run_seated(retarget(nxt), continuing=True)
             finally:
                 done(label)
             now = results[label]
@@ -2229,7 +2479,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
                     lane_ended(lane, job[0], unit[at:], error=verdict.error)
                     break
                 try:
-                    one(*retarget(job))
+                    run_seated(retarget(job))
                 finally:
                     done(job[0])
                 try:
@@ -2243,7 +2493,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
                         lane_ended(lane, job[0], unit[at + 1:])
                     break
 
-    for _ in range(min(max_parallel, len(pending))):
+    for _ in range(len(pending) if max_parallel is None else min(max_parallel, len(pending))):
         t = threading.Thread(target=worker, daemon=False)
         t.start()
         threads.append(t)
@@ -2594,10 +2844,270 @@ def fold_probe(args, seats=(), data=None):
     return spec
 
 
+NATIVE_ARGS, NATIVE_JOBS, SIDECAR_JOBS = "native.args.json", "native.jobs.json", "sidecar.jobs.json"
+# Fields only a sidecar expresses: `dispatch.js` has no counterpart, so a job carrying one stays a sidecar.
+# `workdir` is one only when it names a checkout other than the repo root (`_elsewhere`); `schemaFile` and
+# `contextFiles` translate to a job's `schema` and `contextPaths`.
+SIDECAR_ONLY_FIELDS = ("window", "longContext", "extraArgs", "toolsCsv", "baseBuiltins", "armDisclosure")
+_LANE_KEYS = ("_lane", "_exclusive", "_shared_single_flight")
+# Fan-out job fields a `dispatch.js` job carries under the same name.
+_PASSED_FIELDS = ("tier", "pick", "spec", "readOnly", "tools")
+SCRATCH_REL = ".claude/scratch"
+
+
+def split_enabled(args):
+    """(True, None), or (False, why): a run whose flags are sidecar-only keeps every job a sidecar. `--review`
+    and the fold read sidecar out files, `--compare` needs process isolation, `--authorize` lifts a launcher's gate
+    that `Workflow` has no flag for, and `--max-parallel` is the caller's process-level pacing."""
+    for flag, value in (("--review", args.review), ("--fold", args.fold), ("--refold", args.refold),
+                        ("--compare", args.compare), ("--authorize", args.authorize),
+                        ("--max-parallel", args.max_parallel)):
+        if value:
+            return False, f"{flag} runs as sidecars"
+    return True, None
+
+
+def session_split_plan():
+    """(plan, None), or (None, why): the plan paying for this session, when this process may hand a job to a
+    Workflow call. A sidecar child has no Workflow tool, a run with no session id has nobody to hand to, and an
+    unreadable plan cannot say which jobs are the session's own; each keeps every job a sidecar."""
+    if os.environ.get("CLAUDE_CODE_SIDECAR"):
+        return None, "this fan-out runs inside a sidecar child, which has no Workflow tool"
+    if not os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        return None, "no CLAUDE_CODE_SESSION_ID: there is no session to hand a Workflow call to"
+    plan = provider_bands.session_plan()
+    if not plan:
+        return None, "the session's plan is unreadable (hooks/_session_transport.session_plan is unknown)"
+    return plan, None
+
+
+def is_remainder_file(jobs_path, out_dir):
+    """True for the sidecar remainder this tool wrote (`<out-dir>/sidecar.jobs.json`): its driver's input."""
+    return Path(jobs_path).resolve() == (Path(out_dir) / SIDECAR_JOBS).resolve()
+
+
+def _elsewhere(job):
+    """True when `job.workdir` names a checkout other than the repo root this fan-out runs in; a workdir at the
+    root changes nothing, so the split treats it as absent."""
+    return bool(job.get("workdir")) and not _same_path(job["workdir"], REPO)
+
+
+def _extra_context(job, shared_context):
+    """The job's `contextFiles` other than the shared contextPath, which the engine reads for every job."""
+    return [c for c in job.get("contextFiles") or [] if not (shared_context and _same_path(c, shared_context))]
+
+
+def load_schema(job):
+    """The JSON object in `job.schemaFile`; JobError naming the job and file when it is unreadable or not one."""
+    path = job["schemaFile"]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            schema = json.load(fh)
+    except (OSError, ValueError) as err:
+        raise JobError(f"job {job.get('label')}: schemaFile {path} is unreadable as JSON: {err}")
+    if not isinstance(schema, dict):
+        raise JobError(f"job {job.get('label')}: schemaFile {path} must hold a JSON object, not "
+                       f"{type(schema).__name__}")
+    return schema
+
+
+def native_blockers(job, shared_context, session, data):
+    """Why `job` cannot run as a native `dispatch.js` agent: [] when nothing blocks it."""
+    why = [f"`{field}` has no Workflow equivalent" for field in SIDECAR_ONLY_FIELDS if job.get(field)]
+    if _elsewhere(job):
+        why.append("`workdir` needs a process started in another checkout")
+    row = row_on_plan(job, session, data)
+    if row is not None and not row[1]:
+        why.append("no `effort` on its row: the Workflow engine fills none")
+    try:
+        tool_profiles.engine_job(job.get("kind"))
+    except ValueError as err:
+        why.append(str(err))
+    return why
+
+
+WIDTH_CUT = "native width: the five-hour window is hot and this session's room is used"
+
+
+def native_room_now(session):
+    """Native units this session may still start (`_dispatch_checks.native_width`), None when the window is cool or
+    unread. A read that raises is one unit: the width rule's fallback when it cannot run from here."""
+    checks = _dispatch_checks_module()
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    try:
+        transcript = model_registry.session_transcript(sid, session)
+        found = checks.native_width(sid, checks.session_dir(transcript, sid) if transcript else None)
+    except Exception as err:  # noqa: BLE001
+        print(f"[fanout] five-hour width unreadable ({type(err).__name__}: {err}); one native unit")
+        return 1
+    return found["room"]
+
+
+def route_split(jobs, lanes, session, shared_context, out_dir, data, room=None):
+    """({label: None | reason}) for every job: None runs native, a reason keeps it a sidecar. Native means the job
+    is paid by `session`, nothing blocks its translation (`native_blockers`), the out dir sits under
+    .claude/scratch (`dispatch.js` refuses another `spillDir`), and a chain lane goes whole or not at all. A
+    hot window (`room`, from `native_room_now`) keeps only its first `room` native units, a lane counting one;
+    the rest read `WIDTH_CUT`."""
+    scratch = (REPO / SCRATCH_REL).resolve()
+    outside = None if Path(out_dir).resolve().is_relative_to(scratch) else (
+        f"the out dir is outside {SCRATCH_REL}/, where dispatch.js requires its spillDir")
+    routed = {}
+    for job in jobs:
+        label = job.get("label")
+        paid = PAID_BY.get(label)
+        if outside:
+            routed[label] = outside
+        elif paid != session:
+            routed[label] = f"pays on {paid}, not this session's plan {session}"
+        else:
+            blockers = native_blockers(job, shared_context, session, data)
+            routed[label] = "; ".join(blockers) or None
+            if not blockers and job.get("schemaFile"):
+                load_schema(job)
+    for name, labels in lanes or []:
+        if any(routed.get(label) for label in labels):
+            for label in labels:
+                routed[label] = routed[label] or f"lane {name} has a job that stays a sidecar, so the lane does"
+    if room is not None:
+        lane_of = {label: name for name, labels in lanes or [] for label in labels}
+        units = list(dict.fromkeys(("lane", lane_of[j["label"]]) if j["label"] in lane_of else ("job", j["label"])
+                                   for j in jobs if routed[j["label"]] is None))
+        cut = set(units[room:])
+        for job in jobs:
+            label = job["label"]
+            if routed[label] is None and (("lane", lane_of[label]) if label in lane_of else ("job", label)) in cut:
+                routed[label] = WIDTH_CUT
+    return routed
+
+
+def _plain(job, **extra):
+    return {**{k: v for k, v in job.items() if k not in _LANE_KEYS}, **extra}
+
+
+def _document(jobs, build):
+    """`{"jobs": [...]}`, or `{"chains": [...], "sharedSingleFlight"?}` when `jobs` came from lanes, each job
+    built by `build(job)`."""
+    if not any("_lane" in job for job in jobs):
+        return {"jobs": [build(job) for job in jobs]}
+    chains = []
+    for name in dict.fromkeys(job["_lane"] for job in jobs):
+        members = [job for job in jobs if job["_lane"] == name]
+        chain = {"name": name, "jobs": [build(job) for job in members]}
+        if members[0].get("_exclusive"):
+            chain["exclusiveResource"] = members[0]["_exclusive"]
+        chains.append(chain)
+    document = {"chains": chains}
+    if jobs[0].get("_shared_single_flight"):
+        document["sharedSingleFlight"] = jobs[0]["_shared_single_flight"]
+    return document
+
+
+def fanout_document(jobs, spill_dir, extra_for=lambda job: {}):
+    """A jobs file body in this tool's own field names for `jobs`; `extra_for(job)` adds fields to one job
+    (`excludePlans`)."""
+    return {**_document(jobs, lambda job: _plain(job, **extra_for(job))), "spillDir": spill_dir}
+
+
+def native_job(job, session, data, shared_context=None):
+    """The `dispatch.js` job for a fan-out `job` that `route_split` kept native: the row `session` pays for, pinned
+    by `_dispatch_pins.native_pin`, and the kind's shape and agent type (`tool_profiles.engine_job`)."""
+    sys.path.insert(0, str(ROOT / "hooks"))
+    import _dispatch_pins
+    alias, effort = row_on_plan(job, session, data)
+    entry = model_registry.resolve(alias, data)
+    native = {"label": job["label"], "promptPath": _posix(os.path.abspath(job["promptFile"])),
+              "model": _dispatch_pins.native_pin(entry, entry["transport"]), "effort": effort,
+              **tool_profiles.engine_job(job["kind"])}
+    native.update({field: job[field] for field in _PASSED_FIELDS if job.get(field) is not None})
+    if job.get("schemaFile"):
+        native["schema"] = load_schema(job)
+    extra = _extra_context(job, shared_context)
+    if extra:
+        native["contextPaths"] = [_posix(os.path.abspath(c)) for c in extra]
+    return native
+
+
+def native_document(jobs, session, data, shared_context, spill_dir):
+    """`dispatch.js` args for the native `jobs` (`dispatch_chains.js` args when they came from lanes). It carries
+    no injected key: the PreToolUse chain fills `__transport`, `__rails` and `checker`."""
+    document = _document(jobs, lambda job: native_job(job, session, data, shared_context))
+    if shared_context:
+        document["contextPath"] = _posix(os.path.abspath(shared_context))
+    document["spillDir"] = spill_dir
+    return document
+
+
+def write_json(path, document):
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(document, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+
+
+def clear_handoff(out_dir):
+    """Remove the previous run's hand-off files from `out_dir`, so no reader takes them for this run's."""
+    for name in (NATIVE_ARGS, NATIVE_JOBS, SIDECAR_JOBS):
+        try:
+            (Path(out_dir) / name).unlink()
+        except FileNotFoundError:
+            pass
+
+
+def hand_off(routed, jobs, lanes, session, shared_context, out_dir, data, write):
+    """Print each job's routing, and (when `write`) the three out-dir files for the native subset. Returns the
+    native labels. The remainder file `sidecar.jobs.json` is written only while sidecar jobs remain; each of its
+    jobs a placement moved off `session` carries `excludePlans: [session]`, so the driver's own planning cannot pick
+    that plan again, while a job kept a sidecar for its fields or its lane stays free to run on it."""
+    native = [job for job in jobs if routed.get(job.get("label")) is None]
+    cut = [job for job in jobs if routed.get(job.get("label")) == WIDTH_CUT]
+    unrun = width_unrun(cut, lanes, session)
+    waiting = [job for job in jobs if job.get("label") in unrun]
+    rest = [job for job in jobs if routed.get(job.get("label")) is not None and job.get("label") not in unrun]
+    for job in jobs:
+        label = job.get("label")
+        print(f"[fanout] {label}: " + (f"native on {session}" if routed[label] is None
+                                       else f"not run: {routed[label]}; no other plan holds it, see {RESUME_FILE}"
+                                       if label in unrun else f"stays a sidecar ({routed[label]})"))
+    if not native and not waiting:
+        return []
+    spill = _posix(Path(out_dir).resolve().relative_to(REPO.resolve()))
+    moved = {job.get("label") for job in rest
+             if PAID_BY.get(job.get("label")) != session or routed.get(job.get("label")) == WIDTH_CUT}
+    if write:
+        if native:
+            write_json(Path(out_dir) / NATIVE_ARGS, native_document(native, session, data, shared_context, spill))
+            write_json(Path(out_dir) / NATIVE_JOBS,
+                       fanout_document(native, spill, lambda j: {"excludePlans": [session]}))
+        if rest:
+            write_json(Path(out_dir) / SIDECAR_JOBS, fanout_document(
+                rest, spill, lambda j: {"excludePlans": [session]} if j.get("label") in moved else {}))
+        if waiting:
+            write_json(Path(out_dir) / RESUME_FILE, fanout_document(waiting, spill))
+    if native:
+        script = "dispatch_chains.js" if any("_lane" in job for job in native) else "dispatch.js"
+        call = {"scriptPath": f".claude/workflows/{script}", "args": {"jobsFile": f"{spill}/{NATIVE_ARGS}"}}
+        print(f"NATIVE {len(native)} on {session}" + ("" if write else " (dry run: nothing written)")
+              + f": Workflow({json.dumps(call)})", flush=True)
+    return [job.get("label") for job in native + waiting]
+
+
+def width_unrun(cut, lanes, session):
+    """Labels of the `WIDTH_CUT` jobs no other plan can take: a job holding no plan but `session` (a named `plan`,
+    or one route plan) has nowhere to move, and a lane moves whole, so one such job holds its lane's cut jobs."""
+    stuck = {job.get("label") for job in cut
+             if not [p for p in (SLOTS[job["label"]].candidates if job.get("label") in SLOTS else ()) if p != session]}
+    unrun = set(stuck)
+    for _name, labels in lanes or []:
+        if stuck & set(labels):
+            unrun |= {job.get("label") for job in cut} & set(labels)
+    return unrun
+
+
 def print_plan(planned, max_parallel):
     for label, argv, out_path in planned:
         print(f"{label}\n  {' '.join(argv)}\n  -> {out_path}")
-    print(f"\n{len(planned)} job(s), {max_parallel} at a time. Nothing dispatched.")
+    width = "no total cap" if max_parallel is None else f"{max_parallel} at a time"
+    print(f"\n{len(planned)} job(s), {width}. Nothing dispatched.")
 
 
 def run_review_fold(review, args, data, out_dir, seats=()):
@@ -2803,8 +3313,9 @@ def build_parser():
     ap.add_argument("--detach", action="store_true",
                     help="validate here, then run the fan-out in a detached driver and return: a capped or "
                          "killed caller shell then stops neither queued jobs nor the <label>.md writes")
-    ap.add_argument("--max-parallel", type=int, default=DEFAULT_MAX_PARALLEL,
-                    help=f"concurrent child launchers (default {DEFAULT_MAX_PARALLEL})")
+    ap.add_argument("--max-parallel", type=int, default=None,
+                    help="total cap on concurrent child launchers (default: none; a transport's own maxChildren "
+                         "cap, its plan's room and memory headroom still bound it)")
     ap.add_argument("--out-dir", default=None,
                     help="where per-job stdout/record/stream land (default: beside the jobs file)")
     ap.add_argument("--dry-run", action="store_true",
@@ -2926,8 +3437,9 @@ def spare_facts(jobs, data, now=None, read=None):
     return out
 
 
-def detach_driver(argv, jobs, out_dir, claim=None, log_path=None):
-    """Rerun this fan-out without --detach as a process detached from the caller, and return 0.
+def detach_driver(argv, jobs, out_dir, claim=None, log_path=None, rest_file=None):
+    """Rerun this fan-out without --detach as a process detached from the caller, and return 0. `rest_file`
+    (the sidecar remainder a native split wrote) replaces the jobs file in the driver's argv.
 
     The caller's shell may be capped or killed (a backgrounded Bash call ends at the tool's limit);
     the driver it started would die with it, stranding queued jobs and the `<label>.md` writes. The
@@ -2941,7 +3453,7 @@ def detach_driver(argv, jobs, out_dir, claim=None, log_path=None):
         if token == "--detach":
             continue
         if token == jobs and not swapped:
-            token, swapped = str(Path(jobs).resolve()), True
+            token, swapped = str(Path(rest_file or jobs).resolve()), True
         child.append(token)
     log = Path(log_path) if log_path else Path(out_dir) / "fanout-driver.log"
     began = time.time()
@@ -3021,6 +3533,18 @@ def await_admission(driver, out_dir, planned, fallbacks, max_parallel, since, wa
     poll = 0.25 if poll is None else poll
     argvs = {label: argv for label, argv, _ in planned}
     outcome, seen, attempt, pending = {}, {}, {label: 0 for label in argvs}, {}
+    running = set()
+    registry = model_registry.load()
+
+    def held_by(label):
+        """What holds a queued job: its transport's cap when that many admitted jobs still run on the transport,
+        else --max-parallel when that many run in all, else the two causes the driver's files do not tell apart."""
+        name, cap = transport_of(argvs[label], registry)
+        if cap and sum(1 for other in running if transport_of(argvs[other], registry)[0] == name) >= cap[0]:
+            return f"the {name} cap of {cap[0]} concurrent children (registry maxChildren)"
+        if max_parallel is not None and len(running) >= max_parallel:
+            return f"--max-parallel {max_parallel}"
+        return "its plan's room or memory headroom"
     deadline, idle_since = time.time() + wait, None
 
     def plan_of(label):
@@ -3071,6 +3595,8 @@ def await_admission(driver, out_dir, planned, fallbacks, max_parallel, since, wa
                 say(label, f"refused on {plan_of(label)}, nothing ran: {line}", "refused")
             elif state == "admitted":
                 note = f"; it already exited {code}" if code is not None else ""
+                if code is None:
+                    running.add(label)
                 say(label, f"admitted on {plan_of(label)} ({flag(label, '-m')}, {flag(label, '-e')}){note}", "admitted")
             else:
                 states[label] = state
@@ -3087,8 +3613,8 @@ def await_admission(driver, out_dir, planned, fallbacks, max_parallel, since, wa
             idle_since = idle_since or time.time()
             if time.time() - idle_since >= settle:
                 for label in left:
-                    say(label, f"queued, not launched yet (waits on --max-parallel {max_parallel}, its plan's room "
-                               f"or memory headroom); the session watcher reports it", "queued")
+                    say(label, f"queued, not launched yet (held by {held_by(label)}); the session watcher "
+                               f"reports it", "queued")
                 return outcome
         else:
             idle_since = None
@@ -3274,7 +3800,7 @@ def _main(argv):
     if not args.jobs:
         print("a jobs file is required unless --status is given", file=sys.stderr)
         return 2
-    if args.max_parallel < 1:
+    if args.max_parallel is not None and args.max_parallel < 1:
         print("--max-parallel must be at least 1", file=sys.stderr)
         return 2
 
@@ -3306,7 +3832,7 @@ def _main(argv):
         out_dir.mkdir(parents=True, exist_ok=True)
         _LAUNCH["out_dir"] = out_dir
         REFUSED = RefusedLaunch(out_dir, [j.get("label") for j in jobs])
-        jobs = [normalize_job(j, data, shared_context) for j in jobs]
+        jobs = _drop_unfit_rows([normalize_job(j, data, shared_context) for j in jobs], data)
     except (JobError, model_registry.RegistryError) as err:
         return _refused(str(err))
     saved_review = None
@@ -3359,6 +3885,7 @@ def _main(argv):
         FULL_WINDOW.clear()
         SLOTS.clear()
         _LIVE.clear()
+        _REPORTED_UNREADABLE.clear()
         refusal = None if args.refold else admission_refusal(jobs, data)
         if refusal:
             raise JobError(refusal)
@@ -3377,6 +3904,38 @@ def _main(argv):
     if not args.refold:
         for fact in spare_facts(jobs, data):
             print(fact)
+
+    if args.detach and not args.dry_run:
+        refusal = doctrine_refusal(argv if argv is not None else sys.argv[1:])
+        if refusal:
+            print(refusal)
+            return 2
+    rest_file = None
+    if not args.refold and not is_remainder_file(args.jobs, out_dir):
+        if not args.dry_run:
+            clear_handoff(out_dir)
+        enabled, why = split_enabled(args)
+        session, why = session_split_plan() if enabled else (None, why)
+        if session:
+            try:
+                routed = route_split(jobs, lanes, session, shared_context, out_dir, data,
+                                     room=native_room_now(session))
+            except JobError as err:
+                print(str(err), file=sys.stderr)
+                return 2
+            handed = set(hand_off(routed, jobs, lanes, session, shared_context, out_dir, data, not args.dry_run))
+            if handed:
+                kept = {job.get("label") for job in jobs} - handed
+                jobs = [job for job in jobs if job.get("label") in kept]
+                planned = [item for item in planned if item[0] in kept]
+                lanes = [(name, labels) for name, labels in lanes or [] if set(labels) <= kept] or None
+                groups = {label: group for label, group in groups.items() if label in kept}
+                if kept and not args.dry_run:
+                    rest_file = str(Path(out_dir) / SIDECAR_JOBS)
+                if not kept and not args.dry_run:
+                    return 0
+        elif args.dry_run:
+            print(f"[fanout] no native split: {why}")
 
     seen = set()
     for label, _, _ in planned:
@@ -3462,6 +4021,8 @@ def _main(argv):
     _clear_refused()
     if args.detach:
         extra = {"log_path": out_dir.with_name(out_dir.name + "-driver.log")} if args.refold else {}
+        if rest_file:
+            extra["rest_file"] = rest_file
         code = detach_driver(argv if argv is not None else sys.argv[1:], args.jobs, out_dir, claim=token, **extra)
         driver = _LAUNCH.pop("driver", None)
         if code == 0 and driver:

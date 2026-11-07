@@ -45,10 +45,14 @@ def planted_registry():
         "family": "zz-legacy", "version": "zz-legacy", "lifecycle": "current", "order": top + 2,
         "costRank": 1, "prior": "mid", "roles": [], "effort": {"evidence": "unmeasured"},
         "authTier": "open", "gate": {"minBand": "Surplus"}, "apiMode": "messages",
+        "inputGap": {"reason": "planted legacy row", "checked": "https://models.dev/api.json",
+                     "asOf": "2026-09-01"},
         "priceGap": {"reason": "planted legacy row", "checked": "https://models.dev/api.json",
                      "asOf": "2026-09-01"},
         "windowGap": {"reason": "planted legacy row", "checked": "https://models.dev/api.json",
                       "asOf": "2026-09-01"}})
+    # The live go route's image evidence names a row this fixture removes; drop it back to unverified.
+    data["transports"]["go"]["imageRoute"] = {"state": "unverified"}
     mr._validate(data, "planted")
     return data
 

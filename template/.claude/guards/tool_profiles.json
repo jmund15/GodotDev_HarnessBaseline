@@ -91,7 +91,7 @@
       "agentType": "lane-review",
       "tier": "executor",
       "internal": false,
-      "routes": ["launcher", "fanout", "engine", "agent"]
+      "routes": ["launcher", "fanout", "agent"]
     },
     "arm": {
       "builtins": null,

@@ -227,6 +227,21 @@ class OvernightTests(unittest.TestCase):
                          encoding="utf-8")
         result = self.call("--validate-close", str(close))
         self.assertEqual(0, result.returncode, result.stderr)
+        # On cloud the vault is absent, so `/worklog add` queues the item in worklog-pending.md and leaves the
+        # mirror alone (worklog_cloud.md); a title queued there as an ADD names a live item, any other op does not.
+        pending = self.root / ".claude/worklog-pending.md"
+        row = "- Fold run — blocked by Q1 — worklog: Run the fold on prod"
+        for line, ok in (
+            ("- COMPLETE: Run the fold on prod", False),
+            ("- ~~ADD ledger: Run the fold on prod (server · feature · scope 1)~~ (skipped: exists)", False),
+            ("- ADD ledger: Run the fold on prod (server · feature · scope 1)", True),
+        ):
+            with self.subTest(pending=line):
+                pending.write_text(f"# Worklog pending\n\n## 2026-11-03T17:30Z cloud session one\n{line}\n", encoding="utf-8")
+                close = self.close_doc(q_line=q1)
+                close.write_text(close.read_text().replace("- None.", row), encoding="utf-8")
+                result = self.call("--validate-close", str(close))
+                self.assertEqual(ok, result.returncode == 0, result.stderr)
 
     def deny_reason(self):
         result = self.call(payload={"tool_name": "AskUserQuestion", "session_id": "one", "cwd": str(self.root)})

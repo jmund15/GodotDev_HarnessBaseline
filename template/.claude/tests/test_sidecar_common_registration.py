@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 
@@ -47,6 +48,8 @@ class Registration(unittest.TestCase):
         row = next(row for row in registry['models'] if row.get('transport') == 'codex' and 'fanout' in row.get('roles', []))
         registry['aliasHistory'] = {}
         registry['models'] = [dict(row, alias='fixture-sol', id='fixture-model', version='fixture-model', roles=['fanout'])]
+        for transport in registry['transports'].values():
+            transport['imageRoute'] = {'state': 'unverified'}
         roster = self.work / 'registry.json'
         roster.write_text(json.dumps(registry), encoding='utf-8')
         self.brief = self.work / 'brief.md'
@@ -230,9 +233,19 @@ urllib.request.urlopen = urlopen
         self.assertEqual(rows[0]['jobs'][0]['label'], 'wrapped')
         self.assertEqual(Path(rows[0]['record']).resolve(), (self.work / 'wrapped.record.json').resolve())
         self.assertEqual(self.counts(), {'tier': 1, 'preflight': 1})
-        watch = self.run_cmd([sys.executable, str(CLAUDE / 'tools/watch_records.py'), '--session', '--wake'])
-        self.assertEqual(watch.returncode, 0, watch.stderr)
-        self.assertIn('wrapped', watch.stdout)
+        # A clean DONE is no decision event, so the session watch prints it and stays armed; stop it once printed.
+        output = self.work / 'watch.out'
+        with output.open('w', encoding='utf-8') as sink:
+            watch = subprocess.Popen([sys.executable, str(CLAUDE / 'tools/watch_records.py'), '--session', '--wake'],
+                                     cwd=ROOT, env=self.env, stdout=sink, stderr=subprocess.STDOUT)
+        try:
+            deadline = time.time() + 120
+            while time.time() < deadline and watch.poll() is None and 'wrapped' not in output.read_text(encoding='utf-8'):
+                time.sleep(0.1)
+        finally:
+            watch.kill()
+            watch.wait()
+        self.assertIn('wrapped', output.read_text(encoding='utf-8'))
 
     def test_direct_hook_launch_registers_once_checks_once(self):
         argv = self.argv('direct')

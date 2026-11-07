@@ -69,7 +69,9 @@ doctrine gate admits a call (`orchestration` §5, §5b).
 
 RULE 5 -- FIVE-HOUR WIDTH, on the host transport. When this session's 5-hour pressure is above
 `quota_bands.FIVE_HOUR_NARROW_PRESSURE`, a dispatch is allowed only if this session would then have at
-most one live native job, counting its own (`dispatch_width`). A live job is a started agent in one of
+most one live native job, counting its own (`dispatch_width`); `_dispatch_checks.native_room` holds that rule
+and the fan-out's native split reads it too. A call whose `args.spillDir` holds the fan-out's `native.jobs.json`
+gets a deny naming `sidecar_fanout.py <that file> --detach`, which excludes this plan. A live job is a started agent in one of
 this session's `subagents/workflows/<run>/journal.jsonl` with no `result`/`failed`/`error` line, or a
 `subagents/agent-<id>.jsonl` whose last message record is not an assistant `end_turn`/`stop_sequence`
 and whose completion notification in the session transcript does not postdate its last write; either
@@ -172,14 +174,6 @@ _TRACE = {}
 # rest of the window covers interpreter start and imports, which run before this clock starts.
 DEADLINE_SECONDS = 43.0
 _deadline = None
-# A started agent whose transcript has not changed for this long is not counted as live.
-LIVE_SECONDS = 15 * 60
-# Bytes read from the end of a standalone agent transcript to find its last record.
-TAIL_BYTES = 256 * 1024
-# Bytes read from the end of the session transcript to find subagent completion notifications, and how
-# far before an agent's last write a notification may be stamped and still mean that write was its last.
-NOTIFY_TAIL_BYTES = 8 * 1024 * 1024
-NOTIFY_SLACK_SECONDS = 5.0
 # The 5-hour reading returned by this invocation's band read: {"pressure", "resets_at", "used"} or {}.
 _five_hour = {}
 
@@ -187,44 +181,24 @@ _five_hour = {}
 def band_and_pressure(session_id=None):
     """Return (band, pressure) for THIS session's own quota, or (None, None).
 
-    Resolved against THIS file rather than $CLAUDE_PROJECT_DIR: the env var can
-    arrive as an MSYS path (/c/Users/...) that a native Windows python3 cannot
-    open, which would silently disable the advisory. `session_id` makes the CLI read
-    this session's capture instead of listing all of TEMP. A read that times out or
-    cannot start is (None, None) with `band_error` traced: its 5-hour fields feed RULE 5.
+    `_dispatch_checks.band_run` resolves the script against its own file rather than $CLAUDE_PROJECT_DIR: the
+    env var can arrive as an MSYS path (/c/Users/...) that a native Windows python3 cannot open, which would
+    silently disable the advisory. A read that times out or cannot start is (None, None) with `band_error`
+    traced: its 5-hour fields feed RULE 5.
     """
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "budget_posture.py")
-    cmd = [sys.executable, script, "--band", "--pressure", "--five-hour", "--used"]
-    if session_id:
-        cmd += ["--session", str(session_id)]
     budget = 10.0 if _deadline is None else min(10.0, _deadline - time.monotonic())
     if budget < 0.5:
         _TRACE["band_error"] = "skipped: %.1f s left before the hook's timeout" % max(budget, 0.0)
         return None, None
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=budget)
-    except (subprocess.TimeoutExpired, OSError) as exc:
-        _TRACE["band_error"] = "%s: %s" % (type(exc).__name__, str(exc)[:200])
+    out, err = _dispatch_checks.band_run(session_id, budget)
+    if out is None:
+        _TRACE["band_error"] = err
         return None, None
     parts = out.stdout.strip("\r\n").split("\t")
-    _five_hour.update(_five_hour_fields(parts[2:4], parts[5:6]))
+    _five_hour.update(_dispatch_checks.five_hour_fields(parts[2:4], parts[5:6]))
     if out.returncode != 0:
         return None, None
     return (parts[0] or None), (parts[1] if len(parts) > 1 else None)
-
-
-def _five_hour_fields(fields, used_field=()):
-    """{"pressure", "resets_at", "used"} from the band read's 5h fields, or {} when they are absent or empty.
-    `used` is the capture's 5h used percent from 0 to 100, None when the read did not carry it."""
-    try:
-        window = {"pressure": float(fields[0]), "resets_at": float(fields[1])}
-    except (IndexError, ValueError):
-        return {}
-    try:
-        window["used"] = float(used_field[0])
-    except (IndexError, ValueError):
-        window["used"] = None
-    return window
 
 
 def five_hour_window(*_a, **_k):
@@ -753,152 +727,17 @@ def dispatch_width(payload):
 
 
 def _session_dir(payload):
-    """`<transcript dir>/<session id>`, or None when the payload names no transcript. A transcript
-    path already inside the session's tree (a subagent's) is cut back to the session directory."""
-    transcript = str(payload.get("transcript_path") or "")
-    if not transcript:
-        return None
-    sid = str(payload.get("session_id") or os.path.splitext(os.path.basename(transcript))[0])
-    norm = os.path.normpath(transcript)
-    marker = os.sep + sid + os.sep
-    cut = norm.find(marker)
-    return norm[:cut + len(marker) - 1] if cut >= 0 else os.path.join(os.path.dirname(norm), sid)
-
-
-_TERMINAL = ("result", "failed", "error")
-_AGENT_FILE = re.compile(r"^agent-(a[0-9a-f]+)\.jsonl$")
-_NOTIFY_ID = re.compile(r"<task-id>(a[0-9a-f]+)</task-id>")
-_STAMP = re.compile(r'"timestamp"\s*:\s*"([^"]+)"')
-
-
-def _run_live(run_dir, cutoff):
-    """[{run, agentId, label}] started in this run's journal, not ended there, and fresh: its transcript,
-    or the journal while it has none yet, changed at or after `cutoff`."""
-    seen = {}
-    with os.scandir(run_dir) as entries:
-        for e in entries:
-            if e.name.startswith("agent-") and e.name.endswith(".jsonl"):
-                seen[e.name[len("agent-"):-len(".jsonl")]] = e.stat().st_mtime
-    journal = os.path.join(run_dir, "journal.jsonl")
-    journal_mtime = os.path.getmtime(journal)
-    if journal_mtime < cutoff and not any(t >= cutoff for t in seen.values()):
-        return []
-    started, ended = {}, set()
-    with open(journal, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            aid = rec.get("agentId") if isinstance(rec, dict) else None
-            if not aid:
-                continue
-            if rec.get("type") == "started":
-                started[aid] = str(rec.get("label") or aid)
-            elif rec.get("type") in _TERMINAL:
-                ended.add(aid)
-    run = os.path.basename(run_dir)
-    return [{"run": run, "agentId": aid, "label": label} for aid, label in started.items()
-            if aid not in ended and seen.get(aid, journal_mtime) >= cutoff]
-
-
-def _ended(transcript):
-    """Is the last message record of a standalone agent transcript an assistant turn that stopped?"""
-    with open(transcript, "rb") as fh:
-        fh.seek(0, os.SEEK_END)
-        fh.seek(max(0, fh.tell() - TAIL_BYTES))
-        lines = fh.read().decode("utf-8", errors="replace").splitlines()
-    for line in reversed(lines):
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(rec, dict) and rec.get("type") in ("assistant", "user"):
-            return rec["type"] == "assistant" and \
-                (rec.get("message") or {}).get("stop_reason") in ("end_turn", "stop_sequence")
-    return False
-
-
-def _notifications(transcript):
-    """{agent id: epoch of its latest completion notification} from the session transcript's tail, or {}.
-
-    A background agent's completion reaches the session as a `<task-notification>` naming its
-    `<task-id>`; a resumed agent keeps writing after its old notification, so the caller compares times.
-    """
-    try:
-        with open(transcript, "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - NOTIFY_TAIL_BYTES))
-            text = fh.read().decode("utf-8", errors="replace")
-    except OSError:
-        return {}
-    out = {}
-    for line in text.splitlines():
-        if "<task-notification>" not in line:
-            continue
-        stamp = _STAMP.search(line)
-        try:
-            when = datetime.datetime.fromisoformat(stamp.group(1).replace("Z", "+00:00")).timestamp()
-        except (AttributeError, ValueError):
-            continue
-        for aid in _NOTIFY_ID.findall(line):
-            out[aid] = max(out.get(aid, 0.0), when)
-    return out
-
-
-def _meta_label(meta_path, fallback):
-    try:
-        with open(meta_path, encoding="utf-8") as fh:
-            meta = json.load(fh)
-        return str(meta.get("description") or meta.get("agentType") or fallback)
-    except (OSError, ValueError, AttributeError):
-        return fallback
+    """The payload's session directory (`_dispatch_checks.session_dir`), or None without a transcript."""
+    return _dispatch_checks.session_dir(payload.get("transcript_path"), payload.get("session_id"))
 
 
 def live_native_jobs(payload, now=None):
-    """([{run, agentId, label}], note): this session's live native jobs, and what could not be read.
-
-    A Workflow agent is live while its run journal holds its `started` line and no terminal line. An
-    agent under `subagents/` itself (an Agent-tool child, or a resumed agent) has no journal: it is live
-    unless its last message record is a stopped assistant turn or the session transcript holds a
-    completion notification for it stamped after its last write. Either counts only while its
-    transcript changed in the last LIVE_SECONDS. No tree is none live, with the reason as `note`.
-    """
+    """([{run, agentId, label}], note): this session's live native jobs, and what could not be read
+    (`_dispatch_checks.live_jobs` owns the scan, which the fan-out's split reads too)."""
     session = _session_dir(payload)
     if not session:
         return [], "no transcript_path in the payload"
-    sub = os.path.join(session, "subagents")
-    if not os.path.isdir(sub):
-        return [], None if os.path.exists(session + ".jsonl") or os.path.isdir(session) else "session dir absent"
-    cutoff = (time.time() if now is None else now) - LIVE_SECONDS
-    live, seen, note = [], set(), None
-    workflows = os.path.join(sub, "workflows")
-    if os.path.isdir(workflows):
-        with os.scandir(workflows) as runs:
-            for run in runs:
-                if _deadline is not None and time.monotonic() > _deadline - 1.0:
-                    note = "scan stopped at the hook's time budget; runs after it were not read"
-                    break
-                if run.is_dir() and os.path.exists(os.path.join(run.path, "journal.jsonl")):
-                    for job in _run_live(run.path, cutoff):
-                        live.append(job)
-                        seen.add(job["agentId"])
-    notified = None
-    with os.scandir(sub) as entries:
-        for e in entries:
-            m = _AGENT_FILE.match(e.name)
-            if not m or m.group(1) in seen:
-                continue
-            aid, mtime = m.group(1), e.stat().st_mtime
-            if mtime < cutoff or _ended(e.path):
-                continue
-            if notified is None:
-                notified = _notifications(session + ".jsonl")
-            if notified.get(aid, 0.0) >= mtime - NOTIFY_SLACK_SECONDS:
-                continue
-            live.append({"run": "agent-" + aid, "agentId": aid,
-                         "label": _meta_label(os.path.join(sub, "agent-%s.meta.json" % aid), "(no description)")})
-    return live, note
+    return _dispatch_checks.live_jobs(session, now=now, deadline=_deadline)
 
 
 def _clock(reset):
@@ -951,9 +790,8 @@ def five_hour_rule(payload, pins, data, seat, owner=None, plan=None):
     if pressure is None:
         _TRACE["fiveHour"] = "unreadable: the band read carried no 5h window"
         return None, None
-    threshold = quota_bands.FIVE_HOUR_NARROW_PRESSURE
     _TRACE["fiveHour"] = round(pressure, 2)
-    if pressure <= threshold:
+    if _dispatch_checks.native_room(pressure, 0) is None:
         return None, None
     hhmm, when = _clock(reset)
     now = time.time()
@@ -974,17 +812,37 @@ def five_hour_rule(payload, pins, data, seat, owner=None, plan=None):
         _TRACE["fiveHourLive"] = "unmeasured, counted none live: " + note
     width = dispatch_width(payload)
     _TRACE["fiveHourLiveCount"], _TRACE["fiveHourWidth"] = len(live), width
-    if len(live) + width <= 1:
+    if width <= _dispatch_checks.native_room(pressure, len(live)):
         return None, None
     running = "; ".join(f"{j['run']} {j['label']}" for j in live[:8]) or "none"
     stated = ("The currency reason this call states is not an `owner:` statement, so it does not lift this "
               "rule. " if stated_reason(payload, seat) else "")
+    head = (f"orchestration §5b: 5h used faster than its time: one native job at a time. "
+            f"{figures}; this call would make {len(live) + width} live "
+            f"native jobs ({len(live)} live + {width} here). Live: {running}. ")
+    handoff = _handoff_jobs_file(payload)
+    if handoff:
+        return "deny", (head + f"This call's jobs came from the fan-out's hand-off file. Next step: "
+                        f"`python3 .claude/tools/sidecar_fanout.py {handoff} --detach` re-places them with this "
+                        f"plan excluded, so none returns to this window; or wait for the reset at {hhmm}. "
+                        + stated + _owner_line(seat))
     return "deny", (
-        f"orchestration §5b: 5h used faster than its time: one native job at a time. "
-        f"{figures}; this call would make {len(live) + width} live "
-        f"native jobs ({len(live)} live + {width} here). Live: {running}. Next step per job in this call, "
+        head + f"Next step per job in this call, "
         f"sidecar jobs one Bash call each (reference/sidecar_dispatch.md; {_dispatch_checks.EFFORT_HOP}): "
         + "; ".join(_width_steps(pins, live, hhmm, data, plan or seat)) + ". " + stated + _owner_line(seat))
+
+
+def _handoff_jobs_file(payload):
+    """`<spillDir>/native.jobs.json` when this call's `args.spillDir` holds the file the fan-out's split wrote
+    beside the `native.args.json` it expanded into this call (`tools/sidecar_fanout.py`), else None. The
+    PreToolUse chain drops `jobsFile` once it expands it, so the spill dir is what the guard still sees."""
+    spill = _args(payload.get("tool_input") or {}).get("spillDir")
+    if not isinstance(spill, str) or not spill.strip():
+        return None
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    path = os.path.join(spill, "native.jobs.json")
+    return path if os.path.isfile(os.path.join(root, path)) else None
 
 
 # ---------------------------------------------------------------- injection
@@ -1218,7 +1076,7 @@ def session_started(payload):
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:
                 for _ in range(TRANSCRIPT_HEAD_LINES):
-                    match = _STAMP.search(handle.readline())
+                    match = _dispatch_checks.STAMP_RE.search(handle.readline())
                     if match:
                         stamp = match.group(1).replace("Z", "+00:00")
                         return datetime.datetime.fromisoformat(stamp).timestamp()

@@ -139,6 +139,69 @@ class HookMatcherTests(unittest.TestCase):
                 self.assertFalse(lc.hook_matches(matcher, "Edit"))
 
 
+class StandingImportTests(unittest.TestCase):
+    """A standing file's `@path` lines load the imported file, recursively, each once."""
+
+    def _census(self, td, claude_md, extra):
+        root = Path(td) / ".claude"
+        home = make_complete_root(root)
+        write(root / "CLAUDE.md", claude_md)
+        for rel, text in extra.items():
+            write(root / rel, text)
+        return lc.standing_census(root, home=home), root
+
+    def test_two_imports_one_importing_a_third_all_count(self):
+        with tempfile.TemporaryDirectory() as td:
+            base_root = Path(td) / "base" / ".claude"
+            make_complete_root(base_root)
+            before = lc.standing_census(base_root, home=base_root.parent / "fake-home")["total_bytes"]
+            md = "top\n@a.md\n@sub/b.md\n"
+            report, root = self._census(Path(td) / "run", md, {
+                "a.md": "a" * 40, "sub/b.md": "b" * 30 + "\n@../c.md\n", "c.md": "c" * 20})
+            self.assertEqual(report["source_errors"], [])
+            names = {Path(r["path"]).name for r in report["rows"]}
+            self.assertTrue({"a.md", "b.md", "c.md"} <= names, names)
+            sizes = {Path(r["path"]).name: r["bytes"] for r in report["rows"]}
+            top = (root / "CLAUDE.md").stat().st_size
+            old_top = (base_root / "CLAUDE.md").stat().st_size
+            self.assertEqual(report["total_bytes"],
+                             before - old_top + top + sizes["a.md"] + sizes["b.md"] + sizes["c.md"])
+
+    def test_import_cycle_terminates_and_counts_each_file_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            report, root = self._census(td, "@a.md\n", {"a.md": "@b.md\n", "b.md": "@a.md\n@CLAUDE.md\n"})
+            self.assertEqual(report["source_errors"], [])
+            paths = [r["path"] for r in report["rows"]]
+            for name in ("CLAUDE.md", "a.md", "b.md"):
+                self.assertEqual(paths.count(str(root / name)), 1, (name, paths))
+
+    def test_missing_import_is_a_source_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            report, _ = self._census(td, "@ghost.md\n", {})
+            self.assertTrue(any("ghost.md" in e for e in report["source_errors"]), report["source_errors"])
+
+    def test_import_inside_a_fence_or_past_four_hops_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as td:
+            md = "```\n@fenced.md\n```\n@h1.md\n"
+            report, _ = self._census(td, md, {
+                "fenced.md": "f", "h1.md": "@h2.md\n", "h2.md": "@h3.md\n", "h3.md": "@h4.md\n",
+                "h4.md": "@h5.md\n", "h5.md": "x"})
+            names = {Path(r["path"]).name for r in report["rows"]}
+            self.assertNotIn("fenced.md", names)
+            self.assertIn("h4.md", names)
+            self.assertNotIn("h5.md", names)
+
+    def test_escaped_space_path_and_absolute_path_resolve(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "abs.md"
+            write(target, "z" * 9)
+            md = "@Design\\ Docs/x.md\n@" + str(target) + "\n"
+            report, _ = self._census(td, md, {"Design Docs/x.md": "y"})
+            self.assertEqual(report["source_errors"], [])
+            names = {Path(r["path"]).name for r in report["rows"]}
+            self.assertTrue({"x.md", "abs.md"} <= names, names)
+
+
 class OutputStyleStandingTests(unittest.TestCase):
     """F3: the active output style loads every session."""
 

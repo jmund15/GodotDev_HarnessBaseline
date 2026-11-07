@@ -15,6 +15,8 @@ Inputs:
   price         the models.dev `opencode-go` provider's `cost` (input, output, cache_read, optional
                 cache_write; USD per 1M) becomes the row's list `price`. A row the provider lists no
                 complete cost for gets a `priceGap` naming the catalog, unless it already holds a price.
+  input         the models.dev `opencode-go` provider's `modalities.input`, in canonical order; a
+                row the provider lists no modalities for gets an `inputGap`, never a text-only guess.
   limits        only the models.dev `opencode-go` provider's entries (api.json, or --modelsdev as
                 api.json or as {id: [{provider, context, output}]}); the cross-provider first hit
                 disagrees for many Go ids and is reported, never used. A row with no Go-owned entry
@@ -53,7 +55,7 @@ REGISTRY = ROOT / ".claude" / "reference" / "external_models.json"
 VALIDATOR = ROOT / ".claude" / "tools" / "model_registry.py"
 
 sys.path.insert(0, str(VALIDATOR.parent))
-from model_registry import product_line  # noqa: E402
+from model_registry import canonical_input_types, product_line  # noqa: E402
 
 def http_json(url, key=None, method="GET", payload=None, timeout=HTTP_TIMEOUT):
     headers = {"User-Agent": "harness-opencode-refresh/1.0",
@@ -183,6 +185,26 @@ def go_price_sources(api):
     return owned
 
 
+def go_input_sources(api):
+    """{id: [modalities.input]} for the models.dev `opencode-go` provider's entries, either input shape."""
+    owned = {}
+
+    def take(info):
+        types = (info.get("modalities") or {}).get("input") if isinstance(info, dict) else None
+        return canonical_input_types(types) if isinstance(types, list) else None
+
+    if isinstance(api, dict) and api and all(isinstance(v, list) for v in api.values()):
+        for mid, hits in api.items():
+            for h in hits:
+                if isinstance(h, dict) and h.get("provider") == GO_PROVIDER:
+                    owned[mid] = take(h)
+        return owned
+    provider = (api or {}).get(GO_PROVIDER) if isinstance(api, dict) else None
+    for mid, info in ((provider or {}).get("models") or {}).items():
+        owned[mid] = take(info)
+    return owned
+
+
 def _list_price(cost, today):
     """The registry `price` object for one models.dev cost dict, or None when it lacks a required rate."""
     def rate(key):
@@ -220,7 +242,8 @@ def version_key(names):
     return max(tuple(int(n) for n in re.findall(r"\d+", name)) for name in names)
 
 
-def go_plan(reg, catalog, protocol, owned, first, caps, folds, today, protocol_name, prices=None):
+def go_plan(reg, catalog, protocol, owned, first, caps, folds, today, protocol_name, prices=None,
+            inputs=None):
     """-> (new registry document, report). Pure: reads its arguments, writes nothing."""
     import copy
     doc = copy.deepcopy(reg)
@@ -274,6 +297,7 @@ def go_plan(reg, catalog, protocol, owned, first, caps, folds, today, protocol_n
               "markedAbsent": [], "folded": {}, "limitConflictsIgnored": [], "noGoOwnedLimits": [],
               "priced": 0, "priceGaps": 0}
     prices = prices or {}
+    inputs = inputs or {}
     planned = []
     for mid in heads:
         served = sorted(served_by.get(mid, []))
@@ -322,6 +346,15 @@ def go_plan(reg, catalog, protocol, owned, first, caps, folds, today, protocol_n
         elif source != mid:
             row["_limitsComment"] = ("Go serves %s as upstream %s; limits are the %s entry for %s."
                                      % (source, mid, GO_PROVIDER, source))
+        types = next((inputs[n] for n in [mid] + served if inputs.get(n)), None)
+        if types:
+            row["input"] = list(types)
+            row.pop("inputGap", None)
+        else:
+            row.pop("input", None)
+            row["inputGap"] = {"reason": "models.dev lists no %s modalities for %s."
+                                         % (GO_PROVIDER, ", ".join([mid] + served)),
+                               "checked": GO_PRICE_CHECKED, "asOf": today}
         for name in [mid] + served:
             if name in owned and name in first and first[name] != owned[name]:
                 report["limitConflictsIgnored"].append(
@@ -518,7 +551,8 @@ def go_main(args):
         if "go" not in reg.get("transports", {}) or "opencode" not in reg.get("transports", {}):
             raise GoRefreshError("registry has no go or opencode transport")
         doc, report = go_plan(reg, catalog, protocol, owned, first, caps, folds, today,
-                              Path(args.protocol).name, prices=go_price_sources(api))
+                              Path(args.protocol).name, prices=go_price_sources(api),
+                              inputs=go_input_sources(api))
         sys.path.insert(0, str(VALIDATOR.parent))
         import model_registry
         ladder = ROOT / model_registry.LADDER_RELPATH

@@ -219,3 +219,15 @@ class HookAdmission(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WinnerWithNoReadableRoom(unittest.TestCase):
+    """A plan can win with no readable room reading (a reopening or headroom-only row), so `place_job` built no
+    load; admission still charges the winner and admits the job."""
+
+    def test_a_winner_without_a_built_load_is_charged_and_admitted(self):
+        placed = sf.Placement([], {}, {}, [{'transport': PAID}], False, None, [])
+        with patch.object(sf, 'place_job', lambda *a, **k: placed), \
+                patch.object(sf, 'plan_load', lambda data: {}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNone(sf.admission_refusal([job(plan=PAID)], DATA))

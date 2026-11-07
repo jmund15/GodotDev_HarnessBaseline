@@ -5,6 +5,7 @@
   "familyIssuers": {"opus": "Anthropic", "sonnet": "Anthropic", "haiku": "Anthropic", "fable": "Anthropic", "sol": "OpenAI", "luna": "OpenAI", "astra": "OpenAI", "terra": "OpenAI", "flash": "DeepSeek", "pro": "DeepSeek", "deepseek-flash-vision-exp": "DeepSeek", "grok": "xAI", "muse": "Meta", "muse-spark-contributor": "Meta", "kimi": "Moonshot AI", "kimi-code": "Moonshot AI", "glm": "Z.ai", "glm-flash": "Z.ai", "qwen-flash": "Alibaba", "qwen-max": "Alibaba", "qwen-plus": "Alibaba", "mimo": "Xiaomi", "mimo-flash": "Xiaomi", "mimo-pro": "Xiaomi", "hy": "Tencent", "hy3": "Tencent", "hy-preview": "Tencent", "minimax": "MiniMax", "longcat": "Meituan", "longcat-preview-free": "Meituan", "step-preview-free": "StepFun", "nemotron-ultra": "NVIDIA", "lightning": "NVIDIA", "ling": "Ant Group"},
   "transports": {
     "deepseek": {
+      "imageRoute": {"state": "unverified"},
       "baseUrl": "https://api.deepseek.com/anthropic",
       "credentialVar": "DEEPSEEK_API_KEY",
       "capacityProbe": {
@@ -34,6 +35,7 @@
       }
     },
     "codex": {
+      "imageRoute": {"state": "unverified"},
       "_comment": "OpenAI Codex, billed against a ChatGPT Plus plan — NOT an OpenAI API key, and unrelated to the failure_archaeology `codex/*` git branches. ONE launcher (2026-08-20): the proxy path, which runs the real `claude` binary against a local proxy translating Anthropic Messages traffic to the Codex backend, so the full .claude harness applies. The former `codex exec` launcher stub was retired (it passed the prompt as argv — dies on the Windows command-line length limit — and its child loaded none of .claude), then deleted (2026-09-14); git history at the pre-retirement tag point (fix(sidecar) 26393ee81) still has it. Proxy is raine/claude-code-proxy v0.1.35 — caixiaoshun/claudex v1.0.0 was tested and REJECTED: its Anthropic->OpenAI tool-schema conversion emits invalid schemas (widens `required` to every property; adds `type:object` beside an `anyOf`), and all three tool-bearing E2E runs failed while the tools-disabled run passed.",
       "_limitsSource": "OpenAI's own models cache (~/.codex/models_cache.json, written by the Codex client from the backend), read 2026-09-22. Applies to every registered codex row: context_window 272000, max_context_window 872000, effective_context_window_percent 95. Each codex row's `effortValues` is that model's supported_reasoning_levels from the same read; `effort-values` narrows it to serverSidePins.effortValues, the rungs the proxy can pin.",
       "longContextTier": {
@@ -45,6 +47,11 @@
         "asOf": "2026-09-22"
       },
       "launcher": ".claude/scripts/codex_proxy_sidecar.sh",
+      "maxChildren": {
+        "count": 4,
+        "basis": "One 7-wide codex fan-out died 403 at a single instant; the cause was never verified, so 4 is a hypothesis, not a measurement. Lift or raise it once a wider run is observed.",
+        "asOf": "2026-11-01"
+      },
       "costModel": "plan-quota",
       "capacityProbe": {
         "command": "python",
@@ -76,6 +83,7 @@
       }
     },
     "opencode": {
+      "imageRoute": {"state": "unverified"},
       "_limitsSource": "models.dev, the OpenCode team's own catalog (first-party metadata, not a benchmark) - written by the retired Zen-direct refresh; this transport is unavailable and no tool refreshes it. Recorded once here because ONE catalog sourced every row on this transport.",
       "_comment": "OpenCode Zen FREE tier (https://opencode.ai/zen) — keyless (`Authorization: Bearer public`; any other unauthenticated key 401s, measured 2026-08-22). ONE shape: the proxy path — Zen's own Anthropic surface (/v1/messages) serves free models TEXT-ONLY (any request carrying `tools` upstream-errors [1210] on every free id tested) while its OpenAI surface (/v1/chat/completions) carries function-calling, streaming and tool loops, verified end-to-end including a real `claude` child completing tool-bearing work. Proxy is LiteLLM (uv tool install 'litellm[proxy]' --with 'fastapi<0.120'; newer fastapi removed get_flat_dependant and this LiteLLM imports it), started PER DISPATCH from a generated config pinning exactly one deployment under the requested id — unknown ids fail routing loudly ('No deployments available'), there is NO alias surface, so unlike the codex transport the child's own modelUsage.canonicalModel IS trustworthy identity evidence. costModel is marginal-usd WITH $0-AUTHORED PRICES because the calls ARE $0 (`cost:\"0\"` in every Zen response); the legal costModel set has no 'free', and plan-quota would require a quota-capable capacityProbe nothing here can satisfy — so costUSD 0.0 in records is measured truth, not the pricing artifact it would be on a priced model. Privacy: Zen documents some free ids as permitted to train on submissions during their free period — check its Privacy section before dispatching proprietary material. ONE row on this transport (muse) is Contributor-Free rather than anonymous-free: it needs a real logged-in-account key (credentialVar below), trains on submissions by design, and 500s under the anonymous `public` bearer — see the muse model row's own comment.",
       "baseUrl": "https://opencode.ai/zen/v1",
@@ -90,6 +98,13 @@
       "status": {"state": "unavailable", "since": "2026-09-27", "reason": "Zen's free tier answers only the real OpenCode client: copied client headers get 403 FreeTierError, and no launcher sends another client's identity. Rows stay so stored records resolve."}
     },
     "go": {
+      "imageRoute": {
+        "state": "verified",
+        "verifiedAt": "2026-11-05",
+        "row": "go-deepseek-flash",
+        "probe": "python3 .claude/scripts/vision_probe.py --row go-deepseek-flash",
+        "evidence": ".claude/scratch/vision-probe/vision-go-deepseek-flash/vision-go-deepseek-flash.md"
+      },
       "baseUrl": "https://opencode.ai/zen/go/v1",
       "credentialVar": "OPENCODE_API_KEY",
       "costModel": "plan-quota",
@@ -99,6 +114,7 @@
       "_limitsSource": "models.dev, the `opencode-go` provider's entries only (the cross-provider first hit disagrees for many Go ids) - refreshed by scripts/opencode_refresh_models.py --go. A row without a Go-owned entry keeps null limits."
     },
     "opencode-cli": {
+      "imageRoute": {"state": "unverified"},
       "_comment": "The genuine OpenCode CLI (`opencode run`) against Zen's free ids: survey and review (read-only), and arm and author (writes confined to the `-d` root), no .claude hooks, web search available. The launcher's pattern-rule permission config, effective-policy probe and session-export attestation carry the confinement; a cell whose tools include Bash is not citable (benchmark_campaign/README.md Arm isolation).",
       "launcher": ".claude/scripts/opencode_run_sidecar.sh",
       "costModel": "marginal-usd",
@@ -108,6 +124,7 @@
       "_limitsSource": "`opencode models opencode --verbose`, the CLI's live catalog, 2026-09-27. Rows absent from it keep null limits."
     },
     "anthropic": {
+      "imageRoute": {"state": "unverified"},
       "_comment": "The HOST transport, added 2026-09-04. This file's scope deliberately now includes it: an Anthropic session is not the only kind of session, so a non-Anthropic host reaching claude-* needs a launcher and a roster row like every other transport, and `model_registry.py available` should be the ONE answer to 'what can I dispatch to'. These rows claim their tiers in `roles`, which the ladder's role cells must match (`--check`). No baseUrl: the child talks to Anthropic directly. No credentialFile: each plan's credential is its login's own OAuth on disk at `<configDir>/.credentials.json`, which an env scrub does not touch -- see anthropic_sidecar.sh, which deliberately inverts the scrub's original intent (gotcha_claude_code_entrypoint_leaks_host_auth_to_child) for this one route.",
       "launcher": ".claude/scripts/anthropic_sidecar.sh",
       "effortValues": ["low", "medium", "high", "xhigh", "max"],
@@ -128,6 +145,7 @@
       }
     },
     "anthropic-secondary": {
+      "imageRoute": {"state": "unverified"},
       "_comment": "The owner's second Anthropic plan. `planOf` makes it a payer for anthropic's rows, never a row owner: model ids, effort values and roleSource come from the route, while pick, capacity, launcher and ledger key on this entry. `capacityProbe.refresh` is the pin of the one print-mode turn the probe runs to refresh an expired token while no session on this login is open; its timeoutSeconds is about 2.5x one measured refresh-shaped turn (5.8 s wall clock under ~/.claude-secondary, 2026-09-28).",
       "planOf": "anthropic",
       "configDir": "~/.claude-secondary",
@@ -147,6 +165,7 @@
       }
     },
     "anthropic-console": {
+      "imageRoute": {"state": "unverified"},
       "_comment": "The primary Console organization's promotional credit, spent through an inference key rather than a login: NO `.credentials.json` exists for this plan, and `credentialVar` names the key the launcher exports to the child as ANTHROPIC_API_KEY. `configDir` still names a directory of its own -- the child runs with CLAUDE_CONFIG_DIR set to it so no host login can win the auth race -- but nothing logs in there; `sync_plan_config.py` syncs its user config files and never touches credentials. No workspaceIdVar: an inference key needs no workspace header. `credit` is the owner-entered cycle (D4); the re-anchor state and the spending ledger live on the machine, not here. The probe (S3) prices this route's ledger rows against `credit`, and an unanchored, stale or unpriced cycle reads unreadable -- never as a zero-spend reading -- so the route is refused rather than guessed at.",
       "planOf": "anthropic",
       "configDir": "~/.claude-console-primary",
@@ -166,6 +185,7 @@
       }
     },
     "anthropic-console-secondary": {
+      "imageRoute": {"state": "unverified"},
       "_comment": "The secondary Console organization's promotional credit -- the same shape as anthropic-console (see its comment) with its own key, login-free configDir and cycle.",
       "planOf": "anthropic",
       "configDir": "~/.claude-console-secondary",
@@ -231,6 +251,7 @@
     {
       "_limitsSource": "https://api-docs.deepseek.com/quick_start/pricing, read 2026-09-15: deepseek-flash 1M context, 384K max output. Concurrency is not published there.",
       "id": "deepseek-flash",
+      "input": ["text", "image"],
       "alias": "flash",
       "transport": "deepseek",
       "label": "DeepSeek V4.1 Flash", "family": "flash", "lifecycle": "current", "order": 90, "costRank": 2,
@@ -271,6 +292,7 @@
     {
       "_limitsSource": "UNRECORDED - these values predate the 2026-09-04 provenance rule and no source was captured at the time. Re-derive from DeepSeek's published model card before relying on them; do not treat as first-party.",
       "id": "deepseek-v4-pro",
+      "input": ["text"],
       "alias": "pro",
       "transport": "deepseek",
       "label": "DeepSeek V4 Pro", "family": "pro", "lifecycle": "current", "order": 95, "costRank": 3, "prior": "frontier",
@@ -303,6 +325,7 @@
     },
     {
       "id": "gpt-5.6-luna",
+      "input": ["text", "image", "pdf"],
       "alias": "luna56",
       "transport": "codex",
       "label": "GPT-5.6 Luna", "family": "luna", "version": "gpt-5.6-luna", "lifecycle": "superseded", "order": 71, "costRank": 1, "prior": "mid", "effortValues": ["low", "medium", "high", "xhigh", "max"],
@@ -339,6 +362,7 @@
     },
     {
       "id": "gpt-6-astra",
+      "input": ["text", "image", "pdf"],
       "longContextTier": null,
       "_longContextTierComment": "Exempt from the codex transport's long-context tier: OpenAI bills gpt-6-astra at one rate across its window (codex transport longContextTier sources).",
       "alias": "astra",
@@ -380,6 +404,7 @@
     },
     {
       "id": "gpt-6.1-terra",
+      "input": ["text", "image", "pdf"],
       "alias": "terra",
       "transport": "codex",
       "label": "GPT-6.1 Terra", "family": "terra", "version": "gpt-6.1-terra", "lifecycle": "current", "order": 74, "costRank": 1, "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
@@ -406,6 +431,7 @@
     },
     {
       "id": "gpt-5.6-terra",
+      "input": ["text", "image", "pdf"],
       "alias": "terra56",
       "transport": "codex",
       "label": "GPT-5.6 Terra", "family": "terra", "version": "gpt-5.6-terra", "lifecycle": "superseded", "order": 75, "costRank": 1, "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
@@ -433,6 +459,7 @@
     },
     {
       "id": "gpt-5.6-sol",
+      "input": ["text", "image", "pdf"],
       "alias": "sol56",
       "transport": "codex",
       "label": "GPT-5.6 Sol", "family": "sol", "version": "gpt-5.6-sol", "lifecycle": "superseded", "order": 61, "costRank": 2, "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
@@ -461,6 +488,7 @@
     },
     {
       "id": "gpt-6.1-sol",
+      "input": ["text", "image", "pdf"],
       "alias": "sol",
       "transport": "codex",
       "label": "GPT-6.1 Sol", "family": "sol", "version": "gpt-6.1-sol", "lifecycle": "current", "order": 60, "costRank": 2, "prior": "frontier", "effortValues": ["low", "medium", "high", "xhigh", "max"],
@@ -493,6 +521,7 @@
     },
     {
       "id": "gpt-6-luna",
+      "input": ["text", "image", "pdf"],
       "alias": "luna",
       "transport": "codex",
       "label": "GPT-6 Luna", "family": "luna", "version": "gpt-6-luna", "lifecycle": "current", "order": 70, "costRank": 1, "prior": "mid", "effortValues": ["low", "medium", "high", "xhigh", "max"],
@@ -531,6 +560,7 @@
     {
       "_rosterComment": "The opencode rows below are the Zen FREE tier, refreshed live 2026-09-03. Windows/prices are FIRST-PARTY metadata from models.dev (the OpenCode team's own catalog), not benchmarks. Each row's `roles` is empty: a row claims a tier only on scored evidence from the model-effort battery or a dated owner claim. Until then nothing routes to these by tier — dispatch by -m alias or id. x-preview-f-free (\"preview\") and hy3-free left Zen's live catalog 2026-09-03; they stay registered as retired, unavailable rows so stored records resolve.",
       "id": "big-pickle",
+      "input": ["text"],
       "alias": "pickle",
       "transport": "opencode",
       "label": "Big Pickle", "family": "pickle", "version": "big-pickle", "lifecycle": "current", "order": 150, "costRank": 0, "prior": "small",
@@ -563,6 +593,7 @@
     },
     {
       "id": "mimo-v2.5-free",
+      "input": ["text", "image", "audio", "video"],
       "alias": "mimo",
       "transport": "opencode",
       "label": "MiMo V2.5", "family": "mimo", "version": "mimo-v2.5-free", "lifecycle": "current", "order": 160, "costRank": 0, "prior": "small",
@@ -595,6 +626,7 @@
     },
     {
       "id": "nemotron-3-ultra-free",
+      "input": ["text"],
       "alias": "nemotron-ultra",
       "transport": "opencode",
       "label": "Nemotron 3 Ultra", "family": "nemotron-ultra", "version": "nemotron-3-ultra-free", "lifecycle": "current", "order": 130, "costRank": 0, "prior": "small",
@@ -627,6 +659,7 @@
     },
     {
       "id": "nemotron-3.5-lightning-free",
+      "input": ["text"],
       "alias": "lightning",
       "transport": "opencode",
       "label": "Nemotron 3.5 Lightning", "family": "lightning", "version": "nemotron-3.5-lightning-free", "lifecycle": "current", "order": 140, "costRank": 0, "prior": "small",
@@ -659,6 +692,7 @@
     },
     {
       "id": "laguna-s-2.1-free",
+      "input": ["text"],
       "alias": "laguna",
       "transport": "opencode",
       "label": "Laguna S 2.1", "family": "laguna", "version": "laguna-s-2.1-free", "lifecycle": "current", "order": 120, "costRank": 0, "prior": "small",
@@ -691,6 +725,7 @@
     },
     {
       "id": "muse-spark-1.3-contributor-free",
+      "input": ["text", "image", "pdf", "audio", "video"],
       "alias": "muse",
       "transport": "opencode",
       "label": "Muse Spark 1.3", "family": "muse", "version": "muse-spark-1.3-contributor-free", "lifecycle": "current", "order": 80, "costRank": 0, "prior": "mid",
@@ -726,6 +761,7 @@
     {
       "_rosterComment": "The anthropic rows below are the HOST transport, added 2026-09-04. They are DISPATCHABILITY rows only: what anthropic_sidecar.sh can spawn. Role SEMANTICS -- which role to reach for and at what effort -- stay in reference/model_ladder_evidence.md (the transport's roleSource), which is why each current row's effort.evidence is `see-ladder` rather than a measurement duplicated here. A current row's `roles` is its own name because on this transport the alias IS the role; that is not a tier claim about another transport. Superseded and retired rows claim no role.",
       "id": "claude-opus-5-5",
+      "input": ["text", "image", "pdf"],
       "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000},
       "_limitsSource": "Anthropic first-party, read 2026-09-30: https://platform.claude.com/docs/en/about-claude/models/overview (context window 1M, max output 128K)",
       "railTier": "condensed",
@@ -758,6 +794,7 @@
     },
     {
       "id": "claude-opus-5",
+      "input": ["text", "image", "pdf"],
       "limits": {"contextTokens": 1000000},
       "_limitsSource": "Anthropic first-party, read 2026-09-30: https://code.claude.com/docs/en/model-config section Extended context: Opus 4.7 and later run the 1M window on every plan with no [1m] variant. Max output not published for this superseded row.",
       "railTier": "condensed",
@@ -788,6 +825,7 @@
     },
     {
       "id": "claude-sonnet-5-5",
+      "input": ["text", "image", "pdf"],
       "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000},
       "_limitsSource": "Anthropic first-party, read 2026-09-30: https://platform.claude.com/docs/en/about-claude/models/overview (context window 1M, max output 128K)",
       "railTier": "detailed",
@@ -795,7 +833,7 @@
         "evidence": "unmeasured"
       },
       "_railTierComment": "Carried from the claude-sonnet-5 row, the tier Sonnet sessions and delegates ran on before this row existed.",
-      "driverNotes": [{"text": "Finish everything the brief names; stop early only when blocked or before a risky step, and name the blocker.", "evidenceRef": "vendor guide prompting-claude-sonnet-5-5 (reasoned); eval agents.partial-coverage.claude-sonnet-5-5", "weakness": "Checks in before the work is done at low/medium effort; eval partial-coverage 50 of 471 agents against 98 of 2330 for all models (keyword count, cause unread).", "removeWhen": "a /pin_ab run of a multi-item brief at `low`, note suppressed on one arm, finishes every item on both arms, or agents.partial-coverage.claude-sonnet-5-5 falls to the all-models share."}, {"text": "Before reporting changed code done, run a check that exercises it (its proof, the build or the command); a syntax-only check or one that failed to start does not count. If none can run, name it instead of reporting done.", "evidenceRef": "vendor guide prompting-claude-sonnet-5-5 (reasoned)", "weakness": "Reports code changes done without a real check at low effort (vendor guide; unseen here).", "removeWhen": "a /pin_ab run of an author brief at `low`, note suppressed on one arm, runs a real check before reporting done on both arms."}],
+      "driverNotes": [{"text": "Finish everything the brief names; stop early only when blocked or before a risky step, and name the blocker.", "evidenceRef": "vendor guide prompting-claude-sonnet-5-5 (reasoned); eval agents.partial-coverage.claude-sonnet-5-5", "weakness": "Checks in before the work is done at low/medium effort; eval partial-coverage 50 of 471 agents against 98 of 2330 for all models (keyword count, cause unread).", "removeWhen": "a /pin_ab run of a multi-item brief at `low`, note suppressed on one arm, finishes every item on both arms, or agents.partial-coverage.claude-sonnet-5-5 falls to the all-models share."}, {"text": "Before reporting changed code done, run a check that exercises it (its proof, the build or the command); a syntax-only check or one that failed to start does not count. If none can run, name it instead of reporting done.", "evidenceRef": "vendor guide prompting-claude-sonnet-5-5 (reasoned)", "weakness": "Reports code changes done without a real check at low effort (vendor guide; unseen here).", "removeWhen": "a /pin_ab run of an author brief at `low`, note suppressed on one arm, runs a real check before reporting done on both arms."}, {"text": "When a change alters behaviour, write its proof case and run it on the unchanged code before you edit that code. A failure rebuilt afterward from an old copy is not that run.", "evidenceRef": "use: 3 of 9 sonnet-5-5 medium author jobs, session f3a34186 2026-11-01/02: .claude/scratch/fanout-cap/deny-preflight.md, .claude/scratch/route-split/rs-s5.md, .claude/scratch/route-split/rs-s7.md", "weakness": "Edited the code first and rebuilt the failing run from a git copy afterward, in 3 of 9 medium author jobs whose brief and rules/harness_tooling.md both state the order.", "removeWhen": "a /pin_ab run of a RED-first author brief at `medium`, note suppressed on one arm, writes and runs the failing case before the code edit on both arms."}],
       "alias": "sonnet",
       "contextSuffix": "[1m]",
       "_contextSuffixComment": "Client 2.1.283 gives claude-sonnet-5-5 subagents a 200k window (18 compacted at 167k-191k on 2026-09-28) while a `claude-sonnet-5-5[1m]` pin ran to 519,843 context tokens without compacting (probe run wf_4fe964ac-937), so the guard appends the suffix to every native pin of this row; delete this field once an unsuffixed claude-sonnet-5-5 subagent runs past 200k context tokens without compacting.",
@@ -825,6 +863,7 @@
     },
     {
       "id": "claude-sonnet-5",
+      "input": ["text", "image", "pdf"],
       "limits": {"contextTokens": 1000000},
       "_limitsSource": "Anthropic first-party, read 2026-09-30: https://code.claude.com/docs/en/model-config section Extended context: Sonnet 5 and later run the 1M window on every plan with no [1m] variant. Max output not published for this superseded row.",
       "railTier": "detailed",
@@ -856,6 +895,7 @@
     },
     {
       "id": "claude-haiku-5-5",
+      "input": ["text", "image", "pdf"],
       "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000, "compactAtTokens": 217000},
       "_limitsSource": "Anthropic first-party, read 2026-10-07: https://platform.claude.com/docs/en/about-claude/models/overview (context window 1M, max output 128K, default effort medium)",
       "_compactAtComment": "Operating point: a 250000 client window that compacts at 217000 input, for lanes of independent items. A job that keeps one subject resident takes a row whose compaction point holds it (the Compaction bullet in reference/model_ladder_evidence.md owns that rule). Evidence: auto-memory/archive/evidence_haiku_compaction_point.md.",
@@ -901,6 +941,7 @@
     },
     {
       "id": "claude-haiku-4-5-20251001",
+      "input": ["text", "image", "pdf"],
       "limits": {"contextTokens": 200000, "maxOutputTokens": 64000},
       "_limitsSource": "Anthropic first-party, read 2026-09-30: https://platform.claude.com/docs/en/about-claude/models/overview (context window 200K, max output 64K)",
       "railTier": "detailed",
@@ -932,6 +973,7 @@
     },
     {
       "id": "claude-fable-5-1",
+      "input": ["text", "image", "pdf"],
       "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000},
       "_limitsSource": "Anthropic first-party, read 2026-09-30: https://platform.claude.com/docs/en/about-claude/models/overview (context window 1M, max output 128K)",
       "railTier": "minimal",
@@ -962,6 +1004,7 @@
     },
     {
       "id": "gpt-6-sol",
+      "input": ["text", "image", "pdf"],
       "alias": "sol6",
       "transport": "codex",
       "label": "GPT-6 Sol", "family": "sol", "version": "gpt-6-sol", "lifecycle": "retired", "order": 59, "costRank": 2, "prior": "frontier", "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
@@ -975,6 +1018,7 @@
     {
       "_rosterComment": "RETIRED rows below: versions no alias serves and no dispatch may reach. Each is registered so stored records and `aliasHistory` resolve to a labelled row instead of an unregistered id; none carries a price, because an uncallable row owes no rate.",
       "id": "claude-opus-4-8",
+      "input": ["text", "image", "pdf"],
       "alias": "opus48",
       "transport": "anthropic",
       "label": "Opus 4.8", "family": "opus", "version": "claude-opus-4-8", "lifecycle": "retired", "order": 22, "costRank": 2, "prior": "frontier",
@@ -996,6 +1040,7 @@
     },
     {
       "id": "claude-fable-5",
+      "input": ["text", "image", "pdf"],
       "alias": "fable5",
       "transport": "anthropic",
       "label": "Fable 5", "family": "fable", "version": "claude-fable-5", "lifecycle": "retired", "order": 31, "costRank": 3, "prior": "frontier",
@@ -1017,6 +1062,7 @@
     },
     {
       "id": "deepseek-v4-flash",
+      "input": ["text", "image"],
       "alias": "flashv4",
       "transport": "deepseek",
       "label": "DeepSeek V4 Flash", "family": "flash", "version": "DeepSeek-V4-Flash-0731", "lifecycle": "retired", "order": 91, "costRank": 2, "prior": "frontier",
@@ -1028,6 +1074,7 @@
     },
     {
       "id": "deepseek-flash-v4.1",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no deepseek entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "flash41",
       "transport": "deepseek",
       "label": "DeepSeek V4.1 Flash (0910)", "family": "flash", "version": "DeepSeek-V4.1-Flash", "lifecycle": "retired", "order": 92, "costRank": 2, "prior": "frontier",
@@ -1039,6 +1086,7 @@
     },
     {
       "id": "muse-spark-1.2-contributor-free",
+      "input": ["text", "image", "pdf", "audio", "video"],
       "alias": "muse12",
       "transport": "opencode",
       "label": "Muse Spark 1.2", "family": "muse", "version": "muse-spark-1.2-contributor-free", "lifecycle": "retired", "order": 81, "costRank": 0, "prior": "mid",
@@ -1050,6 +1098,7 @@
     },
     {
       "id": "hy3-free",
+      "input": ["text"],
       "alias": "hy3",
       "transport": "opencode",
       "label": "Hy3", "family": "hy3", "version": "hy3-free", "lifecycle": "retired", "order": 110, "costRank": 0, "prior": "small",
@@ -1061,6 +1110,7 @@
     },
     {
       "id": "x-preview-f-free",
+      "input": ["text", "image", "video"],
       "alias": "preview",
       "transport": "opencode",
       "label": "X Preview F", "family": "preview", "version": "x-preview-f-free", "lifecycle": "retired", "order": 100, "costRank": 0, "prior": "small",
@@ -1072,6 +1122,7 @@
     },
     {
       "id": "kimi-k3",
+      "input": ["text", "image", "video"],
       "alias": "go-kimi",
       "transport": "go",
       "label": "Kimi K3 (Go)",
@@ -1092,6 +1143,7 @@
     },
     {
       "id": "glm-5.3",
+      "input": ["text"],
       "alias": "go-glm",
       "transport": "go",
       "label": "GLM 5.3 (Go)",
@@ -1112,6 +1164,7 @@
     },
     {
       "id": "go/deepseek-v4-flash",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-deepseek-v4-flash",
       "transport": "go",
       "upstreamId": "deepseek-v4-flash",
@@ -1133,6 +1186,7 @@
     },
     {
       "id": "deepseek-v4-flash-vision-exp",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-deepseek-v4-flash-vision-exp",
       "transport": "go",
       "label": "deepseek-v4-flash-vision-exp (Go)",
@@ -1153,6 +1207,7 @@
     },
     {
       "id": "go/deepseek-flash-v4.1",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-flash41",
       "transport": "go",
       "upstreamId": "deepseek-flash",
@@ -1168,6 +1223,7 @@
     },
     {
       "id": "go/deepseek-flash",
+      "input": ["text", "image"],
       "alias": "go-deepseek-flash",
       "transport": "go",
       "upstreamId": "deepseek-v4.1-flash",
@@ -1193,6 +1249,7 @@
     },
     {
       "id": "go/deepseek-v4-pro",
+      "input": ["text"],
       "alias": "go-deepseek-v4-pro",
       "transport": "go",
       "upstreamId": "deepseek-v4-pro",
@@ -1214,6 +1271,7 @@
     },
     {
       "id": "glm-5.1",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-glm-5-1",
       "transport": "go",
       "label": "glm-5.1 (Go)",
@@ -1234,6 +1292,7 @@
     },
     {
       "id": "glm-5.2",
+      "input": ["text"],
       "alias": "go-glm-5-2",
       "transport": "go",
       "label": "glm-5.2 (Go)",
@@ -1254,6 +1313,7 @@
     },
     {
       "id": "grok-4.6",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-grok-4-6",
       "transport": "go",
       "label": "grok-4.6 (Go)",
@@ -1274,6 +1334,7 @@
     },
     {
       "id": "grok-4.7",
+      "input": ["text", "image", "pdf"],
       "alias": "go-grok-4-7",
       "transport": "go",
       "label": "grok-4.7 (Go)",
@@ -1294,6 +1355,7 @@
     },
     {
       "id": "muse-spark-1.2-contributor",
+      "input": ["text", "image", "pdf", "audio", "video"],
       "alias": "go-muse-spark-1-2-contributor",
       "transport": "go",
       "label": "muse-spark-1.2-contributor (Go)",
@@ -1314,6 +1376,7 @@
     },
     {
       "id": "muse-spark-1.3-contributor",
+      "input": ["text", "image", "pdf", "audio", "video"],
       "alias": "go-muse-spark-1-3-contributor",
       "transport": "go",
       "label": "muse-spark-1.3-contributor (Go)",
@@ -1334,6 +1397,7 @@
     },
     {
       "id": "glm-5.3-flash",
+      "input": ["text", "image", "video"],
       "alias": "go-glm-5-3-flash",
       "transport": "go",
       "label": "glm-5.3-flash (Go)",
@@ -1354,6 +1418,7 @@
     },
     {
       "id": "omen-alpha",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-omen-alpha",
       "transport": "go",
       "label": "omen-alpha (Go)",
@@ -1374,6 +1439,7 @@
     },
     {
       "id": "go/gpt-5.6-luna",
+      "input": ["text", "image", "pdf"],
       "alias": "go-gpt-5-6-luna",
       "transport": "go",
       "upstreamId": "gpt-5.6-luna",
@@ -1395,6 +1461,7 @@
     },
     {
       "id": "go/gpt-6-luna",
+      "input": ["text", "image", "pdf"],
       "alias": "go-gpt-6-luna",
       "transport": "go",
       "upstreamId": "gpt-6-luna",
@@ -1416,6 +1483,7 @@
     },
     {
       "id": "go/hy3",
+      "input": ["text"],
       "alias": "go-hy3",
       "transport": "go",
       "upstreamId": "hy3",
@@ -1437,6 +1505,7 @@
     },
     {
       "id": "hy4-preview",
+      "input": ["text"],
       "alias": "go-hy4-preview",
       "transport": "go",
       "label": "hy4-preview (Go)",
@@ -1457,6 +1526,7 @@
     },
     {
       "id": "kimi-k2.6",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-kimi-k2-6",
       "transport": "go",
       "label": "kimi-k2.6 (Go)",
@@ -1477,6 +1547,7 @@
     },
     {
       "id": "kimi-k2.7-code",
+      "input": ["text", "image", "video"],
       "alias": "go-kimi-k2-7-code",
       "transport": "go",
       "label": "kimi-k2.7-code (Go)",
@@ -1497,6 +1568,7 @@
     },
     {
       "id": "mimo-v2.5",
+      "input": ["text", "image", "audio", "video"],
       "alias": "go-mimo-v2-5",
       "transport": "go",
       "label": "mimo-v2.5 (Go)",
@@ -1517,6 +1589,7 @@
     },
     {
       "id": "mimo-v2.6-flash",
+      "input": ["text", "image", "audio", "video"],
       "alias": "go-mimo-v2-6-flash",
       "transport": "go",
       "label": "mimo-v2.6-flash (Go)",
@@ -1537,6 +1610,7 @@
     },
     {
       "id": "mimo-v2.5-pro",
+      "input": ["text"],
       "alias": "go-mimo-v2-5-pro",
       "transport": "go",
       "label": "mimo-v2.5-pro (Go)",
@@ -1557,6 +1631,7 @@
     },
     {
       "id": "mimo-v2.6-pro",
+      "input": ["text", "image", "audio", "video"],
       "alias": "go-mimo-v2-6-pro",
       "transport": "go",
       "label": "mimo-v2.6-pro (Go)",
@@ -1577,6 +1652,7 @@
     },
     {
       "id": "minimax-m2.5",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-minimax-m2-5",
       "transport": "go",
       "label": "minimax-m2.5 (Go)",
@@ -1597,6 +1673,7 @@
     },
     {
       "id": "minimax-m2.7",
+      "input": ["text"],
       "alias": "go-minimax-m2-7",
       "transport": "go",
       "label": "minimax-m2.7 (Go)",
@@ -1617,6 +1694,7 @@
     },
     {
       "id": "minimax-m3",
+      "input": ["text", "image", "video"],
       "alias": "go-minimax-m3",
       "transport": "go",
       "label": "minimax-m3 (Go)",
@@ -1637,6 +1715,7 @@
     },
     {
       "id": "space-bunny-free",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-space-bunny-free",
       "transport": "go",
       "label": "space-bunny-free (Go)",
@@ -1658,6 +1737,7 @@
     },
     {
       "id": "longcat-2.0",
+      "input": ["text"],
       "alias": "go-longcat-2-0",
       "transport": "go",
       "label": "longcat-2.0 (Go)",
@@ -1678,6 +1758,7 @@
     },
     {
       "id": "longcat-2.5-preview-free",
+      "input": ["text", "image"],
       "alias": "go-longcat-2-5-preview-free",
       "transport": "go",
       "label": "longcat-2.5-preview-free (Go)",
@@ -1698,6 +1779,7 @@
     },
     {
       "id": "step-5-preview-free",
+      "input": ["text", "image", "video"],
       "alias": "go-step-5-preview-free",
       "transport": "go",
       "label": "step-5-preview-free (Go)",
@@ -1718,6 +1800,7 @@
     },
     {
       "id": "qwen3.6-plus",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-qwen3-6-plus",
       "transport": "go",
       "label": "qwen3.6-plus (Go)",
@@ -1738,6 +1821,7 @@
     },
     {
       "id": "qwen3.7-max",
+      "inputGap": {"reason": "models.dev api.json (2026-11-05 snapshot) lists no opencode-go entry for this id, so its input types are unknown.", "checked": "https://models.dev/api.json", "asOf": "2026-11-05"},
       "alias": "go-qwen3-7-max",
       "transport": "go",
       "label": "qwen3.7-max (Go)",
@@ -1758,6 +1842,7 @@
     },
     {
       "id": "qwen3.8-max",
+      "input": ["text", "image", "video"],
       "alias": "go-qwen3-8-max",
       "transport": "go",
       "label": "qwen3.8-max (Go)",
@@ -1778,6 +1863,7 @@
     },
     {
       "id": "qwen3.8-flash",
+      "input": ["text", "image", "video"],
       "alias": "go-qwen3-8-flash",
       "transport": "go",
       "label": "qwen3.8-flash (Go)",
@@ -1798,6 +1884,7 @@
     },
     {
       "id": "qwen3.7-plus",
+      "input": ["text", "image", "video"],
       "alias": "go-qwen3-7-plus",
       "transport": "go",
       "label": "qwen3.7-plus (Go)",
@@ -1818,6 +1905,7 @@
     },
     {
       "id": "opencode-cli/ling-3.0-flash-fin-free",
+      "input": ["text"],
       "upstreamId": "ling-3.0-flash-fin-free",
       "alias": "cli-ling",
       "transport": "opencode-cli",
@@ -1839,6 +1927,7 @@
     },
     {
       "id": "opencode-cli/longcat-2.5-preview-free",
+      "input": ["text", "image"],
       "upstreamId": "longcat-2.5-preview-free",
       "alias": "cli-longcat-preview",
       "transport": "opencode-cli",
@@ -1861,6 +1950,7 @@
     },
     {
       "id": "opencode-cli/mimo-v2.6-flash-free",
+      "input": ["text", "image", "audio", "video"],
       "upstreamId": "mimo-v2.6-flash-free",
       "alias": "cli-mimo-flash",
       "transport": "opencode-cli",
@@ -1882,6 +1972,7 @@
     },
     {
       "id": "opencode-cli/muse-spark-1.3-contributor-free",
+      "input": ["text", "image", "pdf", "audio", "video"],
       "upstreamId": "muse-spark-1.3-contributor-free",
       "alias": "cli-muse",
       "transport": "opencode-cli",
@@ -1904,6 +1995,7 @@
     },
     {
       "id": "opencode-cli/space-bunny-free",
+      "input": ["text", "image", "video"],
       "upstreamId": "space-bunny-free",
       "alias": "cli-space-bunny",
       "transport": "opencode-cli",
@@ -1926,6 +2018,7 @@
     },
     {
       "id": "opencode-cli/nemotron-3-ultra-free",
+      "input": ["text"],
       "upstreamId": "nemotron-3-ultra-free",
       "alias": "cli-nemotron-ultra",
       "transport": "opencode-cli",
@@ -1946,6 +2039,7 @@
     },
     {
       "id": "opencode-cli/nemotron-3.5-lightning-free",
+      "input": ["text"],
       "upstreamId": "nemotron-3.5-lightning-free",
       "alias": "cli-lightning",
       "transport": "opencode-cli",
@@ -1966,6 +2060,7 @@
     },
     {
       "id": "opencode-cli/big-pickle",
+      "input": ["text"],
       "windowGap": {"reason": "The opencode CLI's live catalog lists no entry for this id, so no first-party window exists to record.", "checked": "opencode models opencode --verbose (the CLI's live catalog)", "asOf": "2026-09-30"},
       "upstreamId": "big-pickle",
       "alias": "cli-pickle",
@@ -1987,6 +2082,7 @@
     },
     {
       "id": "opencode-cli/mimo-v2.5-free",
+      "input": ["text", "image", "audio", "video"],
       "windowGap": {"reason": "The opencode CLI's live catalog lists no entry for this id, so no first-party window exists to record.", "checked": "opencode models opencode --verbose (the CLI's live catalog)", "asOf": "2026-09-30"},
       "upstreamId": "mimo-v2.5-free",
       "alias": "cli-mimo",
@@ -2008,6 +2104,7 @@
     },
     {
       "id": "opencode-cli/laguna-s-2.1-free",
+      "input": ["text"],
       "windowGap": {"reason": "The opencode CLI's live catalog lists no entry for this id, so no first-party window exists to record.", "checked": "opencode models opencode --verbose (the CLI's live catalog)", "asOf": "2026-09-30"},
       "upstreamId": "laguna-s-2.1-free",
       "alias": "cli-laguna",
@@ -2029,6 +2126,7 @@
     },
     {
       "id": "opencode-cli/ling-3.1-flash-free",
+      "input": ["text"],
       "upstreamId": "ling-3.1-flash-free",
       "alias": "cli-ling-31",
       "transport": "opencode-cli",
@@ -2051,6 +2149,7 @@
     },
     {
       "id": "opencode-cli/exo-free",
+      "input": ["text", "image"],
       "upstreamId": "exo-free",
       "alias": "cli-exo",
       "transport": "opencode-cli",
@@ -2073,6 +2172,7 @@
     },
     {
       "id": "opencode-cli/step-5-preview-free",
+      "input": ["text", "image", "video"],
       "upstreamId": "step-5-preview-free",
       "alias": "cli-step-preview",
       "transport": "opencode-cli",
@@ -2095,6 +2195,7 @@
     },
     {
       "id": "opencode-cli/cat-jam-free",
+      "input": ["text"],
       "upstreamId": "cat-jam-free",
       "alias": "cli-cat-jam",
       "transport": "opencode-cli",
@@ -2117,6 +2218,7 @@
     },
     {
       "id": "opencode-cli/deepseek-v4.1-flash-free",
+      "input": ["text", "image"],
       "upstreamId": "deepseek-v4.1-flash-free",
       "alias": "cli-deepseek-v4-1-flash",
       "transport": "opencode-cli",
@@ -2140,6 +2242,7 @@
     },
     {
       "id": "opencode-cli/glm-5.3-flash-free",
+      "input": ["text", "image", "video"],
       "upstreamId": "glm-5.3-flash-free",
       "alias": "cli-glm-5-3-flash",
       "transport": "opencode-cli",
@@ -2163,6 +2266,7 @@
     },
     {
       "id": "opencode-cli/ll-alpha-free",
+      "input": ["text"],
       "upstreamId": "ll-alpha-free",
       "alias": "cli-ll-alpha",
       "transport": "opencode-cli",
@@ -2184,6 +2288,7 @@
     },
     {
       "id": "opencode-cli/nemotron-3.5-super-vl-free",
+      "input": ["text", "image"],
       "upstreamId": "nemotron-3.5-super-vl-free",
       "alias": "cli-nemotron-3-5-super-vl",
       "transport": "opencode-cli",

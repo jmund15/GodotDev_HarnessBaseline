@@ -108,10 +108,11 @@ def test_rigor_record_and_defaults(tmp_path, monkeypatch):
 def own_tags():
     """This project's tag registry, or None when the checkout carries none.
 
-    The tests below quote this project's own tags (scenes, `.tres`, `[Tool]` classes); a template copy ships
-    an `adaptation.json` without `sensitivity_tags`, so those tests have nothing to read there."""
+    The tests below quote one project's own tags (scenes, `.tres`, `[Tool]` classes); a template copy ships
+    an `adaptation.json` without `sensitivity_tags`, and another consumer's tags name other paths, so those
+    tests have nothing to read there."""
     loaded = triage.load_tags(CLAUDE_DIR)
-    return loaded if loaded.valid else None
+    return loaded if {"tool-script", "global-class-rename"} <= {tag.id for tag in loaded.valid} else None
 
 
 def test_contract_refactor_does_not_inherit_owner_from_spell_directory():
@@ -438,14 +439,16 @@ def oracle_grammar():
 
 
 def live_registry():
-    loaded = own_tags()
-    if loaded is None:
+    loaded = triage.load_tags(CLAUDE_DIR)
+    if not loaded.valid:
         return
-    check("the live registry holds entries", len(loaded.valid) > 0, len(loaded.valid))
     check("every live entry validates", loaded.invalid == [], loaded.invalid)
     runtime = [t for t in loaded.valid if t.sets.get("oracle") == "runtime"]
-    check("every live runtime tag names a probe", runtime and all(t.probe for t in runtime), [t.id for t in runtime])
+    check("every live runtime tag names a probe", all(t.probe for t in runtime), [t.id for t in runtime])
     check("every live entry names its source", all(t.source for t in loaded.valid))
+    if own_tags() is None:
+        return
+    check("the live registry holds a runtime tag", bool(runtime), [t.id for t in loaded.valid])
 
     def live(*changes):
         return triage.derive(list(changes), loaded)

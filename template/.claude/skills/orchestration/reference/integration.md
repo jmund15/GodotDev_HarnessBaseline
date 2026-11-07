@@ -2,7 +2,7 @@
 
 ## While a job runs
 
-A running Workflow or sidecar author job has no inbox, so write its brief's full file name plus `.amend.md` (`S.md.amend.md` for `S.md`); its engine's line has the job Read it at each item and before returning. A message may resume a finished agent; do not reopen a completed audit or review files still being edited. Never edit a running fold's subject or writer's write set: wait for its result, or use a worktree.
+Message a dispatched agent only when it changes its next action, with the evidence path and the requested action; a running Workflow or sidecar author job has no inbox, so write its brief's full file name plus `.amend.md` (`S.md.amend.md` for `S.md`). `hooks/amend_delivery.py` delivers the full text to the job at its next tool call, again whenever the file changes, and blocks the job's stop on a revision it never received; the job reads nothing unless the amendment passes the client's 10,000-character hook-text cap, and then only the rest the delivery names. A message may resume a finished agent; do not reopen a completed audit or review files still being edited. Never edit a running fold's subject or writer's write set: wait for its result, or use a worktree.
 
 ## When it returns
 

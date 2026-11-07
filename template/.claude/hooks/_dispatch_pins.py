@@ -54,7 +54,7 @@ def tier_rows(tier, transport, data):
             if m.get("transport") == transport]
 
 
-def _args(tool_input):
+def _call_args(tool_input):
     a = tool_input.get("args")
     if isinstance(a, str):
         try:
@@ -62,6 +62,68 @@ def _args(tool_input):
         except Exception:
             return {}
     return a if isinstance(a, dict) else {}
+
+
+# `args.jobsFile`: a Workflow call that carries a path instead of its jobs. A script cannot read files,
+# so the PreToolUse chain expands the path (hooks/pre_workflow_dispatch.py) and every reader of a call's
+# args sees the same expansion through `_args`. The file holds no key that only the owner's inline words lift.
+JOBS_FILE_ROOT = ".claude/scratch/"
+_OWNER_LIFTS = ("currency", "currencyReason")
+
+
+def _jobs_file_load(args):
+    """(expanded args, None) or (None, refusal reason) for a call's args that name a `jobsFile`."""
+    path = args.get("jobsFile")
+    if not isinstance(path, str) or not path.strip():
+        return None, "args.jobsFile must be a non-empty path string."
+    beside = [k for k in ("jobs", "chains") if k in args]
+    if beside:
+        return None, ("args.jobsFile sits beside args.%s: a call carries its jobs in the file or inline, never "
+                      "both. Send only {jobsFile}." % "/args.".join(beside))
+    root = os.path.realpath(_project_dir())
+    full = os.path.realpath(path if os.path.isabs(path) else os.path.join(root, path))
+    scratch = os.path.normcase(os.path.join(root, *JOBS_FILE_ROOT.strip("/").split("/"))) + os.sep
+    if not os.path.normcase(full).startswith(scratch):
+        return None, "args.jobsFile %r is outside %s of this checkout; the fan-out writes it there." % (path, JOBS_FILE_ROOT)
+    try:
+        with open(full, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, "args.jobsFile %r could not be read as JSON (%s: %s)." % (path, type(exc).__name__, exc)
+    if not isinstance(loaded, dict):
+        return None, "args.jobsFile %r must hold a JSON object of Workflow args." % path
+    units = list(loaded.get("jobs") or []) + [j for c in loaded.get("chains") or []
+                                              for j in (c.get("jobs") or [] if isinstance(c, dict) else [])]
+    for holder in [loaded] + [u for u in units if isinstance(u, dict)]:
+        for key in holder:
+            if key.startswith("__") or key in _OWNER_LIFTS:
+                return None, ("args.jobsFile %r holds %r. Injected keys and the currency lifts stay inline "
+                              "and are the owner's to give (workflow_provider_guard)." % (path, key))
+    expanded = {k: v for k, v in args.items() if k != "jobsFile"}
+    return dict(loaded, **expanded), None
+
+
+def jobs_file_refusal(tool_input):
+    """The reason a call's `args.jobsFile` cannot be expanded, or None (no jobsFile, or it expands)."""
+    args = _call_args(tool_input)
+    if "jobsFile" not in args:
+        return None
+    return _jobs_file_load(args)[1]
+
+
+def expanded_args(tool_input):
+    """The call's `args` dict with `jobsFile` expanded, or None when there is no jobsFile or it is refused."""
+    args = _call_args(tool_input)
+    if "jobsFile" not in args:
+        return None
+    return _jobs_file_load(args)[0]
+
+
+def _args(tool_input):
+    a = _call_args(tool_input)
+    if "jobsFile" in a:
+        return _jobs_file_load(a)[0] or a
+    return a
 
 
 def _is_review_fanout(tool_input):
