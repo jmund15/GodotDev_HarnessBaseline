@@ -98,6 +98,8 @@ OPTIONAL_DATA = {
     ".claude/hooks/skill_dispatch_gate.py": ("hooks/skill_dispatch.project.json",),
     ".claude/scripts/sync_plan_config.py": ("user_scope/*",),
     ".claude/tools/restate_scan.py": ("tests/fixtures/*",),
+    ".claude/tools/vault_sync.py": ("tools/vault_sync.project.json",),
+    ".claude/hooks/vault_mirror_start.py": ("tools/vault_sync.project.json", "rules/vault_mirror.md"),
     ".claude/tools/sidecar_fanout.py": ("tests/fixtures/*",),
     ".claude/tools/subsys.py": ("skills/project_subsystems/reference/subsystem_details.md",),
     ".claude/tools/user_scope.py": ("user_scope/manifest.local.json",),

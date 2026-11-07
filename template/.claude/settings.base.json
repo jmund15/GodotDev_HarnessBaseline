@@ -548,8 +548,6 @@
       "Skill(worklog)"
     ],
     "deny": [
-      "Read(.claude/worktrees/**)",
-      "Grep(.claude/worktrees/**)",
       "Agent",
       "PowerShell",
       "ReportFindings",

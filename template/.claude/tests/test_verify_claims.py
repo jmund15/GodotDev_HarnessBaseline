@@ -280,8 +280,21 @@ def part_two(vc):
             check(f"command: `{command}` is refused as not-runnable", v[0] == "UNCHECKED" and v[2] == "not-runnable", v[:3])
         check("command: a refused `--output`/`--outp` never wrote its file",
               not (root / "planted.txt").exists())
-        v = run([{"command": f"git grep -n -F {token} -- .claude/tools", "output": ""}], cmd_repo, command_timeout=0.001)
-        check("command: a run past its timeout is UNCHECKED (timeout)", v[0] == "UNCHECKED" and v[2] == "timeout", v[:3])
+        # A real 1 ms limit races a fast git (CI saw it finish first), so the run is made to overrun.
+        seen_timeouts = []
+        real_run = vc.subprocess.run
+
+        def overrun(*args, **kwargs):
+            seen_timeouts.append(kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout"))
+
+        vc.subprocess.run = overrun
+        try:
+            v = run([{"command": f"git grep -n -F {token} -- .claude/tools", "output": ""}], cmd_repo, command_timeout=7)
+        finally:
+            vc.subprocess.run = real_run
+        check("command: a run past its timeout is UNCHECKED (timeout)",
+              v[0] == "UNCHECKED" and v[2] == "timeout" and seen_timeouts[:1] == [7], (v[:3], seen_timeouts))
 
         # ---- command leg: the absence checks guards/survey.md names
         planted = root / "planted_repo"
