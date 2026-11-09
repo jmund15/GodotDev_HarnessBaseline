@@ -22,6 +22,12 @@ TOOL = os.path.join(ROOT, "tools", "self_improvement_due.py")
 TODAY = datetime.date.today()
 TODAY_ISO = TODAY.isoformat()
 
+
+def days_ago(n):
+    """Noon, local time, `n` calendar days before TODAY: the tool counts calendar days, so a seconds offset is off by
+    one across a DST change or near midnight."""
+    return datetime.datetime.combine(TODAY - datetime.timedelta(days=n), datetime.time(12)).timestamp()
+
 FAILURES = []
 
 
@@ -247,13 +253,13 @@ def main():
               "candidates: DUE" in proc.stdout and "is absent" in proc.stdout, proc.stdout)
 
         write_json(candidates, {"ok": True})
-        old = time.time() - 8 * 86400
+        old = days_ago(8)
         os.utime(candidates, (old, old))
         proc = run(base)
         check("candidates older than 7 days reads as DUE",
               "candidates: DUE" in proc.stdout and "days old (> 7)" in proc.stdout, proc.stdout)
 
-        recent = time.time() - 2 * 86400
+        recent = days_ago(2)
         os.utime(candidates, (recent, recent))
 
         print("case 5 — --line is empty when nothing is due")

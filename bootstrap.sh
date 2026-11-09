@@ -31,8 +31,9 @@
 #   5. Runs baseline_sync.py compose, which writes .claude/settings.json from the copied
 #      settings.base.json, the adopted layers' settings.<layer>.json overlays and the
 #      settings.project.json seed, pruning a missing hook script or Skill grant.
-#   6. Runs `git init` when the target has no repo (staging 100755 template entries executable, and with
-#      `git add -f` each delivered file a .gitignore rule matches) and points core.hooksPath at .claude/githooks;
+#   6. Runs `git init` when the target has no repo and stages the whole install (100755 template entries
+#      executable, and with `git add -f` each delivered file a .gitignore rule matches; files the target held
+#      before stay unstaged) and points core.hooksPath at .claude/githooks;
 #      creates the vault worklog skeleton
 #      <vault>/DevProjects/<project>/Claude/TODO/Worklog.md when absent; merges autoMemoryDirectory
 #      into the gitignored .claude/settings.local.json.
@@ -253,13 +254,19 @@ fi
 if [[ ! -e "$TARGET/.git" ]]; then
   git -C "$TARGET" init -q
   echo "git repository initialized in $TARGET_NATIVE"
-  # A delivered file a .gitignore rule matches (the shipped .claude/tests/ ignore) is staged here, so
-  # the first commit carries it; it is the install-time twin of /sync_baseline Pull step 4.
+  # The whole install is staged, so a fresh target's index is what it delivered: .claude/ and the root
+  # harness-block files, honoring their ignores, plus each delivered file a .gitignore rule matches (the
+  # shipped .claude/tests/ ignore; the install-time twin of /sync_baseline Pull step 4). A file the target
+  # held before the install stays unstaged.
   python3 - "$TARGET_NATIVE" "$HERE/baseline.manifest.json" "$EXEC_LIST_NATIVE" <<'EOF'
 import json, subprocess, sys
 from pathlib import Path
 
 target, manifest, exec_list = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+sys.path.insert(0, str(target / ".claude" / "tools"))
+from baseline_sync import HARNESS_IGNORE_BLOCKS
+written = [".claude", *(root for _, root, _, _ in HARNESS_IGNORE_BLOCKS if (target / root).is_file())]
+subprocess.run(["git", "-C", str(target), "add", "--", *written], check=True)
 paths = [e["path"] for e in json.loads(manifest.read_text(encoding="utf-8"))["files"] if (target / e["path"]).is_file()]
 checked = subprocess.run(["git", "-C", str(target), "check-ignore", "-z", "--stdin"],
                          input="\0".join(paths).encode("utf-8"), capture_output=True)
@@ -326,5 +333,6 @@ Bootstrapped. Next steps in $TARGET_NATIVE:
      (this machine); run /sync_permissions later.
   3. In the first Claude session: /reindex_search. On a new machine, /workstation_setup provisions it
      (its toolchain phases when godot is adopted).
-  4. Commit .claude/ including baseline.lock.json, and the root .gitignore.
+  4. Commit .claude/ including baseline.lock.json, and the root .gitignore; a repository this run
+     initialized has them staged.
 NEXT
