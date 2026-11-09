@@ -55,6 +55,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import model_registry  # noqa: E402
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -76,7 +78,7 @@ def _consume_deps():
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 _FULL_LINE = re.compile(r"^FULL:\s*(\S.*?)\s*$")
-TERMINAL_STATUSES = frozenset(("completed", "failed", "cancelled", "error", "killed"))
+TERMINAL_STATUSES = frozenset(model_registry.WORKFLOW_TERMINAL_STATES)
 DEFAULT_CHECK_TIMEOUT = 540
 DIGEST_LINES = 30
 DIGEST_CHARS = 2000
@@ -633,6 +635,12 @@ def _inventory_job(out_dir, label):
     return merged
 
 
+def _sidecar_ended(record_path):
+    """True when the launcher recorded the end (`watch_records.ended_code`: the journal's `ended` row, else `.exit`)."""
+    import watch_records
+    return watch_records.ended_code(str(record_path)) is not None
+
+
 def _is_native_label(out_dir, label):
     """True when `<out_dir>/native.args.json`, the fan-out's hand-off to a Workflow call, lists `label`."""
     try:
@@ -664,8 +672,8 @@ def _sidecar_origin(root, source, label, brief):
         raise Refused(f"sidecar record {record_path} is missing or unreadable")
     if not isinstance(record, dict) or record.get("label") != label:
         raise Refused(f"sidecar record {record_path.name} does not hold label {label}")
-    if not Path(str(record_path) + ".exit").is_file():
-        raise Refused(f"sidecar {label} is not terminal (no {record_path.name}.exit)")
+    if not _sidecar_ended(record_path):
+        raise Refused(f"sidecar {label} is not terminal (no ended row in {record_path.name}.journal.jsonl or {record_path.name}.exit)")
     pid = Path(str(record_path) + ".pid")
     if not pid.is_file():
         raise Refused(f"sidecar {label} has no {pid.name}, so its run start is unknown")

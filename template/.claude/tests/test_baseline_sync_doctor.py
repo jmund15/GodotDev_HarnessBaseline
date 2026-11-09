@@ -27,13 +27,14 @@ ITEMS = ("substitutions", "seeds", "git-repo", "git-hooks-path", "gitignore-bloc
 
 
 def _table(*agent_types: str) -> bytes:
-    shapes = {"any": {"builtins": ["Read", "Glob", "Grep"], "mcpServers": []}}
+    kinds = {"scout": {"builtins": ["Read", "Glob", "Grep"], "mcpServers": [], "internal": False,
+                       "routes": ["engine"]}}
     for name in agent_types:
-        shapes[name] = {"agentType": "lane-" + name, "tier": "fanout",
-                        "builtins": ["Read", "Bash"], "mcpServers": []}
-    table = {"version": 1, "defaultShape": "any", "requiredReadTools": ["Read", "Glob", "Grep"],
+        kinds[name] = {"agentType": "lane-" + name, "tier": "fanout", "builtins": ["Read", "Bash"],
+                       "mcpServers": [], "internal": False, "routes": ["engine"]}
+    table = {"version": 1, "requiredReadTools": ["Read", "Glob", "Grep"],
              "canonicalOrder": ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "TodoWrite"],
-             "shapes": shapes}
+             "kinds": kinds}
     return (json.dumps(table, indent=2) + "\n").encode()
 
 
@@ -245,7 +246,7 @@ def test_init_renders_lane_agents_with_local_rows() -> None:
         files = T._load_lock(root)["files"]
         for name in _lane_names(root):
             row = files[".claude/agents/" + name]
-            assert row["status"] == "local" and row["judged"]["verdict"] == "keep-local", row
+            assert row["status"] == "local" and "verdict" not in row["judged"], row
             assert row["judged"]["sha"] == T._sha((root / ".claude" / "agents" / name).read_bytes())
 
 
@@ -268,6 +269,22 @@ def test_pull_that_changes_an_agent_input_renders_and_a_noop_pull_writes_nothing
         assert (root / ".claude" / "baseline.lock.json").read_bytes() == lock_before
         assert {n: (root / ".claude" / "agents" / n).read_bytes() for n in _lane_names(root)} == agents_before
         assert "wrote" not in T._out(again)
+
+
+def test_doctor_accepts_a_rendered_lane_agent_with_no_lock_row() -> None:
+    with T._fixture() as path:
+        root, baseline, remote, _c = T._v2_fixture(path, {
+            LANE_TABLE_ROW: {"upstream": _table("verify", "survey")},
+        })
+        (root / ".claude" / "baseline.lock.json").unlink()
+        init = T._run(root, "init", "--baseline-dir", str(baseline), "--repo", str(remote).replace("\\", "/"),
+                      "--sub", "{{PROJECT_NAME}}=Demo", "--layers", "pure")
+        assert init.returncode == 0, T._out(init)
+        lock = T._load_lock(root)
+        del lock["files"][".claude/agents/lane-verify.md"]
+        T._write_json(root / ".claude" / "baseline.lock.json", lock)
+        _code, rows = _doctor(root)
+        assert rows["lane-agents"]["status"] == "ok", rows["lane-agents"]
 
 
 def _ignored_consumer(path: Path, rows: dict[str, str], *, add_force: tuple[str, ...] = ()) -> Path:
@@ -322,6 +339,7 @@ def main() -> int:
         test_doctor_allows_a_tracked_ignored_row_and_a_local_ignored_row,
         test_init_renders_lane_agents_with_local_rows,
         test_pull_that_changes_an_agent_input_renders_and_a_noop_pull_writes_nothing,
+        test_doctor_accepts_a_rendered_lane_agent_with_no_lock_row,
     ])
 
 

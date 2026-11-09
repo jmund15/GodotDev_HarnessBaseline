@@ -35,8 +35,8 @@ mandatory per-job `model`/`effort` pins, the same `promptPath` twice) and `tools
 
 ## Profile pairs (`--profiles`)
 
-A profile spec is the sidecar's own contract: a `shape` with `+`/`-` items relative to that shape's
-row (`arm,+mcp:ai-worker`, `survey,-mcp:ai-worker`). The row itself — every shape's built-ins and
+A profile spec is the sidecar's own contract: a `kind` with `+`/`-` items relative to that kind's
+row (`arm,+mcp:ai-worker`, `scout,-mcp:ai-worker`). The row itself — every kind's built-ins and
 MCP servers — lives in the project's tool-profile table; nothing here restates it. An `arm` spec needs its
 task built-ins, passed as the job's `baseBuiltins` (`-B`); `reference/sidecar_dispatch.md` §Tool profile
 owns why.
@@ -91,15 +91,14 @@ Workflow({scriptPath: ".claude/workflows/dispatch.js", args: {
   measurement: "<lens>: <a-model>·<a-effort> vs <b-model>·<b-effort>",
   jobs: [
   {label: "<lens>@control",    promptPath: "<mandate.md>", model: "<a-model>", effort: "<a-effort>",
-   agentType: "general-purpose", shape: "arm", tools: {base: ["Read", "Glob", "Grep"]}},
+   kind: "lens"},
   {label: "<lens>@challenger", promptPath: "<mandate.md>", model: "<b-model>", effort: "<b-effort>",
-   agentType: "general-purpose", shape: "arm", tools: {base: ["Read", "Glob", "Grep"]}}
+   kind: "lens"}
 ]}})
 ```
 
-`agentType` is required by the engine. Use `general-purpose` whenever the lens applies project rules;
-a scout cannot follow doctrine it never received, and pinning it here would confound the agent type
-with the model.
+`kind` is required by the engine. Use `lens` whenever the lens applies project rules; a `scout`
+cannot follow doctrine it never received, and pinning it here would confound the kind with the model.
 
 Done when: both jobs return non-null. A null arm is a failed dispatch, **not** a zero score — rerun
 that arm rather than recording it as a loss.

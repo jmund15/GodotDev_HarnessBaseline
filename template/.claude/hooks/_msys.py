@@ -19,13 +19,13 @@ def _git_roots():
 
 
 def tool(name):
-    """`name` from PATH, else from Git's usr\\bin on Windows, else the bare name (the call then fails as
-    it always did, and the caller's unknown-answer path handles it)."""
-    found = shutil.which(name)
-    if found or os.name != "nt":
-        return found or name
+    """On Windows, `name` from Git's usr\\bin first, since a PATH hit can be another tool of the same name (System32's
+    bash.exe is the WSL shim); else from PATH; else the bare name (the call then fails as it always did, and the
+    caller's unknown-answer path handles it)."""
+    if os.name != "nt":
+        return shutil.which(name) or name
     for root in _git_roots():
         cand = os.path.join(root, "usr", "bin", name + ".exe")
         if os.path.isfile(cand):
             return cand
-    return name
+    return shutil.which(name) or name

@@ -9,7 +9,7 @@
       "model": "claude-haiku-5-5",
       "effort": "medium",
       "transport": "anthropic",
-      "shape": "author",
+      "kind": "author",
       "promptPath": "X_sync.md"
     },
     {
@@ -19,7 +19,7 @@
       "model": "claude-sonnet-5-5[1m]",
       "effort": "medium",
       "transport": "anthropic",
-      "shape": "author",
+      "kind": "author",
       "promptPath": "X_lens.md"
     },
     {
@@ -29,7 +29,7 @@
       "model": "claude-sonnet-5-5[1m]",
       "effort": "medium",
       "transport": "anthropic",
-      "shape": "author",
+      "kind": "author",
       "promptPath": "X_dispatch.md"
     },
     {
@@ -39,7 +39,7 @@
       "model": "claude-sonnet-5-5[1m]",
       "effort": "medium",
       "transport": "anthropic",
-      "shape": "author",
+      "kind": "author",
       "promptPath": "X_compose.md"
     },
     {
@@ -49,7 +49,7 @@
       "model": "claude-haiku-5-5",
       "effort": "medium",
       "transport": "anthropic",
-      "shape": "author",
+      "kind": "author",
       "promptPath": "X_repo.md"
     }
   ]

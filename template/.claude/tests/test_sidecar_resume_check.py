@@ -44,6 +44,10 @@ SESSION_LIMIT_RESULT = ev(type="result", subtype="success", is_error=True, termi
 # A terminal 429 whose wording no pattern knows: the status alone decides.
 UNWORDED_429_RESULT = ev(type="result", is_error=True, terminal_reason="api_error", api_error_status=429,
                          session_id="s1", result="API Error: 429")
+# Cut from a live Go run's -P stream (x2-fold, 2026-11-05): an upstream overload, not a spent allowance.
+OVERLOADED_429_RESULT = ev(type="result", is_error=True, terminal_reason="api_error", api_error_status=429,
+                           session_id="s1", result="API Error: Request rejected (429) · Upstream request failed: "
+                                                   "[overloaded] the server is overloaded; retry shortly")
 # The client's own resume prompt after a reply hits the output-token cap (Claude Code 2.1.x).
 CAPPED_TURN = ev(type="user", session_id="s1", message={"role": "user", "content": [{"type": "text", "text":
     "Output token limit hit. Resume directly \u2014 no apology, no recap of what you were doing. Pick up "
@@ -56,6 +60,17 @@ CAPPED_RESULT = ev(type="result", is_error=True, terminal_reason="api_error", se
                    result="API Error: Claude's response exceeded the 32000 output token maximum. "
                           "To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.")
 REJECTED = ev(type="rate_limit_event", rate_limit_info={"status": "rejected", "resetsAt": 1900000000})
+REJECTED_NO_RESET = ev(type="rate_limit_event", rate_limit_info={"status": "rejected"})
+FULL_WINDOW = ev(type="rate_limit_event", rate_limit_info={"status": "allowed", "unifiedWindows": {
+    "fiveHour": {"utilization": 1, "resetsAt": 1900000001}}})
+FULL_WINDOW_NO_RESET = ev(type="rate_limit_event", rate_limit_info={"unifiedWindows": {
+    "weekly": {"utilization": 1.1}}})
+AVAILABLE_WINDOW = ev(type="rate_limit_event", rate_limit_info={"status": "allowed", "unifiedWindows": {
+    "fiveHour": {"utilization": 0.39, "resetsAt": 1900000001}}})
+# x2b-s2.record.json.out (2026-11-05): retry envelope trimmed of uuid; no message text was present.
+BARE_RETRIES = [ev(type="system", subtype="api_retry", attempt=n, max_retries=10,
+                   retry_delay_ms=2000, error_status=429, error="rate_limit",
+                   session_id="1acaefef-ba39-4e93-b419-a4044e5e1a34") for n in range(1, 11)]
 
 
 def stream(name, lines, age=0):
@@ -95,14 +110,21 @@ case("the resume classifier's own selftest passes",
                             text=True, timeout=60).returncode == 0)
 case("a 429 retry run below the limit is not a usage limit",
      lambda: rc.watch([RETRY_429] * 9, 0, 10)[1:3] == (9, False))
-case("ten consecutive 429 retries with no work are a usage limit",
-     lambda: rc.watch([RETRY_429] * 10, 0, 10)[2] is True)
+case("ten bare api_retry 429 rate_limit events are a transient throttle, not spent allowance",
+     lambda: rc.watch(BARE_RETRIES, 0, 10)[1:3] == (10, False))
+case("ten bare retries followed by an overload result stay transient and resumable",
+     lambda: rc.watch(BARE_RETRIES + [OVERLOADED_429_RESULT], 0, 10)[2] is False
+     and rc.classify(BARE_RETRIES + [OVERLOADED_429_RESULT]) == ("s1", "transient"))
+case("ten bare retries followed by success stay unlimited",
+     lambda: rc.watch(BARE_RETRIES + [DONE], 0, 10)[0:3] == (True, 0, False))
+case("ten bare retries followed by a terminal usage rejection are limited",
+     lambda: rc.watch(BARE_RETRIES + [LIMIT_RESULT], 0, 10)[2] is True)
 case("a work event between retries resets the 429 run",
      lambda: rc.watch([RETRY_429] * 9 + [WORK, RETRY_429], 0, 10)[1:3] == (1, False))
 case("a non-429 retry resets the run",
      lambda: rc.watch([RETRY_429] * 9 + [RETRY_500, RETRY_429], 0, 10)[1] == 1)
-case("the run carries across calls through its argument",
-     lambda: rc.watch([RETRY_429], 9, 10)[2] is True)
+case("the run carries across calls without turning retries into usage evidence",
+     lambda: rc.watch([RETRY_429], 9, 10)[1:3] == (10, False))
 case("retries are not work; an assistant event is",
      lambda: rc.watch([RETRY_429], 0, 10)[0] is False and rc.watch([WORK], 0, 10)[0] is True)
 case("a terminal usage-limit result is limited and not work",
@@ -113,8 +135,23 @@ case("a terminal session-limit 429 (the 5-hour window) is limited and not work",
      lambda: rc.watch([SESSION_LIMIT_RESULT], 0, 10)[0:3:2] == (False, True))
 case("a terminal 429 result in any wording is limited",
      lambda: rc.watch([UNWORDED_429_RESULT], 0, 10)[2] is True)
+case("a 429 the server words as an overload is not a usage limit",
+     lambda: rc.watch([OVERLOADED_429_RESULT], 0, 10)[2] is False)
+case("a 429 overload resumes as transient",
+     lambda: rc.classify([OVERLOADED_429_RESULT]) == ("s1", "transient"))
+case("a 429 naming both an overload and a usage limit stays limited",
+     lambda: rc.watch([ev(type="result", is_error=True, terminal_reason="api_error", api_error_status=429,
+                          session_id="s1", result="overloaded; the usage limit has been reached")],
+                      0, 10)[2] is True)
 case("a rejected rate_limit_event names the reset time and the session id is kept",
-     lambda: rc.watch([WORK, REJECTED], 0, 10)[3:] == (1900000000, "s1"))
+     lambda: rc.watch([WORK, REJECTED], 0, 10)[2:] == (True, 1900000000, "s1"))
+case("a rejected rate_limit_event needs no reset timestamp to mark limited",
+     lambda: rc.watch([REJECTED_NO_RESET], 0, 10)[2:4] == (True, None))
+case("a fully utilized window marks limited, with or without a reset timestamp",
+     lambda: rc.watch([FULL_WINDOW], 0, 10)[2:4] == (True, 1900000001)
+     and rc.watch([FULL_WINDOW_NO_RESET], 0, 10)[2:4] == (True, None))
+case("an available window and bare retries do not mark limited or name a rejected reset",
+     lambda: rc.watch([AVAILABLE_WINDOW] + BARE_RETRIES, 0, 10)[2:4] == (False, None))
 
 
 def watch_cli_partial_line():
@@ -172,9 +209,9 @@ case("stream_status: a finished result outranks an earlier output-cap resume",
 case("stream_status: a stale stream with an earlier output-cap resume is stalled",
      lambda: rc.stream_status(stream("cappedstale.stream", [WORK, CAPPED_TURN, WORK], age=4000), time.time(), 900)[0]
      == "stalled")
-case("stream_status: trailing 429 retries after an earlier output-cap resume are usage-limit",
-     lambda: rc.stream_status(stream("cappedlimit.stream", [WORK, CAPPED_TURN, WORK] + [RETRY_429] * 10), NOW)[0]
-     == "usage-limit")
+case("stream_status: trailing bare 429 retries after an output-cap resume are retrying",
+     lambda: rc.stream_status(stream("cappedlimit.stream", [WORK, CAPPED_TURN, WORK] + BARE_RETRIES), NOW)[0]
+     == "retrying")
 case("stream_status: the resume phrase quoted in a tool result is not an output-cap cut",
      lambda: rc.stream_status(stream("quoted.stream", [WORK, QUOTED_RESULT, WORK]), time.time())[0] == "working")
 case("stream_status: the resume phrase quoted in assistant text is not an output-cap cut",
@@ -190,8 +227,11 @@ case("stream_status: a finished result is finished",
      lambda: rc.stream_status(stream("done.stream", [WORK, DONE]), NOW)[0] == "finished")
 case("stream_status: a terminal usage-limit result is usage-limit",
      lambda: rc.stream_status(stream("limit.stream", [WORK, LIMIT_RESULT]), NOW)[0] == "usage-limit")
-case("stream_status: trailing 429 retries at the limit are usage-limit",
-     lambda: rc.stream_status(stream("retry10.stream", [WORK] + [RETRY_429] * 10), NOW)[0] == "usage-limit")
+case("stream_status: ten trailing bare 429 retries are retrying, not usage-limit",
+     lambda: rc.stream_status(stream("retry10.stream", [WORK] + BARE_RETRIES), NOW)[0] == "retrying")
+case("stream_status: rejected events and full windows are usage-limit without a terminal result",
+     lambda: all(rc.stream_status(stream("rejected%d.stream" % n, [event]), NOW)[0] == "usage-limit"
+                 for n, event in enumerate((REJECTED, REJECTED_NO_RESET, FULL_WINDOW, FULL_WINDOW_NO_RESET))))
 case("stream_status: a few trailing retries are retrying",
      lambda: rc.stream_status(stream("retry2.stream", [WORK, RETRY_429, RETRY_429]), NOW)[0] == "retrying")
 case("stream_status: an old unfinished stream is stalled",

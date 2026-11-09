@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-// Proof that dispatch.js keeps a read-only promise by tool set, not by prompt text alone.
-// The base args are the m4 survey dispatch as the provider hook rewrote them (captured from the run
-// record, trimmed to job m4-FA): shape survey, no readOnly flag, the brief's Bash need widened into the
-// profile, so the job ran as general-purpose with every tool.
+// Proof that dispatch.js keeps a read-only promise by the job's kind, never by prompt text or by a brief's wording.
+// The base args are the m4 survey dispatch (captured from the run record, trimmed to job m4-FA) as the provider
+// hook rewrites it now: the job names `kind: lens`, and the hook resolves that row into args.__toolProfiles.
 // Run: node .claude/tests/dispatch_readonly_test.js
 const fs = require('fs')
 const path = require('path')
@@ -17,19 +16,11 @@ const argsFor = (edit) => {
   edit(a)
   return a
 }
-const noBash = (a) => {
-  const job = a.jobs[0]
-  delete job.tools
-  const row = a.__toolProfiles[job.label]
-  row.builtins = row.builtins.filter(t => t !== 'Bash')
-  row.add = []
-  a.__coverage[job.label] = { covered: [], needs: [], unread: [] }
+const withKind = (kind) => (a) => {
+  a.jobs[0].kind = kind
+  a.__toolProfiles['m4-FA'] = a.__kindRows[kind]
 }
-const covered = (a) => { a.__coverage[a.jobs[0].label].covered = ['survey'] }
-const lane = (a) => {
-  a.__toolProfiles[a.jobs[0].label].agentType = 'lane-survey'
-  a.__toolProfileDefaults.survey.agentType = 'lane-survey'
-}
+const withBash = (a) => { a.__toolProfiles['m4-FA'] = { ...a.__toolProfiles['m4-FA'], builtins: [...a.__toolProfiles['m4-FA'].builtins, 'Bash'] } }
 
 async function run(args, agentImpl) {
   const calls = [], logs = []
@@ -37,7 +28,8 @@ async function run(args, agentImpl) {
     calls.push({ prompt: String(prompt), opts })
     return agentImpl ? agentImpl(calls.length, opts) : 'ok'
   }
-  const parallel = async (thunks) => Promise.all(thunks.map((f) => f()))
+  // The runtime resolves a thrown job to null rather than rejecting the batch.
+  const parallel = async (thunks) => Promise.all(thunks.map((f) => f().catch(() => null)))
   const result = await engineRun.load(SCRIPT)(engineRun.withHost(args), agent, parallel, () => {}, (m) => logs.push(String(m)))
   return { calls, logs, result }
 }
@@ -53,42 +45,42 @@ async function run(args, agentImpl) {
   const j = (r) => JSON.stringify(r.result).slice(0, 300)
 
   let r = await run(argsFor(() => {}))
-  check('m4 replay: the job as dispatched runs, as general-purpose with its widened profile',
-    r.calls.length === 1 && r.calls[0].opts.agentType === 'general-purpose', j(r))
-  check('m4 replay: a survey profile that holds Bash is logged as not read-only',
-    r.logs.some(l => /^NOT-READ-ONLY m4-FA/.test(l) && l.includes('Bash')), r.logs.join(' | ').slice(0, 300))
-  check('m4 replay: it gets no read-only line it could not keep', !r.calls[0].prompt.includes(READONLY))
+  check('m4 replay: a lens job runs as lane-survey, the type its kind row sets',
+    r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-survey', j(r))
+  check('m4 replay: a lens holds no write tool and no shell, so its prompt carries no read-only line to keep',
+    !r.calls[0].prompt.includes(READONLY))
+  check('m4 replay: the recorded profile is agent-type, kind lens',
+    r.logs.some(l => /^TOOL-PROFILES /.test(l) && /"enforcement":"agent-type"/.test(l) && /"kind":"lens"/.test(l)), r.logs.join(' | ').slice(0, 300))
 
-  r = await run(argsFor(a => { a.jobs[0].readOnly = true }))
-  check('readOnly:true on a profile that holds Bash is refused before any agent starts',
-    r.calls.length === 0 && r.result && /m4-FA/.test(String(r.result.error)) && /Bash/.test(String(r.result.error)), j(r))
+  r = await run(argsFor(a => { delete a.jobs[0].kind }))
+  check('a kindless job is refused before any agent starts',
+    r.calls.length === 0 && (r.result.badJobs || []).includes('m4-FA') && /kind/.test(String(r.result.error)), j(r))
 
-  r = await run(argsFor(a => { noBash(a); a.jobs[0].readOnly = true }))
-  check('readOnly:true with no lane type to run as is refused before any agent starts',
-    r.calls.length === 0 && r.result && /m4-FA/.test(String(r.result.error)), j(r))
+  for (const key of ['readOnly', 'agentType', 'shape']) {
+    r = await run(argsFor(a => { a.jobs[0][key] = key === 'readOnly' ? true : 'general-purpose' }))
+    check(key + ' on a job is refused before any agent starts, naming kind',
+      r.calls.length === 0 && new RegExp(key).test(String(r.result.error)) && /kind/.test(String(r.result.error)), j(r))
+  }
 
-  r = await run(argsFor(a => { noBash(a); lane(a); covered(a); a.jobs[0].readOnly = true }))
-  check('readOnly:true on a covered survey job runs as the lane type, which holds no write tool',
-    r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-survey' && r.calls[0].prompt.includes(READONLY), j(r))
+  r = await run(argsFor(a => { withKind('reviewer')(a) }))
+  check('a reviewer job runs as lane-review', r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-review', j(r))
 
-  r = await run(argsFor(a => { noBash(a); lane(a); covered(a); a.jobs[0].readOnly = true }),
+  r = await run(argsFor(a => { withKind('reviewer')(a); withBash(a) }))
+  check('a no-write kind whose profile holds Bash is told not to write through the shell',
+    r.calls.length === 1 && r.calls[0].prompt.includes(READONLY), j(r))
+
+  r = await run(argsFor(a => { withKind('author')(a) }))
+  check('an author job runs as lane-author and is not read-only',
+    r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-author' && !r.calls[0].prompt.includes(READONLY), j(r))
+  check('an author job gets the amend line and the choices contract',
+    r.calls[0].prompt.includes('.amend.md') && r.calls[0].prompt.includes('=== CHOICES'), r.calls[0].prompt.slice(-300))
+
+  r = await run(argsFor(() => {}),
     async (n, opts) => { if (opts.agentType === 'lane-survey') throw new Error("agent type 'lane-survey' not found"); return 'ok' })
-  check('a read-only job whose lane type is not loaded is never retried as general-purpose',
+  check('a job whose agent type is not loaded is never retried as another type',
     r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-survey', r.calls.map(c => c.opts.agentType).join(','))
   check('that job comes back as a no-return the caller can see',
     r.result && r.result.noReturn && r.result.noReturn.labels.includes('m4-FA'), j(r))
-
-  r = await run(argsFor(a => { noBash(a) }))
-  check('a survey job with no write tool in its profile is read-only by its shape: the prompt says so',
-    r.calls.length === 1 && r.calls[0].prompt.includes(READONLY), j(r))
-  check('and an unenforced shape-derived claim is logged',
-    r.logs.some(l => /^READ-ONLY-UNENFORCED m4-FA/.test(l)), r.logs.join(' | ').slice(0, 300))
-
-  r = await run(argsFor(a => { noBash(a); a.jobs[0].readOnly = false }))
-  check('readOnly:false opts a shape-derived claim out', r.calls.length === 1 && !r.calls[0].prompt.includes(READONLY), j(r))
-
-  r = await run(argsFor(a => { a.jobs[0].shape = 'author'; a.__toolProfiles['m4-FA'].shape = 'author' }))
-  check('an author job is not read-only', r.calls.length === 1 && !r.calls[0].prompt.includes(READONLY), j(r))
 
   console.log('\n' + (total - failed) + ' pass, ' + failed + ' fail')
   process.exit(failed ? 1 : 0)

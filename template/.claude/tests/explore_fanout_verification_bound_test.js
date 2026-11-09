@@ -6,7 +6,7 @@ const engine = engineRun.load(path.join(__dirname, '..', 'workflows', 'explore_f
 ;(async () => {
   const claims = Array.from({length: 1500}, (_, i) => ({ subject: 'subject-' + i, claim: 'claim-' + i,
     polarity: 'exists', bearing: 'context', evidence: [] }))
-  const out = await engine(engineRun.withHost({ lenses: [{key: 'seat', prompt: 'Explore fixture.', model: 'fixture-model', agentType: 'general-purpose'}], resultMode: 'bounded', checker: {model: 'fixture-model'} }),
+  const out = await engine(engineRun.withHost({ lenses: [{key: 'seat', prompt: 'Explore fixture.', model: 'fixture-model', kind: 'author'}], resultMode: 'bounded', checker: {model: 'fixture-model'} }),
     async () => ({claims, gaps: [], checked: {toolsUsed: ['Read:fixture'], stoppedAt: 'exhausted-leads', basis: 'fixture'}}),
     thunks => Promise.all(thunks.map(fn => fn())), () => {}, () => {})
   assert.ok(Buffer.byteLength(JSON.stringify(out), 'utf8') <= 8192, 'bounded bytes=' + Buffer.byteLength(JSON.stringify(out), 'utf8'))

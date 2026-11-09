@@ -17,7 +17,7 @@ import tempfile
 TOOL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "guard_text.py")
 
 PLANTED = {
-    "any.md": "# any\n\n## detailed\nANY-DETAILED\n\n## condensed\nANY-CONDENSED\n",
+    "common.md": "# common\n\n## detailed\nCOMMON-DETAILED\n\n## condensed\nCOMMON-CONDENSED\n",
     "review.md": "# review\n\n## detailed\nREVIEW-DETAILED\n\n## condensed\nREVIEW-CONDENSED\n",
     "survey.md": "# survey\n\n## detailed\nSURVEY-DETAILED\n",
     "author.md": "# author\n\n## detailed\nAUTHOR-DETAILED\n",
@@ -25,7 +25,7 @@ PLANTED = {
 
 
 OVERLAYS = {
-    "any.coding.md": "# any coding\n\n## detailed\nANY-CODING-DETAILED\n",
+    "common.coding.md": "# common coding\n\n## detailed\nCOMMON-CODING-DETAILED\n",
     "review.godot.md": "# review godot\n\n## detailed\nREVIEW-GODOT-DETAILED\n",
 }
 
@@ -77,12 +77,12 @@ def main():
         tool = planted_tool(tmp)
 
         rc, out, _ = run(tool, "review", "detailed")
-        cases.append(("a shape gets the `any` section, then its own, under one header",
-                      rc == 0 and out == "[delegate rails — shape 'review', detailed tier; home: .claude/guards/any.md"
-                                        " + .claude/guards/review.md]\nANY-DETAILED\n\nREVIEW-DETAILED"))
-        rc, out, _ = run(tool, "any", "detailed")
-        cases.append(("shape `any` gets its section alone",
-                      rc == 0 and out == "[delegate rails — shape 'any', detailed tier; home: .claude/guards/any.md]\nANY-DETAILED"))
+        cases.append(("a shape gets the `common` section, then its own, under one header",
+                      rc == 0 and out == "[delegate rails — shape 'review', detailed tier; home: .claude/guards/common.md"
+                                        " + .claude/guards/review.md]\nCOMMON-DETAILED\n\nREVIEW-DETAILED"))
+        rc, out, _ = run(tool, "common", "detailed")
+        cases.append(("shape `common` gets its section alone",
+                      rc == 0 and out == "[delegate rails — shape 'common', detailed tier; home: .claude/guards/common.md]\nCOMMON-DETAILED"))
         rc, out, _ = run(tool, "review", "detailed")
         cases.append(("a section stops at the next heading", "CONDENSED" not in out))
         rc, out, _ = run(tool, "review", "none")
@@ -92,7 +92,7 @@ def main():
         rc, _, err = run(tool, "planner", "detailed")
         cases.append(("an unknown kind exits 2 with the legal set", rc == 2 and "scout" in err and "reviewer" in err
                       and "bench-score" in err))
-        for kind, guard in (("scout", "survey"), ("lens", "survey"), ("reviewer", "review"), ("judge", "any"),
+        for kind, guard in (("scout", "survey"), ("lens", "survey"), ("reviewer", "review"), ("judge", "common"),
                             ("author", "author")):
             rc, out, _ = run(tool, kind, "detailed")
             cases.append(("kind %s delivers the %s guard through the table" % (kind, guard),
@@ -111,17 +111,17 @@ def main():
                 fh.write(text)
         rc, out, _ = run(tool, "review", "detailed")
         cases.append(("each present layer overlay follows its base section, listed in the header",
-                      rc == 0 and out == "[delegate rails — shape 'review', detailed tier; home: .claude/guards/any.md"
-                                        " + .claude/guards/any.coding.md + .claude/guards/review.md"
-                                        " + .claude/guards/review.godot.md]\nANY-DETAILED\n\nANY-CODING-DETAILED"
+                      rc == 0 and out == "[delegate rails — shape 'review', detailed tier; home: .claude/guards/common.md"
+                                        " + .claude/guards/common.coding.md + .claude/guards/review.md"
+                                        " + .claude/guards/review.godot.md]\nCOMMON-DETAILED\n\nCOMMON-CODING-DETAILED"
                                         "\n\nREVIEW-DETAILED\n\nREVIEW-GODOT-DETAILED"))
         rc, out, _ = run(tool, "review", "condensed")
         cases.append(("an overlay without the tier adds nothing",
-                      rc == 0 and out == "[delegate rails — shape 'review', condensed tier; home: .claude/guards/any.md"
-                                        " + .claude/guards/review.md]\nANY-CONDENSED\n\nREVIEW-CONDENSED"))
+                      rc == 0 and out == "[delegate rails — shape 'review', condensed tier; home: .claude/guards/common.md"
+                                        " + .claude/guards/review.md]\nCOMMON-CONDENSED\n\nREVIEW-CONDENSED"))
 
     live = []
-    for shape in ("any", "survey", "review", "author"):
+    for shape in ("common", "survey", "review", "author"):
         for tier in ("detailed", "condensed", "minimal"):
             rc, out, err = run(TOOL, shape, tier)
             if rc != 0 or not out.startswith("[delegate rails — shape '%s', %s tier;" % (shape, tier)):
@@ -139,9 +139,9 @@ def main():
         (None, "present", "no profile keeps the clause's tool name",
          lambda out: "mcp__ai-worker__read_files" in out),
     ):
-        rc, out, _ = run(TOOL, "any", "detailed", env=profile_env(tier, ai_worker))
+        rc, out, _ = run(TOOL, "common", "detailed", env=profile_env(tier, ai_worker))
         cases.append((label, rc == 0 and ok(out)))
-    rc, out, _ = run(TOOL, "any", "condensed", env=profile_env("full", "absent"))
+    rc, out, _ = run(TOOL, "common", "condensed", env=profile_env("full", "absent"))
     cases.append(("the condensed tier's ai-worker clause is rendered the same way",
                   rc == 0 and "mcp__ai-worker__" not in out and "bounded Read or a subagent" in out))
 

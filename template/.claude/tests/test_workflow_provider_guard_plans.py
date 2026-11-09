@@ -75,14 +75,15 @@ def run_plan(config_dir, exhausted, rooms, data=PLAN_SYN):
 
     payload = {"tool_name": "Workflow", "session_id": "plan0001", "tool_input": {
         "scriptPath": ".claude/workflows/dispatch.js",
-        "args": {"jobs": [{"label": "j0", "model": "h-exec", "tier": "executor", "effort": "high",
-                           "promptPath": "x", "agentType": "Explore"}]}}}
+        "args": {"jobs": [{"label": "j0", "model": "host-exec-1", "tier": "executor", "effort": "high",
+                           "promptPath": "x", "kind": "reviewer"}]}}}
     state_dir = tempfile.mkdtemp(prefix="wpg_plan_")
     with open(os.path.join(state_dir, "plan0001.json"), "w", encoding="utf-8", newline="\n") as fh:
         json.dump({"skills_loaded": ["orchestration"]}, fh)
     saved = [(st, "_registry"), (st, "HOST_TRANSPORT"), (wpg, "band_and_pressure"),
              (wpg.provider_capacity_guard, "refusal"), (mr, "load"), (mr, "role_tiers"),
-             (wpg._hook_state, "state_path"), (checks, "read_capacity"), (sys, "stdin")]
+             (wpg._hook_state, "state_path"), (checks, "read_capacity"), (sys, "stdin"),
+             (wpg._tp(), "load_registrations")]
     saved = [(o, a, getattr(o, a)) for o, a in saved]
     env_saved = {k: os.environ.get(k) for k in ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_TRANSPORT",
                                                   "ANTHROPIC_BASE_URL")}
@@ -99,6 +100,8 @@ def run_plan(config_dir, exhausted, rooms, data=PLAN_SYN):
         mr.role_tiers = lambda *_a, **_k: {"executor": ["h-exec"]}
         wpg._hook_state.state_path = lambda s: os.path.join(state_dir, str(s or "default")[:8] + ".json")
         checks.read_capacity = lambda t, *_a, **_k: rooms.get(t)
+        # The planted config dirs register no MCP server; the kind row's servers are not this case's subject.
+        wpg._tp().load_registrations = lambda *_a, **_k: [("semantic-search", {}), ("ai-worker", {})]
         sys.stdin = io.StringIO(json.dumps(payload))
         with contextlib.redirect_stdout(out):
             wpg.main()

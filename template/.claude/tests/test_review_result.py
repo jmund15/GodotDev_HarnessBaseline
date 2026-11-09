@@ -502,14 +502,14 @@ class ReviewIngestionTests(unittest.TestCase):
     def test_review_jobs_require_explicit_mandates(self):
         self.assertTrue(hasattr(review_result, "validate_review_jobs"))
         with self.assertRaises(ValueError):
-            review_result.validate_review_jobs([{"label": "one", "shape": "review"}])
+            review_result.validate_review_jobs([{"label": "one", "kind": "reviewer"}])
         with self.assertRaises(ValueError):
-            review_result.validate_review_jobs([{"label": "one", "shape": "survey",
+            review_result.validate_review_jobs([{"label": "one", "kind": "scout",
                                                 "mandates": ["plc-instruction-quality"]}])
         with self.assertRaises(ValueError):
-            review_result.validate_review_jobs([{"label": "one", "shape": "review",
+            review_result.validate_review_jobs([{"label": "one", "kind": "reviewer",
                                                 "mandates": ["plc-instruction-quality"]}])
-        review_result.validate_review_jobs([{"label": "one", "shape": "review",
+        review_result.validate_review_jobs([{"label": "one", "kind": "reviewer",
                                             "mandates": ["plc-instruction-quality"],
                                             "mustRead": [{"path": str(Path(__file__)), "lines": 1}],
                                             "contextFiles": [str(Path(__file__))]}])
@@ -526,7 +526,7 @@ class ReviewIngestionTests(unittest.TestCase):
             record.write_text(json.dumps({"exitCode": 0, "schemaValid": True}), encoding="utf-8")
             stream = root / "one.stream"
             stream.write_text(json.dumps({"type": "result"}) + "\n", encoding="utf-8")
-            jobs = [{"label": "one", "shape": "review", "mandates": ["plc-instruction-quality"],
+            jobs = [{"label": "one", "kind": "reviewer", "mandates": ["plc-instruction-quality"],
                      "mustRead": [{"path": ".claude/plans/p.md", "lines": 3}],
                      "contextFiles": [str(context)]}]
             results = {"one": {"exit": 0, "stdout": str(output), "record": str(record),
@@ -569,7 +569,7 @@ class ReviewIngestionTests(unittest.TestCase):
         rows = [self._listed("halves", tools=("Read:src/a.cs:1-437", "Read:src/Core/ImpactPhysics.cs:438-900",
                                                "Read:src/Core/ImpactPhysics.cs:1-437")),
                 self._listed("comma", tools=("Read:src/a.cs:1-437", "Read:src/Core/ImpactPhysics.cs:1-500,450-900")),
-                self._listed("absolute", tools=("Read:C:/repo/src/a.cs:1-200", "Read:src/a.cs:201-437",
+                self._listed("absolute", tools=("Read:" + review_result.REPO.as_posix() + "/src/a.cs:1-200", "Read:src/a.cs:201-437",
                                                  "Read:src/Core/ImpactPhysics.cs")),
                 self._listed("paged", tools=("Read:src/a.cs", "Read:src/Big.cs:1-2000", "Read:src/Big.cs:2001-2600"),
                              must=big),
@@ -656,7 +656,7 @@ class ReviewIngestionTests(unittest.TestCase):
                           encoding="utf-8")
         record = root / "one.record.json"
         record.write_text(json.dumps({"exitCode": 0, "schemaValid": True}), encoding="utf-8")
-        jobs = [{"label": "one", "shape": "review", "mandates": ["plc-instruction-quality"],
+        jobs = [{"label": "one", "kind": "reviewer", "mandates": ["plc-instruction-quality"],
                  "contextFiles": [str(context)], "mustRead": [dict(entry) for entry in self.MUST]}]
         results = {"one": {"exit": 0, "stdout": str(output), "record": str(record), "stream": str(stream)}}
         return review_result.prepare_review(jobs, results)["coverage"][0]
@@ -683,7 +683,7 @@ class ReviewIngestionTests(unittest.TestCase):
                 self.assertEqual(self._stream_review(Path(directory), reads)["status"], status)
 
     def test_review_jobs_refuse_a_malformed_must_read_list(self):
-        job = {"label": "one", "shape": "review", "mandates": ["plc-instruction-quality"],
+        job = {"label": "one", "kind": "reviewer", "mandates": ["plc-instruction-quality"],
                "contextFiles": [str(Path(__file__))]}
         review_result.validate_review_jobs([dict(job, mustRead=[{"path": "src/a.cs", "lines": 3}])])
         review_result.validate_review_jobs([dict(job, mustRead=[{"path": "src/new.cs", "lines": 0}])])
@@ -774,7 +774,7 @@ class ReviewIngestionTests(unittest.TestCase):
                 record = root / f"{label}.record.json"
                 record.write_text(json.dumps({"exitCode": 0, "schemaValid": True,
                                               "engagement": "proven"}), encoding="utf-8")
-                jobs.append({"label": label, "shape": "review",
+                jobs.append({"label": label, "kind": "reviewer",
                              "mandates": ["plc-instruction-quality"],
                              "mustRead": [{"path": ".claude/plans/p.md", "lines": 3}],
                              "contextFiles": [str(ROOT / ".claude/CLAUDE.md")]})
@@ -866,7 +866,7 @@ class ReviewIngestionTests(unittest.TestCase):
             record = root / "one.record.json"
             record.write_text(json.dumps({"exitCode": 0, "schemaValid": True, "engagement": "proven"}),
                               encoding="utf-8")
-            jobs = [{"label": "one", "shape": "review", "mandates": ["plc-instruction-quality"],
+            jobs = [{"label": "one", "kind": "reviewer", "mandates": ["plc-instruction-quality"],
                      "mustRead": [{"path": ".claude/plans/p.md", "lines": 3}],
                      "contextFiles": [str(ROOT / ".claude/CLAUDE.md")]}]
             review = review_result.consolidate(jobs, {"one": {"exit": 0, "stdout": str(output),

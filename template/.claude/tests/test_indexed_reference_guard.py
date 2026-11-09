@@ -55,8 +55,8 @@ def main():
                   rc == 0 and not err and "lens.py get --shared" in advisory))
     rc, out, err = run_dispatch({"tool_name": "Read", "agent_id": "delegate-proof",
                                   "tool_input": {"file_path": CATALOG}})
-    cases.append(("delegate deny cites guards/any.md and routes through the accessor",
-                  rc == 2 and "guards/any.md" in err
+    cases.append(("delegate deny cites guards/common.md and routes through the accessor",
+                  rc == 2 and "guards/common.md" in err
                   and "read a catalog with an accessor through it" in err
                   and "lens.py get --shared" in err))
     for actor, extra in (("main", {}), ("delegate", {"agent_id": "delegate-proof"})):
@@ -80,7 +80,7 @@ def main():
         rc, out, err = run_dispatch({"tool_name": "Read", "agent_id": "delegate-proof",
                                      "tool_input": {"file_path": path}})
         cases.append((f"delegate block cites rail and accessor for {suffix}",
-                      rc == 2 and "guards/any.md" in err
+                      rc == 2 and "guards/common.md" in err
                       and "read a catalog with an accessor through it" in err
                       and accessor in err))
 
@@ -124,7 +124,7 @@ def main():
     rc, out, err = run_dispatch({"tool_name": "Read", "agent_id": "delegate-proof",
                                  "tool_input": {"file_path": SUBSYS}})
     cases.append(("delegate whole-file Read of the subsystem catalog is blocked with the accessor",
-                  rc == 2 and "subsys.py index" in err and "guards/any.md" in err))
+                  rc == 2 and "subsys.py index" in err and "guards/common.md" in err))
     for actor, extra in (("main", {}), ("delegate", {"agent_id": "delegate-proof"})):
         rc, out, err = run_dispatch({"tool_name": "Read", **extra,
                                      "tool_input": {"file_path": SUBSYS, "offset": 1, "limit": 5}})

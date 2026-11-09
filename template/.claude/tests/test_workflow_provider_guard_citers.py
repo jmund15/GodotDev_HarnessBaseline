@@ -26,7 +26,7 @@ def run():
                 rows = [(label, job, None, bad and (CITER_REGISTRY_SHIPPED or label != CITER_LABEL))
                         for label, job, bad in cases(root)] + stage_cases(root)
                 for label, job, stage, bad in rows:
-                    if engine == "review_fanout" and job.get("shape") != "review":
+                    if engine == "review_fanout" and job.get("kind") != "reviewer":
                         continue
                     args = {"agents" if engine == "review_fanout" else "jobs": [job]}
                     if stage:
@@ -38,7 +38,7 @@ def run():
                         stack.enter_context(patch.object(sys, "stdin", io.StringIO(json.dumps(payload))))
                         stack.enter_context(contextlib.redirect_stdout(out))
                         for name, value in {
-                            "tool_profile_refusal": None, "coverage_refusal": None,
+                            "tool_profile_refusal": None,
                             "_session_record": (None, {"skills_loaded": ["orchestration"]}, None),
                             "_load_registry": None, "non_thinking_review_pins": [],
                             "decide_vocabulary": (None, None), "invalid_effort_pins": [],

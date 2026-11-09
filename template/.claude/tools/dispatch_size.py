@@ -71,9 +71,7 @@ cannot run prints `preflight: not checked`, and one `preflight: clean` line is t
 """
 from __future__ import annotations
 
-import contextlib
 import copy
-import io
 import json
 import math
 import os
@@ -592,7 +590,7 @@ def denied_lines(size: dict) -> list:
 
 def _kind_refusals(jobs: list) -> list:
     """Each job the fan-out would refuse by its `kind`, in the fan-out's own refusal text. The check runs the
-    same predicates `sidecar_fanout.plan_job` runs, on a copy, so the caller's spec is not widened."""
+    same predicates `sidecar_fanout.plan_job` runs, on a copy."""
     try:
         import sidecar_fanout
     except Exception as exc:
@@ -604,9 +602,7 @@ def _kind_refusals(jobs: list) -> list:
         label = job.get("label") or "job%d" % (index + 1)
         probe = copy.deepcopy(job)
         try:
-            kind = sidecar_fanout.check_job_kind(probe, label)
-            with contextlib.redirect_stdout(io.StringIO()):
-                sidecar_fanout.cover_brief_tools(probe, label, kind)
+            sidecar_fanout.check_job_kind(probe, label)
             sidecar_fanout.job_builtins(probe)
         except Exception as exc:
             text = str(exc)
@@ -630,7 +626,7 @@ def _credit_lines(spec, root: Path, session_id: str, transcript_path) -> list:
     jobs = _jobs_of(spec)
     tiers = {}
     for index, job in enumerate(jobs):
-        kind = job.get("kind") or job.get("shape")
+        kind = job.get("kind")
         try:
             tier = (_dispatch_checks.job_tier(kind, job.get("tier"))[0]
                     if _dispatch_checks is not None else job.get("tier"))
@@ -697,8 +693,8 @@ def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> l
     return ["preflight: clean: every launch precondition is met"]
 
 
-def _job_tier(job: dict, by_shape: dict, by_kind: dict):
-    """The tier a job's own data names: its seat's lens tier, else the tier it writes, else its shape or kind
+def _job_tier(job: dict, by_kind: dict):
+    """The tier a job's own data names: its seat's lens tier, else the tier it writes, else its kind
     row. A seat keyed by registry lenses takes `lens.seat_tier`, never a `kind` row's role (a `judge` kind
     once labelled four `plc-*` plan-review seats executor)."""
     key = job.get("seat") or job.get("key")
@@ -710,8 +706,7 @@ def _job_tier(job: dict, by_shape: dict, by_kind: dict):
             tier = None
         if tier:
             return tier
-    return job.get("tier") or (by_kind.get(job["kind"]) if job.get("kind") else None) \
-        or by_shape.get(job.get("shape"))
+    return job.get("tier") or (by_kind.get(job["kind"]) if job.get("kind") else None)
 
 
 def _tier_in_context(tier, session_id):
@@ -741,7 +736,7 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None, ses
     a `cheaper claimants: `label` (model) not compared: reason` line for a job it
     could not compare; and, once, `pin is the cheapest claimant: labels` naming the compared jobs with nothing cheaper.
     A job's tier is its own data: a seat keyed by registry lenses takes `lens.seat_tier`, else its written `tier`,
-    else its shape or kind row (`guards/tool_profiles.json`). The `±` cell is omitted when `tier_in_context` says the
+    else its kind row (`guards/tool_profiles.json`). The `±` cell is omitted when `tier_in_context` says the
     tier's rows already reached context. Facts only: no check denies on these lines, and
     `_dispatch_checks.cheaper_claimants` owns the filter and raises on what it cannot compare.
     `now`/`read` plant the clock and the capacity reader; both have production defaults. `session_id` is the
@@ -756,19 +751,18 @@ def fact_lines(spec, root=None, data=None, ladder=None, now=None, read=None, ses
     try:
         size = dispatch_size(spec, root, data)
         data = data if data is not None else model_registry.load()
-        by_shape = _dispatch_checks.shape_tiers()
         by_kind = _dispatch_checks.kind_tiers()
     except Exception as err:
         return ["cheaper claimants: not compared for this dispatch: %s" % err]
     out, compared = [], []
     for job, sized in zip(jobs, size["perJob"]):
         label, model = sized["label"], sized["model"]
-        tier = _job_tier(job, by_shape, by_kind)
+        tier = _job_tier(job, by_kind)
         if not model:
             out.append("cheaper claimants: `%s` not compared: no model pin" % label)
             continue
         if not tier:
-            out.append("cheaper claimants: `%s` (%s) not compared: neither its shape row nor its own tier names one"
+            out.append("cheaper claimants: `%s` (%s) not compared: neither its kind row nor its own tier names one"
                        % (label, model))
             continue
         try:

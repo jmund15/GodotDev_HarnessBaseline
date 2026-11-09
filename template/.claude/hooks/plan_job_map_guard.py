@@ -35,6 +35,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hook_state  # noqa: E402
+from _win_path import native_path  # noqa: E402
 
 JOB_MAP_RE = re.compile(r"^#{2,6}\s*Job map\b", re.IGNORECASE | re.MULTILINE)
 STATE_KEY = "job_map_plans"
@@ -52,7 +53,7 @@ def has_job_map(text):
 
 
 def _project_dir(payload):
-    return os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())
+    return os.path.abspath(native_path(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd()))
 
 
 def _is_inside(path, directory):
@@ -106,7 +107,7 @@ def _git_ignored(rel, root):
 
 
 def _target_path(payload, root, key):
-    target = (payload.get("tool_input") or {}).get(key) or ""
+    target = native_path((payload.get("tool_input") or {}).get(key) or "")
     return os.path.abspath(os.path.join(root, target)) if target else ""
 
 

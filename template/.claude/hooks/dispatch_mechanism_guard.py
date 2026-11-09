@@ -48,7 +48,7 @@ UNVERIFIABLE_REASON = (
 # dispatches them itself.
 #
 # The grammar and the fan-out set live in tools/tool_profiles.py (`nested_fanout_hit`,
-# `nested_fanout_hits`), which the sidecar launcher's `--brief` check reads too. Matched on the ACTION,
+# `nested_fanout_hits`), which this hook alone reads. Matched on the ACTION,
 # not the noun (rules/harness_tooling.md): a dispatch verb within the same line span of the target
 # denies; a descriptive mention, a negated clause, quoted data and a fenced block never do. The generated lens briefs
 # strip the caller-facing spawn rules for this reason (lens_briefs.lens_facing).

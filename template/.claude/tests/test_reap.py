@@ -251,17 +251,38 @@ def main():
         rc, killed, out = run(["101", "--reason", "stalled", "--log", log, "--idle-min", "30", "--why", "x"], table())
         ck("stalled: a log written just now -> denied", rc == 2 and killed == [], out[-300:])
         # A sidecar's stream keeps taking status heartbeats while the run makes no progress; its launcher
-        # measures real silence and writes <record>.stall. A fresh marker is the evidence, not its mtime.
-        stall = os.path.join(td, "job.record.json.stall")
-        open(stall, "w").write("idle=2400 at=2026-09-30T17:26:19Z\n")
-        rc, killed, out = run(["101", "--reason", "stalled", "--log", stall, "--idle-min", "30", "--why", "x"], table())
-        ck("stalled: a fresh .stall marker reporting idle beyond the threshold -> killed", rc == 0 and killed == [101], out[-300:])
-        open(stall, "w").write("idle=600 at=2026-09-30T17:26:19Z\n")
-        rc, killed, out = run(["101", "--reason", "stalled", "--log", stall, "--idle-min", "30", "--why", "x"], table())
-        ck("stalled: a .stall marker reporting idle under the threshold -> denied", rc == 2 and killed == [], out[-300:])
-        open(stall, "w").write("garbage\n")
-        rc, killed, out = run(["101", "--reason", "stalled", "--log", stall, "--idle-min", "30", "--why", "x"], table())
-        ck("stalled: an unreadable .stall marker -> denied", rc == 2 and killed == [], out[-300:])
+        # measures real silence and appends a `stalled` row. Silence now is that row's idle plus its age.
+        journal = os.path.join(td, "job.record.json.journal.jsonl")
+
+        def write_journal(*rows):
+            open(journal, "w", encoding="utf-8").write("".join(
+                json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp)), "schema": 1,
+                            "event": event, "launchId": "L", "record": journal, "session": None,
+                            "label": "job", "call": None, **fields}) + "\n"
+                for event, stamp, fields in rows))
+
+        write_journal(("started", time.time() - 2400, {"pid": 101}),
+                      ("stalled", time.time() - 1200, {"idle": 900}))
+        rc, killed, out = run(["101", "--reason", "stalled", "--log", journal, "--idle-min", "30", "--why", "x"], table())
+        ck("stalled: a 20-min-old stalled row at idle=900 s passes --idle-min 30 (idle plus the row's age)",
+           rc == 0 and killed == [101], out[-300:])
+        write_journal(("started", time.time() - 2400, {"pid": 101}),
+                      ("stalled", time.time() - 1200, {"idle": 900}),
+                      ("resumed", time.time() - 60, {"idle": 5}))
+        rc, killed, out = run(["101", "--reason", "stalled", "--log", journal, "--idle-min", "30", "--why", "x"], table())
+        ck("stalled: a later resumed row refuses", rc == 2 and killed == [], out[-300:])
+        write_journal(("started", time.time() - 2400, {"pid": 101}),
+                      ("stalled", time.time() - 1200, {"idle": 900}),
+                      ("ended", time.time() - 60, {"code": 0}))
+        rc, killed, out = run(["101", "--reason", "stalled", "--log", journal, "--idle-min", "30", "--why", "x"], table())
+        ck("stalled: an ended row refuses", rc == 2 and killed == [], out[-300:])
+        write_journal(("started", time.time() - 60, {"pid": 101}),
+                      ("stalled", time.time() - 30, {"idle": 600}))
+        rc, killed, out = run(["101", "--reason", "stalled", "--log", journal, "--idle-min", "30", "--why", "x"], table())
+        ck("stalled: idle plus a 30 s row age is under the threshold -> denied", rc == 2 and killed == [], out[-300:])
+        open(journal, "w").write("garbage\n")
+        rc, killed, out = run(["101", "--reason", "stalled", "--log", journal, "--idle-min", "30", "--why", "x"], table())
+        ck("stalled: a journal with no standing stalled row -> denied", rc == 2 and killed == [], out[-300:])
 
     # 6. never a session host or shared infra, even under our own ancestry: refused with no --reason, too
     rc, killed, out = run([str(SESSION_PID)], table())
@@ -441,19 +462,21 @@ def main():
 
     # 10. the shell used for the environ read is Git's, never WSL's: a bare `bash` from Windows
     #     Python is System32\bash.exe, whose /proc cannot see MSYS pids at all.
-    #     Planted: a Git-style usr/bin holding ps, so the case runs the same on any OS.
-    real_which = reap.shutil.which
+    #     Planted: a Git-style usr/bin holding ps, the only Git root _msys sees, so the case runs the same on
+    #     any OS. On Windows _msys reads Git's usr/bin before PATH; elsewhere PATH answers.
+    real_which, real_roots = reap.shutil.which, reap._msys._GIT_ROOTS
     with tempfile.TemporaryDirectory() as git_root:
         usr_bin = os.path.join(git_root, "Git", "usr", "bin")
         os.makedirs(usr_bin)
         open(os.path.join(usr_bin, "ps.exe"), "w").close()
-        reap.shutil.which = lambda name, *a, **k: os.path.join(usr_bin, "ps.exe") if name == "ps" else None
+        reap.shutil.which = lambda name, *a, **k: os.path.join(usr_bin, "ps.exe") if name == "ps" and os.name != "nt" else None
+        reap._msys._GIT_ROOTS = (os.path.join(git_root, "Git"),)
         try:
             without_bash = reap.git_bash()
             open(os.path.join(usr_bin, "bash.exe"), "w").close()
             b = reap.git_bash() or ""
         finally:
-            reap.shutil.which = real_which
+            reap.shutil.which, reap._msys._GIT_ROOTS = real_which, real_roots
         ck("the environ read uses the bash.exe beside Git's ps, never a bare `bash` lookup",
            b == os.path.join(usr_bin, "bash.exe") and without_bash is None, f"resolved {b!r}, without {without_bash!r}")
     # 11. the reverse pid map: a Windows pid finds its MSYS row, an absent one does not
@@ -476,7 +499,7 @@ def main():
     real_run = reap.subprocess.run
     reap.subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": raw, "stderr": ""})()
     try:
-        planted = REAL_PROCESS_TABLE()
+        planted = reap._cim_table()
     finally:
         reap.subprocess.run = real_run
     ck("a raw control character in one command line does not blank the process table",
@@ -492,13 +515,33 @@ def main():
     reap.subprocess.run = undecodable_run
     try:
         try:
-            planted = REAL_PROCESS_TABLE()
+            planted = reap._cim_table()
         except Exception as exc:
             planted = {"crash": repr(exc)}
     finally:
         reap.subprocess.run = real_run
     ck("a command line that is not valid UTF-8 does not crash or blank the process table",
        len(planted) == 2 and planted.get(6, {}).get("name") == "git.exe", f"got {planted!r}")
+
+    # 13b. off Windows the table comes from /proc without spawning PowerShell: a Linux host with pwsh installed
+    #      paid a failing Get-CimInstance call per table read before the /proc fallback.
+    spawned = []
+    real_on_windows, real_proc_table = reap._on_windows, reap._proc_table
+    reap.subprocess.run = lambda *a, **k: spawned.append(a) or real_run(*a, **k)
+    reap._on_windows, reap._proc_table = (lambda: False), (lambda: {7: {"pid": 7}})
+    try:
+        planted = REAL_PROCESS_TABLE()
+    finally:
+        reap.subprocess.run, reap._on_windows, reap._proc_table = real_run, real_on_windows, real_proc_table
+    ck("off Windows the process table reads /proc and spawns no CIM call",
+       planted == {7: {"pid": 7}} and not spawned, f"got {planted!r}, spawned {spawned!r}")
+    reap.subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": raw, "stderr": ""})()
+    reap._on_windows = lambda: True
+    try:
+        planted = REAL_PROCESS_TABLE()
+    finally:
+        reap.subprocess.run, reap._on_windows = real_run, real_on_windows
+    ck("on Windows the process table reads CIM", len(planted) == 2, f"got {planted!r}")
 
     # 14. a native Windows process (Godot, python, dotnet) is invisible to MSYS /proc, so an orphan whose
     #     launcher died was unprovable and unreapable. Its environment block is read from its own PEB. This

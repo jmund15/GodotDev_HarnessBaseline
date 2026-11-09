@@ -14,8 +14,8 @@ Delegate vs orchestrator is decided by CLAUDE_CODE_SIDECAR, which deepseek_sidec
 and codex_proxy_sidecar.sh set on the child only — the two need opposite rails, and a
 delegate reading "You ARE the orchestrator this session" is worse than none.
 
-A delegate's rails carry `guards/any.md` AND its shape file, assembled by
-tools/guard_text.py. `any` is concatenated rather than chained: it holds the rules
+A delegate's rails carry `guards/common.md` AND its shape file, assembled by
+tools/guard_text.py. `common` is concatenated rather than chained: it holds the rules
 binding every delegate, so its delivery must not depend on the child choosing to follow
 a pointer it finds inside another file. On the -D bare/pointer tiers no project hook fires,
 so lib/sidecar_common.sh calls guard_text.py directly — which is why that parse is a shared
@@ -171,7 +171,7 @@ def sidecar_delegate_shape() -> str | None:
     """Sidecar DELEGATE mode, distinguished from a user-launched `claude-deepseek`
     ORCHESTRATOR session by CLAUDE_CODE_SIDECAR, which deepseek_sidecar.sh sets on
     the child only. Returns the requested guard shape, or None when this is not a
-    sidecar child. Unrecognized shape -> `any`, matching dispatch.js: a shape the
+    sidecar child. Unrecognized shape -> `common`, matching dispatch.js: a shape the
     caller did not assert is not an error, it just means no shape applies. The launcher exports its
     `-G` kind as CLAUDE_CODE_SIDECAR_KIND; guards/tool_profiles.json maps it to the guard file set."""
     if not os.environ.get("CLAUDE_CODE_SIDECAR"):
@@ -182,7 +182,7 @@ def sidecar_delegate_shape() -> str | None:
         guard = tool_profiles.kind_guard(kind)
     except Exception:
         guard = None
-    return guard if guard in ("any", "survey", "review", "author") else "any"
+    return guard if guard in ("common", "survey", "review", "author") else "common"
 
 
 def sidecar_delegate_tier() -> str:

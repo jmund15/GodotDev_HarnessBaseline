@@ -23,6 +23,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _claude_scope import harness_tail  # noqa: E402
 from _hook_state import SETTINGS_FILES  # noqa: E402
+from _win_path import native_path  # noqa: E402
 
 _TOOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
 
@@ -88,7 +89,7 @@ def _generated_block(payload):
 def _in_user_claude(path):
     """The user-level ~/.claude holds the user's own settings; compose never writes it."""
     def norm(p):
-        return os.path.normcase(os.path.abspath(p)).replace("\\", "/").rstrip("/") + "/"
+        return os.path.normcase(os.path.abspath(native_path(p))).replace("\\", "/").rstrip("/") + "/"
     return norm(path).startswith(norm(os.path.expanduser("~/.claude")))
 
 

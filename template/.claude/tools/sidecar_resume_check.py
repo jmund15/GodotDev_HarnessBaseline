@@ -73,6 +73,13 @@ NEVER_RESUME = re.compile(
 
 USAGE_LIMIT = re.compile(r"(?:usage|weekly|session)[ _-]?limit", re.I)
 USAGE_LIMIT_REASON = "provider-usage-limit"
+# A 429 the server words as its own overload ("[overloaded] ... retry shortly") spends no allowance:
+# it is a transient fault that resumes, never a usage limit that stops the run and marks the plan.
+OVERLOADED = re.compile(r"\boverloaded\b|retry shortly", re.I)
+
+
+def _overload_only(text):
+    return isinstance(text, str) and bool(OVERLOADED.search(text)) and not USAGE_LIMIT.search(text)
 # The Claude CLI's own resume prompt after a reply hits CLAUDE_CODE_MAX_OUTPUT_TOKENS (client 2.1.x).
 OUTPUT_CAP_RESUME = "Output token limit hit."
 OUTPUT_CAP_RE = re.compile(r"exceeded the (\d+) output token maximum")
@@ -111,7 +118,21 @@ def is_usage_limit_result(d):
     if not d.get("is_error"):
         return False
     text = d.get("result")
+    if _overload_only(text):
+        return False
     return d.get("api_error_status") == 429 or (isinstance(text, str) and bool(USAGE_LIMIT.search(text)))
+
+
+def is_usage_limit_event(d):
+    """Only a rejected allowance or a full window establishes exhaustion, never retry count."""
+    if d.get("type") != "rate_limit_event":
+        return False
+    info = d.get("rate_limit_info")
+    if not isinstance(info, dict):
+        return False
+    return info.get("status") == "rejected" or any(
+        isinstance(window, dict) and (window.get("utilization") or 0) >= 1
+        for window in (info.get("unifiedWindows") or {}).values())
 
 
 def reset_epoch(d):
@@ -133,6 +154,7 @@ def watch(lines, run=0, limit=10):
     """Fold stream lines -> (work_seen, 429_run, usage_limited, resets_at, session_id).
 
     `run` counts consecutive 429 api_retry lines with no work, result or other retry between them.
+    Retry count is throttle telemetry, not allowance evidence; `limit` is retained for CLI compatibility.
     """
     work, limited, resets, sid = False, False, None, None
     for d in iter_stream_events(lines):
@@ -148,9 +170,9 @@ def watch(lines, run=0, limit=10):
                 work = True
         elif kind == "work":
             run, work = 0, True
-        resets = reset_epoch(d) or resets
-        if limit > 0 and run >= limit:
+        elif is_usage_limit_event(d):
             limited = True
+        resets = reset_epoch(d) or resets
     return work, run, limited, resets, sid
 
 
@@ -238,6 +260,8 @@ def stream_status(path, now, stall_sec=900, limit=10):
     age = int(now - mtime)
     if len(events) == 1 and "seeAlso" in events[0]:
         return "finished", "stream bounded after exit; see %s" % events[0]["seeAlso"]
+    if any(is_usage_limit_event(d) for d in events):
+        return "usage-limit", "rejected or fully utilized rate-limit window"
     last = _ending_result(events)
     if last is not None:
         if is_usage_limit_result(last):
@@ -255,7 +279,7 @@ def stream_status(path, now, stall_sec=900, limit=10):
     for d in retries:
         run = run + 1 if d.get("error_status") == 429 else 0
     if limit > 0 and run >= limit:
-        return "usage-limit", "%d consecutive 429 retries with no work" % run
+        return "retrying", "%d consecutive 429 retries with no work (transient throttle)" % run
     if age >= stall_sec:
         return "stalled", "no write for %ds (limit %ds)" % (age, stall_sec)
     cuts = sum(1 for d in events if d.get("type") == "user" and any(
@@ -312,6 +336,9 @@ def classify(stream):
 
     if not saw_result or not sid:
         return None, None
+
+    if is_error and str(result_status) == "429" and _overload_only(result_text):
+        return sid, "transient"
 
     # Structured rejection status outranks transport wording, even when the text omits the code.
     if str(result_status) in {"400", "401", "403", "404", "429"} or NEVER_RESUME.search(result_text):

@@ -5,7 +5,7 @@ export const meta = {
   phases: [{ title: 'Relevance', detail: 'one agent judges backlog overlap against the stated scope' }],
 }
 // Titles and provenance close against canonical evidence before consumption.
-// Args: {scope, model, effort, tier, checker: {model, effort}, domains?, promptPath?, justification?}. model and effort
+// Args: {scope, model, effort, tier, kind, checker: {model, effort}, domains?, promptPath?, justification?}. model and effort
 // pin the relevance agent and are required; checker pins the closeCheck verifier this engine always starts. Both are
 // validated before any agent starts. No engine supplies a default pin.
 
@@ -14,13 +14,24 @@ export const meta = {
 // SyntaxError names neither this workflow nor the expected shape, so the caller cannot self-correct
 // and retries the same way. Catch it and fall through to the shape error below, carrying the raw
 // string as the scope so the message names only what is actually still missing.
+// ENGINE-BLOCK-BEGIN A
 let A
+// ENGINE-BLOCK-END A
 try {
   A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
 } catch {
   A = { scope: args }
 }
 
+// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge) for every child it spawns;
+// hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
+// child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
+// entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
+const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
+if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
+  return { error: 'worklog-relevance: args.kind is required (scout|lens|reviewer|author|judge), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. The relevance delegate runs as that kind.' }
+}
+const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 // EVIDENCE-SSOT-BEGIN
 const EVIDENCE_SCHEMA = {
   "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
@@ -117,36 +128,49 @@ const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence
 // EVIDENCE-SSOT-END
 
 // CLOSE-CHECK-BEGIN
+// ENGINE-BLOCK-BEGIN repoRootOf
 function repoRootOf(a) {
   const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
   return /^([A-Za-z]:)?\//.test(root) ? root : ''
 }
+// ENGINE-BLOCK-END repoRootOf
+// ENGINE-BLOCK-BEGIN rootedPath
 function rootedPath(a, p) {
   const root = repoRootOf(a)
   return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
 }
+// ENGINE-BLOCK-END rootedPath
+// ENGINE-BLOCK-BEGIN cdRootPrefix
 function cdRootPrefix(a) {
   const root = repoRootOf(a)
   return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
 }
+// ENGINE-BLOCK-END cdRootPrefix
+// ENGINE-BLOCK-BEGIN VERDICTS
 const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
+// ENGINE-BLOCK-END VERDICTS
+// ENGINE-BLOCK-BEGIN applyVerdicts
 const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
   const supplied = verdicts[keyOf(item)]
   const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
   return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
 })
+// ENGINE-BLOCK-END applyVerdicts
 const boundedVerification = verification => ({
   status: verification.status, counts: verification.counts, report: verification.report,
   ...(verification.note ? { note: verification.note } : {}),
   nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
 })
 // A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
+// ENGINE-BLOCK-BEGIN verifierAgent
 const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
   const msg = String((e && e.message) || e)
   if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
   log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
   return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
 })
+// ENGINE-BLOCK-END verifierAgent
+// ENGINE-BLOCK-BEGIN closeCheck
 const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, expectTotal, expectSources, ledger, fold, seats = [] }) => {
   const keys = items.map(keyOf)
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
@@ -254,21 +278,30 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
   }
   return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
 }
+// ENGINE-BLOCK-END closeCheck
 // CLOSE-CHECK-END
 
 // Model vocabulary comes only from args.__transport, which hooks/workflow_provider_guard.py injects on
 // every Workflow call: {name, ids, efforts?}. This engine holds no model list, so a
 // call the guard did not rewrite fails closed. Inlined per script because the Workflow sandbox has
 // no require/import.
+// ENGINE-BLOCK-BEGIN TRANSPORT
 const TRANSPORT = A.__transport
+// ENGINE-BLOCK-END TRANSPORT
+// ENGINE-BLOCK-BEGIN validStringList
 const validStringList = (value) => Array.isArray(value) && value.length > 0
   && value.every(item => typeof item === 'string' && item.trim())
+// ENGINE-BLOCK-END validStringList
 if (!TRANSPORT || typeof TRANSPORT !== 'object' || !validStringList(TRANSPORT.ids)
   || (TRANSPORT.efforts !== undefined && !validStringList(TRANSPORT.efforts))) {
   return { error: 'worklog-relevance: args.__transport is missing or malformed. hooks/workflow_provider_guard.py injects the endpoint\'s model vocabulary ({name, ids, efforts?}); without it this engine has no legal pins and refuses to guess.' }
 }
+// ENGINE-BLOCK-BEGIN PIN
 const PIN = (m) => m
+// ENGINE-BLOCK-END PIN
+// ENGINE-BLOCK-BEGIN EFF
 const EFF = (e) => e
+// ENGINE-BLOCK-END EFF
 
 // Pins are the CALLER's decision (provider choice is budget-posture, and the ladder in
 // reference/model_ladder_evidence.md is the only role→model surface).
@@ -347,7 +380,9 @@ const RELEVANCE_SCHEMA = {
 phase('Relevance')
 // The platform relays the triggering user message to every agent as authoritative; a delegate whose
 // mandate looks unrelated can answer that message instead of its brief.
+// ENGINE-BLOCK-BEGIN RELAY_LINE
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
+// ENGINE-BLOCK-END RELAY_LINE
 const prompt = [
   'Your mandate is at: ' + promptPath + ' — read it with the Read tool and follow it exactly. Retry a transient read error; a missing path or a denial is not retried: return stoppedAt `blocked` with the path and cause in checked.basis.',
   'That file is the single source of truth for this check; do not substitute your own procedure.',
@@ -363,44 +398,12 @@ const prompt = [
   'Return ONLY the JSON object of the schema. An empty `overlaps` array is the correct answer when nothing genuinely overlaps — do NOT explain that you found nothing.',
 ].filter(l => l !== null).join('\n')
 
-// TOOL PROFILES — the inventory this delegate launches with. A native child INHERITS the session's
-// MCP set, so the entry is `inherited` with effectiveMcp unknown unless the delegate runs as its
-// generated agent type (`agent-type`); never a strict claim of enforcement.
-const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
-// LEAN AGENT TYPE (plan lean-delegate-agent-types). Copied per engine: a Workflow script has no imports.
-// A job runs as its profile's generated `<prefix>-*` type only when it asked for `general-purpose` or no
-// type, its profile names an `agentType` with no add/remove delta, and hooks/workflow_provider_guard.py
-// proved its brief covered: `args.__coverage[key].covered` holds the profile's shape. No entry, no swap.
-// A swapped prompt ends with `args.__skillIndex`, because a `<prefix>-*` type has no Skill tool. A session
-// that predates the generated type rejects it; the job retries once, as asked (the known-good type), and is re-recorded.
-const LEAN = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { c: (a && a.__coverage) || {}, s: (a && typeof a.__skillIndex === 'string') ? a.__skillIndex : '' } } catch (e) { return { c: {}, s: '' } } })()
-const leanTypeOf = (keys, asked, tp) => {
-  const cov = keys.map(k => LEAN.c[k]).find(Boolean)
-  return ((asked == null || asked === 'general-purpose') && tp && tp.agentType
-    && !(tp.add || []).length && !(tp.remove || []).length
-    && cov && Array.isArray(cov.covered) && cov.covered.includes(tp.shape)) ? tp.agentType : null
-}
-const leanRecord = (tp, asked, swapped) => tp ? Object.assign({}, tp, swapped
-  ? { agentType: swapped, enforcement: 'agent-type', effectiveMcp: (tp.mcpServers || []).join(', ') }
-  : { agentType: asked || 'general-purpose' }) : null
-const leanAgent = (prompt, opts, swapped, rec) => {
-  if (!swapped) return agent(prompt, opts)
-  const asked = opts.agentType || 'general-purpose'
-  return agent(LEAN.s ? prompt + '\n\n' + LEAN.s : prompt, Object.assign({}, opts, { agentType: swapped })).catch(e => {
-    const msg = String((e && e.message) || e)
-    if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-    log('FALLBACK ' + opts.label + ' ' + swapped + '→' + asked)
-    rec[opts.label] = Object.assign({}, rec[opts.label], { agentType: 'general-purpose', enforcement: 'inherited', effectiveMcp: 'unknown/inherited' })
-    log('TOOL-PROFILES-REVISED ' + JSON.stringify(rec))
-    return agent(prompt, Object.assign({}, opts, { agentType: asked }))
-  })
-}
-const tp = TOOLP.d['worklog:relevance'] || TOOLP.f['survey'] || null
-const swapped = leanTypeOf(['worklog:relevance'], undefined, tp)
-const RECORDED = { 'worklog:relevance': leanRecord(tp, undefined, swapped) }
+// TOOL PROFILES — the relevance delegate launches as the call's kind row.
+const tp = KP_RECORD
+const RECORDED = { 'worklog:relevance': tp }
 log('TOOL-PROFILES ' + JSON.stringify(RECORDED))
 
-const r = await leanAgent(prompt, { label: 'worklog:relevance', phase: 'Relevance', schema: RELEVANCE_SCHEMA, model: PIN(A.model), effort: EFF(A.effort) }, swapped, RECORDED)
+const r = await agent(prompt, { label: 'worklog:relevance', phase: 'Relevance', agentType: KP.agentType, schema: RELEVANCE_SCHEMA, model: PIN(A.model), effort: EFF(A.effort) })
 
 // Unambiguous empty: `count` is always present, so a caller never has to distinguish "no overlaps"
 // from "the agent returned nothing".

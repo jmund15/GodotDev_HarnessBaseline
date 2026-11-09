@@ -94,8 +94,7 @@ A missing or stale result, a new tracked red or unavailable coverage blocks push
 
 A failure whose marked lines also appear at the upstream base, or at the default branch's merge-base when a sync merged in commits that base lacks, is pre-existing: printed and logged
 to `harness_known_red.jsonl`, not new. An untracked, never-committed proof runs its working copy
-against the base's inputs. Its red prints `UNCOMMITTED PROOF RED <proof> (not in this push)` and blocks neither push nor stamp: its own commit's close gates it. A new tracked red is bisected through that proof's input-changing commits and
-prints `FIRST RED <proof> at <sha> <subject>`. A red that passes in the shared checkout is rerun at committed HEAD with its dirty, untracked or ignored inputs planted. When planting makes it pass, the close prints `NEEDS UNCOMMITTED <proof>` naming those inputs, skips the bisect, counts it apart in the summary and still blocks push: commit an input that belongs to the change, and make the proof plant any input it reads from scratch or another session's work. When planting does not make it pass, the close prints `PASSES ONLY IN THE WORKING TREE <proof>` with an unknown cause (the checkout's location, or an input outside its reach) and bisects it like any other red. `/session_end` §7b
+against the base's inputs. Its red prints `UNCOMMITTED PROOF RED <proof> (not in this push)` and blocks neither push nor stamp: its own commit's close gates it. A red that passes in the shared checkout is rerun at committed HEAD with its dirty, untracked or ignored inputs planted. If planting makes it pass, the close names those inputs and still blocks push: commit an input that belongs to the change, and make the proof plant any input it reads from scratch or another session's work. `/session_end` §7b
 leaves another session's in-progress red to its owner. A timeout or output without a
 failure-marked line never excuses a red. A close started while this session's author or fold dispatch writes in its checkout waits for it and names it. An author whose `writeSet` is wholly gitignored cannot change the commits close proves, so close never waits for it. Close then proves the committed HEAD of that moment once: a later commit never restarts it, and a newer `--close` supersedes it at once, waiting or running, so a commit never needs the close stopped. Before dispatching a fix for reds, run `--close --now`, which skips that wait, so each red arrives classified (pre-existing, or its FIRST RED commit and owner); map the new ones to fix jobs by cause and write set (`orchestration` §2).
 
@@ -104,7 +103,7 @@ satisfy push. `--for` excuses a red that also fails at HEAD while a given path o
 after the change is committed (a worktree branch, a delegate's slice), pass `--base <the revision
 before the change>`, or no red is excused. Use the edited unit's proof file directly for RED-first work, not the bound suite.
 Passes are reused while reached inputs are unchanged, whichever checkout of the repository recorded them. `--all` runs every proof on demand;
-`/sync_baseline` publish keeps its template battery.
+`/sync_baseline` publish sets `HARNESS_REUSE_PASSES=1` for its full battery, so it reuses recorded passes.
 
 `git_guardrails.py` keeps quick checks (skill load, density, git/index scope and tracked-proof
 presence) and makes the advisory proof run above. An authored `hooks/` or `tools/` `.py` needs a git-TRACKED `tests/test_<name>*.py` or
@@ -204,7 +203,7 @@ Bash reads a running script by byte offset, so a size-changing edit makes every 
 
 ## A new script a listed script dot-sources joins every copy list
 
-Proofs that copy scripts into a temp checkout (`_bench_sandbox.py`, `test_regression_gate_held.ps1`, `test_run_test_suite_userdir.py`, the integration batcher's adaptation proof) copy fixed file lists. A new sibling is absent from each, and its proofs fail with "not recognized" far from the edit. Before the first proof run, `git grep -n '<an existing sibling>.ps1' -- .claude/tests` and add the new file to every list that names that sibling, or keep the helper in its caller's file.
+Proofs that copy scripts into a temp checkout copy fixed file lists. A new sibling is absent from each, and its proofs fail with "not recognized" far from the edit. Before the first proof run, `git grep -n '<an existing sibling>.ps1' -- .claude/tests` and add the new file to every list that names that sibling, or keep the helper in its caller's file.
 
 ## Deleting a flag is not done until its stale invocations name their replacement
 

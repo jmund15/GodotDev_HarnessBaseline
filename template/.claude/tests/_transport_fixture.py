@@ -84,7 +84,7 @@ def planted_mcp_workdir():
         return _MCP_WORKDIR
     sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
     import tool_profiles
-    names = sorted({name for row in tool_profiles.load_table()["shapes"].values()
+    names = sorted({name for row in tool_profiles.load_table()["kinds"].values()
                     for name in row["mcpServers"]})
     folder = tempfile.mkdtemp(prefix="transport_mcp_")
     atexit.register(shutil.rmtree, folder, True)

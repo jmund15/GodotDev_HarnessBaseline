@@ -241,121 +241,56 @@ function Assert-GateTargetCompatible {
 # Healthy first-test observations span 7–66 s (cadence_godot2_report F4/F6). A 90 s runtime-log
 # boot window leaves 24 s beyond that cold-reimport maximum; the attempt still retries once.
 $script:SuiteBootTimeoutMs = 90000
-# A short healthy run costs up to 66 s before its first test; the 150 s floor leaves build/reimport
-# room. Known duration bodies get 1.5x headroom plus 90 s boot/build; a last-green wall gets 1.5x + 30 s.
-$script:SuiteTimeoutFloorMs = 150000
-$script:SuiteDurationHeadroomFactor = 1.5
-$script:SuiteLastGreenExtraMs = 30000
-# A cold checkout's first GdUnit4 recompile pass; the 150 s floor plus this is the 400 s cap that cleared cold runs.
+# A cold checkout's first GdUnit4 recompile pass; a default-ceiling run adds this when a recompile runs.
 $script:SuiteColdRecompileExtraMs = 250000
-$script:SuiteDurationExtraMs = 90000
-function Get-HeadroomMs {
-    param([double] $ExpectedSec, [double] $ExtraMs)
-    [int][math]::Ceiling([math]::Max($script:SuiteTimeoutFloorMs, ($ExpectedSec * $script:SuiteDurationHeadroomFactor * 1000 + $ExtraMs)))
-}
+
 function Read-SuiteManifest {
     param([Parameter(Mandatory)] [string] $Path)
     try { Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop }
     catch { throw "Unreadable suite manifest $Path : $($_.Exception.Message)" }
 }
-function Get-SuiteTimeoutMs {
-    param([string] $Repo, [string] $Filter, [string] $LastGreen = '')
-    $expected = 0.0
-    if ($LastGreen -and (Test-Path -LiteralPath $LastGreen)) {
-        $green = Read-SuiteManifest -Path $LastGreen
-        if ($green.filter -ceq $Filter -and [double] $green.elapsedSec -gt 0) {
-            return Get-HeadroomMs -ExpectedSec ([double] $green.elapsedSec) -ExtraMs $script:SuiteLastGreenExtraMs
-        }
-    }
-    # A tier sub-filter takes its whole tier's duration, an upper bound. A part naming no known tier,
-    # unit or test file could select anything, so it adds the widest known duration: an unknown part
-    # reads as the longest run, never as zero (a name prefix such as `EngagementLadder` hung at the floor).
-    # `&` joins a selection to its exclusions; a conjunction runs at most its widest part, so each part
-    # estimates alone and a `!~` exclusion, which selects nothing, adds nothing.
-    $parts = @($Filter -replace '[()]', '' -split '[|&]' | Where-Object { $_ -notmatch '!' })
-    $tiers = @{}
-    $chosen = @{}
-    $unknown = 0
-    $man = $null
-    foreach ($part in $parts) {
-        # vstest reads an operator-less part as FullyQualifiedName~<part>.
-        if ($part -match '^[\w.]+$') { $part = "FullyQualifiedName~$part" }
-        # A class name, bare or dotted (Folder.Class, Class.Test), stands for the tier or unit its test
-        # file lives in: the rightmost segment that names a test file is the class.
-        if ($part -match '^FullyQualifiedName~([\w.]+)$' -and $Matches[1] -notmatch '^Tests(\.|$)') {
-            $testsRoot = (Get-Item -LiteralPath (Join-Path $Repo 'Tests')).FullName.TrimEnd('\', '/')
-            $segments = @($Matches[1].Trim('.') -split '\.')
-            [array]::Reverse($segments)
-            $file = $null
-            foreach ($segment in $segments) {
-                $file = Get-ChildItem -LiteralPath $testsRoot -Recurse -File -Filter "$segment.cs" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($file) { break }
-            }
-            if (-not $file) { $unknown++; continue }
-            $rel = $file.FullName.Substring($testsRoot.Length + 1) -replace '\\', '/'
-            $part = 'FullyQualifiedName~Tests.' + (($rel -split '/' | Select-Object -SkipLast 1) -join '.')
-        }
-        if ($part -match '^FullyQualifiedName~Tests\.(Logic|Sanity)(?:\.[\w.]*)?$') { $tiers[$Matches[1]] = $true; continue }
-        if ($part -notmatch '^FullyQualifiedName~Tests\.Integration(?:\.([\w]+)(?:\.[\w.]*)?)?$') { $unknown++; continue }
-        $segment = $Matches[1]
-        if (-not $man) { $man = Read-SuiteManifest -Path (Join-Path $Repo 'Tests/integration_batch_durations.json') }
-        $names = @($man.units.PSObject.Properties.Name | Where-Object { -not $segment -or $_ -eq $segment -or $_.StartsWith($segment + '.') })
-        if (-not $names.Count) { $unknown++ }
-        foreach ($name in $names) { $chosen[$name] = [double] $man.units.$name.seconds }
-    }
-    if (-not $tiers.Count -and -not $chosen.Count -and -not $unknown) { return $script:SuiteTimeoutFloorMs }
-    $baselinePath = Join-Path $Repo 'Tests/regression_baseline.json'
-    $baseline = $null
-    if ($tiers.Count) {
-        $baseline = Read-SuiteManifest -Path $baselinePath
-        foreach ($tier in $tiers.Keys) { $expected += [double] $baseline.suites.$tier.duration_sec }
-    }
-    foreach ($value in $chosen.Values) { $expected += $value }
-    if ($unknown) {
-        # Only the manifests that exist inform the widest duration; with neither, no estimate exists.
-        $unitsPath = Join-Path $Repo 'Tests/integration_batch_durations.json'
-        if (-not $man -and (Test-Path -LiteralPath $unitsPath)) { $man = Read-SuiteManifest -Path $unitsPath }
-        if (-not $baseline -and (Test-Path -LiteralPath $baselinePath)) { $baseline = Read-SuiteManifest -Path $baselinePath }
-        $known = @()
-        if ($man) { $known += @($man.units.PSObject.Properties | ForEach-Object { [double] $_.Value.seconds }) }
-        if ($baseline) { $known += @($baseline.suites.PSObject.Properties | ForEach-Object { [double] $_.Value.duration_sec }) }
-        # No filter selects more than every known unit and tier together, so that sum bounds the estimate.
-        if ($known.Count) {
-            $widest = ($known | Measure-Object -Maximum).Maximum
-            $expected = [math]::Min($expected + $unknown * $widest, ($known | Measure-Object -Sum).Sum)
-        }
-    }
-    if ($expected -le 0) { return $script:SuiteTimeoutFloorMs }
-    Get-HeadroomMs -ExpectedSec $expected -ExtraMs $script:SuiteDurationExtraMs
+# The default cap for a run that names no -TimeoutMs: the sum of every recorded unit and tier duration.
+# A missing or malformed manifest throws (Read-SuiteManifest) rather than returning a silent floor.
+function Get-SuiteDefaultCeilingMs {
+    param([Parameter(Mandatory)] [string] $Repo)
+    $units = Read-SuiteManifest -Path (Join-Path $Repo 'Tests/integration_batch_durations.json')
+    $baseline = Read-SuiteManifest -Path (Join-Path $Repo 'Tests/regression_baseline.json')
+    $seconds = [double] 0
+    foreach ($unit in $units.units.PSObject.Properties) { $seconds += [double] $unit.Value.seconds }
+    foreach ($suite in $baseline.suites.PSObject.Properties) { $seconds += [double] $suite.Value.duration_sec }
+    [int][math]::Ceiling($seconds * 1000)
 }
 
 # The run cap prices an idle machine. A loaded machine runs gate batches several times slower than
-# expected, so a run still writing its Godot log keeps going past the cap, to this multiple of it.
+# expected, so a run still making progress keeps going past the cap, to this multiple of it.
 $script:SuiteProgressCeilingFactor = 3
-# A wedged GdUnit4 run writes nothing; a live one logs every test.
-$script:SuiteStallMs = 60000
+# A run whose progress file has not grown for this long is wedged: it is killed, not extended.
+# basis: measured max healthy silence 60.2 s (build phase, forced recompile; n=7 real runs 2026-11-06; boot max 6.0 s, test max 4.1 s), margin 5x.
+$script:SuiteStallMs = 300000
 function Wait-SuiteAttempt {
-    param($Process, [int] $TimeoutMs, [string] $GodotLog, [switch] $NoGodotRuntime,
+    param($Process, [int] $TimeoutMs, [string] $GodotLog, [string] $WrapperLog = '', [switch] $NoGodotRuntime,
           [int] $BootTimeoutMs = $script:SuiteBootTimeoutMs, [int] $PollMs = 500,
           [int] $StallMs = $script:SuiteStallMs)
     $clock = [Diagnostics.Stopwatch]::StartNew()
     $bootAt = -1L
     $connected = $false
-    $logLen = -1L
-    $grewAt = -1L
+    $progLen = -1L
+    $progPath = ''
+    $grewAt = 0L
     $ceilingMs = [long] $TimeoutMs * $script:SuiteProgressCeilingFactor
     while ($true) {
-        if (-not $NoGodotRuntime) {
-            $info = [IO.FileInfo]::new($GodotLog)
-            $len = if ($info.Exists) { $info.Length } else { -1L }
-            if ($logLen -ge 0 -and $len -gt $logLen) { $grewAt = $clock.ElapsedMilliseconds }
-            $logLen = $len
-        }
+        # The progress file is the Godot log once it exists; before that, and for -NoGodotRuntime, the wrapper's log.
+        $progress = if (-not $NoGodotRuntime -and $GodotLog -and [IO.File]::Exists($GodotLog)) { $GodotLog } else { $WrapperLog }
+        $len = if ($progress -and [IO.File]::Exists($progress)) { ([IO.FileInfo]::new($progress)).Length } else { -1L }
         $elapsed = $clock.ElapsedMilliseconds
-        $limit = $TimeoutMs
-        if ($elapsed -ge $TimeoutMs -and $grewAt -ge 0 -and $elapsed - $grewAt -lt $StallMs) { $limit = $ceilingMs }
-        $remaining = $limit - $elapsed
-        if ($remaining -le 0) { return 'cap-hang' }
+        if ($len -gt $progLen -or $progress -ne $progPath) { $grewAt = $elapsed }
+        $progLen = $len
+        $progPath = $progress
+        $stallAt = $grewAt + $StallMs
+        if ($elapsed -ge $stallAt) { return 'stall-hang' }
+        $limit = if ($elapsed -ge $TimeoutMs) { $ceilingMs } else { [long] $TimeoutMs }
+        if ($elapsed -ge $limit) { return 'cap-hang' }
+        $remaining = [math]::Min($limit, $stallAt) - $elapsed
         if ($Process.WaitForExit([int][math]::Min($PollMs, $remaining))) { return 'exited' }
         if (-not $NoGodotRuntime -and -not $connected -and (Test-Path -LiteralPath $GodotLog)) {
             if ($bootAt -lt 0) { $bootAt = $clock.ElapsedMilliseconds }

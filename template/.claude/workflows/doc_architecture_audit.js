@@ -10,12 +10,23 @@ export const meta = {
 // Platform contract: args is a JSON STRING. Parse-guard (legible failure on malformed/truncated JSON
 // rather than an uncaught SyntaxError — the CONTEXT block is large and truncation-at-boundary is the
 // realistic failure mode).
+// ENGINE-BLOCK-BEGIN A
 let A
+// ENGINE-BLOCK-END A
 try {
   A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
 } catch (e) {
   return { error: 'args is not valid JSON — /doc_architecture_audit must pass {context, docRoot, model, effort, tier}. ' + ((e && e.message) || '') }
 }
+// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge) for every child it spawns;
+// hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
+// child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
+// entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
+const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
+if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
+  return { error: 'doc-architecture-audit: args.kind is required (scout|lens|reviewer|author|judge), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. The three audit lenses run as that kind.' }
+}
+const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 // EVIDENCE-SSOT-BEGIN
 const EVIDENCE_SCHEMA = {
   "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
@@ -112,36 +123,49 @@ const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence
 // EVIDENCE-SSOT-END
 
 // CLOSE-CHECK-BEGIN
+// ENGINE-BLOCK-BEGIN repoRootOf
 function repoRootOf(a) {
   const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
   return /^([A-Za-z]:)?\//.test(root) ? root : ''
 }
+// ENGINE-BLOCK-END repoRootOf
+// ENGINE-BLOCK-BEGIN rootedPath
 function rootedPath(a, p) {
   const root = repoRootOf(a)
   return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
 }
+// ENGINE-BLOCK-END rootedPath
+// ENGINE-BLOCK-BEGIN cdRootPrefix
 function cdRootPrefix(a) {
   const root = repoRootOf(a)
   return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
 }
+// ENGINE-BLOCK-END cdRootPrefix
+// ENGINE-BLOCK-BEGIN VERDICTS
 const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
+// ENGINE-BLOCK-END VERDICTS
+// ENGINE-BLOCK-BEGIN applyVerdicts
 const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
   const supplied = verdicts[keyOf(item)]
   const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
   return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
 })
+// ENGINE-BLOCK-END applyVerdicts
 const boundedVerification = verification => ({
   status: verification.status, counts: verification.counts, report: verification.report,
   ...(verification.note ? { note: verification.note } : {}),
   nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
 })
 // A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
+// ENGINE-BLOCK-BEGIN verifierAgent
 const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
   const msg = String((e && e.message) || e)
   if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
   log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
   return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
 })
+// ENGINE-BLOCK-END verifierAgent
+// ENGINE-BLOCK-BEGIN closeCheck
 const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, expectTotal, expectSources, ledger, fold, seats = [] }) => {
   const keys = items.map(keyOf)
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
@@ -249,12 +273,15 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
   }
   return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
 }
+// ENGINE-BLOCK-END closeCheck
 // CLOSE-CHECK-END
 
 // args.__transport = {name, ids, efforts?}, injected by hooks/workflow_provider_guard.py. `efforts` is absent when
 // the transport declares no effort vocabulary. args.checker = {model, effort} pins the closeCheck verifier this
 // engine always starts; it is validated before any agent starts. No engine supplies a default pin.
+// ENGINE-BLOCK-BEGIN TRANSPORT
 const TRANSPORT = A.__transport
+// ENGINE-BLOCK-END TRANSPORT
 if (!TRANSPORT || !Array.isArray(TRANSPORT.ids) || !TRANSPORT.ids.length
   || !TRANSPORT.ids.every(id => typeof id === 'string' && id)
   || (TRANSPORT.efforts !== undefined && (!Array.isArray(TRANSPORT.efforts) || !TRANSPORT.efforts.length
@@ -375,46 +402,16 @@ const FINDINGS_SCHEMA = {
 }
 
 phase('Audit')
-// TOOL PROFILES — the inventory each audit lens launches with. A native child INHERITS the session's
-// MCP set, so an entry is `inherited` with effectiveMcp unknown unless the lens runs as its generated
-// agent type (`agent-type`); never a strict claim of enforcement.
-const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
-// LEAN AGENT TYPE (plan lean-delegate-agent-types). Copied per engine: a Workflow script has no imports.
-// A job runs as its profile's generated `<prefix>-*` type only when it asked for `general-purpose` or no
-// type, its profile names an `agentType` with no add/remove delta, and hooks/workflow_provider_guard.py
-// proved its brief covered: `args.__coverage[key].covered` holds the profile's shape. No entry, no swap.
-// A swapped prompt ends with `args.__skillIndex`, because a `<prefix>-*` type has no Skill tool. A session
-// that predates the generated type rejects it; the job retries once, as asked (the known-good type), and is re-recorded.
-const LEAN = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { c: (a && a.__coverage) || {}, s: (a && typeof a.__skillIndex === 'string') ? a.__skillIndex : '' } } catch (e) { return { c: {}, s: '' } } })()
-const leanTypeOf = (keys, asked, tp) => {
-  const cov = keys.map(k => LEAN.c[k]).find(Boolean)
-  return ((asked == null || asked === 'general-purpose') && tp && tp.agentType
-    && !(tp.add || []).length && !(tp.remove || []).length
-    && cov && Array.isArray(cov.covered) && cov.covered.includes(tp.shape)) ? tp.agentType : null
-}
-const leanRecord = (tp, asked, swapped) => tp ? Object.assign({}, tp, swapped
-  ? { agentType: swapped, enforcement: 'agent-type', effectiveMcp: (tp.mcpServers || []).join(', ') }
-  : { agentType: asked || 'general-purpose' }) : null
-const leanAgent = (prompt, opts, swapped, rec) => {
-  if (!swapped) return agent(prompt, opts)
-  const asked = opts.agentType || 'general-purpose'
-  return agent(LEAN.s ? prompt + '\n\n' + LEAN.s : prompt, Object.assign({}, opts, { agentType: swapped })).catch(e => {
-    const msg = String((e && e.message) || e)
-    if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-    log('FALLBACK ' + opts.label + ' ' + swapped + '→' + asked)
-    rec[opts.label] = Object.assign({}, rec[opts.label], { agentType: 'general-purpose', enforcement: 'inherited', effectiveMcp: 'unknown/inherited' })
-    log('TOOL-PROFILES-REVISED ' + JSON.stringify(rec))
-    return agent(prompt, Object.assign({}, opts, { agentType: asked }))
-  })
-}
-const tpOf = (label) => TOOLP.d[label] || TOOLP.f['review'] || null
-const swapOf = (label) => leanTypeOf([label], undefined, tpOf(label))
-const RECORDED = Object.fromEntries(['da-structural', 'da-crossref', 'da-domain'].map(l => [l, leanRecord(tpOf(l), undefined, swapOf(l))]))
+// TOOL PROFILES — each audit lens launches as the call's kind row.
+const tpOf = () => KP_RECORD
+const RECORDED = Object.fromEntries(['da-structural', 'da-crossref', 'da-domain'].map(l => [l, tpOf(l)]))
 log('TOOL-PROFILES ' + JSON.stringify(RECORDED))
 // The platform relays the triggering user message to every agent as authoritative; a lens whose
 // mandate looks unrelated can answer that message instead of its brief.
+// ENGINE-BLOCK-BEGIN RELAY_LINE
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
-const audit = (prompt, label) => leanAgent(prompt + '\n' + RELAY_LINE, { label, phase: 'Audit', schema: FINDINGS_SCHEMA, model: A.model, effort: A.effort }, swapOf(label), RECORDED)
+// ENGINE-BLOCK-END RELAY_LINE
+const audit = (prompt, label) => agent(prompt + '\n' + RELAY_LINE, { label, phase: 'Audit', agentType: KP.agentType, schema: FINDINGS_SCHEMA, model: A.model, effort: A.effort })
 
 const [structRes, crossRes, domainRes] = await parallel([
   () => audit(STRUCTURAL, 'da-structural'),

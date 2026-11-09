@@ -113,11 +113,70 @@ param(
     # With -Watch: the Integration batch state file. Empty uses this checkout's default.
     [string]   $Batches = '',
     # With -Watch: poll interval in seconds. The wait costs process time, not caller turns.
-    [int]      $WatchIntervalSec = 10
+    [int]      $WatchIntervalSec = 10,
+    # Print the flags and the verdict table (one row per exit code), then exit 0. Runs no gate.
+    [switch]   $Help
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+# The one owner of what each verdict means and what to do next. Complete-Gate prints the row at every exit, the
+# module-missing exits print it through Exit-ModuleMissing, and -Help prints every row.
+$script:VerdictRows = [ordered]@{
+    'PASS'        = @{ code = 0;   meaning = 'All tiers clear.'; next = 'Proceed. Stage any baseline diff.' }
+    'STATIC_PASS' = @{ code = 0;   meaning = 'Preflight, guards, build and DOCS passed. The .cs gate is NOT satisfied.'; next = 'Run the full gate before any .cs commit.' }
+    'FAIL'        = @{ code = 1;   meaning = 'Real test failures.'; next = 'Follow regression_gate.md §Failure handling: repair in-scope failures, then re-run the failing -Filter.' }
+    'INVALID'     = @{ code = 2;   meaning = 'Silent-skip signature or below the architectural floor. Counts are untrustworthy.'; next = 'Do not read the counts. Verify the affected surface per change_control §Gate cadence, then re-run.' }
+    'WARN'        = @{ code = 3;   meaning = 'Unexplained count drop. Baseline not written.'; next = 'Fix any counting or ratchet defect and re-verify. Ask the user only to accept lost coverage.' }
+    'BLOCKED'     = @{ code = 4;   meaning = 'Preflight, guard or build red.'; next = 'Fix the cause on the PREFLIGHT or guard line, then re-run. gate_last.md lists each guard''s remediation.' }
+    'INCOMPLETE'  = @{ code = 6;   meaning = 'Harness fault, or a unit with no readable result. Nothing failed.'; next = 'Read the unit wrapper.out or the stack in the detail, fix the cause, then re-run.' }
+    'BUSY'        = @{ code = 7;   meaning = 'No verdict. Nothing failed. A holder owns the checkout.'; next = 'Re-invoke after the holder ends, or raise -WaitSec. Never kill a holder.' }
+    'CONTENTION'  = @{ code = 8;   meaning = 'A peer run killed this one. Not a regression.'; next = 'Re-run once inline. Never adjudicate it as FAIL.' }
+    'HANG'        = @{ code = 124; meaning = 'A suite wedged and was tree-killed, or a batch stayed hung after its retry.'; next = 'Re-run with -RetryOnly. A repeated HANG follows testing reference/running.md.' }
+}
+# Each flag and its use. -Help prints these; every param above must have a row.
+$script:GateFlagUse = [ordered]@{
+    'Repo'            = 'Checkout to gate. Default: this checkout.'
+    'StaticOnly'      = 'Preflight, guards, build and DOCS only. Never satisfies .cs.'
+    'NoBaselineUpdate' = 'Evaluate and report without writing the baseline.'
+    'RetryOnly'       = 'Restore prior green Integration batches for this exact tree; run the rest.'
+    'IgnoreEditor'    = 'Run inline even when an editor is live. Only for a stale editor record.'
+    'RouteOnly'       = 'Print ROUTE=<path> (the checkout the gate would run in) and exit 0.'
+    'WaitSec'         = 'Seconds to wait for a busy checkout before BUSY (exit 7). 0 probes once.'
+    'NoReuse'         = 'Force a fresh run; refuse a ledger REUSE.'
+    'Detach'          = 'Run detached; print DETACHED, OUT= and ERR=, exit in about 1s. Required from an agent.'
+    'Watch'           = 'Read-only: stream stage lines of a detached run until VERDICT=. Needs -Out.'
+    'Out'             = 'With -Watch: the detached run''s OUT path.'
+    'Batches'         = 'With -Watch: the Integration batch state file. Empty uses the default.'
+    'WatchIntervalSec' = 'With -Watch: poll interval in seconds.'
+    'Help'            = 'Print this help and exit 0.'
+}
+
+function Write-VerdictRow {
+    param([Parameter(Mandatory)] [string] $Verdict)
+    $row = $script:VerdictRows[$Verdict]
+    Write-Output "MEANING=$($row.meaning)"
+    Write-Output "NEXT=$($row.next)"
+}
+
+# A module-missing exit runs before Complete-Gate's state exists, so it prints the BLOCKED row itself.
+function Exit-ModuleMissing {
+    param([Parameter(Mandatory)] [string] $Module)
+    Write-Output "PREFLIGHT=BLOCKED reason=${Module}-missing"
+    Write-VerdictRow -Verdict 'BLOCKED'
+    exit 4
+}
+
+function Show-GateHelp {
+    Write-Output 'Usage: pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 [flags]'
+    Write-Output 'Flags:'
+    foreach ($name in $script:GateFlagUse.Keys) { Write-Output ("  -{0,-18} {1}" -f $name, $script:GateFlagUse[$name]) }
+    Write-Output 'Verdicts (the VERDICT= line; exit code):'
+    foreach ($v in $script:VerdictRows.Keys) { Write-Output ("  {0} exit {1}: {2}" -f $v, $script:VerdictRows[$v].code, $script:VerdictRows[$v].meaning) }
+}
+
+if ($Help) { Show-GateHelp; exit 0 }
 
 . (Join-Path $PSScriptRoot 'WideRunGuard.ps1')
 Assert-WideRunAllowed -Entry 'regression_gate.ps1' -Repo $Repo -Flags @(@('StaticOnly', 'RouteOnly', 'Watch', 'Detach') | Where-Object { $PSBoundParameters.ContainsKey($_) })
@@ -294,6 +353,7 @@ function Complete-Gate {
     }
     Exit-TwinLock
     Exit-GateHeld
+    Write-VerdictRow -Verdict $Verdict
     Emit "DETAIL=$detailPath"
     Emit "VERDICT=$Verdict$verdictSuffix"
     exit $Code
@@ -380,44 +440,38 @@ function Get-EngineProbe {
 # checkout is it". Nothing below re-derives it.
 $godotProcP = Join-Path $scripts 'GodotProcess.ps1'
 if (-not (Test-Path $godotProcP)) {
-    Write-Output 'PREFLIGHT=BLOCKED reason=GodotProcess.ps1-missing'
-    exit 4
+    Exit-ModuleMissing 'GodotProcess.ps1'
 }
 . $godotProcP
 # The checkout lock, runtime slots and trigger log live in ONE home (it dot-sources GodotProcess.ps1).
 $runtimeSlotsP = Join-Path $scripts 'RuntimeSlots.ps1'
 if (-not (Test-Path $runtimeSlotsP)) {
-    Write-Output 'PREFLIGHT=BLOCKED reason=RuntimeSlots.ps1-missing'
-    exit 4
+    Exit-ModuleMissing 'RuntimeSlots.ps1'
 }
 . $runtimeSlotsP
 # Run-dir layout (TestResults/runs/<runId>/) lives in ONE home.
 $runPoolP = Join-Path $scripts 'RunPool.ps1'
 if (-not (Test-Path $runPoolP)) {
-    Write-Output 'PREFLIGHT=BLOCKED reason=RunPool.ps1-missing'
-    exit 4
+    Exit-ModuleMissing 'RunPool.ps1'
 }
 . $runPoolP
 $script:PoolRepo = $repo
 # The Integration batch model (units, plan, state, manifest, retry selection, verdict lines) lives in ONE home.
 $intBatchesP = Join-Path $scripts 'IntegrationBatches.ps1'
 if (-not (Test-Path $intBatchesP)) {
-    Write-Output 'PREFLIGHT=BLOCKED reason=IntegrationBatches.ps1-missing'
-    exit 4
+    Exit-ModuleMissing 'IntegrationBatches.ps1'
 }
 . $intBatchesP
 # The activity-registry reader, the own-family predicate and the owner-root walk live in ONE home.
 $peerActivityP = Join-Path $scripts 'PeerActivity.ps1'
 if (-not (Test-Path $peerActivityP)) {
-    Write-Output 'PREFLIGHT=BLOCKED reason=PeerActivity.ps1-missing'
-    exit 4
+    Exit-ModuleMissing 'PeerActivity.ps1'
 }
 . $peerActivityP
 # C# comment/string masking and the test-attribute diff counter live in ONE home.
 $csharpSourceP = Join-Path $scripts 'CSharpSource.ps1'
 if (-not (Test-Path $csharpSourceP)) {
-    Write-Output 'PREFLIGHT=BLOCKED reason=CSharpSource.ps1-missing'
-    exit 4
+    Exit-ModuleMissing 'CSharpSource.ps1'
 }
 . $csharpSourceP
 # Walked now and passed to every child: a child of a detached gate has no session in its own chain, and its activity
@@ -911,7 +965,7 @@ function Invoke-LedgerReuse {
         $script:RunTree = Get-TreeDigest -Repo $repo
         $producerAction = [string](Get-Prop $best 'baselineAction' 'unknown')
         Emit "REUSE from=$from mode=$($script:Mode) age=${ageM}m session=$(Get-Prop $best 'sessionId' 'n/a')"
-        Emit "BASELINE reused=$producerAction"
+        Emit "BASELINE action=none reason=reused producer-action=$producerAction"
         Add-Detail "## REUSE`n`nThis run reused the verdict of run **$from** (${ageM}m old): content-exact digest match, identical mode ($($script:Mode)), engine probe re-run and OK. The producer's baseline action: $producerAction. A reused verdict is a run against byte-identical content and toolchain — report it as such, never as a fresh run."
         if ((Get-Prop $best 'status' '') -eq 'FAIL') {
             $pft = @(Get-Prop $best 'failedTests' @())
@@ -1336,6 +1390,8 @@ function Set-GateRecompiled {
     Emit 'HELD stamp=recompiled'
 }
 
+# Basis: the gate's declared per-unit cap on an idle machine (X5 N10). Not derived from recorded durations;
+# a run that stops writing progress ends at the stall bound before this cap matters.
 $suiteTimeoutMs = 480000
 
 # --- Sanity: the one held child admitted before `recompiled` (-RecompilePass). It runs GdUnit4's single editor pass,

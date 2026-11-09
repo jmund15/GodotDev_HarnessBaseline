@@ -12,8 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _project_owned(relpath):
-    """`_lock_rows.project_owned` for a path relative to `.claude/`."""
-    return project_owned('.claude/' + relpath)
+    """`_lock_rows.project_owned` for a path relative to `.claude/`, and only while the file exists here:
+    a file a `local` row names is absent from a template checkout and has no row in its lock, and a
+    proof of its prose belongs only to the checkout that owns it."""
+    return (ROOT / relpath).is_file() and project_owned('.claude/' + relpath)
 
 
 ORCHESTRATION_CONTRACTS = {

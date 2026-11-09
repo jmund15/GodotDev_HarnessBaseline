@@ -1,7 +1,7 @@
 """Re-runnable proof for scripts/harness_tests.py's `adaptation.json` `proof_excluded` and
 `proof_timeouts` seam -- the runner seam (Design Doc §8, owner ruling 2026-09-15 R1).
 
-Three shapes: adaptation.json absent -> EXCLUDED stays empty and _PROOF_TIMEOUTS stays at the runner's built-in table; present with
+Three shapes: adaptation.json absent -> EXCLUDED and _PROOF_TIMEOUTS stay empty; present with
 valid entries -> `proof_excluded` merges into EXCLUDED and `proof_timeouts` merges into
 _PROOF_TIMEOUTS; a wrong-typed top-level key (not a dict) -> that table stays empty plus one
 stderr line (from the shared loader). Validation case: a `proof_timeouts` value that is not a
@@ -82,7 +82,7 @@ def main():
         scratches.append(tmp)
         mod, err = import_fresh(tmp)
         cases.append(("absent adaptation.json: EXCLUDED stays empty", mod.EXCLUDED == {}))
-        cases.append(("absent adaptation.json: _PROOF_TIMEOUTS stays at the built-in table", mod._PROOF_TIMEOUTS == mod._BUILTIN_PROOF_TIMEOUTS))
+        cases.append(("absent adaptation.json: _PROOF_TIMEOUTS stays empty", mod._PROOF_TIMEOUTS == {}))
         cases.append(("absent adaptation.json: no stderr", err == ""))
 
         # --- present: proof_excluded and proof_timeouts merge in -----------------------------
@@ -135,7 +135,7 @@ def main():
         tmp = make_scratch(real_runner, seed={"proof_timeouts": "not-a-dict"})
         scratches.append(tmp)
         mod, err = import_fresh(tmp)
-        cases.append(("wrong-typed proof_timeouts: _PROOF_TIMEOUTS stays at the built-in table", mod._PROOF_TIMEOUTS == mod._BUILTIN_PROOF_TIMEOUTS))
+        cases.append(("wrong-typed proof_timeouts: _PROOF_TIMEOUTS stays empty", mod._PROOF_TIMEOUTS == {}))
         cases.append(("wrong-typed proof_timeouts: one stderr line names the key",
                       "proof_timeouts" in err))
 

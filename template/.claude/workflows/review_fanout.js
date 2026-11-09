@@ -22,7 +22,9 @@ export const meta = {
 // Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
 // string is a caller mistake, but an uncaught SyntaxError names neither this workflow nor the
 // expected shape, so the caller cannot self-correct and retries the same way. Fail legibly instead.
+// ENGINE-BLOCK-BEGIN A
 let A
+// ENGINE-BLOCK-END A
 try {
   A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
 } catch (e) {
@@ -125,36 +127,49 @@ const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence
 // EVIDENCE-SSOT-END
 
 // CLOSE-CHECK-BEGIN
+// ENGINE-BLOCK-BEGIN repoRootOf
 function repoRootOf(a) {
   const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
   return /^([A-Za-z]:)?\//.test(root) ? root : ''
 }
+// ENGINE-BLOCK-END repoRootOf
+// ENGINE-BLOCK-BEGIN rootedPath
 function rootedPath(a, p) {
   const root = repoRootOf(a)
   return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
 }
+// ENGINE-BLOCK-END rootedPath
+// ENGINE-BLOCK-BEGIN cdRootPrefix
 function cdRootPrefix(a) {
   const root = repoRootOf(a)
   return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
 }
+// ENGINE-BLOCK-END cdRootPrefix
+// ENGINE-BLOCK-BEGIN VERDICTS
 const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
+// ENGINE-BLOCK-END VERDICTS
+// ENGINE-BLOCK-BEGIN applyVerdicts
 const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
   const supplied = verdicts[keyOf(item)]
   const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
   return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
 })
+// ENGINE-BLOCK-END applyVerdicts
 const boundedVerification = verification => ({
   status: verification.status, counts: verification.counts, report: verification.report,
   ...(verification.note ? { note: verification.note } : {}),
   nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
 })
 // A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
+// ENGINE-BLOCK-BEGIN verifierAgent
 const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
   const msg = String((e && e.message) || e)
   if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
   log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
   return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
 })
+// ENGINE-BLOCK-END verifierAgent
+// ENGINE-BLOCK-BEGIN closeCheck
 const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, expectTotal, expectSources, ledger, fold, seats = [] }) => {
   const keys = items.map(keyOf)
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
@@ -262,9 +277,12 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
   }
   return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
 }
+// ENGINE-BLOCK-END closeCheck
 // CLOSE-CHECK-END
 
+// ENGINE-BLOCK-BEGIN RESULT_MODE
 const RESULT_MODE = A.resultMode === undefined ? 'bounded' : A.resultMode
+// ENGINE-BLOCK-END RESULT_MODE
 if (!['bounded', 'full'].includes(RESULT_MODE)) {
   return { error: 'review-fanout: resultMode must be `bounded` or `full`.' }
 }
@@ -272,17 +290,27 @@ if (!['bounded', 'full'].includes(RESULT_MODE)) {
 // Model vocabulary comes only from args.__transport, which hooks/workflow_provider_guard.py injects on
 // every Workflow call: {name, ids, efforts?}. This engine holds no model list, so a
 // call the guard did not rewrite fails closed. `efforts` is absent when the transport declares none.
+// ENGINE-BLOCK-BEGIN TRANSPORT
 const TRANSPORT = A.__transport
+// ENGINE-BLOCK-END TRANSPORT
+// ENGINE-BLOCK-BEGIN validStringList
 const validStringList = (value) => Array.isArray(value) && value.length > 0
   && value.every(item => typeof item === 'string' && item.trim())
+// ENGINE-BLOCK-END validStringList
+// ENGINE-BLOCK-BEGIN transportValid
 const transportValid = TRANSPORT && typeof TRANSPORT === 'object' && !Array.isArray(TRANSPORT)
   && validStringList(TRANSPORT.ids)
   && (TRANSPORT.efforts === undefined || validStringList(TRANSPORT.efforts))
+// ENGINE-BLOCK-END transportValid
 if (!transportValid) {
   return { error: 'review-fanout: args.__transport is missing or malformed. hooks/workflow_provider_guard.py injects the endpoint\'s model vocabulary (non-empty string array `ids`, optional non-empty `efforts`); without it this engine has no legal pins and refuses to guess.' }
 }
+// ENGINE-BLOCK-BEGIN PIN
 const PIN = (m) => m
+// ENGINE-BLOCK-END PIN
+// ENGINE-BLOCK-BEGIN EFF
 const EFF = (e) => e
+// ENGINE-BLOCK-END EFF
 // The Read tool's default window: a Read naming no line range returns at most this many lines from line 1.
 // tools/review_result.py `READ_WINDOW` holds the same value.
 const READ_WINDOW = 2000
@@ -295,58 +323,42 @@ if (badAgentObjects.length) {
   return { error: 'review-fanout: every args.agents entry must be an object.' }
 }
 
+// ENGINE-BLOCK-BEGIN SPILL_REL
 const SPILL_REL = (typeof A.spillDir === 'string' && A.spillDir.trim()) ? A.spillDir.replace(/[\\/]+$/, '') : null
+// ENGINE-BLOCK-END SPILL_REL
+// ENGINE-BLOCK-BEGIN NORMAL_SPILL_DIR
 const NORMAL_SPILL_DIR = SPILL_REL ? SPILL_REL.replace(/\\/g, '/') : null
+// ENGINE-BLOCK-END NORMAL_SPILL_DIR
+// ENGINE-BLOCK-BEGIN spillEscapesRoot
 const spillEscapesRoot = NORMAL_SPILL_DIR && /(^|\/)\.\.(\/|$)/.test(NORMAL_SPILL_DIR)
+// ENGINE-BLOCK-END spillEscapesRoot
+// ENGINE-BLOCK-BEGIN spillRootAllowed
 const spillRootAllowed = !NORMAL_SPILL_DIR
   || (!spillEscapesRoot && /^\.claude\/scratch(?:\/|$)/.test(NORMAL_SPILL_DIR))
+// ENGINE-BLOCK-END spillRootAllowed
 if (!spillRootAllowed) {
   return { error: 'review-fanout: spillDir must be repository-relative and contained by .claude/scratch/. Received: ' + SPILL_REL }
 }
 const SPILL_DIR = SPILL_REL && repoRootOf(A) ? repoRootOf(A) + '/' + NORMAL_SPILL_DIR : SPILL_REL
 const spillPath = (label) => SPILL_DIR + '/' + String(label).replace(/[^A-Za-z0-9._-]/g, '_') + '.spill.md'
 
-// TOOL PROFILES. hooks/workflow_provider_guard.py resolves args.__toolProfiles (keyed by the agent's
-// `key`) for a job that DECLARED a shape or a delta, and args.__toolProfileDefaults (one row per
-// shape) otherwise. A native child inherits the session's MCP set, so a profile is `inherited`
-// unless this engine launches the job as its row's generated agent type (`agentType`, rendered by
-// `tools/tool_profiles.py agents` into .claude/agents/), which is then stamped `agent-type`.
-const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
-// LEAN AGENT TYPE (plan lean-delegate-agent-types). Copied per engine: a Workflow script has no imports.
-// A job runs as its profile's generated `<prefix>-*` type only when it asked for `general-purpose` or no
-// type, its profile names an `agentType` with no add/remove delta, and hooks/workflow_provider_guard.py
-// proved its brief covered: `args.__coverage[key].covered` holds the profile's shape. No entry, no swap.
-// A swapped prompt ends with `args.__skillIndex`, because a `<prefix>-*` type has no Skill tool. A session
-// that predates the generated type rejects it; the job retries once, as asked (the known-good type), and is re-recorded.
-const LEAN = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { c: (a && a.__coverage) || {}, s: (a && typeof a.__skillIndex === 'string') ? a.__skillIndex : '' } } catch (e) { return { c: {}, s: '' } } })()
-const leanTypeOf = (keys, asked, tp) => {
-  const cov = keys.map(k => LEAN.c[k]).find(Boolean)
-  return ((asked == null || asked === 'general-purpose') && tp && tp.agentType
-    && !(tp.add || []).length && !(tp.remove || []).length
-    && cov && Array.isArray(cov.covered) && cov.covered.includes(tp.shape)) ? tp.agentType : null
-}
-const leanRecord = (tp, asked, swapped) => tp ? Object.assign({}, tp, swapped
-  ? { agentType: swapped, enforcement: 'agent-type', effectiveMcp: (tp.mcpServers || []).join(', ') }
-  : { agentType: asked || 'general-purpose' }) : null
-const leanAgent = (prompt, opts, swapped, rec) => {
-  if (!swapped) return agent(prompt, opts)
-  const asked = opts.agentType || 'general-purpose'
-  return agent(LEAN.s ? prompt + '\n\n' + LEAN.s : prompt, Object.assign({}, opts, { agentType: swapped })).catch(e => {
-    const msg = String((e && e.message) || e)
-    if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-    log('FALLBACK ' + opts.label + ' ' + swapped + '→' + asked)
-    rec[opts.label] = Object.assign({}, rec[opts.label], { agentType: 'general-purpose', enforcement: 'inherited', effectiveMcp: 'unknown/inherited' })
-    log('TOOL-PROFILES-REVISED ' + JSON.stringify(rec))
-    return agent(prompt, Object.assign({}, opts, { agentType: asked }))
-  })
-}
-const profileOf = (a) => TOOLP.d[a.key] || TOOLP.d['review:' + a.key] || TOOLP.f['review'] || null
-const swappedType = (a) => leanTypeOf([a.key, 'review:' + a.key], a.agentType, profileOf(a))
-const effectiveType = (a) => swappedType(a) || a.agentType
-// lane-review returns its deliverable inline only: salvage reads the transcript's final payload.
-const NO_WRITE_AGENT_TYPES = ['Explore', 'Plan', 'lane-review', 'lane-survey']
-const NO_SHELL_AGENT_TYPES = ['lane-review', 'lane-survey']
-const spills = (a) => !!SPILL_DIR && !NO_WRITE_AGENT_TYPES.includes(effectiveType(a))
+// KIND PROFILES. Each agent names a `kind`; hooks/workflow_provider_guard.py resolves that row of
+// guards/tool_profiles.json into args.__toolProfiles[<agent key>] (agentType, guard, built-ins), and the engine's
+// own merge and fold stages into `review:merge` (reviewer) and `review:fold` (author). Every child runs as its
+// kind's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded entry is
+// `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
+// ENGINE-BLOCK-BEGIN TOOLP
+const TOOLP = (A.__toolProfiles && typeof A.__toolProfiles === 'object') ? A.__toolProfiles : {}
+// ENGINE-BLOCK-END TOOLP
+const profileOf = (a) => (a && (TOOLP[a.key] || TOOLP['review:' + a.key])) || null
+const hasTool = (a, t) => (profileOf(a).builtins || []).includes(t)
+const noShell = (a) => !hasTool(a, 'Bash')
+const recordOf = (tp) => tp ? Object.assign({}, tp, { enforcement: 'agent-type', effectiveMcp: (tp.mcpServers || []).join(', ') }) : null
+const RETIRED_KEYS = { agentType: 'the kind row sets the agent type', shape: 'use kind', readOnly: 'this engine is read-only; the kind sets the tools' }
+const retiredOn = (a) => Object.keys(RETIRED_KEYS).filter(k => !!a && k in a)
+const kindOk = (a) => !!a && typeof a.kind === 'string' && !!a.kind.trim() && !!profileOf(a) && profileOf(a).kind === a.kind && !!profileOf(a).agentType
+// A kind without a Write tool returns its deliverable inline only: salvage reads the transcript's final payload.
+const spills = (a) => !!SPILL_DIR && hasTool(a, 'Write')
 const readOnlyContract = (a) => spills(a)
   ? 'Read-only: do NOT modify, create, or delete any file EXCEPT your own spill file ' + spillPath(a.label) + '.'
   : 'Read-only: do NOT modify, create, or delete any file.'
@@ -367,20 +379,28 @@ const spillContract = (a) => spills(a) ? [
 // Guard tier per RECEIVING model is registry data (`railTier`), injected as `args.__rails` by
 // hooks/workflow_provider_guard.py because a Workflow script cannot read files. A model the map
 // does not name, or a call the hook did not rewrite, reads `detailed`: the fail-safe direction.
+// ENGINE-BLOCK-BEGIN RAILS
 const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
+// ENGINE-BLOCK-END RAILS
 const tierOf = (m) => RAILS[m] || 'detailed'
-// Rails text per (shape, tier) is assembled from .claude/guards/ by tools/guard_text.py and injected as
+// Rails text per (guard, tier) is assembled from .claude/guards/ by tools/guard_text.py and injected as
 // `args.__railsText` by hooks/workflow_provider_guard.py, because this script cannot read files. The
 // inline text reaches every delegate; the Read pointer is only the fallback when the hook supplied
 // none, and a present map missing a job's pair logs RAILS-FALLBACK so a key disagreement is visible.
+// ENGINE-BLOCK-BEGIN RAILS_TEXT
 const RAILS_TEXT = (A.__railsText && typeof A.__railsText === 'object') ? A.__railsText : {}
+// ENGINE-BLOCK-END RAILS_TEXT
+// ENGINE-BLOCK-BEGIN RAILS_HEADER
 const RAILS_HEADER = '=== DELEGATE RAILS (standing rules for how you work; your task is the brief above) ==='
-const inlineRails = (label, shape, tier) => {
-  const text = RAILS_TEXT[shape + '/' + tier]
+// ENGINE-BLOCK-END RAILS_HEADER
+// ENGINE-BLOCK-BEGIN inlineRails
+const inlineRails = (label, guard, tier) => {
+  const text = RAILS_TEXT[guard + '/' + tier]
   if (typeof text === 'string' && text.trim()) return ['', RAILS_HEADER, text].join('\n')
-  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + shape + '/' + tier)
+  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + guard + '/' + tier)
   return null
 }
+// ENGINE-BLOCK-END inlineRails
 // MACHINE SAFETY + delivery mechanics, owned by this engine and shipped at EVERY tier (detailed,
 // condensed, minimal). Only DOCTRINE tiers by model — a strongest-row lens that wedges the single-flight GdUnit4 pipe or
 // writes to the tree does the same damage a weakest-row lens would, and this engine's seats are
@@ -388,7 +408,9 @@ const inlineRails = (label, shape, tier) => {
 const CONCURRENT = agents.length > 1
 // The platform relays the triggering user message to every agent as authoritative; a lens whose
 // mandate looks unrelated can answer that message instead of its brief.
+// ENGINE-BLOCK-BEGIN RELAY_LINE
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
+// ENGINE-BLOCK-END RELAY_LINE
 // The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
 // .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock),
 // which arms for any engine carrying the next line.
@@ -399,7 +421,7 @@ const BASE_CONTRACT = (a) => [
   RELAY_LINE,
   readOnlyContract(a),
   CONCURRENT ? 'You are one of several agents running CONCURRENTLY: do NOT run a single-flight tool (a test runner, build, engine or language server that allows one process per machine or per checkout; your delegate rails name this project\'s) — use Grep/Read instead of a language server. Python and Node proofs under .claude/tests/ are not single-flight'
-    + (NO_SHELL_AGENT_TYPES.includes(effectiveType(a)) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file, not harness_tests.py (its machine slots are shared; rules/harness_tooling.md).')
+    + (noShell(a) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file, not harness_tests.py (its machine slots are shared; rules/harness_tooling.md).')
     + ' If your mandate requires a single-flight run, STOP and report that it needs a serialized dispatch.' : null,
   'COVERAGE: `checked.toolsUsed` lists each read/search as `tool:target`, and each Read as `Read:<path>:<first>-<last>`, the lines it returned; a Read entry with no range counts as lines 1-' + READ_WINDOW + ', the Read tool\'s default window. `checked.stoppedAt` names why you stopped; `checked.basis` says what you examined. Each `gaps` entry is `{"item": <the path you did not read>, "reason": "outside-lens" | "capability" | "missing"}`: another seat\'s lens owns the item, it needs a tool you lack (running code, a shell, the engine), or the path does not exist. Only such a gap excuses a MUST-READ entry; state any other limit (a check you could not run, a file outside the list) in `checked.basis`. Empty findings without positive checked provenance are UNCOVERED, not clean.',
   'MUST-READ: you are done only when your Read ranges in `checked.toolsUsed` together cover every line of each entry below, or a `gaps` item names the entry with a legal reason. Read a file past the default window in ranges. A shell read of the file counts whole; a search covers no line. An entry read only in part fails this seat whatever `checked.stoppedAt` says, and the panel does not re-run a failed seat. Entries: ' + (a.mustRead || []).map(entry => entry.path + ' (' + entry.lines + ' lines)').join(', '),
@@ -410,18 +432,23 @@ const BASE_CONTRACT = (a) => [
   spillContract(a) || null,
 ].filter(l => l !== null).join('\n')
 // DOCTRINE on top, tiered by the receiving model (instruction_quality §3).
-// Registry driverNotes per pinned model; rails key on (shape, tier) and carry no model, so notes travel in args.__driverNotes.
+// Registry driverNotes per pinned model; rails key on (guard, tier) and carry no model, so notes travel in args.__driverNotes.
+// ENGINE-BLOCK-BEGIN DRIVER_NOTES
 const DRIVER_NOTES = (A.__driverNotes && typeof A.__driverNotes === 'object') ? A.__driverNotes : {}
+// ENGINE-BLOCK-END DRIVER_NOTES
+// ENGINE-BLOCK-BEGIN driverNotes
 const driverNotes = (model) => (typeof DRIVER_NOTES[model] === 'string' && DRIVER_NOTES[model].trim()) ? '\n\n' + DRIVER_NOTES[model] : ''
+// ENGINE-BLOCK-END driverNotes
 const guardRef = (x) => { const r = railsRef(x); return r && r + driverNotes(x.model) }
 const railsRef = (a) => {
   const tier = tierOf(a.model)
-  const inline = inlineRails(a.label || a.key, 'review', tier)
+  const guard = profileOf(a).guard
+  const inline = inlineRails(a.label || a.key, guard, tier)
   if (inline) return BASE_CONTRACT(a) + '\n' + inline
   return BASE_CONTRACT(a) + '\n' + [
     '',
     '=== DELEGATE RAILS ===',
-    'Read .claude/guards/review.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/any.md and of each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists. Read ONLY those sections — the other tiers are for other models.',
+    'Read .claude/guards/review.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/common.md and of each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists. Read ONLY those sections — the other tiers are for other models.',
   ].join('\n')
 }
 
@@ -528,9 +555,16 @@ const badKeys = agents.filter(a => typeof a.key !== 'string' || !a.key.trim())
 if (badKeys.length) {
   return { error: 'review-fanout: every agent needs a non-empty key.' }
 }
-const badAgentTypes = agents.filter(a => a.agentType != null && (typeof a.agentType !== 'string' || !a.agentType.trim()))
-if (badAgentTypes.length) {
-  return { error: 'review-fanout: an agentType, when given, must be a non-empty string; omit it for the runtime default.' }
+const retiredAgents = agents.filter(a => retiredOn(a).length > 0)
+if (retiredAgents.length) {
+  return { error: 'review-fanout: a seat names its tools by kind alone. ' + retiredAgents.map(a => a.key + ' carries ' + retiredOn(a).map(k => k + ' (' + RETIRED_KEYS[k] + ')').join(', ')).join('; ') + '.' }
+}
+const kindless = agents.filter(a => !kindOk(a))
+if (kindless.length) {
+  return { error: 'review-fanout: every agent needs a kind in [scout|lens|reviewer|author|judge], resolved by the guard into args.__toolProfiles. Missing or unresolved: ' + kindless.map(a => a.key).join(', ') + '.' }
+}
+if (!TOOLP['review:merge'] || (A.fold && !TOOLP['review:fold'])) {
+  return { error: 'review-fanout: args.__toolProfiles lacks the engine own review:merge' + (A.fold ? ' or review:fold' : '') + ' row; hooks/workflow_provider_guard.py injects it, and a call it did not rewrite fails closed.' }
 }
 // Every seat carries its must-read list, its done condition: exactly {path, lines} per entry, the shape
 // tools/review_result.py `valid_must_read` accepts; that module's `gap_verdict` docstring names the contract's home.
@@ -675,10 +709,9 @@ if (LEDGER !== null) {
 const resolved = agents.map(a => ({
   ...a,
   label: 'review:' + a.key,
-  askedType: a.agentType,
-  swapped: swappedType(a),
+  agentType: profileOf(a).agentType,
 }))
-log('PINS ' + JSON.stringify(Object.fromEntries(resolved.map(a => [a.label, a.model + '/' + a.effort + '/' + (effectiveType(a) || 'general-purpose') + ' guards:review@' + tierOf(a.model) + ' tier:' + tierOfAgent(a)]))))
+log('PINS ' + JSON.stringify(Object.fromEntries(resolved.map(a => [a.label, a.model + '/' + a.effort + '/' + a.agentType + ' guards:' + profileOf(a).guard + '@' + tierOf(a.model) + ' tier:' + tierOfAgent(a)]))))
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
 // Every label this run spawns, on ONE line at launch: the caller's lenses, plus the
@@ -686,14 +719,20 @@ if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 // entry records the type the job runs as. A job that falls back from a missing generated type is
 // re-recorded in a TOOL-PROFILES-REVISED line. `log()` output is retained in
 // <session>/workflows/<runId>.json.
-const RECORDED = Object.fromEntries(resolved.map(a => [a.label, leanRecord(profileOf(a), a.askedType, a.swapped)]))
-RECORDED['review:merge'] =leanRecord(TOOLP.f['review'] || null, 'Explore', null)
+const RECORDED = Object.fromEntries(resolved.map(a => [a.label, recordOf(profileOf(a))]))
+RECORDED['review:merge'] = recordOf(TOOLP['review:merge'])
 if (FOLD_PIN) {
-  for (const job of FOLD_PIN.jobs) RECORDED[job.label] = leanRecord(TOOLP.f['author'] || null, 'general-purpose', null)
+  for (const job of FOLD_PIN.jobs) RECORDED[job.label] = recordOf(TOOLP['review:fold'])
 }
 log('TOOL-PROFILES ' + JSON.stringify(RECORDED))
 
+// The key hooks/amend_delivery.py reads to deliver a parent's amendment to a running author job.
+// ENGINE-BLOCK-BEGIN AMEND_LINE
+const AMEND_LINE = (promptPath) => 'Amendments: the harness delivers ' + promptPath + '.amend.md to you when your parent writes or changes it; a delivered amendment overrides the brief, and your report names what you applied.'
+// ENGINE-BLOCK-END AMEND_LINE
+// ENGINE-BLOCK-BEGIN READ_FAILURE
 const READ_FAILURE = '(retry a transient read error; a missing path or a denial is not retried: return checked.stoppedAt `blocked` with the path and cause in checked.basis)'
+// ENGINE-BLOCK-END READ_FAILURE
 const contextPre = A.contextPrefixPath
   ? 'SHARED CONTEXT for every lens of this dispatch is at: ' + A.contextPrefixPath + ' — read it with the Read tool FIRST ' + READ_FAILURE + '.\n\n'
   : (contextPrefix ? (contextPrefix + '\n\n') : '')
@@ -702,15 +741,15 @@ phase('Review')
 const raw = await parallel(resolved.map(a => () => {
   const opts = {
     label: a.label, phase: 'Review', schema: seatSchema(a),
-    model: PIN(a.model), effort: EFF(a.effort), agentType: a.askedType,
+    model: PIN(a.model), effort: EFF(a.effort), agentType: a.agentType,
   }
   const body = a.promptPath
-    ? 'Your full lens mandate is at: ' + a.promptPath + ' — read it with the Read tool and execute it exactly ' + READ_FAILURE + '.'
+    ? 'Your full lens mandate is at: ' + a.promptPath + ' — read it with the Read tool and execute it exactly ' + READ_FAILURE + '.\n' + AMEND_LINE(rootedPath(A, a.promptPath))
     : (a.prompt || '')
   const prompt = contextPre + body + guardRef(a)
   // Preserve null (a schema rejection after retries, or a dead agent): it MUST NOT collapse into an
   // empty findings array — a dead lens reading as "clean review" is the silent-coverage-loss shape.
-  return leanAgent(prompt, opts, a.swapped, RECORDED).then(r => ({ key: a.key, result: r }))
+  return agent(prompt, opts).then(r => ({ key: a.key, result: r }))
 }))
 
 // Lossless ingestion: every valid finding becomes an engine-owned source (F1, F2, ...) in
@@ -801,9 +840,30 @@ const shellReads = (command, root = '.') => {
   }
   return reads.map(([p, spans]) => [p.replace(/\\/g, '/').replace(/\/\.\//g, '/'), spans])
 }
-// The path a `tool:target` entry names, lower-cased: review_result.py `target_path` without its repo-root
-// strip, which samePath's suffix match on a `/` boundary replaces.
-const targetPath = (target) => {
+// The lower-cased spellings one checkout root has: the `C:/repo` drive form and the `/c/repo` Git Bash form.
+const rootForms = (root) => {
+  const low = String(root || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  if (!low) return []
+  const drive = low.replace(/^\/([a-z])(?=\/|$)/, '$1:')
+  return [...new Set([low, drive, drive.replace(/^([a-z]):/, '/$1')])]
+}
+// A lower-cased path inside `root` when it lies there, else the path as written (an absolute path outside `root`).
+const repoRel = (name, root) => {
+  for (const form of rootForms(root)) {
+    if (name === form) return ''
+    if (name.startsWith(form + '/')) return name.slice(form.length + 1)
+  }
+  return name
+}
+// The checkout pair of a repo path: the root (lower-cased) and the path inside it. A path under `.claude/worktrees/<name>`
+// names that worktree's checkout (review_result.py `repo_pair`). The NUL joins them, so an empty path never equals a pair.
+const checkoutPair = (rel, root) => {
+  const base = rootForms(root)[0] || ''
+  const wt = rel.match(/^(\.claude\/worktrees\/[^/]+)\/(.+)$/)
+  return wt ? base + '/' + wt[1] + '\u0000' + wt[2] : base + '\u0000' + rel
+}
+// The repo path a `tool:target` entry names under `root`, lower-cased: review_result.py `target_path`.
+const targetPath = (target, root = '') => {
   const text = String(target)
   const cut = text.indexOf(':')
   const tool = cut >= 0 ? text.slice(0, cut).trim().toLowerCase() : ''
@@ -819,9 +879,10 @@ const targetPath = (target) => {
     }
   }
   name = name.replace(/^['"]+|['"]+$/g, '').replace(/:\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*$/, '').replace(/\/+$/, '')
-  return name.split('/').filter(seg => seg !== '.').join('/').toLowerCase()
+  return repoRel(name.split('/').filter(seg => seg !== '.').join('/').toLowerCase(), root)
 }
-const samePath = (a, b) => !!a && !!b && (a === b || a.endsWith('/' + b) || b.endsWith('/' + a))
+// Two checkout pairs name one file: equal, with a path inside the checkout (no suffix match across checkouts).
+const samePath = (a, b) => !!a && a === b && !a.endsWith('\u0000')
 // The [first, last] line spans one `tool:target` entry read; searches and unsupported shell commands get none.
 const targetSpans = (target) => {
   const text = String(target)
@@ -836,15 +897,15 @@ const targetSpans = (target) => {
 }
 // review_result.py `claimed_reads`: one {path, spans} per file a seat's toolsUsed entries read, so a chained shell
 // read never credits its last file with another file's spans. Entries that read no line are dropped.
-const claimedReads = (tools) => tools.flatMap(t => {
+const claimedReads = (tools, root = '') => tools.flatMap(t => {
   const text = String(t)
   const cut = text.indexOf(':')
   if (cut >= 0 && SHELL_TOOLS.includes(text.slice(0, cut).trim().toLowerCase())) {
     const reads = shellReads(text.slice(cut + 1).trim().replace(/\\/g, '/').replace(/(?:\s+\([^()]*\))+\s*$/, ''))
-    if (reads.length) return reads.map(([p, spans]) => ({ path: targetPath('Read:' + p), spans }))
+    if (reads.length) return reads.map(([p, spans]) => ({ path: checkoutPair(targetPath('Read:' + p, root), root), spans }))
   }
-  return [{ path: targetPath(text), spans: targetSpans(text) }]
-}).filter(r => r.path && r.spans.length)
+  return [{ path: checkoutPair(targetPath(text, root), root), spans: targetSpans(text) }]
+}).filter(r => !r.path.endsWith('\u0000') && r.spans.length)
 // True when `spans` hold at least one read and together cover lines 1 to `lines`.
 const covers = (spans, lines) => {
   if (!spans.length) return false
@@ -863,27 +924,28 @@ const spansText = (spans) => {
   }
   return merged.map(([a, b]) => a + '-' + (b === Infinity ? 'end' : b)).join(', ') || 'none'
 }
-const entrySpans = (entry, reads) => {
-  const path = targetPath('Read:' + entry.path)
+const entrySpans = (entry, reads, root = '') => {
+  const path = checkoutPair(targetPath('Read:' + entry.path, root), root)
   return reads.filter(r => samePath(path, r.path)).flatMap(r => r.spans)
 }
-const isGap = (gap, mustRead) => isRecord(gap) && Object.keys(gap).length === 2
+const isGap = (gap, mustRead, root = '') => isRecord(gap) && Object.keys(gap).length === 2
   && typeof gap.item === 'string' && !!gap.item.trim() && GAP_REASONS.includes(gap.reason)
-  && mustRead.some(entry => samePath(targetPath('Read:' + entry.path), targetPath('Read:' + gap.item)))
+  && mustRead.some(entry => samePath(checkoutPair(targetPath('Read:' + entry.path, root), root),
+    checkoutPair(targetPath('Read:' + gap.item, root), root)))
 // {legal, notes, unread, unreadText}: the gaps with a listed item and a closed reason; every other gap entry, which
 // excuses nothing and is a note (every seat here has a must-read list); the paths of the must-read entries whose
 // lines the `reads` ({path, spans}) do not cover and no legal gap names; and each such path with the lines its seat
 // did read.
-const gapVerdict = (gaps, mustRead, reads) => {
+const gapVerdict = (gaps, mustRead, reads, root = '') => {
   const legal = []
   const notes = []
   if (gaps !== undefined && !Array.isArray(gaps)) notes.push(gaps)
-  else for (const gap of (gaps || [])) (isGap(gap, mustRead) ? legal : notes).push(gap)
-  const named = legal.map(gap => targetPath('Read:' + gap.item))
-  const short = mustRead.filter(entry => !covers(entrySpans(entry, reads), entry.lines)
-    && !named.some(n => samePath(targetPath('Read:' + entry.path), n)))
+  else for (const gap of (gaps || [])) (isGap(gap, mustRead, root) ? legal : notes).push(gap)
+  const named = legal.map(gap => checkoutPair(targetPath('Read:' + gap.item, root), root))
+  const short = mustRead.filter(entry => !covers(entrySpans(entry, reads, root), entry.lines)
+    && !named.some(n => samePath(checkoutPair(targetPath('Read:' + entry.path, root), root), n)))
   return { legal, notes, unread: short.map(entry => entry.path),
-    unreadText: short.map(entry => entry.path + ' (read ' + spansText(entrySpans(entry, reads)) + ' of ' + entry.lines + ')') }
+    unreadText: short.map(entry => entry.path + ' (read ' + spansText(entrySpans(entry, reads, root)) + ' of ' + entry.lines + ')') }
 }
 const isMandateMap = (value, keys) => isRecord(value) && keys.length > 0
   && Object.keys(value).length === keys.length
@@ -935,7 +997,9 @@ const seatMandates = (lens, status, valid, checked, map, capabilityPartial) => {
 }
 const sources = []
 let entryCount = 0
+// ENGINE-BLOCK-BEGIN flags
 const flags = []
+// ENGINE-BLOCK-END flags
 const reports = {}  // lens key -> lens-level report (schema `report`), passed through untouched
 const perAgent = []
 for (let i = 0; i < resolved.length; i++) {
@@ -982,8 +1046,8 @@ for (let i = 0; i < resolved.length; i++) {
   const mustRead = resolved[i].mustRead
   const claimed = isRecord(result.checked) && Array.isArray(result.checked.toolsUsed)
     ? result.checked.toolsUsed.filter(t => typeof t === 'string' && t.trim()) : []
-  const reads = claimedReads(claimed)
-  const verdict = gapVerdict(result.gaps, mustRead, reads)
+  const reads = claimedReads(claimed, repoRootOf(A))
+  const verdict = gapVerdict(result.gaps, mustRead, reads, repoRootOf(A))
   const gapTexts = verdict.legal.map(gap => gap.item + ' (' + gap.reason + ')')
   for (const text of gapTexts) flags.push({ kind: 'lens-gaps', lens, detail: text })
   const capability = verdict.legal.filter(gap => gap.reason === 'capability').length
@@ -1110,12 +1174,12 @@ if (mergeCandidates.length > 0) {
   ].join('\n')
   const mergeModel = A.checker.model
   const mergeEffort = A.checker.effort
-  log('PINS ' + JSON.stringify({ 'review:merge': mergeModel + '/' + mergeEffort + '/Explore tier:fanout' }))
+  log('PINS ' + JSON.stringify({ 'review:merge': mergeModel + '/' + mergeEffort + '/' + TOOLP['review:merge'].agentType + ' tier:fanout' }))
   let res = null
   try {
     res = await agent(mergePrompt, {
       label: 'review:merge', phase: 'Merge', schema: MERGE_SCHEMA,
-      model: mergeModel, effort: mergeEffort, agentType: 'Explore',
+      model: mergeModel, effort: mergeEffort, agentType: TOOLP['review:merge'].agentType,
     })
   } catch (e) {
     res = null
@@ -1267,7 +1331,6 @@ const DIGEST_SCHEMA = {
   },
   required: ['applied', 'deferred', 'changedPaths'],
 }
-const AMEND_LINE = (promptPath) => 'Amendments: the harness delivers ' + promptPath + '.amend.md to you when your parent writes or changes it; a delivered amendment overrides the brief, and your report names what you applied.'
 const authorRef = (label, model, writes, promptPath) => {
   const tier = tierOf(model)
   const contract = [
@@ -1284,13 +1347,13 @@ const authorRef = (label, model, writes, promptPath) => {
   return contract + '\n' + [
     '',
     '=== DELEGATE RAILS ===',
-    'Read .claude/guards/author.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/any.md and of each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists. Read ONLY those sections — the other tiers are for other models.',
+    'Read .claude/guards/author.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/common.md and of each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists. Read ONLY those sections — the other tiers are for other models.',
   ].join('\n') + notes
 }
 const runStage = async (label, phaseName, prompt, schema, model, effort) => {
-  log('PINS ' + JSON.stringify({ [label]: model + '/' + effort + '/general-purpose tier:' + ((FOLD && FOLD.tier) || A.tier || '-') }))
+  log('PINS ' + JSON.stringify({ [label]: model + '/' + effort + '/' + TOOLP['review:fold'].agentType + ' tier:' + ((FOLD && FOLD.tier) || A.tier || '-') }))
   try {
-    return await agent(prompt, { label, phase: phaseName, schema, model, effort, agentType: 'general-purpose' })
+    return await agent(prompt, { label, phase: phaseName, schema, model, effort, agentType: TOOLP['review:fold'].agentType })
   } catch (e) {
     return null
   }
@@ -1379,9 +1442,7 @@ if (FOLD_PIN) {
       const own = (String(job.subject.root || '').replace(/\\/g, '/').match(/\.claude\/worktrees\/[^/]+$/) || [])[0]
       return routeKey(own && cited.startsWith(own + '/') ? cited.slice(own.length + 1) : cited)
     }
-    const exact = FOLD_PIN.jobs.flatMap(job => job.subject.files.filter(p => routeKey(p) === fileFor(job)).map(() => job))
-    return exact.length ? exact
-      : FOLD_PIN.jobs.flatMap(job => job.subject.files.filter(p => ('/' + routeKey(p)).endsWith('/' + fileFor(job))).map(() => job))
+    return FOLD_PIN.jobs.flatMap(job => job.subject.files.filter(p => routeKey(p) === fileFor(job)).map(() => job))
   }
   const routes = final.map(f => ({ f, jobs: routedTo(f) }))
   // A relative citation no subject holds is a file the review read and the fold may not edit (a commit message, a task

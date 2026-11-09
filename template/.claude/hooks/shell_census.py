@@ -24,7 +24,7 @@ repeats, and re-arms once after a compaction (`transcript_backup.py` calls
 context.
 
 Rule home: CLAUDE.core.md §Shell Discipline ("Watch background jobs through their completion/monitor
-contract"); a sidecar silent for `SIDECAR_STALL_SEC` writes `<record>.stall` from
+contract"); a sidecar silent for `SIDECAR_STALL_SEC` appends a `stalled` journal row from
 lib/sidecar_common.sh `sc_run_watched` and keeps running, so a stall is a `STALLED` wake from the
 session watcher, never a kill.
 

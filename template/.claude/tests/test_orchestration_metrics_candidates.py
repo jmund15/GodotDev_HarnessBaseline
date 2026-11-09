@@ -53,6 +53,12 @@ class CandidateGroupingTests(unittest.TestCase):
         self.assertEqual(c["model"], "claude-opus-5")
         self.assertEqual(c["cost_ratio"], 3.0)
 
+    def test_an_ultra_rung_pair_forms_a_candidate(self):
+        # The registry ladder ends at ultra; a max/ultra cost gap must be compared, not dropped.
+        synthetic = rows("claude-opus-5", "ultra", 300, self.n) + rows("claude-opus-5", "max", 100, self.n)
+        cands = self.m.compute_candidates(synthetic)
+        self.assertEqual([(c["effort"], c["suggested"]) for c in cands], [("ultra", "max")])
+
     def test_a_missing_middle_rung_is_not_skipped(self):
         # high vs low with no medium rows: the medium rung is untested, so there is no adjacent pair.
         synthetic = rows("claude-opus-5", "high", 300, self.n) + rows("claude-opus-5", "low", 100, self.n)

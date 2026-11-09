@@ -7,7 +7,9 @@ export const meta = {
 
 // Platform contract mirrors dispatch.js: args may arrive as a JSON string or an already-parsed
 // value, and an uncaught SyntaxError would name neither this workflow nor the expected shape.
+// ENGINE-BLOCK-BEGIN A
 let A
+// ENGINE-BLOCK-END A
 try {
   A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
 } catch (e) {
@@ -109,36 +111,49 @@ const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence
 // EVIDENCE-SSOT-END
 
 // CLOSE-CHECK-BEGIN
+// ENGINE-BLOCK-BEGIN repoRootOf
 function repoRootOf(a) {
   const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
   return /^([A-Za-z]:)?\//.test(root) ? root : ''
 }
+// ENGINE-BLOCK-END repoRootOf
+// ENGINE-BLOCK-BEGIN rootedPath
 function rootedPath(a, p) {
   const root = repoRootOf(a)
   return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
 }
+// ENGINE-BLOCK-END rootedPath
+// ENGINE-BLOCK-BEGIN cdRootPrefix
 function cdRootPrefix(a) {
   const root = repoRootOf(a)
   return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
 }
+// ENGINE-BLOCK-END cdRootPrefix
+// ENGINE-BLOCK-BEGIN VERDICTS
 const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
+// ENGINE-BLOCK-END VERDICTS
+// ENGINE-BLOCK-BEGIN applyVerdicts
 const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
   const supplied = verdicts[keyOf(item)]
   const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
   return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
 })
+// ENGINE-BLOCK-END applyVerdicts
 const boundedVerification = verification => ({
   status: verification.status, counts: verification.counts, report: verification.report,
   ...(verification.note ? { note: verification.note } : {}),
   nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
 })
 // A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
+// ENGINE-BLOCK-BEGIN verifierAgent
 const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
   const msg = String((e && e.message) || e)
   if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
   log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
   return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
 })
+// ENGINE-BLOCK-END verifierAgent
+// ENGINE-BLOCK-BEGIN closeCheck
 const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, expectTotal, expectSources, ledger, fold, seats = [] }) => {
   const keys = items.map(keyOf)
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
@@ -246,6 +261,7 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
   }
   return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
 }
+// ENGINE-BLOCK-END closeCheck
 // CLOSE-CHECK-END
 
 const chains = Array.isArray(A.chains) ? A.chains : []
@@ -255,14 +271,24 @@ const chains = Array.isArray(A.chains) ? A.chains : []
 // call the guard did not rewrite fails closed. `efforts` is absent when the transport declares none.
 // args.checker = {model, effort}: the pin for the verifier this engine starts itself (closeCheck). Required
 // only when the run reaches that step, and validated before any agent starts. No engine supplies a default pin.
+// ENGINE-BLOCK-BEGIN PIN
 const PIN = (m) => m
+// ENGINE-BLOCK-END PIN
+// ENGINE-BLOCK-BEGIN EFF
 const EFF = (e) => e
+// ENGINE-BLOCK-END EFF
+// ENGINE-BLOCK-BEGIN TRANSPORT
 const TRANSPORT = A.__transport
+// ENGINE-BLOCK-END TRANSPORT
+// ENGINE-BLOCK-BEGIN validStringList
 const validStringList = (value) => Array.isArray(value) && value.length > 0
   && value.every(item => typeof item === 'string' && item.trim())
+// ENGINE-BLOCK-END validStringList
+// ENGINE-BLOCK-BEGIN transportValid
 const transportValid = TRANSPORT && typeof TRANSPORT === 'object' && !Array.isArray(TRANSPORT)
   && validStringList(TRANSPORT.ids)
   && (TRANSPORT.efforts === undefined || validStringList(TRANSPORT.efforts))
+// ENGINE-BLOCK-END transportValid
 if (!transportValid) {
   return { error: 'dispatch-chains: args.__transport is missing or malformed. hooks/workflow_provider_guard.py injects the endpoint\'s model vocabulary (non-empty string array `ids`, optional non-empty `efforts`); without it this engine has no legal pins and refuses to guess.' }
 }
@@ -272,7 +298,16 @@ const VALID_MODELS = TRANSPORT.ids
 const VALID_EFFORTS = TRANSPORT.efforts
 const pinVocab = 'model in [' + VALID_MODELS.join('|') + ']' + (VALID_EFFORTS ? ' and effort in [' + VALID_EFFORTS.join('|') + ']' : '')
 const tierOfJob = (j) => j.tier || A.tier || '-'
-const VALID_AGENT_TYPES = ['Explore', 'Plan', 'general-purpose', 'lane-survey', 'lane-review', 'lane-author']
+// REQUIRED `kind` on every job, no default (see dispatch.js): the guard resolves each kind row into
+// args.__toolProfiles[label] (agentType, guard, built-ins), and a job still carrying `agentType`, `shape` or
+// `readOnly` is refused with the replacement named.
+// ENGINE-BLOCK-BEGIN TOOLP
+const TOOLP = (A.__toolProfiles && typeof A.__toolProfiles === 'object') ? A.__toolProfiles : {}
+// ENGINE-BLOCK-END TOOLP
+const profileOf = (j) => (j && TOOLP[j.label]) || null
+const RETIRED_KEYS = { agentType: 'the kind row sets the agent type', shape: 'use kind', readOnly: 'a job that writes is kind author; the other kinds cannot write' }
+const retiredOn = (j) => Object.keys(RETIRED_KEYS).filter(k => !!j && k in j)
+const kindOk = (j) => !!j && typeof j.kind === 'string' && !!j.kind.trim() && !!profileOf(j) && profileOf(j).kind === j.kind && !!profileOf(j).agentType
 
 const allJobs = chains.flatMap(c => (c && Array.isArray(c.jobs)) ? c.jobs.map(j => [c, j]) : [])
 const unpinned = allJobs.filter(([, j]) => !!j && (!VALID_MODELS.includes(j.model) || (VALID_EFFORTS !== undefined && !VALID_EFFORTS.includes(j.effort))))
@@ -286,11 +321,18 @@ if (chains.length === 0 && A.jobsFile) {
   return { error: 'dispatch-chains: args.jobsFile is set (' + A.jobsFile + ') and args.chains is empty. hooks/pre_workflow_dispatch.py expands the file into args.chains before the engine runs; it did not, so this call skipped the PreToolUse chain or the file holds no chains. Re-issue the call once; if it repeats, read the file.' }
 }
 const badChain = chains.filter(c => !c || !c.name || !Array.isArray(c.jobs) || c.jobs.length === 0)
-const badJob = allJobs.filter(([, j]) => !j || !j.label || !j.promptPath || !VALID_AGENT_TYPES.includes(j.agentType))
+const retired = allJobs.filter(([, j]) => retiredOn(j).length > 0)
+if (retired.length > 0) {
+  return {
+    error: 'dispatch-chains: a job names its tools by kind alone. ' + retired.map(([, j]) => (j.label || '(unlabeled)') + ' carries ' + retiredOn(j).map(k => k + ' (' + RETIRED_KEYS[k] + ')').join(', ')).join('; ') + '.',
+    badJobs: retired.map(([, j]) => j.label || '(unlabeled)'),
+  }
+}
+const badJob = allJobs.filter(([, j]) => !j || !j.label || !j.promptPath || !kindOk(j))
 if (chains.length === 0 || badChain.length > 0 || badJob.length > 0) {
   return {
-    error: 'Every chain needs {name, jobs:[...]} and every job needs {label, promptPath, model, agentType}; agentType must be in ['
-      + VALID_AGENT_TYPES.join('|') + ']. Each job needs ' + pinVocab
+    error: 'Every chain needs {name, jobs:[...]} and every job needs {label, promptPath, model, kind}; kind must be one of '
+      + '[scout|lens|reviewer|author|judge], resolved by the guard into args.__toolProfiles. Each job needs ' + pinVocab
       + '. Write each prompt to a file and pass its path — never inline large prompts into args.',
     badChains: badChain.map(c => (c && c.name) || '(unnamed)'),
     badJobs: badJob.map(([, j]) => (j && j.label) || '(unlabeled)'),
@@ -302,9 +344,15 @@ if (chains.length === 0 || badChain.length > 0 || badJob.length > 0) {
 // (`tight|judged`, orchestration §5). Optional and independent -- an omitted field is a real answer
 // the readouts count as unrecorded (`pins.spec-unrecorded.all`) -- but a value outside the enum is
 // refused before any agent starts.
+// ENGINE-BLOCK-BEGIN VALID_PICKS
 const VALID_PICKS = ['cell', 'room', 'owner', 'default']
+// ENGINE-BLOCK-END VALID_PICKS
+// ENGINE-BLOCK-BEGIN VALID_SPECS
 const VALID_SPECS = ['tight', 'judged']
+// ENGINE-BLOCK-END VALID_SPECS
+// ENGINE-BLOCK-BEGIN basisFaults
 const basisFaults = []
+// ENGINE-BLOCK-END basisFaults
 for (const [, j] of allJobs) {
   if (!j) continue
   if (j.pick !== undefined && !VALID_PICKS.includes(j.pick)) basisFaults.push({ job: j, field: 'pick' })
@@ -336,8 +384,10 @@ if (declaredReturns && !checkerOk) {
 }
 
 log('CHAINS ' + JSON.stringify(Object.fromEntries(chains.map(c => [c.name, c.jobs.length]))))
+// ENGINE-BLOCK-BEGIN pinBasis
 const pinBasis = (j) => (j.pick !== undefined ? ' pick:' + j.pick : '') + (j.spec !== undefined ? ' spec:' + j.spec : '')
-log('PINS ' + JSON.stringify(Object.fromEntries(allJobs.map(([, j]) => [j.label, PIN(j.model) + '/' + EFF(j.effort) + (j.agentType ? '/' + j.agentType : '') + ' tier:' + tierOfJob(j) + pinBasis(j)]))))
+// ENGINE-BLOCK-END pinBasis
+log('PINS ' + JSON.stringify(Object.fromEntries(allJobs.map(([, j]) => [j.label, PIN(j.model) + '/' + EFF(j.effort) + '/' + profileOf(j).agentType + ' tier:' + tierOfJob(j) + pinBasis(j)]))))
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
 // The concurrency contract this engine exists to express. Contention scope is NOT one boolean:
@@ -360,75 +410,54 @@ const guardFor = (c) => {
 }
 
 // Delegate rails — ONE home (.claude/guards/), assembled and inlined by the Workflow hook (see dispatch.js).
-const VALID_SHAPES = ['any', 'survey', 'review', 'author']
 // Guard tier per RECEIVING model is registry data (`railTier`), injected as `args.__rails` by
 // hooks/workflow_provider_guard.py because a Workflow script cannot read files. A model the map
 // does not name, or a call the hook did not rewrite, reads `detailed`: the fail-safe direction.
+// ENGINE-BLOCK-BEGIN RAILS
 const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
-const shapeOf = (j) => VALID_SHAPES.includes(j.shape) ? j.shape : 'any'
+// ENGINE-BLOCK-END RAILS
+const guardOf = (j) => profileOf(j).guard
 const tierOf = (j) => RAILS[j.model] || 'detailed'
 
-// TOOL PROFILES — what each child of this run launches with. A native child INHERITS the session's
-// MCP set (the runtime restricts no per-child server), so an entry is `inherited` with effectiveMcp
-// unknown unless the job runs as its generated agent type (`agent-type`). hooks/workflow_provider_guard.py resolves args.__toolProfiles for a job that
-// DECLARED a shape or a delta, and args.__toolProfileDefaults (one row per shape) for the stages a
-// script spawns on its own labels. `log()` output is retained in <session>/workflows/<runId>.json.
-const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
-// LEAN AGENT TYPE (plan lean-delegate-agent-types). Copied per engine: a Workflow script has no imports.
-// A job runs as its profile's generated `<prefix>-*` type only when it asked for `general-purpose` or no
-// type, its profile names an `agentType` with no add/remove delta, and hooks/workflow_provider_guard.py
-// proved its brief covered: `args.__coverage[key].covered` holds the profile's shape. No entry, no swap.
-// A swapped prompt ends with `args.__skillIndex`, because a `<prefix>-*` type has no Skill tool. A session
-// that predates the generated type rejects it; the job retries once, as asked (the known-good type), and is re-recorded.
-const LEAN = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { c: (a && a.__coverage) || {}, s: (a && typeof a.__skillIndex === 'string') ? a.__skillIndex : '' } } catch (e) { return { c: {}, s: '' } } })()
-const leanTypeOf = (keys, asked, tp) => {
-  const cov = keys.map(k => LEAN.c[k]).find(Boolean)
-  return ((asked == null || asked === 'general-purpose') && tp && tp.agentType
-    && !(tp.add || []).length && !(tp.remove || []).length
-    && cov && Array.isArray(cov.covered) && cov.covered.includes(tp.shape)) ? tp.agentType : null
-}
-const leanRecord = (tp, asked, swapped) => tp ? Object.assign({}, tp, swapped
-  ? { agentType: swapped, enforcement: 'agent-type', effectiveMcp: (tp.mcpServers || []).join(', ') }
-  : { agentType: asked || 'general-purpose' }) : null
-const leanAgent = (prompt, opts, swapped, rec) => {
-  if (!swapped) return agent(prompt, opts)
-  const asked = opts.agentType || 'general-purpose'
-  return agent(LEAN.s ? prompt + '\n\n' + LEAN.s : prompt, Object.assign({}, opts, { agentType: swapped })).catch(e => {
-    const msg = String((e && e.message) || e)
-    if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-    log('FALLBACK ' + opts.label + ' ' + swapped + '→' + asked)
-    rec[opts.label] = Object.assign({}, rec[opts.label], { agentType: 'general-purpose', enforcement: 'inherited', effectiveMcp: 'unknown/inherited' })
-    log('TOOL-PROFILES-REVISED ' + JSON.stringify(rec))
-    return agent(prompt, Object.assign({}, opts, { agentType: asked }))
-  })
-}
-const profileOf = (j) => TOOLP.d[j.label] || TOOLP.f[shapeOf(j)] || null
-const swapOf = (j) => leanTypeOf([j.label], j.agentType, profileOf(j))
-const effectiveType = (j) => swapOf(j) || j.agentType
-const RECORDED = Object.fromEntries(allJobs.map(([, j]) => [j.label, leanRecord(profileOf(j), j.agentType, swapOf(j))]))
+// TOOL PROFILES — what each child of this run launches with. Every job runs as its kind row's generated
+// agent type, whose `tools` frontmatter is the whole inventory, so an entry is `agent-type`; the runtime
+// restricts no per-child MCP server, so effectiveMcp is the row's list. `log()` output is retained in
+// <session>/workflows/<runId>.json.
+const RECORDED = Object.fromEntries(allJobs.map(([, j]) => [j.label, Object.assign({}, profileOf(j),
+  { enforcement: 'agent-type', effectiveMcp: (profileOf(j).mcpServers || []).join(', ') })]))
 log('TOOL-PROFILES ' + JSON.stringify(RECORDED))
-// Rails text per (shape, tier) is assembled from .claude/guards/ by tools/guard_text.py and injected as
+// Rails text per (guard, tier) is assembled from .claude/guards/ by tools/guard_text.py and injected as
 // `args.__railsText` by hooks/workflow_provider_guard.py, because this script cannot read files. The
 // inline text reaches every delegate; the Read pointer is only the fallback when the hook supplied
 // none, and a present map missing a job's pair logs RAILS-FALLBACK so a key disagreement is visible.
+// ENGINE-BLOCK-BEGIN RAILS_TEXT
 const RAILS_TEXT = (A.__railsText && typeof A.__railsText === 'object') ? A.__railsText : {}
+// ENGINE-BLOCK-END RAILS_TEXT
+// ENGINE-BLOCK-BEGIN RAILS_HEADER
 const RAILS_HEADER = '=== DELEGATE RAILS (standing rules for how you work; your task is the brief above) ==='
-const inlineRails = (label, shape, tier) => {
-  const text = RAILS_TEXT[shape + '/' + tier]
+// ENGINE-BLOCK-END RAILS_HEADER
+// ENGINE-BLOCK-BEGIN inlineRails
+const inlineRails = (label, guard, tier) => {
+  const text = RAILS_TEXT[guard + '/' + tier]
   if (typeof text === 'string' && text.trim()) return ['', RAILS_HEADER, text].join('\n')
-  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + shape + '/' + tier)
+  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + guard + '/' + tier)
   return null
 }
-// Registry driverNotes per pinned model; rails key on (shape, tier) and carry no model, so notes travel in args.__driverNotes.
+// ENGINE-BLOCK-END inlineRails
+// Registry driverNotes per pinned model; rails key on (guard, tier) and carry no model, so notes travel in args.__driverNotes.
+// ENGINE-BLOCK-BEGIN DRIVER_NOTES
 const DRIVER_NOTES = (A.__driverNotes && typeof A.__driverNotes === 'object') ? A.__driverNotes : {}
+// ENGINE-BLOCK-END DRIVER_NOTES
+// ENGINE-BLOCK-BEGIN driverNotes
 const driverNotes = (model) => (typeof DRIVER_NOTES[model] === 'string' && DRIVER_NOTES[model].trim()) ? '\n\n' + DRIVER_NOTES[model] : ''
+// ENGINE-BLOCK-END driverNotes
 const guardRef = (x) => { const r = railsRef(x); return r && r + driverNotes(x.model) }
 const railsRef = (j) => {
   const tier = tierOf(j)
-  const shape = shapeOf(j)
-  const inline = inlineRails(j.label, shape, tier)
+  const guard = guardOf(j)
+  const inline = inlineRails(j.label, guard, tier)
   if (inline) return inline
-  const files = shape === 'any' ? '.claude/guards/any.md' : '.claude/guards/any.md and .claude/guards/' + shape + '.md'
+  const files = guard === 'common' ? '.claude/guards/common.md' : '.claude/guards/common.md and .claude/guards/' + guard + '.md'
   return ['', '=== DELEGATE RAILS ===',
     'Read ' + files + ' with the Read tool, plus each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists, and follow the `## ' + tier
     + '` section of each. Read ONLY that section — the other tiers are for other models.'].join('\n')
@@ -436,22 +465,31 @@ const railsRef = (j) => {
 
 // Return-path spill (optional), identical contract to dispatch.js: bound what lands in orchestrator
 // context, and let the orchestrator Read only the deliverables it acts on.
+// ENGINE-BLOCK-BEGIN SPILL_REL
 const SPILL_REL = (typeof A.spillDir === 'string' && A.spillDir.trim()) ? A.spillDir.replace(/[\\/]+$/, '') : null
+// ENGINE-BLOCK-END SPILL_REL
+// ENGINE-BLOCK-BEGIN NORMAL_SPILL_DIR
 const NORMAL_SPILL_DIR = SPILL_REL ? SPILL_REL.replace(/\\/g, '/') : null
+// ENGINE-BLOCK-END NORMAL_SPILL_DIR
 if (NORMAL_SPILL_DIR && (/(^|\/)\.\.(\/|$)/.test(NORMAL_SPILL_DIR) || !/^\.claude\/scratch(?:\/|$)/.test(NORMAL_SPILL_DIR))) {
   return { error: 'dispatch-chains: spillDir must be repository-relative and contained by .claude/scratch/ (for example .claude/scratch/<task>/spill). Received: ' + SPILL_REL }
 }
+// ENGINE-BLOCK-BEGIN DIGEST_WORDS
 const DIGEST_WORDS = Number.isFinite(A.spillDigestWords) ? A.spillDigestWords : 200
-const NO_WRITE_AGENT_TYPES = ['Explore', 'Plan', 'lane-review', 'lane-survey']
+// ENGINE-BLOCK-END DIGEST_WORDS
+const hasTool = (j, t) => (profileOf(j).builtins || []).includes(t)
+const canWrite = (j) => ['Edit', 'Write', 'NotebookEdit'].some(t => hasTool(j, t))
 // A job dispatched from a linked worktree (<project>/.claude/worktrees/<name>) reports under the project root,
 // where the brief's own paths point, not under the worktree it runs in.
+// ENGINE-BLOCK-BEGIN projectRootOf
 const projectRootOf = (a) => repoRootOf(a).replace(/\/\.claude\/worktrees\/[^/]+$/, '')
+// ENGINE-BLOCK-END projectRootOf
 const SPILL_DIR = SPILL_REL && projectRootOf(A) ? projectRootOf(A) + '/' + NORMAL_SPILL_DIR : SPILL_REL
-const spills = (j) => !!SPILL_DIR && !j.schema && !NO_WRITE_AGENT_TYPES.includes(effectiveType(j))
+const spills = (j) => !!SPILL_DIR && !j.schema && hasTool(j, 'Write')
 const spillPath = (label) => SPILL_DIR + '/' + String(label).replace(/[^A-Za-z0-9._-]/g, '_') + '.md'
 // A writing job names what it wrote beyond its spec, so review routes those units as design no
 // reviewer saw (orchestration §2 *Later rounds*); `dispatch_result.py check --block choices=unit,why` validates it.
-const choicesContract = (j) => (j.schema || NO_WRITE_AGENT_TYPES.includes(effectiveType(j))) ? '' : [
+const choicesContract = (j) => (j.schema || !canWrite(j)) ? '' : [
   '',
   '=== CHOICES (orchestration/reference/writer_returns.md) ===',
   'End your deliverable with a fenced block opened by ```choices holding one JSON object per line, {"unit": "<what you wrote>", "why": "<its reason>"}, for each unit whose content your brief or plan does not state. Leave the block empty when there is none. With Bash, run `python3 .claude/tools/dispatch_result.py check <your deliverable file> --block choices=unit,why` before returning; the parent runs it otherwise, and a missing block fails it.',
@@ -473,7 +511,7 @@ if (SPILL_DIR) {
   }
   log('SPILL-DIR ' + SPILL_DIR + ' (digest cap ' + DIGEST_WORDS + ' words/job)')
   if (INLINE_LABELS.length > 0) {
-    log('SPILL-EXEMPT (' + NO_WRITE_AGENT_TYPES.join('/') + ' have no Write tool and a job with a schema returns its object; these return in full INLINE and cost orchestrator context): ' + INLINE_LABELS.join(', '))
+    log('SPILL-EXEMPT (these kinds have no Write tool and a job with a schema returns its object; these return in full INLINE and cost orchestrator context): ' + INLINE_LABELS.join(', '))
   }
 }
 
@@ -488,9 +526,13 @@ const handoff = (c, idx) => idx === 0 ? '' : ['',
 
 // The platform relays the triggering user message to every agent as authoritative; a job whose
 // brief looks unrelated can answer that message instead of its brief.
+// ENGINE-BLOCK-BEGIN RELAY_LINE
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
+// ENGINE-BLOCK-END RELAY_LINE
 // The key hooks/amend_delivery.py reads to deliver a parent's amendment to a running author job.
+// ENGINE-BLOCK-BEGIN AMEND_LINE
 const AMEND_LINE = (promptPath) => 'Amendments: the harness delivers ' + promptPath + '.amend.md to you when your parent writes or changes it; a delivered amendment overrides the brief, and your report names what you applied.'
+// ENGINE-BLOCK-END AMEND_LINE
 
 phase('Chains')
 const results = await parallel(chains.map(c => async () => {
@@ -504,17 +546,17 @@ const results = await parallel(chains.map(c => async () => {
       + 'Evidence: ' + EVIDENCE_RULES + '\n'
       + 'Your full task brief is at: ' + j.promptPath + ' — read it with the Read tool and execute it exactly (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it). Your final message is the deliverable: return the result the brief asks for, self-contained, no meta-commentary.'
       + '\n' + RELAY_LINE
-      + (shapeOf(j) === 'author' ? '\n' + AMEND_LINE(rootedPath(A, j.promptPath)) : '')
+      + (j.kind === 'author' ? '\n' + AMEND_LINE(rootedPath(A, j.promptPath)) : '')
       + handoff(c, i)
       + guardFor(c)
       + guardRef(j)
       + spillContract(j)
       + choicesContract(j)
-    const opts = { label: j.label, phase: 'Chains', model: PIN(j.model), effort: EFF(j.effort), agentType: j.agentType }
+    const opts = { label: j.label, phase: 'Chains', model: PIN(j.model), effort: EFF(j.effort), agentType: profileOf(j).agentType }
     if (j.schema) opts.schema = j.schema
     let r
     try {
-      r = await leanAgent(prompt, opts, swapOf(j), RECORDED)
+      r = await agent(prompt, opts)
     } catch (e) {
       out.push([j.label, {
         error: 'dispatch-chains: agent rejected (' + ((e && e.message) || String(e)) + '); remaining jobs in lane `' + c.name + '` were not run',
@@ -541,8 +583,12 @@ const out = Object.fromEntries(results.filter(Boolean).flat().filter(Boolean))
 const inlineRecover = INLINE_LABELS.length > 0
   ? 'No Write tool or a schema return for ' + INLINE_LABELS.join(', ') + ': their deliverables came back inline. Land them with: python3 .claude/tools/dispatch_result.py <this run\'s transcript dir> --out-dir ' + SPILL_DIR
   : null
+// ENGINE-BLOCK-BEGIN CLAIM_FENCE
 const CLAIM_FENCE = /```(?:claims|findings)[ \t]*\r?\n([\s\S]*?)```/g
+// ENGINE-BLOCK-END CLAIM_FENCE
+// ENGINE-BLOCK-BEGIN inlineClaims
 const inlineClaims = []
+// ENGINE-BLOCK-END inlineClaims
 for (const [label, result] of Object.entries(out)) {
   if (typeof result !== 'string') continue
   let index = 0
@@ -556,8 +602,12 @@ for (const [label, result] of Object.entries(out)) {
     }
   }
 }
+// ENGINE-BLOCK-BEGIN declared
 const declared = A.__returns && Object.keys(A.__returns).length > 0
+// ENGINE-BLOCK-END declared
+// ENGINE-BLOCK-BEGIN hasFence
 const hasFence = Object.values(out).some(value => typeof value === 'string' && /```(?:claims|findings)[ \t]*\r?\n/.test(value))
+// ENGINE-BLOCK-END hasFence
 let verification = null
 if (declared || hasFence) {
   const checked = await closeCheck('claims', {

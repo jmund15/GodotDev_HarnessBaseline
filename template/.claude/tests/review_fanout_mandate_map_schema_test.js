@@ -27,9 +27,9 @@ const parallel = thunks => Promise.all(thunks.map(fn => fn()))
     __lensMandates: {'lens-a+lens-b': ['m.A', 'm.B']},
     agents: [
       {key: 'lens-a+lens-b', label: 'merged', prompt: 'Review.', model: 'fixture-model', effort: 'medium',
-        agentType: 'general-purpose', mustRead: [{path: 'fixture', lines: 1}]},
+        kind: 'reviewer', mustRead: [{path: 'fixture', lines: 1}]},
       {key: 'plain', label: 'plain', prompt: 'Review.', model: 'fixture-model', effort: 'medium',
-        agentType: 'general-purpose', mustRead: [{path: 'fixture', lines: 1}]},
+        kind: 'reviewer', mustRead: [{path: 'fixture', lines: 1}]},
     ],
   }, HOST_TRANSPORT), agent, parallel, () => {}, () => {})
   const merged = schemas['lens-a+lens-b'].properties.checked

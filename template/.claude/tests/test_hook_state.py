@@ -250,6 +250,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import harness_tests  # noqa: E402
 check("the proof runner's _is_code is _hook_state.is_harness_code",
       is_code is not None and harness_tests._is_code is is_code)
+check("a .cjs launcher under tools/ is harness code (the real input: godot_mcp_launch.cjs)",
+      is_code is not None and is_code(".claude/tools/godot_mcp_launch.cjs")
+      and is_code(".claude/tools/Godot_MCP_Launch.CJS") and is_code(".claude/tools/planted.cjs"))
+check("non-code suffixes stay non-code: a .json fixture under tests, a plans .md",
+      is_code is not None and not is_code(".claude/tests/fixture.json") and not is_code(".claude/plans/x.md"))
 
 # --- fire_once failure posture: default fires; on_failure=None lets a deny-capable caller pass ---
 _real_update = _hook_state.update_json_locked

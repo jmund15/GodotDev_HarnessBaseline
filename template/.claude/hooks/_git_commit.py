@@ -794,13 +794,22 @@ def _flag_values(rest, long_name, short_letter):
     return values, "-" in values
 
 
+def commit_trailer_lines(rest):
+    """Each `--trailer` of `git commit <rest>` as a `Key: value` line. Readable when the message is not, such as
+    an `-F` file the same command writes after the hook runs."""
+    lines = []
+    for trailer in _flag_values(rest, "--trailer", None)[0]:
+        cut = min((trailer.index(sep) for sep in ":=" if sep in trailer), default=None)
+        lines.append("%s: %s" % (trailer[:cut].strip(), trailer[cut + 1:].strip()) if cut is not None else trailer)
+    return lines
+
+
 def commit_message(rest, cwd):
     """The message `git commit <rest>` carries: every `-m`/`--message` as a paragraph, `-F`/`--file` read
     relative to `cwd`, and each `--trailer` as a trailer line, in that order. None when the message cannot be
     known here: `-F -` (stdin), an editor commit (no `-m`, `-F` or `--trailer`), or an unreadable `-F` file."""
     messages, _ = _flag_values(rest, "--message", "m")
     files, from_stdin = _flag_values(rest, "--file", "F")
-    trailers, _ = _flag_values(rest, "--trailer", None)
     if from_stdin:
         return None
     parts = list(messages)
@@ -810,10 +819,7 @@ def commit_message(rest, cwd):
                 parts.append(fh.read().rstrip("\n"))
         except OSError:
             return None
-    lines = []
-    for trailer in trailers:
-        cut = min((trailer.index(sep) for sep in ":=" if sep in trailer), default=None)
-        lines.append("%s: %s" % (trailer[:cut].strip(), trailer[cut + 1:].strip()) if cut is not None else trailer)
+    lines = commit_trailer_lines(rest)
     if not parts and not lines:
         return None
     return "\n\n".join(parts + (["\n".join(lines)] if lines else []))

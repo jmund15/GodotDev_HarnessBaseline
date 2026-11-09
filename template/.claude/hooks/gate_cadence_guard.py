@@ -32,6 +32,7 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_state import read_json_salvage, update_json_locked
 from _command_text import executable_text
+from _win_path import native_path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
 from sidecar_argv import executable_index, literal_launcher_body, shell_segments_with_comments
@@ -85,6 +86,7 @@ def sweep_stale_state(directory, keep=None, max_age_sec=7 * 24 * 3600):
 
 def gate_roots(repo):
     """The checkout and its linked worktrees; only the checkout when git cannot list them."""
+    repo = native_path(repo)
     roots = [repo]
     try:
         listing = subprocess.run(['git', '-C', repo, 'worktree', 'list', '--porcelain'],
@@ -95,7 +97,7 @@ def gate_roots(repo):
         return roots
     here = os.path.normcase(os.path.abspath(repo))
     for line in listing.stdout.splitlines():
-        if line.startswith('worktree ') and os.path.normcase(os.path.abspath(line[9:])) != here:
+        if line.startswith('worktree ') and os.path.normcase(os.path.abspath(native_path(line[9:]))) != here:
             roots.append(line[9:])
     return roots
 

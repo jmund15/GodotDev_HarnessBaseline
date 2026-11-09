@@ -121,7 +121,8 @@ def inventory(out, jobs):
 
 
 def watch(out, labels, fallbacks=None, alive=True, wait=1.5, max_parallel=None, script=None, **kw):
-    """(printed text, outcome dict, seconds) for sf.await_admission over `labels` planted in `out`."""
+    """(printed text, outcome dict, seconds) for sf.await_admission over `labels` planted in `out`. `max_parallel`
+    None is the no-flag run: the fan-out names no count."""
     planned = [(l, job_argv(out, l, script or REFUSER), os.path.join(out, l + ".out.json")) for l in labels]
     real = sf._pid_alive
     sf._pid_alive = lambda pid: alive
@@ -295,8 +296,40 @@ def queued_job_says_why():
     out = fresh()
     plant(out, "a", stream=True)
     inventory(out, [("a", os.path.join(out, "a.record.json")), ("b", os.path.join(out, "b.record.json"))])
-    text, outcome, took = watch(out, ["a", "b"], wait=5, max_parallel=1)
-    return outcome == {"a": "admitted", "b": "queued"} and "[fanout] b: queued" in text and "--max-parallel 1" in text and took < 4
+    text, outcome, took = watch(out, ["a", "b"], wait=5)
+    return outcome == {"a": "admitted", "b": "queued"} and "[fanout] b: queued" in text and "plan's room" in text and took < 4
+
+
+def queued_job_behind_a_full_flag_names_the_flag():
+    """The explicit bound is the reason only when it is full: one job admitted against a flag of 1."""
+    out = fresh()
+    plant(out, "a", stream=True)
+    inventory(out, [("a", os.path.join(out, "a.record.json")), ("b", os.path.join(out, "b.record.json"))])
+    text, outcome, _ = watch(out, ["a", "b"], wait=5, max_parallel=1)
+    return outcome == {"a": "admitted", "b": "queued"} and "waits on --max-parallel 1" in text
+
+
+def queued_job_in_a_memory_wait_names_the_memory_gate():
+    """Added after the fix (order missed): a launcher waiting on memory has no claimed record, so it reads queued."""
+    out = fresh()
+    plant(out, "a", stream=True)
+    # The launcher's one `waiting-memory` journal row (sc_journal in lib/sidecar_common.sh), before any `started`.
+    record_b = os.path.join(out, "b.record.json")
+    with open(record_b + ".journal.jsonl", "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": "2026-11-08T12:00:00Z", "schema": 1, "event": "waiting-memory", "launchId": None,
+                             "record": record_b, "session": None, "label": "b", "call": None,
+                             "message": "WAIT memory headroom 1.2 GB free, 2.0 GB needed"}) + "\n")
+    inventory(out, [("a", os.path.join(out, "a.record.json")), ("b", os.path.join(out, "b.record.json"))])
+    text, outcome, _ = watch(out, ["a", "b"], wait=5, max_parallel=None)
+    return outcome == {"a": "admitted", "b": "queued"} and "waits on memory headroom (WAIT memory headroom" in text
+
+
+def queued_job_with_no_flag_never_names_a_count():
+    out = fresh()
+    plant(out, "a", stream=True)
+    inventory(out, [("a", os.path.join(out, "a.record.json")), ("b", os.path.join(out, "b.record.json"))])
+    text, outcome, _ = watch(out, ["a", "b"], wait=5, max_parallel=None)
+    return outcome == {"a": "admitted", "b": "queued"} and "--max-parallel" not in text and "plan's room" in text
 
 
 def dead_driver_is_reported():
@@ -322,6 +355,9 @@ case("(d) a job that never decides ends the wait within its bound and is reporte
 case("a stream older than the launch is not an admission", stale_stream_before_launch_is_not_admission)
 case("(b) a refused job the driver moved prints `moved to <plan>` and then its admission on the new plan", moved_job_is_reported_refused_then_admitted)
 case("a job the driver has not started is reported queued with why, without waiting out the bound", queued_job_says_why)
+case("a queued job behind a full --max-parallel names that flag", queued_job_behind_a_full_flag_names_the_flag)
+case("a queued job in a no-flag run names the plan's room, never a count", queued_job_with_no_flag_never_names_a_count)
+case("a queued job whose launcher waits on memory names the memory gate", queued_job_in_a_memory_wait_names_the_memory_gate)
 case("a driver that exited before deciding is reported with its exit code", dead_driver_is_reported)
 case("seven jobs on a transport with no cap and plan room all start at once", seven_jobs_on_an_uncapped_transport_start_at_once)
 case("jobs on a capped transport beyond its cap wait for a running one", jobs_beyond_a_transport_cap_wait_for_a_running_one)

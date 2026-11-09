@@ -20,37 +20,31 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import exhausted_marker  # noqa: E402
 import model_registry as mr  # noqa: E402
 
 TRANSPORT = "opencode-cli"
 POOL = "free"
-# Placeholder until the S2 spike measures a member's cooldown: the length of `provider_capacity`'s lockout.
+# Fallback basis: 420 s is `provider_capacity`'s usage-endpoint lockout (measured 2026-09-29), borrowed.
+# It is unmeasured for a pool member. No captured rate-limit line names a member's reset (checked 2026-11-06),
+# so `cool` uses this when the launcher passes no reset.
 COOLDOWN_SECONDS = 420
 MODELS_DEV_URL = "https://models.dev/api.json"
 CATALOG_ARGS = ["models", "opencode", "--verbose"]
-ROW_KEYS = ("id", "upstreamId", "alias", "transport", "label", "family", "version", "lifecycle", "order",
-            "costRank", "prior", "status", "roles", "limits", "price", "effort", "effortValues", "authTier", "gate")
+ROW_KEYS = ("id", "upstreamId", "alias", "transport", "label", "family", "version", "input", "inputGap",
+            "lifecycle", "order", "costRank", "prior", "status", "roles", "limits", "price", "effort", "effortValues", "authTier", "gate")
 
 
 class SyncError(Exception):
     """Ingest refused: nothing was written."""
 
 
-def _exhausted_dir():
-    return Path(os.environ.get("SIDECAR_EXHAUSTED_DIR") or Path.home() / ".claude" / "sidecar-exhausted")
-
-
 def _member_marker(member):
-    return _exhausted_dir() / "members" / TRANSPORT / f"{member}.json"
+    return exhausted_marker.marker_path(TRANSPORT, member)
 
 
 def _read_marker(member):
-    try:
-        with open(_member_marker(member), encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+    return exhausted_marker.read(TRANSPORT, member)
 
 
 def _marker_live(marker, now):
@@ -246,6 +240,13 @@ def _cli_row(cli_id, entry, values, today, order, data):
                   "source": f"opencode models opencode (live CLI catalog); models.dev opencode/{cli_id}"},
         "effort": {"evidence": "unmeasured"},
     }
+    listed = (entry.get("modalities") or {}).get("input")
+    types = mr.canonical_input_types(listed) if isinstance(listed, list) else []
+    if types:
+        row["input"] = types
+    else:
+        row["inputGap"] = {"reason": f"models.dev opencode/{cli_id} lists no input modalities.",
+                           "checked": "models.dev opencode provider", "asOf": today}
     if values:
         row["effortValues"] = values
     row["authTier"] = "open"

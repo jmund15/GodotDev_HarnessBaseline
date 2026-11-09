@@ -8,16 +8,15 @@ checked. No engine fills an omitted model or effort: each refuses the call befor
 engine's own verify and merge steps take `args.checker`; when the call names none, INJECTION fills it with
 `computed_checker` (a choice the facts settle), and RULE 3 checks it as a verify-tier pin.
 
-RULE -1 -- TOOL PROFILE. A job or Agent prompt header that declares a shape or a `tools` delta must
-resolve against `guards/tool_profiles.json`; otherwise deny with the resolver's message. Resolved
-profiles ride in `args.__toolProfiles`, recorded `enforcement: inherited`.
+RULE -1 -- TOOL PROFILE. Every job of a job engine (dispatch, dispatch_chains, explore_fanout,
+review_fanout) names a `kind`, and so does the call of a single-kind engine (`args.kind`: the engines in
+`CALL_KIND_ENGINES`). A job or Agent prompt header that carries a `tools` delta names its kind too.
+The kind must resolve against `guards/tool_profiles.json`, a delta needs a covering generated agent
+file, and a job carrying `agentType`, `shape` or `readOnly` is refused with the replacement named;
+otherwise deny with the resolver's message. Resolved profiles ride in `args.__toolProfiles` (by job
+label) and a single-kind engine's in `args.__kindProfile`, recorded `enforcement: inherited`. No tool is
+added to a job for what its brief says: a job that writes declares `kind: author`.
 Proof: tests/test_workflow_tool_profiles.py.
-
-RULE -0.5 -- BRIEF COVERAGE. An uncovered generated agentType becomes general-purpose, and a declared
-tool profile gains each missing tool its brief runs (merged into `tools.add`, named in an advisory),
-in this hook's single updatedInput, beside transport injection. Still denied: a tool the job's own
-`tools.remove` names, a brief that needs Workflow or Agent, and any gap left when
-HARNESS_WORKFLOW_ARGS_OWNER owns input rewriting.
 
 RULE C -- CITER COVERAGE (process guard; denies while `citer_coverage.BLOCKING`). `citer_coverage`
 validates current meta subject sweeps at the shared native boundary. Phase 2 of plan_check.md owns
@@ -43,15 +42,15 @@ to identify it.
 
 RULE 3 -- TIER, every band and every transport. A job's tier is the one its own data names, and the pin must
 pass `_dispatch_checks.tier_fit` on the session's own transport, the check the sidecar hook applies on the
-alias's transport (there `_dispatch_checks.job_tier`: written tier, else the shape row's):
+alias's transport (there `_dispatch_checks.job_tier`: written tier, else the kind row's):
   * A written tier -- a pin's `tier`, the nearest enclosing object's, the call-wide `args.tier`, the Agent
     tool's `TIER: <tier>` line, `args.tier` for script pins -- is checked. A dispatch.js job's own `tier`
-    wins over its shape row's. Legal values are `model_registry.TIER_ORDER` plus `validation`, which folds
+    wins over its kind row's. Legal values are `model_registry.TIER_ORDER` plus `validation`, which folds
     onto `fanout`; an unknown value denies with the legal list. A missing tier never denies.
   * The implied tier is the tier the call's facts name: a review_fanout seat keyed by registry
-    lenses takes `lens.seat_tier` (tools/lens.py), and a dispatch.js job that writes no `tier` takes its shape
-    row's (guards/tool_profiles.json). The same maps ride to the engines as `args.__lensTiers` and
-    `args.__shapeTiers`; a review_fanout call also gets `args.__lensMandates`, each seat's catalog keys
+    lenses takes `lens.seat_tier` (tools/lens.py), and a dispatch.js job that writes no `tier` takes its kind
+    row's (guards/tool_profiles.json), which the engine reads from `args.__toolProfiles`. The lens map
+    rides to review_fanout as `args.__lensTiers`; a review_fanout call also gets `args.__lensMandates`, each seat's catalog keys
     (`lens.seat_mandates`), which the engine writes on its ledger rows. A lens seat's implied tier cannot be
     replaced by a `tier` written on the entry, on an enclosing object or call-wide. A Workflow
     alias naming exactly one id among an implied tier's rows is rewritten before checking; zero
@@ -92,11 +91,8 @@ opens with the instruction it enforces (orchestration §5b, read before the call
 naming the override as the owner's to grant, never the agent's.
 
 INJECTION: every Workflow call on a known transport receives `args.__rails`, `args.__railsText`, `args.__driverNotes`
-(registry `driverNotes` per pinned model, when any), `args.__toolProfileDefaults` and `args.__transport` = {name, ids (the legal pins), efforts (only when
-the transport declares a vocabulary)}. A review_fanout call also receives `args.__rigor` and `args.__barText` (the run's rigor and its bar text, `finding_bar.bar_contract`), read from `args.ledger.task`'s record or the payload session's; a caller's own `rigor` is ignored, and neither key is set when the rigor cannot be read. `args.__coverage` lists a covered shape only when the session
-can have loaded its generated agent type (`loadable_coverage`): the client reads `.claude/agents/` once,
-at session start, so a type whose file is missing or not older than the session's first transcript
-timestamp would fail as "agent type not found". An unknown start offers no shape. It carries no default pin. A call naming no `args.checker` gets
+(registry `driverNotes` per pinned model, when any) and `args.__transport` = {name, ids (the legal pins), efforts (only when
+the transport declares a vocabulary)}. A review_fanout call also receives `args.__rigor` and `args.__barText` (the run's rigor and its bar text, `finding_bar.bar_contract`), read from `args.ledger.task`'s record or the payload session's; a caller's own `rigor` is ignored, and neither key is set when the rigor cannot be read. It carries no default pin. A call naming no `args.checker` gets
 `computed_checker`'s pin there. The
 engines hold no model vocabulary of their own.
 
@@ -137,11 +133,10 @@ except Exception:  # no session record → an owner statement is not held across
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _owner_text  # noqa: E402  the one owner-row parser; this file holds only the projection
 import _dispatch_checks  # noqa: E402  tier fit and currency, shared with the sidecar hook
-from _dispatch_checks import shape_tiers  # noqa: E402
-from _brief_coverage import coverage_fixes, coverage_map, coverage_refusal, skill_index  # noqa: E402
+from _dispatch_checks import kind_tiers  # noqa: E402
 from _dispatch_pins import (  # noqa: E402
-    _args, _is_review_fanout, _tp, agent_profile_request, dispatch_jobs, native_legal_pins,
-    native_pin, profile_defaults, profile_request, resolve_request, script_blobs, tier_rows)
+    RETIRED_JOB_KEYS, _args, _is_review_fanout, _tp, agent_profile_request, dispatch_jobs,
+    native_legal_pins, native_pin, profile_request, resolve_request, script_blobs, tier_rows)
 try:
     import _session_transport
     import provider_capacity_guard
@@ -163,8 +158,6 @@ EFFORT_NOT_TIER = ("raise effort before tier (orchestration §5 Effort); if the 
 OWNER_CLASS = "owner"
 # The one class a statement may open with: a verified owner quote. Any other text is not a lift.
 _CLASS_RE = re.compile(r"^\s*(%s)\s*:\s*(.*)$" % OWNER_CLASS, re.S)
-AGENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents")
-TRANSCRIPT_HEAD_LINES = 200
 LOG_NAME = "workflow_provider_guard.jsonl"
 LOG_ENV = "HARNESS_PROVIDER_GUARD_LOG"
 # This invocation's diagnosis record: main() resets it, the phases fill it, main() appends it.
@@ -330,11 +323,12 @@ def review_panel(payload):
 
 
 def checker_tier():
-    """The verify shape's tier (guards/tool_profiles.json): the tier `args.checker` serves."""
-    try:
-        return resolve_request({"shape": "verify"}).get("tier") or "fanout"
-    except Exception:
-        return "fanout"
+    """The `verify` row's tier (guards/tool_profiles.json): the tier `args.checker` serves. Raises when
+    the row or its tier is missing: a checker with no declared tier is not a fanout checker by default."""
+    tier = resolve_request({"kind": "verify"}).get("tier")
+    if not tier:
+        raise ValueError("the `verify` row of guards/tool_profiles.json declares no tier")
+    return tier
 
 
 def computed_checker(transport, data):
@@ -362,22 +356,22 @@ def implied_tiers(tool_input, args):
     """(site, field, {value: tier}) an engine fills an omitted tier from, else (None, None, {}).
 
     review_fanout fills an `agents` seat from its `key`; dispatch.js fills a `jobs` entry from its
-    `shape`. No other engine fills a tier.
+    `kind`. No other engine fills a tier.
     """
     engine = _engine_of(tool_input)
     if engine == "review_fanout":
         return "agents", "key", lens_tiers(args)
     if engine == "dispatch":
-        return "jobs", "shape", shape_tiers()
+        return "jobs", "kind", kind_tiers()
     return None, None, {}
 
 
 def with_implied_tiers(tool_input, args):
     """(args, implied entry ids) with each entry's tier set to the tier its engine implies.
 
-    The implied tier is a fact the call carries -- a registry lens, a shape row -- so it is the tier
+    The implied tier is a fact the call carries -- a registry lens, a kind row -- so it is the tier
     the engines run and the tier the guard checks. A lens seat's WINS over a `tier` written on the
-    entry or call-wide (`instruction_quality` §3). A shape row's is the default of a job that writes no
+    entry or call-wide (`instruction_quality` §3). A kind row's is the default of a job that writes no
     `tier`: the job's own wins, as on the sidecar route (`_dispatch_checks.job_tier`). The
     returned ids let `arg_pins` report which pins carry an implied tier.
     """
@@ -387,7 +381,7 @@ def with_implied_tiers(tool_input, args):
         filled = []
         for entry in args.get(site) or []:
             tier = tiers.get(entry.get(field)) if isinstance(entry, dict) else None
-            if tier and not (field == "shape" and entry.get("tier")):
+            if tier and not (field == "kind" and entry.get("tier")):
                 entry = dict(entry, tier=tier)
                 implied.add(id(entry))
             filled.append(entry)
@@ -626,7 +620,7 @@ def decide_tiers(payload, transport, data):
             parts.append(
                 "Pin outside the tier this call implies — " + "; ".join(unfit[:8]) + ". A seat keyed by a "
                 "registry lens takes that lens's tier (`lens.py index`); a dispatch.js job takes its own "
-                "`tier`, else its shape row's (`guards/tool_profiles.json`). Pin one of "
+                "`tier`, else its kind row's (`guards/tool_profiles.json`). Pin one of "
                 "the tier's rows (`model_registry.py for-role <tier>`); " + EFFORT_NOT_TIER)
         if rule:
             parts.append("Supplementary seat without a qualified seat beside it — " + "; ".join(rule[:8]))
@@ -864,9 +858,6 @@ def _rails_map(transport, data):
     return out
 
 
-_VALID_SHAPES = ("any", "survey", "review", "author")
-
-
 def _suffix_pins(node, names):
     """A copy of `node` with every `model` string in `names` given its suffix, walking the sites
     `arg_pins` reads (`__`-prefixed keys are hook-injected and left alone)."""
@@ -901,32 +892,30 @@ def _engine_of(tool_input):
 
 
 def _rails_text(payload, rails_map):
-    """{"<shape>/<tier>": guard text} for exactly the pairs this call's jobs resolve to, or {}.
+    """{"<guard>/<tier>": guard text} for exactly the pairs this call's jobs resolve to, or {}.
 
-    Mirrors each engine's own resolution: dispatch/dispatch_chains take the job's shape (default
-    `any`), explore_fanout is `survey`, review_fanout is `review`; the tier is the job's `railTier`
-    (dispatch.js only), else the rail map, else `detailed`; `none` gets nothing. A review_fanout
-    `args.fold` adds one `author` stage, the fold, on its `model`. A pair whose assembly fails is left out, so that job
-    falls back to the engine's Read pointer.
+    Mirrors each engine's own resolution: every job's guard file set is its kind row's `guard`
+    (`guards/tool_profiles.json`); the tier is the job's `railTier` (dispatch.js only), else the rail
+    map, else `detailed`; `none` gets nothing. A review_fanout `args.fold` adds one `author` stage, the
+    fold, on its `model`. A pair whose assembly fails is left out, so that job falls back to the
+    engine's Read pointer.
     """
     engine = _engine_of(payload.get("tool_input") or {})
     if engine is None:
         return {}
     out = {}
+    kinds = (_tp().load_table().get("kinds") or {})
     for site, job in _arg_entries(_args(payload.get("tool_input") or {})):
-        if engine == "explore_fanout":
-            shape = "survey"
-        elif engine == "review_fanout":
-            shape = "review"
-        else:
-            shape = job.get("shape") if job.get("shape") in _VALID_SHAPES else "any"
+        guard = (kinds.get(job.get("kind")) or {}).get("guard")
+        if not guard:
+            continue
         model = job.get("model")
         tier = (job.get("railTier") if engine == "dispatch" else None) or rails_map.get(model) or "detailed"
-        key = "%s/%s" % (shape, tier)
+        key = "%s/%s" % (guard, tier)
         if tier == "none" or key in out:
             continue
         try:
-            out[key] = _guard_text(shape, tier)
+            out[key] = _guard_text(guard, tier)
         except Exception:
             continue
     fold = _args(payload.get("tool_input") or {}).get("fold") if engine == "review_fanout" else None
@@ -965,22 +954,53 @@ def _driver_notes(payload, data):
     return out
 
 
+# Engines whose one call runs every child on one kind: `args.kind` names it, and the hook injects the
+# resolved row as `args.__kindProfile`. The four job engines take `kind` per job instead.
+CALL_KIND_ENGINES = ("doc_architecture_audit", "doc_npc_all", "idea_fanout", "key_reachability",
+                     "worklog_relevance", "agentic_cloud", "sdf_cloud", "calibrate_cloud", "cloud_sdf",
+                     "mine_sdf_corpus", "rebuild_agentic", "rebuild_sdf", "w13_cloud_ceiling",
+                     "w_axis_and_floors", "test_agents_fixtures", "test_skill_pressure")
+
+
+def _call_kind_engine(tool_input):
+    key = os.path.basename(str(tool_input.get("scriptPath") or tool_input.get("name") or "")).replace("-", "_")
+    return next((e for e in CALL_KIND_ENGINES if e in key), None)
+
+
+def call_kind_profile(payload):
+    """The resolved row of a single-kind engine's `args.kind`, or None for any other call.
+
+    Raises ValueError when such an engine's call names no kind or an unusable one."""
+    ti = payload.get("tool_input") or {}
+    if payload.get("tool_name") != "Workflow" or not _call_kind_engine(ti):
+        return None
+    kind = _args(ti).get("kind")
+    return resolve_request({"kind": str(kind or "").strip() or None})
+
+
 def _tool_profiles(payload):
     """{label: resolved profile} for every job this call declared one for.
 
-    Only a job that NAMED a shape or a delta appears: a job that named nothing has no profile
-    anybody chose, and reporting the `any` row for it would state an inventory as applied that
-    nobody requested. Raises ValueError on a declared profile the resolver rejects.
+    A job of a job engine must name a kind, and no job may carry a retired key: a job that named
+    nothing has no profile anybody chose, and no tool set is inferred for it. Raises ValueError on a
+    job the resolver rejects.
     """
     out = {}
     ti = payload.get("tool_input") or {}
     if payload.get("tool_name") == "Agent":
         request = agent_profile_request(ti)
         if request:
-            out[str(ti.get("description") or "agent")] = resolve_request(request)
+            out[str(ti.get("description") or "agent")] = resolve_request(request, route="agent")
         return out
+    engine = _engine_of(ti)
     for job in dispatch_jobs(payload):
+        if engine and job["retired"]:
+            raise ValueError("job %r carries %s: %s" % (job["label"], ", ".join(job["retired"]),
+                             "; ".join("`%s`: %s" % (k, RETIRED_JOB_KEYS[k]) for k in job["retired"])))
         request = profile_request(job)
+        if request is None and engine:
+            raise ValueError("job %r names no kind: a job names one of %s (guards/tool_profiles.json)"
+                             % (job["label"], ", ".join(_tp().public_kinds())))
         if request:
             out[job["label"]] = resolve_request(request)
     return out
@@ -990,9 +1010,10 @@ def tool_profile_refusal(payload):
     """The deny reason for an unusable declared tool profile, or None when nothing is wrong."""
     try:
         _tool_profiles(payload)
+        call_kind_profile(payload)
     except ValueError as exc:
         return ("invalid tool profile: %s. A declared profile must resolve before any agent "
-                "starts — guards/tool_profiles.json holds the shapes and the logical server "
+                "starts — guards/tool_profiles.json holds the kinds and the logical server "
                 "names, and a `tools.add`/`tools.remove` item is a built-in name or "
                 "`mcp:<server>`." % exc)
     except Exception as exc:
@@ -1059,56 +1080,6 @@ def _repo_root(payload):
     return _git_line(cwd, "rev-parse", "--show-superproject-working-tree") or _git_line(cwd, "rev-parse", "--show-toplevel")
 
 
-def session_started(payload):
-    """Epoch seconds of the first `timestamp` in the head of the session transcript, or None.
-
-    The payload carries `transcript_path` and `session_id`, not a start time; the transcript's first
-    record stamp is the session's own clock. A resumed session keeps its original stamp, which is
-    older than the reload, so a resume only withholds a swap it could have made. A transcript path
-    inside the session tree (a subagent's) is cut back to the session's own transcript.
-    """
-    transcript = str(payload.get("transcript_path") or "")
-    if not transcript:
-        return None
-    session_dir = _session_dir(payload)
-    main = session_dir + ".jsonl" if session_dir else ""
-    for path in (main, transcript):
-        try:
-            with open(path, encoding="utf-8", errors="replace") as handle:
-                for _ in range(TRANSCRIPT_HEAD_LINES):
-                    match = _dispatch_checks.STAMP_RE.search(handle.readline())
-                    if match:
-                        stamp = match.group(1).replace("Z", "+00:00")
-                        return datetime.datetime.fromisoformat(stamp).timestamp()
-        except (OSError, ValueError):
-            continue
-    return None
-
-
-def loadable_coverage(payload, coverage, agents_dir=None):
-    """`coverage` with each entry's `covered` narrowed to shapes whose generated agent file is older than
-    the session start (`session_started`). A shape with no generated type, a missing file or an unknown
-    start is dropped. Never raises: any failure withholds every swap."""
-    try:
-        started = session_started(payload)
-        table = _tp().load_table()
-        agents_dir = agents_dir or AGENTS_DIR
-        loaded = set()
-        for shape, row in table["shapes"].items():
-            agent_type = row.get("agentType")
-            if not (started and agent_type):
-                continue
-            try:
-                if os.path.getmtime(os.path.join(agents_dir, agent_type + ".md")) < started:
-                    loaded.add(shape)
-            except OSError:
-                pass
-        return {label: dict(entry, covered=[s for s in entry.get("covered") or [] if s in loaded])
-                for label, entry in coverage.items()}
-    except Exception:
-        return {label: dict(entry, covered=[]) for label, entry in coverage.items()}
-
-
 def _review_rigor(payload, task_id, repo_root, advice):
     """The run's rigor for a review_fanout call, or None. An unreadable record names its cause in `advice`
     (`additionalContext`). The reader is `triage.rigor`, the call post-check makes through `finding_bar`."""
@@ -1171,31 +1142,18 @@ def transport_injection(payload, transport, data=None, advice=None):
     # read `guards/tool_profiles.json` itself. Resolution happens HERE so an invalid delta fails
     # the dispatch before any agent call (main() turns the ValueError into a deny).
     profiles = _tool_profiles(payload)
-    verifier = resolve_request({'shape': 'verify'})
-    profiles['verify'] = {'agentType': verifier['agentType'], 'tier': verifier['tier']}
-    parsed['__returns'] = required_returns(payload)
-    if profiles:
-        parsed["__toolProfiles"] = profiles
-    # A declared shape settles the start: the engine swaps general-purpose to the shape's lean type
-    # when the brief is covered, so a shaped job that omits agentType needs no second choice.
-    if isinstance(parsed.get("jobs"), list):
-        parsed["jobs"] = [dict(j, agentType="general-purpose")
-                          if isinstance(j, dict) and j.get("label") in profiles and not j.get("agentType") else j
-                          for j in parsed["jobs"]]
-    # Which lean shapes cover each job's brief: an engine swaps a job to its shape's agent type only
-    # when this says so (a script cannot read the brief itself). The names-only skill index rides
-    # with it for the swapped child, which has no Skill tool.
-    parsed["__coverage"] = loadable_coverage(payload, coverage_map(payload))
-    try:
-        parsed["__skillIndex"] = skill_index()
-    except Exception:
-        pass  # no index is a smaller brief, never a wrong one
-    # The shape defaults ride beside them for the stages a script spawns on its OWN label; each row
-    # is `inherited`, which is what such a child actually gets.
-    try:
-        parsed["__toolProfileDefaults"] = profile_defaults()
-    except Exception:
-        pass  # an unresolvable default leaves that stage's journal entry null, never a wrong profile
+    verifier = resolve_request({"kind": "verify"})
+    profiles["verify"] = {"agentType": verifier["agentType"], "tier": verifier["tier"]}
+    if _engine_of(ti) == "review_fanout":
+        # The engine's own merge and fold stages run on the reviewer and author rows.
+        profiles["review:merge"] = resolve_request({"kind": "reviewer"})
+        if isinstance(parsed.get("fold"), dict):
+            profiles["review:fold"] = resolve_request({"kind": "author"})
+    parsed["__returns"] = required_returns(payload)
+    parsed["__toolProfiles"] = profiles
+    call_profile = call_kind_profile(payload)
+    if call_profile:
+        parsed["__kindProfile"] = call_profile
     rails_text = _rails_text({"tool_name": "Workflow", "tool_input": dict(ti, args=parsed)},
                              parsed["__rails"])
     if rails_text:
@@ -1220,8 +1178,8 @@ def transport_injection(payload, transport, data=None, advice=None):
         if checker:
             parsed["checker"] = dict(checker, model=suffixed(checker["model"]))
     site, _field, implied = implied_tiers(ti, parsed)
-    if implied:
-        parsed["__lensTiers" if site == "agents" else "__shapeTiers"] = implied
+    if implied and site == "agents":
+        parsed["__lensTiers"] = implied
     if site == "agents":
         # review_fanout records each seat's catalog keys on its ledger rows (tools/review_ledger.py).
         mandates = lens_mandates(parsed)
@@ -1603,22 +1561,16 @@ def main():
 
 def check(payload):
     """Every rule, in order, for one Workflow or Agent payload; emits exactly one verdict."""
-    payload, coverage_notes = coverage_fixes(payload)
     tool = payload.get("tool_name")
     tool_input = payload.get("tool_input") or {}
 
     # RULE -1 — a declared tool profile that does not resolve. A property of the CALL, so first.
     profile_reason = tool_profile_refusal(payload)
     if profile_reason:
-        _deny(profile_reason + " (orchestration §Pre-Dispatch Checklist) Fix the shape with a +Tool delta or a wider profile, then re-issue.")
+        _deny(profile_reason + " (orchestration §Pre-Dispatch Checklist) Name the job's kind (a job that writes is an author), then re-issue.")
         return
 
-    # RULE -0.5 — what coverage_fixes could not grant (an explicit removal, a fan-out need): refused before the spend.
-    coverage_reason = coverage_refusal(payload)
-    if coverage_reason:
-        _deny(coverage_reason + " (orchestration §Pre-Dispatch Checklist)")
-        return
-    guard_notes = list(coverage_notes)
+    guard_notes = []
     if citer_coverage.BLOCKING:
         try:
             citer_reason = citer_coverage.workflow_reason(payload)
@@ -1689,7 +1641,7 @@ def check(payload):
         return
 
     updated = transport_injection(payload, transport, advice=guard_notes) if _session_transport else None
-    if (coverage_notes or alias_notes) and updated is None:
+    if alias_notes and updated is None:
         updated = tool_input
     if _session_transport and transport != _session_transport.HOST_TRANSPORT:
         _emit_advice(list(t_body) + guard_notes, updated)

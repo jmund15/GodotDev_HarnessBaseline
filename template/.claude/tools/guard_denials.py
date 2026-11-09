@@ -24,8 +24,11 @@ SIGNATURES = [
     ('kill-denied', re.compile(r'BLOCKED (TaskStop|kill)')),
     ('shape-guard', re.compile(r'Blocked by bash_shape_guard')),
     ('dispatch-denied', re.compile(r'Dispatch denied|Sidecar dispatch denied')),
+    ('dispatch-doctrine', re.compile(r'the dispatch doctrine is not in context')),
     ('harness-edit', re.compile(r'Harness edit to .* DENIED')),
     ('classifier-denied', re.compile(r'denied by the Claude Code auto mode classifier')),
+    # 'gave no verdict (timed out)' / '(the response ended ...)' is a transient check failure, not a denial.
+    ('classifier-no-verdict', re.compile(r'auto mode classifier gave no verdict for \w+: ')),
 ]
 
 

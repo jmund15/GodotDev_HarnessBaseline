@@ -226,6 +226,9 @@ def real_payload_cases():
 def jobs_file_cases():
     import shutil
     world = World("available", True, "pwdjf001")
+    # A kind row names user-level servers the fresh HOME does not register, so the proof plants them.
+    (world.home / ".claude.json").write_text(json.dumps({"mcpServers": {
+        "semantic-search": {"command": "planted"}, "ai-worker": {"command": "planted"}}}), encoding="utf-8")
     scratch = REPO / ".claude" / "scratch" / ("pwd_jobsfile_%d" % os.getpid())
     scratch.mkdir(parents=True)
     brief = scratch / "a.md"
@@ -241,7 +244,7 @@ def jobs_file_cases():
 
     try:
         job = {"label": "a", "promptPath": str(brief), "model": "no-such-model-xyz", "effort": "low",
-               "agentType": "Explore"}
+               "kind": "scout"}
         proc = call({"jobsFile": put("bad_pin.json", {"jobs": [job]})})
         check("a pin outside the vocabulary inside the jobs file is denied by RULE 1",
               classify(proc) == "deny" and "no-such-model-xyz" in reason_of(proc), (proc.stdout[:400], proc.stderr[-300:]))

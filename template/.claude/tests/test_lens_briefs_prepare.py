@@ -331,6 +331,26 @@ def mode_session_audit():
           and ledger.get("stage") == "candidate", (detail, ledger))
 
 
+def doc_defined_none_placeholder():
+    f = Fixture()
+    designs = f.write("ctx/designs.txt", "planted design list\n")
+    audit = dict(mode="session-audit", seats=[{"key": "sa-architecture-sweep", "effort": EFFORT}],
+                 pins={"panel": PANEL}, efforts={"panel": EFFORT}, subjectFiles=["src/thing.py"],
+                 sessionAudit={"sessionBase": f.base, "baseRef": f.base, "files": ["src/thing.py"],
+                               "session": "prepsess"},
+                 fold={"tier": "executor", "model": PANEL, "effort": EFFORT})
+    built = f.prepare(subs=["DESIGN_LIST=" + str(designs)], **audit)
+    brief = f.out / "p_sa-architecture-sweep.md"
+    check("a placeholder its doc defines as `none` (SHORT_PLAN, no plan) builds the brief with `none`",
+          built.returncode == 0 and brief.exists() and "{{SHORT_PLAN}}" not in brief.read_text(encoding="utf-8"),
+          (built.stdout[-300:], built.stderr[-600:]))
+    g = Fixture()
+    audit["sessionAudit"] = dict(audit["sessionAudit"], sessionBase=g.base, baseRef=g.base)
+    undefined = g.prepare(**audit)
+    check("a placeholder no doc defines as `none` (DESIGN_LIST) still refuses, and names only it",
+          undefined.returncode != 0 and "['DESIGN_LIST']" in undefined.stderr, undefined.stderr[-600:])
+
+
 def over_window_refusal():
     f = Fixture()
     big = f.write("docs/big.md", "x\n" * 1500000)
@@ -504,12 +524,29 @@ def base_sizes_past_a_command_line():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def spec_refused_before_any_write():
+    f = Fixture()
+    common = dict(mode="explore", lenses=["exp-integration-surface"], engine=str(f.root / "engine.js"),
+                  pins={"panel": PANEL}, efforts={"panel": EFFORT}, spillDir=str(f.scratch("run", "spill")))
+    proc = f.prepare(subjectFiles=[], seatFiles={"exp-integration-surface": [str(f.plan)]}, fold={"tier": "architect", "model": PANEL, "effort": EFFORT_HI}, **common)
+    check("a fold with no subjectFiles is refused naming `subjectFiles`",
+          proc.returncode != 0 and "subjectFiles" in proc.stderr, proc.stderr[-400:])
+    check("the refused fold spec wrote no brief", not f.out.exists() or not any(x.is_file() for x in f.out.rglob("*")),
+          sorted(x.name for x in f.out.glob("*")) if f.out.exists() else "")
+    proc = f.prepare(sessionAudit={"plan": "none", "baseRef": f.base}, **common)
+    check("a sessionAudit plan that is no file is refused naming `plan`",
+          proc.returncode != 0 and "sessionAudit.plan" in proc.stderr, proc.stderr[-400:])
+    check("the refused plan spec wrote no brief", not f.out.exists() or not any(x.is_file() for x in f.out.rglob("*")),
+          sorted(x.name for x in f.out.glob("*")) if f.out.exists() else "")
+
+
 def main():
     check("test_lens_briefs_prepare.py finds the tool it proves", (TOOLS / "lens_briefs.py").is_file())
     for case in (mode_explore, mode_plan_check, mode_pr_review, mode_design_redteam, mode_pr_ready,
                  mode_session_audit, over_window_refusal, refusals_state_their_shape, sidecar_target, stale_kfm_snapshot,
                  task_text_not_backticked, later_round_diff, base_sizes_past_a_command_line,
-                 mixed_roster_code_seat_keeps_its_files):
+                 mixed_roster_code_seat_keeps_its_files, spec_refused_before_any_write,
+                 doc_defined_none_placeholder):
         if NEEDS.get(case.__name__, "") and NEEDS[case.__name__] not in SHIPPED:
             print("skip %s: the %s lens registry is not installed" % (case.__name__, NEEDS[case.__name__]))
             continue

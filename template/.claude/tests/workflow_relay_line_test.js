@@ -36,7 +36,7 @@ async function run(engine, args, returned) {
   }
   const parallel = async thunks => Promise.all(thunks.map(fn => fn()))
   const result = await engineRun.load(script)(
-    withHost(args), agent, parallel, () => {}, () => {})
+    engineRun.withKinds(withHost(args)), agent, parallel, () => {}, () => {})
   return { result, prompts }
 }
 
@@ -77,17 +77,17 @@ const checked = { toolsUsed: ['Read:fixture'], stoppedAt: 'exhausted-leads', bas
 const cases = [
   ['review_fanout.js', {
     resultMode: 'full',
-    agents: ['one', 'two'].map(key => ({ key, prompt: 'Review it.', model: 'sonnet', effort: 'medium', agentType: 'general-purpose', mustRead: [{ path: 'fixture', lines: 1 }] })),
+    agents: ['one', 'two'].map(key => ({ key, prompt: 'Review it.', model: 'sonnet', effort: 'medium', kind: 'author', mustRead: [{ path: 'fixture', lines: 1 }] })),
   }, { findings: [], checked, gaps: [] }],
   ['explore_fanout.js', {
     resultMode: 'full',
-    lenses: ['one', 'two'].map(key => ({ key, prompt: 'Inspect.', model: 'opus', effort: 'low', agentType: 'general-purpose' })),
+    lenses: ['one', 'two'].map(key => ({ key, prompt: 'Inspect.', model: 'opus', effort: 'low', kind: 'author' })),
   }, { claims: [], checked }],
   ['dispatch.js', {
-    jobs: ['one', 'two'].map(label => ({ label, promptPath: label + '.md', model: 'sonnet', effort: 'low', agentType: 'general-purpose' })),
+    jobs: ['one', 'two'].map(label => ({ label, promptPath: label + '.md', model: 'sonnet', effort: 'low', kind: 'author' })),
   }, 'done'],
   ['dispatch_chains.js', {
-    chains: ['one', 'two'].map(name => ({ name, jobs: [{ label: name, promptPath: name + '.md', model: 'sonnet', effort: 'low', agentType: 'general-purpose' }] })),
+    chains: ['one', 'two'].map(name => ({ name, jobs: [{ label: name, promptPath: name + '.md', model: 'sonnet', effort: 'low', kind: 'author' }] })),
   }, 'done'],
 ]
 

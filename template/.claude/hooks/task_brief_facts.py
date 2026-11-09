@@ -3,6 +3,11 @@
 
 Class: advisory. It never denies, and a malformed `task` block is named in its context line.
 
+At the first brief write of a window while the orchestration skill or the ladder is not in context, one extra
+line (`NOTICE_TAG`) names both loads and that a launch is denied until they are met, so a deny never announces
+them first. It fires once per window and is silent once both are met; `model_ladder_gate.doctrine_check` owns
+the two conditions.
+
 A Write or Edit that leaves a file holding a ```task block gets one context block: a route header per route, then
 one row per claiming model on that route, in registry order, with no pick. A plan route's header names each
 surviving plan's quota left, read cache-only with no probe; a plan with no fresh cache reading is named
@@ -39,6 +44,14 @@ FENCE = "```task"
 NOTE = ("draw ratios compare models within one plan (list-price ratio, one measured point); "
         "across plans compare room")
 HEADER = "model | input | image route | draw or spend | intel | speed | window | first + | first −"
+
+# The dispatch loads `model_ladder_gate.doctrine_check` denies on, stated before the first dispatch so a deny
+# is never the first place the agent meets them.
+NOTICE_TAG = "[dispatch-prep]"
+NOTICE_ONCE = "task_brief_facts:dispatch_prep"
+SKILL_LOAD = 'invoke Skill(skill="orchestration")'
+LADDER_LOAD = ('run `python3 .claude/tools/model_registry.py for-role <tier>` bare (no pipe or filter) '
+               'for each tier the jobs pin')
 
 
 def _owners():
@@ -245,6 +258,39 @@ def _facts(block, path, data, session, session_id=None):
     return "\n".join(lines)
 
 
+def _dispatch_prep_notice(payload):
+    """One line at the first dispatch-prep signal of a window while the orchestration skill or the ladder is
+    not in context: both loads, and that a launch is denied until they are. Silent once both are met, and
+    silent after it has fired once since the session started or last compacted."""
+    session_id = payload.get("session_id") or ""
+    if not session_id:
+        return ""
+    import _hook_state
+    try:
+        ladder = bool(_hook_state.ladder_slice_tiers(session_id))
+        if not ladder:
+            import model_ladder_gate
+            ladder = bool(model_ladder_gate.claim_loaded(session_id))
+        skill = _hook_state.skill_in_context(session_id, "orchestration",
+                                             transcript_path=payload.get("transcript_path"))
+    except Exception:
+        return ""
+    if skill and ladder:
+        return ""
+    missing = [step for step, met in ((SKILL_LOAD, skill), (LADDER_LOAD, ladder)) if not met]
+    if not _hook_state.fire_once_since_compaction(session_id, NOTICE_ONCE):
+        return ""
+    return "%s before your first dispatch, a launch is DENIED until %s." % (NOTICE_TAG, " and ".join(missing))
+
+
+def _with_notice(result, notice):
+    """`result` with the dispatch-prep notice appended to its context line, or the notice alone."""
+    if not notice:
+        return result
+    text = (result or {}).get("context") or ""
+    return {"context": text + "\n" + notice if text else notice}
+
+
 def process(payload):
     data_in = payload if isinstance(payload, dict) else {}
     if data_in.get("tool_name") not in TOOL_NAMES:
@@ -261,13 +307,16 @@ def process(payload):
         return None
     if FENCE not in text:
         return None
+    notice = _dispatch_prep_notice(data_in)
     dispatch_result, _size, model_registry, provider_bands, _checks = _owners()
     try:
         block = dispatch_result.task_block(text)
     except ValueError as exc:
-        return {"context": "%s the task block is malformed: %s; fix it before the brief is dispatched." % (TAG, exc)}
+        return _with_notice({"context": "%s the task block is malformed: %s; fix it before the brief is "
+                                       "dispatched." % (TAG, exc)}, notice)
     if block is None:
-        return None
+        return _with_notice(None, notice)
     session = provider_bands.session_plan()
     data = model_registry.load()
-    return {"context": _facts(block, path, data, session, session_id=data_in.get("session_id") or "default")}
+    return _with_notice({"context": _facts(block, path, data, session,
+                                           session_id=data_in.get("session_id") or "default")}, notice)

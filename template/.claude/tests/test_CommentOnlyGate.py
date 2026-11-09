@@ -21,10 +21,12 @@ Set-StrictMode -Version Latest
 $t = $null; $e = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile('@GATE@', [ref]$t, [ref]$e)
 if ($e.Count) { throw ($e | Out-String) }
-foreach ($name in @('Get-Prop', 'Get-ImportStamp', 'Complete-Gate', 'Exit-IfStaticRoute', 'Invoke-LedgerReuse')) {
+foreach ($name in @('Get-Prop', 'Get-ImportStamp', 'Complete-Gate', 'Exit-IfStaticRoute', 'Invoke-LedgerReuse', 'Write-VerdictRow')) {
     $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
     if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
 }
+$vr = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$script:VerdictRows' }, $true)
+. ([scriptblock]::Create($vr.Extent.Text))
 if (-not (Test-Path -LiteralPath '@HELPER@') -or -not (Get-Command Exit-IfStaticRoute -ErrorAction SilentlyContinue)) {
     Write-Output 'FEATURE=missing'; exit 0
 }

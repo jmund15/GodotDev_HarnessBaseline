@@ -35,13 +35,13 @@ const CELLS = [
   { label: 'explore-haiku',       agentType: 'Explore',         model: 'haiku' },
 ]
 
+// MEASUREMENT ROW — each cell's own agentType is the variable under test, so it takes no job kind.
+const MEASURE = (c) => ({ agentType: c.agentType || 'default', model: c.model, enforcement: 'measurement' })
+log('TOOL-PROFILES ' + JSON.stringify(Object.fromEntries(CELLS.map(c => [c.label, MEASURE(c)]))))
+
 phase('Probe')
 
 const results = await parallel(CELLS.map(c => () => {
-  // TOOL PROFILES — the inventory this cell launches with. A native child INHERITS the session's MCP
-  // set, so the entry is `inherited` with effectiveMcp unknown, never a strict claim of enforcement.
-  const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
-  log('TOOL-PROFILES ' + JSON.stringify({ [c.label]: TOOLP.d[c.label] || TOOLP.f['any'] || null }))
   const opts = { label: c.label, phase: 'Probe', effort: 'low' }
   if (c.agentType) opts.agentType = c.agentType
   if (c.model) opts.model = c.model

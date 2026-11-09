@@ -297,19 +297,9 @@ def _collect(root: Path, source: dict, requested: list[str] | None, lock: dict,
 # ---------------------------------------------------------------------------
 
 def _candidates(source: dict, lock: dict) -> list[str]:
-    result = _git(Path(source["repo"]), ["ls-tree", "-r", "--name-only", source["commit"], "--", ".claude"])
-    known = set(lock.get("files", {}))
-    candidates = []
-    for relpath in _lf(result.stdout).decode(errors="replace").splitlines():
-        if relpath in known or relpath == sync.LOCK_RELPATH:
-            continue
-        if any(relpath.startswith(prefix) for prefix in sync.CANDIDATE_EXCLUDE_PREFIXES):
-            continue
-        name = relpath.rsplit("/", 1)[-1]
-        if any(fnmatch.fnmatch(name, pattern) for pattern in sync.CANDIDATE_EXCLUDE_NAMES):
-            continue
-        candidates.append(relpath)
-    return candidates
+    repo = Path(source["repo"])
+    result = _git(repo, ["ls-tree", "-r", "--name-only", source["commit"], "--", ".claude"])
+    return sync.candidate_paths(repo, lock, _lf(result.stdout).decode(errors="replace").splitlines())
 
 
 def _classify(source: dict, lock: dict) -> str:
@@ -495,9 +485,9 @@ def _battery_counts_match(worktree: Path) -> None:
         )
 
 
-def _run_python_args(worktree: Path, args: list[str], label: str) -> str:
+def _run_python_args(worktree: Path, args: list[str], label: str, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
-        [sys.executable, *args], cwd=str(worktree),
+        [sys.executable, *args], cwd=str(worktree), env=None if env is None else {**os.environ, **env},
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
     )
     out = _lf(result.stdout + result.stderr).decode("utf-8", errors="replace").strip()
@@ -567,7 +557,9 @@ def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
             rows = [r["relpath"] for r in records if r["kind"] == "lock" and r["op"] != "D"]
             args = [".claude/scripts/harness_tests.py", "--proofs-for", *rows]
             battery_label, battery_cwd = "harness_tests.py --proofs-for", worktree / "template"
-        tasks.append((battery_label, lambda: _run_python_args(battery_cwd, args, battery_label), True))
+        # Only the full battery reuses recorded passes: the scoped child already builds its own cache.
+        battery_env = {"HARNESS_REUSE_PASSES": "1"} if mode == "full" else None
+        tasks.append((battery_label, lambda: _run_python_args(battery_cwd, args, battery_label, battery_env), True))
 
     # Longest known first, so the pool's start order puts the long tasks ahead of the short ones.
     head = (battery_label, "tests/test_bootstrap.py", "tests/test_audit_baseline.py", "audit_baseline.py --strict")
@@ -995,13 +987,13 @@ def _apply_published_rows(root: Path, lock: dict, records: list[dict], baseline_
                           baseline_sha_after: str, source: dict) -> str:
     # §5: a `--from-worktree` publication authors upstream first, so the consumer's local
     # copy of an existing tracked row still holds the pre-publication content until the
-    # consumer's own `pull`. Only rewrite `hash` there when local content already equals
-    # the forward-substituted merged content -- otherwise leave it, so `check` reports the
-    # row as needing `pull`. `--from-commit` keeps the old unconditional rewrite: the
-    # consumer is the source, so it is already in sync with what it just published.
+    # consumer's own `pull`. Only settle a row there when local content already equals the
+    # forward-substituted merged content -- otherwise leave it, so `check` reports the row as
+    # needing `pull`. `--from-commit` settles unconditionally: the consumer is the source.
     from_worktree = source["kind"] == "worktree"
     substitutions = lock.get("substitutions", {})
     updated = 0
+    taken: set[str] = set()
     for record in records:
         if record["kind"] != "lock":
             continue  # root files carry no lock row
@@ -1017,8 +1009,8 @@ def _apply_published_rows(root: Path, lock: dict, records: list[dict], baseline_
             if (root / relpath).exists():
                 if sync._entry_status(entry) != "local":
                     entry["status"] = "local"
-                    entry.pop("hash", None)
                     entry.pop("base", None)
+                    entry.pop("judged", None)
                     updated += 1
                 continue
             del lock["files"][relpath]
@@ -1030,22 +1022,17 @@ def _apply_published_rows(root: Path, lock: dict, records: list[dict], baseline_
         content = _git_show(baseline_repo, baseline_sha_after, "template/" + relpath)
         if content is None:
             raise PublishError(f"merged baseline is missing: {relpath}")
-        merged_hash = sync.content_sha(relpath, sync.rendered_upstream(relpath, content, substitutions).encode("utf-8"))
-        if from_worktree:
-            local = sync.local_text(root, relpath)
-            local_hash = sync.content_sha(relpath, local.encode("utf-8")) if local is not None else None
-            if local_hash != merged_hash:
-                continue  # leave `hash` untouched; the consumer's `pull` catches up (§5)
-        entry["hash"] = merged_hash
-        # A `forked` row judged `push` is upstream's content once this hash is rewritten, so it
-        # is no longer a fork. Keeping the status and its stale `base` makes the next
-        # `check --strict` report `forked-upstream-moved` against a baseline that now carries
-        # this very content -- a clean publication that reads as drift.
-        if sync._entry_status(entry) == "forked":
+        merged_text = sync.rendered_upstream(relpath, content, substitutions)
+        if from_worktree and sync.local_text(root, relpath) != merged_text:
+            continue  # leave the row; the consumer's `pull` catches up (§5)
+        # The row reached upstream: its open verdict is settled, and a fork or local row now
+        # follows upstream. Its reconcile point is the new pin, so any `base` goes.
+        if sync._entry_status(entry) in ("forked", "local"):
             entry["status"] = "tracked"
-            entry.pop("base", None)
+        entry.pop("judged", None)
+        taken.add(relpath)
         updated += 1
-    lock["synced_commit"] = baseline_sha_after
+    sync.move_pin(lock, baseline_repo, baseline_sha_after, taken)
     return f"lock updated ({updated} row(s))"
 
 
@@ -1421,6 +1408,15 @@ def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str
                             journal_id, None)
     _write_json_atomic(journal_path, journal)
 
+    # A finished publication leaves its rows settled at upstream, so their push verdicts are
+    # gone: match a named row set against a complete journal before collect requires a verdict.
+    if requested is not None:
+        repeat = _find_matching_journal(root, source["commit"], requested, exclude_id=journal_id)
+        if repeat is not None and _journal_complete(repeat):
+            _delete_journal(journal_path)
+            print("already published " + repeat["id"])
+            return repeat
+
     # Step 1 (collect) runs inside the journal from the start: a collect failure (a bad
     # `--rows` entry, an unjudged row) is a real step result, not a pre-journal crash.
     box: list[list[dict]] = []
@@ -1439,7 +1435,7 @@ def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str
     journal["rows_judged_count"] = sum(
         1 for record in records
         if record["kind"] == "lock"
-        and (lock.get("files", {}).get(record["relpath"], {}).get("judged") or {}).get("at")
+        and (lock.get("files", {}).get(record["relpath"], {}).get("judged") or {}).get("sha")
     )
     _write_json_atomic(journal_path, journal)
 

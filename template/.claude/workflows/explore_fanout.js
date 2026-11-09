@@ -7,14 +7,16 @@ export const meta = {
   ],
 }
 
-// Args: {lenses: [{key, promptPath, model, effort, agentType, tier}], contextPrefixPath, spillDir?, resultMode?: 'bounded' | 'full',
+// Args: {lenses: [{key, promptPath, model, effort, kind, tier}], contextPrefixPath, spillDir?, resultMode?: 'bounded' | 'full',
 //        checker: {model, effort}}. Every lens pins its own model (and effort when the transport declares efforts). `checker` pins
 //        the closeCheck verifier this engine always starts; it is required and validated before any agent starts.
 // A spill file needs a lens profile with Write; without one the claims return through the journal only.
 // Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
 // string is a caller mistake, but an uncaught SyntaxError names neither this workflow nor the
 // expected shape, so the caller cannot self-correct and retries the same way. Fail legibly instead.
+// ENGINE-BLOCK-BEGIN A
 let A
+// ENGINE-BLOCK-END A
 try {
   A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
 } catch (e) {
@@ -116,36 +118,49 @@ const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence
 // EVIDENCE-SSOT-END
 
 // CLOSE-CHECK-BEGIN
+// ENGINE-BLOCK-BEGIN repoRootOf
 function repoRootOf(a) {
   const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
   return /^([A-Za-z]:)?\//.test(root) ? root : ''
 }
+// ENGINE-BLOCK-END repoRootOf
+// ENGINE-BLOCK-BEGIN rootedPath
 function rootedPath(a, p) {
   const root = repoRootOf(a)
   return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
 }
+// ENGINE-BLOCK-END rootedPath
+// ENGINE-BLOCK-BEGIN cdRootPrefix
 function cdRootPrefix(a) {
   const root = repoRootOf(a)
   return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
 }
+// ENGINE-BLOCK-END cdRootPrefix
+// ENGINE-BLOCK-BEGIN VERDICTS
 const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
+// ENGINE-BLOCK-END VERDICTS
+// ENGINE-BLOCK-BEGIN applyVerdicts
 const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
   const supplied = verdicts[keyOf(item)]
   const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
   return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
 })
+// ENGINE-BLOCK-END applyVerdicts
 const boundedVerification = verification => ({
   status: verification.status, counts: verification.counts, report: verification.report,
   ...(verification.note ? { note: verification.note } : {}),
   nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
 })
 // A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
+// ENGINE-BLOCK-BEGIN verifierAgent
 const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
   const msg = String((e && e.message) || e)
   if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
   log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
   return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
 })
+// ENGINE-BLOCK-END verifierAgent
+// ENGINE-BLOCK-BEGIN closeCheck
 const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, expectTotal, expectSources, ledger, fold, seats = [] }) => {
   const keys = items.map(keyOf)
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
@@ -253,79 +268,74 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
   }
   return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
 }
+// ENGINE-BLOCK-END closeCheck
 // CLOSE-CHECK-END
 
 const lenses = Array.isArray(A.lenses) ? A.lenses : []
+// ENGINE-BLOCK-BEGIN RESULT_MODE
 const RESULT_MODE = A.resultMode === undefined ? 'bounded' : A.resultMode
+// ENGINE-BLOCK-END RESULT_MODE
 if (!['bounded', 'full'].includes(RESULT_MODE)) {
   return { error: 'explore-fanout: resultMode must be `bounded` or `full`.' }
 }
 
 // Optional paid-output spill. A Workflow script cannot write files, so only a receiving profile
 // with Write may promise one. Runtime journals remain the native durable result source for all profiles.
+// ENGINE-BLOCK-BEGIN SPILL_REL
 const SPILL_REL = (typeof A.spillDir === 'string' && A.spillDir.trim()) ? A.spillDir.replace(/[\\/]+$/, '') : null
+// ENGINE-BLOCK-END SPILL_REL
+// ENGINE-BLOCK-BEGIN NORMAL_SPILL_DIR
 const NORMAL_SPILL_DIR = SPILL_REL ? SPILL_REL.replace(/\\/g, '/') : null
+// ENGINE-BLOCK-END NORMAL_SPILL_DIR
+// ENGINE-BLOCK-BEGIN spillEscapesRoot
 const spillEscapesRoot = NORMAL_SPILL_DIR && /(^|\/)\.\.(\/|$)/.test(NORMAL_SPILL_DIR)
+// ENGINE-BLOCK-END spillEscapesRoot
+// ENGINE-BLOCK-BEGIN spillRootAllowed
 const spillRootAllowed = !NORMAL_SPILL_DIR
   || (!spillEscapesRoot && /^\.claude\/scratch(?:\/|$)/.test(NORMAL_SPILL_DIR))
+// ENGINE-BLOCK-END spillRootAllowed
 if (!spillRootAllowed) {
   return { error: 'explore-fanout: spillDir must be repository-relative and contained by .claude/scratch/. Received: ' + SPILL_REL }
 }
 const SPILL_DIR = SPILL_REL && repoRootOf(A) ? repoRootOf(A) + '/' + NORMAL_SPILL_DIR : SPILL_REL
 const spillPath = (key) => SPILL_DIR + '/' + String(key).replace(/[^A-Za-z0-9._-]/g, '_') + '.spill.md'
-// TOOL PROFILES — what each child of this run launches with. A native child INHERITS the session's
-// MCP set (the runtime restricts no per-child server), so an entry is `inherited` with effectiveMcp
-// unknown unless the lens runs as its generated agent type (`agent-type`). hooks/workflow_provider_guard.py
-// resolves args.__toolProfiles for a job that DECLARED a shape or a delta, keyed by the lens key, and
-// args.__toolProfileDefaults (one row per shape) otherwise. `log()` output is retained in
+// KIND PROFILES. Each lens names a `kind`; hooks/workflow_provider_guard.py resolves that row of
+// guards/tool_profiles.json into args.__toolProfiles[<lens key>] (agentType, guard, built-ins). Every lens runs
+// as its kind's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded entry is
+// `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list. `log()` output is retained in
 // <session>/workflows/<runId>.json.
-const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
-// LEAN AGENT TYPE (plan lean-delegate-agent-types). Copied per engine: a Workflow script has no imports.
-// A job runs as its profile's generated `<prefix>-*` type only when it asked for `general-purpose` or no
-// type, its profile names an `agentType` with no add/remove delta, and hooks/workflow_provider_guard.py
-// proved its brief covered: `args.__coverage[key].covered` holds the profile's shape. No entry, no swap.
-// A swapped prompt ends with `args.__skillIndex`, because a `<prefix>-*` type has no Skill tool. A session
-// that predates the generated type rejects it; the job retries once, as asked (the known-good type), and is re-recorded.
-const LEAN = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { c: (a && a.__coverage) || {}, s: (a && typeof a.__skillIndex === 'string') ? a.__skillIndex : '' } } catch (e) { return { c: {}, s: '' } } })()
-const leanTypeOf = (keys, asked, tp) => {
-  const cov = keys.map(k => LEAN.c[k]).find(Boolean)
-  return ((asked == null || asked === 'general-purpose') && tp && tp.agentType
-    && !(tp.add || []).length && !(tp.remove || []).length
-    && cov && Array.isArray(cov.covered) && cov.covered.includes(tp.shape)) ? tp.agentType : null
-}
-const leanRecord = (tp, asked, swapped) => tp ? Object.assign({}, tp, swapped
-  ? { agentType: swapped, enforcement: 'agent-type', effectiveMcp: (tp.mcpServers || []).join(', ') }
-  : { agentType: asked || 'general-purpose' }) : null
-const leanAgent = (prompt, opts, swapped, rec) => {
-  if (!swapped) return agent(prompt, opts)
-  const asked = opts.agentType || 'general-purpose'
-  return agent(LEAN.s ? prompt + '\n\n' + LEAN.s : prompt, Object.assign({}, opts, { agentType: swapped })).catch(e => {
-    const msg = String((e && e.message) || e)
-    if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-    log('FALLBACK ' + opts.label + ' ' + swapped + '→' + asked)
-    rec[opts.label] = Object.assign({}, rec[opts.label], { agentType: 'general-purpose', enforcement: 'inherited', effectiveMcp: 'unknown/inherited' })
-    log('TOOL-PROFILES-REVISED ' + JSON.stringify(rec))
-    return agent(prompt, Object.assign({}, opts, { agentType: asked }))
-  })
-}
-const profileOf = (l) => TOOLP.d[l.key] || TOOLP.d[l.label] || TOOLP.f['survey'] || null
-const swapOf = (l) => leanTypeOf([l.key, l.label], l.agentType, profileOf(l))
-const effectiveType = (l) => swapOf(l) || l.agentType
-const NO_WRITE_AGENT_TYPES = ['Explore', 'Plan', 'lane-review', 'lane-survey']
-const NO_SHELL_AGENT_TYPES = ['lane-review', 'lane-survey']
-const spills = (l) => !!SPILL_DIR && !NO_WRITE_AGENT_TYPES.includes(effectiveType(l))
+// ENGINE-BLOCK-BEGIN TOOLP
+const TOOLP = (A.__toolProfiles && typeof A.__toolProfiles === 'object') ? A.__toolProfiles : {}
+// ENGINE-BLOCK-END TOOLP
+const profileOf = (l) => (l && (TOOLP[l.key] || TOOLP[l.label])) || null
+const hasTool = (l, t) => (profileOf(l).builtins || []).includes(t)
+const noShell = (l) => !hasTool(l, 'Bash')
+const spills = (l) => !!SPILL_DIR && hasTool(l, 'Write')
+const RETIRED_KEYS = { agentType: 'the kind row sets the agent type', shape: 'use kind', readOnly: 'this engine is read-only; the kind sets the tools' }
+const retiredOn = (l) => Object.keys(RETIRED_KEYS).filter(k => !!l && k in l)
+const kindOk = (l) => !!l && typeof l.kind === 'string' && !!l.kind.trim() && !!profileOf(l) && profileOf(l).kind === l.kind && !!profileOf(l).agentType
 
 // Model vocabulary comes only from args.__transport, which hooks/workflow_provider_guard.py injects on
 // every Workflow call: {name, ids, efforts?}. This engine holds no model list, so a
 // call the guard did not rewrite fails closed. `efforts` is absent when the transport declares none. Inlined because the Workflow sandbox has no require/import.
+// ENGINE-BLOCK-BEGIN PIN
 const PIN = (m) => m
+// ENGINE-BLOCK-END PIN
+// ENGINE-BLOCK-BEGIN EFF
 const EFF = (e) => e
+// ENGINE-BLOCK-END EFF
+// ENGINE-BLOCK-BEGIN TRANSPORT
 const TRANSPORT = A.__transport
+// ENGINE-BLOCK-END TRANSPORT
+// ENGINE-BLOCK-BEGIN validStringList
 const validStringList = (value) => Array.isArray(value) && value.length > 0
   && value.every(item => typeof item === 'string' && item.trim())
+// ENGINE-BLOCK-END validStringList
+// ENGINE-BLOCK-BEGIN transportValid
 const transportValid = TRANSPORT && typeof TRANSPORT === 'object' && !Array.isArray(TRANSPORT)
   && validStringList(TRANSPORT.ids)
   && (TRANSPORT.efforts === undefined || validStringList(TRANSPORT.efforts))
+// ENGINE-BLOCK-END transportValid
 if (!transportValid) {
   return { error: 'explore-fanout: args.__transport is missing or malformed. hooks/workflow_provider_guard.py injects the endpoint\'s model vocabulary (non-empty string array `ids`, optional non-empty `efforts`); without it this engine has no legal pins and refuses to guess.' }
 }
@@ -347,12 +357,19 @@ if (unpinned.length > 0) {
     badLenses: unpinned.map(l => l.key || '(unkeyed)'),
   }
 }
+const retired = lenses.filter(l => retiredOn(l).length > 0)
+if (retired.length > 0) {
+  return {
+    error: 'explore-fanout: a lens names its tools by kind alone. ' + retired.map(l => (l.key || '(unkeyed)') + ' carries ' + retiredOn(l).map(k => k + ' (' + RETIRED_KEYS[k] + ')').join(', ')).join('; ') + '.',
+    badLenses: retired.map(l => l.key || '(unkeyed)'),
+  }
+}
 const bad = lenses.filter(l => typeof l.key !== 'string' || !l.key.trim()
   || !(l.promptPath || l.prompt)
-  || typeof l.agentType !== 'string' || !l.agentType.trim())
+  || !kindOk(l))
 if (lenses.length === 0 || bad.length > 0) {
   return {
-    error: 'Every lens needs {key, promptPath (or prompt), agentType} with ' + pinVocab + '. Mandates live in .claude/commands/agents/explore_agents.md (or .claude/commands/research.md for res-* lenses) — write the resolved text to a scratchpad file and pass its path; never inline a large mandate into args (gotcha_workflow_args_generation_fidelity).',
+    error: 'Every lens needs {key, promptPath (or prompt), kind} with ' + pinVocab + '. Mandates live in .claude/commands/agents/explore_agents.md (or .claude/commands/research.md for res-* lenses) — write the resolved text to a scratchpad file and pass its path; never inline a large mandate into args (gotcha_workflow_args_generation_fidelity).',
     badLenses: bad.map(l => l.key || '(unkeyed)'),
   }
 }
@@ -378,24 +395,34 @@ if (SPILL_DIR) {
 // Guard tier per RECEIVING model is registry data (`railTier`), injected as `args.__rails` by
 // hooks/workflow_provider_guard.py because a Workflow script cannot read files. A model the map
 // does not name, or a call the hook did not rewrite, reads `detailed`: the fail-safe direction.
+// ENGINE-BLOCK-BEGIN RAILS
 const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
+// ENGINE-BLOCK-END RAILS
 const tierOf = (m) => RAILS[m] || 'detailed'
-// Rails text per (shape, tier) is assembled from .claude/guards/ by tools/guard_text.py and injected as
+// Rails text per (guard, tier) is assembled from .claude/guards/ by tools/guard_text.py and injected as
 // `args.__railsText` by hooks/workflow_provider_guard.py, because this script cannot read files. The
 // inline text reaches every delegate; the Read pointer is only the fallback when the hook supplied
 // none, and a present map missing a job's pair logs RAILS-FALLBACK so a key disagreement is visible.
+// ENGINE-BLOCK-BEGIN RAILS_TEXT
 const RAILS_TEXT = (A.__railsText && typeof A.__railsText === 'object') ? A.__railsText : {}
+// ENGINE-BLOCK-END RAILS_TEXT
+// ENGINE-BLOCK-BEGIN RAILS_HEADER
 const RAILS_HEADER = '=== DELEGATE RAILS (standing rules for how you work; your task is the brief above) ==='
-const inlineRails = (label, shape, tier) => {
-  const text = RAILS_TEXT[shape + '/' + tier]
+// ENGINE-BLOCK-END RAILS_HEADER
+// ENGINE-BLOCK-BEGIN inlineRails
+const inlineRails = (label, guard, tier) => {
+  const text = RAILS_TEXT[guard + '/' + tier]
   if (typeof text === 'string' && text.trim()) return ['', RAILS_HEADER, text].join('\n')
-  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + shape + '/' + tier)
+  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + guard + '/' + tier)
   return null
 }
+// ENGINE-BLOCK-END inlineRails
 const CONCURRENT = lenses.length > 1
 // The platform relays the triggering user message to every agent as authoritative; a lens whose
 // mandate looks unrelated can answer that message instead of its brief.
+// ENGINE-BLOCK-BEGIN RELAY_LINE
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
+// ENGINE-BLOCK-END RELAY_LINE
 // The read-only line below is prompt-level. Its advisory backstop is armed OUTSIDE this script by
 // .claude/hooks/readonly_marker_arm.py (a Workflow script has no filesystem, require, or clock),
 // which arms for any engine carrying the next line.
@@ -406,7 +433,7 @@ const BASE_CONTRACT = (l) => [
   RELAY_LINE,
   spills(l) ? 'Read-only: do NOT modify, create, or delete any file EXCEPT your own spill file, named in the SPILL-BEFORE-VALIDATE contract below.' : 'Read-only: do NOT modify, create, or delete any file.',
   CONCURRENT ? 'You are one of several lenses running CONCURRENTLY: do NOT run a single-flight tool (a test runner, build, engine or language server that allows one process per machine or per checkout; your delegate rails name this project\'s) — anchor with Grep and Read instead of a language server. Python and Node proofs under .claude/tests/ are not single-flight'
-    + (NO_SHELL_AGENT_TYPES.includes(effectiveType(l)) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file, not harness_tests.py (its machine slots are shared; rules/harness_tooling.md).')
+    + (noShell(l) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file, not harness_tests.py (its machine slots are shared; rules/harness_tooling.md).')
     + ' If your mandate needs a single-flight test run or call-site enumeration through a language server, report it as a gap; it needs a serialized dispatch.' : null,
   'You report STATE, never advice. A claim says what IS; it never says what should be built, fixed, or preferred. Recommendations are the orchestrator\'s to make from your claims.',
   '',
@@ -423,20 +450,25 @@ const BASE_CONTRACT = (l) => [
   '`gaps` — anything your mandate could not establish. Silence here reads as full coverage.',
   'OUTPUT: return ONLY the JSON object `{"claims": [...], "checked": {...}}` — no prose around it. Keep every field short: the schema imposes no caps, and a shorter object always beats a longer one.',
 ].filter(line => line !== null).join('\n')
-// DOCTRINE on top, tiered by the receiving model (instruction_quality §3). Shape is fixed `survey`:
-// this engine is discovery-shaped by construction, so unlike dispatch.js there is nothing to select.
-// Registry driverNotes per pinned model; rails key on (shape, tier) and carry no model, so notes travel in args.__driverNotes.
+// DOCTRINE on top, tiered by the receiving model (instruction_quality §3). The guard file set is the lens's
+// kind row `guard`.
+// Registry driverNotes per pinned model; rails key on (guard, tier) and carry no model, so notes travel in args.__driverNotes.
+// ENGINE-BLOCK-BEGIN DRIVER_NOTES
 const DRIVER_NOTES = (A.__driverNotes && typeof A.__driverNotes === 'object') ? A.__driverNotes : {}
+// ENGINE-BLOCK-END DRIVER_NOTES
+// ENGINE-BLOCK-BEGIN driverNotes
 const driverNotes = (model) => (typeof DRIVER_NOTES[model] === 'string' && DRIVER_NOTES[model].trim()) ? '\n\n' + DRIVER_NOTES[model] : ''
+// ENGINE-BLOCK-END driverNotes
 const guardRef = (x) => { const r = railsRef(x); return r && r + driverNotes(x.model) }
 const railsRef = (l) => {
   const tier = tierOf(l.model)
-  const inline = inlineRails(l.label || l.key, 'survey', tier)
+  const guard = profileOf(l).guard
+  const inline = inlineRails(l.label || l.key, guard, tier)
   if (inline) return BASE_CONTRACT(l) + '\n' + inline
   return BASE_CONTRACT(l) + '\n' + [
     '',
     '=== DELEGATE RAILS ===',
-    'Read .claude/guards/survey.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/any.md and of each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists. Read ONLY those sections — the other tiers are for other models.',
+    'Read .claude/guards/' + guard + '.md with the Read tool and follow its `## ' + tier + '` section, then do the same for the `## ' + tier + '` section of .claude/guards/common.md and of each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists. Read ONLY those sections — the other tiers are for other models.',
   ].join('\n')
 }
 
@@ -504,12 +536,15 @@ if (!checkerOk) {
   return { error: 'explore-fanout: args.checker = {model, effort} is required because every run starts the closeCheck verifier; args.checker must pin ' + pinVocab + '. Refusing before any lens starts.' }
 }
 const resolved = lenses.map(l => ({ ...l, label: LABEL + ':' + l.key }))
-log('PINS ' + JSON.stringify(Object.fromEntries(resolved.map(l => [l.label, PIN(l.model) + '/' + EFF(l.effort) + ' guards:survey@' + tierOf(l.model) + ' tier:' + tierOfLens(l)]))))
+log('PINS ' + JSON.stringify(Object.fromEntries(resolved.map(l => [l.label, PIN(l.model) + '/' + EFF(l.effort) + '/' + profileOf(l).agentType + ' guards:' + profileOf(l).guard + '@' + tierOf(l.model) + ' tier:' + tierOfLens(l)]))))
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
-const RECORDED = Object.fromEntries(resolved.map(l => [l.label, leanRecord(profileOf(l), l.agentType, swapOf(l))]))
+const RECORDED = Object.fromEntries(resolved.map(l => [l.label, Object.assign({}, profileOf(l),
+  { enforcement: 'agent-type', effectiveMcp: (profileOf(l).mcpServers || []).join(', ') })]))
 log('TOOL-PROFILES ' + JSON.stringify(RECORDED))
 
+// ENGINE-BLOCK-BEGIN READ_FAILURE
 const READ_FAILURE = '(retry a transient read error; a missing path or a denial is not retried: return checked.stoppedAt `blocked` with the path and cause in checked.basis)'
+// ENGINE-BLOCK-END READ_FAILURE
 const contextPre = A.contextPrefixPath
   ? 'SHARED CONTEXT for every lens of this dispatch is at: ' + A.contextPrefixPath + ' — read it with the Read tool FIRST ' + READ_FAILURE + '. It ORIENTS you; it never caps what you investigate, and every fact in it is a claim to confirm first-party, not ground truth.\n\n'
   : ''
@@ -519,16 +554,18 @@ const raw = await parallel(resolved.map(l => () => {
   const body = l.promptPath
     ? 'Your full lens mandate is at: ' + l.promptPath + ' — read it with the Read tool and execute it exactly ' + READ_FAILURE + '.'
     : (l.prompt || '')
-  return leanAgent(contextPre + body + spillContract(l) + guardRef(l), {
+  return agent(contextPre + body + spillContract(l) + guardRef(l), {
     label: l.label, phase: 'Explore', schema: CLAIMS_SCHEMA, model: PIN(l.model), effort: EFF(l.effort),
-    agentType: l.agentType,
-  }, swapOf(l), RECORDED).then(r => ({ key: l.key, result: r }))
+    agentType: profileOf(l).agentType,
+  }).then(r => ({ key: l.key, result: r }))
 }))
 
 phase('Consolidate')
 // A lens that died or returned nothing is NOT a lens that found nothing. Distinguishing them is the
 // whole point of `checked`; a null return has no `checked` at all, so it is its own flag class.
+// ENGINE-BLOCK-BEGIN flags
 const flags = []
+// ENGINE-BLOCK-END flags
 const gaps = []
 const perLens = []
 const stamped = []

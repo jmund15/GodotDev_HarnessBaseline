@@ -44,7 +44,7 @@ def coverage_reason(job, *, review=False, root=REPO, stage=None):
             names.update(key.split("+"))
     import tool_profiles
     declared_seat = bool(names.intersection(citer_keys()))
-    if not review and tool_profiles.job_kind_shape(job) != "review" and not declared_seat:
+    if not review and tool_profiles.kind_guard(job.get("kind")) != "review" and not declared_seat:
         return None
     label = job.get("key") or job.get("label") or job.get("seat") or "review seat"
     prompt_path = job.get("promptPath") or job.get("promptFile")

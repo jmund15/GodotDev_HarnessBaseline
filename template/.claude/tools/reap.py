@@ -46,7 +46,8 @@ beside the whole transcript. The tool reads no transcript for it, no stop verb, 
                             SIDECAR_LAUNCH_ID=X that is not itself a launcher (a seat child), no
                             launcher of X lives instead (see `launchers` below)
                 stalled     --log <path> untouched for --idle-min minutes (default 30); a sidecar's
-                            `<record>.stall` marker counts by the idle seconds its launcher wrote
+                            `<record>.journal.jsonl` counts by its `stalled` row's idle seconds plus the
+                            time since that row, and a later `resumed` or `ended` row refuses
                 superseded  --artifact <path> exists: the output the target is producing is already on disk,
                             written by another job. An artifact whose label stem (the name before
                             its first dot, any case) is in the target tree's command lines is the
@@ -252,8 +253,18 @@ def _proc_table():
     return out
 
 
+def _on_windows():
+    return os.name == "nt"
+
+
 def process_table(timeout=60):
-    """{pid: {pid, ppid, name, cmd, start}} for every process, via CIM, else /proc off Windows. Empty dict when unreadable."""
+    """{pid: {pid, ppid, name, cmd, start}} for every process: CIM on Windows, /proc elsewhere. Empty dict when
+    unreadable."""
+    return _cim_table(timeout) if _on_windows() else _proc_table()
+
+
+def _cim_table(timeout=60):
+    """process_table's Windows reader, through Get-CimInstance. Empty dict when unreadable."""
     ps = ("Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine,"
           " @{n='Start';e={$_.CreationDate.ToString('yyyy-MM-dd HH:mm:ss')}} | ConvertTo-Json -Compress")
     for exe in ("pwsh", "powershell"):
@@ -278,7 +289,7 @@ def process_table(timeout=60):
                 out[pid] = {"pid": pid, "ppid": row.get("ParentProcessId"), "name": row.get("Name") or "",
                             "cmd": row.get("CommandLine") or "", "start": row.get("Start") or ""}
         return out
-    return _proc_table() if os.name != "nt" else {}
+    return {}
 
 
 def winpid_from_ps(text, msys_pid):
@@ -841,6 +852,30 @@ def orphan_evidence(table, pid):
     return True, "parent %s is gone" % ppid
 
 
+def _standing_stall(journal):
+    """The last `stalled` row of a launcher journal, or None when a later `resumed` or `ended` row
+    already cleared it. An unreadable line is skipped; nothing is guessed."""
+    rows = []
+    try:
+        with open(journal, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        return None
+    for row in reversed(rows):
+        event = row.get("event")
+        if event == "stalled":
+            return row
+        if event in ("resumed", "ended"):
+            return None
+    return None
+
+
 def justification(args, table, pid, targets):
     """(ok, evidence) for the named reason, verified mechanically; a call naming none needs none."""
     reason = args.reason
@@ -861,18 +896,23 @@ def justification(args, table, pid, targets):
     if reason == "stalled":
         if not args.log or not os.path.isfile(args.log):
             return False, "--log %r is not a file" % args.log
-        if args.log.endswith(".stall"):
-            # A sidecar launcher's marker: it measures silence without the status heartbeats that keep
-            # the stream's mtime fresh, and it deletes the marker when the run speaks again.
-            with open(args.log, encoding="utf-8", errors="replace") as fh:
-                found = re.search(r"idle=(\d+)", fh.read())
-            if not found:
-                return False, "%s carries no idle=<seconds>" % os.path.basename(args.log)
-            idle = int(found.group(1)) / 60.0
+        journal = args.log if args.log.endswith(".journal.jsonl") else args.log + ".journal.jsonl"
+        if os.path.isfile(journal):
+            # A launcher's journal: its `stalled` row records the silence the launcher measured, and the
+            # row's age is the silence since. A later `resumed` or `ended` row means no stall stands.
+            row = _standing_stall(journal)
+            if row is None:
+                return False, "%s carries no standing stalled row" % os.path.basename(journal)
+            try:
+                at = datetime.datetime.strptime(str(row.get("ts")), "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=datetime.timezone.utc).timestamp()
+                idle = (int(row["idle"]) + (time.time() - at)) / 60.0
+            except (KeyError, TypeError, ValueError):
+                return False, "%s stalled row carries no readable idle and ts" % os.path.basename(journal)
         else:
             idle = (time.time() - os.path.getmtime(args.log)) / 60.0
         if idle < args.idle_min:
-            return False, "%s written %.1f min ago (< %d)" % (os.path.basename(args.log), idle, args.idle_min)
+            return False, "%s idle %.1f min (< %d)" % (os.path.basename(args.log), idle, args.idle_min)
         return True, "%s idle %.0f min (>= %d)" % (os.path.basename(args.log), idle, args.idle_min)
     if reason == "superseded":
         if not args.artifact or not os.path.exists(args.artifact):

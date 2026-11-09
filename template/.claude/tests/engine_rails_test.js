@@ -9,15 +9,15 @@ const engineRun = require('./_engine_run')
 const HOST_TRANSPORT = { name: 'host', ids: ['opus', 'sonnet', 'haiku', 'fable'], efforts: ['low', 'medium', 'high', 'xhigh'] }
 // The test pins the self-started verifier and merge steps through args.checker; the engine never picks them.
 const HOST_CHECKER = { model: 'sonnet', effort: 'medium' }
-const withHost = (args) => Object.prototype.hasOwnProperty.call(args || {}, '__transport') ? args : { ...args, checker: (args && args.checker) || HOST_CHECKER, __transport: HOST_TRANSPORT }
+const withHost = (args) => engineRun.withKinds(Object.prototype.hasOwnProperty.call(args || {}, '__transport') ? args : { ...args, checker: (args && args.checker) || HOST_CHECKER, __transport: HOST_TRANSPORT })
 
 const RAILS = { fable: 'minimal', 'claude-fable-5-1': 'minimal', opus: 'condensed', sonnet: 'detailed' }
-const JOB = { label: 'j', promptPath: 'p.md', model: 'fable', effort: 'medium', agentType: 'Explore' }
+const JOB = { label: 'j', promptPath: 'p.md', model: 'fable', effort: 'medium', kind: 'reviewer' }
 const ENGINES = {
   'dispatch.js': (extra) => ({ jobs: [{ ...JOB }], ...extra }),
   'dispatch_chains.js': (extra) => ({ chains: [{ name: 'c', jobs: [{ ...JOB }] }], ...extra }),
-  'explore_fanout.js': (extra) => ({ lenses: [{ key: 'k', promptPath: 'p.md', model: 'fable', effort: 'medium', agentType: 'Explore' }], ...extra }),
-  'review_fanout.js': (extra) => ({ agents: [{ key: 'k', promptPath: 'p.md', model: 'fable', effort: 'medium', agentType: 'Explore', mustRead: [{ path: 'x', lines: 1 }] }], ...extra }),
+  'explore_fanout.js': (extra) => ({ lenses: [{ key: 'k', promptPath: 'p.md', model: 'fable', effort: 'medium', kind: 'reviewer' }], ...extra }),
+  'review_fanout.js': (extra) => ({ agents: [{ key: 'k', promptPath: 'p.md', model: 'fable', effort: 'medium', kind: 'reviewer', mustRead: [{ path: 'x', lines: 1 }] }], ...extra }),
 }
 
 async function prompts(file, args, logs) {
@@ -60,8 +60,8 @@ async function prompts(file, args, logs) {
   }
   // Inline delivery: the hook supplies `__railsText` for the pairs a call uses; each engine pastes it
   // after the brief under a standing-rules header, and keeps the pointer only as the fallback.
-  const INLINE_KEY = { 'dispatch.js': 'any/minimal', 'dispatch_chains.js': 'any/minimal',
-    'explore_fanout.js': 'survey/minimal', 'review_fanout.js': 'review/minimal' }
+  const INLINE_KEY = { 'dispatch.js': 'review/minimal', 'dispatch_chains.js': 'review/minimal',
+    'explore_fanout.js': 'review/minimal', 'review_fanout.js': 'review/minimal' }
   for (const [file, build] of Object.entries(ENGINES)) {
     const logs = []
     const inline = await prompts(file, build({ __rails: RAILS, __railsText: { [INLINE_KEY[file]]: 'RAILS-BODY-XYZ' } }), logs)
@@ -93,7 +93,7 @@ async function prompts(file, args, logs) {
   const noneNotes = await prompts('dispatch.js', { jobs: [{ ...JOB, railTier: 'none' }], __rails: RAILS, __driverNotes: { fable: 'NOTE-XYZ' } })
   check('dispatch.js: railTier none sends no driver notes either', !(noneNotes.seen[0] || '').includes('NOTE-XYZ'))
   const chainsBare = await prompts('dispatch_chains.js', ENGINES['dispatch_chains.js']({}))
-  check('dispatch_chains.js: the fallback pointer names any.md', (chainsBare.seen[0] || '').includes('guards/any.md'),
+  check('dispatch_chains.js: the fallback pointer names common.md', (chainsBare.seen[0] || '').includes('guards/common.md'),
     (chainsBare.seen[0] || '').slice(-300))
   // A per-job railTier override wins over the registry map: the rail-tier battery varies the tier
   // with the model held fixed, through the production prompt.
@@ -108,16 +108,16 @@ async function prompts(file, args, logs) {
   const badTier = await prompts('dispatch.js', { jobs: [{ ...JOB, railTier: 'strict' }], __rails: RAILS })
   check('dispatch.js: an unknown railTier is rejected before dispatch',
     badTier.seen.length === 0 && !!(badTier.result && badTier.result.error), JSON.stringify(badTier.result).slice(0, 200))
-  // The choices block is for a writing job; a read-only job (Explore, no write tool) does not get it.
-  const chainJob = (agentType) => ({ chains: [{ name: 'c', jobs: [{ ...JOB, agentType }] }] })
-  const writing = await prompts('dispatch_chains.js', chainJob('general-purpose'))
+  // The choices block is for a writing job; a read-only job (a reviewer, no write tool) does not get it.
+  const chainJob = (kind) => ({ chains: [{ name: 'c', jobs: [{ ...JOB, kind }] }] })
+  const writing = await prompts('dispatch_chains.js', chainJob('author'))
   check('dispatch_chains.js: a writing job gets the CHOICES block', (writing.seen[0] || '').includes('=== CHOICES'),
     writing.result && writing.result.error || (writing.seen[0] || '').slice(-300))
-  const reading = await prompts('dispatch_chains.js', chainJob('Explore'))
+  const reading = await prompts('dispatch_chains.js', chainJob('reviewer'))
   check('dispatch_chains.js: a read-only job gets no CHOICES block', !(reading.seen[0] || '').includes('=== CHOICES'),
     reading.result && reading.result.error || (reading.seen[0] || '').slice(-300))
   // hooks/amend_delivery.py LINE_RE keys delivery on this line; a poll instruction is the retired mechanism.
-  const authorJob = { ...JOB, agentType: 'general-purpose', shape: 'author' }
+  const authorJob = { ...JOB, kind: 'author' }
   for (const [file, args] of [['dispatch.js', { jobs: [authorJob] }],
                               ['dispatch_chains.js', { chains: [{ name: 'c', jobs: [authorJob] }] }]]) {
     const amended = (await prompts(file, args)).seen[0] || ''
@@ -126,6 +126,10 @@ async function prompts(file, args, logs) {
         && !/before returning, Read/.test(amended),
       amended.slice(-300))
   }
+  // A reviewer lens read from a promptPath gets the same amend line as an author job.
+  const lensAmended = (await prompts('review_fanout.js', ENGINES['review_fanout.js']({}))).seen[0] || ''
+  check('review_fanout.js: a lens with a promptPath carries the amendment key line',
+    /Amendments: the harness delivers \S*p\.md\.amend\.md to you when your parent writes or changes it/.test(lensAmended), lensAmended.slice(-300))
   console.log('\n' + (total - failed) + '/' + total + ' passed')
   process.exit(failed ? 1 : 0)
 })()

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Proof that a provider usage limit ends a sidecar run and blocks new launches
 # (lib/sidecar_common.sh sc_run_watched, sc_resume_loop, sc_write_record, sc_gate_availability).
-#   A  a child retrying 429 forever is stopped: rc 10, stopReason recorded, marker written, no resume
+#   A  a rejected allowance stops the child: rc 10, stopReason recorded, marker written, no resume
 #   B  the terminal usage-limit result is not resumed, even when the child lingers after it
 #   C  a transient 429 that later succeeds keeps running and finishes normally
-#   D  api_retry lines are not progress: the stall marker still fires, and nothing is killed
+#   D  api_retry lines are not progress: the stall row still fires, and nothing is killed
 #   E  a live marker refuses a launch even with -A; an expired marker allows it
-#   F  the first 429 retry writes <record>.usage (the session's wake signal) while the run keeps
-#      retrying; later retries leave it as written, and a stale marker from an earlier launch is replaced
+#   F  the first 429 retry writes a usage-limit journal row (the session's wake signal) while the run keeps
+#      retrying; later retries leave it as written, and a stale row from an earlier launch stays behind it
 # Planted children only; nothing reaches a provider. Every case must produce output.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,7 +27,7 @@ trap 'rm -rf "$TMPD"' EXIT
 export SIDECAR_EXHAUSTED_DIR="$TMPD/exhausted"
 MARKER="$SIDECAR_EXHAUSTED_DIR/codex.json"
 SC_WATCH_POLL_SEC=1
-SC_USAGE_LIMIT_RETRIES=3
+SC_USAGE_LIMIT_RETRIES=10
 SC_WORKDIR="$(cd "$R/.." && pwd)"
 SC_MODEL="gpt-5.6-luna"; SC_COST_MODEL="plan-quota"; SC_EFFORT="low"; SC_DISCLOSURE="pointer"
 SC_SCHEMA_FILE=""; SC_RECORD_PARSER="claude"; SC_CONTEXT_TOKENS=""
@@ -55,17 +55,18 @@ ledger_rows() { [ -f "$1" ] && wc -l < "$1" | tr -d ' ' || echo 0; }
 
 echo "provider usage limit — firing proof"
 
-# --- A: 429 retries forever (bounded at 60 lines so a broken watchdog fails instead of hanging)
+# --- A: a rejected allowance without a reset timestamp stops the still-retrying child
 retry_forever() {
   init_line S-A; work_line S-A
+  printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected"}}\n'
   local i; for i in $(seq 1 60); do retry_line "$i" 429 S-A; sleep 0.5; done
   printf '{"type":"result","session_id":"S-A","is_error":false,"result":"never stopped"}\n'
 }
 reset_run ul-a; rm -rf "$SIDECAR_EXHAUSTED_DIR"; SC_STALL_SEC=900
 t0=$(date +%s); sc_run_watched retry_forever "$P" 2>"$TMPD/a.err"; t1=$(date +%s)
 [ "$rc" = 10 ] && [ "${SC_USAGE_LIMITED:-0}" = 1 ] && [ $((t1 - t0)) -lt 25 ] \
-  && ok "A1 a run of 429 retries stops the child (rc=10 after $((t1 - t0))s)" \
-  || bad "A1 a run of 429 retries stops the child" "rc=$rc limited=${SC_USAGE_LIMITED:-unset} elapsed=$((t1 - t0))s"
+  && ok "A1 a rejected allowance stops the child (rc=10 after $((t1 - t0))s)" \
+  || bad "A1 a rejected allowance stops the child" "rc=$rc limited=${SC_USAGE_LIMITED:-unset} elapsed=$((t1 - t0))s"
 grep -q '"terminal_reason":"provider-usage-limit"' "$P" && ok "A2 the stream ends on a provider-usage-limit event" \
   || bad "A2 the stream ends on a provider-usage-limit event" "tail: $(tail -c 160 "$P")"
 sc_resume_loop resume_stub "$P" 2>/dev/null
@@ -83,6 +84,48 @@ if [ -f "$MARKER" ]; then
 else
   bad "A6 the marker is written with a 30-minute expiry when no reset time is known" "no marker at $MARKER"
 fi
+
+# --- H/I: the x2b-s2 retry shape has no allowance evidence; wait for the child's own result
+bare_retries() {
+  init_line S-H
+  local i; for i in $(seq 1 10); do retry_line "$i" 429 S-H; done
+  sleep 3
+  printf '{"type":"result","is_error":false,"session_id":"S-H","result":"after ten retries"}\n'
+}
+reset_run ul-h; rm -rf "$SIDECAR_EXHAUSTED_DIR"
+sc_run_watched bare_retries "$P" 2>"$TMPD/h.err"
+[ "$rc" = 0 ] && [ "$SC_USAGE_LIMITED" = 0 ] && [[ "$OUTPUT" == *'after ten retries'* ]] && [ ! -f "$MARKER" ] \
+  && ok "H1 ten bare retries let the child finish successfully without exhaustion" \
+  || bad "H1 ten bare retries let the child finish successfully without exhaustion" "rc=$rc limited=$SC_USAGE_LIMITED"
+usage_rows() { local n; n="$(grep -c '"event": "usage-limit"' "${SC_RECORD}.journal.jsonl" 2>/dev/null)"; echo "${n:-0}"; }
+usage_field() { python3 -c 'import json,sys
+rows=[json.loads(l) for l in open(sys.argv[1],encoding="utf-8") if l.strip()]
+rows=[r for r in rows if r.get("event")=="usage-limit"]
+v=rows[-1].get(sys.argv[2]) if rows else None
+print("" if v is None else v)' "$(sc_to_native "${SC_RECORD}.journal.jsonl")" "$1" 2>/dev/null; }
+[ "$(usage_rows)" -ge 1 ] \
+  && ok "H2 ten bare retries still write the early usage-limit wake row" \
+  || bad "H2 ten bare retries still write the early usage-limit wake row" "rows=$(usage_rows)"
+
+bare_then_overload() {
+  init_line S-I
+  local i; for i in $(seq 1 10); do retry_line "$i" 429 S-I; done
+  sleep 3
+  printf '{"type":"result","is_error":true,"terminal_reason":"api_error","api_error_status":429,"session_id":"S-I","result":"API Error: Request rejected (429) · Upstream request failed: [overloaded] the server is overloaded; retry shortly"}\n'
+}
+reset_run ul-i; rm -rf "$SIDECAR_EXHAUSTED_DIR"
+sc_run_watched bare_then_overload "$P" 2>"$TMPD/i.err"
+[ "$rc" != 10 ] && [ "$SC_USAGE_LIMITED" = 0 ] && [[ "$OUTPUT" == *'[overloaded]'* ]] && [ ! -f "$MARKER" ] \
+  && ok "I1 ten bare retries preserve the child's terminal overload, not exit 10" \
+  || bad "I1 ten bare retries preserve the child's terminal overload, not exit 10" "rc=$rc limited=$SC_USAGE_LIMITED"
+sc_resume_loop resume_stub "$P" 2>"$TMPD/i-resume.err"
+[ "$(calls)" = 1 ] && [ "$rc" = 0 ] && [ "$SC_RESUME_SID" = S-I ] && [ ! -f "$MARKER" ] \
+  && ok "I2 the terminal overload takes the existing same-session resume path" \
+  || bad "I2 the terminal overload takes the existing same-session resume path" "rc=$rc calls=$(calls) sid=$SC_RESUME_SID"
+sc_write_record "$OUTPUT" "$rc" 2>/dev/null
+[ "$(rec_field "$SC_RECORD" stopReason)" != provider-usage-limit ] && [ ! -f "$MARKER" ] \
+  && ok "I3 the resumed run's record does not report provider exhaustion" \
+  || bad "I3 the resumed run's record does not report provider exhaustion" "stopReason=$(rec_field "$SC_RECORD" stopReason)"
 
 # --- B: the terminal usage-limit result, with a child that lingers after it
 RESET=$(( $(date +%s) + 3600 ))
@@ -109,13 +152,12 @@ sc_write_record "$OUTPUT" "$rc" 2>/dev/null
 [ -f "$MARKER" ] && [ "$(marker_field expiresAt)" = "$RESET" ] && ok "B4 the marker expires at the stream's reset time" \
   || bad "B4 the marker expires at the stream's reset time" "expiresAt=$(marker_field expiresAt) want=$RESET"
 
-usage_field() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1],encoding="utf-8")).get(sys.argv[2]); print("" if v is None else v)' "$(sc_to_native "${SC_RECORD}.usage")" "$1" 2>/dev/null; }
-[ -f "${SC_RECORD}.usage" ] && [ "$(usage_field transport)" = codex ] && [ "$(usage_field resetsAt)" = "$RESET" ] \
-  && [ -n "$(usage_field firstSeen)" ] \
-  && ok "B5 the usage-limit hit writes <record>.usage with the transport and the stream's reset time" \
-  || bad "B5 the usage-limit hit writes <record>.usage" "exists=$([ -f "${SC_RECORD}.usage" ] && echo yes || echo no) transport=$(usage_field transport) resetsAt=$(usage_field resetsAt) want=$RESET"
+[ "$(usage_rows)" -ge 1 ] && [ "$(usage_field transport)" = codex ] && [ "$(usage_field resetsAt)" = "$RESET" ] \
+  && [ -n "$(usage_field ts)" ] \
+  && ok "B5 the usage-limit hit writes a journal row with the transport and the stream's reset time" \
+  || bad "B5 the usage-limit hit writes a journal row" "rows=$(usage_rows) transport=$(usage_field transport) resetsAt=$(usage_field resetsAt) want=$RESET"
 
-# --- F: the FIRST retry writes <record>.usage while the run keeps going; later retries leave it
+# --- F: the FIRST retry writes the usage-limit row while the run keeps going; later retries leave it
 slow_retries() {
   init_line S-F; work_line S-F
   retry_line 1 429 S-F; sleep 3
@@ -124,24 +166,23 @@ slow_retries() {
   printf '{"type":"result","subtype":"success","is_error":false,"session_id":"S-F","result":"the deliverable"}\n'
 }
 reset_run ul-f; rm -rf "$SIDECAR_EXHAUSTED_DIR"
-printf '{"firstSeen":"stale"}\n' > "${SC_RECORD}.usage"
+printf '{"event": "usage-limit", "transport": "stale", "retries": 9}\n' > "${SC_RECORD}.journal.jsonl"
 ( sc_run_watched slow_retries "$P" 2>/dev/null; printf '%s' "$rc" > "$TMPD/ul-f.rc" ) &
 bg=$!
 first=""; waited=0
 while kill -0 "$bg" 2>/dev/null && [ "$waited" -lt 80 ]; do
-  # The launch removes the stale marker before the first retry writes the new one; an empty read is that gap.
-  seen="$(usage_field firstSeen)"
-  if [ -n "$seen" ] && [ "$seen" != stale ]; then first="$(cat "${SC_RECORD}.usage")"; break; fi
+  # The launch appends this run's row after the stale one; the reader takes the last row in the run.
+  if [ "$(usage_rows)" -ge 2 ]; then first="$(usage_field ts)"; break; fi
   sleep 0.25; waited=$((waited + 1))
 done
 alive=no; kill -0 "$bg" 2>/dev/null && alive=yes
 wait "$bg"; rc="$(cat "$TMPD/ul-f.rc" 2>/dev/null)"
 [ -n "$first" ] && [ "$alive" = yes ] && [ "$(usage_field retries)" = 1 ] && [ -z "$(usage_field resetsAt)" ] \
-  && ok "F1 the first 429 retry writes <record>.usage (retries=1, reset unknown) while the run is live" \
-  || bad "F1 the first 429 retry writes <record>.usage while the run is live" "first=${first:-none} alive=$alive retries=$(usage_field retries)"
-[ -n "$first" ] && [ "$(cat "${SC_RECORD}.usage" 2>/dev/null)" = "$first" ] \
-  && ok "F2 the second retry does not rewrite the marker" \
-  || bad "F2 the second retry does not rewrite the marker" "first=${first:-none} now=$(cat "${SC_RECORD}.usage" 2>/dev/null)"
+  && ok "F1 the first 429 retry writes a usage-limit row (retries=1, reset unknown) while the run is live" \
+  || bad "F1 the first 429 retry writes a usage-limit row while the run is live" "first=${first:-none} alive=$alive retries=$(usage_field retries)"
+[ -n "$first" ] && [ "$(usage_rows)" = 2 ] && [ "$(usage_field ts)" = "$first" ] \
+  && ok "F2 the second retry does not append another row" \
+  || bad "F2 the second retry does not append another row" "first=${first:-none} rows=$(usage_rows)"
 [ "$rc" = 0 ] && ok "F3 the run keeps retrying and finishes normally (rc=0)" || bad "F3 the run keeps retrying and finishes normally" "rc=$rc"
 
 # --- C: transient 429s that clear keep running
@@ -170,14 +211,14 @@ bg=$!
 # Watch for the whole run: the mark lands one poll after SC_STALL_SEC idle, plus each poll's python start.
 marked=no; waited=0
 while kill -0 "$bg" 2>/dev/null; do
-  if [ -f "${SC_RECORD}.stall" ]; then marked=yes; break; fi
+  if grep -q '"event": "stalled"' "${SC_RECORD}.journal.jsonl" 2>/dev/null; then marked=yes; break; fi
   sleep 0.25; waited=$((waited + 1))
 done
 wait "$bg"; rc="$(cat "$TMPD/ul-d.rc" 2>/dev/null)"
 [ "$marked" = yes ] && [ "$rc" = 0 ] && grep -q 'never stalled' "$TMPD/ul-d.out" \
-  && [ ! -f "${SC_RECORD}.stall" ] && [ ! -s "$CNT" ] \
-  && ok "D1 api_retry and system lines do not reset the stall marker (marked, then the run finished rc=0)" \
-  || bad "D1 api_retry and system lines do not reset the stall marker" "marked=$marked waited=${waited} rc=$rc"
+  && [ ! -s "$CNT" ] \
+  && ok "D1 api_retry and system lines do not reset the stall reading (stalled row, then the run finished rc=0)" \
+  || bad "D1 api_retry and system lines do not reset the stall reading" "marked=$marked waited=${waited} rc=$rc"
 SC_STALL_SEC=900
 
 # --- E: the marker gate

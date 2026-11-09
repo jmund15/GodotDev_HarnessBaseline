@@ -43,7 +43,11 @@ from _win_path import native_path  # noqa: E402
 # sidecar arm, a gate/suite run, or a peer's whole session.
 PROTECTED = (
     (r"sidecar_fanout\.py", "a sidecar fan-out — its in-flight arms are billed and unresumable"),
-    (r"_sidecar\.sh|sidecar_launch\.py", "a sidecar launcher child — the arm dies with it"),
+    # Bound to the process's script argument (after an optional interpreter and flags): a shell whose command
+    # line only mentions the script name, as in `python -c "...sidecar_launch.py"`, is not a launcher.
+    (r"^\"?(?:(?:[A-Za-z]:[/\\][^\"\n]*?[/\\]|[^\s\"]*[/\\])?(?:bash|sh|python3?|py)(?:\.exe)?\"?\s+(?:-\S+\s+)*)?"
+     r"\"?(?:\S*[/\\])?(?:\S*_sidecar\.sh|sidecar_launch\.py)\b",
+     "a sidecar launcher child — the arm dies with it"),
     (r"harness_tests\.py", "the harness proof runner"),
     (r"regression_gate|gate_chain|verify\.ps1", "a gate/verification run"),
     (r"vstest|dotnet\s+test", "a test run"),

@@ -91,6 +91,12 @@ def _bash_credit_cases(cases, gate, hook_state, project):
         delivered = gate.mark_loaded(bash("bashcredit1", stdout=full.replace("\n", "\r\n")))
         cases.append(("a delivered for-role stdout (CRLF, as the client returns it) credits the staged tiers",
                       delivered is True and hook_state.ladder_slice_tiers("bashcredit1") == ["executor", "fanout"]))
+        earlier = run_role("bashkey1", ["for-role", "executor", "--from", "anthropic"])[1]
+        run_role("bashkey1", ["for-role", "fanout", "--from", "anthropic"])
+        delivered_earlier = gate.mark_loaded(bash("bashkey1", stdout=earlier.replace("\n", "\r\n")))
+        cases.append(("a later for-role run does not replace an earlier run's receipt: the earlier run's delivered "
+                      "stdout still credits its own tiers",
+                      delivered_earlier is True and hook_state.ladder_slice_tiers("bashkey1") == ["executor"]))
         captured = (fixture.get("for_role") or {}).get("toolUseResult", {}).get("stdout") or ""
         rc, full = run_role("bashtrim1", ["for-role", "executor", "fanout", "--from", "anthropic"])
         cases.append(("the client trims the trailing newline off a Bash stdout (the captured result ends without one), "
@@ -105,6 +111,25 @@ def _bash_credit_cases(cases, gate, hook_state, project):
         cases.append(("a for-role run piped through head credits nothing and records why",
                       rc == 0 and not piped and hook_state.ladder_slice_tiers("bashhead1") == []
                       and bool(failure("bashhead1"))))
+
+        rc, full = run_role("bashand1", ["for-role", "executor", "fanout", "--from", "anthropic"])
+        joined = "a line before the table\n" + full.rstrip("\n") + "\na line after the table\n"
+        credited = gate.mark_loaded(bash("bashand1", command="echo before && " + BARE + " && echo after",
+                                         stdout=joined))
+        cases.append(("a for-role run joined by && between two other commands credits its tiers: its stdout "
+                      "appears whole inside the delivered output",
+                      rc == 0 and credited is True
+                      and hook_state.ladder_slice_tiers("bashand1") == ["executor", "fanout"]))
+
+        rc, full = run_role("bashhead20", ["for-role", "executor", "--from", "anthropic"])
+        head20 = "a line before the table\n" + "".join(full.splitlines(True)[:20])
+        cases.append(("a for-role run joined by && and then piped through head -20 credits nothing: the block "
+                      "is cut",
+                      rc == 0 and len(full.splitlines()) > 20
+                      and not gate.mark_loaded(bash("bashhead20", command="echo before && " + BARE + " | head -20",
+                                                    stdout=head20))
+                      and hook_state.ladder_slice_tiers("bashhead20") == []
+                      and bool(failure("bashhead20"))))
 
         stage("bashtail1", full)
         cases.append(("a for-role run piped through tail credits nothing",
@@ -419,18 +444,27 @@ def _tools_registry():
     return model_registry
 
 
-def test_the_deny_embeds_the_slice_for_the_missing_tier_only_and_records_it(tmp_path, monkeypatch):
+def test_the_deny_names_the_missing_tier_and_embeds_every_claimed_tier(tmp_path, monkeypatch):
     gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'embed001', ['fanout'])
-    registry = _tools_registry()
+    registry = _planted_capacity(tmp_path, monkeypatch)
+    claimed = registry.claimed_tiers()
+    text, ladder_error = registry.for_role_text(claimed)
     reason, fault = gate.doctrine_check(payload, tiers=lambda: ['fanout', 'executor'], embed_slice=True)
-    assert fault is None and reason.endswith(registry.ladder_slice(['executor'])), reason
+    assert fault is None and ladder_error is None and reason.endswith(text), reason[-300:]
     assert gate.SLICE_BELOW_STEP.format(which="executor") in reason, reason
     assert gate.SLICE_STEP.format(which="executor", tiers="executor") not in reason, reason
     assert 're-issue' in reason and 'DENIED' in reason, reason
-    executor_lines = set(registry.ladder_slice(['executor']).splitlines())
-    only_architect = [l for l in registry.ladder_slice(['fanout']).splitlines() if l not in executor_lines]
-    assert only_architect and not any(l in reason for l in only_architect)
-    assert hooks_state.ladder_slice_tiers('embed001') == ['executor', 'fanout']
+    assert hooks_state.ladder_slice_tiers('embed001') == sorted(claimed)
+
+
+def test_an_unidentified_plan_still_embeds_the_ladder_and_names_no_room(tmp_path, monkeypatch):
+    gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'embed007', [])
+    registry = _planted_capacity(tmp_path, monkeypatch)
+    monkeypatch.delenv('CLAUDE_CODE_TRANSPORT', raising=False)
+    monkeypatch.setenv('ANTHROPIC_BASE_URL', 'https://example.invalid/unmatched')
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['executor'], embed_slice=True)
+    assert '## Role definitions' in reason and 'route ' not in reason, reason[-300:]
+    assert hooks_state.ladder_slice_tiers('embed007') == sorted(registry.claimed_tiers())
 
 
 def test_the_call_passes_once_the_deny_embedded_its_slice(tmp_path, monkeypatch):
@@ -471,6 +505,46 @@ def test_the_default_records_no_slice_so_an_undelivered_deny_cannot_pass_the_nex
     assert '%s executor' % SLICE_CMD in reason, reason
     assert hooks_state.ladder_slice_tiers('embed006') == []
     assert gate.doctrine_check(payload, tiers=lambda: ['executor'])[0] is not None
+
+
+def _planted_capacity(tmp_path, monkeypatch):
+    """A fresh cache reading per plan-quota transport, and a pinned launcher count: the embedded `for-role`
+    text reads room cache-only and must not vary between two calls."""
+    monkeypatch.syspath_prepend(str(HERE))
+    from _capacity_fixtures import write_capacity_cache
+    registry = _tools_registry()
+    import sidecar_fanout
+    monkeypatch.setattr(sidecar_fanout, 'plan_load', lambda data=None: {})
+    cache = write_capacity_cache(tmp_path / 'capacity.json', registry.load())
+    monkeypatch.setenv('PROVIDER_CAPACITY_CACHE', str(cache))
+    monkeypatch.setenv('CLAUDE_CODE_TRANSPORT', 'anthropic')
+    return registry
+
+
+def test_the_deny_embeds_for_role_text_with_plan_room_and_credits_every_claimed_tier(tmp_path, monkeypatch):
+    gate, hooks_state, payload = _sliced_session(tmp_path, monkeypatch, 'embed101', [], skill=False)
+    registry = _planted_capacity(tmp_path, monkeypatch)
+    claimed = registry.claimed_tiers()
+    reason, fault = gate.doctrine_check(payload, tiers=lambda: ['executor'], embed_slice=True)
+    assert fault is None and 'Skill(skill="orchestration")' in reason, reason
+    assert '## Role definitions' in reason and 'route ' in reason, reason
+    assert 'plan ' in reason and 'left ' in reason, reason
+    assert hooks_state.ladder_slice_tiers('embed101') == sorted(claimed), claimed
+
+
+def test_the_deny_credits_every_claimed_tier_so_a_second_tier_passes(tmp_path, monkeypatch):
+    gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'embed102', [])
+    _planted_capacity(tmp_path, monkeypatch)
+    assert gate.doctrine_check(payload, tiers=lambda: ['executor'], embed_slice=True)[0] is not None
+    assert gate.doctrine_check(payload, tiers=lambda: ['architect']) == (None, None)
+
+
+def test_the_embedded_text_is_exactly_what_for_role_prints(tmp_path, monkeypatch):
+    gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'embed103', [])
+    registry = _planted_capacity(tmp_path, monkeypatch)
+    reason, _ = gate.doctrine_check(payload, tiers=lambda: ['executor'], embed_slice=True)
+    text, ladder_error = registry.for_role_text(registry.claimed_tiers())
+    assert ladder_error is None and reason.endswith(text), reason[-300:]
 
 
 if __name__ == "__main__":

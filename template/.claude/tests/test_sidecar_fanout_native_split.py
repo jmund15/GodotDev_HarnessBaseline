@@ -127,10 +127,10 @@ args = read(out, "native.args.json")
 case("a session-plan job writes native.args.json and starts no driver",
      lambda: code == 0 and args is not None and [j["label"] for j in args["jobs"]] == ["nat1"] and DRIVERS == [])
 case("the native job carries the engine's fields and no injected key",
-     lambda: args["jobs"][0].get("shape") == "survey" and args["jobs"][0].get("agentType") == "general-purpose"
+     lambda: args["jobs"][0].get("kind") == "scout" and not {"shape", "agentType"} & set(args["jobs"][0])
      and args["jobs"][0].get("effort") == "high" and args["jobs"][0].get("model")
      and os.path.isabs(args["jobs"][0]["promptPath"])
-     and not any(k.startswith("__") or k in ("currency", "currencyReason", "checker", "plan", "alias", "kind")
+     and not any(k.startswith("__") or k in ("currency", "currencyReason", "checker", "plan", "alias")
                  for k in args["jobs"][0]) and not any(k.startswith("__") for k in args))
 case("spillDir is the out dir, repo-relative under .claude/scratch",
      lambda: args["spillDir"].startswith(".claude/scratch/") and ".." not in args["spillDir"].split("/"))
@@ -347,15 +347,15 @@ def brief(name, text):
 ORDER = brief("order.md", "Survey the hooks.\nThen run dispatch.js with the jobs file.\n")
 TERMS = brief("terms.md", "Run `git grep` over `.claude/` for: `sidecar_fanout`, `fan-out`, `dispatch.js`, `Workflow`.\n")
 code, text, out, _ = run([job("ok1", promptFile=TERMS), job("bad1", promptFile=ORDER)])
-case("a brief that orders a fan-out is refused in the fan-out's own call, naming the job and orchestration section 0",
-     lambda: code != 0 and "bad1" in text and "orchestration §0" in text
-     and read(out, "native.args.json") is None and DRIVERS == [])
+case("a brief that orders a fan-out still plans native: the kind sets the tools, the fan-out reads no brief wording",
+     lambda: code == 0 and [j["label"] for j in read(out, "native.args.json")["jobs"]] == ["ok1", "bad1"]
+     and DRIVERS == [])
 code, text, out, _ = run([job("ok2", promptFile=TERMS), job("ok3", plan=OTHER, promptFile=TERMS)])
 case("a brief that only names the engine as a search term plans, native and sidecar alike",
      lambda: code == 0 and [j["label"] for j in read(out, "native.args.json")["jobs"]] == ["ok2"])
 code, text, out, _ = run([job("bad2", plan=OTHER, promptFile=ORDER)])
-case("...and a sidecar-bound job is refused the same way",
-     lambda: code != 0 and "bad2" in text and DRIVERS == [])
+case("...and a sidecar-bound job plans the same way",
+     lambda: code == 0 and read(out, "native.args.json") is None and len(DRIVERS) == 2)
 
 shutil.rmtree(ROOT, ignore_errors=True)
 failed = 0

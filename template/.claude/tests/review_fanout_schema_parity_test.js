@@ -10,7 +10,7 @@ const canonical = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'schemas
 const HOST_TRANSPORT = { name: 'host', ids: ['opus', 'sonnet', 'haiku', 'fable'] }
 let captured = null
 const agent = async (_prompt, opts) => {
-  captured = opts.schema
+  if (opts.phase === 'Review') captured = opts.schema
   return {
     findings: [],
     checked: {toolsUsed: ['Read:fixture'], stoppedAt: 'exhausted-leads', basis: 'fixture read'},
@@ -23,7 +23,7 @@ const parallel = thunks => Promise.all(thunks.map(fn => fn()))
   await engineRun.load(path.join(__dirname, '..', 'workflows', 'review_fanout.js'))(engineRun.withHost({
     resultMode: 'full',
     checker: {model: 'sonnet', effort: 'medium'},
-    agents: [{key: 'lens', prompt: 'Review.', model: 'sonnet', effort: 'medium', agentType: 'general-purpose',
+    agents: [{key: 'lens', prompt: 'Review.', model: 'sonnet', effort: 'medium', kind: 'author',
       mustRead: [{path: 'fixture', lines: 1}]}],
   }, HOST_TRANSPORT), agent, parallel, () => {}, () => {})
   const {description: _schemaDescription, ...canonicalShape} = canonical

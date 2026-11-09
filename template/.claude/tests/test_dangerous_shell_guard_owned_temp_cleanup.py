@@ -75,6 +75,8 @@ MUST_PASS = {
     "two independently owned deletes": 'A=$(mktemp -d); B=$(mktemp -d); rm -rf "$A"; rm -rf "$B"',
     "brace form": 'TMPD=$(mktemp -d); rm -rf ${TMPD}',
     "-t template with no slash": 'TMPD=$(mktemp -d -t fooXXXXXX); rm -rf "$TMPD"',
+    # 2026-11-05: an unresolvable `cd "$d"` then `cd /` crashed the resolved-target check (join on None).
+    "cd into it, then cd / before the delete": 'd=$(mktemp -d) && cd "$d" && git init -q && cd / && rm -rf "$d"',
 }
 
 MUST_BLOCK_TEMPLATE_SLASH = 'TMPD=$(mktemp -d -t foo/bar); rm -rf "$TMPD"'

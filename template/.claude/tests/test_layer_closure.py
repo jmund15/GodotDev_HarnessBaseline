@@ -64,6 +64,29 @@ def worktree_pinned_manifest():
             git(main, "worktree", "remove", "--force", str(tree))
 
 
+def stale_clone_pinned_manifest():
+    """`pinned_manifest` where the pin is newer than the cache clone: the baseline remote holds it."""
+    import subprocess
+
+    def git(cwd, *args):
+        return subprocess.run(["git", "-C", str(cwd), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        up, root = Path(tmp, "up"), Path(tmp, "proj")
+        up.mkdir()
+        git(up, "init", "-q")
+        (up / "baseline.manifest.json").write_text('{"files": []}', encoding="utf-8")
+        git(up, "add", "baseline.manifest.json")
+        git(up, "commit", "-q", "-m", "one")
+        clone = root / ".claude" / ".cache" / "baseline-repo"
+        clone.parent.mkdir(parents=True)
+        git(tmp, "clone", "-q", str(up), str(clone))
+        (up / "baseline.manifest.json").write_text('{"files": [{"path": "a", "layer": "pure"}]}', encoding="utf-8")
+        git(up, "commit", "-qam", "two")
+        return lc.pinned_manifest(root, {"synced_commit": git(up, "rev-parse", "HEAD")})
+
+
 def dependencies(files, layers, relpath):
     """`row_dependencies(root, relpath)` over a planted tree whose lock ships `layers`."""
     with tempfile.TemporaryDirectory() as root:
@@ -444,6 +467,10 @@ def main():
     got = worktree_pinned_manifest()
     check("a linked worktree with no cache clone reads the pin from its main checkout's clone",
           got == {"files": []}, got)
+
+    got = stale_clone_pinned_manifest()
+    check("a pin the cache clone lacks is fetched from the baseline remote, then read",
+          got == {"files": [{"path": "a", "layer": "pure"}]}, got)
 
     with tempfile.TemporaryDirectory() as tmp:
         for rel, text in ((hook, "import tres_guard\n"), (guard, "x = 1\n")):

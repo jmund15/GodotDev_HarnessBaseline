@@ -4,7 +4,7 @@ Doctrine for any claim about behavior **inside this repo**. The sibling axis is 
 grades *source authority* on claims about behavior outside it — engine, library, spec. Different axis:
 that one asks *who says so*, this one asks *how far you are from having seen it*.
 
-Loaded by reference, not by path. `guards/any.md` and `guards/review.md` cite it; neither carries a copy.
+Loaded by reference, not by path. `guards/common.md` and `guards/review.md` cite it; neither carries a copy.
 
 ## The ladder
 
@@ -46,7 +46,7 @@ stops at the declaration is unmeasured, however confident it reads.
 
 ## Where this binds
 
-- **Delegates** — `guards/any.md` (verified vs inferred) and `guards/review.md` (every finding names a
+- **Delegates** — `guards/common.md` (verified vs inferred) and `guards/review.md` (every finding names a
   `file:line` you actually read) fold this ladder into their rails at both model tiers.
 - **Orchestrators** — a rung-4 or rung-5 claim from a delegate is not promoted by consolidation. Re-verify
   it first-party or report it at the rung it arrived on.

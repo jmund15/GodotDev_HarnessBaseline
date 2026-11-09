@@ -37,7 +37,7 @@ const finding = (description, more = {}) => ({
   file: 'example.py:42', description, old: 'fixture old', new: 'fixture new', rationale: 'Independent source evidence', ...more,
 })
 const config = {agents: ['one', 'two'].map(key => ({
-  key, prompt: 'Review fixture.', model: 'sonnet', effort: 'medium', agentType: 'general-purpose',
+  key, prompt: 'Review fixture.', model: 'sonnet', effort: 'medium', kind: 'author',
 })), resultMode: 'full'}
 let agentCalls = 0
 async function run(replies, extra = {}) {
@@ -602,7 +602,7 @@ async function check(name, test) {
   const mergeModel = async (models, extra = {}) => {
     let pinned = null
     const agents = models.map((model, i) => ({
-      key: 'lens' + i, prompt: 'Review fixture.', model, effort: 'medium', agentType: 'general-purpose',
+      key: 'lens' + i, prompt: 'Review fixture.', model, effort: 'medium', kind: 'author',
     }))
     const replies = {merge: (prompt, opts) => { pinned = opts.model; return {findings: []} }}
     agents.forEach((a, i) => { replies[a.key] = {findings: [finding('lens ' + i)]} })
@@ -623,11 +623,11 @@ async function check(name, test) {
     assert.equal(await mergeModel(['gpt-test', 'gpt-test'], {__transport: transport, checker: {model: 'gpt-test', effort: 'low'}}), 'gpt-test')
   })
   await check('an unpinned panel is refused before any agent starts', async () => {
-    const out = await run({}, {agents: [{key: 'lens0', prompt: 'Review fixture.', effort: 'medium', agentType: 'general-purpose'}]})
+    const out = await run({}, {agents: [{key: 'lens0', prompt: 'Review fixture.', effort: 'medium', kind: 'author'}]})
     assert.match(String(out.error || ''), /every job \(orchestration §5\)/)
     assert.equal(agentCalls, 0)
   })
-  const seatAgents = keys => keys.map(key => ({ key, prompt: 'Review fixture.', model: 'sonnet', effort: 'medium', agentType: 'general-purpose' }))
+  const seatAgents = keys => keys.map(key => ({ key, prompt: 'Review fixture.', model: 'sonnet', effort: 'medium', kind: 'author' }))
   const mandateRun = async (replies, catalog, extra = {}) => run(replies, {
     agents: seatAgents(Object.keys(replies)), __lensMandates: catalog, ...extra })
   await check('S-D a two-mandate seat returning checked.mandates keeps that map; the same seat without one is not-reached', async () => {
@@ -803,7 +803,7 @@ async function check(name, test) {
     assert.equal(out.delivery.byteLimitExceeded, false)
     assert.ok(out.delivery.coverage.seats.every(s => s.checkedTargets === 40))
   })
-  const listed = (key, mustRead) => ({ key, prompt: 'Review fixture.', model: 'sonnet', effort: 'medium', agentType: 'general-purpose', mustRead })
+  const listed = (key, mustRead) => ({ key, prompt: 'Review fixture.', model: 'sonnet', effort: 'medium', kind: 'author', mustRead })
   const A_CS = { path: 'src/a.cs', lines: 437 }
   const IMPACT = { path: 'src/Core/ImpactPhysics.cs', lines: 900 }
   const MUST = [A_CS, IMPACT]
@@ -818,7 +818,7 @@ async function check(name, test) {
     assert.ok(flag && flag.detail.includes('src/Core/ImpactPhysics.cs') && flag.detail.includes('exhausted-leads'), JSON.stringify(out.flags))
     assert.equal(out.perAgent.find(r => r.key === 'two').status, 'partial', 'two never read src/a.cs either')
     const bounded = await run({ one: { findings: [], checked: checked({ toolsUsed: ['Read:src/a.cs'] }) }, two: { findings: [], checked: checked({ toolsUsed: ['Read:C:/repo/src/a.cs'] }) } },
-      { agents: [listed('one', MUST), listed('two', [A_CS])], resultMode: 'bounded' })
+      { agents: [listed('one', MUST), listed('two', [A_CS])], resultMode: 'bounded', __repoRoot: 'C:/repo' })
     assert.equal(bounded.delivery.coverage.status, 'partial', 'an unproven seat leaves the run partial, never uncovered')
     const seats = Object.fromEntries(bounded.delivery.coverage.seats.map(s => [s.key, s]))
     assert.deepEqual(seats.one.unread, ['src/Core/ImpactPhysics.cs'])
@@ -902,7 +902,7 @@ async function check(name, test) {
     }
     const lists = { paged: [A_CS, BIG], window: [A_CS, BIG] }
     const out = await run(Object.fromEntries(Object.entries(replies).map(([k, tools]) => [k, { findings: [], checked: checked({ toolsUsed: tools }) }])),
-      { agents: Object.keys(replies).map(k => listed(k, lists[k] || MUST)) })
+      { agents: Object.keys(replies).map(k => listed(k, lists[k] || MUST)), __repoRoot: 'C:/repo' })
     const got = Object.fromEntries(out.perAgent.map(r => [r.key, r.status]))
     assert.deepEqual(got, { halves: 'completed', comma: 'completed', absolute: 'completed', paged: 'completed', window: 'partial', hole: 'partial' })
   })
@@ -918,7 +918,7 @@ async function check(name, test) {
     let calls = 0
     const agent = async () => { calls++; return withCoverage({ findings: [] }) }
     const parallel = thunks => Promise.all(thunks.map(fn => Promise.resolve().then(fn)))
-    const bare = { key: 'bare', prompt: 'Review fixture.', model: 'sonnet', effort: 'medium', agentType: 'general-purpose' }
+    const bare = { key: 'bare', prompt: 'Review fixture.', model: 'sonnet', effort: 'medium', kind: 'author' }
     const out = await engine(withHost({ agents: [listed('one', MUST), bare] }), agent, parallel, () => {}, () => {})
     assert.ok(out.error && out.error.includes('mustRead') && out.error.includes('bare') && !out.error.includes('one,'), JSON.stringify(out))
     assert.equal(calls, 0)

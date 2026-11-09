@@ -97,7 +97,7 @@ ENGINE_RUN = os.path.join(HERE, "_engine_run.js")
 def engine_return(reply, seat, keys, must_read):
     """`review_fanout.js`'s full return for one seat `seat` holding `keys` and `must_read`, whose agent returns `reply`."""
     agent = {"key": seat, "prompt": "Review fixture.", "model": "fixture-model", "effort": "medium",
-             "agentType": "general-purpose", "mustRead": must_read}
+             "kind": "reviewer", "mustRead": must_read}
     args = {"agents": [agent], "consolidate": False, "resultMode": "full", "__lensMandates": {seat: keys},
             "checker": {"model": "fixture-model", "effort": "medium"}}
     done = subprocess.run(["node", ENGINE_RUN], capture_output=True, text=True,

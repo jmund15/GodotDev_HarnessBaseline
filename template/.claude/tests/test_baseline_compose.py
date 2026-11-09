@@ -24,7 +24,7 @@ COMPOSE_PATH = _TOOLS_DIR / "baseline_compose.py"
 SYNC_PATH = _TOOLS_DIR / "baseline_sync.py"
 # baseline_sync.py's own imports, copied into each temp consumer so the CLI runs there.
 SYNC_TOOLS = ("baseline_sync.py", "baseline_identity.py", "baseline_compose.py",
-              "adaptation.py", "layer_closure.py", "cli_usage.py")
+              "adaptation.py", "layer_closure.py", "cli_usage.py", "lock_merge.py")
 
 
 def _load(path: Path, name: str):
@@ -251,15 +251,15 @@ def main() -> int:
         "schema": 2, "profile": "pure", "substitutions": {}, "baseline_repo": "https://example.invalid/x.git",
         "baseline_ref": "main", "synced_commit": "0" * 40, "identity": {"abbreviations": []},
         "files": {
-            ".claude/settings.base.json": {"status": "tracked", "layer": "pure", "hash": None,
+            ".claude/settings.base.json": {"status": "tracked", "layer": "pure",
                                             "judged": {"sha": None, "verdict": "push", "at": "x", "borderline": False, "confirmed_at": None}},
             ".claude/settings.project.json": {"status": "local", "layer": "pure", "judged": None},
-            ".claude/settings.json": {"status": "composed", "layer": "pure", "hash": None,
+            ".claude/settings.json": {"status": "composed", "layer": "pure",
                                        "inputs": [".claude/settings.base.json", ".claude/settings.project.json"], "judged": None},
-            ".claude/reference/memory_domains.base.md": {"status": "tracked", "layer": "pure", "hash": None,
+            ".claude/reference/memory_domains.base.md": {"status": "tracked", "layer": "pure",
                                                            "judged": {"sha": None, "verdict": "push", "at": "x", "borderline": False, "confirmed_at": None}},
             ".claude/skills/project_subsystems/adaptation.json": {"status": "local", "layer": "pure", "judged": None},
-            ".claude/reference/memory_domains.md": {"status": "composed", "layer": "pure", "hash": None,
+            ".claude/reference/memory_domains.md": {"status": "composed", "layer": "pure",
                                                       "inputs": [".claude/reference/memory_domains.base.md",
                                                                  ".claude/skills/project_subsystems/adaptation.json"], "judged": None},
         },
@@ -325,10 +325,10 @@ def main() -> int:
         "schema": 2, "profile": "pure", "substitutions": {}, "baseline_repo": "https://example.invalid/x.git",
         "baseline_ref": "main", "synced_commit": "0" * 40, "identity": {"abbreviations": []},
         "files": {
-            ".claude/settings.base.json": {"status": "tracked", "layer": "pure", "hash": None,
+            ".claude/settings.base.json": {"status": "tracked", "layer": "pure",
                                             "judged": {"sha": None, "verdict": "push", "at": "x", "borderline": False, "confirmed_at": None}},
             ".claude/settings.project.json": {"status": "local", "layer": "pure", "judged": None},
-            ".claude/settings.json": {"status": "composed", "layer": "pure", "hash": None,
+            ".claude/settings.json": {"status": "composed", "layer": "pure",
                                        "inputs": [".claude/settings.base.json", ".claude/settings.project.json"], "judged": None},
         },
     }
@@ -342,10 +342,11 @@ def main() -> int:
 
     r_first = run_compose3([])
     lock3_after_first = json.loads((claude3 / "baseline.lock.json").read_text(encoding="utf-8"))
-    hash_after_first = lock3_after_first["files"][".claude/settings.json"]["hash"]
-    failures.append(case("compose backfills hash for an already-matching file with hash:null",
-                          r_first.returncode == 0 and hash_after_first is not None,
-                          f"stdout={r_first.stdout!r} stderr={r_first.stderr!r} hash={hash_after_first!r}"))
+    row_after_first = lock3_after_first["files"][".claude/settings.json"]
+    failures.append(case("compose records inputs on an already-matching composed row, with no hash",
+                          r_first.returncode == 0 and "hash" not in row_after_first
+                          and bool(row_after_first.get("inputs")),
+                          f"stdout={r_first.stdout!r} stderr={r_first.stderr!r} row={row_after_first!r}"))
     r_second = run_compose3([])
     failures.append(case("a repeat compose after the backfill prints no change",
                           r_second.returncode == 0 and "no change" in r_second.stdout,
@@ -538,10 +539,10 @@ def main() -> int:
             encoding="utf-8")
         judged = {"sha": None, "verdict": "push", "at": "x", "borderline": False, "confirmed_at": None}
         rows = {
-            ".claude/settings.base.json": {"status": "tracked", "layer": "pure", "hash": None, "judged": judged},
-            ".claude/settings.godot.json": {"status": "tracked", "layer": "godot", "hash": None, "judged": judged},
+            ".claude/settings.base.json": {"status": "tracked", "layer": "pure", "judged": judged},
+            ".claude/settings.godot.json": {"status": "tracked", "layer": "godot", "judged": judged},
             ".claude/settings.project.json": {"status": "local", "layer": "pure", "judged": None},
-            ".claude/settings.json": {"status": "composed", "layer": "pure", "hash": None,
+            ".claude/settings.json": {"status": "composed", "layer": "pure",
                                        "inputs": recorded_inputs, "judged": None},
         }
         lock_doc = {"schema": 2, "profile": profile, "substitutions": {},

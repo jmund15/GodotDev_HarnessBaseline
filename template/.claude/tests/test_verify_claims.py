@@ -40,8 +40,8 @@ def check(label, ok, detail=""):
         FAILURES.append(f"{label} :: {detail}")
 
 
-def verdicts(claims):
-    proc = subprocess.run([sys.executable, str(TOOL), "-"], input=json.dumps(claims), text=True,
+def verdicts(claims, root=None):
+    proc = subprocess.run([sys.executable, str(TOOL), "-", *(["--root", str(root)] if root else [])], input=json.dumps(claims), text=True,
                           capture_output=True, cwd=str(REPO), timeout=60, encoding="utf-8")
     if proc.returncode not in (0, 1) or "Traceback" in proc.stderr:
         return ["CRASH"] * len(claims), proc.stderr
@@ -849,6 +849,55 @@ def part_contract_examples():
     check("the checker gives every printed example a verdict, no crash", len(rows) == len(claims) and "CRASH" not in rows, out[-300:])
 
 
+COMMIT_SUBJECT = "a planted subject that only the plant's commit holds"
+
+
+def plant_commit(root):
+    """A throwaway repo with one commit: the sha, the subject and the file text come from the plant."""
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                              check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+    git("init", "-q")
+    (root / ".claude" / "tools").mkdir(parents=True)
+    (root / ".claude" / "tools" / "verify_claims.py").write_text(
+        "def claim_verdict(item_verdicts, polarity=None):\n    pass\n", encoding="utf-8", newline="\n")
+    git("add", ".")
+    git("commit", "-q", "-m", COMMIT_SUBJECT)
+    return git("rev-parse", "--short=9", "HEAD")
+
+
+def part_commit_citations():
+    """A file field may name a commit (`git <sha>`, `git show <sha>`, `commit <sha>`, a bare sha, `<sha>:<path>`):
+    the quote is checked against that commit's text. A sha that does not resolve is UNVERIFIED, not UNCHECKED."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        commit_cases(root, plant_commit(root))
+
+
+def commit_cases(root, COMMIT_SHA):
+    cases = [
+        ("git <sha> names a commit: its subject is VERIFIED", f"git {COMMIT_SHA}", COMMIT_SUBJECT, "VERIFIED"),
+        ("git show <sha> names a commit", f"git show {COMMIT_SHA}", COMMIT_SUBJECT, "VERIFIED"),
+        ("commit <sha> names a commit", f"commit {COMMIT_SHA}", COMMIT_SUBJECT, "VERIFIED"),
+        ("a bare sha names a commit", COMMIT_SHA, COMMIT_SUBJECT, "VERIFIED"),
+        ("<sha>:<path> reads that path at that commit", f"{COMMIT_SHA}:.claude/tools/verify_claims.py",
+         "def claim_verdict(item_verdicts, polarity=None):", "VERIFIED"),
+        ("a quote absent from the commit is UNVERIFIED", f"git {COMMIT_SHA}",
+         "no commit holds this zz-absent sentence", "UNVERIFIED"),
+        ("a path absent at the commit is UNVERIFIED", f"{COMMIT_SHA}:.claude/tools/no_such_file.py",
+         "def main():", "UNVERIFIED"),
+        ("a sha that does not resolve is UNVERIFIED", "git deadbee00", COMMIT_SUBJECT, "UNVERIFIED"),
+        ("a git command that names no commit stays UNCHECKED", "git status", COMMIT_SUBJECT, "UNCHECKED"),
+        ("a non-git command with a sha stays UNCHECKED", f"bash echo {COMMIT_SHA}", COMMIT_SUBJECT, "UNCHECKED"),
+    ]
+    claims = [{"id": f"K{index}", "evidence": [{"file": file, "quote": quote}]}
+              for index, (_, file, quote, _) in enumerate(cases)]
+    rows, out = verdicts(claims, root)
+    for index, (label, file, _quote, want) in enumerate(cases):
+        got = rows[index] if index < len(rows) else "MISSING"
+        check(label, got == want, f"{file!r}: want {want}, got {got}\n{out[-300:]}")
+
+
 def main():
     part_one()
     import verify_claims as vc
@@ -859,6 +908,7 @@ def main():
     part_body_cache(vc)
     part_owner_turn_cache(vc)
     part_contract_examples()
+    part_commit_citations()
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")
         for failure in FAILURES:

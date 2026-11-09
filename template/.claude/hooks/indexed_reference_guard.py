@@ -121,7 +121,7 @@ def process(input_data):
             return {
                 "block": (
                     f"BLOCKED: whole-file Read of {suffix} ({size}).\n"
-                    "Delegate rail (guards/any.md): read a catalog with an accessor through it.\n"
+                    "Delegate rail (guards/common.md): read a catalog with an accessor through it.\n"
                     f"Run instead:  {command}\n"
                     f"That returns {gives}\n"
                     "Editing an entry? Bound the read: Read(file_path=..., offset=N, limit=M)."
