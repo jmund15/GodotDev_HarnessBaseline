@@ -112,6 +112,18 @@ class Hook(unittest.TestCase):
         self.plant_status(True, 5)
         self.assertEqual(self.run_hook(cloud=False).stdout, '')
 
+    def test_off_the_cloud_a_present_but_unreadable_status_reads_unknown(self):
+        git_dir = self.base / 'local' / 'vault-git-test'
+        git_dir.mkdir(parents=True, exist_ok=True)
+        (git_dir / 'sync_status.json').write_text('{not json', encoding='utf-8')
+        result = self.run_hook(cloud=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout.startswith('[vault] sync UNKNOWN: status unreadable (JSONDecodeError)'), result.stdout)
+        (git_dir / 'sync_status.json').write_text('{"ok": true}', encoding='utf-8')
+        result = self.run_hook(cloud=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout.startswith('[vault] sync UNKNOWN: status unreadable (KeyError)'), result.stdout)
+
     def test_a_tool_that_prints_nothing_reads_unavailable(self):
         self.stub_tool('import sys\nsys.exit(3)\n')
         result = self.run_hook()
