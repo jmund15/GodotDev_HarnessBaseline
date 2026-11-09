@@ -7,6 +7,16 @@ export const meta = {
     { title: 'Adjudicate', detail: 'score each response; independently validate EVERY COMPLIES; downgrade false-COMPLIES to DRIFTS' },
   ],
 }
+// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge) for every child it spawns;
+// hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
+// child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
+// entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
+const KIND_ARGS = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return a || {} } catch (e) { return {} } })()
+const KP = (KIND_ARGS.__kindProfile && typeof KIND_ARGS.__kindProfile === 'object') ? KIND_ARGS.__kindProfile : null
+if (typeof KIND_ARGS.kind !== 'string' || !KIND_ARGS.kind.trim() || !KP || KP.kind !== KIND_ARGS.kind || !KP.agentType) {
+  return { error: 'test-skill-pressure: args.kind is required (scout|lens|reviewer|author|judge), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. Every child of the run launches as that kind.' }
+}
+const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 // POST-CHECK exempt (benchmark/probe self-scoring): it scores its own pressure prompts' output.
 
 // Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
@@ -98,8 +108,7 @@ phase('Synthesize')
 // TOOL PROFILES — the inventory every child of this run launches with: the synthesizer, then each
 // item's dispatch, score and validate stages. A native child INHERITS the session's MCP set, so every
 // entry is `inherited` with effectiveMcp unknown, never a strict claim of enforcement.
-const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
-const tpOf = (label) => TOOLP.d[label] || TOOLP.f['review'] || null
+const tpOf = () => KP_RECORD
 const tpLog = (labels) => log('TOOL-PROFILES ' + JSON.stringify(Object.fromEntries(labels.map(l => [l, tpOf(l)]))))
 tpLog(['synthesize:' + SKILL_NAME])
 
@@ -116,7 +125,7 @@ const syn = await agent(
     SKILL_CONTENT,
     CLAIMS_TO_REFUSE ? ('\n=== GENERIC COMPLIANCE BASELINE (Claims to Refuse) ===\n' + CLAIMS_TO_REFUSE) : '',
   ].join('\n'),
-  { label: 'synthesize:' + SKILL_NAME, phase: 'Synthesize', schema: ITEMS_SCHEMA }
+  { agentType: KP.agentType, label: 'synthesize:' + SKILL_NAME, phase: 'Synthesize', schema: ITEMS_SCHEMA }
 )
 
 const items = (syn && Array.isArray(syn.items)) ? syn.items.slice(0, CAP) : []
@@ -185,10 +194,10 @@ tpLog(items.flatMap(it => ['dispatch:' + it.source, 'score:' + it.source, 'valid
 const results = await pipeline(
   items,
   // stage 1: dispatch a tempted subagent on args.subject (the caller pins a model able to capitulate)
-  (item) => agent(adversarialPrompt(item.prompt), { label: 'dispatch:' + item.source, phase: 'Dispatch', model: SUBJECT.model, effort: SUBJECT.effort })
+  (item) => agent(adversarialPrompt(item.prompt), { agentType: KP.agentType, label: 'dispatch:' + item.source, phase: 'Dispatch', model: SUBJECT.model, effort: SUBJECT.effort })
     .then(response => ({ response })),
   // stage 2: score the response on args.scorer
-  (prev, item) => agent(scorePrompt(item.excerpt, item.prompt, prev.response), { label: 'score:' + item.source, phase: 'Adjudicate', model: SCORER.model, effort: SCORER.effort, schema: VERDICT_SCHEMA })
+  (prev, item) => agent(scorePrompt(item.excerpt, item.prompt, prev.response), { agentType: KP.agentType, label: 'score:' + item.source, phase: 'Adjudicate', model: SCORER.model, effort: SCORER.effort, schema: VERDICT_SCHEMA })
     .then(score => score
       ? ({ ...prev, verdict: score.verdict, reason: score.reason, suggestedPatch: score.suggestedPatch || '' })
       : ({ ...prev, verdict: 'DRIFTS', reason: 'score agent returned null (transport failure) — surfaced, not silently dropped', suggestedPatch: '' })),
@@ -198,7 +207,7 @@ const results = await pipeline(
     if (prev.verdict !== 'COMPLIES') {
       return { ...base, verdict: prev.verdict, reason: prev.reason, validated: null, downgraded: false }
     }
-    const v = await agent(validatorPrompt(item.excerpt, item.prompt, prev.response), { label: 'validate:' + item.source, phase: 'Adjudicate', model: VALIDATOR.model, effort: VALIDATOR.effort, schema: VALIDATE_SCHEMA })
+    const v = await agent(validatorPrompt(item.excerpt, item.prompt, prev.response), { agentType: KP.agentType, label: 'validate:' + item.source, phase: 'Adjudicate', model: VALIDATOR.model, effort: VALIDATOR.effort, schema: VALIDATE_SCHEMA })
     const validated = !!(v && v.validated)
     const downgraded = !validated
     return {

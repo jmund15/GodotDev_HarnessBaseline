@@ -31,6 +31,14 @@ def _call(name, *args):
         return "<raised %s: %s>" % (type(exc).__name__, exc)
 
 
+def _reset_derived():
+    """Drop the derived option and flag sets, so the next read sees the current parser and shell line."""
+    for name in ("_fanout_options", "_sidecar_value_letters"):
+        reset = getattr(sidecar_argv, name, None)
+        if reset is not None:
+            reset.cache_clear()
+
+
 def _plain(invocations):
     if not isinstance(invocations, list):
         return invocations
@@ -233,22 +241,53 @@ def main():
 
     try:
         import sidecar_fanout  # noqa: E402
-        parser_options = {opt: action.nargs != 0 for action in sidecar_fanout.build_parser()._actions
-                          for opt in action.option_strings}
-    except Exception as exc:
-        parser_options = "<raised %s: %s>" % (type(exc).__name__, exc)
-    values = set(getattr(sidecar_argv, "FANOUT_VALUE_OPTIONS", ()))
-    flags = set(getattr(sidecar_argv, "FANOUT_FLAG_OPTIONS", ()))
-    non_launch = set(getattr(sidecar_argv, "FANOUT_NON_LAUNCH_OPTIONS", ()))
-    classified = {opt: True for opt in values} | {opt: False for opt in flags}
-    cases.append(("every sidecar_fanout option is classified once, by its value arity",
-                  isinstance(parser_options, dict)
-                  and not (values & flags) and not ((values | flags) & non_launch)
-                  and {o: v for o, v in parser_options.items() if o not in non_launch} == classified
-                  and non_launch <= set(parser_options)))
+        parser_options = {opt for action in sidecar_fanout.build_parser()._actions for opt in action.option_strings}
+        non_launch = set(sidecar_fanout.NON_LAUNCH_OPTIONS)
+        values, flags, every = (set(group) for group in sidecar_argv._fanout_options())
+        derived = (non_launch <= parser_options and every == parser_options
+                   and not (values & flags) and (values | flags) == parser_options - non_launch)
+    except Exception:
+        derived = False
+    cases.append(("NON_LAUNCH_OPTIONS is a subset of the parser's options; the derived sets are the rest",
+                  derived))
+
+    # 276d5514f, 70d8b3000: an option added to sidecar_fanout's parser read as no launch. The planted
+    # parser gains one value option; the reader must classify it, not refuse the argv.
+    import sidecar_fanout as planted_fanout  # noqa: E402
+    real_build = planted_fanout.build_parser
+
+    def planted_build():
+        parser = real_build()
+        parser.add_argument("--plant-check", default=None)
+        return parser
+
+    planted_fanout.build_parser = planted_build
+    _reset_derived()
+    try:
+        planted_parse = _call("parse_fanout_args", ["j.json", "--plant-check", "v"])
+    finally:
+        planted_fanout.build_parser = real_build
+        _reset_derived()
+    cases.append(("an option added to sidecar_fanout's parser is read as a launch option",
+                  planted_parse == ("j.json", None)))
+
+    # An unreadable SC_OPTSTRING line raises; an empty flag set would parse every launch as flagless.
+    real_lib = getattr(sidecar_argv, "_SHELL_LIB", None)
+    raised = False
+    if real_lib is not None:
+        sidecar_argv._SHELL_LIB = os.path.join(HERE, "no-such-sidecar_common.sh")
+        _reset_derived()
+        try:
+            _ = sidecar_argv.SIDECAR_VALUE_FLAGS
+        except OSError:
+            raised = True
+        finally:
+            sidecar_argv._SHELL_LIB = real_lib
+            _reset_derived()
+    cases.append(("an unreadable SC_OPTSTRING raises instead of returning an empty flag set", raised))
 
     launcher = _shipped_launcher()
-    check_rows = om.sidecar_launches("bash .claude/scripts/%s --check -m flash" % launcher) if launcher else None
+    check_rows =om.sidecar_launches("bash .claude/scripts/%s --check -m flash" % launcher) if launcher else None
     cases.append(("sidecar_launches returns [] for a <launcher> --check probe", check_rows == []))
     launch_rows = om.sidecar_launches("bash .claude/scripts/%s -m flash -e high" % launcher) if launcher else None
     cases.append(("sidecar_launches still reads a real launch",

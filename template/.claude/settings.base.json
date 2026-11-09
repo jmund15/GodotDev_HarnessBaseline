@@ -263,6 +263,16 @@
       {
         "hooks": [
           {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/login_parity_check.py\"",
+            "timeout": 120,
+            "type": "command"
+          }
+        ],
+        "matcher": "startup|resume"
+      },
+      {
+        "hooks": [
+          {
             "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/compact_directive_anchor.py\" --opening",
             "timeout": 30,
             "type": "command"

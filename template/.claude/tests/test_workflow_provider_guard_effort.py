@@ -76,6 +76,7 @@ def run_hook(payload, transport=HOST):
 
 
 def wf(script, agents):
+    agents = [dict({"kind": "reviewer"}, **a) for a in agents]
     return {"tool_name": "Workflow", "session_id": "effort-proof", "tool_input": {"scriptPath": script, "args": {"agents": agents}}}
 
 
@@ -111,13 +112,13 @@ def test_the_fixture_actually_controls_the_seat():
 def test_non_thinking_rung_on_dispatch_engine_is_not_denied_by_this_rule():
     # dispatch.js runs execution jobs, where the ladder allows the non-thinking rung.
     h = run_hook({"tool_name": "Workflow", "session_id": "effort-proof",
-                  "tool_input": {"scriptPath": ".claude/workflows/dispatch.js", "args": {"jobs": [{"label": "exec", "model": PIN, "effort": COLD, "tier": TIER}]}}})
+                  "tool_input": {"scriptPath": ".claude/workflows/dispatch.js", "args": {"jobs": [{"label": "exec", "kind": "author", "model": PIN, "effort": COLD, "tier": TIER}]}}})
     assert h.get("permissionDecision") != "deny", h
 
 
 def test_args_as_json_string_are_parsed():
     p = wf(".claude/workflows/review_fanout.js", [])
-    p["tool_input"]["args"] = json.dumps({"agents": [{"key": "s", "model": PIN, "effort": COLD}]})
+    p["tool_input"]["args"] = json.dumps({"agents": [{"key": "s", "kind": "reviewer", "model": PIN, "effort": COLD}]})
     assert run_hook(p).get("permissionDecision") == "deny"
 
 
@@ -142,7 +143,7 @@ def test_nested_job_effort_uses_its_own_model_row():
     invalid = next(v for v in ("medium", "xhigh", "none") if v not in model_registry.effort_values(row, _DATA))
     payload = {"tool_name": "Workflow", "session_id": "effort-nested-proof",
                "tool_input": {"scriptPath": ".claude/workflows/dispatch.js",
-                              "args": {"jobs": [{"label": "invalid-rung", "model": row["id"],
+                              "args": {"jobs": [{"label": "invalid-rung", "kind": "author", "model": row["id"],
                                                   "effort": invalid, "tier": "executor"}]}}}
     denied = run_hook(payload, "deepseek")
     assert denied.get("permissionDecision") == "deny", denied
@@ -173,7 +174,7 @@ def _free_subject(rung):
 def _job_call(pin, tier, rung, **extra):
     return {"tool_name": "Workflow", "session_id": "avoid-proof",
             "tool_input": {"scriptPath": ".claude/workflows/dispatch.js",
-                           "args": dict({"jobs": [{"label": "waste-probe", "model": pin, "effort": rung, "tier": tier}]},
+                           "args": dict({"jobs": [{"label": "waste-probe", "kind": "scout", "model": pin, "effort": rung, "tier": tier}]},
                                         **extra)}}
 
 

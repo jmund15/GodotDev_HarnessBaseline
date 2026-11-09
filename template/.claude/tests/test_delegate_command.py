@@ -35,7 +35,7 @@ REQUIRED = {
     "manifest finalization": r"--manifest-seed[\s\S]+--manifest-out[\s\S]+--session",
     "outcomes recorded before manifest": r"--rate[\s\S]+manifest",
     "exact label count": r"seed count is the required result count",
-    "review mapping retains agentType": r"review_fanout\.js[^\n]+agents:[^\n]+agentType",
+    "review mapping carries kind": r"review_fanout\.js[^\n]+agents:[^\n]+kind",
     "review manifest label matches workflow": r"review:<key>",
 }
 

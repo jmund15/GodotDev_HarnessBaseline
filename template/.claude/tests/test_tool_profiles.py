@@ -19,11 +19,21 @@ as a fixture in most cases so the proof does not depend on this machine's regist
 import json
 import os
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, ".claude", "tools"))
 import tool_profiles as tp  # noqa: E402
+
+# The `resolve-kind` cases below resolve a kind's MCP servers, so they run against this planted config
+# (the defaults table's logical names) rather than this machine's registrations.
+MCP_CFG = tempfile.mkdtemp(prefix="tool_profiles_mcp_")
+with open(os.path.join(MCP_CFG, ".claude.json"), "w", encoding="utf-8", newline="\n") as _fh:
+    json.dump({"mcpServers": {"ai-worker": {"command": "aiw"}, "git": {"command": "gr"},
+                              "godot": {"command": "g"},
+                              "plugin:semantic-search:semantic-search": {"command": "node"}},
+               "projects": {}}, _fh)
 
 FAIL = 0
 RAN = 0
@@ -58,12 +68,15 @@ def raises(label, needle, fn):
 
 CANDIDATES = [
     ("ai-worker", {"command": "aiw"}),
+    ("git", {"command": "gr"}),
     ("godot", {"command": "g"}),
     ("plugin:context7:context7", {"command": "c7"}),
     ("plugin:semantic-search:semantic-search", {"command": "ss"}),
 ]
 TABLE = tp.load_table()
-SURVEY_SPEC = "Read,Glob,Grep,mcp__plugin_semantic-search_semantic-search,mcp__ai-worker"
+# The read-only kind rows carry the read-only git server.
+READ_ONLY_SERVERS = ["semantic-search", "ai-worker", "git"]
+SURVEY_SPEC = "Read,Glob,Grep,mcp__plugin_semantic-search_semantic-search,mcp__ai-worker,mcp__git"
 
 
 def spec(shape, **kw):
@@ -72,31 +85,33 @@ def spec(shape, **kw):
 
 
 # ---- 1. the shape vectors ---------------------------------------------------------------
-for shape in ("any", "survey", "review"):
+for shape in ("judge", "scout", "reviewer"):
     profile, _, _ = tp.resolve(shape, candidates=CANDIDATES)
     check("%s builtins" % shape, ["Read", "Glob", "Grep"], profile["builtins"])
-    check("%s servers" % shape, ["semantic-search", "ai-worker"], profile["mcpServers"])
-    check("%s spec" % shape, SURVEY_SPEC, spec(shape))
+    servers = READ_ONLY_SERVERS if shape != "any" else ["semantic-search", "ai-worker"]
+    check("%s servers" % shape, servers, profile["mcpServers"])
+    check("%s spec" % shape, (SURVEY_SPEC if shape != "any"
+                              else SURVEY_SPEC.replace(",mcp__git", "")), spec(shape))
     check("%s mode" % shape, "shape-default", profile["overrideMode"])
     check("%s enforcement" % shape, "strict", profile["enforcement"])
 check("author builtins",
       ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
       tp.resolve("author", candidates=CANDIDATES)[0]["builtins"])
-for shape, tier in (("review", "executor"), ("author", "executor"), ("survey", "fanout")):
+for shape, tier in (("reviewer", "executor"), ("author", "executor"), ("scout", "fanout")):
     check("%s carries its row's role tier" % shape, tier, tp.resolve(shape, candidates=CANDIDATES)[0].get("tier"))
 check("resolve(tier=) overrides the row's tier and canonicalizes a folded alias", ("architect", "fanout", "executor"),
-      (tp.resolve("review", candidates=CANDIDATES, tier="architect")[0].get("tier"),
-       tp.resolve("review", candidates=CANDIDATES, tier="validation")[0].get("tier"),
-       tp.resolve("review", candidates=CANDIDATES, tier=None)[0].get("tier")))
+      (tp.resolve("reviewer", candidates=CANDIDATES, tier="architect")[0].get("tier"),
+       tp.resolve("reviewer", candidates=CANDIDATES, tier="validation")[0].get("tier"),
+       tp.resolve("reviewer", candidates=CANDIDATES, tier=None)[0].get("tier")))
 check("a shape with no tier has no tier key", False,
-      any("tier" in tp.resolve(s, base_builtins=["Read"], candidates=CANDIDATES)[0] for s in ("any", "bench-score", "arm")))
-check("arm declares no built-ins of its own", None, TABLE["shapes"]["arm"]["builtins"])
+      any("tier" in tp.resolve(s, base_builtins=["Read"], candidates=CANDIDATES)[0] for s in ("bench-score", "arm")))
+check("arm declares no built-ins of its own", None, TABLE["kinds"]["arm"]["builtins"])
 check("arm servers", ["semantic-search"],
       tp.resolve("arm", base_builtins=["Read", "Glob", "Grep"], candidates=CANDIDATES)[0]["mcpServers"])
 raises("arm without its task built-ins", "task's built-in list",
        lambda: tp.resolve("arm", candidates=CANDIDATES))
 check("godot is opt-in only", [],
-      [s for s in TABLE["shapes"]["author"]["mcpServers"] if s == "godot"])
+      [s for s in TABLE["kinds"]["author"]["mcpServers"] if s == "godot"])
 check("logical name resolves to the plugin key", "plugin:semantic-search:semantic-search",
       tp.registered_key("semantic-search", CANDIDATES))
 check("a bare logical name resolves to its own key", "ai-worker",
@@ -109,21 +124,21 @@ check("signed csv is a delta", ("delta", ["Bash"], ["Grep"]), tp.parse_tools_csv
 check("unsigned csv is a legacy replacement", ("legacy-replace", [], []),
       tp.parse_tools_csv("Read,Glob,Grep"))
 check("empty -t asserts nothing", ("shape-default", [], []), tp.parse_tools_csv(""))
-check("delta adds a server", SURVEY_SPEC + ",mcp__godot", spec("survey", tools_csv="+mcp:godot"))
+check("delta adds a server", SURVEY_SPEC + ",mcp__godot", spec("scout", tools_csv="+mcp:godot"))
 check("delta removes a server",
-      "Read,Glob,Grep,mcp__plugin_semantic-search_semantic-search",
-      spec("survey", tools_csv="-mcp:ai-worker"))
+      "Read,Glob,Grep,mcp__plugin_semantic-search_semantic-search,mcp__git",
+      spec("scout", tools_csv="-mcp:ai-worker"))
 check("delta adds and removes in one csv",
-      "Read,Glob,Grep,mcp__plugin_semantic-search_semantic-search,mcp__godot",
-      spec("survey", tools_csv="-mcp:ai-worker,+mcp:godot"))
+      "Read,Glob,Grep,mcp__plugin_semantic-search_semantic-search,mcp__git,mcp__godot",
+      spec("scout", tools_csv="-mcp:ai-worker,+mcp:godot"))
 check("delta removes a read tool", "Read,Bash,mcp__plugin_semantic-search_semantic-search,"
-      "mcp__ai-worker", spec("survey", tools_csv="+Bash,-Glob,-Grep"))
+      "mcp__ai-worker,mcp__git", spec("scout", tools_csv="+Bash,-Glob,-Grep"))
 check("delta is canonical order, not written order", "Read,Glob,Grep,Edit,Write,Bash",
       spec("author", tools_csv="+Bash,+Edit").split(",mcp__")[0])
 check("a structured delta merges with -t", "Read,Glob,Grep,Edit,Write,Bash,mcp__godot",
       spec("author", tools_csv="-mcp:semantic-search,-mcp:ai-worker", add=["mcp:godot"]))
 check("structured add and remove work alone",
-      "Read,Glob,Grep,mcp__godot", spec("survey", tools_csv="-mcp:semantic-search,-mcp:ai-worker",
+      "Read,Glob,Grep,mcp__git,mcp__godot", spec("scout", tools_csv="-mcp:semantic-search,-mcp:ai-worker",
                                         add=["mcp:godot"]))
 check("a Workflow signed tools string keeps its Bash grant", (["Bash"], ["Grep"]),
       tp.tools_delta("+Bash,-Grep"))
@@ -135,12 +150,12 @@ raises("an unsigned Workflow tools list does not become a legacy sidecar replace
        lambda: tp.tools_delta(["Bash"]))
 raises("an unsupported Workflow tools value is not treated as absent", "tools",
        lambda: tp.tools_delta(17))
-legacy, _, _ = tp.resolve("review", tools_csv="Read,Glob,Grep,Bash", candidates=CANDIDATES)
+legacy, _, _ = tp.resolve("reviewer", tools_csv="Read,Glob,Grep,Bash", candidates=CANDIDATES)
 check("legacy -t replaces the built-ins", ["Read", "Glob", "Grep", "Bash"], legacy["builtins"])
 check("legacy -t takes no MCP the csv did not name", [], legacy["mcpServers"])
 check("legacy -t is recorded as such", "legacy-replace", legacy["overrideMode"])
 check("legacy -t keeps an mcp__ name", ["godot"],
-      tp.resolve("review", tools_csv="Read,mcp__godot__get_uid", candidates=CANDIDATES)[0]["mcpServers"])
+      tp.resolve("reviewer", tools_csv="Read,mcp__godot__get_uid", candidates=CANDIDATES)[0]["mcpServers"])
 arm_profile, arm_spec, _ = tp.resolve(
     "arm", tools_csv="Read,Glob,Grep,Edit,Write,Bash,TodoWrite,mcp__plugin_semantic-search_semantic-search__search",
     candidates=CANDIDATES)
@@ -157,36 +172,37 @@ check("an arm's delta can add a server",
 
 # ---- 3. fail-closed ----------------------------------------------------------------------
 raises("unregistered server", "not registered",
-       lambda: spec("survey", tools_csv="+mcp:nosuch"))
-raises("unknown shape", "unknown shape", lambda: tp.resolve("lens", candidates=CANDIDATES))
+       lambda: spec("scout", tools_csv="+mcp:nosuch"))
+raises("unknown kind", "unknown kind", lambda: tp.resolve("nosuch", candidates=CANDIDATES))
 raises("removing a server the shape lacks", "does not carry",
-       lambda: spec("survey", tools_csv="-mcp:godot"))
+       lambda: spec("scout", tools_csv="-mcp:godot"))
 raises("removing a built-in the shape lacks", "does not carry",
-       lambda: spec("survey", tools_csv="-Edit"))
+       lambda: spec("scout", tools_csv="-Edit"))
 raises("removing every read tool", "could not read its brief",
-       lambda: spec("survey", tools_csv="-Read,-Glob,-Grep"))
+       lambda: spec("scout", tools_csv="-Read,-Glob,-Grep"))
 raises("mixed signed and unsigned csv", "mixed signed and unsigned",
-       lambda: spec("survey", tools_csv="Read,+Bash"))
+       lambda: spec("scout", tools_csv="Read,+Bash"))
 raises("a name in both add and remove", "named in both",
-       lambda: spec("survey", tools_csv="+Bash,-Bash"))
+       lambda: spec("scout", tools_csv="+Bash,-Bash"))
 raises("a repeated entry", "repeated",
-       lambda: spec("survey", tools_csv="+mcp:godot,+mcp:godot"))
+       lambda: spec("scout", tools_csv="+mcp:godot,+mcp:godot"))
 raises("an empty server name", "empty MCP server name",
-       lambda: spec("survey", tools_csv="+mcp:"))
+       lambda: spec("scout", tools_csv="+mcp:"))
 raises("a delta beside a legacy csv", "cannot be combined",
-       lambda: tp.resolve("survey", tools_csv="Read,Glob,Grep", add=["Bash"], candidates=CANDIDATES))
+       lambda: tp.resolve("scout", tools_csv="Read,Glob,Grep", add=["Bash"], candidates=CANDIDATES))
 raises("a bad --field", "unknown field", lambda: tp._report(({}, "", []), "nope", CANDIDATES))
 
 # ---- 4. one config walk ------------------------------------------------------------------
 check("the strict config holds exactly the resolved keys",
-      ["ai-worker", "plugin:semantic-search:semantic-search"],
+      ["ai-worker", "git", "plugin:semantic-search:semantic-search"],
       sorted(tp.strict_mcp_config(
-          list(tp.resolve("survey", candidates=CANDIDATES)[0]["mcpRegistrations"].values()),
+          list(tp.resolve("scout", candidates=CANDIDATES)[0]["mcpRegistrations"].values()),
           CANDIDATES)["mcpServers"]))
 check("an unknown spec name is dropped, not raised", [],
       list(tp.mcp_config_for("mcp__nosuch__x", workdir=ROOT)["mcpServers"]))
-check("registration names ride in the profile", {"semantic-search": "plugin:semantic-search:semantic-search"},
-      tp.resolve("survey", tools_csv="-mcp:ai-worker",
+check("registration names ride in the profile",
+      {"semantic-search": "plugin:semantic-search:semantic-search", "git": "git"},
+      tp.resolve("scout", tools_csv="-mcp:ai-worker",
                  candidates=CANDIDATES)[0]["mcpRegistrations"])
 
 # ---- 5. built-ins reserved from ordinary dispatches ---------------------------------------
@@ -197,25 +213,25 @@ check("registration names ride in the profile", {"semantic-search": "plugin:sema
 check("the reserved set is named once",
       ("Workflow", "Agent"), tuple(getattr(tp, "RESERVED_BUILTINS", ())))
 check("bench-score is the one shape row carrying a reserved built-in", ["bench-score"],
-      sorted(n for n, r in tp.load_table()["shapes"].items()
+      sorted(n for n, r in tp.load_table()["kinds"].items()
              if set(r.get("builtins") or []) & set(getattr(tp, "RESERVED_BUILTINS", ("Workflow", "Agent")))))
 check("bench-score resolves Workflow for the score driver", "Read,Glob,Grep,Workflow",
       spec("bench-score").split(",mcp__")[0])
 raises("bench-score cannot be widened to Agent by a delta", "cannot grant",
        lambda: spec("bench-score", tools_csv="+Agent"))
 raises("a delta adding Workflow", "cannot grant",
-       lambda: spec("any", tools_csv="+Workflow"))
+       lambda: spec("judge", tools_csv="+Workflow"))
 raises("a delta adding Agent", "cannot grant",
        lambda: spec("author", tools_csv="+Agent"))
 raises("a legacy -t naming Workflow", "cannot grant",
-       lambda: spec("review", tools_csv="Read,Glob,Grep,Workflow"))
+       lambda: spec("reviewer", tools_csv="Read,Glob,Grep,Workflow"))
 raises("an arm task row naming Agent", "cannot grant",
        lambda: tp.resolve("arm", base_builtins=["Read", "Glob", "Grep", "Agent"],
                           candidates=CANDIDATES))
 raises("a structured delta adding Workflow", "cannot grant",
-       lambda: tp.resolve("survey", add=["Workflow"], candidates=CANDIDATES))
+       lambda: tp.resolve("scout", add=["Workflow"], candidates=CANDIDATES))
 check("a grantable delta is untouched", "Read,Glob,Grep,Bash",
-      spec("survey", tools_csv="+Bash").split(",mcp__")[0])
+      spec("scout", tools_csv="+Bash").split(",mcp__")[0])
 
 # ---- 6. the shared data rule: quoted data is not an instruction -----------------------------
 # A brief quotes diffs, worklogs and deliverables. `without_quoted_data` is the ONE rule that tells
@@ -239,69 +255,19 @@ check("a plain line is untouched", True, _kept.endswith("plain tail\n"))
 check("line count is preserved so line numbers still point at the source",
       len(QUOTED.splitlines()), len(_kept.splitlines()))
 
-_REPORT = tp.brief_requirements([("b", "Run `git diff HEAD`.\n"
-                                       'TOOLS-ACK: Bash "git diff HEAD" — the diff is attached below\n')])
-check("a TOOLS-ACK line is plain text, never a pass condition", ["Bash"],
-      tp.coverage_of(_REPORT)["needs"])
-check("a match carries no `waived` field", {"tool", "source", "line", "text", "negated"},
-      set(_REPORT["matches"][0]))
-check("imperative Run python3 needs Bash", ["Bash"], tp.coverage_of(
-      tp.brief_requirements([("b", "Run python3 .claude/tools/kfm.py index")]))["needs"])
-check("Never run python3 remains a negative instruction", [], tp.coverage_of(
-      tp.brief_requirements([("b", "Never run python3 .claude/tools/kfm.py index")]))["needs"])
-check("blockquoted Run python3 is judged data", [], tp.coverage_of(
-      tp.brief_requirements([("b", "> Run python3 .claude/tools/kfm.py index")]))["needs"])
 _DIFF = ("diff --git a/x.md b/x.md\nindex 1111111..2222222 100644\n--- a/x.md\n+++ b/x.md\n"
          "@@ -1 +1 @@\n-old\n+    \"\"\"The files one `git log` call names for every spec.\"\"\"\n")
-check("a unified diff passed as a brief file is judged data", [], tp.coverage_of(
-      tp.brief_requirements([("prompt", "Review the hunks."), ("d.diff", _DIFF)]))["needs"])
 import tempfile  # noqa: E402
-with tempfile.TemporaryDirectory() as _diff_root:
-    with open(os.path.join(_diff_root, "hunks.diff"), "w", encoding="utf-8", newline="\n") as _f:
-        _f.write(_DIFF)
-    check("a unified diff a brief points at is judged data", [], tp.coverage_of(tp.brief_requirements(
-        [("prompt", "The hunks are in sub/../hunks.diff; read sub/../hunks.diff first.")],
-        root=_diff_root))["needs"])
-check("the same line outside a diff still needs Bash", ["Bash"], tp.coverage_of(tp.brief_requirements(
-    [("prompt", "Review the hunks."), ("notes.md", "The files one `git log` call names for every spec.\n")]))["needs"])
 # A brief that points at named sections of a doc hands its child those sections, not the doc's
 # other sections: a routing line elsewhere in it ("Use /rule_consistency for contradictions") is
 # not an order to this child.
 _SECTIONED = ("# Doc\n\n## Universal\n\n### 7. Descriptions\nState the trigger first.\n\n"
               "### 8. Frontmatter\nCommands use one line.\n\n## Composition\n\n"
               "Use `/rule_consistency` for contradictions.\n")
-with tempfile.TemporaryDirectory() as _sec_root:
-    _sec = os.path.join(_sec_root, "doc.md").replace("\\", "/")
-    with open(_sec, "w", encoding="utf-8", newline="\n") as _f:
-        _f.write(_SECTIONED)
-    check("a pointer naming sections scans only those sections", [], tp.coverage_of(tp.brief_requirements(
-        [("prompt", "Read `%s` §7 and §8 first." % _sec)]))["needs"])
-    check("a pointer naming no section still scans the whole doc", True, "Workflow" in tp.coverage_of(
-        tp.brief_requirements([("prompt", "Read `%s` first." % _sec)]))["needs"])
-    check("a pointer naming the section that orders the fan-out still needs it", True, "Workflow" in
-          tp.coverage_of(tp.brief_requirements([("prompt", "Read `%s` §Composition first." % _sec)]))["needs"])
 
 # A skill, reference or rule file a brief only points at is reading material: its own routing lines
 # ("Use /rule_consistency for contradictions") are not orders to this child. The brief's own text and
 # a file handed over as the task (a direct text, a non-doctrine pointer) still count.
-with tempfile.TemporaryDirectory() as _doc_root:
-    _doc_rel = ".claude/skills/planted_skill/SKILL.md"
-    _doc_abs = os.path.join(_doc_root, *_doc_rel.split("/"))
-    os.makedirs(os.path.dirname(_doc_abs))
-    with open(_doc_abs, "w", encoding="utf-8", newline="\n") as _f:
-        _f.write(_SECTIONED)
-    check("a pointed skill's command mention is reference, not an order", [], tp.coverage_of(
-        tp.brief_requirements([("prompt", "Read `%s` first." % _doc_rel)], root=_doc_root))["needs"])
-    check("a pointed skill's mention is reference with an absolute path too", [], tp.coverage_of(
-        tp.brief_requirements([("prompt", "Read `%s` first." % _doc_abs.replace("\\", "/"))],
-                              root=_doc_root))["needs"])
-    check("a brief that itself orders the fan-out still needs it beside a pointed skill", True,
-          "Workflow" in tp.coverage_of(tp.brief_requirements(
-              [("prompt", "Read `%s` first.\nThen run /rule_consistency on the result." % _doc_rel)],
-              root=_doc_root))["needs"])
-    check("the same skill text handed over as a direct brief text still needs the fan-out", True,
-          "Workflow" in tp.coverage_of(tp.brief_requirements([(_doc_rel, _SECTIONED)],
-                                                             root=_doc_root))["needs"])
 
 sys.path.insert(0, os.path.join(ROOT, ".claude", "hooks"))
 import dispatch_mechanism_guard as dmg  # noqa: E402
@@ -417,9 +383,6 @@ def attempt(fn):
         return "raised %s: %s" % (type(exc).__name__, exc)
 
 
-def refusal_for(line, shape, root=None):
-    builtins = tp.resolve(shape, candidates=CANDIDATES)[0]["builtins"]
-    return tp.brief_refusal(builtins, tp.brief_requirements([("brief.md", line)], root))
 
 
 check("command_grants reads Task as Agent, in written order", ["Read", "Agent"],
@@ -472,45 +435,10 @@ check("a `run:<id>` key heading a ledger unit row is data, not a dispatch verb",
       attempt(lambda: tp.nested_fanout_hit("run:wf_1a2b\t.claude/commands/planted_wf.md,.claude/x.md", CMD_ROOT)))
 check("...while the verb before a command path still dispatches", True,
       attempt(lambda: tp.nested_fanout_hit("Next, run .claude/commands/planted_wf.md.", CMD_ROOT)) is not None)
-_pr = str(attempt(lambda: refusal_for("Run /pr_ready over the branch.", "author")))
-check("Run /pr_ready under author is refused with the orchestration §0 text (only where the command is shipped)",
-      PR_READY_SHIPPED,
-      "orchestration §0" in _pr and "every lens of a nested fan-out itself" in _pr)
-check("...and offers no delta or wider shape for Workflow/Agent", False, "Fix:" in _pr)
-_pull = str(attempt(lambda: refusal_for("Then run /clean_pull.", "review")))
-check("Then run /clean_pull under review is refused for Bash", True,
-      _pull.startswith("the brief needs Bash,") and "brief.md:1" in _pull)
-check("a descriptive /pr_ready mention passes", None,
-      attempt(lambda: refusal_for("This output feeds /pr_ready later.", "author")))
-check("a negated run after a /pr_ready mention passes", None,
-      attempt(lambda: refusal_for("This output feeds /pr_ready later; do not run it.", "author")))
-check("a negated run of /pr_ready passes", None,
-      attempt(lambda: refusal_for("Never run /pr_ready yourself.", "author")))
-_neg_then_run = str(attempt(lambda: refusal_for("Run /pr_ready; do not skip it.", "author")))
-check("a run whose later clause is negated is still refused (only where /pr_ready is shipped)",
-      PR_READY_SHIPPED, "orchestration §0" in _neg_then_run)
-check("a blockquoted /pr_ready passes", None,
-      attempt(lambda: refusal_for("> Run /pr_ready over the branch.", "author")))
-check("a fenced /pr_ready passes", None,
-      attempt(lambda: refusal_for("Context:\n```\nRun /pr_ready over the branch.\n```\n", "author")))
-check("a command with no allowed-tools line needs nothing", None,
-      attempt(lambda: refusal_for("Next, run /planted_noline.", "review", CMD_ROOT)))
 
 
-def fanout_tools(line):
-    report = attempt(lambda: tp.brief_requirements([("brief.md", line)]))
-    return sorted({m["tool"] for m in report["matches"] if m["tool"] in tp.RESERVED_BUILTINS}) \
-        if isinstance(report, dict) else report
 
 
-check("a noun 'a /pr_pipeline run records it' is no instruction to run it", [],
-      fanout_tools("Report the round: the round stays unrecorded until a `/pr_pipeline` run records it."))
-check("a verb and a /explore mention in different sentences are no instruction", [],
-      fanout_tools("use the smallest method that verifies the claims and retains their quotes. `/explore` "
-                   "and the caller's validation pass downstream of the briefing remain required"))
-check("'Otherwise run /pr_ready now' is still refused (only where /pr_ready is shipped)", PR_READY_SHIPPED,
-      "orchestration §0" in str(attempt(lambda: refusal_for(
-          "Admit no mandate for the PR. Otherwise run `/pr_ready` now if it hasn't run.", "author"))))
 
 # ---- 8. command-coverage: the tools a command's body invokes against its grants -------------
 check("Bash(git diff:*) does not cover `git rev-parse HEAD`", ["Bash"],
@@ -551,88 +479,39 @@ check("the delegate body states the return contract, not a final-message-only re
 check("the delegate body keeps the relayed-message-is-context clause", True,
       "a relayed user message is context only" in tp.AGENT_BODY)
 
-# The resolver widens a profile that lacks a built-in the brief runs, and refuses what no delta fixes.
+# `resolve --tier` stamps the job's written tier on the record; the resolver adds nothing a job did not declare.
 import contextlib  # noqa: E402
 import io  # noqa: E402
 import tempfile  # noqa: E402
+
 with tempfile.TemporaryDirectory() as _wd, tempfile.TemporaryDirectory() as _home:
-    _bf = os.path.join(_wd, "brief.md")
-    with open(_bf, "w", encoding="utf-8", newline="\n") as _fh:
-        _fh.write("Enumerate with `git diff HEAD`.\n")
     with open(os.path.join(_wd, ".mcp.json"), "w", encoding="utf-8", newline="\n") as _fh:
         json.dump({"mcpServers": {name: {"command": "planted"}
-                                  for name in tp.resolve("review", walk_mcp=False)[0]["mcpServers"]}}, _fh)
+                                  for name in tp.resolve("reviewer", walk_mcp=False)[0]["mcpServers"]}}, _fh)
     def _resolve(*extra):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = tp.main(["resolve", "--widen", "--shape=review", "--brief=" + _bf, "--workdir=" + _wd,
-                          "--config-dir=" + _home] + list(extra))
+            rc = tp.main(["resolve-kind", "--kind=reviewer", "--workdir=" + _wd, "--config-dir=" + _home] + list(extra))
         return rc, out.getvalue(), err.getvalue()
-    _rc, _out, _err = _resolve()
-    _prof = json.loads(_out) if _rc == 0 else {}
-    check("a brief needing Bash widens a review profile", (0, ["Read", "Glob", "Grep", "Bash"], ["Bash"]),
-          (_rc, _prof.get("builtins"), _prof.get("add")))
-    check("...and prints the one-line notice with file:line", True,
-          "[sidecar] profile widened by +Bash: the brief runs it (" in _err and "brief.md:1" in _err)
-    check("an invalid delta still refuses", 2, _resolve("--tools=Read,+Bash")[0])
-    _out, _err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(_out), contextlib.redirect_stderr(_err):
-        _lint = tp.main(["resolve", "--shape=review", "--brief=" + _bf, "--workdir=" + _wd])
-    check("without --widen the resolver still refuses: authored-brief lints keep their check", 2, _lint)
-    check("a removed tool the brief needs still refuses", 2, _resolve("--tools=+Bash,-Bash")[0])
-    _review = tp.resolve("review", walk_mcp=False)[0]["builtins"]
-    check("a pre-launch check that defers to the launcher's widening passes a grantable need", None,
-          tp.check_brief_files(_review, [_bf], grammar="job", root=_wd, widen=True))
-    check("...and without widen it still refuses", True,
-          bool(tp.check_brief_files(_review, [_bf], grammar="job", root=_wd)))
-    _wf = os.path.join(_wd, "wf.md")
-    with open(_wf, "w", encoding="utf-8", newline="\n") as _fh:
-        _fh.write("Run `Workflow({script: 'x'})` over the three lenses.\n")
-    check("...but a fan-out need no delta grants still refuses under widen", True,
-          bool(tp.check_brief_files(_review, [_wf], grammar="job", root=_wd, widen=True)))
-
     _plain = json.loads(_resolve()[1]).get("tier")
     _arch = _resolve("--tier=architect")
-    check("the record's tier is the resolved job tier: --tier overrides the shape row's", ("executor", 0, "architect"),
+    check("the record's tier is the resolved job tier: --tier overrides the kind row's", ("executor", 0, "architect"),
           (_plain, _arch[0], json.loads(_arch[1]).get("tier") if _arch[0] == 0 else None))
     check("...a folded alias resolves to its tier", "fanout", json.loads(_resolve("--tier=validation")[1]).get("tier")
           if _resolve("--tier=validation")[0] == 0 else None)
     _bad = _resolve("--tier=bogus")
     check("...an unknown tier refuses with the known list", (2, True),
           (_bad[0], "bogus" in _bad[2] and "architect" in _bad[2] and "scout" in _bad[2]))
-
-    def _ctx(shape):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = tp.main(["resolve", "--widen", "--shape=" + shape, "--context=" + _bf, "--workdir=" + _wd,
-                          "--config-dir=" + _home, "--field=builtins"])
-        return rc, out.getvalue()
-    check("brief_files keeps the prompt and the context files of a non-review shape", ["p.md", "a", "b"],
-          tp.brief_files("survey", "p.md", ["a", "b"]))
-    check("brief_files drops a review seat's context files and tolerates none", (["p.md"], ["p.md"], []),
-          (tp.brief_files("review", "p.md", ["a", "b"]), tp.brief_files("survey", "p.md", None),
-           tp.brief_files("review", None, ["a"])))
-    check("a --context file widens a survey profile like a --brief", (0, True),
-          (_ctx("survey")[0], "Bash" in _ctx("survey")[1]))
-    check("...and a review seat's --context file is not scanned", (0, False),
-          (_ctx("review")[0], "Bash" in _ctx("review")[1]))
+    check("an invalid delta still refuses", 2, _resolve("--tools=Read,+Bash")[0])
 
 _live = tp.load_table()
 _engine_kinds = [k for k, r in _live["kinds"].items() if "engine" in r["routes"]]
 check("the live table declares engine kinds", True, len(_engine_kinds) > 0)
 for _k in _engine_kinds:
-    _row = _live["kinds"][_k]
-    _shape = _live["shapes"].get(tp.kind_guard(_k, _live), {})
-    check("engine kind %s: its guard shape carries the kind's own agentType" % _k,
-          _row.get("agentType"), _shape.get("agentType"))
-    check("engine kind %s: engine_job is the guard shape on a general-purpose start" % _k,
-          {"shape": tp.kind_guard(_k, _live), "agentType": "general-purpose"}, tp.engine_job(_k, _live))
+    check("engine kind %s: engine_job is the kind itself, which the engine runs as its row's agent type" % _k,
+          {"kind": _k}, tp.engine_job(_k, _live))
 raises("engine_job refuses a kind with no engine route", "engine", lambda: tp.engine_job("arm", _live))
 raises("engine_job refuses an unknown kind", "unknown kind", lambda: tp.engine_job("nope", _live))
-_inexact = json.loads(json.dumps(_live))
-_inexact["kinds"]["scout"]["agentType"] = "lane-review"
-raises("engine_job refuses a kind whose guard shape names another agentType", "exact",
-       lambda: tp.engine_job("scout", _inexact))
 # The exec scorer's driver (daemon_lib.EXEC_DRIVER_TOOLS) writes mutants and runs tests in its arm worktree.
 check("the bench-score driver takes the exec scorer's write delta", ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "Workflow"],
       tp.resolve_kind("bench-score", add=["Edit", "Write", "Bash"], route="launcher", candidates=CANDIDATES)[0]["builtins"])
@@ -642,8 +521,272 @@ try:
 except ValueError as exc:
     check("+Write on a lens is refused, naming author", True, "use kind author" in str(exc))
 
-if RAN < 110:
-    print("FAIL expected >= 110 cases, ran %d" % RAN)
+# A kind row's default `git` is repo-scoped: the repo's `.mcp.json` registers it, so a workdir outside
+# every repo (a benchmark arm root) resolves without it, and a subdirectory of the repo resolves with it.
+def _repo_scope_case():
+    with tempfile.TemporaryDirectory() as base:
+        home = os.path.join(base, "home")
+        outside = os.path.join(base, "BenchmarkArms")
+        repo = os.path.join(base, "repo")
+        deep = os.path.join(repo, "a", "b")
+        for d in (home, outside, deep, os.path.join(repo, ".git")):
+            os.makedirs(d)
+        with open(os.path.join(home, ".claude.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"mcpServers": {"ai-worker": {"command": "aiw"},
+                                      "semantic-search": {"command": "ss"}}}, fh)
+        with open(os.path.join(repo, ".mcp.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"mcpServers": {"git": {"command": "python3",
+                                              "env": {"GIT_RO_ROOT": "${CLAUDE_PROJECT_DIR:-.}"}}}}, fh)
+
+        def kind(name, wd, add=()):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                try:
+                    cands = tp.load_registrations(home, wd)
+                    return tp.resolve_kind(name, add=list(add), route="launcher", candidates=cands)[0], err.getvalue(), cands
+                except ValueError as exc:
+                    return str(exc), err.getvalue(), []
+        prof, err, _c = kind("scout", outside)
+        check("a workdir in no repo resolves scout without git and without error",
+              (["semantic-search", "ai-worker"], True),
+              (prof["mcpServers"] if isinstance(prof, dict) else prof, "git" in err and "repo" in err))
+        prof, err, cands = kind("scout", deep)
+        check("a repo subdirectory resolves scout with git", (["semantic-search", "ai-worker", "git"], ""),
+              (prof["mcpServers"] if isinstance(prof, dict) else prof, err))
+        check("...and git's CLAUDE_PROJECT_DIR is the repo root, not the subdirectory",
+              os.path.normcase(os.path.abspath(repo)),
+              os.path.normcase(os.path.abspath(dict(cands).get("git", {}).get("env", {}).get("GIT_RO_ROOT", ""))))
+        prof, _e, _c = kind("author", outside, add=["mcp:git"])
+        check("an explicit +git outside a repo still errors", True,
+              isinstance(prof, str) and "not registered in this config: git" in prof)
+        with open(os.path.join(home, ".claude.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"mcpServers": {"ai-worker": {"command": "aiw"}}}, fh)
+        prof, _e, _c = kind("scout", outside)
+        check("an unregistered non-repo-scoped default (semantic-search) still errors", True,
+              isinstance(prof, str) and "not registered in this config: semantic-search" in prof)
+
+
+_repo_scope_case()
+
+# ---- the kind table: one required `kind` per job sets tools, -D, guard and agent type ----------
+_TB = tp.load_table()
+_PUBLIC = ["scout", "lens", "reviewer", "author", "judge"]
+check("PUBLIC_KINDS derive from the table's non-internal rows", _PUBLIC,
+      sorted(tp.public_kinds(_TB), key=_PUBLIC.index))
+for _k, _b, _d, _a, _t in (
+        ("scout", ["Read", "Glob", "Grep"], "bare", "lane-survey", "fanout"),
+        ("lens", ["Read", "Glob", "Grep"], "pointer", "lane-survey", "fanout"),
+        ("reviewer", ["Read", "Glob", "Grep"], "full", "lane-review", "executor"),
+        ("author", ["Read", "Glob", "Grep", "Edit", "Write", "Bash"], "full", "lane-author", "executor"),
+        ("judge", ["Read", "Glob", "Grep"], "full", "lane-review", "executor")):
+    _p = tp.resolve_kind(_k, route="fanout", candidates=CANDIDATES)[0]
+    check("resolve_kind %s: builtins, disclosure, agentType, tier" % _k, (_b, _d, _a, _t),
+          (_p["builtins"], _p["disclosure"], _p["agentType"], _p["tier"]))
+raises("an unknown kind names the public kinds", "scout, lens, reviewer, author, judge",
+       lambda: tp.resolve_kind("nonesuch", route="fanout", candidates=CANDIDATES))
+raises("an internal kind on the wrong route names its routes and the fix", "internal to",
+       lambda: tp.resolve_kind("bench-score", route="fanout", candidates=CANDIDATES))
+raises("+Edit on a reviewer is refused, naming author", "use kind author",
+       lambda: tp.resolve_kind("reviewer", add=["Edit"], route="fanout", candidates=CANDIDATES))
+raises("+Write on a lens is refused, naming author", "use kind author",
+       lambda: tp.resolve_kind("lens", add=["Write"], route="fanout", candidates=CANDIDATES))
+check("+Bash on a lens is accepted", ["Read", "Glob", "Grep", "Bash"],
+      tp.resolve_kind("lens", add=["Bash"], route="fanout", candidates=CANDIDATES)[0]["builtins"])
+check("kind_launcher_flags is gone: launchers take -G <kind>", False, hasattr(tp, "kind_launcher_flags"))
+check("kind_guard reads the kind row's guard name", "survey", tp.kind_guard("scout"))
+check("kind_guard of a reviewer is review", "review", tp.kind_guard("reviewer"))
+check("kind_guard of no kind is None", None, tp.kind_guard(None))
+
+
+def _bad_kinds(mutate):
+    import copy
+    import tempfile as _tf
+    table = copy.deepcopy(_TB)
+    mutate(table["kinds"])
+    with _tf.TemporaryDirectory() as d:
+        path = os.path.join(d, "t.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(table, fh)
+        return tp.load_table(path)
+
+
+raises("two kinds sharing an agentType with different built-ins are refused", "agentType",
+       lambda: _bad_kinds(lambda k: k["judge"].update(builtins=["Read", "Glob", "Grep", "Bash"])))
+check("a table whose kinds carry no legacy field loads", True,
+      bool(_bad_kinds(lambda k: [row.pop("legacy", None) for row in k.values()])))
+check("no kind row carries a legacy field", [], [n for n, r in _TB["kinds"].items() if "legacy" in r])
+check("bench-review expresses its inputs directly: reviewer guard text, bare disclosure, launcher route",
+      ("review", "bare", True),
+      (_TB["kinds"]["bench-review"]["guard"], _TB["kinds"]["bench-review"]["disclosure"],
+       "launcher" in _TB["kinds"]["bench-review"]["routes"]))
+
+# ---- resolve-kind: the launcher's resolver ----------------------------------------------------
+def _rk(*argv):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = tp.main(["resolve-kind", "--config-dir=" + MCP_CFG, "--workdir=" + MCP_CFG] + list(argv))
+    return rc, out.getvalue(), err.getvalue()
+
+
+_rc, _out, _err = _rk("--kind=lens")
+_prof = json.loads(_out) if _rc == 0 else {}
+check("resolve-kind lens prints builtins, disclosure and guard", (0, ["Read", "Glob", "Grep"], "pointer", "survey"),
+      (_rc, _prof.get("builtins"), _prof.get("disclosure"), _prof.get("guard")))
+_rc, _out, _err = _rk("--kind=author", "--tools=-mcp:ai-worker")
+_prof = json.loads(_out) if _rc == 0 else {}
+check("resolve-kind takes a signed removal", (0, ["semantic-search"]), (_rc, _prof.get("mcpServers")))
+_rc, _out, _err = _rk("--kind=scout", "--tools=+Bash")
+check("resolve-kind takes a signed +Bash", (0, "Read,Glob,Grep,Bash"),
+      (_rc, ",".join(json.loads(_out)["builtins"]) if _rc == 0 else ""))
+_rc, _out, _err = _rk("--kind=reviewer", "--tools=Read,Glob,Grep")
+check("resolve-kind refuses an unsigned -t naming -G <kind> and a signed delta", True,
+      _rc == 2 and "-G <kind>" in _err and "+Bash" in _err)
+_rc, _out, _err = _rk("--kind=scout", "--tools=+Edit")
+check("resolve-kind refuses +Edit off an author via -t", True, _rc == 2 and "use kind author" in _err)
+_rc, _out, _err = _rk("--kind=survey")
+check("resolve-kind refuses a retired shape name, naming the public kinds", True,
+      _rc == 2 and "scout, lens, reviewer, author, judge" in _err)
+_rc, _out, _err = _rk("--kind=verify")
+check("resolve-kind refuses an engine-only kind", True, _rc == 2 and "internal" in _err)
+_rc, _out, _err = _rk("--kind=scout", "--base-builtins=Read")
+check("-B base built-ins are legal only with arm", True, _rc == 2 and "arm" in _err)
+_rc, _out, _err = _rk("--kind=arm", "--tools=Read,Glob,Grep")
+check("an arm still takes its unsigned task row", (0, ["Read", "Glob", "Grep"]),
+      (_rc, json.loads(_out)["builtins"] if _rc == 0 else None))
+_rc, _out, _err = _rk("--kind=bench-score")
+check("bench-score resolves Workflow from its own row", (0, True), (_rc, "Workflow" in json.loads(_out)["builtins"] if _rc == 0 else None))
+_rc, _out, _err = _rk("--kind=bench-review")
+check("bench-review resolves through the launcher route", 0, _rc)
+raises("a kind with no routes is refused", "routes",
+       lambda: _bad_kinds(lambda k: k["scout"].update(routes=[])))
+
+# ---- native_agent_type: a native job runs only as a generated agent type -----------------------
+_NT = {"variants": [{"kind": "reviewer", "add": ["Bash"], "remove": [], "agentType": "lane-review-bash"}]}
+check("a reviewer with no delta runs as its kind row's agent type", "lane-review",
+      tp.native_agent_type({"kind": "reviewer", "agentType": "lane-review", "add": [], "remove": []}, _NT))
+check("an author with no delta runs as lane-author", "lane-author",
+      tp.native_agent_type({"kind": "author", "agentType": "lane-author"}, _NT))
+check("a delta a variants entry names runs as that entry", "lane-review-bash",
+      tp.native_agent_type({"kind": "reviewer", "agentType": "lane-review", "add": ["Bash"], "remove": []}, _NT))
+raises("a delta with no covering agent file is refused", "no covering agent file",
+       lambda: tp.native_agent_type({"kind": "reviewer", "agentType": "lane-review", "add": ["Write"], "remove": []}, _NT))
+raises("the same delta on another kind is refused", "no covering agent file",
+       lambda: tp.native_agent_type({"kind": "lens", "agentType": "lane-survey", "add": ["Bash"], "remove": []}, _NT))
+raises("a kind row with no agentType cannot run natively", "names no agentType",
+       lambda: tp.native_agent_type({"kind": "judge", "add": [], "remove": []}, _NT))
+
+# ---- the live table: the kind row owns the tools; one enforced variant (D4c, OF1) ----------------
+def _native(kind, add=(), remove=()):
+    profile = tp.resolve_kind(kind, list(add), list(remove), route="agent", walk_mcp=False)[0]
+    return tp.native_agent_type(profile)
+
+
+def _bad_variants(variants):
+    import copy
+    import tempfile as _tf
+    table = copy.deepcopy(_TB)
+    table["variants"] = variants
+    with _tf.TemporaryDirectory() as d:
+        path = os.path.join(d, "t.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(table, fh)
+        return tp.load_table(path)
+
+
+check("the table has no `shapes` key: the kind rows own the defaults", False, "shapes" in TABLE)
+check("the table has no job_kind_shape reader left", False, hasattr(tp, "job_kind_shape"))
+check("the live table ships the reviewer+Bash variant",
+      [{"kind": "reviewer", "add": ["Bash"], "agentType": "lane-review-sh"}],
+      [{k: v for k, v in row.items() if k != "remove"} for row in TABLE.get("variants", [])])
+check("a reviewer+Bash delta resolves to lane-review-sh", "lane-review-sh", _native("reviewer", ["Bash"]))
+raises("a reviewer+Write delta is refused", "author", lambda: _native("reviewer", ["Write"]))
+raises("a scout+Bash delta has no covering agent file", "no covering agent file", lambda: _native("scout", ["Bash"]))
+for _kind, _agent in (("scout", "lane-survey"), ("lens", "lane-survey"), ("reviewer", "lane-review"),
+                      ("author", "lane-author"), ("judge", "lane-review")):
+    check("a planted native %s job resolves to %s" % (_kind, _agent), _agent, _native(_kind))
+_rendered = tp.render_agents(TABLE, CANDIDATES)
+check("render_agents writes the variant file with Bash after the reviewer's built-ins", True,
+      "tools: Read, Glob, Grep, Bash, " in _rendered.get("lane-review-sh.md", ""))
+check("render_agents writes one file per agent type", ["lane-author.md", "lane-review-sh.md", "lane-review.md", "lane-survey.md", "lane-verify.md"],
+      sorted(_rendered))
+raises("a variant adding Write to a non-author kind is refused at load", "author",
+       lambda: _bad_variants([{"kind": "reviewer", "add": ["Write"], "agentType": "lane-review-w"}]))
+raises("a variant reusing a kind's agentType is refused at load", "agentType",
+       lambda: _bad_variants([{"kind": "reviewer", "add": ["Bash"], "agentType": "lane-review"}]))
+
+WRITE_DOC = "mcp__ai-worker__write_doc"
+for _kind in ("scout", "lens", "reviewer", "judge"):
+    check("%s withholds ai-worker write_doc" % _kind, [WRITE_DOC], tp.resolve_kind(_kind, route="fanout", walk_mcp=False)[0]["denyTools"])
+check("author keeps ai-worker write_doc", [], tp.resolve_kind("author", route="fanout", walk_mcp=False)[0]["denyTools"])
+check("a read-only kind's spec still names the ai-worker server", True,
+      "mcp__ai-worker" in tp.resolve_kind("scout", route="launcher", candidates=CANDIDATES)[1].split(","))
+raises("denyTools on a kind must be a list of mcp__ names", "denyTools",
+       lambda: tp._validate_kinds({"x": dict(TABLE["kinds"]["scout"], denyTools=["write_doc"])}))
+
+# ---- the brief scan is gone; a retired flag names its replacement
+import re  # noqa: E402
+import subprocess  # noqa: E402
+
+
+def _cli(*args):
+    run = subprocess.run([sys.executable, os.path.join(ROOT, ".claude", "tools", "tool_profiles.py"), *args],
+                         capture_output=True, text=True)
+    return run.returncode, run.stderr
+
+
+for _args in (("resolve", "--brief", "x.md"), ("resolve-kind", "--kind=scout", "--brief", "x.md"),
+              ("resolve-kind", "--kind=scout", "--widen")):
+    _rc, _err = _cli(*_args)
+    check("`%s` exits 2" % " ".join(_args), 2, _rc)
+    check("`%s` names kind and a signed tools delta" % " ".join(_args), (True, True),
+          ("Declare `kind`" in _err, "signed `tools` delta" in _err))
+_dead = ("brief_requirements", "brief_refusal", "check_brief_files", "widenable_needs", "coverage_for",
+         "_cover_brief", "_with_pointed", "read_brief")
+_live = []
+for _dir in ("tools", "hooks"):
+    for _f in sorted(os.listdir(os.path.join(ROOT, ".claude", _dir))):
+        if _f.endswith(".py"):
+            _src = open(os.path.join(ROOT, ".claude", _dir, _f), encoding="utf-8", errors="replace").read()
+            _live += ["%s/%s:%s" % (_dir, _f, n) for n in _dead if re.search(r"def %s" % n, _src)]
+check("no tools/ or hooks/ module defines a deleted brief-scan function", [], _live)
+
+# ---- the table names no `any`, and the common rails file keeps the godot overlay
+check("the table has no shapes block or defaultShape", [], [k for k in ("shapes", "defaultShape") if k in TABLE])
+check("no kind row is named or guarded `any`", [],
+      sorted(k for k, r in TABLE["kinds"].items() if k == "any" or r.get("guard") == "any"))
+import guard_text as _gt  # noqa: E402
+import glob as _glob  # noqa: E402
+_rails = _gt.guard_text("author", "detailed")
+_overlays = sorted(_glob.glob(os.path.join(ROOT, ".claude", "guards", "common.*.md")))
+_missing = []
+for _o in _overlays:
+    _body = open(_o, encoding="utf-8").read().split("## detailed", 1)[1].split("\n## ", 1)[0]
+    _first = next((l for l in _body.splitlines() if l.startswith("- ")), "")
+    if not _first or _first not in _rails:
+        _missing.append(os.path.basename(_o))
+check("author/detailed rails carry the first detailed line of every common overlay file present", [], _missing)
+_surf = [json.dumps({"kind": "path", "surface": ".claude/guards/%s" % o, "change": "rename", "to": ".claude/guards/%s" % n})
+         for o, n in (("any.md", "common.md"), ("any.godot.md", "common.godot.md"))]
+_out = subprocess.run([sys.executable, os.path.join(ROOT, ".claude", "tools", "citers.py"), "--json", "--repo", ROOT] + _surf,
+                      capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
+_history = (".claude/auto-memory/archive/", ".claude/tests/fixtures/", ".claude/scripts/rail_battery/reports/",
+            ".claude/plans/", ".claude/scratch/", ".claude/autolearn_outcomes.jsonl", ".claude/orchestration_verdicts.json",
+            ".claude/orchestration_metrics.jsonl", ".claude/self_evaluate_archive.json",
+            ".claude/baseline.lock.json", ".claude/tests/test_tool_profiles.py")
+_stale = sorted({"%s:%s" % (c["path"], c["line"]) for c in json.loads(_out.stdout or '{"citers": []}')["citers"]
+                 if c["path"].startswith(".claude/") and not c["path"].startswith(_history)})
+check("the citer sweep reports no live reference to guards/any*.md", [], _stale)
+
+import re  # noqa: E402
+
+_doc = open(os.path.join(ROOT, ".claude", "reference", "sidecar_dispatch.md"), encoding="utf-8").read()
+_sect = _doc.split("## Job kind", 1)[1].split("\n## ", 1)[0]
+_doc_kinds = sorted(k for k in re.findall(r"^\| (\w[\w-]*) \|", _sect, re.M) if k != "kind")
+_table_kinds = sorted(k for k, row in tp.load_table()["kinds"].items() if not row.get("internal"))
+check("sidecar_dispatch.md §Job kind lists exactly the non-internal kinds of the table", _table_kinds, _doc_kinds)
+
+if RAN < 201:
+    print("FAIL expected >= 201 cases, ran %d" % RAN)
     FAIL = 1
 print("%s test_tool_profiles (%d cases)" % ("PASS" if not FAIL else "FAIL", RAN))
 sys.exit(FAIL)

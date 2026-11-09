@@ -24,6 +24,15 @@ import tempfile
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The guard resolves a kind's MCP servers, and a template checkout registers none: plant the logical
+# servers the defaults table names so the proof never reads this machine's config.
+_MCP_CFG = tempfile.mkdtemp(prefix="guard_mcp_")
+with open(os.path.join(_MCP_CFG, ".claude.json"), "w", encoding="utf-8", newline="\n") as _fh:
+    json.dump({"mcpServers": {"ai-worker": {"command": "aiw"}, "git": {"command": "gr"},
+                              "godot": {"command": "g"},
+                              "plugin:semantic-search:semantic-search": {"command": "node"}},
+               "projects": {}}, _fh)
+os.environ["CLAUDE_CONFIG_DIR"] = _MCP_CFG
 HOOK = os.path.join(HERE, "..", "hooks", "workflow_provider_guard.py")
 sys.path.insert(0, os.path.join(HERE, "..", "hooks"))
 spec = importlib.util.spec_from_file_location("wpg", HOOK)
@@ -66,7 +75,7 @@ def wf(jobs=None, agents=None, script=None, script_path=None):
     ti = {"scriptPath": script_path or ".claude/workflows/dispatch.js"}
     args = {}
     if jobs is not None:
-        args["jobs"] = jobs
+        args["jobs"] = [dict({"kind": "scout"}, **j) for j in jobs]
     if agents is not None:
         args["agents"] = agents
     ti["args"] = args
@@ -200,6 +209,10 @@ def main():
         # A row that declares contextSuffix is dispatched with it: the guard rewrites every pin naming
         # the row (id or alias) so callers keep the bare name and the engines need no edit.
         def rewritten(args, transport="host", data=DATA):
+            for holder in [args] + list(args.get("chains") or []):
+                for key in ("jobs", "agents", "lenses"):
+                    if key in holder:
+                        holder[key] = [dict({"kind": "scout"}, **j) for j in holder[key]]
             out = wpg.transport_injection({"tool_name": "Workflow", "tool_input": {
                 "scriptPath": ".claude/workflows/dispatch.js", "args": args}}, transport, data)
             return (out or {}).get("args") or {}
@@ -237,7 +250,7 @@ def main():
         a = rewritten({"model": "h-long", "jobs": [{"label": "a", "model": "h-fan"}]})
         check("suffix: a root args.model is rewritten", a["model"] == "h-long[1m]" and a["jobs"][0]["model"] == "h-fan", a)
         a = rewritten({"jobs": [{"label": "a", "model": "h-fan"}]})
-        check("suffix: a call naming no declaring row is left byte-for-byte", a["jobs"] == [{"label": "a", "model": "h-fan"}], a["jobs"])
+        check("suffix: a call naming no declaring row is left byte-for-byte", a["jobs"] == [{"label": "a", "kind": "scout", "model": "h-fan"}], a["jobs"])
         v = a["__transport"]
         check("suffix: __transport.ids carries the suffixed forms and drops the bare ones",
               "h-long[1m]" in v["ids"] and "host-long-1[1m]" in v["ids"]
@@ -249,7 +262,7 @@ def main():
         check("suffix: another transport's declaring row is left bare in the pins and in ids",
               a["jobs"][0]["model"] == "off-long-1" and "off-long-1" in a["__transport"]["ids"]
               and "off-long-1[1m]" not in a["__transport"]["ids"], a["__transport"]["ids"])
-        raw_args = json.dumps({"jobs": [{"label": "a", "model": "h-long"}]})
+        raw_args = json.dumps({"jobs": [{"label": "a", "kind": "scout", "model": "h-long"}]})
         out = wpg.transport_injection({"tool_name": "Workflow", "tool_input": {"args": raw_args}}, "host", DATA)
         check("suffix: string args stay a string with the rewrite inside",
               isinstance(out["args"], str) and json.loads(out["args"])["jobs"][0]["model"] == "h-long[1m]", out.get("args"))

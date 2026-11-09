@@ -34,11 +34,12 @@ def main(tmp):
     with open(os.path.join(tmp, "Tests", "integration_batch_durations.json"), "w", encoding="utf-8", newline="\n") as f:
         f.write('{"units": {"AI": {"seconds": 57.5}, "AI.Steering": {"seconds": 107.0}, '
                 '"AI.Ports": {"seconds": 42.1}, "Other": {"seconds": 10.0}}}')
-    rc, out, _ = drive("'T=' + (Get-SuiteTimeoutMs -Repo $env:PROOF_TMP -Filter 'FullyQualifiedName~Tests.Integration.AI')"
-                       " + ' H=' + (Get-HeadroomMs -ExpectedSec 206.6 -ExtraMs $script:SuiteDurationExtraMs)", tmp)
-    timeout_ms, headroom_ms = (int(float(part.split("=", 1)[1])) for part in out.split()[:2])
-    check("a split segment's timeout sums its sub-units",
-          rc == 0 and timeout_ms >= headroom_ms, f"rc={rc} {out!r}")
+    with open(os.path.join(tmp, "Tests", "regression_baseline.json"), "w", encoding="utf-8", newline="\n") as f:
+        f.write('{"suites": {"Logic": {"duration_sec": 10.0}}}')
+    rc, out, _ = drive("'T=' + (Get-SuiteDefaultCeilingMs -Repo $env:PROOF_TMP)", tmp)
+    timeout_ms = int(float(out.split("=", 1)[1].split()[0])) if rc == 0 and "=" in out else -1
+    check("the default ceiling sums every recorded unit and tier (216.6 + 10 s)",
+          rc == 0 and timeout_ms == 226600, f"rc={rc} {out!r}")
     platform_roots(tmp)
     linux_proc(tmp)
     process_tree(tmp)

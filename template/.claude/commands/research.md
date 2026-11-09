@@ -48,7 +48,7 @@ If that route is unavailable, choose another eligible route explicitly or report
 
 ```
 Workflow({scriptPath: ".claude/workflows/explore_fanout.js", args: {
-  lenses: [{key, promptPath, model, effort, tier, agentType: "general-purpose"}], contextPrefixPath: <ctx>, labelPrefix: "research"}})
+  lenses: [{key, promptPath, model, effort, tier, kind: "author"}], contextPrefixPath: <ctx>, labelPrefix: "research"}})
 ```
 
 Consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5, except that Phase 3 step 1 rules UNCHECKED external claims.

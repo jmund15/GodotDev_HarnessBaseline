@@ -448,7 +448,8 @@ def rewrite_absent_forced_deletes(command: str, cwd: str | None = None) -> str |
         if not delete_shape:
             if words and words[0] == "cd" and len(words) == 2:
                 moved = expand_literal(words[1], assignments)
-                here = resolve_cd(here, moved) if moved and not _GLOB_CHARS.search(moved) else None
+                here = (resolve_cd(here, moved)
+                        if here is not None and moved and not _GLOB_CHARS.search(moved) else None)
             continue
         if here is None or words[0].lower() != "rm" or not _forces_removal(words[1:]):
             return None
@@ -507,7 +508,8 @@ def _is_mktemp_owned(name: str, raw: str) -> bool:
     literal directory name, however mktemp-shaped, is never ownership evidence."""
     # Every bare occurrence of the name (not a `$NAME` / `${NAME}` expansion) must be that one
     # assignment: `read NAME`, `for NAME in`, `export NAME` and `printf -v NAME` reassign it too.
-    bare_re = re.compile(r'(?<![A-Za-z0-9_$])(?<!\$\{)' + re.escape(name) + r'(?![A-Za-z0-9_])')
+    # A name right after `-` is a flag (`mktemp -d`), never an assignment.
+    bare_re = re.compile(r'(?<![A-Za-z0-9_$-])(?<!\$\{)' + re.escape(name) + r'(?![A-Za-z0-9_])')
     matches = list(bare_re.finditer(raw))
     if len(matches) != 1 or raw[matches[0].end():matches[0].end() + 1] != '=':
         return False
@@ -641,7 +643,8 @@ def _is_resolved_safe_cleanup(raw: str, cwd: str | None, accept=_is_regenerable_
         tokens = _cleanup_tokens(segment)
         if tokens and tokens[0] == "cd" and len(tokens) == 2:
             moved = expand_literal(tokens[1], assignments)
-            here = resolve_cd(here, moved) if moved and not _GLOB_CHARS.search(moved) else None
+            here = (resolve_cd(here, moved)
+                    if here is not None and moved and not _GLOB_CHARS.search(moved) else None)
             continue
         if not any(re.search(p, _strip_quoted(segment), re.IGNORECASE) for p in _RECURSIVE_DELETE_PATTERNS):
             continue

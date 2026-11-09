@@ -66,7 +66,7 @@ Resolve the three audit lenses' `fanout` work shape with `python3 .claude/tools/
 Workflow({
   scriptPath: ".claude/workflows/doc_architecture_audit.js",
   args: { context: "<the CONTEXT block from 1d>", docRoot: "<absolute path to .../Claude/Documentation>",
-          model: "<native model ID>", effort: "<legal ladder effort>", tier: "fanout" }
+          model: "<native model ID>", effort: "<legal ladder effort>", tier: "fanout", kind: "reviewer" }
 })
 ```
 

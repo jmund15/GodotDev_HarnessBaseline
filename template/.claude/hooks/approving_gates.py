@@ -18,6 +18,7 @@ TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import _git_commit  # noqa: E402
+from _win_path import native_path  # noqa: E402
 
 try:
     import model_registry  # noqa: E402
@@ -65,9 +66,9 @@ def trusted_root(payload):
     project = os.environ.get("CLAUDE_PROJECT_DIR")
     if not project:
         return None
-    root = Path(project).resolve()
+    root = Path(native_path(project)).resolve()
     cwd = payload.get("cwd") if isinstance(payload, dict) else None
-    if cwd and os.path.normcase(str(Path(cwd).resolve())) != os.path.normcase(str(root)):
+    if cwd and os.path.normcase(str(Path(native_path(cwd)).resolve())) != os.path.normcase(str(root)):
         return None
     return root
 
@@ -82,7 +83,7 @@ def without_output_wrappers(command, root):
     changes only what is printed. A `cd` anywhere else leaves the command whole."""
     match = _CD_PREFIX.match(command)
     if match:
-        target = next(group for group in match.groups() if group)
+        target = native_path(next(group for group in match.groups() if group))
         if os.path.normcase(str(Path(target).resolve())) != os.path.normcase(str(root)):
             return command
         command = command[match.end():]
@@ -323,10 +324,11 @@ def _commit_shape(argv, root):
     if parsed is None:
         return False, "the command is not `git commit`"
     args, chdir, inline_env = parsed
-    if inline_env or argv[1:len(argv) - len(args)] not in ([], ["-C", chdir]):
+    expected = [] if chdir is None else ["-C", chdir.paths[0]]
+    if inline_env or argv[1:len(argv) - len(args)] != expected:
         return False, "only `-C <project root>` may precede `commit` (no `-c` or other global flags)"
     if chdir is not None:
-        target = Path(chdir)
+        target = Path(native_path(chdir))
         if not target.is_absolute() or os.path.normcase(str(target.resolve())) != os.path.normcase(str(root)):
             return False, "`git -C` must name the project root"
     rest = args[1:]
@@ -587,7 +589,7 @@ def _probe_subcommand(argv, root=None):
             index += 1
         elif argv[index] == "-C" and index + 1 < len(argv):
             if root is not None:
-                target = Path(argv[index + 1])
+                target = Path(native_path(argv[index + 1]))
                 if not target.is_absolute() or os.path.normcase(str(target.resolve())) != os.path.normcase(
                         str(Path(root).resolve())):
                     return None, "`git -C` must name the project root"
@@ -779,7 +781,7 @@ def sidecar_bash_ask_shape(command, root):
     if seen["t"] != "+Bash" or seen["G"] != "reviewer":
         return False, "only `-G reviewer` with exactly `-t +Bash` can request consent"
     root = Path(root).resolve()
-    if os.path.normcase(str(Path(seen["d"]).resolve())) != os.path.normcase(str(root)):
+    if os.path.normcase(str(Path(native_path(seen["d"])).resolve())) != os.path.normcase(str(root)):
         return False, "the review workdir must be the project root"
     ordinary = argv[:2]
     for letter, value in pairs:

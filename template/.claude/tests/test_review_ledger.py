@@ -3030,7 +3030,7 @@ class RecordTests(RecordBase):
                            .read_text(encoding="utf-8"))
         must_read = [{"path": "src/a.cs", "lines": 1}, {"path": "callers outside this diff", "lines": 0}]
         args = {"agents": [{"key": "sa-seat", "prompt": "Review fixture.", "model": "fixture-model",
-                            "effort": "medium", "agentType": "general-purpose", "mustRead": must_read}],
+                            "effort": "medium", "kind": "reviewer", "mustRead": must_read}],
                 "consolidate": False, "resultMode": "full", "checker": {"model": "fixture-model", "effort": "medium"},
                 "__lensMandates": {"sa-seat": ["cq.C", "cq.D"]}}
         engine = subprocess.run(["node", str(ENGINE_RUN)], capture_output=True, text=True, input=json.dumps(
@@ -4368,6 +4368,17 @@ class WorktreeBlobTests(unittest.TestCase):
         self.assertFalse(module._clause_content(cover, {"files": {"f.cs": "0" * 40}}, "m", key))
         self.assertEqual(module.row_blob(row, key), self.blob)
         self.assertIsNone(module.row_blob(row, ".claude/worktrees/sub/other.cs"))
+
+    def test_a_row_credits_only_the_checkout_it_recorded_and_an_old_row_keeps_the_split(self):
+        module = load_module(TOOL)
+        key = ".claude/worktrees/sub/f.cs"
+        worktree = (self.main / ".claude" / "worktrees" / "sub").as_posix()
+        old_row = {"files": {"f.cs": self.blob}}
+        worktree_row = {"files": {"f.cs": self.blob}, "repo": worktree}
+        main_row = {"files": {"f.cs": self.blob}, "repo": self.main.as_posix()}
+        self.assertEqual(module.row_blob(old_row, key), self.blob)
+        self.assertEqual(module.row_blob(worktree_row, key), self.blob)
+        self.assertIsNone(module.row_blob(main_row, key))
 
     def test_worktree_split_names_the_worktree_root_and_the_rest_of_a_main_rooted_path(self):
         module = load_module(TOOL)

@@ -39,6 +39,9 @@ FAKE = {
     "9003": "claude.exe --resume|claude.exe",
     "9004": "pwsh -File .claude/scripts/gate_chain.ps1|pwsh.exe",
     "9005": "",
+    "9006": 'python3 -c "import time; time.sleep(600)  # sidecar_launch.py"|python3.exe',
+    "9007": "python3 .claude/tools/sidecar_launch.py --job x|python3.exe",
+    "9008": "bash .claude/scripts/watch_sidecar.sh|bash.exe",
 }
 
 
@@ -133,6 +136,21 @@ def c_incident():
 @case("a sidecar launcher child is blocked too")
 def c_launcher():
     return "BLOCKED" in (v("taskkill /PID 53236 /T /F") or "")
+
+
+@case("a plain python shell that only mentions sidecar_launch.py is not a launcher child")
+def c_launcher_mention():
+    return "BLOCKED" not in (v("taskkill /PID 9006 /F") or "")
+
+
+@case("a python process running sidecar_launch.py is a launcher child")
+def c_launcher_python():
+    return "launcher child" in (v("taskkill /PID 9007 /F") or "")
+
+
+@case("a bash script named *_sidecar.sh is a launcher child")
+def c_launcher_sh_suffix():
+    return "launcher child" in (v("taskkill /PID 9008 /F") or "")
 
 
 @case("a peer Claude session is blocked")

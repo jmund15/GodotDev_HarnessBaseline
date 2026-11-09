@@ -11,9 +11,11 @@ What it does:
   (payload `agent_id`) needs its own load: the parent's does not put the skill in the subagent's context.
   An injection cannot carry the skill: the client saves a hook value over 10,000 characters to a file and
   shows a 2,000-character preview, and the skill is larger. Only the Skill tool delivers it whole.
-  The deny and the reminder name the four `reference/` files holding §7-§18 with when each applies
-  (`READ_CLASS_FILES`): SKILL.md carries only a pointer per section, and a Skill call delivers no reference.
-  The agent reads the files its edit's content matches; the hook does not verify the read.
+- The deny embeds the full text of the one `reference/` file the path's class matches (`REFERENCE_FILES`,
+  `reference_for`): SKILL.md carries only a pointer per section, and a Skill call delivers no reference.
+  An unmapped class names all four. The agent no longer Reads them separately.
+- `advance_notice` is the earlier surface (instruction_quality §3): `post_read_dispatch` emits one line at the
+  first Read of a governed file in a window where the skill is absent, so the deny rarely fires.
 - Once loaded: emits the gates-summary reminder as `hookSpecificOutput.additionalContext`, once per compaction.
 - Adds a maintained artifact's editing note (EDIT_NOTES) on every edit of that path.
 - A fault in this hook reaches the dispatcher, which allows the edit and reports the lost check.
@@ -32,6 +34,7 @@ Wired in: pre_edit_dispatch on Write|Edit; `main()` also supports standalone use
 """
 
 import json
+import os
 import sys
 
 from _claude_scope import harness_tail
@@ -164,17 +167,86 @@ def is_doctrine_path(file_path: str) -> bool:
     return str(file_path).endswith(".md") and is_harness_file(file_path)
 
 
-# Sections 7-18 live in reference files so the skill fits the client's re-attach cap. Which apply is judgment
-# by the edit's content (instruction_quality §3), so the hook states the files and their read-when lines.
-READ_CLASS_FILES = (
-    "Read in full each `skills/instruction_quality/reference/` file your edit's content matches: "
-    "`skills_and_commands.md` (§7-§11) when it changes a skill or a command; "
-    "`orchestration.md` (§12) when it changes dispatch, workflow, fan-out or review-lens text, or text that could "
-    "name a model or an effort; "
-    "`hooks.md` (§13-§16) when it changes a hook, a guard, a hook's registration or a model-facing hook string; "
-    "`claims_and_wording.md` (§17-§18) when it changes `.claude/reference/` prose, asserts a fact about a tool, "
-    "file or schema, or introduces a new term"
+REFERENCE_DIR = "skills/instruction_quality/reference"
+# Sections 7-18 live in reference files so the skill fits the client's re-attach cap. One map for both surfaces:
+# the deny embeds the matching file, and the Read-time notice names it. Which apply within an unmapped class is
+# judgment by the edit's content (instruction_quality §3), so the read-when lines state that.
+REFERENCE_FILES = (
+    ("skills_and_commands.md", "§7-§11", "it changes a skill or a command"),
+    ("orchestration.md", "§12",
+     "it changes dispatch, workflow, fan-out or review-lens text, or text that could name a model or an effort"),
+    ("hooks.md", "§13-§16",
+     "it changes a hook, a guard, a hook's registration or a model-facing hook string"),
+    ("claims_and_wording.md", "§17-§18",
+     "it changes `.claude/reference/` prose, asserts a fact about a tool, file or schema, or introduces a new term"),
 )
+READ_CLASS_FILES = (
+    f"Read in full each `{REFERENCE_DIR}/` file your edit's content matches: "
+    + "; ".join(f"`{name}` ({sections}) when {when}" for name, sections, when in REFERENCE_FILES)
+)
+
+
+def reference_for(file_path: str) -> str | None:
+    """The `reference/` file whose sections govern this path's class, or None when the class is unmapped (the
+    caller then names all four). The orchestration check runs before the wider `skills/` one."""
+    tail = harness_tail(file_path)
+    if tail is None or not is_harness_file(file_path):
+        return None
+    parts = tail.split("/")
+    if parts[0] == "hooks" and parts[-1].endswith(".py"):
+        return "hooks.md"
+    if len(parts) == 1 and parts[0].startswith("settings") and parts[0].endswith(".json"):
+        return "hooks.md"
+    if parts[0] == "workflows" or parts[:2] == ["skills", "orchestration"]:
+        return "orchestration.md"
+    if parts[0] in ("commands", "skills"):
+        return "skills_and_commands.md"
+    if parts[0] == "reference":
+        return "claims_and_wording.md"
+    return None
+
+
+def reference_text(name: str) -> str:
+    """A reference file's full text, or "" when it cannot be read: the deny then still names its path."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "skills", "instruction_quality",
+                        "reference", name)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def advance_notice(file_path: str) -> str:
+    """The Read-time line: the edit gate's requirement and the reference file this path's class matches, so the
+    agent loads both before its first edit instead of meeting them in a deny."""
+    name = harness_tail(file_path) or file_path
+    target = reference_for(file_path)
+    files = (f"`{REFERENCE_DIR}/{target}`" if target
+             else f"`{REFERENCE_DIR}/` ({', '.join(f for f, _, _ in REFERENCE_FILES)})")
+    return (f"Harness file `.claude/{name}`: the harness denies any edit of it until `instruction_quality` is "
+            "loaded: invoke Skill(skill=\"instruction_quality\"), or with no Skill tool Read "
+            "`.claude/skills/instruction_quality/SKILL.md` whole (no offset/limit); "
+            f"read {files}.")
+
+
+def deny_text(file_path: str) -> str:
+    """The deny: the unmet load, then the one reference file this path's class matches, in full. An unmapped
+    class names all four instead. The requirement and the next step are the same for both."""
+    name = harness_tail(file_path) or file_path
+    target = reference_for(file_path)
+    head = (f"Harness edit to `.claude/{name}` DENIED: `instruction_quality` is not in context. "
+            "Invoke Skill(skill=\"instruction_quality\") or Read `skills/instruction_quality/SKILL.md` in full, "
+            "no offset or limit")
+    if not target:
+        return (f"{head}, then {READ_CLASS_FILES}, then check this edit against the sections you read "
+                "and re-issue it with any change they call for.")
+    sections = next(s for f, s, _ in REFERENCE_FILES if f == target)
+    body = reference_text(target)
+    cited = f"`{REFERENCE_DIR}/{target}` ({sections})" + (", included in full below" if body else "")
+    deny = (f"{head}, then read {cited}, then check this edit against the sections you read and re-issue it "
+            "with any change they call for.")
+    return deny + (f"\n\n--- {REFERENCE_DIR}/{target} ---\n{body}" if body else "")
 
 
 def build_reminder(file_path: str) -> str:
@@ -203,14 +275,7 @@ def process(input_data):
 
     if not skill_in_context(session_id, "instruction_quality", input_data.get("agent_id"),
                             transcript_path=input_data.get("transcript_path")):
-        name = harness_tail(file_path) or file_path
-        return {"deny": (
-            f"Harness edit to `.claude/{name}` DENIED: `instruction_quality` is not in context. "
-            "Invoke Skill(skill=\"instruction_quality\") or Read `skills/instruction_quality/SKILL.md` in full, "
-            "no offset or limit"
-            + f", then {READ_CLASS_FILES}, then check this edit against the sections you read "
-            "and re-issue it with any change they call for."
-        )}
+        return {"deny": deny_text(file_path)}
     general = build_reminder(file_path) if fire_once_since_compaction(session_id, STATE_KEY) else ""
     context = "\n".join(part for part in (general, note) if part)
     return {"context": context} if context else None

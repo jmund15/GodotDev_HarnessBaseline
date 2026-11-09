@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import tarfile
 import os
 import shutil
 import stat
@@ -250,15 +251,17 @@ def test_missing_upstream_exits_nonzero() -> None:
         remote, commit, _ = _baseline_one(path, ".claude/tools/other.py", b"other = 1\n")
         checkout = _clone(remote, path / "checkout")
         root = _consumer(path, remote, commit, rel, b"missing = 1\n")
-        for operation in (("diff", rel), ("update-lock",), ("update-lock", rel)):
+        bare = _run(root, "update-lock", "--baseline-dir", str(checkout))
+        assert bare.returncode == 2 and "relpaths" in _out(bare), _out(bare)
+        for operation in (("diff", rel), ("update-lock", rel)):
             result = _run(root, *operation, "--baseline-dir", str(checkout))
             output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
             assert result.returncode == 1, " ".join(operation) + ": " + output
             assert rel in output, " ".join(operation) + ": " + output
-        # An unmodified tracked row whose upstream file is gone is retired by pull, not refused.
+        # A tracked row the baseline never shipped is not a removal: pull keeps the project's file.
         pull = _run(root, "pull", rel, "--baseline-dir", str(checkout))
         assert pull.returncode == 0, _out(pull)
-        assert not (root / rel).exists() and rel not in _load_lock(root)["files"]
+        assert (root / rel).exists() and _load_lock(root)["files"][rel]["status"] == "local", _out(pull)
 
 
 def test_interrupted_lock_write_keeps_old_lock() -> None:
@@ -506,12 +509,31 @@ def _write_json(path: Path, value: object) -> None:
     _write(path, (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode())
 
 
+_MISSING = object()
+
+
 def _v2_fixture(path: Path, rows: dict[str, dict], *, manifest: bool = True):
     remote = _remote(path)
     baseline = path / "baseline"
     _init_repo(baseline)
     # identity's template-token read lists `template/`; a baseline without one has nothing to list.
     _write(baseline / "template" / ".gitkeep", b"")
+    # A row whose `hash` names the copy it reconciled with (its `local` content, not today's
+    # upstream) needs an older pin holding that copy: the row's `base`.
+    base_rows = {}
+    for relpath, entry in rows.items():
+        if not entry.get("manifest", True):
+            continue
+        upstream = entry.get("upstream", ("upstream " + relpath + "\n").encode())
+        local = entry.get("local", entry.get("upstream", ("upstream " + relpath + "\n").encode()))
+        given = entry.get("hash", _MISSING)
+        if local is not None and given not in (_MISSING, None) and given != _sha(upstream) and given == _sha(local):
+            base_rows[relpath] = local
+    base_commit = None
+    if base_rows:
+        for relpath, data in base_rows.items():
+            _write(baseline / "template" / relpath, data)
+        base_commit = _commit(baseline, "baseline (earlier pin)")
     manifest_rows = []
     for relpath, entry in rows.items():
         if not entry.get("manifest", True):
@@ -539,10 +561,8 @@ def _v2_fixture(path: Path, rows: dict[str, dict], *, manifest: bool = True):
             "status": entry.get("status", "tracked"),
             "layer": entry.get("layer", "pure"),
         }
-        if "hash" in entry:
-            files[relpath]["hash"] = entry["hash"]
-        elif entry.get("status", "tracked") == "tracked":
-            files[relpath]["hash"] = _sha(entry.get("upstream", ("upstream " + relpath + "\n").encode()))
+        if relpath in base_rows:
+            files[relpath]["base"] = base_commit
         if "judged" in entry:
             files[relpath]["judged"] = entry["judged"]
         if "base" in entry:
@@ -817,6 +837,95 @@ def test_v2_judge_commit_reads_that_commit_not_the_shared_index() -> None:
         assert _load_lock(root)["files"][rel]["judged"]["sha"] == _sha(b"value = 2\n")
         missing = _run(root, "judge", ".claude/tools/absent.py", "--verdict", "push", "--commit", pinned)
         assert missing.returncode == 1
+
+
+def test_judge_push_records_a_committed_deletion_of_a_file_upstream_carries() -> None:
+    """A deliberate local deletion of a shipped file publishes as a deletion: `judge --verdict push` on the
+    absent row records it once HEAD's history holds the deletion. A deleted file upstream lacks has nothing
+    to publish, so its push is still refused."""
+    rel = ".claude/tools/retired.py"
+    other = ".claude/tools/local_only.py"
+    with _fixture() as path:
+        root, _baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {rel: {"upstream": b"value = 1\n"}, other: {"manifest": False, "local": b"value = 2\n"}}
+        )
+        _git(root, "rm", "-q", "--", rel, other)
+        _commit(root, "retire both")
+        result = _run(root, "judge", rel, "--verdict", "push")
+        assert result.returncode == 0, (result.stdout + result.stderr).decode(errors="replace")
+        assert _load_lock(root)["files"][rel]["judged"]["verdict"] == "push", _load_lock(root)["files"][rel]
+        listed = _run(root, "paths", "--verdict", "push", "--unshipped", "--json")
+        assert rel in json.loads(listed.stdout.decode()), listed.stdout.decode(errors="replace")
+        local_only = _run(root, "judge", other, "--verdict", "push")
+        assert local_only.returncode == 1, local_only.stdout.decode(errors="replace")
+
+
+def test_candidates_lists_an_unjudged_path_and_skips_a_never_ship_path() -> None:
+    """X2 D1: a `.claude/` path with no row is unjudged, so `candidates` lists it. A path under the
+    lock's `never_ship` prefix is project-owned (`local`), so it is never a candidate."""
+    unjudged = ".claude/tools/new_tool.py"
+    policy = ".claude/auto-memory/note.md"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {})
+        _write(root / unjudged, b"value = 1\n")
+        _write(root / policy, b"# note\n")
+        _commit(root, "new files")
+        lock = _load_lock(root)
+        lock["never_ship"] = [".claude/auto-memory/"]
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _commit(root, "never_ship")
+        result = _run_baseline(root, baseline, "candidates")
+        out = result.stdout.decode("utf-8", errors="replace")
+        assert result.returncode == 0, out + result.stderr.decode("utf-8", errors="replace")
+        assert unjudged in out.splitlines(), out
+        assert policy not in out, out
+
+
+def test_candidates_lists_a_row_less_test_only_when_its_subject_ships() -> None:
+    """X2 D1: a `tests/test_*` path with no row is listed only when a shipped tool it binds exists.
+    A new local test with no shipped subject is no judging work."""
+    shipped = ".claude/tools/shipped_tool.py"
+    bound = ".claude/tests/test_shipped_tool.py"
+    unshipped_tool = ".claude/tools/new_tool.py"
+    unshipped_test = ".claude/tests/test_new_tool.py"
+    orphan = ".claude/tests/test_orphan_thing.py"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {shipped: {"upstream": b"x = 1\n"}})
+        _write(root / bound, b"import shipped_tool\n")
+        _write(root / unshipped_tool, b"y = 2\n")
+        _write(root / unshipped_test, b"import new_tool\n")
+        _write(root / orphan, b"pass\n")
+        _commit(root, "row-less tests")
+        result = _run_baseline(root, baseline, "candidates")
+        out = result.stdout.decode("utf-8", errors="replace")
+        assert result.returncode == 0, out + result.stderr.decode("utf-8", errors="replace")
+        lines = out.splitlines()
+        assert bound in lines, out
+        assert unshipped_tool in lines, out
+        assert unshipped_test not in lines, out
+        assert orphan not in lines, out
+
+
+def test_check_leaves_a_never_ship_path_the_baseline_ships_out_of_new_upstream() -> None:
+    """X2 D1/D2: a `never_ship` path has no row and is project-owned, so an upstream copy of it is no
+    `new-upstream` work item. An unjudged upstream path outside `never_ship` still is one."""
+    policy = ".claude/auto-memory/MEMORY.md"
+    shipped = ".claude/tools/shipped_tool.py"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {
+            policy: {"row": False, "upstream": b"upstream memory\n"},
+            shipped: {"row": False, "upstream": b"upstream tool\n"},
+        })
+        lock = _load_lock(root)
+        lock["never_ship"] = [".claude/auto-memory/"]
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _commit(root, "never_ship")
+        result = _run_baseline(root, baseline, "check", "--json")
+        output = result.stdout.decode("utf-8", errors="replace")
+        assert result.returncode == 0, output + result.stderr.decode("utf-8", errors="replace")
+        results = json.loads(output)["results"]
+        assert results.get(shipped) == "new-upstream", results
+        assert policy not in results, results
 
 
 def _proof_rows(*specs: tuple[str, str, bytes]) -> dict[str, dict]:
@@ -1097,7 +1206,7 @@ def test_v2_classify_local_declines_an_upstream_only_path() -> None:
         assert first.returncode == 0, (first.stdout + first.stderr).decode(errors="replace")
         row = _load_lock(root)["files"][declined]
         assert row["status"] == "local" and row["absent"] is True
-        assert row["judged"]["verdict"] == "keep-local"
+        assert "verdict" not in row["judged"]
         assert row["judged"]["sha"] == _sha(b"upstream body\n")
         _assert_no_change(_run_baseline(root, baseline, "classify", declined, "--status", "local"))
 
@@ -1163,7 +1272,7 @@ def test_v2_fork_success_and_repeat() -> None:
         assert first.returncode == 0, first.stderr.decode(errors="replace")
         entry = _load_lock(root)["files"][rel]
         assert entry["status"] == "forked" and entry["base"] == commit_sha
-        assert entry["judged"]["verdict"] == "fork"
+        assert "verdict" not in entry["judged"] and entry["judged"]["sha"]
         state = _run_baseline(root, baseline, "check", "--json")
         assert _json_output(state)["results"][rel] == "forked"
         repeat = _run_baseline(root, baseline, "fork", rel)
@@ -1174,36 +1283,30 @@ def test_v2_fork_success_and_repeat() -> None:
 def test_v2_track_success_refusal_and_repeat() -> None:
     rel = ".claude/tools/track.py"
     local = b"value = 1\n"
-    no_hash = ".claude/tools/track_no_hash.py"
+    advanced = ".claude/tools/track_advanced.py"
     with _fixture() as path:
         root, baseline, _remote_path, _commit_sha = _v2_fixture(
             path,
             {
-                rel: {"status": "forked", "upstream": local, "local": local, "hash": _sha(local)},
-                no_hash: {"status": "forked", "upstream": local, "local": local},
+                rel: {"status": "forked", "upstream": local, "local": local},
+                advanced: {"status": "forked", "upstream": local, "local": local},
             },
         )
-        # The no-hash row's fixture-assigned "hash" must be absent, not merely
-        # unused: _v2_fixture only omits it when no explicit "hash" key and
-        # status isn't "tracked", which already holds for a bare forked row.
-        assert "hash" not in _load_lock(root)["files"][no_hash]
-        _write(baseline / "template" / rel, b"new upstream\n")
-        _commit(baseline, "advance upstream")
         first = _run_baseline(root, baseline, "track", rel)
         assert first.returncode == 0, first.stderr.decode(errors="replace")
         entry = _load_lock(root)["files"][rel]
-        assert entry["status"] == "tracked" and entry["hash"] == _sha(local)
-        assert entry["judged"]["sha"] == _sha(local)
-        assert entry["judged"]["verdict"] == "push"
+        assert entry["status"] == "tracked" and "base" not in entry and "judged" not in entry, entry
         repeat = _run_baseline(root, baseline, "track", rel)
         _assert_no_change(repeat)
         refusal = _run_baseline(root, baseline, "track", ".claude/tools/missing.py")
         assert refusal.returncode == 1
-        no_hash_refusal = _run_baseline(root, baseline, "track", no_hash)
-        assert no_hash_refusal.returncode == 1
-        no_hash_output = (no_hash_refusal.stdout + no_hash_refusal.stderr).decode(errors="replace")
-        assert f"pull --force {no_hash}" in no_hash_output, no_hash_output
-        assert _load_lock(root)["files"][no_hash]["status"] == "forked"
+        _write(baseline / "template" / advanced, b"new upstream\n")
+        _commit(baseline, "advance upstream")
+        advanced_refusal = _run_baseline(root, baseline, "track", advanced)
+        assert advanced_refusal.returncode == 1
+        advanced_output = (advanced_refusal.stdout + advanced_refusal.stderr).decode(errors="replace")
+        assert f"pull --force {advanced}" in advanced_output, advanced_output
+        assert _load_lock(root)["files"][advanced]["status"] == "forked"
 
 
 def test_v2_ignore_alias_success_refusal_and_repeat() -> None:
@@ -1305,7 +1408,7 @@ def test_v2_paths_filters_success_refusal_and_repeat() -> None:
                 second: {"upstream": b"two\n", "status": "local"},
             },
         )
-        result = _run(root, "paths", "--status", "tracked", "--verdict", "push", "--judged-since", "2026-09-13T00:00:00Z", "--json")
+        result = _run(root, "paths", "--status", "tracked", "--verdict", "push", "--json")
         assert result.returncode == 0, result.stderr.decode(errors="replace")
         assert _json_output(result) == [first]
         repeat = _run(root, "paths", "--json")
@@ -1333,7 +1436,7 @@ def test_paths_unshipped_lists_every_push_row_the_baseline_lacks_whenever_judged
         })
         result = _run(root, "paths", "--verdict", "push", "--unshipped", "--json")
         assert result.returncode == 0, _out(result)
-        assert _json_output(result) == sorted([old_judged, never]), _out(result)
+        assert _json_output(result) == sorted([shipped, old_judged, never]), _out(result)
 
 
 def test_paths_unshipped_names_a_push_row_edited_after_its_verdict() -> None:
@@ -1351,7 +1454,7 @@ def test_paths_unshipped_names_a_push_row_edited_after_its_verdict() -> None:
         assert "--carry" not in stderr, stderr
 
 
-def test_v2_pull_explicit_states_and_new_hash() -> None:
+def test_v2_pull_explicit_states_and_new_row() -> None:
     existing = ".claude/tools/existing.py"
     new = ".claude/tools/new.py"
     local = ".claude/tools/local_pull.py"
@@ -1376,19 +1479,17 @@ def test_v2_pull_explicit_states_and_new_hash() -> None:
         forked_pull = _run_baseline(root, baseline, "pull", forked, "--force")
         assert forked_pull.returncode == 0, forked_pull.stderr.decode(errors="replace")
         forked_entry = _load_lock(root)["files"][forked]
-        assert forked_entry["status"] == "forked" and forked_entry["hash"] == _sha(b"fork upstream\n")
+        assert forked_entry["status"] == "forked" and "judged" not in forked_entry
         missing_pull = _run_baseline(root, baseline, "pull", missing)
         assert missing_pull.returncode == 0, missing_pull.stderr.decode(errors="replace")
         assert (root / missing).read_bytes() == b"missing upstream\n"
-        old_hash = _load_lock(root)["files"][existing]["hash"]
         _write(baseline / "template" / existing, b"existing new\n")
         _commit(baseline, "stale upstream")
         _write(root / existing, b"existing new\n")
-        _commit(root, "stale local copy")
+        _commit(root, "same content, new pin")
         stale = _run_baseline(root, baseline, "pull")
         assert stale.returncode == 0, _out(stale)
-        assert old_hash != _sha(b"existing new\n")
-        assert _load_lock(root)["files"][existing]["hash"] == _sha(b"existing new\n")
+        assert _load_lock(root)["files"][existing].get("base") is None
         assert (root / existing).read_bytes() == b"existing new\n"
         # Add a new upstream row after the consumer lock was created.
         _write(baseline / "template" / new, b"new\n")
@@ -1396,8 +1497,7 @@ def test_v2_pull_explicit_states_and_new_hash() -> None:
         first = _run_baseline(root, baseline, "pull", new)
         assert first.returncode == 0, first.stderr.decode(errors="replace")
         entry = _load_lock(root)["files"][new]
-        assert entry["status"] == "tracked" and entry["hash"] == _sha(b"new\n")
-        assert entry["judged"]["sha"] == _sha(b"new\n")
+        assert entry["status"] == "tracked" and "judged" not in entry and "base" not in entry, entry
         repeat = _run_baseline(root, baseline, "pull", new)
         _assert_no_change(repeat)
         (root / existing).write_bytes(b"changed\n")
@@ -1468,12 +1568,12 @@ def test_v2_migrate_covers_every_status_mapping_source_row() -> None:
         lock = _load_lock(root)
         assert lock["schema"] == 2 and lock["profile"] == "pure,coding,godot"
         assert lock["identity"]["abbreviations"] == []
-        assert lock["files"][".claude/local.py"]["judged"]["verdict"] == "keep-local"
+        assert "judged" not in lock["files"][".claude/local.py"]
         assert lock["files"][".claude/forked.py"]["base"] is None
         assert lock["files"][".claude/settings.json"]["status"] == "composed"
         assert lock["files"][".claude/reference/memory_domains.md"]["status"] == "composed"
         assert lock["files"][".claude/CLAUDE.md"]["status"] == "local"
-        assert lock["files"][".claude/missing-watch.md"]["judged"] is None
+        assert "judged" not in lock["files"][".claude/missing-watch.md"]
         assert all(lock["files"][rel]["status"] == "forked" for rel in other_watch)
         assert lock["files"][".claude/CLAUDE.core.md"]["status"] == "tracked"
         repeat_before = (root / ".claude" / "baseline.lock.json").read_bytes()
@@ -1867,6 +1967,69 @@ def test_env_strips_every_git_local_env_var() -> None:
     assert not leaked, "scratch-repo env kept %s" % leaked
 
 
+def test_never_ship_command_sets_the_policy_and_drops_local_rows_under_it() -> None:
+    """X2 D2 (U1a, U1b): `never-ship PREFIX...` writes the lock's `never_ship` list through the
+    lock writer. It drops every non-absent `local` row under a prefix (a `local` row there records
+    no decision). A shipped row under the prefix, an absent row, and a `local` row outside it keep
+    their rows."""
+    shipped_in = ".claude/auto-memory/shipped.md"
+    policy = {
+        ".claude/auto-memory/note.md": {"status": "local"},
+        ".claude/auto-memory/old_marker.md": {"status": "local", "layer": "project"},
+        ".claude/auto-memory/gone.md": {"status": "local", "absent": True},
+        ".claude/tools/kept.py": {"status": "local"},
+    }
+    with _fixture() as path:
+        root, _baseline, _remote_path, _commit_sha = _v2_fixture(path, {shipped_in: {"upstream": b"x\n"}})
+        lock = _load_lock(root)
+        lock["files"].update(policy)
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+
+        result = _run(root, "never-ship", ".claude/auto-memory/", ".claude/scripts/benchmark_campaign/")
+        assert result.returncode == 0, result.stdout + result.stderr
+
+        after = _load_lock(root)
+        assert after["never_ship"] == [".claude/auto-memory/", ".claude/scripts/benchmark_campaign/"], after.get("never_ship")
+        assert "files" in after and shipped_in in after["files"], after["files"].keys()
+        assert ".claude/auto-memory/note.md" not in after["files"], after["files"].keys()
+        assert ".claude/auto-memory/old_marker.md" not in after["files"], after["files"].keys()
+        assert ".claude/auto-memory/gone.md" in after["files"], after["files"].keys()
+        assert ".claude/tools/kept.py" in after["files"], after["files"].keys()
+        assert str(root).replace("\\", "/") not in (root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8")
+
+
+def test_migrate_lock_drops_local_rows_under_never_ship_on_load() -> None:
+    """X2 D2/D3 (U1b): a lock whose `never_ship` is already set migrates on load: the non-absent
+    `local` rows under the prefix go, a shipped row under it stays, and a `local` row outside it
+    stays. A lock without `never_ship` drops nothing."""
+    policy = ".claude/auto-memory/note.md"
+    shipped = ".claude/auto-memory/shipped.md"
+    outside = ".claude/tools/kept.py"
+    with _fixture() as path:
+        remote, _commit_sha, work = _baseline_one(path, shipped, b"x = 1\n")
+        pin = _git(work, "rev-parse", "HEAD").decode().strip()
+        root = path / "root"
+        _write(root / policy, b"note\n")
+        engine = _load_engine()
+        rows = {
+            policy: {"status": "local"},
+            shipped: {"status": "tracked", "layer": "pure"},
+            outside: {"status": "local"},
+        }
+        for never_ship, expect_policy_kept in (([".claude/auto-memory/"], False), ([], True)):
+            lock = {"schema": 2, "synced_commit": pin, "substitutions": {},
+                    "files": {key: dict(value) for key, value in rows.items()}}
+            if never_ship:
+                lock["never_ship"] = never_ship
+            source = engine.BaselineSource(work, pin, engine._BatchReader(work, pin))
+            try:
+                engine.migrate_lock(lock, source, root)
+            finally:
+                source.close()
+            assert (policy in lock["files"]) is expect_policy_kept, sorted(lock["files"])
+            assert shipped in lock["files"] and outside in lock["files"], sorted(lock["files"])
+
+
 def _out(result: subprocess.CompletedProcess[bytes]) -> str:
     return (result.stdout + result.stderr).decode("utf-8", errors="replace")
 
@@ -1883,7 +2046,7 @@ def test_pull_new_seed_row_is_local() -> None:
         assert (root / seed).read_bytes() == b"seed text\n"
         row = _load_lock(root)["files"][seed]
         assert row["status"] == "local", row
-        assert row["judged"]["verdict"] == "keep-local", row
+        assert "judged" not in row, row
 
 
 def test_pull_keeps_existing_seed_file() -> None:
@@ -1897,6 +2060,42 @@ def test_pull_keeps_existing_seed_file() -> None:
         assert pull.returncode == 0, _out(pull)
         assert (root / seed).read_bytes() == b"project text\n"
         assert _load_lock(root)["files"][seed]["status"] == "local"
+
+
+_STUB_HARNESS = """import sys, pathlib
+paths = sys.argv[2:]
+pathlib.Path(__file__).with_name('seen.txt').write_text(' '.join(paths))
+red = [p for p in paths if p.endswith('red.py')]
+for p in red:
+    print('harness_tests: unstamped %s: blocked by test_red_proof.py' % p)
+sys.exit(1 if red else 0)
+"""
+
+
+def test_pull_runs_for_on_what_it_wrote_and_fails_on_red() -> None:
+    red, green = ".claude/tools/red.py", ".claude/tools/green.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            red: {"row": False, "local": None, "upstream": b"x = 1\n"},
+            green: {"row": False, "local": None, "upstream": b"y = 1\n"},
+        })
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_HARNESS.encode())
+        ok = _run_baseline(root, baseline, "pull", green)
+        assert ok.returncode == 0, _out(ok)
+        assert green in (root / ".claude/scripts/seen.txt").read_text()
+        bad = _run_baseline(root, baseline, "pull", red)
+        assert bad.returncode == 1, _out(bad)
+        assert "test_red_proof.py" in _out(bad) and "harness_tests.py --for " + red in _out(bad), _out(bad)
+        assert (root / red).read_bytes() == b"x = 1\n"
+
+
+def test_pull_that_wrote_nothing_runs_no_proof() -> None:
+    rel = ".claude/tools/same.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"v = 1\n"}})
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_HARNESS.encode())
+        _assert_no_change(_run_baseline(root, baseline, "pull"))
+        assert not (root / ".claude/scripts/seen.txt").exists()
 
 
 def test_bare_pull_skips_unrowed_differing_local() -> None:
@@ -2367,17 +2566,15 @@ def test_triage_lists_every_identity_hit_the_push_scan_would_refuse() -> None:
         assert row["identity"][0]["id"] in _out(refused), _out(refused)
 
 
-def test_bare_pull_refreshes_a_lock_stale_row() -> None:
+def test_a_row_equal_to_upstream_is_in_sync_whatever_its_pin() -> None:
     rel = ".claude/tools/stale.wasm"
     data = b"\x00asm\x01\x00\x00\x00same"
     with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": data, "local": data, "hash": "0" * 64}})
-        assert "in-sync-lock-stale" in _out(_run_baseline(root, baseline, "check"))
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": data, "local": data}})
+        assert "in-sync: 1 file(s)" in _out(_run_baseline(root, baseline, "check"))
         pulled = _run_baseline(root, baseline, "pull")
-        assert pulled.returncode == 0, _out(pulled)
-        assert _load_lock(root)["files"][rel]["hash"] != "0" * 64, _out(pulled)
+        _assert_no_change(pulled)
         assert (root / rel).read_bytes() == data
-        assert "in-sync-lock-stale" not in _out(_run_baseline(root, baseline, "check"))
 
 
 def test_j3_push_judge_refuses_an_unlayered_row_upstream_lacks() -> None:
@@ -2427,6 +2624,7 @@ def test_j3_keep_local_on_an_unshipped_tracked_row_sets_local() -> None:
         assert judged.returncode == 0, _out(judged)
         row = _load_lock(root)["files"][rel]
         assert row["status"] == "local" and "hash" not in row, row
+        assert "verdict" not in row["judged"] and row["judged"]["sha"], row
         strict = _run_baseline(root, baseline, "check", "--strict")
         assert strict.returncode == 0 and "unpublished" not in _out(strict), _out(strict)
 
@@ -2512,20 +2710,14 @@ def test_pull_drops_row_of_file_removed_upstream_and_missing_locally() -> None:
 def test_a_tracked_row_never_published_is_unpublished_and_pull_keeps_it() -> None:
     mine = ".claude/tools/mine_unpublished.py"
     with _fixture() as path:
-        root, baseline, _r, _c = _v2_fixture(path, {mine: {"upstream": b"v1\n"}})
-        _delete_upstream(baseline, mine)
-        lock_path = root / ".claude" / "baseline.lock.json"
-        lock = _load_lock(root)
-        lock["files"][mine].pop("hash", None)
-        lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8", newline="\n")
-        _commit(root, "an unpublished tracked row")
+        root, baseline, _r, _c = _v2_fixture(path, {mine: {"manifest": False, "local": b"v1\n"}})
         check = _run_baseline(root, baseline, "check", "--json")
         assert _json_output(check)["results"][mine] == "unpublished", _out(check)
         pull = _run_baseline(root, baseline, "pull")
-        assert pull.returncode == 0, _out(pull)
+        _assert_no_change(pull)
         assert (root / mine).is_file() and _load_lock(root)["files"][mine]["status"] == "tracked", _out(pull)
         update = _run_baseline(root, baseline, "update-lock")
-        assert update.returncode == 0, _out(update)
+        assert update.returncode == 2 and "relpaths" in _out(update), _out(update)
 
 
 def _diverge(root: Path, baseline: Path, rel: str, local: bytes, upstream: bytes) -> None:
@@ -2546,7 +2738,9 @@ def test_pull_merge_combines_both_sides_of_a_diverged_row() -> None:
         pull = _run_baseline(root, baseline, "pull", "--merge", rel)
         assert pull.returncode == 0, _out(pull)
         assert (root / rel).read_bytes() == b"ONE\ntwo\nTHREE\n", (root / rel).read_bytes()
-        assert _load_lock(root)["files"][rel]["hash"] == _sha(b"one\ntwo\nTHREE\n")
+        row = _load_lock(root)["files"][rel]
+        assert "hash" not in row and "base" not in row, row
+        assert _json_output(_run_baseline(root, baseline, "check", "--json"))["results"][rel] == "local-modified"
         assert f"merged: {rel}" in _out(pull), _out(pull)
 
 
@@ -2556,13 +2750,13 @@ def test_pull_merge_refuses_a_diverged_binary_row_and_leaves_it_untouched() -> N
     with _fixture() as path:
         root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": base}})
         _diverge(root, baseline, rel, local, upstream)
-        before = _load_lock(root)["files"][rel]["hash"]
+        before = _load_lock(root)["files"][rel]
         pull = _run_baseline(root, baseline, "pull", "--merge", rel)
         out = _out(pull)
         assert pull.returncode == 1, out
         assert f"conflict: {rel} (binary row" in out, out
         assert (root / rel).read_bytes() == local
-        assert _load_lock(root)["files"][rel]["hash"] == before
+        assert _load_lock(root)["files"][rel] == before
 
 
 def test_pull_merge_reports_a_conflict_and_leaves_the_row_untouched() -> None:
@@ -2570,12 +2764,12 @@ def test_pull_merge_reports_a_conflict_and_leaves_the_row_untouched() -> None:
     with _fixture() as path:
         root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
         _diverge(root, baseline, rel, b"one\nLOCAL\nthree\n", b"one\nUPSTREAM\nthree\n")
-        before = _load_lock(root)["files"][rel]["hash"]
+        before = _load_lock(root)["files"][rel]
         pull = _run_baseline(root, baseline, "pull", "--merge")
         out = _out(pull)
         assert pull.returncode == 1, out
         assert (root / rel).read_bytes() == b"one\nLOCAL\nthree\n"
-        assert _load_lock(root)["files"][rel]["hash"] == before
+        assert _load_lock(root)["files"][rel] == before
         line = next((l for l in out.splitlines() if l.startswith(f"conflict: {rel} ")), "")
         assert line, out
         copy = Path(line.rsplit(" -> ", 1)[-1].strip())
@@ -2596,7 +2790,9 @@ def test_resolve_installs_a_marker_free_copy_and_refuses_one_with_markers() -> N
         done = _run_baseline(root, baseline, "resolve", rel)
         assert done.returncode == 0, _out(done)
         assert (root / rel).read_bytes() == b"one\nLOCAL UPSTREAM\nthree\n"
-        assert _load_lock(root)["files"][rel]["hash"] == _sha(b"one\nUPSTREAM\nthree\n")
+        row = _load_lock(root)["files"][rel]
+        assert row["base"] == _git(baseline, "rev-parse", "HEAD").decode().strip(), row
+        assert _json_output(_run_baseline(root, baseline, "check", "--json"))["results"][rel] == "local-modified"
         assert not copy.exists() and f"resolved: {rel}" in _out(done), _out(done)
 
 
@@ -2615,10 +2811,10 @@ def test_resolve_refuses_when_upstream_moved_or_the_file_changed_since_the_merge
         _write(root / rel, b"one\nLOCAL\nthree\n")
         _write(baseline / "template" / rel, b"one\nUPSTREAM\nthree\nfour\n")
         _commit(baseline, "upstream moves again " + rel)
-        before = _load_lock(root)["files"][rel]["hash"]
+        before = _load_lock(root)["files"][rel]
         moved = _run_baseline(root, baseline, "resolve", rel)
         assert moved.returncode != 0 and f"pull --merge {rel}" in _out(moved), _out(moved)
-        assert _load_lock(root)["files"][rel]["hash"] == before
+        assert _load_lock(root)["files"][rel] == before
         assert (root / rel).read_bytes() == b"one\nLOCAL\nthree\n" and copy.is_file()
 
 
@@ -2971,6 +3167,21 @@ def test_judge_push_refuses_a_citer_whose_dependency_does_not_ship() -> None:
             assert "judged" not in _load_lock(root)["files"][_DEP_CITER], state
 
 
+def test_judge_push_refuses_a_citer_whose_dependency_has_no_row() -> None:
+    """Only rows ship, so a dependency with no lock row (a new fixture, a never_ship path) reaches no consumer."""
+    with _fixture() as path:
+        root, baseline = _dep_fixture(path, _dep_helpers()["local"])
+        lock = _load_lock(root)
+        del lock["files"][_DEP_HELPER]
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _commit(root, "the helper loses its row")
+        result = _run_baseline(root, baseline, "judge", _DEP_CITER, "--verdict", "push")
+        out = _out(result)
+        assert result.returncode == 1, out
+        assert _DEP_HELPER in out and "no lock row" in out, out
+        assert "judged" not in _load_lock(root)["files"][_DEP_CITER], out
+
+
 def test_judge_push_allows_a_citer_whose_dependency_ships_or_is_judged_push() -> None:
     # A forked row, or a local row the baseline ships (a seed), reaches every consumer as the baseline's
     # copy; refusing it would block the citer for as long as the fork or seed stands.
@@ -3133,6 +3344,22 @@ def test_unproven_tools_binds_every_tool_in_one_scan() -> None:
         assert calls["discover"] == 1, calls
         assert got == [".claude/tools/beta.py", ".claude/tools/gamma.py"], got
 
+
+def test_new_tool_with_a_row_less_proof_judged_push_in_this_call_publishes() -> None:
+    engine = _load_engine()
+    with _fixture() as path:
+        _write(path / ".claude" / "tools" / "gamma.py", b"x = 1\n")
+        _write(path / ".claude" / "tests" / "test_gamma.py", b"pass\n")
+        proof = ".claude/tests/test_gamma.py"
+        engine._refuse_unproven_new_tool(path, {}, ".claude/tools/gamma.py", {proof: "sha"},
+                                         {proof: "push"}, None)
+        try:
+            engine._refuse_unproven_new_tool(path, {}, ".claude/tools/gamma.py", {proof: "sha"}, {}, None)
+        except engine.BaselineError as exc:
+            assert "new tool has no shipped proof" in str(exc), exc
+        else:
+            raise AssertionError("an unjudged row-less proof must not prove a new tool")
+
 _RESET_STDERR = b"fatal: unable to access 'https://example.invalid/x.git/': Recv failure: Connection was reset\n"
 
 
@@ -3262,7 +3489,7 @@ def test_remote_git_carries_the_network_timeout_and_local_git_does_not() -> None
     assert len(seen) == 2 and seen[0] and seen[0] > 0 and seen[1] is None, seen
 
 
-def test_pull_moves_a_tracked_rows_verdict_to_the_copy_it_writes() -> None:
+def test_pull_settles_a_tracked_row_at_the_copy_it_writes() -> None:
     rel = ".claude/reference/repulled.md"
     with _fixture() as path:
         root, baseline, _r, _c = _v2_fixture(path, {
@@ -3270,9 +3497,11 @@ def test_pull_moves_a_tracked_rows_verdict_to_the_copy_it_writes() -> None:
         })
         result = _run_baseline(root, baseline, "pull")
         assert result.returncode == 0, _out(result)
-        row = _load_lock(root)["files"][rel]
-        assert row["hash"] == row["judged"]["sha"] == _sha(b"v2\n"), row
-        assert row["judged"]["verdict"] == "push", row
+        lock = _load_lock(root)
+        row = lock["files"][rel]
+        assert "judged" not in row and "base" not in row, row
+        assert lock["synced_commit"] == _git(baseline, "rev-parse", "HEAD").decode().strip()
+        assert _json_output(_run_baseline(root, baseline, "check", "--json"))["results"][rel] == "in-sync"
 
 
 def test_pull_updates_the_running_engine_first_and_reruns_with_it() -> None:
@@ -3345,21 +3574,614 @@ def test_pull_delivers_a_binary_row_byte_for_byte() -> None:
         assert pulled.returncode == 0, pulled.stderr.decode(errors="replace")
         assert (root / rel).read_bytes() == binary, "pull changed the bytes of a binary row"
         again = _run_baseline(root, baseline, "check")
-        assert _load_lock(root)["files"][rel]["hash"] == hashlib.sha256(binary).hexdigest(), "a binary row's hash is the sha of its bytes"
+        assert "hash" not in _load_lock(root)["files"][rel]
         strict = _run_baseline(root, baseline, "check", "--strict")
         assert b"needs-judgment" not in strict.stdout, strict.stdout
         report = again.stdout.decode(errors="replace")
         assert "in-sync: 1 file(s)" in report and "placeholder" not in report and "modified" not in report, report
 
 
+# --- S2 real-input checks: historic locks and a foreign publish ------------------
+#
+# The spec's RED inputs are two historic locks and a 31-version sample of this repo's lock
+# history, read with `git show` (`git archive` for the pre-S2 tools). They were never run by
+# S2. Each case runs the pre-S2 engine (a fixed commit's `tools/` copy) and the worktree engine
+# on the same input and reports both. The pre-S2 engine compares a row's stored `hash`; the S2
+# shape drops it, so the historic lock is rewritten `hash` -> `base` here: the newest upstream
+# commit whose rendered text hashes to the row's recorded hash. A row whose hash matches no
+# upstream commit cannot carry a base, and each case names that class instead of hiding it.
+#
+# A historic tree is read from git, not materialized: `local_text` is replaced by one
+# `git cat-file --batch` over the project commit. Composed rows are left out of the state
+# comparisons: their output is recomputed from inputs, not read through `hash` or `base`.
+
+PROJECT_REPO = Path(__file__).resolve().parents[2]
+BASELINE_CACHE = PROJECT_REPO / ".claude" / ".cache" / "baseline-repo"
+PRE_S2_TOOLS_COMMIT = "5f483a56721253b879bdbc1a32cd433507bb4468"
+HISTORIC_LOCK_817 = "817526e82b3e8555a45a58a6ec5e7f2adb5b5b6e"
+HISTORIC_LOCK_240 = "2400746c82d178e35ad8ee9d188f3be618e97aa1"
+SAMPLE_ONE_IN = 27
+
+_HISTORIC_STATE_DRIVER = '''\
+import importlib.util, json, subprocess, sys
+from pathlib import Path
+tools, repo, commit, lock_path, root = (Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve(),
+                                        sys.argv[3], Path(sys.argv[4]).resolve(),
+                                        Path(sys.argv[5]).resolve())
+sys.path.insert(0, str(tools))
+spec = importlib.util.spec_from_file_location("historic_sync", tools / "baseline_sync.py")
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+process = subprocess.Popen(["git", "-C", str(repo), "cat-file", "--batch"],
+                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+def local_text(_root, relpath):
+    process.stdin.write(("%s:%s\\n" % (commit, relpath)).encode("utf-8"))
+    process.stdin.flush()
+    header = process.stdout.readline().rstrip(b"\\n").split(b" ")
+    if header[-1] == b"missing":
+        return None
+    body = process.stdout.read(int(header[2]))
+    process.stdout.read(1)
+    return module.row_text(relpath, body)
+
+module.local_text = local_text
+lock = json.loads(lock_path.read_text(encoding="utf-8"))
+source = module.BaselineSource(repo, lock["synced_commit"],
+                               module._BatchReader(repo, lock["synced_commit"]))
+try:
+    print(json.dumps({path: module._v2_state(root, source, lock, path, row)
+                      for path, row in lock["files"].items()}))
+finally:
+    source.close()
+'''
+
+
+def _historic_inputs_ready() -> str | None:
+    """The reason to skip a historic-lock case, or None when its inputs are present. A fresh
+    clone without the baseline cache cannot read the upstream commits these checks compare."""
+    if not BASELINE_CACHE.is_dir():
+        return "no baseline cache at %s" % BASELINE_CACHE
+    for commit in (PRE_S2_TOOLS_COMMIT, HISTORIC_LOCK_817):
+        probe = subprocess.run(["git", "-C", str(PROJECT_REPO), "cat-file", "-e", commit + "^{commit}"],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if probe.returncode != 0:
+            return "commit %s is not in this clone" % commit
+    return None
+
+
+def _baseline_has(commit: str) -> bool:
+    probe = subprocess.run(["git", "-C", str(BASELINE_CACHE), "cat-file", "-e", commit + "^{commit}"],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return probe.returncode == 0
+
+
+def _extract_archive(data: bytes, destination: Path) -> None:
+    """Extract a tar stream. `tar` unpacks many small files several times faster than Python's
+    tarfile; fall back to tarfile where no `tar` is on PATH."""
+    tar = shutil.which("tar")
+    if tar:
+        result = subprocess.run([tar, "-x", "-C", str(destination)], input=data,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode == 0:
+            return
+    with tarfile.open(fileobj=io.BytesIO(data)) as stream:
+        stream.extractall(destination, filter="data")
+
+
+def _extract_old_tools(destination: Path) -> Path:
+    archive = subprocess.run(["git", "-C", str(PROJECT_REPO), "archive", PRE_S2_TOOLS_COMMIT,
+                              ".claude/tools"], stdout=subprocess.PIPE, check=True)
+    _extract_archive(archive.stdout, destination)
+    return destination / ".claude" / "tools"
+
+
+def _write_state_driver(destination: Path) -> Path:
+    driver = destination / "historic_state_driver.py"
+    driver.write_text(_HISTORIC_STATE_DRIVER, encoding="utf-8", newline="\n")
+    return driver
+
+
+def _historic_lock(commit: str, destination: Path) -> tuple[dict, Path]:
+    """The lock at `commit`, written to `destination` for both engines to read."""
+    path = destination / "historic.lock.json"
+    path.write_bytes(_git(PROJECT_REPO, "show", commit + ":.claude/baseline.lock.json"))
+    return json.loads(path.read_text(encoding="utf-8")), path
+
+
+def _old_states(driver: Path, tools: Path, commit: str, lock_path: Path, root: Path) -> dict:
+    result = subprocess.run([sys.executable, "-I", str(driver), str(tools), str(PROJECT_REPO),
+                             commit, str(lock_path), str(root)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")[-2000:]
+    return json.loads(result.stdout.decode("utf-8"))
+
+
+class _GitTextReader:
+    """`local_text` over a project commit through one `git cat-file --batch`, so a historic
+    tree is read from git instead of extracted to disk. Mirrors `row_text`'s projection."""
+
+    def __init__(self, module, repo: Path, commit: str):
+        self.module = module
+        self.commit = commit
+        self.process = subprocess.Popen(["git", "-C", str(repo), "cat-file", "--batch"],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL)
+
+    def local_text(self, _root, relpath: str) -> str | None:
+        self.process.stdin.write(("%s:%s\n" % (self.commit, relpath)).encode("utf-8"))
+        self.process.stdin.flush()
+        header = self.process.stdout.readline().rstrip(b"\n").split(b" ")
+        if header[-1] == b"missing":
+            return None
+        body = self.process.stdout.read(int(header[2]))
+        self.process.stdout.read(1)
+        return self.module.row_text(relpath, body)
+
+    def close(self) -> None:
+        self.process.stdin.close()
+        self.process.wait(timeout=5)
+
+
+def _template_touches() -> dict[str, list[str]]:
+    """relpath -> the commits, newest first, that changed `template/<relpath>` on any ref. One
+    `git log` for the whole baseline, so a lock's many unmatched hashes cost no extra spawn."""
+    log = _git(BASELINE_CACHE, "log", "--all", "--format=%H", "--name-only", "--", "template/")
+    touches: dict[str, list[str]] = {}
+    commit = None
+    for line in log.decode("utf-8").splitlines():
+        if not line:
+            continue
+        if len(line) == 40 and all(char in "0123456789abcdef" for char in line):
+            commit = line
+        elif line.startswith("template/") and commit:
+            touches.setdefault(line[len("template/"):], []).append(commit)
+    return touches
+
+
+def _legacy_lock_as_base(engine, source, lock: dict,
+                         touches: dict[str, list[str]]) -> tuple[dict, list[str], list[str]]:
+    """The S2 lock shape for a historic lock: every `hash` becomes the `base` commit whose
+    rendered upstream text it records, where such a commit exists. Returns the rewritten lock,
+    the rows whose hash matched no rendered upstream commit, and the rows that carried no hash
+    (the S2 default, `synced_commit`, then stands in for a reconcile point they never had)."""
+    upgraded = json.loads(json.dumps(lock))
+    subs = upgraded.get("substitutions", {})
+    unmatched: list[str] = []
+    no_hash: list[str] = []
+    for relpath, entry in upgraded["files"].items():
+        if not isinstance(entry, dict):
+            continue
+        recorded = entry.pop("hash", None)
+        if entry.get("status") in ("local", "watch", "absent"):
+            continue
+        if recorded is None:
+            no_hash.append(relpath)
+            continue
+        if entry.get("base"):
+            continue
+        upstream = engine.upstream_text(source, relpath, subs)
+        if upstream is not None and engine.sha(upstream.encode("utf-8")) == recorded:
+            continue  # reconciled at the pin: the default base already holds this text
+        found = None
+        for commit in touches.get(relpath, ()):
+            data = source.read_at(commit, relpath)
+            if data is None:
+                continue
+            text = engine.rendered_upstream(relpath, data, subs)
+            if engine.sha(text.encode("utf-8")) == recorded:
+                found = commit
+                break
+        if found:
+            entry["base"] = found
+        else:
+            unmatched.append(relpath)
+    return upgraded, unmatched, no_hash
+
+
+def _new_states(engine, root: Path, source, lock: dict, commit: str) -> dict:
+    """The worktree engine's states for one historic lock, reading local text from `commit`.
+    The engine migrates the raw lock itself (`migrate_lock`): no hand `hash` -> `base` rewrite."""
+    reader = _GitTextReader(engine, PROJECT_REPO, commit)
+    original = engine.local_text
+    engine.local_text = reader.local_text
+    try:
+        engine.migrate_lock(lock, source, root)
+        return {relpath: engine._v2_state(root, source, lock, relpath, entry)
+                for relpath, entry in lock["files"].items()}
+    finally:
+        engine.local_text = original
+        reader.close()
+
+
+def _composed_rows(lock: dict) -> set[str]:
+    return {relpath for relpath, entry in lock["files"].items()
+            if isinstance(entry, dict) and entry.get("status") == "composed"}
+
+
+def test_historic_817_lock_reads_its_twelve_upstream_updated_rows() -> None:
+    """Spec `817526e82`: 12 rows the hash rule reads `upstream-updated` must keep that state
+    under `base`, not fall to `local-modified`."""
+    skip = _historic_inputs_ready()
+    if skip:
+        print("SKIP historic 817 lock: " + skip)
+        return
+    with _fixture() as path:
+        lock, lock_path = _historic_lock(HISTORIC_LOCK_817, path)
+        if not _baseline_has(lock["synced_commit"]):
+            print("SKIP historic 817 lock: baseline cache lacks " + lock["synced_commit"])
+            return
+        root = path / "root"
+        root.mkdir()
+        old = _old_states(_write_state_driver(path), _extract_old_tools(path / "old-tools"),
+                          HISTORIC_LOCK_817, lock_path, root)
+        engine = _load_engine()
+        source = engine.BaselineSource(BASELINE_CACHE, lock["synced_commit"],
+                                       engine._BatchReader(BASELINE_CACHE, lock["synced_commit"]))
+        try:
+            # The raw lock, no `hash` -> `base` rewrite: the engine's own migration derives it.
+            new = _new_states(engine, root, source, lock, HISTORIC_LOCK_817)
+        finally:
+            source.close()
+        old_up = {relpath for relpath, state in old.items() if state == "upstream-updated"}
+        new_up = {relpath for relpath, state in new.items() if state == "upstream-updated"}
+        assert len(old_up) == 12, sorted(old_up)
+        assert new_up == old_up, (sorted(old_up - new_up), sorted(new_up - old_up))
+        assert sum(1 for state in old.values() if state == "diverged") == 4
+        assert sum(1 for state in new.values() if state == "diverged") == 4
+
+
+def test_historic_240_lock_reads_its_stale_rows_in_sync() -> None:
+    """Spec `2400746c8`: the 49 rows the hash rule reads `in-sync-lock-stale` must read
+    `in-sync`; the state existed only to name a stale stored hash."""
+    skip = _historic_inputs_ready()
+    if skip:
+        print("SKIP historic 240 lock: " + skip)
+        return
+    with _fixture() as path:
+        lock, lock_path = _historic_lock(HISTORIC_LOCK_240, path)
+        if not _baseline_has(lock["synced_commit"]):
+            print("SKIP historic 240 lock: baseline cache lacks " + lock["synced_commit"])
+            return
+        root = path / "root"
+        root.mkdir()
+        old = _old_states(_write_state_driver(path), _extract_old_tools(path / "old-tools"),
+                          HISTORIC_LOCK_240, lock_path, root)
+        engine = _load_engine()
+        source = engine.BaselineSource(BASELINE_CACHE, lock["synced_commit"],
+                                       engine._BatchReader(BASELINE_CACHE, lock["synced_commit"]))
+        try:
+            new = _new_states(engine, root, source, lock, HISTORIC_LOCK_240)
+        finally:
+            source.close()
+        stale = {relpath for relpath, state in old.items() if state == "in-sync-lock-stale"}
+        assert len(stale) == 49, sorted(stale)
+        missed = {relpath for relpath in stale if new[relpath] != "in-sync"}
+        assert not missed, sorted(missed)
+        composed = _composed_rows(lock)
+        old_sync = sum(1 for relpath, state in old.items()
+                       if state == "in-sync" and relpath not in composed)
+        new_sync = sum(1 for relpath, state in new.items()
+                       if state == "in-sync" and relpath not in composed)
+        assert new_sync == old_sync + 49, (old_sync, new_sync)
+
+
+def test_v2_state_old_and_new_agree_over_the_sampled_lock_versions() -> None:
+    """S2c's differential, re-run on the migration engine. S2c measured 462 row-versions where OLD
+    and the hand-rewritten NEW disagreed. With `migrate_lock` deriving each legacy `hash` itself,
+    every one of those rows must now either match OLD or read `base-unknown`: no row may carry a
+    guessed state. Composed rows are excluded: their output is recomputed from inputs."""
+    skip = _historic_inputs_ready()
+    if skip:
+        print("SKIP sampled lock versions: " + skip)
+        return
+    commits = _git(PROJECT_REPO, "log", "--format=%H", HISTORIC_LOCK_817,
+                   "--", ".claude/baseline.lock.json").decode("utf-8").split()
+    sample = commits[SAMPLE_ONE_IN - 1::SAMPLE_ONE_IN]
+    assert len(sample) == 31, "the sample is one lock version in %d over the history" % SAMPLE_ONE_IN
+    engine = _load_engine()
+    with _fixture() as path:
+        driver = _write_state_driver(path)
+        old_tools = _extract_old_tools(path / "old-tools")
+        touches = _template_touches()
+        root = path / "root"
+        root.mkdir()
+        disagreements = 0
+        matched = 0
+        unknown = 0
+        v1_rows = 0
+        residual_all: list[tuple] = []
+        for commit in sample:
+            lock, lock_path = _historic_lock(commit, path)
+            if not _baseline_has(lock["synced_commit"]):
+                print("SKIP sampled lock versions: baseline cache lacks " + lock["synced_commit"])
+                return
+            old = _old_states(driver, old_tools, commit, lock_path, root)
+            source = engine.BaselineSource(BASELINE_CACHE, lock["synced_commit"],
+                                           engine._BatchReader(BASELINE_CACHE, lock["synced_commit"]))
+            try:
+                # S2c's reading of record: the hand rewrite, kept only to define the 462 set.
+                previous_lock, _unmatched, _no_hash = _legacy_lock_as_base(engine, source, lock, touches)
+                previous = _new_states(engine, root, source, previous_lock, commit)
+                current = _new_states(engine, root, source, lock, commit)
+            finally:
+                source.close()
+            composed = _composed_rows(lock)
+            normalized = {relpath: ("in-sync" if state == "in-sync-lock-stale" else state)
+                          for relpath, state in old.items() if relpath not in composed}
+            for relpath, state in normalized.items():
+                if state == "in-sync":
+                    assert current[relpath] == "in-sync", ("an in-sync row gained a drift state",
+                                                           commit, relpath, current[relpath])
+            changed = [relpath for relpath in normalized
+                       if normalized[relpath] != previous[relpath]]
+            if lock.get("schema") != 2:
+                # A schema-1 lock is read-only: `upgrade` migrates it, so the migration rule does
+                # not reach these rows (S2c's 462 span both shapes; this is that split).
+                v1_rows += len(changed)
+                disagreements += len(changed)
+                continue
+            for relpath in changed:
+                now = current[relpath]
+                if now == "base-unknown":
+                    unknown += 1
+                elif now == normalized[relpath]:
+                    matched += 1
+                else:
+                    residual_all.append((commit, relpath, normalized[relpath], previous[relpath], now))
+            disagreements += len(changed)
+        assert disagreements > 0, "the sample found no legacy row to compare"
+        assert not residual_all, ("an underivable-base row reads a guessed state", residual_all[:5])
+        # The S2c measurement, reproduced: 462 legacy-only row-versions.
+        assert disagreements == 462, "S2c's differential moved: %d" % disagreements
+        print("sampled versions: %d, %d legacy disagreements (schema-1 read-only: %d): "
+              "schema-2 reads %d matching OLD, %d base-unknown"
+              % (len(sample), disagreements, v1_rows, matched, unknown))
+
+
+def test_legacy_lock_migrates_on_load_and_never_guesses_a_base() -> None:
+    """A legacy `hash` becomes the `base` commit whose rendered upstream text it names. A row with
+    no derivable base (no hash, or a hash naming no baseline commit) reads `base-unknown` and is a
+    `check --strict` finding; a save writes the migrated shape."""
+    rel = ".claude/tools/legacy.py"
+    orphan = ".claude/tools/orphan.py"
+    unmatched = ".claude/tools/unmatched.py"
+    local_rel = ".claude/tools/local.py"
+    first = b"value = 'first'\n"
+    second = b"value = 'second'\n"
+    with _fixture() as path:
+        remote, first_commit, _second_commit = _baseline_two(path, rel, first, second)
+        work = path / "baseline-work"
+        _write(work / "template" / orphan, second)
+        _commit(work, "add orphan")
+        _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+        pin = _git(work, "rev-parse", "HEAD").decode().strip()
+
+        root = path / "root"
+        _write(root / rel, second)
+        _write(root / orphan, b"value = 'own orphan'\n")
+        _write(root / unmatched, b"value = 'own unmatched'\n")
+        _write(root / local_rel, b"value = 'local'\n")
+        engine = _load_engine()
+        source = engine.BaselineSource(work, pin, engine._BatchReader(work, pin))
+        lock = {
+            "schema": 2, "synced_commit": pin, "substitutions": {},
+            "files": {
+                rel: {"status": "tracked", "layer": "pure", "hash": engine.sha(first)},
+                orphan: {"status": "tracked", "layer": "pure"},
+                unmatched: {"status": "tracked", "layer": "pure", "hash": "0" * 64},
+                local_rel: {"status": "local", "layer": None, "hash": "1" * 64},
+            },
+        }
+        try:
+            engine.migrate_lock(lock, source, root)
+            files = lock["files"]
+            assert files[rel]["base"] == first_commit, files[rel]
+            assert "hash" not in files[rel], files[rel]
+            assert files[orphan]["base"] is None, files[orphan]
+            assert files[unmatched]["base"] is None, files[unmatched]
+            assert "hash" not in files[local_rel], files[local_rel]
+            assert engine._v2_state(root, source, lock, rel, files[rel]) == "in-sync"
+            assert engine._v2_state(root, source, lock, orphan, files[orphan]) == "base-unknown"
+            assert engine._v2_state(root, source, lock, unmatched,
+                                    files[unmatched]) == "base-unknown"
+            findings = engine._strict_findings(
+                root, source, lock,
+                {orphan: "base-unknown", unmatched: "base-unknown"})
+            assert (orphan, "base-unknown") in findings, findings
+            assert (unmatched, "base-unknown") in findings, findings
+            engine.save_lock(root, lock)
+        finally:
+            source.close()
+        written = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+        assert all("hash" not in row for row in written["files"].values()), written["files"]
+        assert written["files"][rel]["base"] == first_commit, written["files"][rel]
+        assert written["files"][orphan]["base"] is None, written["files"][orphan]
+
+
+def test_base_unknown_is_listed_and_rejudged_by_keep_local_or_pull() -> None:
+    """`check` lists a `base-unknown` row (strict fails). Its two named judgments settle it: a
+    `keep-local` verdict clears the marker and the row's strict finding, and a named `pull` takes
+    upstream and reconciles the row at the pin."""
+    kept = ".claude/rules/unknown_kept.md"
+    pulled = ".claude/rules/unknown_pulled.md"
+    with _fixture() as path:
+        root, baseline, _remote, _commit_sha = _v2_fixture(path, {
+            kept: {"upstream": b"new\n", "local": b"old\n", "base": None},
+            pulled: {"upstream": b"new\n", "local": b"old\n", "base": None},
+        })
+        check = _run_baseline(root, baseline, "check", "--json")
+        assert check.returncode == 0, check.stderr.decode(errors="replace")
+        results = _json_output(check)["results"]
+        assert results[kept] == "base-unknown" and results[pulled] == "base-unknown", results
+        strict = _run_baseline(root, baseline, "check", "--strict")
+        assert strict.returncode == 1, strict.stdout.decode(errors="replace")
+        assert b"base-unknown:" in strict.stdout, strict.stdout.decode(errors="replace")
+
+        judged = _run_baseline(root, baseline, "judge", kept, "--verdict", "keep-local")
+        assert judged.returncode == 0, judged.stderr.decode(errors="replace")
+        _commit(root, "keep-local judgment")
+        assert "base" not in _load_lock(root)["files"][kept], _load_lock(root)["files"][kept]
+
+        taken = _run_baseline(root, baseline, "pull", pulled)
+        assert taken.returncode == 0, taken.stderr.decode(errors="replace")
+        _commit(root, "pulled")
+        assert "base" not in _load_lock(root)["files"][pulled], _load_lock(root)["files"][pulled]
+
+        after = _json_output(_run_baseline(root, baseline, "check", "--json"))["results"]
+        assert after[kept] == "local-modified" and after[pulled] == "in-sync", after
+        settled = _run_baseline(root, baseline, "check", "--strict")
+        assert settled.returncode == 0, settled.stdout.decode(errors="replace")
+
+
+def test_migration_drops_a_settled_push_verdict_and_keeps_an_open_one() -> None:
+    """Publish settles a verdict it acted on; migration retires one a lock carried from before.
+    A row whose text equals upstream at its base has nothing left to publish, so its `push` goes.
+    A row whose text differs is still an open publication and keeps it."""
+    settled = ".claude/tools/settled.py"
+    open_rel = ".claude/tools/open.py"
+    text = b"value = 'same'\n"
+    with _fixture() as path:
+        remote, _commit_sha, work = _baseline_one(path, settled, text)
+        _write(work / "template" / open_rel, text)
+        _commit(work, "add open")
+        _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+        pin = _git(work, "rev-parse", "HEAD").decode().strip()
+
+        root = path / "root"
+        _write(root / settled, text)
+        _write(root / open_rel, b"value = 'mine'\n")
+        engine = _load_engine()
+        source = engine.BaselineSource(work, pin, engine._BatchReader(work, pin))
+        judged = {"sha": engine.sha(text), "verdict": "push"}
+        lock = {
+            "schema": 2, "synced_commit": pin, "substitutions": {},
+            "files": {
+                settled: {"status": "tracked", "layer": "pure", "judged": dict(judged)},
+                open_rel: {"status": "tracked", "layer": "pure", "judged": dict(judged)},
+            },
+        }
+        try:
+            engine.migrate_lock(lock, source, root)
+        finally:
+            source.close()
+        assert "judged" not in lock["files"][settled], lock["files"][settled]
+        assert lock["files"][open_rel]["judged"]["verdict"] == "push", lock["files"][open_rel]
+
+
+def test_foreign_publish_is_not_overwritten_and_move_pin_records_base() -> None:
+    """Spec proof: a baseline with two pins (our lock's pin, then a foreign publish) and a
+    planted foreign change. Publishing here must not overwrite it; the row it changed must
+    read `upstream-updated` at the new pin; `pull <one row>` must settle both; and a stale
+    `judged.sha` must still refuse."""
+    import test_baseline_publish as publish_proofs
+
+    rel = ".claude/tools/fixture.py"
+    other = ".claude/tools/other.py"
+    local_rel = b"value = 'fixture'\n"
+    old_other = b"other = 1\n"
+    foreign_other = b"other = 2\n"
+    with publish_proofs._fixture() as path:
+        remote = publish_proofs._remote(path)
+        baseline = path / "baseline-work"
+        publish_proofs._init_repo(baseline)
+        publish_proofs._write(baseline / "template" / rel, b"value = 'old'\n")
+        publish_proofs._write(baseline / "template" / other, old_other)
+        publish_proofs._write_baseline_stubs(baseline)
+        manifest = {"version": 2, "files": [
+            {"path": rel, "layer": "pure", "sync": "auto"},
+            {"path": other, "layer": "pure", "sync": "auto"}]}
+        publish_proofs._write(baseline / "baseline.manifest.json",
+                              (json.dumps(manifest, indent=2) + "\n").encode())
+        pin_a = publish_proofs._commit(baseline, "seed")
+        publish_proofs._push_main(baseline, remote)
+
+        root = path / "consumer"
+        publish_proofs._init_repo(root)
+        publish_proofs._seed_project_subsystems(root)
+        publish_proofs._write(root / rel, local_rel)
+        publish_proofs._write(root / other, old_other)
+        lock = {
+            "schema": 2,
+            "baseline_repo": remote.as_uri(),
+            "baseline_ref": "main",
+            "synced_commit": pin_a,
+            "profile": "pure",
+            "substitutions": {},
+            "files": {
+                rel: {"status": "tracked", "layer": "pure",
+                      "judged": {"sha": publish_proofs._sha(local_rel), "verdict": "push", "at": "t"}},
+                other: {"status": "tracked", "layer": "pure"},
+                ".claude/skills/project_subsystems/adaptation.json": {"status": "local", "layer": "pure", "judged": None},
+                ".claude/skills/project_subsystems/SKILL.md": {"status": "local", "layer": "pure", "judged": None},
+            },
+        }
+        publish_proofs._write(root / ".claude" / "baseline.lock.json",
+                              (json.dumps(lock, indent=2) + "\n").encode())
+        source_commit = publish_proofs._commit(root, "consumer")
+
+        # The foreign publish: upstream moves from pin A to pin B, changing a row we hold.
+        publish_proofs._write(baseline / "template" / other, foreign_other)
+        publish_proofs._commit(baseline, "foreign publish")
+        publish_proofs._git(baseline, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+        publish = publish_proofs._load_publish()
+        stale = json.loads(json.dumps(lock))
+        stale["files"][rel]["judged"]["sha"] = "0" * 64
+        try:
+            publish._collect(root, {"kind": "commit", "repo": str(root), "commit": source_commit},
+                             [rel], stale, None, "unused")
+        except publish.PublishError as exc:
+            assert "judged sha does not match" in str(exc), str(exc)
+        else:
+            raise AssertionError("a stale judged.sha was published")
+
+        env = publish_proofs._install_fake_gh(path)
+        with publish_proofs._patched_env(env):
+            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": source_commit},
+                                  [rel], [], False, True, None)
+        assert all(step["status"] == "green" for step in journal["steps"]), journal["steps"]
+        assert publish_proofs._git(remote, "show", "main:template/" + other) == foreign_other, (
+            "publish overwrote the foreign change")
+        updated = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+        assert updated["files"][other].get("base") == pin_a, updated["files"][other]
+        assert updated["files"][rel].get("base") is None, updated["files"][rel]
+        engine = _load_engine()
+        pin = updated["synced_commit"]
+        source = engine.BaselineSource(root / ".claude" / ".cache" / "baseline-repo", pin,
+                                       engine._BatchReader(root / ".claude" / ".cache" / "baseline-repo", pin))
+        try:
+            assert engine._v2_state(root, source, updated, other, updated["files"][other]) == "upstream-updated"
+            assert engine._v2_state(root, source, updated, rel, updated["files"][rel]) == "in-sync"
+        finally:
+            source.close()
+
+        pulled = _run(root, "pull", other)
+        assert pulled.returncode == 0, pulled.stderr.decode("utf-8", errors="replace")[-2000:]
+        updated = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+        assert updated["files"][other].get("base") is None, updated["files"][other]
+        pin = updated["synced_commit"]
+        source = engine.BaselineSource(root / ".claude" / ".cache" / "baseline-repo", pin,
+                                       engine._BatchReader(root / ".claude" / ".cache" / "baseline-repo", pin))
+        try:
+            assert engine._v2_state(root, source, updated, other, updated["files"][other]) == "in-sync"
+            assert engine._v2_state(root, source, updated, rel, updated["files"][rel]) == "in-sync"
+        finally:
+            source.close()
+
+
 def main() -> int:
     cases = [
-        test_pull_moves_a_tracked_rows_verdict_to_the_copy_it_writes,
+        test_pull_settles_a_tracked_row_at_the_copy_it_writes,
         test_pull_merge_refuses_a_diverged_binary_row_and_leaves_it_untouched,
         test_pull_updates_the_running_engine_first_and_reruns_with_it,
         test_pull_stops_when_the_engine_pull_reports_a_conflict,
         test_pull_delivers_a_binary_row_byte_for_byte,
         test_unproven_tools_binds_every_tool_in_one_scan,
+        test_new_tool_with_a_row_less_proof_judged_push_in_this_call_publishes,
+        test_candidates_lists_a_row_less_test_only_when_its_subject_ships,
         test_carry_refuses_a_new_tool_whose_proof_is_local,
         test_carry_refuses_a_citer_whose_named_dependency_is_not_carried,
         test_dependency_check_failure_refuses_the_push,
@@ -3369,7 +4191,7 @@ def main() -> int:
         test_j3_push_judge_refuses_an_identity_hit_and_accept_hit_allows_it,
         test_push_judge_names_every_refused_row_and_hit_in_one_call,
         test_triage_lists_every_identity_hit_the_push_scan_would_refuse,
-        test_bare_pull_refreshes_a_lock_stale_row,
+        test_a_row_equal_to_upstream_is_in_sync_whatever_its_pin,
         test_paths_unshipped_lists_every_push_row_the_baseline_lacks_whenever_judged,
         test_paths_unshipped_names_a_push_row_edited_after_its_verdict,
         test_push_refuses_a_literal_placeholder_a_pull_would_render,
@@ -3415,6 +4237,7 @@ def main() -> int:
         test_v2_classify_tracked_scans_the_reverse_substituted_text,
         test_v2_judge_success_refusal_and_repeat,
         test_v2_judge_commit_reads_that_commit_not_the_shared_index,
+        test_judge_push_records_a_committed_deletion_of_a_file_upstream_carries,
         test_v2_triage_json_fields_and_truncation,
         test_v2_forget_success_refusal_and_repeat,
         test_v2_gc_success_refusal_and_repeat,
@@ -3427,7 +4250,7 @@ def main() -> int:
         test_v2_check_strict_git_spawns_do_not_grow_with_rows,
         test_v2_forked_row_moves_only_when_its_own_upstream_file_changed,
         test_v2_paths_filters_success_refusal_and_repeat,
-        test_v2_pull_explicit_states_and_new_hash,
+        test_v2_pull_explicit_states_and_new_row,
         test_v2_pull_keeps_placeholder_ok_files_verbatim,
         test_placeholder_ok_files_skip_both_substitution_directions,
         test_v2_migrate_covers_every_status_mapping_source_row,
@@ -3473,6 +4296,7 @@ def main() -> int:
         test_judge_push_allows_a_new_tool_and_its_new_proof_in_one_range,
         test_judge_push_counts_a_proof_judged_push_at_its_current_sha,
         test_judge_push_refuses_a_citer_whose_dependency_does_not_ship,
+        test_judge_push_refuses_a_citer_whose_dependency_has_no_row,
         test_judge_push_allows_a_citer_whose_dependency_ships_or_is_judged_push,
         test_judge_push_allows_a_citer_and_its_local_dependency_in_one_call,
         test_judge_push_passes_when_the_baseline_copy_already_cites_the_modified_dependency,
@@ -3500,6 +4324,15 @@ def main() -> int:
         test_triage_relists_a_local_row_edited_since_its_keep_local_verdict,
         test_triage_relists_a_fork_edited_since_its_verdict,
         test_check_names_a_local_row_that_shadows_a_shipped_file,
+        test_historic_817_lock_reads_its_twelve_upstream_updated_rows,
+        test_historic_240_lock_reads_its_stale_rows_in_sync,
+        test_v2_state_old_and_new_agree_over_the_sampled_lock_versions,
+        test_legacy_lock_migrates_on_load_and_never_guesses_a_base,
+        test_base_unknown_is_listed_and_rejudged_by_keep_local_or_pull,
+        test_migration_drops_a_settled_push_verdict_and_keeps_an_open_one,
+        test_foreign_publish_is_not_overwritten_and_move_pin_records_base,
+        test_pull_runs_for_on_what_it_wrote_and_fails_on_red,
+        test_pull_that_wrote_nothing_runs_no_proof,
     ]
     return run_cases(cases)
 

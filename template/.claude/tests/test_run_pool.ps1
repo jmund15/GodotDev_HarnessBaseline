@@ -310,7 +310,7 @@ try {
         }
         $wrapper = Get-TimeoutDefault 'run_test_suite.ps1'
         Assert-True 'P13 run_test_suite.ps1 -TimeoutMs has no fixed default; GodotProcess derives it' ($null -eq $wrapper -and
-            (Get-Content (Join-Path $repoRoot '.claude/scripts/run_test_suite.ps1') -Raw) -match 'Get-SuiteTimeoutMs') "wrapper=$wrapper"
+            (Get-Content (Join-Path $repoRoot '.claude/scripts/run_test_suite.ps1') -Raw) -match 'Get-SuiteDefaultCeilingMs') "wrapper=$wrapper"
         $verify = Get-TimeoutDefault 'verify.ps1'
         Assert-True 'P13 verify.ps1 -TimeoutMs has no default of its own' ($null -eq $verify) "verify=$verify"
     }

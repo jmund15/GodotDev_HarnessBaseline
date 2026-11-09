@@ -5,7 +5,7 @@ A Workflow-dispatched agent has neither the Workflow tool nor the Agent tool, an
 subagent has no Workflow tool (measured 2026-09-03, both arms). So a batch orchestrator cannot
 delegate "run /review_pr" and expect the inner lens fan-out to happen under pins. The flat shape is:
 the orchestrator materializes every lens prompt as a file, dispatches all lenses in ONE dispatch.js
-run (readOnly, spillDir), and a second run consolidates. This tool does the materialization so no
+run (kind reviewer, spillDir), and a second run consolidates. This tool does the materialization so no
 prompt byte travels through Workflow `args` (gotcha_workflow_args_generation_fidelity).
 
 Usage:
@@ -142,7 +142,7 @@ import model_registry  # noqa: E402  (the tier vocabulary, and the sidecar alias
 import finding_bar  # noqa: E402  (the run's bar words; a sidecar prompt has no engine contract to carry them)
 import plan_job_map_guard  # noqa: E402  (the `## Job map` heading rule, one home)
 import review_result  # noqa: E402  (the Read window a must-read brief states)
-import tool_profiles  # noqa: E402  (the review profile's built-ins, and the brief coverage gate)
+import tool_profiles  # noqa: E402  (the review kind's built-ins)
 
 TIERS = list(model_registry.TIER_ORDER) + sorted(model_registry._TIER_ALIASES)
 
@@ -160,12 +160,15 @@ NATIVE_EFFORTS = tuple(_session_transport.legal_effort_values("anthropic"))
 # A placeholder the CALLER supplies as a flag rather than as a `--sub` file: the refusal names the
 # flag, because an absent --pr-num silently substituted with empty text produces a brief that reads
 # as complete and reviews nothing.
+# Placeholders whose consuming command defines an absent value of `none` (session_audit.md:109 SHORT_PLAN).
+# A placeholder missing here still refuses: DESIGN_LIST has no documented absent value.
+NONE_DEFAULTS = {"SHORT_PLAN": "none"}
 FLAG_PLACEHOLDERS = {"PR_NUM": "--pr-num", "BRANCH": "--branch"}
 
 # The review route's shape and schema. One home per authored value: the schema path is
 # `sidecar_fanout.DEFAULT_REVIEW_SCHEMA` — the launcher's own default — and the import is deferred so
 # the native route never pays for the fan-out's process machinery.
-REVIEW_SHAPE = "review"
+REVIEW_KIND = "reviewer"
 
 
 @functools.lru_cache(maxsize=None)
@@ -906,6 +909,19 @@ def _receipt_line(spec: dict, pinned: list[str]) -> str:
     return line
 
 
+def _refuse_bad_spec(spec: dict, root: Path) -> None:
+    """Refuse a spec the later steps would fail on, before prepare writes any file."""
+    fold = spec.get("fold")
+    if fold and not (fold.get("subjects") if isinstance(fold, dict) else None) and not spec.get("subjectFiles"):
+        sys.exit("prepare: the fold needs `subjectFiles` (or `fold.subjects`)")
+    plan = (spec.get("sessionAudit") or {}).get("plan")
+    if plan:
+        import session_audit_inputs
+        main = session_audit_inputs.linked_main_root(str(root))
+        if not any((home / plan).is_file() for home in [root] + ([Path(main)] if main else [])):
+            sys.exit(f"prepare: sessionAudit.plan {plan} is no file under {root}; omit the key for no plan")
+
+
 def prepare_command(argv: list[str]) -> None:
     """One prep call: compose the ledger plan, the frozen inputs, the briefs, the fold snapshot and the
     engine `args.json` the `argsFile` member expands. Prints the bounded summary and the next call.
@@ -931,6 +947,7 @@ def prepare_command(argv: list[str]) -> None:
     if spec["mode"] not in PREP_ENGINES and not spec.get("engine"):
         sys.exit(f"prepare: mode {spec['mode']} runs an engine the calling command names; add `engine` to the spec")
     root = Path(spec.get("root") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+    _refuse_bad_spec(spec, root)
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     prefix = spec.get("prefix") or spec["mode"]
@@ -1026,8 +1043,6 @@ def prepare_command(argv: list[str]) -> None:
                 files = [path for path in files if path not in production]
                 if production:
                     print("fold these on the sidecar route (the native fold runs no gate): " + ", ".join(production))
-            if not spec.get("subjectFiles"):
-                sys.exit("prepare: the fold needs `subjectFiles` (or `fold.subjects`)")
             if files:
                 manifest = fold_check.snapshot_blobs(str(root), files)
                 snapshot = out / "snapshot.json"
@@ -1163,6 +1178,7 @@ def build_briefs(a: BriefParams) -> list[dict]:
         "CHECKLIST_I": with_companion(cq, lambda f: sections(f, {"I"})),
         "CODE_QUALITY_CHECKLIST": with_companion(cq, lambda f: below_frontmatter(f.read_text(encoding="utf-8"))),
         "TEST_QUALITY_CHECKLIST": checklist_for_tests(tq),
+        **NONE_DEFAULTS,
     }
     if a.pr_num is not None:
         subs["PR_NUM"] = str(a.pr_num)
@@ -1229,7 +1245,7 @@ def build_briefs(a: BriefParams) -> list[dict]:
     builtins = None
     if a.target == "sidecar":
         try:
-            builtins = tool_profiles.resolve(REVIEW_SHAPE, walk_mcp=False)[0]["builtins"]
+            builtins = tool_profiles.resolve(REVIEW_KIND, walk_mcp=False)[0]["builtins"]
         except ValueError as err:
             sys.exit(f"the review tool profile does not resolve: {err}")
 
@@ -1328,8 +1344,7 @@ def build_briefs(a: BriefParams) -> list[dict]:
                 "model": model_overrides.get(k) or a.model,
                 "tier": tier,
                 "effort": effort,
-                "agentType": "general-purpose",
-                "readOnly": True,
+                "kind": REVIEW_KIND,
             })
             continue
 
@@ -1352,19 +1367,7 @@ def build_briefs(a: BriefParams) -> list[dict]:
             parts.append(preloaded)
         body = "\n".join(parts)
         path = out / f"{a.prefix}_{k}.md"
-        # The gate reads the brief text under its final path name and the context it points at, so
-        # the refusal quotes the real line. Every brief is written only after the whole panel passes.
-        try:
-            context_text = tool_profiles.read_brief(a.context_path)
-        except OSError as exc:
-            sys.exit(f"--context-path unreadable: {a.context_path} ({exc})")
-        refusal = tool_profiles.brief_refusal(
-            builtins, tool_profiles.brief_requirements(
-                [(str(path), body), (a.context_path, context_text)], str(REPO)), "job")
-        if refusal:
-            sys.exit(f"{path.name}: {refusal}\nThis route dispatches a READ-ONLY review seat: rework "
-                     f"the line to a read-only input, or move that mandate to a Bash-enabled seat. "
-                     f"A sidecar job never grants Bash and never takes the `author` shape (C6).")
+        # Every brief is written only after the whole panel passes.
         reading = seat_reading(key=k, token=token, body=body, context_path=a.context_path, entries=must,
                                data=data)
         readings.append((k, reading, len(body.encode("utf-8"))))

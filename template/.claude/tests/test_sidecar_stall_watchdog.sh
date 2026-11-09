@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Proof that the sidecar stall watchdog (lib/sidecar_common.sh sc_run_watched) judges liveness by work events and tree CPU:
-#   1. a child silent for longer than SC_STALL_SEC gets <record>.stall and is still alive; the next
-#      work event deletes the marker and the run reaches its own end with rc=0 (never 9);
-#   2. SC_STALL_SEC=0 writes no marker at all;
+#   1. a child silent for longer than SC_STALL_SEC gets a `stalled` journal row and is still alive; the next
+#      work event writes `resumed` and the run reaches its own end with rc=0 (never 9);
+#   2. SC_STALL_SEC=0 writes no row and no marker;
 #   3. SIDECAR_TIMEOUT unset leaves the wall-clock kill OFF (SC_TIMEOUT empty); the opt-in still reaches
 #      the launcher's `timeout` guard — the kill itself is proved end-to-end by
 #      test_opencode_run_sidecar.py::test_killed_run_writes_durable_record (SIDECAR_TIMEOUT=2, rc 124).
@@ -26,7 +26,10 @@ say() { echo "$*"; }
 # init is not a work event; the assistant line is, so the marker must appear and then be deleted.
 stalling_child() { printf '{"type":"system","subtype":"init"}\n'; sleep 6; printf '{"type":"assistant","n":1}\n'; sleep 1; printf '{"type":"result","subtype":"success","result":"recovered"}\n'; }
 
-# --- case 1: the stall writes a marker, kills nothing, and the next work event clears it
+# journal_event <record> <event>: 0 when the record's journal holds that row
+journal_event() { grep -q "\"event\": \"$2\"" "$1.journal.jsonl" 2>/dev/null; }
+
+# --- case 1: the stall writes a journal row, kills nothing, and the next work event writes resumed
 d="$(mktemp -d)"; P="$d/progress.jsonl"; : > "$P"
 REC="$d/stall.record.json"
 rcfile="$d/rc"; outfile="$d/out"
@@ -38,7 +41,7 @@ rcfile="$d/rc"; outfile="$d/out"
 bg=$!
 alive_when_marked=0; waited=0
 while [ "$waited" -lt 12 ]; do
-  if [ -f "$REC.stall" ]; then
+  if journal_event "$REC" stalled; then
     kill -0 "$bg" 2>/dev/null && alive_when_marked=1
     break
   fi
@@ -46,12 +49,13 @@ while [ "$waited" -lt 12 ]; do
 done
 if wait "$bg" 2>/dev/null; then :; fi
 rc="$(cat "$rcfile" 2>/dev/null)"
-if [ "$alive_when_marked" = 1 ] && [ "$rc" = 0 ] && [ ! -f "$REC.stall" ] \
+if [ "$alive_when_marked" = 1 ] && [ "$rc" = 0 ] && journal_event "$REC" resumed \
+   && [ ! -f "$REC.stall" ] && grep -q '"idle": [0-9]' "$REC.journal.jsonl" \
    && grep -q 'recovered' "$outfile" && ! grep -q '"terminal_reason":"stall"' "$P"; then
-  say "OK   stall signals: marker seen at ${waited}s with the child alive, deleted by the next work event, rc=0"
+  say "OK   stall signals: stalled row seen at ${waited}s with the child alive, resumed by the next work event, rc=0"
 else
   say "FAIL stall: marked=$alive_when_marked waited=${waited}s rc=${rc:-none} marker_now=$( [ -f "$REC.stall" ] && echo present || echo gone ) out=$(tail -c 120 "$outfile" 2>/dev/null)"
-  [ -f "$REC.stall" ] && say "     marker: $(cat "$REC.stall")"
+  [ -f "$REC.journal.jsonl" ] && say "     journal: $(cat "$REC.journal.jsonl")"
   fail=1
 fi
 
@@ -66,13 +70,13 @@ RC2="$d/rc0" OUT2="$d/out0"
 ) &
 bg2=$!
 sleep 5
-if [ -f "$REC2.stall" ]; then
-  say "FAIL disabled: SC_STALL_SEC=0 still wrote a marker"; fail=1
+if [ -f "$REC2.stall" ] || journal_event "$REC2" stalled; then
+  say "FAIL disabled: SC_STALL_SEC=0 still wrote a marker or a row"; fail=1
   kill "$bg2" 2>/dev/null
 else
   wait "$bg2" 2>/dev/null
   if [ "$(cat "$RC2" 2>/dev/null)" = 0 ] && grep -q 'recovered' "$OUT2"; then
-    say "OK   disabled: SC_STALL_SEC=0 writes no marker and runs the child to its own end"
+    say "OK   disabled: SC_STALL_SEC=0 writes no row and runs the child to its own end"
   else
     say "FAIL disabled: rc=$(cat "$RC2" 2>/dev/null)"; fail=1
   fi
@@ -114,12 +118,12 @@ err4="$d/err4"; seen4=0
 ) &
 bg4=$!
 for _ in 1 2 3 4 5 6 7 8; do
-  if [ -f "$REC4.stall" ]; then seen4=1; break; fi
+  if journal_event "$REC4" stalled; then seen4=1; break; fi
   sleep 1
 done
 wait "$bg4" 2>/dev/null || :
 if [ "$seen4" = 1 ] && ! grep -q 'watchdog is OFF' "$err4"; then
-  say "OK   a -R run with no -P is watched: the stall marker appears and no OFF notice prints"
+  say "OK   a -R run with no -P is watched: the stall row appears and no OFF notice prints"
 else
   say "FAIL -R without -P unwatched: marker_seen=$seen4 stderr=$(cat "$err4" 2>/dev/null)"; fail=1
 fi
@@ -137,10 +141,10 @@ P5="$d/progress5.jsonl"; : > "$P5"; REC5="$d/busy.record.json"; seen5=0
   printf '%s' "$rc" > "$d/rc5"; printf '%s' "$OUTPUT" > "$d/out5"
 ) &
 bg5=$!
-while kill -0 "$bg5" 2>/dev/null; do [ -f "$REC5.stall" ] && seen5=1; sleep 1; done
+while kill -0 "$bg5" 2>/dev/null; do journal_event "$REC5" stalled && seen5=1; sleep 1; done
 wait "$bg5" 2>/dev/null || :
 if [ "$seen5" = 0 ] && [ "$(cat "$d/rc5" 2>/dev/null)" = 0 ] && grep -q busy-done "$d/out5"; then
-  say "OK   a stream-silent child burning CPU is alive: no stall marker, rc=0"
+  say "OK   a stream-silent child burning CPU is alive: no stall row, rc=0"
 else say "FAIL busy child: marker_seen=$seen5 rc=$(cat "$d/rc5" 2>/dev/null)"; fail=1; fi
 
 # --- case 6: a bench arm (unattended) silent AND idle for the stall window ends as a resumable stall void

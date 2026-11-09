@@ -184,7 +184,7 @@ check("a missing report file is an error", _problems(str(_tmp / "nope.json"))[0]
 check("a report for another model is an error", _problems(_report(modelId="claude-fable-5-1"))[0] != [])
 check("a report at another effort is an error", _problems(_report(effort="medium"))[0] != [])
 check("a non-PASS report is an error", _problems(_report(verdict="INCONCLUSIVE"))[0] != [])
-errs, stale = _problems(_report(treatmentHashes={"guards/any.md": "0" * 64}))
+errs, stale = _problems(_report(treatmentHashes={"guards/common.md": "0" * 64}))
 check("a report whose guard hashes moved is STALE, not an error", errs == [] and len(stale) == 1, (errs, stale))
 
 def _mrow(probe, stage, verdict, model="claude-opus-5-5", effort="low", runs=("4ee3c043",)):

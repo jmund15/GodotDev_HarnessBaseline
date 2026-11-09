@@ -77,8 +77,9 @@ _SAMPLES_CACHE = {"at": None, "rows": []}
 # 0.97, 13 jobs went to it, and 6+ hit the limit within 15 minutes (about 4 points a job). Thin basis: one burst.
 JOB_DRAIN_PCT = float(os.environ.get("SIDECAR_JOB_DRAIN_PCT") or 4)
 # A job's expected drain is its plan's recorded points per list-price dollar (`plan_rate`) times what finished jobs of
-# its model, effort and shape cost at DRAIN_QUANTILE (`job_usd`). The 0.75 quantile held a job cluster's observed total in 53% to
-# 83% of the clusters of the four plans backtested and reads high (figures: commit b78984a). Thin: one day of dense history.
+# its model, effort and shape cost at DRAIN_QUANTILE (`job_usd`). Priced from only the jobs finished before it started, a
+# job's list cost fell at or under the 0.75 quantile for 55% to 80% of jobs per plan on the shape group, and the median
+# priced/actual ratio was 1.32, so it reads high (9,203 finished ledger jobs over six plans; commit message holds the backtest).
 DRAIN_QUANTILE = 0.75
 # Fewer than five jobs make the 0.75 quantile their maximum, which is an anecdote; the group widens instead.
 GROUP_MIN_JOBS = 5

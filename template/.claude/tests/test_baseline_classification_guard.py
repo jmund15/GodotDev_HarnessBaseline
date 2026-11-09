@@ -157,20 +157,19 @@ SHELL_WORD_CASES = (
 
 
 def _shell_words_case(spec, env, cases):
-    """A raw shell expansion survives the commit rewrite, runs, and Git reads the intended message."""
+    """A raw shell expansion passes the guard unchanged, runs, and Git reads the intended message."""
     label, command, expansion = spec
     shell_repo = _make_consumer_repo()
     _write(shell_repo / 'message file.txt', 'intended shell message\n')
     _write(shell_repo / '.claude/commands/shell.md', '# shell words\n')
     _git(shell_repo, 'add', '--', '.claude/commands/shell.md')
     proc = _run_dispatch(str(shell_repo), command, env)
-    rewritten = (_hso(proc).get('updatedInput') or {}).get('command', '')
-    cases.append((label + ': rewrite keeps raw expansion',
-                  _classify(proc) == 'ALLOW' and expansion in rewritten and 'GIT_INDEX_FILE=' in rewritten,
-                  proc.stderr + rewritten))
-    executed = subprocess.run([git_bash(), '-c', rewritten], cwd=shell_repo, env=env,
+    cases.append((label + ': guard allows the command unrewritten',
+                  _classify(proc) == 'ALLOW' and 'updatedInput' not in _hso(proc) and expansion in command,
+                  proc.stderr + proc.stdout))
+    executed = subprocess.run([git_bash(), '-c', command], cwd=shell_repo, env=env,
                               capture_output=True, text=True, encoding='utf-8', timeout=90)
-    cases.append((label + ': rewritten command succeeds', executed.returncode == 0,
+    cases.append((label + ': the command succeeds', executed.returncode == 0,
                   executed.stdout + executed.stderr))
     message = subprocess.run(['git', 'log', '-1', '--format=%B'], cwd=shell_repo,
                              capture_output=True, text=True, encoding='utf-8', check=True).stdout.strip()
@@ -215,11 +214,10 @@ def main(only: int | None = None) -> int:
         _write(repo / rel, "# new command\n")
         _git(repo, "add", "-A")
         proc = _run_dispatch(str(repo), 'git commit -m "add thing" -- .claude/commands/new_thing.md', env)
-        check("1: pathspec commit adding an unclassified .claude/ file -> private-index rewrite",
+        check("1: pathspec commit adding an unclassified .claude/ file -> allow, no row demanded",
               _classify(proc), "ALLOW", proc)
-        cases.append(("1: the rewrite names its private index and resync",
-                      'GIT_INDEX_FILE=' in (_hso(proc).get('updatedInput') or {}).get('command', '')
-                      and 'resync --name' in (_hso(proc).get('updatedInput') or {}).get('command', ''), proc.stdout))
+        cases.append(("1: the command is not rewritten (no private index, no resync)",
+                      'updatedInput' not in _hso(proc), proc.stdout))
 
         # --- 2: after `classify`, the same commit is allowed --------------------------------
         classify_proc = subprocess.run(
@@ -266,8 +264,9 @@ def main(only: int | None = None) -> int:
         _git(repo6, "commit", "-q", "-m", "add notes")
         _git(repo6, "mv", "notes.txt", ".claude/commands/moved.md")
         proc = _run_dispatch(str(repo6), "git commit -m mv", env)
-        check("6: git mv into .claude/ reads as an unclassified addition -> rewrite",
+        check("6: git mv into .claude/ reads as an unclassified addition -> allow, no rewrite",
               _classify(proc), "ALLOW", proc)
+        cases.append(("6: the git mv commit is not rewritten", 'updatedInput' not in _hso(proc), proc.stdout[:300]))
 
     @section
     def _s3():
@@ -506,12 +505,10 @@ def main(only: int | None = None) -> int:
         _write(repo23 / ".claude" / "commands" / "mine.md", "# authored during the merge\n")
         _git(repo23, "add", "-A")
         proc = _run_dispatch(str(repo23), "git commit -m merge", env)
-        check("23: a merge whose resolution authors a new .claude/ file -> rewrite",
+        check("23: a merge whose resolution authors a new .claude/ file -> allow, no rewrite",
               _classify(proc), "ALLOW", proc)
-        context = _hso(proc).get('additionalContext', '')
-        cases.append(("23: the context names the authored file, never the one from MERGE_HEAD",
-                      "mine.md" in context and "from_main.md" not in context,
-                      context[:500]))
+        cases.append(("23: the merge command is not rewritten",
+                      'updatedInput' not in _hso(proc), proc.stdout[:500]))
 
     @section
     def _s17():
@@ -519,8 +516,8 @@ def main(only: int | None = None) -> int:
         _write(repo24 / ".claude" / "commands" / "mine.md", "# authored during the merge\n")
         _git(repo24, "add", "-A")
         proc = _run_dispatch(str(repo24), "git merge --continue", env)
-        check("24: `git merge --continue` is judged like the commit closing the merge -> deny",
-              _classify(proc), "DENY", proc)
+        check("24: `git merge --continue` authoring an unclassified .claude/ file -> allow (no row demanded)",
+              _classify(proc), "ALLOW", proc)
 
     @section
     def _s18():
@@ -622,6 +619,33 @@ def main(only: int | None = None) -> int:
         check("27: `--pathspec-from-file` lock commit dropping a HEAD row -> deny", _classify(proc), "DENY", proc)
         cases.append(("27: the denial names the dropped row",
                       ".claude/commands/peer.md" in proc.stderr, proc.stderr[:500]))
+
+    @section
+    def _s28():
+        # --- 28 (D3): the S1 migration drops `local` rows under the lock's `never_ship` prefixes while
+        # their files still exist. The committed lock names those prefixes, so the drop is allowed.
+        # A `local` row outside `never_ship` still denies: a reverted peer row is a real defect.
+        def never_ship_repo(dropped):
+            repo = _make_consumer_repo({
+                ".claude/auto-memory/note.md": {"status": "local", "judged": None},
+                ".claude/commands/peer.md": {"status": "local", "judged": None}})
+            for name in (".claude/auto-memory/note.md", ".claude/commands/peer.md"):
+                _write(repo / name, "# row\n")
+            _git(repo, "add", "-A")
+            _git(repo, "commit", "-q", "-m", "rows")
+            lock_path = repo / ".claude" / "baseline.lock.json"
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            del lock["files"][dropped]
+            lock["never_ship"] = [".claude/auto-memory/"]
+            _write_json(lock_path, lock)
+            return repo
+
+        repo28 = never_ship_repo(".claude/auto-memory/note.md")
+        proc = _run_dispatch(str(repo28), 'git commit -m m -- .claude/baseline.lock.json', env)
+        check("28: dropping a local row under never_ship (file exists) -> allow", _classify(proc), "ALLOW", proc)
+        repo28b = never_ship_repo(".claude/commands/peer.md")
+        proc = _run_dispatch(str(repo28b), 'git commit -m m -- .claude/baseline.lock.json', env)
+        check("28b: dropping a local row outside never_ship (file exists) -> deny", _classify(proc), "DENY", proc)
 
     if only is not None:
         sections[only]()

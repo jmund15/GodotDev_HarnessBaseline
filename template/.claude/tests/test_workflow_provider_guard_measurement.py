@@ -2,10 +2,21 @@
 self-attested-guard-fields-audit, Classification). No observable fact tells a benchmark arm from a
 normal job, so a call that declares itself a measurement skips implied-tier fit (RULE 3). Negative cases: the same call without the declaration still denies on fit,
 and a declaration under the minimum length is no declaration."""
+import json
 import os
 import sys
+import tempfile
 
 CLAUDE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The guard resolves a kind's MCP servers, and a template checkout registers none: plant the logical
+# servers the defaults table names so the proof never reads this machine's config.
+_MCP_CFG = tempfile.mkdtemp(prefix="guard_mcp_")
+with open(os.path.join(_MCP_CFG, ".claude.json"), "w", encoding="utf-8", newline="\n") as _fh:
+    json.dump({"mcpServers": {"ai-worker": {"command": "aiw"}, "git": {"command": "gr"},
+                              "godot": {"command": "g"},
+                              "plugin:semantic-search:semantic-search": {"command": "node"}},
+               "projects": {}}, _fh)
+os.environ["CLAUDE_CONFIG_DIR"] = _MCP_CFG
 # plc-memory-alignment implies architect only where the coding-layer plan-check registry is installed;
 # a project without it has no lens to name, so no fit rule to skip and nothing to deny.
 PLAN_CHECK_SHIPPED = os.path.isfile(os.path.join(CLAUDE, "commands", "agents", "plan_check_agents.md"))
@@ -18,7 +29,7 @@ SCOUT_PIN = next(p for p in ("haiku",) if p)  # a scout-tier host alias; the len
 
 
 def call(measurement=None):
-    args = {"agents": [{"key": "plc-memory-alignment", "model": SCOUT_PIN, "effort": "low"}]}
+    args = {"agents": [{"key": "plc-memory-alignment", "kind": "reviewer", "model": SCOUT_PIN, "effort": "low"}]}
     if measurement is not None:
         args["measurement"] = measurement
     return {"tool_name": "Workflow", "tool_input": {"scriptPath": ".claude/workflows/review_fanout.js", "args": args}}

@@ -46,7 +46,7 @@ param(
     [Parameter(Mandatory, ParameterSetName = 'ReapReport')] [switch] $ReapReport,
     [string] $Label = $Filter,
     [string] $Repo = '',
-    # Omitted: target durations or last-green wall with headroom, at least 150 s.
+    # Omitted: the sum of every recorded unit and tier duration (Get-SuiteDefaultCeilingMs); a silent run ends at the stall bound.
     [ValidateRange(1, [int]::MaxValue)] [int] $TimeoutMs,
     # Logic-domain tier: the filtered suite spawns NO headless Godot, so it needs neither a
     # runtime slot nor the drain. Default off = today's runtime-safe behavior.
@@ -217,7 +217,7 @@ $passTrx = if ($trxPath) { $trxPath } else { Join-Path $repo "TestResults\$safe.
 $godotLog = if ($runRoot) { Join-Path $runDir 'godot_test.log' } else { Join-Path $repo 'TestResults\godot_test.log' }
 $lastGreen = Join-Path $logDir "$safe.green"
 if (-not $PSBoundParameters.ContainsKey('TimeoutMs')) {
-    $TimeoutMs = Get-SuiteTimeoutMs -Repo $repo -Filter $Filter -LastGreen $lastGreen
+    $TimeoutMs = Get-SuiteDefaultCeilingMs -Repo $repo
 }
 if (-not $PSBoundParameters.ContainsKey('TimeoutMs') -and -not $HeldCheckout -and -not $ReapReport -and -not (Get-RecompileDecision -Repo $repo).Skip) {
     $TimeoutMs += $script:SuiteColdRecompileExtraMs
@@ -659,7 +659,7 @@ try {
         $p = Start-IsolatedNativeProcess -FilePath 'dotnet' -Arguments $testArgs -OutPath $log -ErrPath $errLog -Display:(-not $NoGodotRuntime)
         $null = $p.Handle
         Set-RuntimeSlotRunner -Lease $lease -Process $p
-        $attemptState = Wait-SuiteAttempt -Process $p -TimeoutMs $TimeoutMs -GodotLog $godotLog -NoGodotRuntime:$NoGodotRuntime
+        $attemptState = Wait-SuiteAttempt -Process $p -TimeoutMs $TimeoutMs -GodotLog $godotLog -WrapperLog $log -NoGodotRuntime:$NoGodotRuntime
         $sw.Stop()
         $secs = [math]::Round($sw.Elapsed.TotalSeconds, 1)
 

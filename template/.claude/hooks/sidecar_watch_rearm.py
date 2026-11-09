@@ -36,6 +36,9 @@ def _state(state):
 # `pid` and `inventory` rungs both report DIED or WATCH; which one answered is what separates a
 # launcher that died from one that never started, and a job that is running from one still queued.
 _STATE_NAMES = {("DONE", "exit"): "finished",
+                ("DONE", "journal"): "finished",
+                ("DIED", "journal"): "died",
+                ("WATCH", "journal"): "running",
                 ("DIED", "pid"): "died",
                 ("DIED", "inventory"): "never started",
                 ("WATCH", "pid"): "running",

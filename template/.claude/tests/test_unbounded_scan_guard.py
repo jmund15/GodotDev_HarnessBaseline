@@ -1,8 +1,9 @@
-"""Re-runnable proof for hooks/unbounded_scan_guard.py's advisory cadence (B5).
+"""Re-runnable proof for hooks/unbounded_scan_guard.py's deny and advisory cadence (B5).
 
-The full advisory teaches; the repeat only reminds. Each axis (volume, scope) delivers its
-full text once, drops to a one-liner after, and is re-armed by a compaction. Cases feed real
-PreToolUse payloads and assert on `additionalContext`.
+Every recursive grep is denied, the deny's `rg -uu` form finds a tracked-ignored file, and the
+full advisory teaches while the repeat only reminds. Each advisory axis (volume, scope) delivers
+its full text once, drops to a one-liner after, and is re-armed by a compaction. Cases feed real
+PreToolUse payloads and assert on `permissionDecision` or `additionalContext`.
 
 State is redirected with HARNESS_HOOK_STATE_DIR — this never touches ~/.claude/.routing_state/.
 
@@ -10,9 +11,12 @@ State is redirected with HARNESS_HOOK_STATE_DIR — this never touches ~/.claude
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+
+import _platform_skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(HERE, "..", "hooks")
@@ -58,8 +62,38 @@ def verdict(command, env, cwd, home=None):
             out.get("permissionDecision", ""))
 
 
-def outside_git_cases(env):
-    """A recursive grep outside any git tree runs as a bounded `rg`; shapes it cannot translate stay denied."""
+def rg_available():
+    """True when a real `rg` or Claude Code's embedded one (argv0 rg) can run here."""
+    if shutil.which("rg"):
+        return True
+    exe = os.environ.get("CLAUDE_CODE_EXECPATH") or os.path.expanduser("~/.local/bin/claude.exe")
+    return os.path.exists(exe)
+
+
+def run_rg(*args, cwd=None):
+    """ripgrep as the agents' search tools run it: a real `rg`, else Claude Code's embedded one (argv0 rg)."""
+    if shutil.which("rg"):
+        return subprocess.run(["rg"] + list(args), cwd=cwd, capture_output=True, text=True, timeout=120)
+    exe = os.environ.get("CLAUDE_CODE_EXECPATH") or os.path.expanduser("~/.local/bin/claude.exe")
+    if not os.path.exists(exe):
+        raise SystemExit("CANNOT-RUN: no ripgrep available for the deny-form check")
+    return subprocess.run(["rg"] + list(args), cwd=cwd, executable=exe, capture_output=True, text=True, timeout=120)
+
+
+def reason(command, env, cwd, home=None):
+    """The permissionDecisionReason the hook emits for a Bash call, or ''."""
+    child_env = dict(env, HOME=home, USERPROFILE=home) if home else env
+    r = subprocess.run([sys.executable, HOOK], input=json.dumps(
+        {"tool_name": "Bash", "session_id": "usgrg", "cwd": cwd, "tool_input": {"command": command}}),
+        capture_output=True, text=True, timeout=60, env=child_env)
+    if r.returncode not in (0, 2) or "Traceback" in (r.stderr or ""):
+        raise RuntimeError("hook crashed: " + (r.stderr or ""))
+    out = json.loads(r.stdout).get("hookSpecificOutput") if r.stdout.strip() else {}
+    return (out or {}).get("permissionDecisionReason", "")
+
+
+def deny_cases(env):
+    """A recursive grep outside any git tree is denied, and the deny names the bounded forms."""
     home = os.path.realpath(tempfile.mkdtemp(prefix="usghome_")).replace("\\", "/")
     target = home + "/.claude/projects/x"
     os.makedirs(target)
@@ -68,32 +102,13 @@ def outside_git_cases(env):
     probe = subprocess.run(["git", "-C", home, "rev-parse", "--is-inside-work-tree"], capture_output=True)
     cases = [("the planted home is outside any git tree", probe.returncode != 0)]
 
-    def rewritten(command, cwd=home):
+    def denied(command, cwd=home):
         return verdict(command, env, cwd, home)
 
-    cmd, note, decision = rewritten("grep -rn foo ~/.claude/projects/x")
-    cases.append(("outside git, grep -rn is rewritten to a bounded rg through updatedInput",
-                  cmd.startswith("rg ") and "--max-count" in cmd and " -uu" in cmd and " -n" in cmd
-                  and "-e foo" in cmd and home + "/.claude/projects/x" in cmd and decision == ""))
-    cases.append(("the rewrite note names rg and CLAUDE.core.md §9, not git grep",
-                  "rg" in note and "CLAUDE.core.md §9" in note and "git grep" not in note))
-    cmd, _, _ = rewritten("grep -rnF 'a.b' " + target)
-    cases.append(("-F becomes rg -F", " -F" in cmd and cmd.startswith("rg ")))
-    cmd, _, _ = rewritten("grep -rnE 'a|b' " + target)
-    cases.append(("-E keeps rg's default regex (rg -E is an encoding flag) and the pattern",
-                  cmd.startswith("rg ") and " -E" not in cmd and " -F" not in cmd and "-e 'a|b'" in cmd))
-    cmd, _, _ = rewritten("grep -rniwl foo " + target + " | head -5")
-    cases.append(("flags and the downstream filter survive; -l carries no --max-count",
-                  cmd.startswith("rg ") and " -i" in cmd and " -w" in cmd and " -l" in cmd
-                  and "--max-count" not in cmd and cmd.endswith("| head -5")))
-    cmd, _, _ = rewritten("grep -rn -m 3 foo " + target)
-    cases.append(("the caller's -m replaces the default bound", cmd.count("--max-count") == 1 and "--max-count 3" in cmd))
-
-    cmd, _, _ = rewritten("grep -r --include=*.jsonl foo " + target)
-    cases.append(("outside git, --include runs as an rg glob", cmd.startswith("rg ") and "-g '*.jsonl'" in cmd))
-    cmd, _, _ = rewritten("grep -rn --exclude-dir=y foo " + target)
-    cases.append(("outside git, --exclude-dir runs as an rg glob", cmd.startswith("rg ") and "-g '!y/'" in cmd))
-    for label, command in (("-P", "grep -rnP 'fo+' " + target),
+    for label, command in (("grep -rn", "grep -rn foo ~/.claude/projects/x"),
+                           ("-F", "grep -rnF 'a.b' " + target),
+                           ("-E", "grep -rnE 'a|b' " + target),
+                           ("-P", "grep -rnP 'fo+' " + target),
                            ("-z", "grep -rnz foo " + target),
                            ("an unknown flag", "grep -rn --color=always foo " + target),
                            ("a BRE alternation", "grep -rn 'a\\|b' " + target),
@@ -101,82 +116,74 @@ def outside_git_cases(env):
                            ("command substitution", "grep -rn foo $(echo " + target + ")"),
                            ("a missing path", "grep -rn foo " + home + "/nope"),
                            ("an unparsed subshell", "(grep -rn foo " + target + ")")):
-        cmd, note, decision = rewritten(command)
-        cases.append(("outside git, " + label + " stays denied with the current text",
-                      cmd == "" and decision == "deny" and "RECURSIVE GREP DENIED" in (json.loads(subprocess.run(
-                          [sys.executable, HOOK], input=json.dumps({"tool_name": "Bash", "cwd": home,
-                          "tool_input": {"command": command}}), capture_output=True, text=True, env=env
-                      ).stdout)["hookSpecificOutput"]["permissionDecisionReason"])))
+        cmd, _, decision = denied(command)
+        cases.append(("outside git, " + label + " is denied without an updatedInput",
+                      cmd == "" and decision == "deny"))
+    text = reason("grep -rn foo ~/.claude/projects/x", env, home, home)
+    cases.append(("the deny names the Grep tool, rg with -uu, git grep and CLAUDE.core.md §9",
+                  "Grep tool" in text and "rg -n <pat> <dir> --max-count N" in text and "-uu" in text
+                  and "git grep -n <pat> -- <path>" in text and "CLAUDE.core.md §9" in text))
 
     repo = os.path.normpath(os.path.join(HERE, "..", ".."))
-    cmd, note, decision = verdict("grep -rn foo .claude/hooks", env, repo)
-    cases.append(("a checkout grep still runs as git grep --untracked",
-                  cmd == "git grep --untracked -n -e foo -- .claude/hooks" and "git grep" in note))
+    cmd, _, decision = verdict("grep -rn foo .claude/hooks", env, repo)
+    cases.append(("a checkout grep is denied too", cmd == "" and decision == "deny"))
     for label, command in (("a quoted mention", 'echo "grep -r foo ' + target + '"'),
                            ("git grep", "git grep -n foo"),
                            ("a named-file grep", "grep -rn foo a.py b.md"),
                            ("a one-level glob grep", "grep -rn PROVIDER .claude/tests/*.py | head"),
                            ("a file with a redirect", "grep -rn \"s9_h\\|headless\" notes/ledger.md 2>/dev/null | head -5")):
-        cmd, note, decision = verdict(command, env, repo)
+        cmd, _, decision = verdict(command, env, repo)
         cases.append((label + " is neither rewritten nor denied", cmd == "" and decision == ""))
     return cases
 
 
-def rewrite_reach_cases(env):
-    """The git grep rewrite keeps a file operand a file, stays under the command-line limit, and reaches a nested repository."""
-    import shlex
+def tracked_ignored_deny_cases(env):
+    """A recursive grep over a tracked-ignored tree is denied, and the deny's `rg -uu` form finds it."""
     repo = os.path.normpath(os.path.join(HERE, "..", ".."))
-    claude = os.path.join(repo, ".claude")
+    tracked = os.path.realpath(tempfile.mkdtemp(prefix="usgtrign_")).replace("\\", "/")
+    git = ["git", "-C", tracked, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false"]
+    subprocess.run(git + ["init", "-q"], capture_output=True)
+    os.makedirs(tracked + "/d/ign")
+    for rel, text in (("d/plain.txt", "ti_needle\n"), ("d/ign/forced.txt", "ti_needle\n"),
+                      ("d/ign/loose.txt", "ti_needle\n"), ("d/new.txt", "ti_needle\n"), (".gitignore", "d/ign/\n")):
+        with open(tracked + "/" + rel, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+    subprocess.run(git + ["add", "d/plain.txt", ".gitignore"], capture_output=True)
+    subprocess.run(git + ["add", "-f", "d/ign/forced.txt"], capture_output=True)
+    subprocess.run(git + ["commit", "-qm", "i"], capture_output=True)
     cases = []
 
-    def ran(cmd, cwd):
-        if len(cmd) > 32000:
-            return subprocess.CompletedProcess(cmd, 1, "", "command line too long")
-        return subprocess.run(shlex.split(cmd), capture_output=True, text=True, cwd=cwd, timeout=60)
+    command = "grep -rln ti_needle d | head -20"
+    cmd, _, decision = verdict(command, env, tracked)
+    cases.append(("a recursive grep over a tracked-ignored tree is denied, not rewritten",
+                  cmd == "" and decision == "deny"))
+    text = reason(command, env, tracked)
+    cases.append(("the deny names the -uu form for ignored trees",
+                  "-uu" in text and "--max-count N" in text))
+    if rg_available():
+        done = run_rg("-uu", "-n", "ti_needle", "d", "--max-count", "20", cwd=tracked)
+        found = {line.replace("\\", "/").split(":")[0] for line in done.stdout.splitlines()}
+        cases.append(("the deny's rg -uu form finds the tracked file under the ignored path",
+                      "d/ign/forced.txt" in found))
+    else:
+        _platform_skip.skip("the deny's rg -uu form finds the tracked file under the ignored path",
+                            "no ripgrep on PATH and no embedded rg")
 
-    # Item 1: a file operand with --include is searched as the file.
-    # The targets are hooks and tools, never `.claude/tests/`: a consumer gitignores its proofs, and an older git's
-    # `--untracked` skips a tracked file a .gitignore rule matches.
-    target = ".claude/hooks/unbounded_scan_guard.py"
-    cmd, _, decision = verdict("grep -rn --include=*.py REWRITE_NOTE " + target + " .claude/tools", env, repo)
-    done = ran(cmd, repo) if cmd.startswith("git grep") else None
-    cases.append(("a file operand with --include is searched as the file, not <file>/**/*.py",
-                  done is not None and done.returncode == 0 and "REWRITE_NOTE" in done.stdout and decision == ""))
-
-    # Item 2: a wide shell glob stays short and still returns its matches.
-    cmd, _, decision = verdict("grep -rn --include=*.py REWRITE_NOTE tests/*.py hooks scripts",
-                               env, claude)
-    done = ran(cmd, claude) if cmd.startswith("git grep") else None
-    cases.append(("a wide glob operand rewrites under 30000 chars and returns the matches",
-                  0 < len(cmd) < 30000 and done is not None and "hooks/unbounded_scan_guard.py" in done.stdout))
-    cmd, _, decision = verdict("grep -rn REWRITE_NOTE tests/*.py hooks", env, claude)
-    cases.append(("a wide glob without --include also rewrites under 30000 chars",
-                  0 < len(cmd) < 30000 and "hooks/unbounded_scan_guard.py" in ran(cmd, claude).stdout))
-    cmd, _, decision = verdict("grep -rn foo tests/*.py hooks $(echo x)", env, claude)
-    cases.append(("a wide glob with a substitution operand stays denied", cmd == "" and decision == "deny"))
-
-    # Item 3: a directory inside another git repository runs as git -C <toplevel> grep.
-    other = os.path.realpath(tempfile.mkdtemp(prefix="usgnested_")).replace("\\", "/")
-    subprocess.run(["git", "-C", other, "init", "-q"], capture_output=True)
-    os.makedirs(other + "/sub")
-    with open(other + "/sub/a.txt", "w", encoding="utf-8") as handle:
-        handle.write("nested_needle\n")
-    with open(other + "/.gitignore", "w", encoding="utf-8") as handle:
-        handle.write("ign/\n")
-    os.makedirs(other + "/ign")
-    with open(other + "/ign/b.txt", "w", encoding="utf-8") as handle:
-        handle.write("nested_needle\n")
-    cmd, note, decision = verdict("grep -rln nested_needle %s/sub 2>/dev/null | head -5" % other, env, repo)
-    cases.append(("a nested-repo operand is rewritten to git -C <toplevel> grep --untracked",
-                  cmd.startswith("git -C %s grep --untracked" % other) and decision == "" and "git grep" in note
-                  and cmd.endswith("2>/dev/null | head -5")))
-    body = cmd.split(" 2>/dev/null")[0]
-    done = ran(body, repo) if cmd else None
-    cases.append(("the nested-repo rewrite finds the file", done is not None and "a.txt" in done.stdout))
-    cmd, _, decision = verdict("grep -rn nested_needle %s/sub %s/ign" % (other, other), env, repo)
-    cases.append(("a nested-repo operand that git ignores is not sent to git grep", "git -C" not in cmd))
-    cmd, _, decision = verdict("grep -rn nested_needle %s/sub .claude/hooks" % other, env, repo)
-    cases.append(("operands spanning two repositories stay denied", cmd == "" and decision == "deny"))
+    # The real checkout carries tracked-ignored files under `.claude/plans`; the deny covers them.
+    listing = subprocess.run(["git", "-C", repo, "ls-files", "-ci", "--exclude-standard", "--", ".claude/plans"],
+                             capture_output=True, text=True, timeout=60)
+    rows = listing.stdout.split() if listing.returncode == 0 else []
+    if rows:
+        cases.append(("the real checkout's tracked-ignored plans are behind the same deny",
+                      verdict("grep -rn x .claude/plans", env, repo)[2] == "deny"))
+        if rg_available():
+            done = run_rg("-uu", "--files", ".claude/plans", cwd=repo)
+            seen = {line.replace("\\", "/") for line in done.stdout.splitlines()}
+            cases.append(("the deny's -uu form reaches the real tracked-ignored tree, which git grep alone cannot",
+                          done.returncode == 0 and bool(seen & set(rows))))
+        else:
+            _platform_skip.skip("the deny's -uu form reaches the real tracked-ignored tree",
+                                "no ripgrep on PATH and no embedded rg")
     return cases
 
 
@@ -288,8 +295,8 @@ def main():
     cases.append(('a find inside a command substitution still warns on the scope axis',
                   'GITIGNORE-BLIND SCAN' in scan('f=$(find . -name "*.md")', env, session=SID + '-subst')))
 
-    cases += outside_git_cases(env)
-    cases += rewrite_reach_cases(env)
+    cases += deny_cases(env)
+    cases += tracked_ignored_deny_cases(env)
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

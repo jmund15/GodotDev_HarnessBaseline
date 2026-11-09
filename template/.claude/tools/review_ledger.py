@@ -167,6 +167,8 @@ import uuid
 from pathlib import Path
 from typing import NamedTuple
 
+import model_registry  # noqa: E402
+
 TOOLS_DIR = Path(__file__).resolve().parent
 CLAUDE_DIR = TOOLS_DIR.parent
 
@@ -179,7 +181,7 @@ REVIEW_REGISTRIES = ("review", "session_audit", "plan_check")
 SUBJECT_KINDS = ("session", "pr", "plan", "doc")
 OUTCOMES = ("findings", "clean", "not-reached", "incomplete", "blocked", "failed")
 COVERING_OUTCOMES = ("findings", "clean")
-EFFORT_ORDER = ("none", "low", "medium", "high", "xhigh", "max", "ultra")
+EFFORT_ORDER = ("none",) + model_registry.EFFORT_ORDER  # `none` ranks weakest: a mandate at `none` covers no rung seat
 # Sized for about 600 median-PR reviews before a rotation (sizing evidence: this comment as commit acb99030d
 # wrote it); a review that outgrows the cap costs a re-run, never a skipped review.
 MAX_BYTES = 16 * 1024 * 1024
@@ -270,14 +272,27 @@ def split_worktree(top: Path, path: str):
     return None
 
 
+def row_checkout(row: dict):
+    """The checkout a row recorded: None for a row written before the `repo` field, `.claude/worktrees/<name>` for a
+    linked worktree, `.` for the main checkout."""
+    repo = row.get("repo")
+    if not repo:
+        return None
+    parts = str(repo).replace("\\", "/").rstrip("/").split("/")
+    if parts[-3:-1] == [".claude", "worktrees"]:
+        return "/".join(parts[-3:])
+    return "."
+
+
 def row_blob(row: dict, path: str):
     """The blob `row` recorded for `path`. A worktree subject's row keys its files worktree-relative, so a
-    main-rooted `.claude/worktrees/<name>/<rest>` key falls back to `<rest>`; the compare against the current
+    main-rooted `.claude/worktrees/<name>/<rest>` key falls back to `<rest>` when the row recorded that worktree
+    or predates the `repo` field; a row from another checkout never credits it. The compare against the current
     blob stays the content check."""
     files = row.get("files") or {}
     blob = files.get(path)
     found = worktree_split(path)
-    if blob is None and found:
+    if blob is None and found and row_checkout(row) in (None, found[0]):
         blob = files.get(found[1])
     return blob
 
@@ -2538,7 +2553,7 @@ def _must_read_evidence(row: dict):
     return "observed" if row.get("reads") is not None else "self-reported"
 
 
-def _engine_seats(result: dict, where: str, pins=None, tiers=None, served=None, results=None) -> list[dict]:
+def _engine_seats(result: dict, where: str, pins=None, tiers=None, served=None, results=None, root=None) -> list[dict]:
     """One seat per engine row: `perAgent`, else a bounded return's `delivery.coverage.seats` when it holds
     every row. Each mandate token is the engine's final outcome; a token outside OUTCOMES exits 2. A seat's
     `targets` and `gaps` are the served row's whole lists from its journaled agent result when it has them,
@@ -2589,19 +2604,20 @@ def _engine_seats(result: dict, where: str, pins=None, tiers=None, served=None, 
             texts, whole = seat_row["gaps"], True
         status, evidence = row.get("status"), _must_read_evidence(seat_row)
         review_result = _import("review_result")
-        reads = seat_row.get("reads") if evidence == "observed" else review_result.claimed_reads(targets)
+        root = root or review_result.REPO  # the subject checkout the row records: its entries and reads are its paths
+        reads = seat_row.get("reads") if evidence == "observed" else review_result.claimed_reads(targets, root)
         if evidence == "observed":
             agent = (results or {}).get(label)
             gaps = agent.get("gaps", []) if isinstance(agent, dict) else []
-            _legal, _bad, unread, _notes = review_result.gap_verdict(gaps, seat_row["mustRead"], reads)
+            _legal, _bad, unread, _notes = review_result.gap_verdict(gaps, seat_row["mustRead"], reads, root)
             if unread and status != "failed":
                 print(f"seat {key}: its transcript does not cover must-read "
-                      f"{review_result.unread_text(seat_row['mustRead'], seat_row['reads'], unread) or 'entries'}"
+                      f"{review_result.unread_text(seat_row['mustRead'], seat_row['reads'], unread, root) or 'entries'}"
                       f"; recorded failed", file=sys.stderr)
                 status, mandates = "failed", {mandate: "failed" for mandate in mandates}
         seats.append({"seat": key, "status": status, "stopped": row.get("stoppedAt"),
                       "mustReadEvidence": evidence,
-                      "mustReadSpans": review_result.must_read_spans(seat_row.get("mustRead"), reads),
+                      "mustReadSpans": review_result.must_read_spans(seat_row.get("mustRead"), reads, root),
                       "capabilityPartial": row.get("capabilityPartial") is True,
                       "mandates": mandates, "targets": targets, "gaps": texts if whole else None,
                       "called": seat_row.get("called"),
@@ -2943,6 +2959,7 @@ def cmd_record(args, repo: Path) -> int:
         print("author model unknown: no readable session transcript (pass --author-model)", file=sys.stderr)
     recorded = _import("finding_bar").run_rigor(args.task, repo)
     base = {"v": 1, "stage": args.stage, "subject": args.subject, "head": ctx.head, "mergeBase": ctx.merge_base(),
+            "repo": (ctx.toplevel or repo).as_posix(),
             "premise_commits": premise_commits,
             "degraded": bool(args.degraded), "authorModel": author, "task": args.task,
             "session": os.environ.get("CLAUDE_CODE_SESSION_ID"), "noNewDecision": bool(args.no_new_decision),
@@ -2989,11 +3006,11 @@ def cmd_record(args, repo: Path) -> int:
                 result = dict(journal.get("result") or {})
                 if not isinstance(result.get("sources"), list):
                     result["sources"] = _journal_sources(agent_results)
-                seats = _engine_seats(result, f"run {args.run}", pins, tiers, served, agent_results)
+                seats = _engine_seats(result, f"run {args.run}", pins, tiers, served, agent_results, ctx.toplevel or repo)
             rid = args.run
         elif args.result:
             result = _load_json(args.result, "--result")
-            seats = _engine_seats(result, args.result)
+            seats = _engine_seats(result, args.result, root=ctx.toplevel or repo)
             rid = Path(args.result).stem
         else:
             result = _load_json(args.sidecar_result, "--sidecar-result")

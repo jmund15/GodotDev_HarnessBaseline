@@ -159,8 +159,17 @@ def pinned_manifest(root: Path, lock: dict) -> dict | None:
     sha = lock.get("synced_commit")
     if not sha or not clone.is_dir():
         return None
-    shown = subprocess.run(["git", "-C", str(clone), "show", f"{sha}:baseline.manifest.json"],
-                           capture_output=True, text=True, encoding="utf-8")
+    def show():
+        return subprocess.run(["git", "-C", str(clone), "show", f"{sha}:baseline.manifest.json"],
+                              capture_output=True, text=True, encoding="utf-8")
+
+    shown = show()
+    if shown.returncode != 0:
+        try:
+            subprocess.run(["git", "-C", str(clone), "fetch", "-q", "origin"], capture_output=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        shown = show()
     return json.loads(shown.stdout) if shown.returncode == 0 else None
 
 

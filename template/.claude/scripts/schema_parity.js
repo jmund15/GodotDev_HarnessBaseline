@@ -74,14 +74,103 @@ function diff(a, b, at, out) {
   }
 }
 
-const argPair = process.argv.slice(2)
+const flags = process.argv.slice(2).filter(a => a.startsWith('--'))
+const argPair = process.argv.slice(2).filter(a => !a.startsWith('--'))
 const pairs = argPair.length === 2 ? [argPair] : workflowPairs()
-if (argPair.length !== 0 && argPair.length !== 2) {
-  console.error('usage: node schema_parity.js [<script.js> <schema.json>]')
+if ((argPair.length !== 0 && argPair.length !== 2) || flags.some(f => f !== '--write' && f !== '--check')) {
+  console.error('usage: node schema_parity.js [--write|--check] [<script.js> <schema.json>]')
   process.exit(2)
 }
 
+const ENGINE_DIR = path.join(ROOT, '.claude', 'workflows')
+// The engines carrying shared blocks differ per project: a project may add one (key_reachability) or
+// omit one, and an absent workflow has no blocks to check.
+const BLOCK_ENGINES = ['dispatch', 'dispatch_chains', 'review_fanout', 'explore_fanout', 'idea_fanout',
+  'doc_architecture_audit', 'key_reachability', 'worklog_relevance']
+  .filter(e => fs.existsSync(path.join(ENGINE_DIR, e + '.js')))
+const ENGINE_SOURCE = path.join(ROOT, '.claude', 'scripts', 'engine_src', 'common.js')
+const BLOCK_BEGIN = '// ENGINE-BLOCK-BEGIN '
+const BLOCK_END = '// ENGINE-BLOCK-END '
+const TOP_DECL = /^(const|let|var|function|async function|class)\s+([A-Za-z_$][\w$]*)/
+const TOP_STOP = /^(const |let |var |function |async function |class |\/\/|[A-Za-z_$'"`\/]|\S)/
+
+function sourceBlocks() {
+  const lines = fs.readFileSync(ENGINE_SOURCE, 'utf8').split('\n')
+  const blocks = new Map()
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith(BLOCK_BEGIN)) continue
+    const name = lines[i].slice(BLOCK_BEGIN.length).trim()
+    const end = lines.indexOf(BLOCK_END + name, i)
+    if (end < 0) throw new Error('no ' + BLOCK_END + name + ' in engine_src/common.js')
+    blocks.set(name, lines.slice(i + 1, end))
+    i = end
+  }
+  return blocks
+}
+
+function declaredAt(lines, name) {
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(TOP_DECL)
+    if (!m || m[2] !== name) continue
+    let end = i + 1
+    while (end < lines.length && !(TOP_STOP.test(lines[end]) && !/^[}\])]/.test(lines[end]))) end++
+    while (end > i && lines[end - 1].trim() === '') end--
+    return { start: i, end }
+  }
+  return null
+}
+
+function fenceAt(lines, name) {
+  const begin = lines.indexOf(BLOCK_BEGIN + name)
+  if (begin < 0) return null
+  const end = lines.indexOf(BLOCK_END + name, begin)
+  if (end < 0) throw new Error('unclosed ' + BLOCK_BEGIN + name)
+  return { begin, end }
+}
+
+// Comments and blank lines are not drift: a helper's behavior is its code.
+const codeOf = lines => lines.filter(l => l.trim() !== '' && !/^\s*\/\//.test(l)).map(l => l.trimEnd()).join('\n')
+
+function blockPass(write) {
+  const source = sourceBlocks()
+  const problems = []
+  for (const file of BLOCK_ENGINES.map(e => e + '.js')) {
+    const abs = path.join(ENGINE_DIR, file)
+    let lines = fs.readFileSync(abs, 'utf8').split('\n')
+    let touched = false
+    for (const [name, text] of source) {
+      const fence = fenceAt(lines, name)
+      if (fence) {
+        if (codeOf(lines.slice(fence.begin + 1, fence.end)) === codeOf(text)) continue
+        if (write) {
+          lines = [...lines.slice(0, fence.begin + 1), ...text, ...lines.slice(fence.end)]
+          touched = true
+        } else {
+          problems.push('DIVERGED block ' + name + ' in ' + file + ': edit .claude/scripts/engine_src/common.js, then run schema_parity.js --write')
+        }
+        continue
+      }
+      const decl = declaredAt(lines, name)
+      if (!decl) continue
+      if (write) {
+        lines = [...lines.slice(0, decl.start), BLOCK_BEGIN + name, ...text, BLOCK_END + name, ...lines.slice(decl.end)]
+        touched = true
+      } else {
+        problems.push('UNFENCED block ' + name + ' in ' + file + ': run schema_parity.js --write')
+      }
+    }
+    if (touched) fs.writeFileSync(abs, lines.join('\n'))
+  }
+  return problems
+}
+
 let failed = 0
+if (flags.includes('--write')) blockPass(true)
+const blockProblems = blockPass(false)
+if (blockProblems.length) {
+  console.error(blockProblems.join('\n'))
+  failed = 1
+}
 for (const [js, json] of pairs) {
   const jsAbs = path.isAbsolute(js) ? js : path.join(ROOT, js)
   const jsonAbs = path.isAbsolute(json) ? json : path.join(ROOT, json)

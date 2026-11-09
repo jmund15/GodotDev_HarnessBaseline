@@ -73,7 +73,10 @@ set -uo pipefail
 
 SC_TRANSPORT="anthropic"   # the route, until the plan resolves below; the lib reads it at source time
 # shellcheck source=lib/sidecar_common.sh
-SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+_sc_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# An inherited SC_LAUNCHER_DIR that equals SC_LAUNCHER_DIR_RUN is a parent launcher's own export, not a caller's choice.
+case "$_sc_here" in */sidecar-snapshots) ;; *) if [ "${SC_LAUNCHER_DIR:-}" = "${SC_LAUNCHER_DIR_RUN:-}" ]; then unset SC_LAUNCHER_DIR; fi ;; esac
+SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$_sc_here}"
 . "$SC_LAUNCHER_DIR/lib/sidecar_common.sh"
 sc_reexec_snapshot "$@"   # run from a snapshot copy; see lib
 

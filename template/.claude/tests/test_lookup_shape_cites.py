@@ -80,6 +80,16 @@ def cited_anchors_resolve():
     assert re.search(r"^## Semantic Search MCP\b", text("CLAUDE.coding.md"), re.M), "CLAUDE.coding.md has no §Semantic Search MCP"
 
 
+@case
+def the_close_selects_this_proof_for_the_docs_it_reads():
+    sys.path.insert(0, str(CLAUDE / "scripts"))
+    import harness_tests
+    docs = [".claude/CLAUDE.core.md", ".claude/CLAUDE.coding.md"]
+    bound = harness_tests.bindings(str(ROOT), docs)
+    missing = [d for d in docs if not any(Path(p).name == Path(__file__).name for p in bound[d])]
+    assert not missing, missing
+
+
 def main():
     failed = 0
     for fn in CASES:

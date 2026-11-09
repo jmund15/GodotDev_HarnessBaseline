@@ -2069,7 +2069,7 @@ def _stub_validate_seams(publish, red_labels, log=None):
     second_call = threading.Event()
     calls = []
 
-    def fake_run(worktree, args, label):
+    def fake_run(worktree, args, label, env=None):
         log.append(label)
         calls.append(label)
         if len(calls) == 1:
@@ -2156,7 +2156,7 @@ def test_a_full_mode_validate_spawns_no_linux_preview_child() -> None:
     real_popen = subprocess.Popen
     with _fixture() as path:
         worktree = _validate_fixture(path)
-        publish._run_python_args = lambda worktree, args, label: f"{label} ok"
+        publish._run_python_args = lambda worktree, args, label, env=None: f"{label} ok"
         publish._battery_counts_match = lambda worktree: None
         subprocess.Popen = _RecordedProc
         try:
@@ -2444,8 +2444,44 @@ def test_binary_bytes_survive_the_publish_copy() -> None:
     assert publish._lf(b"a\r\nb\rc") == b"a\nb\nc"
 
 
+def test_only_the_full_battery_child_asks_for_reused_passes() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = _validate_fixture(path, with_tests=True)
+        seen: dict[str, dict] = {}
+
+        def fake_run(_worktree, _args, label, env=None):
+            seen[label] = dict(env or {})
+            return f"{label} ok"
+
+        publish._run_python_args = fake_run
+        publish._battery_counts_match = lambda worktree: None
+        publish._validate(worktree, [], True)
+        assert seen["harness_tests.py"].get("HARNESS_REUSE_PASSES") == "1", seen
+        seen.clear()
+        publish._validate(worktree, [{"relpath": ".claude/commands/doc.md", "kind": "lock", "op": "M"}], False)
+        assert "HARNESS_REUSE_PASSES" not in seen["harness_tests.py --proofs-for"], seen
+
+
+def test_classify_lists_exactly_what_the_candidates_command_lists():
+    """Step 1 refuses on the same candidates `baseline_sync.py candidates` prints: a never_ship path and
+    a row-less test of no shipped tool are no decision to make, so neither blocks a publish."""
+    publish = _load_publish()
+    with _fixture() as root:
+        _init_repo(root)
+        _write(root / ".claude" / "auto-memory" / "note.md", b"note\n")
+        _write(root / ".claude" / "tests" / "test_orphan.py", b"pass\n")
+        _write(root / ".claude" / "tools" / "new_tool.py", b"pass\n")
+        commit = _commit(root, "consumer")
+        lock = {"never_ship": [".claude/auto-memory/"], "files": {}}
+        found = publish._candidates({"kind": "commit", "repo": str(root), "commit": commit}, lock)
+        assert found == [".claude/tools/new_tool.py"], found
+
+
 def main() -> int:
     cases = [
+        test_classify_lists_exactly_what_the_candidates_command_lists,
+        test_only_the_full_battery_child_asks_for_reused_passes,
         test_binary_bytes_survive_the_publish_copy,
         test_publishing_a_binary_row_records_the_sha_of_its_bytes,
         test_unknown_check_bucket_fails_step_six_closed,
@@ -2509,6 +2545,7 @@ def main() -> int:
         test_publish_refuses_malformed_adaptation_contract_fresh_run,
         test_publish_resume_refuses_malformed_adaptation_contract,
         test_published_forked_row_records_tracked_not_forked,
+        test_published_local_row_records_tracked_not_local,
         test_scrub_honors_the_hits_a_judge_accepted_on_each_row,
         test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds,
         test_update_lock_keeps_a_verdict_judged_while_the_publish_ran,
@@ -2549,14 +2586,14 @@ def test_upstream_deletion_keeps_the_row_of_a_file_the_consumer_still_holds() ->
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_text("x\n", encoding="utf-8")
         _write_lock(root, {"schema": 2, "files": {
-            held_local: {"status": "local", "layer": "coding", "judged": None},
-            held_tracked: {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
-            gone: {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
+            held_local: {"status": "local", "layer": "coding"},
+            held_tracked: {"status": "tracked", "layer": "pure"},
+            gone: {"status": "tracked", "layer": "pure"},
         }})
         records = [{"kind": "lock", "relpath": rel, "op": "D"} for rel in (held_local, held_tracked, gone)]
         publish._update_lock(root, records, root, "after", {"kind": "commit"})
         files = _read_lock(root)["files"]
-        assert files.get(held_local) == {"status": "local", "layer": "coding", "judged": None}, files.get(held_local)
+        assert files.get(held_local) == {"status": "local", "layer": "coding"}, files.get(held_local)
         assert files.get(held_tracked, {}).get("status") == "local", files.get(held_tracked)
         assert "hash" not in files.get(held_tracked, {}), files.get(held_tracked)
         assert gone not in files, files.get(gone)
@@ -2608,9 +2645,9 @@ def test_worktree_deletion_leaves_every_row_for_the_consumer_pull() -> None:
 
     def rows() -> dict:
         return {"files": {
-            ".claude/commands/held_local.md": {"status": "local", "layer": "coding", "judged": None},
-            ".claude/commands/held_tracked.md": {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
-            ".claude/commands/gone.md": {"status": "tracked", "layer": "pure", "hash": "h", "judged": None},
+            ".claude/commands/held_local.md": {"status": "local", "layer": "coding"},
+            ".claude/commands/held_tracked.md": {"status": "tracked", "layer": "pure"},
+            ".claude/commands/gone.md": {"status": "tracked", "layer": "pure"},
         }}
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -2668,21 +2705,32 @@ def test_published_forked_row_records_tracked_not_forked() -> None:
     so the row is no longer a fork. Leaving `status: forked` there makes the next
     `check --strict` report `forked-upstream-moved`: the recorded `base` can no longer match a
     baseline that now carries this very content -- a clean publication that reads as drift."""
-    rel = ".claude/tools/fixture_forked.py"
+    _assert_published_row_records_tracked("forked")
+
+
+def test_published_local_row_records_tracked_not_local() -> None:
+    """A `local` row judged `push` ships upstream; left `local`, the next `check --strict`
+    reads it as local-shadows-upstream against the baseline that now carries it."""
+    _assert_published_row_records_tracked("local")
+
+
+def _assert_published_row_records_tracked(status: str) -> None:
+    rel = ".claude/tools/fixture_%s.py" % status
     baseline_content = b"value = 'old'\n"
     local_content = b"value = 'fixture'\n"
     with _fixture() as path:
         remote, baseline_commit, root = _seed_commit_fixture(path, rel, baseline_content, local_content)
         lock_path = root / ".claude" / "baseline.lock.json"
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
-        lock["files"][rel]["status"] = "forked"
-        lock["files"][rel]["base"] = baseline_commit
+        lock["files"][rel]["status"] = status
+        if status == "forked":
+            lock["files"][rel]["base"] = baseline_commit
         # Schema 2 is what makes the consequence reachable: on a v1-shaped lock `_v2_state`
         # short-circuits a forked row to plain `forked` (quiet), so the drift this case exists
         # to prevent would not appear and the case would prove only the row-dict change.
         lock["schema"] = 2
         _write(lock_path, (json.dumps(lock, indent=2) + "\n").encode())
-        _commit(root, "forked row judged push")
+        _commit(root, "%s row judged push" % status)
         source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
 
         publish = _load_publish()
@@ -2701,12 +2749,20 @@ def test_published_forked_row_records_tracked_not_forked() -> None:
         assert all(step["status"] == "green" for step in steps), steps
         assert _git(remote, "show", "main:" + "template/" + rel) != baseline_content
 
-        row = json.loads(lock_path.read_text(encoding="utf-8"))["files"][rel]
+        updated_lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        row = updated_lock["files"][rel]
         assert row["status"] == "tracked", (
-            "a published row now holds upstream's content; leaving it `forked` makes the "
-            "next check read forked-upstream-moved: %r" % (row,)
+            "a published row now holds upstream's content; leaving it `%s` makes the "
+            "next check read it as drift: %r" % (status, row)
         )
         assert "base" not in row, row
+        # Publish is the one tool that knows the row settled: its `push` verdict goes, so the
+        # next publish does not collect the same row again.
+        assert (row.get("judged") or {}).get("verdict") != "push", row
+        again = publish._collect(
+            root, {"kind": "commit", "repo": str(root), "commit": source_commit},
+            None, updated_lock, None, "unused")
+        assert again == [], again
 
 
 if __name__ == "__main__":

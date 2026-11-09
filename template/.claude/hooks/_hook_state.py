@@ -88,7 +88,7 @@ HARNESS_DIRS = (
 # Which harness paths are code (a script or a settings file): the proof runner's binding and the fold
 # checker's untested-code rule read this one predicate. A settings file is `settings.json` or any
 # `settings.<name>.json` (base, project, a layer overlay) except the user's gitignored `settings.local.json`.
-CODE_EXT = (".py", ".ps1", ".sh", ".js", ".mjs")
+CODE_EXT = (".py", ".ps1", ".sh", ".js", ".mjs", ".cjs")
 _SETTINGS_RE = re.compile(r"\.claude/settings(?:\.(?!local\.json$)[\w-]+)?\.json")
 
 
@@ -146,6 +146,7 @@ SKILL_REATTACH_CHARS = 20_000
 _COMPACTED_AT_KEY = "compacted_at"
 LADDER_SLICE_KEY = "ladder_slice_tiers"
 LADDER_RECEIPT_KEY = "ladder_receipt"
+LADDER_RECEIPT_CAP = 8
 LADDER_RECEIPT_FAILURE_KEY = "ladder_receipt_failure"
 BRIEF_TABLE_KEY = "brief_table_fits"
 _COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", "model_ladder_ready", LADDER_SLICE_KEY,
@@ -300,31 +301,70 @@ def stdout_sha256(text):
     return hashlib.sha256(normalize_stdout(text).encode("utf-8")).hexdigest()
 
 
-def stage_ladder_receipt(session_id, sha256, tiers):
+def stage_ladder_receipt(session_id, sha256, tiers, text=""):
     """Stage the text a `for-role` run is about to deliver, with the tiers it credits. The delivery hook
-    (`model_ladder_gate.mark_loaded`) credits them only when the delivered stdout hashes to this value.
-    One pending receipt per session: a later run replaces it. True when staged."""
+    (`model_ladder_gate.mark_loaded`) credits them when the run's own stdout appears whole inside the delivered
+    output, so one command joined with `&&` cannot void a run that reached context; the text is what containment
+    compares. Receipts are keyed by sha256: a later run stages beside an earlier one, and the earlier run's
+    delivery still credits it. The newest LADDER_RECEIPT_CAP are kept. True when staged."""
     if not session_id or not sha256:
         return False
 
     def update(state):
-        state[LADDER_RECEIPT_KEY] = {"sha256": sha256, "tiers": sorted({t for t in tiers if isinstance(t, str)}),
-                                     "at": time.time()}
+        receipts = _ladder_receipts(state)
+        receipts[sha256] = {"sha256": sha256, "text": normalize_stdout(text),
+                            "tiers": sorted({t for t in tiers if isinstance(t, str)}),
+                            "at": time.time()}
+        for stale in _newest_first(receipts)[LADDER_RECEIPT_CAP:]:
+            receipts.pop(stale)
+        state[LADDER_RECEIPT_KEY] = receipts
         return True
 
     written, _ = update_json_locked(state_path(session_id), update)
     return bool(written)
 
 
-def consume_ladder_receipt(session_id):
-    """Pop the pending receipt for `session_id` (atomic), or None when none is staged. A delivery attempt
-    consumes it whether it credits or not: a second payload cannot retry the first one's stage."""
+def consume_ladder_receipt(session_id, delivered=""):
+    """Pop the staged receipt that `delivered` carries: the newest whose run text appears whole in it, else the
+    newest staged one, so a delivery that carries none still records why it failed. None when none is staged.
+    A delivery attempt consumes its receipt whether it credits or not: a second payload cannot retry the first
+    one's stage."""
+    delivered_text = normalize_stdout(delivered)
+
     def update(state):
-        receipt = state.pop(LADDER_RECEIPT_KEY, None)
-        return receipt if isinstance(receipt, dict) else None
+        receipts = _ladder_receipts(state)
+        ordered = _newest_first(receipts)
+        match = next((key for key in ordered
+                      if normalize_stdout(receipts[key].get("text")) and
+                      normalize_stdout(receipts[key].get("text")) in delivered_text),
+                     ordered[0] if ordered else None)
+        if match is None:
+            state.pop(LADDER_RECEIPT_KEY, None)
+            return None
+        receipt = receipts.pop(match)
+        if receipts:
+            state[LADDER_RECEIPT_KEY] = receipts
+        else:
+            state.pop(LADDER_RECEIPT_KEY, None)
+        return receipt
 
     written, receipt = update_json_locked(state_path(session_id), update)
-    return receipt if written else None
+    return receipt if written and isinstance(receipt, dict) else None
+
+
+def _ladder_receipts(state):
+    """The staged receipts keyed by sha256. A receipt written before the keyed form was one dict that carried
+    its own sha256."""
+    raw = state.get(LADDER_RECEIPT_KEY)
+    if not isinstance(raw, dict):
+        return {}
+    if isinstance(raw.get("sha256"), str):
+        return {raw["sha256"]: raw}
+    return {key: value for key, value in raw.items() if isinstance(value, dict)}
+
+
+def _newest_first(receipts):
+    return sorted(receipts, key=lambda key: receipts[key].get("at") or 0, reverse=True)
 
 
 def fail_ladder_receipt(session_id, reason):

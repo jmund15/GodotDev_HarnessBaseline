@@ -124,8 +124,8 @@ def main():
         crash_free("a bounded Read of the same reference passes", rc, out, err, rc == 0)
         rc, out, err = run(call("Read", {"file_path": indexed}, agent_id="agent-9",
                                 agent_type="workflow-subagent"), env)
-        crash_free("a subagent deny cites guards/any.md and names the accessor next step",
-                   rc, out, err, rc == 2 and "guards/any.md" in err
+        crash_free("a subagent deny cites guards/common.md and names the accessor next step",
+                   rc, out, err, rc == 2 and "guards/common.md" in err
                    and "read a catalog with an accessor through it" in err
                    and "lens.py get --shared" in err)
         rc, out, err = run(call("Read", {"file_path": indexed, "offset": 1, "limit": 40},

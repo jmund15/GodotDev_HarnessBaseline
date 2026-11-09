@@ -5,10 +5,11 @@ dispatch_mechanism_guard (Workflow) and sidecar_dispatch_context (sidecar launch
 observed governing skills, orchestration and the ladder are in this context. skill_dispatch_gate derives the
 skills from the actual reading and project artifact ownership. The ladder is read in full, or printed as the per-tier slice
 (`model_registry.py for-role <tier>...`) for every tier the call implies; a deny that reaches the session
-carries the slice of the missing tiers itself and records them, and names each missing tier with its dispatch
-consumer. A slice credits only when its stdout reached context untouched: the Bash PostToolUse entry
-(`--bash-credit`) compares the delivered text to the hash the run staged. Class: process guard, blocking
-because the advisory that replaced it let the skip recur (instruction_quality §3)."""
+carries the whole `for-role` text for every tier the registry claims and records them all in one write, and
+names each missing tier with its dispatch consumer. A slice credits when the run's own stdout appears whole
+inside the delivered output: the Bash PostToolUse entry (`--bash-credit`) compares against the text the run
+staged, so a command joined with `&&` earns credit and one cut by a pipe, filter or redirect earns none.
+Class: process guard, blocking because the advisory that replaced it let the skip recur (instruction_quality §3)."""
 import json
 import os
 import re
@@ -57,8 +58,9 @@ def _full_read_succeeded(payload):
 
 def mark_loaded(payload):
     """Arm readiness from a delivery that reached context: a successful exact-path Read covering the whole
-    ladder, or a `for-role` run whose delivered stdout is the text it staged. A Bash result that was piped,
-    filtered, redirected, persisted, interrupted or failed credits nothing, and records why for the next deny."""
+    ladder, or a `for-role` run whose staged stdout appears whole inside the delivered output. A Bash result
+    that was piped, filtered, redirected, persisted, interrupted or failed credits nothing, and records why for
+    the next deny."""
     if not isinstance(payload, dict):
         return False
     if payload.get("tool_name") == "Bash":
@@ -128,6 +130,11 @@ def _delivery_failure(response, receipt):
     delivered = normalize_stdout(response.get("stdout"))
     if not delivered.strip():
         return "the run delivered no output"
+    run_text = normalize_stdout(receipt.get("text"))
+    if run_text:
+        if run_text not in delivered:
+            return "the run's output is not in the delivered text (piped, filtered or redirected)"
+        return None
     if stdout_sha256(delivered) != receipt.get("sha256"):
         return "the delivered text differs from the run's own output (piped, filtered or redirected)"
     return None
@@ -138,7 +145,9 @@ def _credit_delivered_slice(payload):
     session_id = payload.get("session_id") or ""
     if not session_id or not _invokes_for_role((payload.get("tool_input") or {}).get("command")):
         return False
-    receipt = consume_ladder_receipt(session_id)
+    response = payload.get("tool_response")
+    delivered = response.get("stdout") if isinstance(response, dict) else ""
+    receipt = consume_ladder_receipt(session_id, delivered or "")
     if not receipt:
         return False
     reason = _delivery_failure(payload.get("tool_response"), receipt)
@@ -190,18 +199,33 @@ def _call_tiers(tiers):
     return (sorted(named), consumers) if named else None
 
 
-def _embedded_slice(session_id, missing):
-    """The ladder slice for `missing`, recorded as loaded for the session, else None when it cannot be produced
-    or recorded (the deny then names the command and records nothing)."""
+def _embedded_slice(session_id):
+    """The whole `for-role` text for every tier the registry claims, recorded as loaded for all of them in one
+    write, else None when it cannot be produced or recorded (the deny then names the command and records
+    nothing). One write means a later call pinning a different tier is already covered. When the plan cannot be
+    resolved or the ladder cut fails, the ladder alone is embedded: the same doctrine, minus the room lines, and
+    the only text an unidentified session can be given."""
     try:
         tools = str(Path(__file__).resolve().parents[1] / "tools")
         if tools not in sys.path:
             sys.path.insert(0, tools)
         import model_registry
-        text = model_registry.ladder_slice(missing)
+        claimed = model_registry.claimed_tiers()
     except Exception:
         return None
-    return text if mark_ladder_slice(session_id, missing) else None
+    text = None
+    try:
+        text, ladder_error = model_registry.for_role_text(claimed)
+        if ladder_error:
+            text = None
+    except Exception:
+        text = None
+    if text is None:
+        try:
+            text = model_registry.ladder_slice(claimed)
+        except Exception:
+            return None
+    return text if mark_ladder_slice(session_id, claimed) else None
 
 
 def doctrine_check(payload, tiers=None, embed_slice=False):
@@ -216,8 +240,9 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
     The ladder is met by a full Read or by `model_registry.py for-role` for every tier the call implies.
     `tiers` is a zero-argument callable returning those canonical tiers, evaluated only when the full Read is
     absent. When it names none (absent, failing or empty) the call's tiers are unknown, so only the full Read meets
-    the ladder; with tiers known and `embed_slice` True, the deny ends with the slice of the uncovered ones and
-    records them, so the re-issued call passes. Only a caller whose deny text reaches the session's context passes
+    the ladder; with tiers known and `embed_slice` True, the deny ends with the whole `for-role` text for every tier
+    the registry claims and records them all in one write, so the re-issued call and a later call pinning a second
+    tier both pass. Only a caller whose deny text reaches the session's context passes
     True: the record is a side effect, and a slice recorded but never delivered lets the next call pass without the
     doctrine in context. By default, and when the slice cannot be produced, the deny names the slice command and
     records nothing."""
@@ -247,7 +272,7 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
             missing = [t for t in needed if t not in covered]
             if missing:
                 named = ', '.join(_tier_phrase(tier, consumers) for tier in missing)
-                slice_text = _embedded_slice(session_id, missing) if embed_slice else None
+                slice_text = _embedded_slice(session_id) if embed_slice else None
                 unmet.append(SLICE_BELOW_STEP.format(which=named) if slice_text
                              else SLICE_STEP.format(which=named, tiers=' '.join(missing)))
     if not unmet:

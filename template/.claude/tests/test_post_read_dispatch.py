@@ -134,6 +134,56 @@ def main():
     check("a bounded SKILL.md Read records nothing",
           r.returncode == 0 and not (partial.get("skills_loaded") or []), repr(partial))
 
+    # 3c. Advance notice at the first Read of a harness-edit-governed file, once per window.
+    marker_hook = os.path.join(HERE, "..", "hooks", "skill_load_marker.py")
+
+    def read_ctx(session, path, agent=""):
+        payload = {"tool_name": "Read", "session_id": session, "tool_input": {"file_path": path},
+                   "tool_response": {"content": "x"}}
+        if agent:
+            payload["agent_id"] = agent
+        r = run(json.dumps(payload), env)
+        ctx = ""
+        if r.stdout.strip():
+            doc = json.loads(r.stdout)
+            ctx = (doc.get("hookSpecificOutput") or {}).get("additionalContext") or ""
+        return r, [ln for ln in ctx.splitlines() if ln.startswith("Harness file")]
+
+    def load_skill(session, agent=""):
+        payload = {"tool_name": "Skill", "session_id": session,
+                   "tool_input": {"skill": "instruction_quality"}}
+        if agent:
+            payload["agent_id"] = agent
+        subprocess.run([sys.executable, marker_hook], input=json.dumps(payload),
+                       capture_output=True, text=True, timeout=60, env=env)
+
+    hook_read = os.path.join(tmp, ".claude", "hooks", "practice.py")
+    r, notes = read_ctx("prd0010", hook_read)
+    check("the first Read of a governed hook names the edit gate and reference/hooks.md",
+          r.returncode == 0 and len(notes) == 1 and "instruction_quality" in notes[0]
+          and "hooks.md" in notes[0] and "denies any edit" in notes[0], repr(notes))
+    check("the notice stays within its one-line budget", bool(notes) and len(notes[0]) <= 330,
+          repr(notes))
+    r, notes = read_ctx("prd0010", os.path.join(tmp, ".claude", "commands", "practice.md"))
+    check("a second governed Read in the same window is silent", r.returncode == 0 and not notes,
+          repr(notes))
+    r, notes = read_ctx("prd0013", os.path.join(tmp, ".claude", "commands", "practice.md"))
+    check("a command Read names reference/skills_and_commands.md",
+          len(notes) == 1 and "skills_and_commands.md" in notes[0], repr(notes))
+    load_skill("prd0011")
+    r, notes = read_ctx("prd0011", hook_read)
+    check("a Read with instruction_quality already loaded is silent", r.returncode == 0 and not notes,
+          repr(notes))
+    for session, rel in (("prd0012", ("plans", "x.md")), ("prd0015", ("auto-memory", "x.md"))):
+        r, notes = read_ctx(session, os.path.join(tmp, ".claude", *rel))
+        check("a %s Read emits no notice" % rel[0], r.returncode == 0 and not notes, repr(notes))
+    r, notes = read_ctx("prd0014", hook_read, agent="agent9")
+    check("a subagent's first governed Read gets its own notice",
+          len(notes) == 1 and "instruction_quality" in notes[0], repr(notes))
+    r, notes = read_ctx("prd0014", hook_read)
+    check("the parent thread's first governed Read still fires after the subagent's",
+          len(notes) == 1, repr(notes))
+
     # 4. Malformed payload: the dispatcher fails open.
     r = run("{not json", env)
     check("malformed payload exits 0 with an empty or valid hook payload",

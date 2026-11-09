@@ -28,14 +28,14 @@ async function run(script, args) {
   let result
   try {
     result = await new AsyncFunction('args', 'agent', 'parallel', 'phase', 'log', body(script))(
-      { __transport: HOST, ...args }, agent, parallel, () => {}, () => {})
+      require('./_engine_run').withKinds({ __transport: HOST, ...args }), agent, parallel, () => {}, () => {})
   } catch (e) {
     result = { crash: String((e && e.stack) || e) }
   }
   return { result, calls, prompts }
 }
 
-const job = (label, extra) => Object.assign({ label, promptPath: label + '.md', model: 'model-a', effort: 'low', agentType: 'general-purpose' }, extra)
+const job = (label, extra) => Object.assign({ label, promptPath: label + '.md', model: 'model-a', effort: 'low', kind: 'author' }, extra)
 const argsFor = (script, jobs, extra) => Object.assign({ spillDir: '.claude/scratch/s7/spill', contextPath: 'shared.md' },
   script === 'dispatch.js' ? { jobs } : { chains: [{ name: 'lane', jobs }] }, extra)
 const readLine = (p) => 'SHARED CONTEXT for this dispatch is at: ' + p + ' — read it with the Read tool FIRST'

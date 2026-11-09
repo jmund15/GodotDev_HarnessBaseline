@@ -178,7 +178,7 @@ def _writes_tracked(prompt_path):
 def author_writes(job):
     """Whether one declared job is an author that can change tracked files."""
     job = job or {}
-    return job.get("shape") == "author" and _writes_tracked(job.get("promptPath") or job.get("promptFile"))
+    return job.get("kind") == "author" and _writes_tracked(job.get("promptPath") or job.get("promptFile"))
 
 
 def writes(tool_name, tool_input):
@@ -221,9 +221,19 @@ def writes(tool_name, tool_input):
     return False
 
 
+# A native job names its tool inventory by `kind` alone (`guards/tool_profiles.json`); each retired key
+# names its replacement, and the engines and the hook refuse a job that still carries one.
+RETIRED_JOB_KEYS = {
+    "agentType": "the `kind` row sets the agent type",
+    "shape": "use `kind` (scout|lens|reviewer|author|judge)",
+    "readOnly": "a reviewer, scout, lens or judge job cannot write and an author job can: pick the kind",
+}
+
+
 def dispatch_jobs(payload):
-    """[{label, model, effort, agentType}] per job this call's ARGS declare, with the caller's literal
-    `model`/`effort` (None when omitted). No engine fills an omitted pin: each refuses the call."""
+    """[{label, model, effort, kind, ...}] per job this call's ARGS declare, with the caller's literal
+    `model`/`effort` (None when omitted). No engine fills an omitted pin: each refuses the call. `retired`
+    lists the job keys a kind replaced (`RETIRED_JOB_KEYS`) that the entry still carries."""
     tool = payload.get("tool_name")
     ti = payload.get("tool_input") or {}
     if tool == "Agent":
@@ -235,7 +245,8 @@ def dispatch_jobs(payload):
     def job(j, label_key, default_label):
         return {"label": str(j.get(label_key) or default_label), "model": j.get("model") or None,
                 "effort": j.get("effort") or None, "agentType": j.get("agentType") or None,
-                "shape": j.get("shape") or None, "railTier": j.get("railTier") or None,
+                "kind": j.get("kind") or None, "retired": [k for k in RETIRED_JOB_KEYS if k in j],
+                "railTier": j.get("railTier") or None,
                 "tools": j.get("tools") or None, "promptPath": j.get("promptPath") or None,
                 "prompt": j.get("prompt") or None, "contextFiles": j.get("contextFiles") or None}
 
@@ -373,29 +384,30 @@ def _tool_list(value):
 
 
 def profile_request(job):
-    """`{shape, add, remove, baseBuiltins}` a declared job asks for, or None when it asks for nothing.
+    """`{kind, add, remove, baseBuiltins}` a declared job asks for, or None when it asks for nothing.
 
-    Nothing declared is NOT the `any` default: a job that named no shape has no profile anybody
-    chose, and a reader must see that as absent rather than as a default that was applied.
+    Nothing declared is not a default: a job that named no kind and no delta has no profile anybody
+    chose, and a reader must see that as absent. A delta with no kind is returned with `kind` None, and
+    `resolve_request` refuses it.
 
-    `tools.base` carries an `arm` job's task built-in list — the arm row declares none, because its
-    built-ins come from the benchmark task, so a native job that wants an arm profile must say what
-    that task row is.
+    `tools.base` carries an `arm` job's task built-in list; `arm` is not a native kind, so a base with
+    a kind other than `arm` is refused at resolution.
     """
-    shape = str(job.get("shape") or "").strip() or None
+    kind = str(job.get("kind") or "").strip() or None
     add, remove = _delta(job.get("tools"))
     raw = job.get("tools") if isinstance(job.get("tools"), dict) else {}
     base = _tool_list(raw.get("base"))
-    if not shape and not add and not remove and not base:
+    if not kind and not add and not remove and not base:
         return None
-    return {"shape": shape, "add": add, "remove": remove, "baseBuiltins": base or None}
+    return {"kind": kind, "add": add, "remove": remove, "baseBuiltins": base or None}
 
 
 def agent_profile_request(tool_input):
-    """`{shape, add, remove}` from a standalone Agent prompt header, or None when absent.
+    """`{kind, add, remove}` from a standalone Agent prompt header, or None when absent.
 
     Raises ValueError on a header that is present but unusable: a malformed profile the caller
-    wrote must not be read as "no profile".
+    wrote must not be read as "no profile". A header that carries a delta but no `kind` is refused
+    by `resolve_request`.
     """
     prompt = str((tool_input or {}).get("prompt") or "")
     match = TOOL_PROFILE_HEADER.search(prompt)
@@ -408,26 +420,33 @@ def agent_profile_request(tool_input):
         raise ValueError("TOOL-PROFILE header is not JSON (%s): %s" % (exc, raw[:120]))
     if not isinstance(body, dict):
         raise ValueError("TOOL-PROFILE header must be an object: %s" % raw[:120])
-    shape = str(body.get("shape") or "").strip() or None
-    add, remove = _delta(body)
+    kind = str(body.get("kind") or "").strip() or None
+    add, remove = _delta({k: v for k, v in body.items() if k != "kind"})
     base = _tool_list(body.get("base"))
-    if not shape and not add and not remove and not base:
-        raise ValueError("TOOL-PROFILE header names no shape and no delta: %s" % raw[:120])
-    return {"shape": shape, "add": add, "remove": remove, "baseBuiltins": base or None}
+    if not kind and not add and not remove and not base:
+        raise ValueError("TOOL-PROFILE header names no kind and no delta: %s" % raw[:120])
+    return {"kind": kind, "add": add, "remove": remove, "baseBuiltins": base or None}
 
 
-def resolve_request(request, table=None, enforcement=None, candidates=None):
+def resolve_request(request, table=None, enforcement=None, candidates=None, route="engine"):
     """The resolved profile for a declared request, or a ValueError naming what is wrong.
 
-    An absent `shape` means the `any` row -- the shape a caller inherits when it names none --
-    while the REQUEST itself being absent is the caller's `None`, handled before this is reached.
+    A request with no `kind` is refused, whatever else it carries: no tool set is inferred from a
+    delta or from brief wording, and a job that writes is an author. A delta must have a covering
+    generated agent file (`tool_profiles.native_agent_type`), because `agent()` has no `tools` option.
     """
     tp = _tp()
-    profile, _spec, _keys = tp.resolve(
-        request.get("shape") or tp.load_table()["defaultShape"],
-        tools_csv=request.get("toolsCsv") or "",
-        add=request.get("add") or [], remove=request.get("remove") or [],
-        base_builtins=request.get("baseBuiltins") or None, table=table, candidates=candidates)
+    table = table or tp.load_table()
+    kind = request.get("kind")
+    if not kind:
+        raise ValueError("no kind: a job names one of %s (guards/tool_profiles.json); a tools delta "
+                         "adjusts a kind and never replaces it" % ", ".join(tp.public_kinds(table)))
+    profile, _spec, _keys = tp.resolve_kind(
+        kind, add=request.get("add") or [], remove=request.get("remove") or [], route=route, table=table,
+        base_builtins=request.get("baseBuiltins") or None, candidates=candidates,
+        tools_csv=request.get("toolsCsv") or "")
+    if route in ("engine", "agent") and profile.get("agentType"):
+        profile["agentType"] = tp.native_agent_type(profile, table)
     profile["enforcement"] = enforcement or INHERITED
     if profile["enforcement"] not in ENFORCEMENT_LABELS:
         raise ValueError("unknown enforcement %r (legal: %s)"
@@ -437,29 +456,6 @@ def resolve_request(request, table=None, enforcement=None, candidates=None):
     else:
         profile["effectiveMcp"] = ", ".join(profile.get("mcpServers") or [])
     return profile
-
-
-def profile_defaults(table=None, candidates=None):
-    """{shape: resolved profile} for every shape row, each marked `inherited`.
-
-    What a Workflow script reports for a stage it spawns on its OWN label: no caller declared a
-    profile for that child, so the honest value is its shape's row -- the same thing a native child
-    actually gets, which is the session's whole inherited inventory
-    (`enforcement: inherited`, `effectiveMcp: unknown/inherited`). `arm` is absent: its row holds no
-    built-ins, and only a benchmark task row can fill them, so a script that needs an arm reports
-    what it declared instead.
-    """
-    tp = _tp()
-    table = table or tp.load_table()
-    if candidates is None:
-        candidates = tp.load_registrations()
-    out = {}
-    for shape in sorted(table["shapes"]):
-        builtins = table["shapes"][shape].get("builtins") or []
-        if shape == "arm" or set(builtins) & set(tp.RESERVED_BUILTINS):
-            continue   # a reserved built-in stays off every Workflow job (tool_profiles.RESERVED_BUILTINS)
-        out[shape] = resolve_request({"shape": shape}, table=table, candidates=candidates)
-    return out
 
 
 def profile_line(label, profile):
@@ -480,7 +476,7 @@ def profile_line(label, profile):
     mode = profile.get("overrideMode") or ""
     mode = "" if mode in ("shape-default", "delta") else " (%s)" % mode
     return "  tools %s: %s %s %s \u00b7 %s%s%s" % (
-        label, profile.get("shape"), note, ",".join(profile.get("builtins") or []), mcp,
+        label, profile.get("kind"), note, ",".join(profile.get("builtins") or []), mcp,
         (" " + delta) if delta else "", mode)
 
 

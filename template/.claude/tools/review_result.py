@@ -11,6 +11,7 @@ import sys
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / ".claude/hooks"))
+import _win_path  # noqa: E402
 from _win_path import drive_path  # noqa: E402
 sys.path.insert(0, str(REPO / ".claude/tools"))
 import tool_profiles  # noqa: E402
@@ -170,7 +171,7 @@ def validate_review_jobs(jobs):
     for job in jobs:
         if not isinstance(job, dict) or not _text(job.get("label")):
             raise ValueError("review jobs need a nonempty label")
-        if tool_profiles.job_kind_shape(job) != "review":
+        if tool_profiles.kind_guard(job.get("kind")) != "review":
             raise ValueError(f"review job {job['label']} needs kind reviewer")
         mandates = job.get("mandates")
         if not isinstance(mandates, list) or not mandates or not all(_text(key) for key in mandates):
@@ -552,8 +553,8 @@ def spans_text(spans) -> str:
     return ", ".join(f"{a}-{'end' if b == math.inf else b}" for a, b in _merged(spans)) or "none"
 
 
-def claimed_reads(tools) -> list:
-    """`(path, spans)` per file a seat's own `checked.toolsUsed` entries read: the self-reported reads.
+def claimed_reads(tools, root=REPO) -> list:
+    """`(path, spans)` per file a seat's own `checked.toolsUsed` entries read under `root`: the self-reported reads.
 
     A shell entry that reads several files (`cat a && sed -n 1,5p b`) yields one pair per file, so no file is
     credited with another file's spans; every other entry yields its `(target_path, target_spans)`."""
@@ -567,29 +568,38 @@ def claimed_reads(tools) -> list:
         if tool.strip().lower() in SHELL_TOOLS:
             reads = _shell_reads(_TARGET_NOTE.sub("", name.strip()))
             if reads:
-                pairs.extend((target_path("Read:" + path), spans) for path, spans in reads)
+                pairs.extend((target_path("Read:" + path, root), spans) for path, spans in reads)
                 continue
-        pairs.append((target_path(item), target_spans(item)))
+        pairs.append((target_path(item, root), target_spans(item)))
     return pairs
 
 
-def must_read_spans(must_read, reads):
+def must_read_spans(must_read, reads, root=REPO):
     """Per must-read entry, `{"path", "lines", "read"}` with `read` the merged spans `reads` covered of it, clipped
     to lines 1 to `lines` so the record is finite JSON; None with no must-read list."""
     if must_read is None:
         return None
     return [{"path": entry["path"], "lines": entry["lines"],
-             "read": [[first, min(last, entry["lines"])] for first, last in _merged(entry_spans(entry, reads))
+             "read": [[first, min(last, entry["lines"])] for first, last in _merged(entry_spans(entry, reads, root))
                       if first <= entry["lines"]]}
             for entry in must_read]
 
 
+def repo_pair(path, root=REPO):
+    """`(checkout id, rel)` of a repo path `target_path` gave under `root`. A path under a linked worktree of
+    `root` names that worktree's checkout, so its own rows and reads match; any other absolute path names no file
+    of `root`."""
+    import review_ledger
+    found = review_ledger.split_worktree(Path(root), path) if path and not path.startswith("/") else None
+    if found:
+        return _win_path.identity(found[1], str(Path(root, found[0])))
+    return _win_path.identity(path, str(root))
+
+
 def same_path(a, b) -> bool:
-    """True when two `target_path` values name one file: equal in any letter case, or one ends with the other
-    on a `/` boundary, so a repo-relative entry matches the absolute path a seat read. `review_fanout.js`
-    `samePath` applies the same rule."""
-    a, b = a.lower(), b.lower()
-    return bool(a) and bool(b) and (a == b or a.endswith("/" + b) or b.endswith("/" + a))
+    """True when two `repo_pair` values name one file: one checkout, and paths equal in letter case. A read of
+    another checkout's file, even under the same relative path, names a different file."""
+    return _win_path.same(a, b)
 
 
 def gap_text(gap) -> str:
@@ -599,21 +609,23 @@ def gap_text(gap) -> str:
     return gap if _text(gap) else ""
 
 
-def _legal_gap(gap, must_read) -> bool:
+def _legal_gap(gap, must_read, root=REPO) -> bool:
     if not (isinstance(gap, dict) and set(gap) == {"item", "reason"} and _text(gap["item"])
             and gap["reason"] in GAP_REASONS):
         return False
-    item = target_path(f"Read:{gap['item']}")
-    return must_read is None or any(same_path(target_path(f"Read:{entry['path']}"), item) for entry in must_read)
+    item = repo_pair(target_path(f"Read:{gap['item']}", root), root)
+    return must_read is None or any(
+        same_path(repo_pair(target_path(f"Read:{entry['path']}", root), root), item) for entry in must_read)
 
 
-def entry_spans(entry, reads) -> list:
-    """Every span the `reads` pairs `(target_path, spans)` read of one must-read entry's file."""
-    path = target_path(f"Read:{entry['path']}")
-    return [span for read, spans in reads if same_path(path, read) for span in spans]
+def entry_spans(entry, reads, root=REPO) -> list:
+    """Every span the `reads` pairs `(target_path, spans)` read of one must-read entry's file. Entries and reads
+    are repo paths of `root`: a read of another checkout never credits an entry."""
+    path = repo_pair(target_path(f"Read:{entry['path']}", root), root)
+    return [span for read, spans in reads if same_path(path, repo_pair(read, root)) for span in spans]
 
 
-def gap_verdict(gaps, must_read, reads):
+def gap_verdict(gaps, must_read, reads, root=REPO):
     """(legal gaps, bad gaps, unread must-read paths, gap notes) for one seat's return.
 
     A legal gap is exactly `{"item", "reason"}` with a reason in GAP_REASONS and, when the seat has a
@@ -625,19 +637,20 @@ def gap_verdict(gaps, must_read, reads):
     the same rule."""
     legal, bad = [], []
     for gap in gaps if isinstance(gaps, list) else [gaps]:
-        (legal if _legal_gap(gap, must_read) else bad).append(gap)
+        (legal if _legal_gap(gap, must_read, root) else bad).append(gap)
     notes, bad = (bad, []) if must_read is not None else ([], bad)
-    named = [target_path(f"Read:{gap['item']}") for gap in legal]
+    named = [repo_pair(target_path(f"Read:{gap['item']}", root), root) for gap in legal]
     unread = [entry["path"] for entry in must_read or []
-              if not covers(entry_spans(entry, reads), entry["lines"])
-              and not any(same_path(target_path(f"Read:{entry['path']}"), path) for path in named)]
+              if not covers(entry_spans(entry, reads, root), entry["lines"])
+              and not any(same_path(repo_pair(target_path(f"Read:{entry['path']}", root), root), path)
+                          for path in named)]
     return legal, bad, unread, notes
 
 
-def unread_text(must_read, reads, unread) -> str:
+def unread_text(must_read, reads, unread, root=REPO) -> str:
     """Each unread entry with the lines its seat did read, e.g. `src/a.cs (read 1-437 of 900)`."""
     by_path = {entry["path"]: entry for entry in must_read or []}
-    return ", ".join(f"{path} (read {spans_text(entry_spans(by_path[path], reads))} of {by_path[path]['lines']})"
+    return ", ".join(f"{path} (read {spans_text(entry_spans(by_path[path], reads, root))} of {by_path[path]['lines']})"
                      for path in unread)
 
 
@@ -1031,10 +1044,11 @@ def ingest(seats):
         counts["rejected"] += rejected
         gaps = body.get("gaps", []) if body else None
         reads = seat.get("reads")
+        root = seat.get("root") or REPO  # the checkout the seat's entries and reads are repo paths of
         observed = reads is not None
         if not observed:
-            reads = claimed_reads(checked.get("toolsUsed") if checked else None)
-        legal, bad, unread, notes = gap_verdict(gaps, must_read, reads) if body else ([], [], [], [])
+            reads = claimed_reads(checked.get("toolsUsed") if checked else None, root)
+        legal, bad, unread, notes = gap_verdict(gaps, must_read, reads, root) if body else ([], [], [], [])
         if bad:
             errors.append(f"{len(bad)} gap entr{'y names' if len(bad) == 1 else 'ies name'} no "
                           f"{'listed ' if must_read is not None else ''}item with a legal reason "
@@ -1083,7 +1097,7 @@ def ingest(seats):
                          "gaps": legal if isinstance(gaps, list) else None, "gapNotes": notes, "unread": unread,
                          "mustReadEvidence": None if must_read is None
                          else "observed" if observed else "self-reported",
-                         "mustReadSpans": must_read_spans(must_read, reads) if body else None})
+                         "mustReadSpans": must_read_spans(must_read, reads, root) if body else None})
     return {"counts": counts, "coverage": coverage, "sources": sources}
 
 

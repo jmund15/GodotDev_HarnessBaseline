@@ -38,14 +38,13 @@ a moved base anyway, the private index still held the old blobs of the paths tha
 changed, so the commit reverts them: `resync` names each and refuses.
 The private index and its sidecar are deleted on success only.
 
-`INDEX_COMMIT_CLASSIFY_CMD` overrides the classifier command (default
-`python3 .claude/tools/baseline_sync.py classify`); the tool appends `--status local` and the new
-paths to it, so each new `.claude/` path lands as a project-local row.
+A new `.claude/` path gets no lock row here: an unjudged path needs none (X2 D1). A row already judged in the
+working lock travels with its path.
 
 Errors, each a printed `error: ...` and a non-zero exit: not inside a git repository; a `--name`
 that is not a plain fragment; a path outside the repo, or unknown to the working tree, HEAD and
 HEAD's lock; a submodule with no checkout; `baseline.lock.json` itself named as a path; a `--blob` argument without `=` or with an unreadable source; an unreadable
-`baseline.lock.json` or one absent from HEAD; a classifier failure; and on `resync`, a missing
+`baseline.lock.json` or one absent from HEAD; and on `resync`, a missing
 sidecar or a commit that did not land. A refused `stage` discards its private index and leaves the
 shared index untouched. Every refusal also prints the shape it accepts and one valid call
 (`accepts:`, `example:`).
@@ -54,7 +53,6 @@ import json
 import os
 import posixpath
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -72,8 +70,6 @@ from lock_merge import dump_lock  # noqa: E402
 
 INDEX_LOCK_TIMEOUT = 5.0
 LOCK_RELPATH = ".claude/baseline.lock.json"
-CLASSIFY_ENV = "INDEX_COMMIT_CLASSIFY_CMD"
-DEFAULT_CLASSIFY_CMD = "python3 .claude/tools/baseline_sync.py classify"
 COMMIT_TEMPLATE = "GIT_INDEX_FILE=%s git commit -F %s"
 BASE_NOTE = "base HEAD %s; the commit guard refuses this index once HEAD moves, so rerun stage then"
 
@@ -173,6 +169,30 @@ def _read_lock(path, label):
         raise IndexCommitError("could not parse %s (%s): %s" % (label, path, exc)) from exc
 
 
+def _update_working_lock(path, updater):
+    """Apply `updater` to the working lock under its JSON lock and write it through `dump_lock`, the
+    committed format (X2 D6). A second format would stage the whole lock on the next commit."""
+    handle = _hook_state._acquire_json_lock(str(path))
+    if not handle:
+        raise IndexCommitError("could not lock the working %s" % LOCK_RELPATH)
+    try:
+        work = _read_lock(path, "the working lock")
+        updater(work)
+        fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(dump_lock(work))
+            _hook_state.replace_path(temporary, str(path))
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+    finally:
+        _hook_state._release_json_lock(handle)
+
+
 def _head_lock(root, ref="HEAD"):
     rc, out, _ = _git(root, ["show", "%s:%s" % (ref, LOCK_RELPATH)], check=False)
     if rc != 0:
@@ -218,17 +238,6 @@ def _entry_specs(root, specs):
             oid = _git(root, ['rev-parse', '--verify', sha])[1].strip()
             entries[rel] = (mode, oid)
     return entries
-
-
-def _classify(root, index, paths):
-    command = shlex.split(os.environ.get(CLASSIFY_ENV) or DEFAULT_CLASSIFY_CMD)
-    env = dict(os.environ)
-    env["GIT_INDEX_FILE"] = str(index)
-    proc = subprocess.run(command + ["--status", "local"] + list(paths), cwd=str(root), env=env,
-                          capture_output=True)
-    if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", "replace").strip() or proc.stdout.decode("utf-8", "replace").strip()
-        raise IndexCommitError("classify failed for %s: %s" % (", ".join(paths), detail))
 
 
 def _lock_row(work, path):
@@ -316,13 +325,6 @@ def _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock
                      'after': after.get(rel, (None, None))[1],
                      'after_mode': after.get(rel, (None, None))[0]} for rel in paths}
 
-    existing_rows = set((work_lock.get("files") or {}))
-    new_rows = [rel for rel in paths
-                if rel.startswith(".claude/") and rel in after and rel not in existing_rows]
-    if new_rows:
-        _classify(root, index, new_rows)
-        work_lock = _read_lock(root / LOCK_RELPATH, "the working lock")
-
     blob = json.loads(json.dumps(head_lock))
     files = blob.setdefault("files", {})
     head_rows = set(head_lock.get("files") or {})
@@ -331,11 +333,9 @@ def _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock
         if rel not in after:
             if files.pop(rel, None) is not None or rel in head_rows:
                 removed.append(rel)
-        elif rel.startswith(".claude/") and rel not in head_rows:
-            row = _lock_row(work_lock, rel)
-            if row is None:
-                raise IndexCommitError("classify wrote no lock row for %s" % rel)
-            files[rel] = row
+        elif rel.startswith(".claude/") and rel not in head_rows and _lock_row(work_lock, rel) is not None:
+            # A row judged in the working lock travels with its path; an unjudged path has none (X2 D1).
+            files[rel] = _lock_row(work_lock, rel)
             added.append(rel)
         elif rel in head_rows and _lock_row(work_lock, rel) not in (None, files.get(rel)):
             # A row belongs to its path: a pull's new hash or a judge's verdict ships with the path's commit.
@@ -515,9 +515,7 @@ def cmd_resync(args):
                 files.pop(rel, None)
         return True
 
-    written, _ = _hook_state.update_json_locked(str(root / LOCK_RELPATH), updater, raising=True, pretty=True)
-    if not written:
-        raise IndexCommitError("could not update the working %s" % LOCK_RELPATH)
+    _update_working_lock(root / LOCK_RELPATH, updater)
 
     work_lock = _read_lock(root / LOCK_RELPATH, "the working lock")
     work_rows = work_lock.get("files") or {}

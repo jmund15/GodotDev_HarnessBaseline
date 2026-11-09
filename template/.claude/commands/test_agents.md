@@ -46,8 +46,8 @@ Workflow scripts cannot read files, so assemble everything here and pass it via 
 ```
 Workflow({
   scriptPath: ".claude/workflows/test_agents_fixtures.js",
-  args: { fixtures: [...], agentTemplates: {...}, checklists: {...}, findingSchema: "...",
-          effort: "<rung for fixtures that declare none>", validator: { model: "<row>", effort: "<rung>" },
+  args: { kind: "reviewer", fixtures: [...], agentTemplates: {...}, checklists: {...}, findingSchema: "...",
+          effort: "<effort for fixtures that declare none>", validator: { model: "<row>", effort: "<effort>" },
           measurement: "agent fixture smoke: <agent keys> at each fixture's declared model" }
 })
 ```

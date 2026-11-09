@@ -51,6 +51,12 @@ SUBAGENT_RESUME = ("Your context was compacted mid-task. The summary above is st
                    "checked with its exact text.")
 
 
+SAVE_NOW = ("[sidecar-save] Your context reached its compaction point, and compaction is held until you save. "
+            "Before any other read, write every finding so far, with its path, line and exact source text, into the "
+            "output file your brief names (create it, or add to it). Compaction runs after that write, and your next "
+            "context continues from that file, so anything left out of it must be read again.")
+
+
 def selected_rail(env) -> int:
     """The rail a launch runs: SIDECAR_COMPACTION_RAIL when it names one in RAILS, else DEFAULT_RAIL. The hook
     reads its text at each compaction, so a per-launch choice is what lets two rails run from one checkout."""

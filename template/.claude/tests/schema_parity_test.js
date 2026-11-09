@@ -24,6 +24,7 @@ function sandboxRun(mutate) {
     fs.mkdirSync(path.join(claude, 'schemas'), { recursive: true })
     fs.copyFileSync(SCRIPT, path.join(claude, 'scripts', 'schema_parity.js'))
     fs.cpSync(WORKFLOWS, path.join(claude, 'workflows'), { recursive: true })
+    fs.cpSync(path.join(TEMPLATE_CLAUDE, 'scripts', 'engine_src'), path.join(claude, 'scripts', 'engine_src'), { recursive: true })
     fs.copyFileSync(EVIDENCE, path.join(claude, 'schemas', 'evidence.json'))
     if (mutate) mutate(claude)
     return spawnSync(process.execPath, [path.join(claude, 'scripts', 'schema_parity.js')], { encoding: 'utf8' })
@@ -93,4 +94,16 @@ const engineNames = fs.readdirSync(WORKFLOWS)
   })
   assert.equal(r.status, 0, 'description-only exit: ' + r.status + ' stderr=' + r.stderr.slice(0, 400))
   console.log('ok   (e) a description-only difference is not a schema divergence')
+}
+
+// (f) a block engine the script lists but this project does not carry is skipped, not an error:
+// the engine set is per-project, so an absent workflow has no blocks to check.
+{
+  const victim = fs.readdirSync(WORKFLOWS).find(f => f.endsWith('.js')
+    && fs.readFileSync(path.join(WORKFLOWS, f), 'utf8').includes('// ENGINE-BLOCK-BEGIN '))
+  const r = sandboxRun(claude => {
+    fs.rmSync(path.join(claude, 'workflows', victim))
+  })
+  assert.equal(r.status, 0, 'absent block engine exit: ' + r.status + ' stderr=' + r.stderr.slice(0, 400))
+  console.log('ok   (f) a listed block engine absent from the tree is skipped')
 }

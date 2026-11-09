@@ -90,9 +90,9 @@
 #       `kinds`; the internal arm|bench-score|bench-review too). Omitting -G refuses (exit 2). The
 #       kind's row sets built-ins, MCP servers, disclosure and guard text, so -D refuses (only
 #       -G arm takes it) and an unsigned -t refuses (a signed delta stays legal). Exported as
-#       CLAUDE_CODE_SIDECAR_KIND; the hook inlines .claude/guards/any.md PLUS
+#       CLAUDE_CODE_SIDECAR_KIND; the hook inlines .claude/guards/common.md PLUS
 #       the kind's guard file on the child's SessionStart, assembled by
-#       tools/guard_text.py. any.md carries the rules binding every delegate, so
+#       tools/guard_text.py. common.md carries the rules binding every delegate, so
 #       it is concatenated rather than left as a pointer the child may not follow.
 #       Tier is detailed unless CLAUDE_CODE_SIDECAR_TIER says otherwise.
 #   -D  refused: disclosure follows the kind (scout bare, lens pointer, reviewer/author/judge full); only
@@ -157,7 +157,10 @@ BASE_URL="https://api.deepseek.com/anthropic"
 
 SC_TRANSPORT="deepseek"
 # shellcheck source=lib/sidecar_common.sh
-SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+_sc_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# An inherited SC_LAUNCHER_DIR that equals SC_LAUNCHER_DIR_RUN is a parent launcher's own export, not a caller's choice.
+case "$_sc_here" in */sidecar-snapshots) ;; *) if [ "${SC_LAUNCHER_DIR:-}" = "${SC_LAUNCHER_DIR_RUN:-}" ]; then unset SC_LAUNCHER_DIR; fi ;; esac
+SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$_sc_here}"
 . "$SC_LAUNCHER_DIR/lib/sidecar_common.sh"
 sc_reexec_snapshot "$@"   # run from a snapshot copy; see lib
 

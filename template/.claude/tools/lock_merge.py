@@ -35,9 +35,29 @@ def load(path):
     return json.loads(text, object_pairs_hook=_no_repeated_keys)
 
 
+def _value(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
 def dump_lock(lock):
-    """The lock's bytes. `index_commit` writes through this too, so neither tool reformats the other's rows."""
-    return (json.dumps(lock, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    """The lock's bytes: one top-level key per line and one `files` row per line, so a row edit is one
+    line. `index_commit` writes through this too, so neither tool reformats the other's rows."""
+    lines = ["{"]
+    keys = list(lock)
+    for index, key in enumerate(keys):
+        comma = "," if index < len(keys) - 1 else ""
+        value = lock[key]
+        if key != "files" or not isinstance(value, dict) or not value:
+            lines.append("  " + _value(key) + ": " + _value(value) + comma)
+            continue
+        lines.append('  "files": {')
+        rows = list(value.items())
+        for row_index, (path, row) in enumerate(rows):
+            row_comma = "," if row_index < len(rows) - 1 else ""
+            lines.append("    " + _value(path) + ": " + _value(row) + row_comma)
+        lines.append("  }" + comma)
+    lines.append("}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
 
 
 def merge_value(base, ours, theirs, where):

@@ -102,6 +102,11 @@ _STALE_PRICE_DAYS = 90
 # Declarable on a transport (gating every model it carries) or on a single model.
 _LEGAL_TRANSPORT_STATES = {"available", "unavailable"}
 
+# The one effort ladder, cheapest first. `none` is not a rung: each caller places it by its own rule.
+EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max", "ultra")
+# The one set of host workflow statuses that mean the run has finished.
+WORKFLOW_TERMINAL_STATES = ("completed", "failed", "killed", "cancelled", "error", "stopped")
+
 # WHAT an exclusion is about. `all` (the default) excludes the row everywhere. `sidecar` excludes
 # only the HOP -- the row stays dispatchable from its own transport, which is the case where the
 # objection is to the cross-transport call rather than to the model. Validated, because an
@@ -2886,6 +2891,45 @@ def _refuse_for_role(message):
     print(refusal(FOR_ROLE_ACCEPTS, FOR_ROLE_EXAMPLE), file=sys.stderr, end="")
 
 
+def claimed_tiers(data=None):
+    """Every canonical tier some registry row claims, in TIER_ORDER: the tiers `for-role` can print a table
+    for, and the set a dispatch deny embeds in one write."""
+    data = data if data is not None else load()
+    claimed = {tier for entry in data.get("models") or [] for tier in entry_tiers(entry)}
+    return [tier for tier in TIER_ORDER if tier in claimed]
+
+
+def for_role_text(tiers, data=None, seat=None, pay=False):
+    """Exactly the stdout `for-role <tiers>` prints: the ladder cut to those tiers, then the plan-filtered tier
+    table with its `route ...` header and `plan ...: left N%` room lines. The CLI and the dispatch deny share
+    this body, so a deny prints what a real run prints. Returns `(text, ladder_error)`: `ladder_error` names why
+    the ladder could not be cut, and the text is then the table alone, as the CLI prints that case. A refused
+    table request raises `RegistryError`, which the CLI prints on stderr before exiting 2."""
+    data = data if data is not None else load()
+    tiers = list(dict.fromkeys(canonical_tier(t) for t in tiers))
+    if not tiers:
+        raise RegistryError("for-role needs at least one tier")
+    if seat is None:
+        sys.path.insert(0, str(find_registry().parent.parent / "hooks"))
+        import _session_transport                                       # noqa: E402
+        seat = _session_transport.session_plan()
+    if seat not in data["transports"]:
+        raise RegistryError(f"unknown transport {seat!r}; registered: {', '.join(transports(data))}")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import provider_bands                                                # noqa: E402
+    got = provider_bands.tier_table(tiers, seat, data=data, pay=pay)
+    if got["refused"]:
+        raise RegistryError(got["refused"])
+    listed = {row.get("ladder") for group in got["groups"] for row in group["rows"]}
+    table = provider_bands.render_tier_table(got) + "\n"
+    try:
+        ladder = ladder_slice(tiers, data=data,
+                              only=None if got["plansLow"] or got.get("payOptions") else listed)
+    except RegistryError as err:
+        return table, str(err)
+    return ladder + table, None
+
+
 def _cmd_for_role(argv):
     """One plan-filtered tier table in the owner's order: surviving plans, then the rows fit for every
     requested tier; the ladder cut to those tiers prints above it. Facts only, never a pick, and the
@@ -2917,25 +2961,23 @@ def _cmd_for_role(argv):
     import provider_bands                                                # noqa: E402
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    got = provider_bands.tier_table(tiers, seat, data=data, pay="--pay" in argv)
-    if got["refused"]:
-        print(got["refused"], file=sys.stderr)
-        return 2
     if "--json" in argv:
+        got = provider_bands.tier_table(tiers, seat, data=data, pay="--pay" in argv)
+        if got["refused"]:
+            print(got["refused"], file=sys.stderr)
+            return 2
         print(json.dumps(got, indent=2))
         return 0
-    listed = {row.get("ladder") for group in got["groups"] for row in group["rows"]}
-    parts = []
     try:
-        parts.append(ladder_slice(tiers, data=data,
-                                  only=None if got["plansLow"] or got.get("payOptions") else listed))
+        text, ladder_error = for_role_text(tiers, data=data, seat=seat, pay="--pay" in argv)
     except RegistryError as err:
-        print(f"for-role: {err}; delivery not staged for the dispatch gate: read the ladder in full instead",
+        print(str(err), file=sys.stderr)
+        return 2
+    if ladder_error:
+        print(f"for-role: {ladder_error}; delivery not staged for the dispatch gate: read the ladder in full instead",
               file=sys.stderr)
-        sys.stdout.write(provider_bands.render_tier_table(got) + "\n")
+        sys.stdout.write(text)
         return 0
-    parts.append(provider_bands.render_tier_table(got) + "\n")
-    text = "".join(parts)
     staged = _stage_ladder_receipt(text, tiers)
     sys.stdout.write(text)
     if not staged:
@@ -3422,15 +3464,15 @@ def _cmd_review_state(argv):
 
 
 def _stage_ladder_receipt(text, tiers):
-    """Stage the hash of the stdout this run is about to deliver, with the tiers it prints. The Bash
-    PostToolUse entry (`model_ladder_gate.mark_loaded`) credits them only when that exact text reaches the
-    context; a pipe, filter, redirect or failed run leaves the tiers uncredited. True when staged."""
+    """Stage the stdout this run is about to deliver, with the tiers it prints. The Bash PostToolUse entry
+    (`model_ladder_gate.mark_loaded`) credits them when that text appears whole inside the delivered output;
+    an output cut by a pipe, `head`, a filter or a redirect leaves the tiers uncredited. True when staged."""
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session_id:
         return False
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
     import _hook_state
-    return _hook_state.stage_ladder_receipt(session_id, _hook_state.stdout_sha256(text), tiers)
+    return _hook_state.stage_ladder_receipt(session_id, _hook_state.stdout_sha256(text), tiers, text)
 
 
 def _cmd_ladder_slice(argv):

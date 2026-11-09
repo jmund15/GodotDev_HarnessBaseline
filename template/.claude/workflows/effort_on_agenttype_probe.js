@@ -34,10 +34,9 @@ for (const agentType of ['Explore', 'general-purpose']) {
 }
 
 // TOOL PROFILES — the inventory each cell of this probe launches with. A native child INHERITS the
-// session's MCP set, so every entry is `inherited` with effectiveMcp unknown, never a strict claim.
-// hooks/workflow_provider_guard.py resolves args.__toolProfileDefaults; the probe declares nothing.
-const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
-log('TOOL-PROFILES ' + JSON.stringify(Object.fromEntries(CELLS.map(c => [c.label, TOOLP.d[c.label] || TOOLP.f['any'] || null]))))
+// session's MCP set; each cell's own agentType is the variable, so an entry is a `measurement` row.
+const MEASURE = (c) => ({ agentType: c.agentType || 'default', model: c.model, enforcement: 'measurement' })
+log('TOOL-PROFILES ' + JSON.stringify(Object.fromEntries(CELLS.map(c => [c.label, MEASURE(c)]))))
 
 phase('Effort')
 

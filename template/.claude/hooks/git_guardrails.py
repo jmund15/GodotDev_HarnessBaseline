@@ -36,7 +36,6 @@ Wired in: settings.json hooks.PreToolUse with matcher "Bash|PowerShell".
 """
 
 import ast
-import hashlib
 import json
 import os
 import re
@@ -559,13 +558,14 @@ def _behavior_unchanged(repo_root, norm, git_env=None, *, ignore_strings=False):
 
 
 def _baseline_unchanged(repo_root, norm, git_env=None, source="index"):
-    """True when the published copy equals the `tracked` row of the published baseline lock:
-    adopted or pulled baseline content, authored and owed its proof upstream.
+    """True when the published copy equals the `tracked` row's upstream commit: adopted or pulled
+    baseline content, authored and owed its proof upstream.
 
     `source` is `commit_source`'s: an index commit publishes the staged lock and copy, a pathspec or `-a`
-    commit the working ones, so a pull committed by pathspec is judged by the lock it brings. The hash is
-    the lock's: sha256 of the LF-normalized bytes (`tools/baseline_sync.py` `sha`). An unknown source, a
-    missing or unparseable lock, a row that is not `tracked`, or a differing copy reads as authored here.
+    commit the working ones, so a pull committed by pathspec is judged by the lock it brings. The row's
+    `base` (else the lock's `synced_commit`) names that commit, read from the cached baseline checkout.
+    An unknown source, a missing or unparseable lock, a row that is not `tracked`, a missing cache, or a
+    differing copy reads as authored here.
     """
     def read(rel):
         if source == "index":
@@ -581,13 +581,25 @@ def _baseline_unchanged(repo_root, norm, git_env=None, source="index"):
         return False
     lock = read(".claude/baseline.lock.json")
     try:
-        row = json.loads(lock)["files"][norm] if lock else None
+        parsed = json.loads(lock) if lock else None
+        row = parsed["files"][norm]
     except (ValueError, KeyError, TypeError):
         return False
-    if not isinstance(row, dict) or row.get("status") != "tracked" or not row.get("hash"):
+    if not isinstance(row, dict) or row.get("status") != "tracked":
+        return False
+    commit = row.get("base") or parsed.get("synced_commit")
+    cache = os.path.join(repo_root, ".claude", ".cache", "baseline-repo")
+    if not commit or not os.path.isdir(cache):
+        return False
+    try:
+        result = subprocess.run(["git", "-C", cache, "show", f"{commit}:template/{norm}"],
+                                capture_output=True, timeout=30, env=git_environ(git_env))
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
         return False
     copy = read(norm)
-    return copy is not None and hashlib.sha256(copy).hexdigest() == row["hash"]
+    return copy is not None and copy == result.stdout.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 def _skill_verdict(session_id, touched):

@@ -37,7 +37,7 @@ def cases(root):
     gone_brief = write("gone_plan_brief.md", "<!-- lens brief: planted -->\n> Sweep file: `"
                        + gone_sweep.as_posix() + "`. Grep that file for the surfaces you judge.\n")
     def job(prompt, subjects, **fields):
-        return {"label": "seat", "shape": "review", "promptPath": str(prompt),
+        return {"label": "seat", "kind": "reviewer", "promptPath": str(prompt),
                 "mustRead": [{"path": str(p), "lines": 1} for p in subjects], **fields}
     return [
         ("raw review with no declared sweep", job(raw, [meta]), False),
@@ -49,8 +49,8 @@ def cases(root):
         ("declared sweep without a lens brief header", job(noheader, [meta]), True),
         ("declared sweep, stale content hash", job(stale, [stale_plan]), True),
         ("declared sweep naming a subject that is gone", job(gone_brief, [root / "gone-plan.md"]), True),
-        ("declared citer seat with no swept subject is not checked", job(raw, [meta], shape="author", key="plc-doctrine-consistency"), False),
-        ("non-review without a citer lens", job(raw, [meta], shape="author"), False),
+        ("declared citer seat with no swept subject is not checked", job(raw, [meta], kind="author", key="plc-doctrine-consistency"), False),
+        ("non-review without a citer lens", job(raw, [meta], kind="author"), False),
     ]
 
 

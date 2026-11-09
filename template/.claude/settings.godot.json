@@ -23,6 +23,16 @@
           }
         ],
         "matcher": "mcp__godot__.*"
+      },
+      {
+        "hooks": [
+          {
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/runtime_mcp_worktree_guard.py\"",
+            "timeout": 30,
+            "type": "command"
+          }
+        ],
+        "matcher": "mcp__godot__run_project|mcp__godot__attach_project"
       }
     ],
     "SessionStart": [

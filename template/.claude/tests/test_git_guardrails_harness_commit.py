@@ -1266,17 +1266,32 @@ def missing_cwd_cases():
     return failures
 
 
+def baseline_cache(repo, rel, content):
+    """The cached baseline checkout the guard reads a row's upstream copy from: a git repo at
+    `.claude/.cache/baseline-repo` whose `template/<rel>` holds `content`. Returns the commit."""
+    cache = os.path.join(repo, ".claude", ".cache", "baseline-repo")
+    os.makedirs(cache, exist_ok=True)
+    git(cache, ["init", "-q"])
+    git(cache, ["config", "user.email", "t@t.example"])
+    git(cache, ["config", "user.name", "t"])
+    write(cache, "template/" + rel, content)
+    git(cache, ["add", "-A"])
+    git(cache, ["commit", "-q", "-m", "baseline"])
+    return git(cache, ["rev-parse", "HEAD"]).strip()
+
+
 def baseline_owned_cases():
     """A hook committed exactly as the baseline lock records it was authored (and owes its proof) upstream."""
-    import hashlib
     failures = []
     synced = "x = 1\n"
 
     def lock_repo(status="tracked", content=synced):
         repo = make_repo()
-        row = {"status": status, "layer": "pure", "hash": hashlib.sha256(synced.encode()).hexdigest()}
+        write(repo, ".gitignore", ".claude/.cache/\n")
+        commit = baseline_cache(repo, ".claude/hooks/synced_hook.py", synced)
+        row = {"status": status, "layer": "pure"}
         write(repo, ".claude/baseline.lock.json",
-              json.dumps({"schema": 2, "files": {".claude/hooks/synced_hook.py": row}}))
+              json.dumps({"schema": 2, "synced_commit": commit, "files": {".claude/hooks/synced_hook.py": row}}))
         write(repo, ".claude/hooks/synced_hook.py", content)
         git(repo, ["add", "-A"])
         return repo
@@ -1300,9 +1315,11 @@ def baseline_owned_cases():
 
     def dense_repo(content):
         repo = make_repo()
-        row = {"status": "tracked", "layer": "pure", "hash": hashlib.sha256(dense_md.encode()).hexdigest()}
+        write(repo, ".gitignore", ".claude/.cache/\n")
+        commit = baseline_cache(repo, ".claude/hooks/guide.md", dense_md)
+        row = {"status": "tracked", "layer": "pure"}
         write(repo, ".claude/baseline.lock.json",
-              json.dumps({"schema": 2, "files": {".claude/hooks/guide.md": row}}))
+              json.dumps({"schema": 2, "synced_commit": commit, "files": {".claude/hooks/guide.md": row}}))
         write(repo, ".claude/hooks/guide.md", content)
         git(repo, ["add", "-A"])
         return repo
@@ -1317,12 +1334,8 @@ def baseline_owned_cases():
 
     # A pull commit: HEAD holds the old row and file, the worktree the pulled ones, nothing staged.
     repo = dense_repo("old\n")
-    write(repo, ".claude/baseline.lock.json", json.dumps({"schema": 2, "files": {".claude/hooks/guide.md": {
-        "status": "tracked", "layer": "pure", "hash": hashlib.sha256(b"old\n").hexdigest()}}}))
     git(repo, ["add", "-A"])
     git(repo, ["commit", "-q", "-m", "adopt"])
-    write(repo, ".claude/baseline.lock.json", json.dumps({"schema": 2, "files": {".claude/hooks/guide.md": {
-        "status": "tracked", "layer": "pure", "hash": hashlib.sha256(dense_md.encode()).hexdigest()}}}))
     write(repo, ".claude/hooks/guide.md", dense_md)
     verdict, text = run_hook("git commit -F msg -- .claude/baseline.lock.json .claude/hooks/guide.md", repo)
     failures.append(case("B7 a pathspec pull commit judges pulled rows by the worktree lock: no density advisory",

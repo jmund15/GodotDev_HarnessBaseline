@@ -1602,6 +1602,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/guards/common.godot.md",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/guards/common.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/guards/review.md",
       "layer": "pure",
       "sync": "auto"
@@ -1643,11 +1653,6 @@
     },
     {
       "path": ".claude/hooks/_bounded_run.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/hooks/_brief_coverage.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -1967,6 +1972,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/login_parity_check.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/memory_hits_logger.py",
       "layer": "pure",
       "sync": "auto"
@@ -2134,6 +2144,11 @@
     {
       "path": ".claude/hooks/running_script_edit_guard.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/runtime_mcp_worktree_guard.py",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -2687,6 +2702,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/scripts/engine_src/common.js",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/scripts/engine_userdata.py",
       "layer": "godot",
       "sync": "auto"
@@ -2719,6 +2739,11 @@
     {
       "path": ".claude/scripts/harness_tests.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/land_run.ps1",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -2758,6 +2783,11 @@
     },
     {
       "path": ".claude/scripts/opencode_sidecar.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/scripts/rail_battery/probes.json",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3502,7 +3532,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/_engine_masks.js",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/_engine_run.js",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/_git_bash.js",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3602,6 +3642,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/dispatch_chains_transport_test.js",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/dispatch_native_fields_test.js",
       "layer": "pure",
       "sync": "auto"
@@ -3628,6 +3673,11 @@
     },
     {
       "path": ".claude/tests/dispatch_verifier_note_test.js",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/doc_architecture_audit_claims_test.js",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3908,6 +3958,46 @@
     },
     {
       "path": ".claude/tests/fixtures/review_gap_only_seat_return.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/sidecar_journal/failed_launch/failed.record.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/sidecar_journal/failed_launch/failed.record.json.exit",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/sidecar_journal/failed_launch/failed.record.json.journal.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/sidecar_journal/failed_launch/failed.record.json.pid",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.exit",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.out",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.pid",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4657,6 +4747,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_exhausted_marker.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_extract_numbers.py",
       "layer": "pure",
       "sync": "auto"
@@ -4789,6 +4884,11 @@
     {
       "path": ".claude/tests/test_git_guardrails_owner_discard.py",
       "layer": "coding",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_git_guardrails_revert_lane.py",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -4992,6 +5092,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_land_run.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_land_watch.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_large_read_reminder.py",
       "layer": "pure",
       "sync": "auto"
@@ -5057,6 +5167,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_login_parity_check.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_lookup_shape_cites.py",
       "layer": "godot",
       "sync": "auto"
@@ -5103,6 +5218,11 @@
     },
     {
       "path": ".claude/tests/test_model_registry_capacity.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_model_registry_for_role.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5163,6 +5283,11 @@
     },
     {
       "path": ".claude/tests/test_opencode_refresh_models.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_opencode_sidecar_check.sh",
       "layer": "pure",
       "sync": "auto"
     },
@@ -5527,6 +5652,16 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_regression_gate_reuse.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_regression_gate_verdicts.ps1",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_restate_scan_contract.py",
       "layer": "pure",
       "sync": "auto"
@@ -5657,6 +5792,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_run_test_suite_userdir.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_runaway_scan_reaper_lock.py",
       "layer": "pure",
       "sync": "auto"
@@ -5664,6 +5804,11 @@
     {
       "path": ".claude/tests/test_running_script_edit_guard.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_runtime_mcp_worktree_guard.py",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -5907,12 +6052,22 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_fanout.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_fanout_admission.py",
       "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tests/test_sidecar_fanout_chains.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_sidecar_fanout_detach.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -6072,6 +6227,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_sidecar_tool_profiles.sh",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_sidecar_tools_limit.sh",
       "layer": "pure",
       "sync": "auto"
@@ -6154,6 +6314,11 @@
     {
       "path": ".claude/tests/test_subsys.py",
       "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_suite_watchdog.py",
+      "layer": "godot",
       "sync": "auto"
     },
     {
@@ -6452,6 +6617,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_wide_test_guard.py",
+      "layer": "godot",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_wide_test_guard_contract.py",
       "layer": "godot",
       "sync": "auto"
@@ -6507,11 +6677,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tests/test_workflow_provider_guard_lean_loaded.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/tests/test_workflow_provider_guard_measurement.py",
       "layer": "pure",
       "sync": "auto"
@@ -6528,6 +6693,11 @@
     },
     {
       "path": ".claude/tests/test_workflow_provider_guard_repo_root.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_workflow_provider_guard_returns.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -6563,6 +6733,11 @@
     },
     {
       "path": ".claude/tests/test_yt_transcript.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/workflow_amend_line_test.js",
       "layer": "pure",
       "sync": "auto"
     },
@@ -6722,6 +6897,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/exhausted_marker.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/extract_numbers.py",
       "layer": "pure",
       "sync": "auto"
@@ -6788,6 +6968,11 @@
     },
     {
       "path": ".claude/tools/ladder_prose_check.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/land_watch.py",
       "layer": "pure",
       "sync": "auto"
     },

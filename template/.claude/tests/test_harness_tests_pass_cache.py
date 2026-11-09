@@ -23,6 +23,8 @@ import threading
 import time
 from contextlib import redirect_stdout
 
+# A battery run that reuses passes exports this to every proof; each case here sets it only where it means to.
+os.environ.pop("HARNESS_REUSE_PASSES", None)
 _SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
 sys.path.insert(0, _SCRIPTS_DIR)
 import harness_tests  # noqa: E402
@@ -175,6 +177,24 @@ def case_opt_outs():
     finally:
         del os.environ["HARNESS_SLOT_DIR"]
     check("the full battery ignores the cache", runs(counter) == 3, "runs=%d" % runs(counter))
+
+
+def case_the_full_battery_reuses_recorded_passes_when_asked():
+    repo, proof, counter = make_repo()
+    os.environ["HARNESS_SLOT_DIR"] = os.path.join(repo, "slots")
+    os.environ["HARNESS_REUSE_PASSES"] = "1"
+    out = io.StringIO()
+    try:
+        with redirect_stdout(io.StringIO()):
+            harness_tests.run_all(repo)
+        with redirect_stdout(out):
+            harness_tests.run_all(repo)
+    finally:
+        del os.environ["HARNESS_REUSE_PASSES"]
+        del os.environ["HARNESS_SLOT_DIR"]
+    check("a full battery with HARNESS_REUSE_PASSES reuses a recorded pass",
+          runs(counter) == 1 and "reused from the pass cache" in out.getvalue(),
+          "runs=%d out=%r" % (runs(counter), out.getvalue()[-300:]))
 
 
 def case_deadline_skips_and_blocks_the_stamp():
@@ -473,6 +493,21 @@ def case_a_missing_recorder_records_no_observed_key():
     row = (harness_tests._pass_cache(repo, [proof]).variants(os.path.join(repo, ".claude/tests/test_alpha.py")) or [{}])[0]
     check("a run whose recorder never loaded records no observed key", "okey" not in row and row.get("key"),
           "row=%s" % sorted(row))
+
+
+def case_a_pass_with_no_observed_reach_never_reuses():
+    """A Python proof whose run dropped the read recorder recorded no manifest. Its static key is no proof of
+    what the pass read, so the next run, with the recorder back, must rerun it."""
+    repo, proof, counter = make_repo()
+    saved = harness_tests._RECORDER_DIR
+    harness_tests._RECORDER_DIR = os.path.join(repo, "no_such_recorder")
+    try:
+        run(repo, [proof], {"PYTHONPATH": ""})
+    finally:
+        harness_tests._RECORDER_DIR = saved
+    run(repo, [proof])
+    check("a pass that recorded no manifest reruns on the next run", runs(counter) == 2,
+          "runs=%d" % runs(counter))
 
 
 def case_a_close_checkout_pass_outlives_its_removed_checkout():
@@ -1156,6 +1191,7 @@ def main():
     case_reuse_and_invalidation()
     case_failure_is_never_reused()
     case_opt_outs()
+    case_the_full_battery_reuses_recorded_passes_when_asked()
     case_deadline_skips_and_blocks_the_stamp()
     case_slots()
     case_a_proof_never_inherits_the_callers_session_identity()
@@ -1170,6 +1206,7 @@ def main():
     case_an_unrecorded_child_keys_its_script_statically()
     case_git_on_the_real_repo_keys_its_state()
     case_a_missing_recorder_records_no_observed_key()
+    case_a_pass_with_no_observed_reach_never_reuses()
     case_two_checkouts_keep_their_own_passes()
     case_a_close_checkout_pass_outlives_its_removed_checkout()
     case_the_rows_are_parsed_once_until_the_file_changes()

@@ -49,7 +49,7 @@ check "empty list stays empty"               ""               "$(builtin_for "")
 # --- MCP config, against a hermetic fixture config dir (user server, installed plugin) and workdir (.mcp.json)
 CFG="$WORK/cfg"; PLUG="$WORK/plug/semantic-search"; mkdir -p "$CFG/plugins" "$PLUG"
 PLUG_NATIVE="$(cygpath -m "$PLUG" 2>/dev/null || printf '%s' "$PLUG")"   # installed_plugins.json holds native paths
-printf '%s' '{"mcpServers":{"godot":{"command":"node","args":["g.js"]},"ai-worker":{"command":"aiw"}},"projects":{}}' > "$CFG/.claude.json"
+printf '%s' '{"mcpServers":{"godot":{"command":"node","args":["g.js"]},"ai-worker":{"command":"aiw"},"git":{"command":"gr"}},"projects":{}}' > "$CFG/.claude.json"
 printf '%s' '{"mcpServers":{"semantic-search":{"command":"node","args":["${CLAUDE_PLUGIN_ROOT}/bin/server.js"]}}}' > "$PLUG/.mcp.json"
 printf '{"version":2,"plugins":{"semantic-search@dreb":[{"scope":"user","installPath":"%s"}]}}' "$PLUG_NATIVE" > "$CFG/plugins/installed_plugins.json"
 printf '%s' '{"mcpServers":{"projsrv":{"command":"p"}}}' > "$WORK/.mcp.json"

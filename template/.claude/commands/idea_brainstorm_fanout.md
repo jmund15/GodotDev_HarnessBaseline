@@ -68,6 +68,7 @@ The lens *keys* and *axis* change per cluster; the rubric (orthogonal, spanning,
 Workflow({
   scriptPath: ".claude/workflows/idea_fanout.js",
   args: {
+    kind: "lens",
     contextPrefix: "<the Step-0 CONTEXT as ONE flat string>",
     generators: [
       { key: "canon-import",        instr: "<mandate only>", model: "<row>", effort: "<effort>", tier: "architect" },

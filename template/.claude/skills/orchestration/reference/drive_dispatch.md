@@ -2,7 +2,7 @@
 
 Read when an executor's slice needs a review before the next slice, when choosing who drafts a plan, or when splitting work over disjoint units (`orchestration` §11 points here).
 
-**Continue file.** A dispatched executor whose slice needs a review before the next slice writes its slice report and diff stat to a file and waits for the parent's continue file in one foreground until-loop call (recipe in `guards/any.md`), because a returned Workflow child cannot be resumed.
+**Continue file.** A dispatched executor whose slice needs a review before the next slice writes its slice report and diff stat to a file and waits for the parent's continue file in one foreground until-loop call (recipe in `guards/common.md`), because a returned Workflow child cannot be resumed.
 
 **Plan drafts.** Dispatch the plan draft to an architect-tier arm in a multi-Part chain, or when the session model sits above the architect tier on the ladder. A standalone Part on an architect-tier session drafts inline: dispatching your own tier is round-trip overhead with no gain at matched effort. At elevated session effort, dispatch the converged chunk at the ladder's tight-spec cell, own tier included, with its runs (§11), and keep review in-session. A thin design surface is the drive's halt rule H1, never grounds for a stronger author. Choose the architect effort from the ladder for the unresolved design load, state the input fact, and dispatch it through `/delegate` at the resolved model and effort. The pointer brief holds the design-section anchors, the exploration dossier path, memory constraints and the plan-file format, because over a chain the driving session's context is the binding constraint and the arm reads sources in its own.
 

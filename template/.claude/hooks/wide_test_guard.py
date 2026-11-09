@@ -57,11 +57,13 @@ LAUNCHER_RE = re.compile(r"\b(pwsh|powershell|python3?|bash|Start-Process|subpro
 TERM_RE = re.compile(r"([A-Za-z]+)\s*(!~|!=|~|=)\s*([^|&()]+)")
 LINT_TERM = re.compile(r"(?:^|\.)Tests\.Logic\.Lint\.?$")
 CLASS_RE = re.compile(r"\bclass\s+([A-Za-z_]\w*)")
+METHOD_RE = re.compile(r"\b(?:void|Task)\s+([A-Za-z_]\w*)\s*\(")
 UNREADABLE = re.compile(r"[$`{%]")
 ADMIT_SET = re.compile(r"(?:^|[\s;&|(])(?:export\s+|set\s+)?HARNESS_WIDE_RUN_ADMITTED\s*=|\$env:HARNESS_WIDE_RUN_ADMITTED\s*="
                        r"|SetEnvironmentVariable\(\s*['\"]HARNESS_WIDE_RUN_ADMITTED", re.I)
 SCAN_DEPTH, MAX_SCRIPT_BYTES = 2, 300_000
 _classes = {}
+_methods = {}
 _roots = [ROOT]
 
 
@@ -70,19 +72,32 @@ def _base(word):
     return name[:-4] if name.endswith(".exe") else name
 
 
+def _scan_tests(root):
+    classes, methods = set(), set()
+    for folder, _, files in os.walk(os.path.join(root, "Tests")):
+        for name in files:
+            if name.endswith(".cs"):
+                try:
+                    with open(os.path.join(folder, name), encoding="utf-8", errors="replace") as fh:
+                        text = fh.read()
+                except OSError:
+                    continue
+                classes.update(CLASS_RE.findall(text))
+                methods.update(METHOD_RE.findall(text))
+    _classes.setdefault(root, classes)
+    _methods.setdefault(root, methods)
+
+
 def test_classes(root):
     if root not in _classes:
-        found = set()
-        for folder, _, files in os.walk(os.path.join(root, "Tests")):
-            for name in files:
-                if name.endswith(".cs"):
-                    try:
-                        with open(os.path.join(folder, name), encoding="utf-8", errors="replace") as fh:
-                            found.update(CLASS_RE.findall(fh.read()))
-                    except OSError:
-                        pass
-        _classes[root] = found
+        _scan_tests(root)
     return _classes[root]
+
+
+def test_methods(root):
+    if root not in _methods:
+        _scan_tests(root)
+    return _methods[root]
 
 
 def checkout_of(path):
@@ -114,13 +129,14 @@ def set_roots(command, cwd):
 
 
 def filter_wide_reason(value):
-    """None when every included term of the filter ends in a test class or Class.Method, else why not."""
+    """None when every included term of the filter ends in a test class, Class.Method or a bare known test-method name, else why not."""
     if UNREADABLE.search(value):
         return "its text is built at run time"
     terms = [t for t in TERM_RE.findall(value) if t[1] in ("~", "=")]
     if not terms:
         return "it has no FullyQualifiedName term"
     classes = set().union(*(test_classes(root) for root in _roots))
+    methods = set().union(*(test_methods(root) for root in _roots))
     for prop, _, raw in terms:
         term = raw.strip().strip("'\"")
         if prop.lower() != "fullyqualifiedname":
@@ -128,6 +144,8 @@ def filter_wide_reason(value):
         if LINT_TERM.search(term) and any(os.path.isdir(os.path.join(r, "Tests", "Logic", "Lint")) for r in _roots):
             continue
         parts = term.split(".")
+        if len(parts) == 1 and term in methods:
+            continue
         if term.endswith(".") or not (parts[-1] in classes or (len(parts) > 1 and parts[-2] in classes)):
             return "`%s` is a namespace or tier, not a test class or method" % term
     return None

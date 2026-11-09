@@ -29,11 +29,11 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            that Stop prints no update: it reports contradictions only. An effort nothing declares shows `?`.
            Sidecars show the registry version of the pinned alias. TYPE is the agent type, which
            sets how much harness the child loads. A dispatch that DECLARED a tool profile gets one
-           `tools <label>:` line under the table (`_profile_lines`): the shape, the final built-ins
+           `tools <label>:` line under the table (`_profile_lines`): the kind, the final built-ins
            and servers, the `+`/`-` delta, and `strict`, `inherited (MCP not restricted)` or
            `agent-type (<type>)`, the last stamped by an engine that launched the generated type.
-           A call that declared none gets no line — that is an absent decision, never the `any`
-           default — and a recorded dispatch whose profile cannot be read says `unknown`.
+           A call that declared none gets no line — that is an absent decision, never a default
+           kind — and a recorded dispatch whose profile cannot be read says `unknown`.
            Registers the dispatch as pending. The shared launcher also registers before spending,
            through the same sidecar_entries builder; record path and label dedupe both observations.
            A fan-out needs a background task id, its detached-driver launch line, or an owned inventory.
@@ -119,6 +119,7 @@ import _hook_state  # noqa: E402
 import _msys  # noqa: E402
 from _win_path import native_path  # noqa: E402
 sys.path.insert(0, TOOLS)
+import model_registry  # noqa: E402
 import sidecar_argv  # noqa: E402
 from sidecar_argv import _SHELL_VAR  # noqa: E402
 import watch_records  # noqa: E402
@@ -134,15 +135,16 @@ ROSTER_OWNER_KEY = "dispatch_table_roster_owner"  # "<roster>:<pid>" -> whether 
 UNKNOWN_KEY = "dispatch_table_unknown"  # deferred fan-outs expired with no checkable producer, revived if the file appears
 NO_WATCHER_REASON = (
     "%d sidecar(s) running with no live watcher, so nothing wakes you when one needs you. "
-    "Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + ", "
-    "then end the turn (reference/sidecar_dispatch.md §Procedure).")
+    "Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + " (reference/sidecar_dispatch.md "
+    "§Procedure step 6), then do the next step that needs no wake; end the turn only when none remains.")
 NO_WATCHER_ROSTER_REASON = (
     "Bench roster(s) this session started are running with no live watcher (%s), so nothing wakes you when "
-    "one ends or fails. Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + ", "
-    "then end the turn (reference/sidecar_dispatch.md §Procedure).")
+    "one ends or fails. Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + " "
+    "(reference/sidecar_dispatch.md §Procedure step 6), then do the next step that needs no wake; end the turn "
+    "only when none remains.")
 STALE_SECONDS = 24 * 3600
 MAX_PENDING = 50
-DONE_STATES = ("completed", "failed", "killed", "cancelled", "error", "stopped")
+DONE_STATES = model_registry.WORKFLOW_TERMINAL_STATES
 UNKNOWN = "?"
 DEFAULT = "default"      # a sidecar flag left to the launcher
 NO_EFFORT = "none"       # the served model takes no effort parameter
@@ -303,7 +305,7 @@ def _audit_snapshot_rows(rows, subjects, report_path):
         for item in row.get("evidence") or []:
             item = dict(item)
             for index, subject in enumerate(subjects if isinstance(item.get("file"), str) else []):
-                hits = subject.hits(item["file"])
+                hits = subject.exact_hits(item["file"])
                 if len(hits) != 1:
                     continue
                 key = index, hits[0]
@@ -903,6 +905,14 @@ def _launch_plan(launch):
     return _mr().plan_for_launcher(".claude/scripts/%s_sidecar.sh" % launch["launcher"])
 
 
+def _kind_agent_type(kind):
+    """The generated agent type a native job of `kind` runs as, else None (a kindless job names none)."""
+    try:
+        return resolve_request({"kind": kind})["agentType"] if kind else None
+    except Exception:
+        return None
+
+
 def _jobs(payload):
     """[{label, model, effort, record?}] — `effort` is the value the job runs at: its pin, the engine
     default, the inherited session level, or UNKNOWN."""
@@ -927,7 +937,7 @@ def _jobs(payload):
     out = []
     for j in raw:
         effort = j.get("effort")
-        agent_type = j.get("agentType")
+        agent_type = j.get("agentType") or _kind_agent_type(j.get("kind"))
         out.append({"label": j["label"],
                     "model": j.get("model") if j.get("model") not in (None, "unresolved") else
                     ("inherit" if tool == "Agent" else UNKNOWN),
@@ -947,12 +957,11 @@ def _workflow_name(payload):
 def _profile_lines(payload):
     """One `tools <label>:` line per dispatch that DECLARED a tool profile, or [] when none did.
 
-    Silence is the honest reading of a call that named no shape, but it must not be mistaken for
-    the `any` default: `_dispatch_pins.profile_request` returns None there, and a recorded dispatch
-    whose profile cannot be read is reported `unknown` rather than assumed. Native rows are
-    `inherited` — the runtime restricts no per-child MCP — while a sidecar's `-G`/`-t` on the
-    command line is the same strict profile its record carries, so the two are reconciled once the
-    record exists.
+    Silence is the honest reading of a call that named no kind, and it is not a default:
+    `_dispatch_pins.profile_request` returns None there, and a recorded dispatch whose profile cannot
+    be read is reported `unknown` rather than assumed. Native rows are `inherited` — the runtime
+    restricts no per-child MCP — while a sidecar's `-G <kind>`/`-t` on the command line is the same
+    strict profile its record carries, so the two are reconciled once the record exists.
     """
     out = []
     tool = payload.get("tool_name")
@@ -960,14 +969,14 @@ def _profile_lines(payload):
         try:
             if tool == "Agent":
                 # A standalone Agent declares its profile in the PROMPT header; the row carries no
-                # args to read it from, so the header is the only place it can come from -- and an
-                # absent header is the `any` row, because that IS the shape a caller who named none
-                # inherits. A present-but-usable-shaped header still wins; a malformed one raises into
-                # the caller's handler rather than being read as "no profile".
+                # args to read it from. An absent header declares nothing, so no line: a headerless
+                # Agent call is the parent session's own subagent. A malformed header raises into the
+                # caller's handler rather than being read as "no profile".
                 ti = payload.get("tool_input") or {}
-                request = agent_profile_request(ti) or {"shape": None, "add": [], "remove": []}
-                out.append(profile_line(str(ti.get("description") or "agent"),
-                                        resolve_request(request)))
+                request = agent_profile_request(ti)
+                if request:
+                    out.append(profile_line(str(ti.get("description") or "agent"),
+                                            resolve_request(request, route="agent")))
                 return out
             for job in dispatch_jobs(payload):
                 # Per JOB, not per call: one job whose profile cannot resolve must not erase the
@@ -990,14 +999,14 @@ def _profile_lines(payload):
         return ["  tools: unreadable (%s)" % exc]
     for inv in invocations:
         flags = sidecar_argv.sidecar_flags(inv.args)
-        shape = flags.get("G") if isinstance(flags.get("G"), str) else None
+        kind = flags.get("G") if isinstance(flags.get("G"), str) else None
         tools = flags.get("t") if isinstance(flags.get("t"), str) else ""
-        if not shape and not tools:
+        if not kind and not tools:
             continue
         label = flags.get("l") if isinstance(flags.get("l"), str) else UNLABELED
         try:
             out.append(profile_line(label, resolve_request(
-                {"shape": shape, "toolsCsv": tools}, enforcement=STRICT)))
+                {"kind": kind, "toolsCsv": tools}, enforcement=STRICT, route="launcher")))
         except Exception as exc:
             out.append("  tools %s: unresolved (%s)" % (label, exc))
     return out
@@ -1423,10 +1432,11 @@ def resolve_sidecar_record(entry, session_id, pending=None):
     earliest inventory that belongs to its call. A call's issue time is its tool_use row in the
     session transcript, written before any PreToolUse hook or the command runs, so a launch never
     writes its inventory before its own call, and an inventory written earlier is an earlier
-    launch's. `launched_at` plays no part: PostToolUse stamps it after a foreground call has
+    launch's. An inventory whose job names its launching call (`call`) belongs to that call alone.
+    `launched_at` plays no part: PostToolUse stamps it after a foreground call has
     finished or timed out, minutes after the fan-out wrote its inventory.
 
-    A job whose record ended (its `.exit` exists) and whose call owns a later inventory naming its
+    A job whose record ended (its journal has an `ended` row) and whose call owns a later inventory naming its
     label resolves to that inventory's record: relaunching the same jobs file into the same out dir
     is the re-plan path (`sidecar_fanout.attempt_record_path`), and a process no hook saw may run it.
 
@@ -1436,7 +1446,7 @@ def resolve_sidecar_record(entry, session_id, pending=None):
     if not entry.get("fanout_dir"):
         return entry.get("record")
     record = entry.get("record")
-    if record and not os.path.isfile(record + ".exit"):
+    if record and watch_records.ended_code(record) is None:
         return record
     after = inventory_written(entry) if record else None
     if record and after is None:
@@ -1448,7 +1458,7 @@ def resolve_sidecar_record(entry, session_id, pending=None):
         if launcher:
             for job in entry.get("jobs") or []:
                 job["launcher"] = launcher
-        if not os.path.isfile(found + ".exit"):
+        if watch_records.ended_code(found) is None:
             break
         after = written
     return entry.get("record")
@@ -1459,6 +1469,7 @@ def _owned_records(entry, session_id, pending):
     label, oldest first (`resolve_sidecar_record`'s identity rule). `launcher` is None for an inventory
     written before jobs named one."""
     issued = _issued_at(entry, session_id)
+    call = _call_of(entry)
     label, fanout_dir = _label(entry), os.path.normcase(os.path.abspath(entry["fanout_dir"]))
     rivals = [other for other in pending or ()
               if other is not entry and other.get("fanout_dir") and _label(other) == label
@@ -1479,6 +1490,8 @@ def _owned_records(entry, session_id, pending):
             continue
         for job in inventory.get("jobs") or []:
             if job.get("label") == label and isinstance(job.get("recordPath"), str):
+                if call and isinstance(job.get("call"), str) and job["call"] != call:
+                    break  # the inventory names another call's launch: it is not this entry's
                 record = job["recordPath"]
                 if not os.path.isabs(record):
                     # An older inventory holds the path relative to the fan-out's cwd, not this
@@ -1651,6 +1664,15 @@ def _fanout_entry_id(fanout_dir, label, call):
     return "%s:%s:%s" % (fanout_dir, label, call)
 
 
+def _call_of(entry):
+    """The tool_use id that registered a fan-out `entry` (its id's suffix), or None."""
+    prefix = _fanout_entry_id(entry.get("fanout_dir"), _label(entry), "")
+    ident = str(entry.get("id") or "")
+    if not entry.get("fanout_dir") or not ident.startswith(prefix) or len(ident) == len(prefix):
+        return None
+    return ident[len(prefix):]
+
+
 def _issued_at(entry, session_id):
     """Epoch seconds at which the call that registered `entry` was issued, or None.
 
@@ -1758,7 +1780,7 @@ def _refusal_since(path, since):
 
 
 def _sidecar_record(entry, payload):
-    """The finished run's record (or its ledger row), {} when only the .exit exists, None while
+    """The finished run's record (or its ledger row), {} when only the end is recorded, None while
     running, DIED when its launcher is gone without having written either. A finished writer seat
     waits for a live fan-out only while it runs a stage after its seats (a review's post-check or
     fold), or its legacy inventory does not say."""
@@ -1781,7 +1803,7 @@ def _sidecar_evidence(entry, payload):
                 return json.load(fh)
         except ValueError:
             pass
-    exited = bool(record) and os.path.isfile(record + ".exit")
+    exited = bool(record) and watch_records.ended_code(record) is not None
     if entry.get("fanout_dir") and not exited:
         return None
     since = _issued_at(entry, payload.get("session_id"))
@@ -2094,7 +2116,7 @@ def _awaiting_launch(entry):
     record has neither the pid file a launch writes (`_never_started`'s test) nor an exit file."""
     record = entry.get("record")
     return bool(entry.get("fanout_dir") and record and not os.path.isfile(record + ".pid")
-                and not os.path.isfile(record + ".exit"))
+                and watch_records.ended_code(record) is None)
 
 
 def _running_line(entry, now):

@@ -27,11 +27,25 @@ from _claude_scope import harness_tail, in_nested_checkout  # noqa: E402
 SID = "hesr0001"
 HARNESS = "C:/repo/.claude/skills/testing/SKILL.md"
 HOOKPY = "C:/repo/.claude/hooks/budget_posture.py"
+COMMAND = "C:/repo/.claude/commands/explore.md"
+UNMAPPED = "C:/repo/.claude/rules/harness_tooling.md"
 NOT_HARNESS = "C:/repo/Spells/Fire/FireSpell.cs"
 MEMORY = "C:/repo/.claude/auto-memory/gotcha_x.md"
 LADDER = "C:/repo/.claude/reference/model_ladder_evidence.md"
 TAGS = "C:/repo/.claude/skills/project_subsystems/adaptation.json"
 LENSES = "C:/repo/.claude/commands/agents/session_audit_agents.md"
+REFERENCE_DIR = os.path.join(HERE, "..", "skills", "instruction_quality", "reference")
+
+
+def reference_line(name, prefix):
+    """A line cut from the reference file itself, so the assertion cannot drift from its source."""
+    with open(os.path.join(REFERENCE_DIR, name), encoding="utf-8") as fh:
+        return next((line.strip() for line in fh if line.startswith(prefix)), "")
+
+
+HOOKS_REF_LINE = reference_line("hooks.md", "Read in full when the edit changes a hook")
+CMDS_REF_LINE = reference_line("skills_and_commands.md", "Read in full when the edit changes a skill")
+assert HOOKS_REF_LINE and CMDS_REF_LINE, (HOOKS_REF_LINE, CMDS_REF_LINE)
 
 # A checkout at <repo>/.claude/worktrees/<name>/ carries a `.claude` segment in
 # EVERY path inside it, so these are the two cells that separate the worktree
@@ -111,11 +125,21 @@ def main():
                   and 'Skill(skill="instruction_quality")' in reason and "with no Skill tool" not in reason
                   and "re-issue" in reason))
     got, reason = edit(HOOKPY, env)
-    cases.append(("a hook edit is denied the same way, naming all four class files and ending on the sections read",
-                  got == DENY and all(f in reason for f in (
-                      "skills_and_commands.md", "orchestration.md", "hooks.md", "claims_and_wording.md"))
+    cases.append(("a hook edit's deny embeds reference/hooks.md in full and names no other class file",
+                  got == DENY and HOOKS_REF_LINE in reason
+                  and all(f not in reason for f in (
+                      "skills_and_commands.md", "orchestration.md", "claims_and_wording.md"))
                   and "against the sections you read" in reason
                   and "sections for its file class" not in reason))
+    got, reason = edit(COMMAND, env)
+    cases.append(("a command edit's deny embeds reference/skills_and_commands.md and keeps the requirement and next step",
+                  got == DENY and CMDS_REF_LINE in reason and HOOKS_REF_LINE not in reason
+                  and 'Skill(skill="instruction_quality")' in reason and "re-issue" in reason))
+    got, reason = edit(UNMAPPED, env)
+    cases.append(("an unmapped governed path names all four class files and embeds none",
+                  got == DENY and all(f in reason for f in (
+                      "skills_and_commands.md", "orchestration.md", "hooks.md", "claims_and_wording.md"))
+                  and HOOKS_REF_LINE not in reason and CMDS_REF_LINE not in reason))
     got, _ = edit(HARNESS, env)
     cases.append(("a second edit is denied again: a denial consumes no latch", got == DENY))
 

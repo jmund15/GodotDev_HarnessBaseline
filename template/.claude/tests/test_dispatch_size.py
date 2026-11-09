@@ -123,8 +123,8 @@ class SizeTests(Plant):
                          "dispatch size: 2 jobs (opus·high ×2); reading 151/151 KB; 150 KB read by all 2 (300 KB total); "
                          "heaviest reading 6% of its compaction point, 967000 tokens (j0)")
         self.assertEqual(result.stdout.splitlines()[1:], [
-            "cheaper claimants: `j0` (opus) not compared: neither its shape row nor its own tier names one",
-            "cheaper claimants: `j1` (opus) not compared: neither its shape row nor its own tier names one",
+            "cheaper claimants: `j0` (opus) not compared: neither its kind row nor its own tier names one",
+            "cheaper claimants: `j1` (opus) not compared: neither its kind row nor its own tier names one",
             "preflight: not checked: ladder and skill credit (CLAUDE_CODE_SESSION_ID is unset)"])
 
 
@@ -322,9 +322,9 @@ class WindowFitTests(Plant):
             [self.job("odd", "p.md", must=[small], model="no-such-row")]))
         self.assertNotIn("of its compaction point", odd)
 
-    def claimant_job(self, label, model, shape, prompt="p.md", kb=20):
+    def claimant_job(self, label, model, kind, prompt="p.md", kb=20):
         return {"label": label, "promptPath": self.file(prompt, kb), "model": model, "effort": "medium",
-                "shape": shape}
+                "kind": kind}
 
     def test_a_review_seat_takes_its_claimant_tier_from_its_own_lens(self):
         """A `plc-*` seat's tier is `lens.seat_tier`, never a `kind` row's default."""
@@ -342,9 +342,9 @@ class WindowFitTests(Plant):
             self.assertIn("for `%s`" % tier, matching[0])
 
     def test_a_pricier_pin_gets_a_pre_launch_line_naming_its_cheaper_claimants_with_the_job_reading(self):
-        spec = {"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "survey", "a.md"),
+        spec = {"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "scout", "a.md"),
                          self.claimant_job("exec", "claude-sonnet-5-5", "author", "b.md"),
-                         self.claimant_job("cheap", "claude-haiku-5-5", "survey", "c.md")]}
+                         self.claimant_job("cheap", "claude-haiku-5-5", "scout", "c.md")]}
         lines = dispatch_size.fact_lines(spec, self.root, read=lambda name, _data=None: None)
         self.assertEqual(len(lines), 3, lines)
         survey, execute, closing = lines
@@ -359,14 +359,14 @@ class WindowFitTests(Plant):
         self.assertEqual(closing, "pin is the cheapest claimant: cheap")
         self.assertNotIn("pin haiku", survey.lower())
 
-    def test_a_written_tier_outranks_the_shape_row(self):
-        job = dict(self.claimant_job("ex", "claude-sonnet-5-5", "survey", "x.md"), tier="executor")
+    def test_a_written_tier_outranks_the_kind_row(self):
+        job = dict(self.claimant_job("ex", "claude-sonnet-5-5", "scout", "x.md"), tier="executor")
         line = dispatch_size.fact_lines({"jobs": [job]}, self.root)[0]
         self.assertIn("`executor`", line)
         self.assertNotIn("`fanout`", line)
 
     def test_a_reading_past_the_cheaper_rows_price_point_is_stated_past_it(self):
-        spec = {"jobs": [self.claimant_job("wide", "claude-sonnet-5-5", "survey", "w.md", kb=300)]}
+        spec = {"jobs": [self.claimant_job("wide", "claude-sonnet-5-5", "scout", "w.md", kb=300)]}
         line = dispatch_size.fact_lines(spec, self.root)[0]
         self.assertIn("reading 122,880 tokens", line)
         self.assertIn("past its 100,000-token long-context point", line)
@@ -416,7 +416,7 @@ class WindowFitTests(Plant):
     def test_main_prints_the_size_line_then_the_fact_lines(self):
         path = os.path.join(self.root, "jobs.json")
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "survey", "a.md")]}, fh)
+            json.dump({"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "scout", "a.md")]}, fh)
         done = subprocess.run([sys.executable, os.path.join(TOOLS, "dispatch_size.py"), path], capture_output=True,
                               text=True, encoding="utf-8", stdin=subprocess.DEVNULL, cwd=self.root,
                               env=dict(os.environ, HARNESS_HOOK_STATE_DIR=self.root))
@@ -427,7 +427,7 @@ class WindowFitTests(Plant):
 
     def test_the_minus_cell_is_dropped_when_the_tiers_rows_reached_context(self):
         """A `for-role` receipt or the full ladder in context already carries the `±` cell: state it once."""
-        spec = {"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "survey", "a.md")]}
+        spec = {"jobs": [self.claimant_job("surv", "claude-sonnet-5-5", "scout", "a.md")]}
         plain = dispatch_size.fact_lines(spec, self.root)[0]
         self.assertIn("± ", plain)
         state = os.path.join(self.root, "state")
@@ -456,7 +456,7 @@ class WindowFitTests(Plant):
         ladder = self.text("ladder.md", "# Ladder\n\n## Role guidance\n\n| model | cost | ± |\n|---|---|---|\n"
                                         "| pin-a | 7 | + the strong default |\n| cheap-a | 10 | + cheap |\n")
         job = self.claimant_job("exec", "pin-x", "author", "e.md")
-        job.pop("shape")
+        job.pop("kind")
         job["tier"] = "executor"
         now = 1_800_000_000.0
         go = {"schemaVersion": 1, "transport": "go", "costModel": "plan-quota", "sourceKind": "live",
@@ -529,7 +529,7 @@ class CompactionPointTests(Plant):
         self.assertEqual(dispatch_size.dispatch_size([job])["perJob"][0]["usable"], full[0])
 
     def test_an_anthropic_job_is_measured_against_the_login_capped_point_whatever_its_marks(self):
-        job, _big = self.named_job("res", 700, resident=True, shape="author")
+        job, _big = self.named_job("res", 700, resident=True, kind="author")
         job["prompt"] += " And `%s`." % self.file("named-res2.md", 700)
         per = dispatch_size.dispatch_size([job])["perJob"][0]
         self.assertEqual(per["usable"], self.anthropic_point("opus"))
@@ -538,14 +538,14 @@ class CompactionPointTests(Plant):
         self.assertGreater(per["over"], 0)
 
     def test_a_review_shaped_job_and_a_plain_job_share_one_point(self):
-        review, _ = self.named_job("rev", 1, shape="review")
-        plain, _ = self.named_job("plain", 1, shape="author")
+        review, _ = self.named_job("rev", 1, kind="reviewer")
+        plain, _ = self.named_job("plain", 1, kind="author")
         per = dispatch_size.dispatch_size([review, plain])["perJob"]
         self.assertEqual(per[0]["usable"], self.anthropic_point("opus"))
         self.assertEqual(per[1]["usable"], per[0]["usable"])
 
     def test_haiku_keeps_its_own_operating_point_under_the_login_cap(self):
-        job, _ = self.named_job("hai", 1, shape="review")
+        job, _ = self.named_job("hai", 1, kind="reviewer")
         job["model"] = "haiku"
         self.assertEqual(dispatch_size.dispatch_size([job])["perJob"][0]["usable"], self.anthropic_point("haiku"))
         self.assertLess(self.anthropic_point("haiku"), 467000)
@@ -811,7 +811,7 @@ class PreflightTests(Plant):
     def test_a_job_the_fan_out_refuses_by_kind_is_named_in_its_own_text(self):
         brief = self.text("brief.md", "Write the report to `reports/out.md`.\n")
         job = {"label": "codify-derive", "promptFile": brief, "kind": "lens", "model": "opus",
-               "effort": "high", "tier": "executor"}
+               "effort": "high", "tier": "executor", "tools": "+Write"}
         lines = self.lines([job])
         self.assertTrue(any("job codify-derive: Write on kind 'lens': a job that writes is an author: "
                             "use kind author" in line for line in lines), lines)

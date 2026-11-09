@@ -59,7 +59,10 @@ SC_TRANSPORT="opencode"
 # snapshot copy under a scratch dir with no lib/ next to it, so sourcing via a fresh
 # `dirname "${BASH_SOURCE[0]}"` on the SECOND run would look for the lib beside the snapshot and
 # fail (measured 2026-09-14, D1: "No such file or directory").
-SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+_sc_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# An inherited SC_LAUNCHER_DIR that equals SC_LAUNCHER_DIR_RUN is a parent launcher's own export, not a caller's choice.
+case "$_sc_here" in */sidecar-snapshots) ;; *) if [ "${SC_LAUNCHER_DIR:-}" = "${SC_LAUNCHER_DIR_RUN:-}" ]; then unset SC_LAUNCHER_DIR; fi ;; esac
+SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$_sc_here}"
 # shellcheck source=lib/sidecar_common.sh
 . "$SC_LAUNCHER_DIR/lib/sidecar_common.sh"
 sc_reexec_snapshot "$@"   # run from a snapshot copy; see lib
@@ -317,9 +320,12 @@ except Exception:
   _check_keylabel="public-tier"; [ "$_check_cred" != "public" ] && _check_keylabel="real-key"
   _check_model="$OC_UPSTREAM_MODEL"
   _check_live="$(oc_live_probe "$_check_model" "$_check_apimode" "$_check_cred")" || {
+    # No answer, 429 or 5xx: the endpoint is down right now, so another row may serve the job (exit 16).
+    # Any other status is a refused credential or request (exit 3).
+    case "${_check_live%% *}" in 000|429|5??) _check_exit=16 ;; *) _check_exit=3 ;; esac
     if [ "${_check_live%% *}" = 000 ]; then echo "UNAVAILABLE (live probe on $_check_model: ${_check_live#* })"
     else echo "UNAVAILABLE (live probe on $_check_model answered HTTP ${_check_live%% *}: ${_check_live#* } -- the call path refuses it)"; fi
-    exit 3; }
+    exit "$_check_exit"; }
   sc_check_gates
   echo "OK (model=$_check_model endpoint=$ZEN_BASE_URL key=$_check_keylabel live-probe=200 path=$_check_apimode)"
   exit 0
@@ -406,7 +412,7 @@ run_claude() {
     CLAUDE_CODE_SIDECAR="$SC_TRANSPORT" \
     ${SC_CONTEXT_TOKENS:+CLAUDE_CODE_MAX_CONTEXT_TOKENS="$SC_CONTEXT_TOKENS"} \
     ${SC_MAX_OUTPUT:+CLAUDE_CODE_MAX_OUTPUT_TOKENS="$SC_MAX_OUTPUT"} \
-    ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_SHAPE="$SC_SHAPE"} \
+    ${SC_SHAPE:+CLAUDE_CODE_SIDECAR_KIND="$SC_SHAPE"} \
     ${SC_TIMEOUT:+timeout} ${SC_TIMEOUT:+"$SC_TIMEOUT"} \
     "$SC_CLAUDE" -p \
       --model "$OC_CHILD_MODEL" \
