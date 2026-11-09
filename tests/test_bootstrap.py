@@ -453,6 +453,22 @@ def test_ignored_delivered_files_are_staged_in_a_fresh_target() -> None:
         assert not hidden, hidden[:5]
 
 
+def test_a_fresh_target_stages_the_whole_install_and_nothing_it_found() -> None:
+    with _Baseline() as b:
+        target = b.temp_root / "WholeGame"
+        target.mkdir()
+        (target / "game.txt").write_text("project file" + chr(10), encoding="utf-8", newline=chr(10))
+        result = b.run("--target", _to_posix(target), "--project-name", "WholeGame", "--layers", "pure")
+        assert result.returncode == 0, result.stdout + result.stderr
+        listed = set(subprocess.run(["git", "-C", str(target), "ls-files"],
+                                    capture_output=True, text=True).stdout.split())
+        for rel in (".claude/tools/baseline_sync.py", ".claude/baseline.lock.json", ".gitignore"):
+            assert rel in listed, rel
+        others = subprocess.run(["git", "-C", str(target), "ls-files", "--others", "--exclude-standard"],
+                                capture_output=True, text=True).stdout.split()
+        assert others == ["game.txt"], others[:5]
+
+
 def test_a_100755_template_entry_is_installed_executable_and_staged_executable() -> None:
     hook = ".claude/githooks/commit-msg"
     with _Baseline() as b:
@@ -495,6 +511,7 @@ def main() -> int:
              test_fresh_bootstrap_contains_none_of_the_range_deleted_files,
              test_untracked_dev_file_in_a_git_checkout_is_not_installed,
              test_ignored_delivered_files_are_staged_in_a_fresh_target,
+             test_a_fresh_target_stages_the_whole_install_and_nothing_it_found,
              test_a_100755_template_entry_is_installed_executable_and_staged_executable,
              test_hook_smoke_lists_every_crashing_hook]
     failures = []

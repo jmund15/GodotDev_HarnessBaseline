@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
@@ -26,15 +27,17 @@ def report_reads_rotated_shards():
     """report_pricier_pins reads through archive_rows (so `.jsonl.1` counts) and dates rows by row_date."""
     root = tempfile.mkdtemp(prefix="pricier_rot_")
     ledger = os.path.join(root, "ledger.jsonl")
+    # Inside report_pricier_pins(30)'s window whatever day the proof runs, so only row_date can exclude a row.
+    day = (datetime.now(timezone.utc).date() - timedelta(days=2)).isoformat()
     with open(ledger, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps({"run": "2026-10-09T00:00:00Z-new", "label": "n", "tier": "fanout",
+        handle.write(json.dumps({"run": day + "T00:00:00Z-new", "label": "n", "tier": "fanout",
                                  "model": "big"}) + "\n")
     with open(ledger + ".1", "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps({"run": "sidecar-2026-10-09T00:00:00Z-old", "label": "old", "tier": "fanout",
+        handle.write(json.dumps({"run": "sidecar-" + day + "T00:00:00Z-old", "label": "old", "tier": "fanout",
                                  "model": "big"}) + "\n")
         handle.write(json.dumps({"run": "wf_ignored", "label": "noise", "ignored": True, "reason": "synthetic"}) + "\n")
         handle.write(json.dumps({"run": "wf_undated", "label": "archive-dated", "tier": "fanout", "model": "big",
-                                 "date": "2026-10-09"}) + "\n")
+                                 "date": day}) + "\n")
     seen = {}
     real = om.pricier_pins
 
