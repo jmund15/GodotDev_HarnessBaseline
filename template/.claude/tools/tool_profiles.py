@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The one resolver of a dispatched job's tool profile, and the one walk of the MCP registrations.
 
-`guards/tool_profiles.json` is the sole defaults table: a shape maps to its built-ins and its
+`guards/tool_profiles.json` is the sole defaults table: a job kind maps to its built-ins and its
 logical MCP server names. Every consumer reads it here — `scripts/lib/sidecar_common.sh` for all
 four launchers, `tools/sidecar_fanout.py` for forwarded deltas, `hooks/workflow_provider_guard.py`
 for Workflow jobs — and none keeps a second copy of the defaults.
@@ -16,31 +16,20 @@ inventory nobody chose.
 record archives as the run's role tier. An unknown tier refuses with the known list.
 
 CLI:
-  tool_profiles.py resolve --shape S [--tools CSV] [--add a,b] [--remove c,d]
-                           [--base-builtins CSV] [--config-dir D] [--workdir W] [--tier T]
-                           [--field profile|builtins|mcpSpec|mcpConfig|spec] [--brief FILE]...
+  tool_profiles.py resolve-kind --kind K [--tools CSV] [--base-builtins CSV] [--config-dir D]
+                           [--workdir W] [--tier T] [--field profile|builtins|mcpServers|spec|mcpConfig]
   tool_profiles.py mcp-config <CSV or name list> [config-dir]   # --mcp-config's own builder
   tool_profiles.py table
   tool_profiles.py agents [--write] [--check] [--table P] [--agents-dir D]
   tool_profiles.py command-coverage [<command.md>...] [--include <path>...]
 
-`--brief` (repeatable) checks a profile against the built-ins a command or file write the brief or a
-file it points to names, or the `allowed-tools` grants of a slash command it tells the child to run
-(`brief_requirements`). A launcher passes `--widen`: the profile then gains each missing built-in and
-says so on stderr. Without `--widen` (the lint path) every gap refuses, exit 2. With or without it,
-exit 2 also refuses what no delta can fix: a removed tool
-the brief needs, or a nested fan-out. A command granting Workflow or Agent is a nested fan-out, and its
-refusal points at orchestration §0: the parent dispatches those lenses. Quoted data is never
-scanned: a command inside a `Workflow({...})` or `args: {...}` object, a blockquote or a task-list
-item is text the child judges, not an instruction it runs.
-
 `command-coverage` audits each command's body against its own `allowed-tools` line
 (`command_coverage`) and exits 1 when any invoked tool is not granted. `allowed-tools`
 pre-approves tools; it never bounds the actions inside them.
 
-`agents` renders one `.claude/agents/<agentType>.md` per row that declares `agentType`: a generated
+`agents` renders one `.claude/agents/<agentType>.md` per kind `agentType` and per `variants` entry: a generated
 agent type carrying exactly that row's tools, so a Workflow engine can launch a delegate on the
-shape's inventory. The files are generated from the table and never hand-edited. Without `--write`
+kind's inventory. The files are generated from the table and never hand-edited. Without `--write`
 the command exits 1 when a rendered file differs from disk; `--check` only suppresses the preview.
 """
 import argparse
@@ -78,31 +67,14 @@ def load_table(path=None):
     """The parsed, validated defaults table. Raises ValueError on any structural defect."""
     with open(path or TABLE_PATH, encoding="utf-8") as handle:
         table = json.load(handle)
-    shapes = table.get("shapes")
-    if not isinstance(shapes, dict) or not shapes:
-        raise ValueError("table has no shapes")
-    for name, row in shapes.items():
-        if not isinstance(row, dict):
-            raise ValueError("shape %r is not an object" % name)
-        builtins = row.get("builtins")
-        if builtins is not None and not (isinstance(builtins, list) and builtins):
-            raise ValueError("shape %r: builtins must be a non-empty list or null" % name)
-        servers = row.get("mcpServers")
-        if not isinstance(servers, list):
-            raise ValueError("shape %r: mcpServers must be a list" % name)
-        agent_type = row.get("agentType")
-        if agent_type is not None and not (isinstance(agent_type, str)
-                                           and re.fullmatch(r"[a-z][a-z0-9-]*", agent_type)):
-            raise ValueError("shape %r: agentType must be a lowercase-hyphenated name" % name)
-        if agent_type is not None and builtins is None:
-            raise ValueError("shape %r: an agentType row needs its own built-ins" % name)
     for key in ("requiredReadTools", "canonicalOrder"):
         if not isinstance(table.get(key), list) or not table[key]:
             raise ValueError("table has no %s" % key)
-    if table.get("defaultShape") not in shapes:
-        raise ValueError("defaultShape %r is not a shape" % table.get("defaultShape"))
-    if "kinds" in table:
-        _validate_kinds(table["kinds"])
+    scoped = table.get("repoScopedServers", [])
+    if not (isinstance(scoped, list) and all(isinstance(n, str) and n for n in scoped)):
+        raise ValueError("repoScopedServers must be a list of server names")
+    _validate_kinds(table.get("kinds"))
+    _validate_variants(table.get("variants") or [], table["kinds"])
     return table
 
 
@@ -122,6 +94,9 @@ def _validate_kinds(kinds):
             raise ValueError("kind %r: builtins must be a non-empty list or null" % name)
         if not isinstance(row.get("mcpServers"), list):
             raise ValueError("kind %r: mcpServers must be a list" % name)
+        deny = row.get("denyTools", [])
+        if not (isinstance(deny, list) and all(isinstance(t, str) and re.fullmatch(r"mcp__[\w-]+__[\w-]+", t) for t in deny)):
+            raise ValueError("kind %r: denyTools must be a list of mcp__<server>__<tool> names" % name)
         if not isinstance(row.get("internal"), bool):
             raise ValueError("kind %r: internal must be a bool" % name)
         routes = row.get("routes")
@@ -131,11 +106,45 @@ def _validate_kinds(kinds):
         if disclosure is not None and disclosure not in KIND_DISCLOSURES:
             raise ValueError("kind %r: disclosure must be %s or null" % (name, "|".join(KIND_DISCLOSURES)))
         agent_type = row.get("agentType")
+        if agent_type is not None and not (isinstance(agent_type, str)
+                                           and re.fullmatch(r"[a-z][a-z0-9-]*", agent_type)):
+            raise ValueError("kind %r: agentType must be a lowercase-hyphenated name" % name)
+        if agent_type is not None and builtins is None:
+            raise ValueError("kind %r: an agentType row needs its own built-ins" % name)
         if agent_type is not None:
             first = by_agent.setdefault(agent_type, name)
-            if (kinds[first]["builtins"], kinds[first]["mcpServers"]) != (builtins, row["mcpServers"]):
-                raise ValueError("kinds %r and %r share agentType %r but carry different built-ins or "
-                                 "mcpServers: one agent file cannot serve both" % (first, name, agent_type))
+            if ((kinds[first]["builtins"], kinds[first]["mcpServers"], kinds[first].get("denyTools") or [])
+                    != (builtins, row["mcpServers"], row.get("denyTools") or [])):
+                raise ValueError("kinds %r and %r share agentType %r but carry different built-ins, "
+                                 "mcpServers or denyTools: one agent file cannot serve both" % (first, name, agent_type))
+
+
+def _validate_variants(variants, kinds):
+    """A variant is a public kind plus a signed built-in delta, rendered as its own agent file so a native
+    job (`agent()` has no `tools` option) can run on it. `Edit`/`Write` belong to `author` alone."""
+    if not isinstance(variants, list):
+        raise ValueError("table variants must be a list")
+    taken = {row.get("agentType") for row in kinds.values() if row.get("agentType")}
+    for variant in variants:
+        kind = variant.get("kind") if isinstance(variant, dict) else None
+        if kind not in kinds or kinds[kind]["internal"] or not kinds[kind].get("agentType"):
+            raise ValueError("variant %r: kind must be a public kind with an agentType" % (variant,))
+        agent_type = variant.get("agentType")
+        if not (isinstance(agent_type, str) and re.fullmatch(r"[a-z][a-z0-9-]*", agent_type)):
+            raise ValueError("variant %r: agentType must be a lowercase-hyphenated name" % (variant,))
+        if agent_type in taken:
+            raise ValueError("variant %r: agentType %r is already taken by a kind or another variant"
+                             % (variant, agent_type))
+        taken.add(agent_type)
+        add, remove = variant.get("add") or [], variant.get("remove") or []
+        if not (add or remove) or not all(isinstance(i, str) and i for i in add + remove):
+            raise ValueError("variant %r: add/remove must hold built-in names, at least one" % (variant,))
+        writes = [a for a in add if a in ("Edit", "Write")]
+        if writes and kind != "author":
+            raise ValueError("variant %r: %s on kind %r: a job that writes is an author"
+                             % (variant, ", ".join(writes), kind))
+        if any(i in RESERVED_BUILTINS for i in add):
+            raise ValueError("variant %r: orchestration built-ins stay with the calling session" % (variant,))
 
 
 def public_kinds(table=None):
@@ -187,8 +196,8 @@ def tools_delta(raw):
             raise ValueError("tools needs a signed delta such as '+Bash,-Grep'; an unsigned list is not a Workflow grant")
         return ([item[1:].strip() for item in entries if item[0] == "+"],
                 [item[1:].strip() for item in entries if item[0] == "-"])
-    if not isinstance(raw, dict) or not set(raw) <= {"shape", "add", "remove", "base"}:
-        raise ValueError("tools needs a signed string/list or structured {shape?: name, add: [...], remove: [...], base?: [...]} delta")
+    if not isinstance(raw, dict) or not set(raw) <= {"add", "remove", "base"}:
+        raise ValueError("tools needs a signed string/list or structured {add: [...], remove: [...], base?: [...]} delta")
     out = []
     for key in ("add", "remove"):
         value = raw.get(key, [])
@@ -249,6 +258,22 @@ def _legacy_spec(csv):
 
 # ------------------------------------------------------------------- MCP registrations
 
+def project_config_dir(wd):
+    """The directory whose `.mcp.json` is `wd`'s project config: the nearest one from `wd` up to its
+    git toplevel. A `wd` in no git repo reads only its own, so a stray file above it is never adopted."""
+    wd = os.path.abspath(wd)
+    chain, cur = [], wd
+    while True:
+        chain.append(cur)
+        if os.path.exists(os.path.join(cur, ".git")):
+            break
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return wd
+        cur = parent
+    return next((d for d in chain if os.path.isfile(os.path.join(d, ".mcp.json"))), cur)
+
+
 def load_registrations(config_dir="", workdir="", plugin_root=None):
     """[(registered key, server config)] in precedence order: project > .mcp.json > user > plugin.
 
@@ -275,7 +300,11 @@ def load_registrations(config_dir="", workdir="", plugin_root=None):
     for project, values in (state.get("projects") or {}).items():
         if same(project, wd):
             candidates += list((values.get("mcpServers") or {}).items())
-    candidates += list((load(os.path.join(wd, ".mcp.json")).get("mcpServers") or {}).items())
+    project_dir = project_config_dir(wd)
+    project_conf = load(os.path.join(project_dir, ".mcp.json")).get("mcpServers") or {}
+    # `CLAUDE_PROJECT_DIR` is the directory the file was read from, which for a subdirectory of a
+    # repo is the repo root, not the workdir.
+    candidates += [(k, _expand_env(v, project_dir)) for k, v in project_conf.items()]
     candidates += list((state.get("mcpServers") or {}).items())
     plugins_dir = (os.path.join(cfg, "plugins") if cfg
                    else os.path.join(home, ".claude", "plugins"))
@@ -396,10 +425,11 @@ def strict_mcp_config(keys, candidates):
 
 # ------------------------------------------------------------------- resolution
 
-def resolve(shape, tools_csv="", add=(), remove=(), base_builtins=None,
+def resolve(kind, tools_csv="", add=(), remove=(), base_builtins=None,
             candidates=None, table=None, registered=None, walk_mcp=True, tier=None):
-    """The resolved profile of one job over a `shapes` row. Removed with `brief_requirements` once no reader outside the launcher contract names a `shape`;
-    launchers and the fan-out resolve through `resolve_kind`.
+    """The resolved profile of one job over a `kinds` row, with no route check. Launchers, the fan-out
+    and the native hooks resolve through `resolve_kind`, which adds the route and write checks; this one
+    serves the callers that name a kind directly (`lens_briefs.py`, the score daemon, proofs).
 
     `tier` is the job's written tier: it replaces the shape row's `tier` in the profile, canonicalized
     (`validation` folds onto `fanout`); an unknown one raises `model_registry.RegistryError`.
@@ -410,17 +440,16 @@ def resolve(shape, tools_csv="", add=(), remove=(), base_builtins=None,
     built-ins only, leaving `mcpRegistrations` empty, for a planner whose launcher walks the config.
     """
     table = table or load_table()
-    shapes = table["shapes"]
-    if shape not in shapes:
-        raise ValueError("unknown shape %r (legal: %s)"
-                         % (shape, ", ".join(sorted(shapes))))
-    return _resolve_row(shape, shapes[shape], tools_csv, add, remove, base_builtins, candidates, table,
+    kinds = table["kinds"]
+    if kind not in kinds:
+        raise ValueError("unknown kind %r (legal: %s)" % (kind, ", ".join(sorted(kinds))))
+    return _resolve_row(kind, kinds[kind], tools_csv, add, remove, base_builtins, candidates, table,
                         registered, walk_mcp, tier)
 
 
-def _resolve_row(shape, row, tools_csv, add, remove, base_builtins, candidates, table, registered, walk_mcp,
+def _resolve_row(kind, row, tools_csv, add, remove, base_builtins, candidates, table, registered, walk_mcp,
                  tier=None):
-    """`resolve` over one row (a `shapes` row or a `kinds` row) named `shape`."""
+    """`resolve` over one `kinds` row named `kind`."""
     default_builtins = row["builtins"]
     default_servers = list(row["mcpServers"])
 
@@ -431,13 +460,13 @@ def _resolve_row(shape, row, tools_csv, add, remove, base_builtins, candidates, 
     # `arm`'s row carries no built-ins: its task row supplies them. The unsigned `-t` a benchmark
     # cell passes IS that task row, so it becomes the base rather than a legacy replacement of a
     # base that does not exist.
-    task_base = shape == "arm"
+    task_base = kind == "arm"
     if task_base and mode == "legacy-replace":
         mode = "task-base"
     if task_base and mode == "task-base":
         base_builtins = _legacy_spec(tools_csv)[0]
     if task_base and base_builtins is None:
-        raise ValueError("shape 'arm' needs its task's built-in list before resolution: pass "
+        raise ValueError("kind 'arm' needs its task's built-in list before resolution: pass "
                          "-t <csv> or --base-builtins")
     add = csv_add + add
     remove = csv_remove + remove
@@ -508,10 +537,20 @@ def _resolve_row(shape, row, tools_csv, add, remove, base_builtins, candidates, 
     else:
         if candidates is None:
             candidates = load_registrations()
+        # A repo-scoped server (the table's `repoScopedServers`) that the row supplies by default and
+        # the workdir's repo does not register is left out, not refused: the workdir is outside the
+        # repo (a benchmark arm root, which must not read the repo). A requested one still refuses.
+        if mode in ("shape-default", "delta", "task-base"):
+            left = [s for s in default_servers if s in table.get("repoScopedServers", [])
+                    and s not in add_servers and s in servers and registered_key(s, candidates) is None]
+            if left:
+                servers = [s for s in servers if s not in left]
+                print("[sidecar] left out %s from the default profile: no git repo at the workdir registers it"
+                      % ", ".join("mcp:" + s for s in left), file=sys.stderr)
         keys, mapping = resolve_servers(servers, candidates, registered=registered)
 
     profile = {
-        "shape": shape,
+        "kind": kind,
         "builtins": builtins,
         "mcpServers": servers,
         "add": list(add),
@@ -519,6 +558,7 @@ def _resolve_row(shape, row, tools_csv, add, remove, base_builtins, candidates, 
         "overrideMode": mode,
         "enforcement": ENFORCEMENT,
         "mcpRegistrations": mapping,
+        "denyTools": list(row.get("denyTools") or []),
     }
     if row.get("agentType"):
         profile["agentType"] = row["agentType"]
@@ -559,8 +599,6 @@ def resolve_kind(kind, add=(), remove=(), *, route, table=None, base_builtins=No
     if writes and not row.get("writes"):
         raise ValueError("%s on kind %r: a job that writes is an author: use kind author"
                          % (", ".join(writes), kind))
-    del profile["shape"]
-    profile["kind"] = kind
     profile["disclosure"] = row.get("disclosure")
     profile["guard"] = row.get("guard")
     for key in ("agentType", "tier"):
@@ -574,45 +612,44 @@ def resolve_kind(kind, add=(), remove=(), *, route, table=None, base_builtins=No
     return profile, tool_spec(profile, keys), keys
 
 
-def job_kind_shape(job, table=None):
-    """A job's old shape name, for readers outside the launcher contract that still compare
-    `any|survey|review|author|arm|bench-score|verify`: its kind row's guard name (else the kind itself
-    where the row has no guard text), or the job's own `shape` when it carries no `kind`. Removed in S5
-    with the readers it serves (`_dispatch_pins.py`, `workflow_provider_guard.py`, the JS engines).
-    Reads only the job dict's `kind` and `shape` keys, never an `inv` record."""
-    kind = job.get("kind")
-    if kind:
-        row = (table or load_table())["kinds"].get(kind)
-        if row is None:
-            raise ValueError("unknown kind %r" % kind)
-        return row.get("guard") or kind
-    return job.get("shape")
+def native_agent_type(profile, table=None):
+    """The generated agent type a native job runs as: its kind row's `agentType` when it carries no
+    delta, else the `variants` entry (`{"kind", "add", "remove", "agentType"}`) naming exactly its delta.
+    Raises ValueError when no agent file covers it: `agent()` has no `tools` option, so a delta with no
+    file would run on the kind's tools, not the job's."""
+    table = table or load_table()
+    add, remove = sorted(profile.get("add") or []), sorted(profile.get("remove") or [])
+    if not add and not remove:
+        if not profile.get("agentType"):
+            raise ValueError("kind %r names no agentType: a native job cannot run on it" % profile.get("kind"))
+        return profile["agentType"]
+    for variant in table.get("variants") or []:
+        if (variant.get("kind") == profile.get("kind") and sorted(variant.get("add") or []) == add
+                and sorted(variant.get("remove") or []) == remove and variant.get("agentType")):
+            return variant["agentType"]
+    raise ValueError("kind %r with %s has no covering agent file: `agent()` takes no tools option, so a "
+                     "native job runs only as a generated agent type. Drop the delta, or add a `variants` "
+                     "entry for it to guards/tool_profiles.json and render it with `tool_profiles.py agents --write`"
+                     % (profile.get("kind"), " ".join(["+%s" % a for a in add] + ["-%s" % r for r in remove])))
 
 
 def kind_guard(kind, table=None):
-    """The guard file set a kind's row names (`survey`, `review`, `author`, `any`, `arm`), else the kind
+    """The guard file set a kind's row names (`survey`, `review`, `author`, `common`, `arm`), else the kind
     itself (`bench-score` has no row guard). None for an unknown kind."""
     row = (table or load_table())["kinds"].get(kind)
     return None if row is None else (row.get("guard") or kind)
 
 
 def engine_job(kind, table=None):
-    """The `dispatch.js` job fields a kind translates to: its guard as `shape`, on a `general-purpose`
-    start that the engine swaps for the shape's lane type. Only a kind that lists the `engine` route
-    translates, and only exactly: the guard shape must carry the kind's own `agentType`, else the swap
-    would run the job on a different tool set than its row declares."""
+    """The `dispatch.js` job fields a kind translates to: the kind itself, which the engine runs as its row's
+    generated agent type. Only a kind that lists the `engine` route translates; any other job stays a sidecar."""
     table = table or load_table()
     row = (table.get("kinds") or {}).get(kind)
     if row is None:
         raise ValueError("unknown kind %r: a job names one of: %s" % (kind, ", ".join(public_kinds(table))))
     if "engine" not in row["routes"]:
         raise ValueError("kind %r does not list the engine route: its job stays a sidecar" % kind)
-    shape = kind_guard(kind, table)
-    declared = (table.get("shapes") or {}).get(shape, {}).get("agentType")
-    if declared != row.get("agentType"):
-        raise ValueError("kind %r has no exact engine translation: its %r shape carries agentType %r, the "
-                         "kind %r" % (kind, shape, declared, row.get("agentType")))
-    return {"shape": shape, "agentType": "general-purpose"}
+    return {"kind": kind}
 
 
 def tool_spec(profile, keys):
@@ -651,30 +688,6 @@ _WRITE = re.compile(r"\b(?:write|spill|save|dump)\b(?:[^.;\n]|\.(?!\s|$)){0,80}?
 _NEGATION = re.compile(r"(?<!\bor )\b(?:not|never)\b|n't\b", re.I)  # "present or not" negates nothing
 _PROHIBITION_LIST = re.compile(r"^\W*no\b", re.I)  # "No commits, no stash, no X": a clause that opens with "No"
 _CLAUSE_END = re.compile(r"[.;:!?](?=\s|$)|—| -- ")
-_POINTER = re.compile(r"(?:\b(?:mandate|brief) is at:?|\bread)\s+`?(?P<path>[^\s`'\"<>]+)", re.I)
-
-
-# Bytes of one brief or pointed-to file the scan reads. The Workflow guard scans every job's brief
-# on each call, so a brief that names a log or transcript must not set that hook's cost.
-BRIEF_READ_CAP = 256 * 1024
-
-
-def read_brief(path):
-    """The first BRIEF_READ_CAP bytes of `path`, decoded; raises OSError when it cannot be read."""
-    with open(path, "rb") as handle:
-        return handle.read(BRIEF_READ_CAP).decode("utf-8", errors="replace")
-
-
-def resolve_brief_path(token, root):
-    """The file a brief's path token names: relative tokens, and a repository path written with one
-    leading slash (`/.claude/skills/x/SKILL.md`), resolve against `root`."""
-    if token.startswith(("/", "\\")) and not token.startswith(("//", "\\\\")):
-        rooted = os.path.join(root, token.lstrip("/\\"))
-        if os.path.isfile(rooted) or not os.path.isfile(token):
-            return rooted
-    return token if os.path.isabs(token) else os.path.join(root, token)
-
-
 def _is_path(token):
     return ("/" in token or "\\" in token) and bool(re.search(r"\.[A-Za-z0-9]{1,6}$", token))
 
@@ -778,9 +791,9 @@ def _drop_data_regions(text):
 # A command's `allowed-tools` frontmatter line is the one home of what running it needs, and the
 # fan-out set derives from it. A brief that tells its child to run `/<name>` needs that command's
 # grants; a grant of Workflow or Agent (`Task` is Agent's older name) makes it a nested fan-out,
-# which no delegate profile carries (orchestration §0). Both dispatch routes read the grammar
-# below: the sidecar launcher through `brief_requirements`, the native route through
-# `hooks/dispatch_mechanism_guard.py`, which imports it because a tool never imports a hook.
+# which no delegate profile carries (orchestration §0). `command_coverage` and the native route's
+# `hooks/dispatch_mechanism_guard.py` read the grammar below; the hook imports it because a tool
+# never imports a hook.
 _GRANT_ALIASES = {"Task": "Agent"}
 
 
@@ -1059,104 +1072,6 @@ def _command_matches(source, text, root, out):
                     out.append(row)
 
 
-_UNIFIED_DIFF_RE = re.compile(r"\A\s*(?:diff --git |--- \S[^\n]*\n\+\+\+ )")
-
-
-def _is_unified_diff(text):
-    return bool(_UNIFIED_DIFF_RE.match(text))
-
-
-def brief_requirements(texts, root=None):
-    """`{"matches": [...], "missing": [...]}` for caller-authored brief texts.
-
-    `texts` is a list of `(source, text)` pairs. Every repository path a text tells the agent to
-    read (`mandate is at: <path>`, `brief is at: <path>`, `read <path>`) is scanned too, one hop
-    deep, relative to `root` (the repository root by default), limited to the `§` sections the
-    pointer's clause names when it names any; a path that cannot be read is listed
-    in `missing`. Each read stops at BRIEF_READ_CAP bytes. A match is one tool per line: `{tool,
-    source, line, text, negated}`. A match in a negated clause is reported with `negated`; quoted
-    data is not scanned at all — a `Workflow({...})`/`args: {...}` region and a quoted line (a
-    blockquote, a task-list item and its sub-bullets) are text the child judges, not instructions.
-    So is a unified diff, given or pointed at: a text that opens with a diff header adds nothing.
-    A slash command the text tells the child to run adds that command's grants a profile can carry
-    (`nested_fanout_hits`), and an engine dispatch adds Workflow. A pointed-to skill, reference or
-    rule file (`_DOCTRINE_PATH`) is reading material: its own command and engine mentions are
-    not orders, while a text handed over directly and a brief's own sentences still count.
-    """
-    direct = {source for source, _text in texts}
-    texts, missing = _with_pointed(texts, root)
-    matches = []
-    for source, text in texts:
-        _scan(source, _drop_data_regions(without_quoted_data(text)), matches)
-        if source in direct or not _is_doctrine_path(source):
-            _command_matches(source, text, root or os.path.dirname(_ROOT), matches)
-    return {"matches": matches, "missing": missing}
-
-
-_DOCTRINE_PATH = re.compile(r"(?:^|/)\.claude/(?:skills|reference|rules)/")
-
-
-def _is_doctrine_path(source):
-    return bool(_DOCTRINE_PATH.search(str(source).replace("\\", "/")))
-
-
-def _with_pointed(texts, root=None):
-    """`(texts plus every file they point to, unreadable pointer tokens)`, unified diffs dropped."""
-    root = root or os.path.dirname(_ROOT)
-    texts = [(s, t) for s, t in texts if not _is_unified_diff(t)]
-    pointed, missing = [], []
-    for _source, text in list(texts):
-        for m in _POINTER.finditer(_drop_data_regions(without_quoted_data(text))):
-            token = m.group("path").rstrip(".,;:)")
-            if not _is_path(token):
-                continue
-            if token in [p for p, _ in pointed] or token in missing:
-                continue
-            try:
-                body = read_brief(resolve_brief_path(token, root))
-            except OSError:
-                missing.append(token)
-                continue
-            if not _is_unified_diff(body):
-                pointed.append((token, _named_sections(body, _section_refs(text, m.end()))))
-    return texts + pointed, missing
-
-
-_SECTION_REF = re.compile(r"§\s*([0-9]+(?:[.–-][0-9]+)?|[A-Za-z][\w-]*)")
-_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
-
-
-def _section_refs(text, end):
-    """The `§` sections a pointer names in its own clause: `read <path> §7 and §8` gives 7 and 8."""
-    clause = re.split(r"`|\n|\. |;", text[end:end + 120].lstrip("`"), maxsplit=1)[0]
-    return _SECTION_REF.findall(clause)
-
-
-def _named_sections(body, refs):
-    """Only the sections `refs` name, each from its heading to the next heading at its level or
-    above; the whole body when there are no refs or none matches, so an unknown name scans more."""
-    if not refs:
-        return body
-    lines, keep, level = body.split("\n"), [], None
-    for line in lines:
-        heading = _HEADING.match(line)
-        if heading:
-            depth, title = len(heading.group(1)), heading.group(2).strip()
-            if level is not None and depth <= level:
-                level = None
-            if level is None and any(_heading_names(title, ref) for ref in refs):
-                level = depth
-        if level is not None:
-            keep.append(line)
-    return "\n".join(keep) if keep else body
-
-
-def _heading_names(title, ref):
-    if ref[0].isdigit():
-        return re.match(r"%s(?:[.)]|\s|$)" % re.escape(ref), title) is not None
-    return title.lower().startswith(ref.lower())
-
-
 # ------------------------------------------------------------------- command grant audit
 _WORKFLOW_CALL = re.compile(r"^\s*Workflow\(\s*\{", re.M)
 
@@ -1187,7 +1102,7 @@ def command_coverage(path, includes=(), root=None):
     """`{command, grants, gaps, lines}` for one command file: the tools its body invokes against
     its `allowed-tools` grants.
 
-    Invoked tools are `brief_requirements`' matches (no pointer hop; `includes` names each linked
+    Invoked tools are `_scan`'s matches (no pointer hop; `includes` names each linked
     procedure file to scan with it) plus Workflow for a line-start `Workflow({` call. A slash
     command the body runs adds only its Workflow or Agent grant: running a fan-out command makes
     this command a fan-out too, while its other tools are pre-approved by its own line. `Bash` covers
@@ -1234,121 +1149,6 @@ def command_coverage(path, includes=(), root=None):
     return {"command": name, "grants": entries, "gaps": gaps, "lines": lines}
 
 
-def brief_refusal(builtins, report, grammar="launcher", table=None):
-    """The refusal text when `builtins` miss a tool the report requires, else None.
-
-    `grammar` is `launcher` (`-t`/`-G`) or `job` (a sidecar_fanout or Workflow job's fields). The
-    delta is offered first, then the narrowest shape row that carries every needed tool. A need
-    for Workflow or Agent is answered with orchestration §0 instead: no delta grants either
-    (RESERVED_BUILTINS), so the parent dispatches that fan-out itself.
-    """
-    if grammar not in ("launcher", "job"):
-        raise ValueError("unknown refusal grammar %r: use 'launcher' or 'job'" % grammar)
-    table = table or load_table()
-    refused = [m for m in report["matches"]
-               if not m["negated"] and m["tool"] not in builtins]
-    if not refused:
-        return None
-    nested = [m for m in refused if m["tool"] in RESERVED_BUILTINS]
-    refused = [m for m in refused if m["tool"] not in RESERVED_BUILTINS]
-    parts = []
-    if nested:
-        parts.append(
-            "the brief tells its delegate to run a fan-out, which needs %s:\n%s\nNo delegate "
-            "profile carries Workflow or Agent, and no delta grants them, so the orchestrator "
-            "dispatches every lens of a nested fan-out itself (orchestration §0): drop the line "
-            "and dispatch that command's lenses from the parent."
-            % (", ".join(_canonical([m["tool"] for m in nested], list(RESERVED_BUILTINS))),
-               _matched_lines(nested)))
-    if refused:
-        needed = _canonical([m["tool"] for m in refused], table["canonicalOrder"])
-        wider = sorted((len(r["builtins"]), name) for name, r in table["shapes"].items()
-                       if r.get("builtins") and set(needed) <= set(r["builtins"])
-                       and set(r["builtins"]) <= set(table["canonicalOrder"]))
-        if grammar == "job":
-            fixes = ['"tools": %s' % json.dumps({"add": needed})]
-            fixes += ['"shape": "%s"' % wider[0][1]] if wider else []
-        else:
-            fixes = ["-t %s" % signed_csv(needed, [])]
-            fixes += ["-G %s" % wider[0][1]] if wider else []
-        parts.append(
-            "the brief needs %s, which this profile (%s) does not carry:\n%s\n"
-            "Fix: %s. Quoted data is not scanned, so only a line this child actually runs needs "
-            "a tool: a command inside a `Workflow({...})` or `args: {...}` object, a blockquote or "
-            "a task-list item needs none."
-            % (", ".join(needed), ",".join(builtins), _matched_lines(refused),
-               " (the delta), or ".join(fixes) + (" (a wider shape)" if len(fixes) > 1 else "")))
-    text = "\n".join(parts)
-    if report["missing"]:
-        text += "\nPointed-to file(s) not readable, so not scanned: %s" % ", ".join(report["missing"])
-    return text
-
-
-def _matched_lines(matches):
-    lines = []
-    for m in matches:
-        line = "  %s:%d: %s" % (m["source"], m["line"], m["text"][:160])
-        if line not in lines:
-            lines.append(line)
-    shown = lines[:3] + (["  ... and %d more matched line(s)" % (len(lines) - 3)] if len(lines) > 3 else [])
-    return "\n".join(shown)
-
-
-def widenable_needs(builtins, report, removed=()):
-    """The built-ins a brief runs that `builtins` lacks, when a delta may grant every one, else None.
-
-    A fan-out need (`RESERVED_BUILTINS`) or a tool the caller removed is not widenable; neither is a
-    brief the profile already covers (an empty need)."""
-    lacking = [m for m in report["matches"] if not m["negated"] and m["tool"] not in builtins]
-    if not lacking or any(m["tool"] in RESERVED_BUILTINS or m["tool"] in set(removed) for m in lacking):
-        return None
-    return _canonical([m["tool"] for m in lacking], load_table()["canonicalOrder"])
-
-
-def brief_files(shape, prompt, context_files):
-    """The instruction-bearing files of a job: its prompt, then its context files unless the shape is
-    `review`, whose context files are the subject it judges, not instructions it runs."""
-    return ([prompt] if prompt else []) + ([] if shape == "review" else list(context_files or []))
-
-
-def check_brief_files(builtins, paths, grammar="launcher", root=None, table=None, widen=False, removed=()):
-    """brief_refusal over the files at `paths` and the files they point to, or None when covered.
-
-    `widen` is for a pre-launch check whose launcher widens the profile itself (`_cover_brief`): a need
-    a delta may grant passes, and only what no delta fixes refuses. `removed` is the job's removed tools,
-    which no delta grants back."""
-    texts = []
-    for path in paths:
-        try:
-            texts.append((path, read_brief(path)))
-        except OSError as exc:
-            raise ValueError("brief file unreadable: %s (%s)" % (path, exc))
-    report = brief_requirements(texts, root)
-    if widen and widenable_needs(builtins, report, removed):
-        return None
-    return brief_refusal(builtins, report, grammar, table)
-
-
-def coverage_of(report, table=None):
-    """`{covered, needs, unread}` for a `brief_requirements` report.
-
-    `needs` is every tool a non-negated match requires; `covered` is every shape that
-    declares `agentType` and whose built-ins hold all of them; `unread` is the pointed-to paths
-    that could not be read.
-    """
-    table = table or load_table()
-    needs = _canonical([m["tool"] for m in report["matches"] if not m["negated"]],
-                       table["canonicalOrder"])
-    covered = [name for name, row in sorted(table["shapes"].items())
-               if row.get("agentType") and set(needs) <= set(row.get("builtins") or [])]
-    return {"covered": covered, "needs": needs, "unread": list(report["missing"])}
-
-
-def coverage_for(texts, root=None, table=None):
-    """coverage_of over `brief_requirements(texts, root)`: the `args.__coverage` entry of one job."""
-    return coverage_of(brief_requirements(texts, root), table)
-
-
 # ------------------------------------------------------------------- generated agent types
 
 AGENT_DESCRIPTION = ("Workflow engine delegate for the %s tool profile; engines select it, never "
@@ -1363,32 +1163,45 @@ AGENT_BODY = ("You are a delegate. The task text from the workflow or agent that
 
 
 def render_agents(table, candidates):
-    """{filename: text} for every row that declares `agentType`.
+    """{filename: text} for every agent type the table declares: one per distinct kind `agentType`
+    (kinds sharing one carry the same tools, `_validate_kinds`) and one per `variants` entry.
 
     `tools:` is the row's built-ins, then one server-level `mcp__<registered key>` per MCP server
     (the name `tool_spec` gives, since a server's individual tool names are only known by starting
-    it), then `ToolSearch` when any server is listed, because MCP tool schemas load deferred.
+    it), then `ToolSearch` when any server is listed, because MCP tool schemas load deferred. A row's
+    `denyTools` become a `disallowedTools:` line, so a read-only type holds the server minus its writers. A
+    variant is its kind's row with the signed built-in delta applied, in canonical order.
     """
     out = {}
-    for shape in sorted(table["shapes"]):
-        row = table["shapes"][shape]
-        agent_type = row.get("agentType")
-        if not agent_type:
+    rows = []
+    for kind, row in table["kinds"].items():
+        if row.get("agentType"):
+            rows.append((row["agentType"], row.get("guard") or kind, row["builtins"], row["mcpServers"],
+                         row.get("denyTools") or []))
+    for variant in table.get("variants") or []:
+        row = table["kinds"][variant["kind"]]
+        builtins = [b for b in row["builtins"] if b not in (variant.get("remove") or [])]
+        builtins = _canonical(builtins + list(variant.get("add") or []), table["canonicalOrder"])
+        rows.append((variant["agentType"], row.get("guard") or variant["kind"], builtins, row["mcpServers"],
+                     row.get("denyTools") or []))
+    for agent_type, profile, builtins, servers, deny in rows:
+        if agent_type + ".md" in out:
             continue
-        keys, _mapping = resolve_servers(row["mcpServers"], candidates)
-        tools = list(row["builtins"]) + [LEGACY_MCP_PREFIX + norm(k) for k in keys]
+        keys, _mapping = resolve_servers(servers, candidates)
+        tools = list(builtins) + [LEGACY_MCP_PREFIX + norm(k) for k in keys]
         if keys:
             tools.append("ToolSearch")
         out[agent_type + ".md"] = "\n".join([
             "---",
             "name: " + agent_type,
-            "description: " + AGENT_DESCRIPTION % shape,
+            "description: " + AGENT_DESCRIPTION % profile,
             "tools: " + ", ".join(tools),
+        ] + (["disallowedTools: " + ", ".join(deny)] if deny else []) + [
             "---",
             AGENT_BODY,
             "",
         ])
-    return out
+    return dict(sorted(out.items()))
 
 
 def sync_agents(write=False, check=False, table_path=None, agents_dir=None, candidates=None):
@@ -1481,68 +1294,19 @@ def _print_command_coverage(paths, includes):
     return 1 if gapped else 0
 
 
-def _cover_brief(args, base, candidates, resolved):
-    """`resolved`, widened by the built-ins the brief runs and the profile lacks; refuses the rest.
-
-    Only "the brief needs X, the profile lacks X" widens, and only for a built-in a delta may grant.
-    A fan-out need (Workflow/Agent), or a tool the caller removed (a `-Tool` entry of `-t`, or `--remove`),
-    still refuses with `brief_refusal`'s text. The notice goes to stderr, one line, for the launcher to forward.
-    """
-    root = args.workdir or None
-    texts = []
-    for path in args.brief:
-        try:
-            texts.append((path, read_brief(path)))
-        except OSError as exc:
-            raise ValueError("brief file unreadable: %s (%s)" % (path, exc))
-    report = brief_requirements(texts, root)
-    builtins = resolved[0]["builtins"]
-    lacking = [m for m in report["matches"] if not m["negated"] and m["tool"] not in builtins]
-    mode, _add, csv_remove = parse_tools_csv(args.tools)
-    needed = widenable_needs(builtins, report, set(csv_remove) | set(split_csv(args.remove)))
-    if not needed:
-        refusal = brief_refusal(builtins, report)
-        if refusal:
-            raise ValueError(refusal)
-        return resolved
-    tools_csv, add = args.tools, split_csv(args.add)
-    if mode in ("legacy-replace", "task-base"):
-        tools_csv = ",".join([tools_csv] + needed)
-    else:
-        add = add + needed
-    widened = resolve(args.shape, tools_csv=tools_csv, add=add, remove=split_csv(args.remove),
-                      base_builtins=base, candidates=candidates, tier=args.tier or None)
-    where = []
-    for m in lacking:
-        place = "%s:%d" % (m["source"], m["line"])
-        if place not in where:
-            where.append(place)
-    print("[sidecar] profile widened by %s: the brief runs it (%s)"
-          % (",".join("+" + t for t in needed), ", ".join(where[:3])), file=sys.stderr)
-    return widened
+RETIRED_FLAGS = ("resolve", "--brief", "--widen")
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    retired = [a for i, a in enumerate(argv) if a.split("=")[0] in RETIRED_FLAGS and (a != "resolve" or i == 0)]
+    if retired:
+        print("tool_profiles: %s retired: a brief no longer sets tools. Declare `kind` (resolve-kind --kind <kind>); "
+              "a job that needs more adds a signed `tools` delta (-t +Bash)" % ", ".join(sorted(set(retired))),
+              file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
-    res = sub.add_parser("resolve")
-    res.add_argument("--shape", required=True)
-    res.add_argument("--tools", default="")
-    res.add_argument("--add", default="")
-    res.add_argument("--remove", default="")
-    res.add_argument("--base-builtins", default=None)
-    res.add_argument("--config-dir", default="")
-    res.add_argument("--workdir", default="")
-    res.add_argument("--field", default="profile", choices=FIELDS)
-    res.add_argument("--tier", default="",
-                     help="the job's written tier; it replaces the shape row's tier in the profile")
-    res.add_argument("--brief", action="append", default=[],
-                     help="a caller-authored brief or context file the profile must cover (repeatable)")
-    res.add_argument("--context", action="append", default=[],
-                     help="a -C context file; a brief to cover unless the shape is review (repeatable)")
-    res.add_argument("--widen", action="store_true",
-                     help="a launcher's call: add the built-ins the brief runs instead of refusing; a lint "
-                          "over authored briefs omits it and keeps the refusal")
     rk = sub.add_parser("resolve-kind", help="the launcher's resolver: -G <kind> plus a signed -t delta")
     rk.add_argument("--kind", required=True)
     rk.add_argument("--tools", default="")
@@ -1597,22 +1361,6 @@ def main(argv=None):
                                             os.environ.get("SC_WORKDIR", "")),
                              separators=(",", ":")))
             return 0
-        base = split_csv(args.base_builtins) if args.base_builtins is not None else None
-        candidates = load_registrations(args.config_dir, args.workdir)
-        resolved = resolve(args.shape, tools_csv=args.tools, add=split_csv(args.add),
-                           remove=split_csv(args.remove), base_builtins=base,
-                           candidates=candidates, tier=args.tier or None)
-        # An arm's task row is the measured variable of a benchmark cell, never widened to fit.
-        args.brief += brief_files(args.shape, None, args.context)
-        if args.brief and args.shape != "arm" and args.widen:
-            resolved = _cover_brief(args, base, candidates, resolved)
-        elif args.brief and args.shape != "arm":
-            refusal = check_brief_files(resolved[0]["builtins"], args.brief,
-                                        root=args.workdir or None)
-            if refusal:
-                raise ValueError(refusal)
-        _report(resolved, args.field, candidates)
-        return 0
     except Exception as exc:
         print("tool_profiles: %s" % exc, file=sys.stderr)
         return 2

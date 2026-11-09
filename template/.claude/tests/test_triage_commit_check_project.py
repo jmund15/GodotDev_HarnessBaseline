@@ -514,6 +514,11 @@ def main(tmp):
     updated = parsed.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
     check("no trailer and local diff gets a derived trailer without context",
           raw[0] == 0 and ctx == "" and '--trailer "Triage-Derived: reach=local oracle=none"' in updated, raw)
+    own = 'printf x > later.txt && git commit --trailer "Triage-Derived: reach=local oracle=none" -F later.txt'
+    ctx, raw, parsed = h.context(root, payload(root, own, session="sess-none"))
+    updated = parsed.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
+    check("a commit carrying its own Triage-Derived trailer, its -F file written by the same command, gets no second one",
+          raw[0] == 0 and updated.count("Triage-Derived:") <= 1, raw)
     write(root, "msg.txt", "fix: x\n\n" + TRAILER % ("local", "gate") + "\n")
     check("a satisfying trailer on the same staged change prints nothing",
           is_silent(h.context(root, payload(root, commit, session="sess-none"))))

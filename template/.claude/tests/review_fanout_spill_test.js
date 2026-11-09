@@ -42,6 +42,22 @@ const withCoverage = value => {
   }
 }
 
+// The rows the provider guard resolves from a seat's `kind` into args.__toolProfiles (by key), plus the engine's own
+// review:merge (reviewer) and review:fold (author) rows.
+const ROW = { add: [], remove: [], overrideMode: 'shape-default', enforcement: 'inherited', effectiveMcp: 'unknown/inherited',
+  mcpServers: ['semantic-search', 'ai-worker'] }
+// The fixture's agent types carry no project prefix: the SHA-256 goldens below hash every agent() option,
+// and a project's own prefix is rewritten on publish, which the hex goldens cannot follow.
+const KINDS = {
+  reviewer: { ...ROW, kind: 'reviewer', builtins: ['Read', 'Glob', 'Grep'], agentType: 'seat-review', tier: 'executor', guard: 'review' },
+  author: { ...ROW, kind: 'author', builtins: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], agentType: 'seat-author', tier: 'executor', guard: 'author' },
+}
+const profilesOf = (args) => ({
+  ...Object.fromEntries((Array.isArray(args.agents) ? args.agents : []).filter(a => a && KINDS[a.kind] && a.key).map(a => [a.key, KINDS[a.kind]])),
+  'review:merge': KINDS.reviewer, 'review:fold': KINDS.author,
+  ...(args.__toolProfiles || {}),
+})
+
 async function run(args, returned) {
   const prompts = []
   const calls = []
@@ -56,7 +72,7 @@ async function run(args, returned) {
   const pin = pinnedChecker(args.__transport) || HOST_CHECKER
   // A fold object the test builds without a model takes the checker's pin: the orchestrator pins every job, and the engine never does.
   const fold = args.fold && typeof args.fold === 'object' && args.fold.model === undefined ? { ...args.fold, ...pin } : args.fold
-  const result = await engine(withHost({ resultMode: 'full', checker: pin, ...args, ...(fold ? { fold } : {}) }), agent, parallel, () => {}, message => logs.push(message))
+  const result = await engine(withHost({ resultMode: 'full', checker: pin, ...args, __toolProfiles: profilesOf(args), ...(fold ? { fold } : {}) }), agent, parallel, () => {}, message => logs.push(message))
   return { result, prompts, calls, logs }
 }
 
@@ -74,7 +90,7 @@ const finding = (overrides = {}) => ({
 
 // Every seat carries its must-read list; `fixture` is the file the default provenance reads whole.
 const reviewAgent = (key, overrides = {}) => ({
-  key, prompt: 'Review it.', model: 'sonnet', effort: 'medium', agentType: 'general-purpose',
+  key, prompt: 'Review it.', model: 'sonnet', effort: 'medium', kind: 'author',
   mustRead: [{ path: 'fixture', lines: 1 }],
   ...overrides,
 })
@@ -119,8 +135,8 @@ function checkFallback(label, runResult, expected = ['strong source', 'weak sour
 // result carries: the fingerprint covers the result, every agent() option and every log line in full and bounded modes.
 const crypto = require('crypto')
 const NO_FOLD_FINGERPRINTS = {
-  full: 'a2cadab2ac710700ab6d14e647b46223e3a51b81aa93b26541f5c59ddfee0b34',
-  bounded: 'a8a1b62abb91cf955e9c243ffd59fae0c96c852369ad876da540f47524703d24',
+  full: '77cd7e79079b274395d273e763f682710c442794f0b7ac982be10c34d074fb12',
+  bounded: 'beaa73e5d221452607044e1846e08e662cea688bbc94e94592873baeb3d0f6fd',
 }
 const fingerprint = (r) => crypto.createHash('sha256').update(JSON.stringify({
   result: r.result, opts: r.calls.map(c => c.opts), logs: r.logs,
@@ -540,12 +556,13 @@ async function jointFoldCases() {
 
   const bare = await run(jointArgs(JOINT), jointReply(['a.md:3', 'plans/b.md:5']))
   const bareFolds = bare.calls.filter(c => c.opts.phase === 'Fold')
-  check('a finding citing a path suffix routes to the one subject it names',
-    !flagKinds(bare).includes('fold-routing') && bareFolds.length === 2,
+  check('a finding citing a bare path suffix names no subject file: held, never suffix-routed',
+    !flagKinds(bare).includes('fold-routing') && bareFolds.length === 0
+      && ((bare.result.fold || {}).outOfSubject || []).join() === 'F1,F2',
     JSON.stringify({ flags: bare.result.flags, folds: bareFolds.map(c => idsIn(c.prompt)) }))
 
   const vectors = JSON.parse(fs.readFileSync(path.join(__dirname, 'fold_routing_vectors.json'), 'utf8'))
-  const REPO_ROOT = 'C:/work/{{PROJECT_NAME}}'
+  const REPO_ROOT = 'C:/work/example-project'
   for (const v of vectors.cases) {
     const plans = v.plans || vectors.plans
     const cited = v.file.split('<root>').join(REPO_ROOT)
@@ -688,12 +705,12 @@ async function verificationCases() {
   check('workflow evidence label matches review:<key>',
     clean.calls[0] && clean.calls[0].opts.label === 'review:one',
     JSON.stringify(clean.calls.map(call => call.opts)))
-  check('a given agentType forwards when no profile row swaps it',
-    clean.calls[0] && clean.calls[0].opts.agentType === 'general-purpose',
+  check('the kind row sets the agent type the seat runs as',
+    clean.calls[0] && clean.calls[0].opts.agentType === 'seat-author',
     JSON.stringify(clean.calls.map(call => call.opts)))
 
   const noWrite = await run({
-    agents: [reviewAgent('scout', { agentType: 'Explore' })],
+    agents: [reviewAgent('scout', { kind: 'reviewer' })],
     spillDir: '.claude/scratch/review-spills',
   }, { findings: [] })
   check('no-Write review agents return inline without an impossible spill contract',
@@ -705,32 +722,27 @@ async function verificationCases() {
       && !('scout' in (noWrite.result.spills || {})),
     JSON.stringify({ result: noWrite.result, prompt: noWrite.prompts[0] }))
 
-  // The lean-type swap reads the guard's coverage verdict, and the spill decision reads the type the
-  // lens actually runs as: lane-review has no Write tool, so a covered lens returns inline.
-  const leanRow = { shape: 'review', builtins: ['Read', 'Glob', 'Grep'], mcpServers: [], add: [], remove: [],
-    overrideMode: 'shape-default', enforcement: 'inherited', agentType: 'lane-review' }
+  // The spill decision reads the kind row's tools: a reviewer has no Write tool and returns inline, an author spills.
   const leanSpill = await run({
-    agents: [reviewAgent('lean'), reviewAgent('open')],
+    agents: [reviewAgent('lean', { kind: 'reviewer' }), reviewAgent('open')],
     spillDir: '.claude/scratch/review-spills',
-    __toolProfileDefaults: { review: leanRow },
-    __coverage: { lean: { covered: ['review'], needs: [], unread: [] } },
   }, { findings: [] })
   const leanCall = leanSpill.calls.find(call => call.opts.label === 'review:lean') || { opts: {}, prompt: '' }
   const openCall = leanSpill.calls.find(call => call.opts.label === 'review:open') || { opts: {}, prompt: '' }
-  check('a coverage-proven lens runs as lane-review and returns inline without a spill contract',
-    !leanSpill.result.error && leanCall.opts.agentType === 'lane-review'
+  check('a reviewer seat runs as seat-review and returns inline without a spill contract',
+    !leanSpill.result.error && leanCall.opts.agentType === 'seat-review'
       && !leanCall.prompt.includes('Write your FULL JSON deliverable')
       && !('lean' in (leanSpill.result.spills || {}))
       && (leanSpill.result.inlineLabels || []).includes('lean'),
     JSON.stringify({ result: leanSpill.result, opts: leanCall.opts }))
-  check('a lens with no coverage entry stays general-purpose and keeps its spill contract',
-    openCall.opts.agentType === 'general-purpose'
+  check('an author seat runs as seat-author and keeps its spill contract',
+    openCall.opts.agentType === 'seat-author'
       && openCall.prompt.includes('Write your FULL JSON deliverable')
       && (leanSpill.result.spills || {}).open === '.claude/scratch/review-spills/review_open.spill.md',
     JSON.stringify({ result: leanSpill.result, opts: openCall.opts }))
 
   const deadNoWrite = await run({
-    agents: [reviewAgent('dead-scout', { agentType: 'Plan' })],
+    agents: [reviewAgent('dead-scout', { kind: 'reviewer' })],
     spillDir: '.claude/scratch/review-spills',
   }, null)
   const deadNoWriteFlag = deadNoWrite.result.flags.find(f => f.kind === 'lens-no-return')
@@ -795,25 +807,25 @@ async function verificationCases() {
     JSON.stringify(caseFoldCollision.result))
 
   const missingKey = await run({
-    agents: [{ prompt: 'Review it.', model: 'sonnet', effort: 'medium', agentType: 'general-purpose' }],
+    agents: [{ prompt: 'Review it.', model: 'sonnet', effort: 'medium', kind: 'author' }],
   }, { findings: [] })
   check('missing lens key fails before dispatch',
     !!missingKey.result.error && missingKey.prompts.length === 0,
     JSON.stringify(missingKey.result))
 
-  const missingAgentType = await run({
-    agents: [{ key: 'missing-type', prompt: 'Review it.', model: 'sonnet', effort: 'medium', mustRead: [{ path: 'fixture', lines: 1 }] }],
+  const missingKind = await run({
+    agents: [{ key: 'missing-kind', prompt: 'Review it.', model: 'sonnet', effort: 'medium', mustRead: [{ path: 'fixture', lines: 1 }] }],
   }, { findings: [] })
-  check('an omitted agentType dispatches on the runtime default',
-    !missingAgentType.result.error && missingAgentType.prompts.length === 1,
-    JSON.stringify(missingAgentType.result))
+  check('a kindless seat fails before dispatch',
+    /kind/.test(String(missingKind.result.error)) && missingKind.prompts.length === 0,
+    JSON.stringify(missingKind.result))
 
-  const blankAgentType = await run({
-    agents: [{ key: 'blank-type', prompt: 'Review it.', model: 'sonnet', effort: 'medium', agentType: ' ' }],
+  const retiredType = await run({
+    agents: [{ key: 'retired-type', prompt: 'Review it.', model: 'sonnet', effort: 'medium', kind: 'reviewer', agentType: 'Explore', mustRead: [{ path: 'fixture', lines: 1 }] }],
   }, { findings: [] })
-  check('a blank agentType fails before dispatch',
-    !!blankAgentType.result.error && blankAgentType.prompts.length === 0,
-    JSON.stringify(blankAgentType.result))
+  check('a seat carrying agentType fails before dispatch, naming kind',
+    /agentType/.test(String(retiredType.result.error)) && /kind/.test(String(retiredType.result.error)) && retiredType.prompts.length === 0,
+    JSON.stringify(retiredType.result))
 
   for (const badAgent of [null, []]) {
     const invalidAgent = await attempt({ agents: [badAgent] }, { findings: [] })
@@ -899,8 +911,8 @@ async function verificationCases() {
     return { findings: [finding({ file, agent: opts.label, description: opts.label })] }
   })
   const candidateMerge = candidates.calls.find(c => c.opts.phase === 'Merge')
-  check('shared-file candidates run one Explore Merge at fanout/medium',
-    candidateMerge && candidateMerge.opts.agentType === 'Explore' && candidateMerge.opts.model === 'sonnet'
+  check('shared-file candidates run one seat-review Merge at fanout/medium',
+    candidateMerge && candidateMerge.opts.agentType === 'seat-review' && candidateMerge.opts.model === 'sonnet'
       && candidateMerge.opts.effort === 'medium', candidateMerge && JSON.stringify(candidateMerge.opts))
   check('Merge sees only candidate ids and candidate partition adds untouched singleton',
     candidateMerge && candidateMerge.prompt.includes('"id":"F1"') && candidateMerge.prompt.includes('"id":"F2"')
@@ -1041,10 +1053,10 @@ async function verificationCases() {
     ? { findings: [mergedFinding()] }
     : { findings: [finding({ file: 'shared.js:' + (opts.label === 'review:one' ? '1' : '2'), description: opts.label, agent: opts.label })] })
   const mergeCall = offTransport.calls.find(call => call.opts.phase === 'Merge')
-  check('the review:merge agent runs on the fanout model at medium effort as Explore, and its PINS log names it at its tier',
+  check('the review:merge agent runs on the fanout model at medium effort as seat-review, and its PINS log names it at its tier',
     mergeCall && mergeCall.opts.label === 'review:merge' && mergeCall.opts.model === 'gpt-test'
-      && mergeCall.opts.effort === 'medium' && mergeCall.opts.agentType === 'Explore'
-      && offTransport.logs.some(line => line.includes('"review:merge":"gpt-test/medium/Explore tier:fanout"')),
+      && mergeCall.opts.effort === 'medium' && mergeCall.opts.agentType === 'seat-review'
+      && offTransport.logs.some(line => line.includes('"review:merge":"gpt-test/medium/seat-review tier:fanout"')),
     JSON.stringify({ calls: offTransport.calls.map(call => call.opts), logs: offTransport.logs }))
 
   await foldCases()

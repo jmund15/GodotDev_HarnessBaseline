@@ -15,7 +15,7 @@ reads it keyed on `-l`. Passing `-R` and `-l` per job is the whole attribution s
 you cannot account for.
 
 IT NEVER AUTO-RETRIES A BILLED CALL THAT FINISHED OR FAILED; only a run a usage limit stopped mid-run is continued (below). Memory admission waits before each launch; exit 12
-means nothing ran, so it waits and retries. Exit 5, 6, 8 or 10 from a detached launcher's OWN call (the
+means nothing ran, so it waits and retries. Exit 5, 6, 8, 10 or 16 from a detached launcher's OWN call (the
 launch, before it spawned), or from its detached job with no `-P` stream written, likewise means nothing ran, so a job that named no plan moves to the next plan
 with room. Exit 10 that arrives later, from the running job, is a usage limit hit mid-run: work was done
 and the session lives in that plan's login, so no other plan can resume it. A job that named no plan CONTINUES:
@@ -120,8 +120,9 @@ fields this route has no use for (`readOnly`) are ignored; `agentType` refuses, 
     armDisclosure         bare|pointer|full -> `-D`; kind `arm` only (an arm's disclosure is the experiment)
     tier                  the work's tier -> `-Q`: the pin must serve it. Omitted, the `kind` row's tier
                           (`guards/tool_profiles.json`) applies; an unknown tier refuses with the known list
-    window                "full" -> the job compacts at its model's own window, not the login's cap
-                          (`SIDECAR_FULL_WINDOW`); any other value refuses
+    window                "full" -> the job skips the login's compaction cap (`SIDECAR_FULL_WINDOW`) and compacts
+                          at its row's own point: `compactAtTokens` when the row sets one, else the model's
+                          window; any other value refuses
     tools                 {add:[], remove:[]} -> a signed `-t` (`+Bash,-mcp:ai-worker`); items are
                           built-in names or `mcp:<server>`
     toolsCsv              kind `arm` only: its task row as an unsigned `-t`; cannot be combined with `tools`
@@ -143,8 +144,9 @@ fields this route has no use for (`readOnly`) are ignored; `agentType` refuses, 
     extraArgs             list, appended verbatim, for a flag this wrapper does not model
     wakeWith              a group name -> the job's inventory row. The session watcher wakes the orchestrator
                           when a job ends cleanly unless another job of the same group in this fan-out still
-                          runs; `reference/sidecar_dispatch.md` step 6 says when to group.
-                          A job with no group wakes the session on its own end. A failure wakes at once
+                          runs; `reference/sidecar_dispatch.md` step 6 says when to group. Without one, a
+                          job of a file with a top-level `measurement` joins group `measurement`, and a lens
+                          or reviewer joins `lenses`; any other job wakes the session on its own end. A failure wakes at once
 
 CITER COVERAGE. Process guard, advisory until plan C's live proof permits promotion.
 Beside tool-profile brief validation, citer_coverage validates meta subjects' current
@@ -239,6 +241,7 @@ import fold_check  # noqa: E402  -- the shared post-fold checker; its verdict de
 import post_check  # noqa: E402  -- closes every --review run: verdicts, fold checks, ledger rows, next seats
 import finding_bar  # noqa: E402  -- the run's bar line for the fold prompt
 import dispatch_result  # noqa: E402  -- one `<label>.md` writer for both dispatch routes
+import watch_records  # noqa: E402  -- owns the record's end: the journal's `ended` row, else `.exit`
 import sidecar_completion  # noqa: E402 -- shared source keys and fail-closed verdict application
 
 GUARD_SOURCE = ROOT / "guards" / "single_flight.json"
@@ -254,7 +257,7 @@ GUARD_SOURCE = ROOT / "guards" / "single_flight.json"
 DEFAULT_REVIEW_SCHEMA = ROOT / "schemas" / "review_findings.json"
 
 # Exit codes the launchers share (sidecar_common.sh header). Reported by name, never renumbered.
-# 9 is retired with the stall kill; a silent run writes `<record>.stall` and keeps running.
+# 9 is retired with the stall kill; a silent run appends a `stalled` journal row and keeps running.
 LAUNCHER_EXITS = {
     0: "ok",
     1: "the child CLI failed or stopped early",
@@ -273,12 +276,16 @@ LAUNCHER_EXITS = {
         "same label or record) or resumes this session; stop it first (NOT overridable)",
     15: "re-pay refused: the spend ledger holds a finished row for this work, or cannot be read; nothing started "
         "(finished work repeats under its own label, an unreadable ledger is repaired first; NOT overridable)",
+    16: "endpoint unavailable right now: the live probe got no answer, HTTP 429 or a 5xx; nothing started "
+        "(another row may serve it; NOT overridable)",
 }
 DUPLICATE_LAUNCH_EXIT = 13
 USAGE_LIMIT_EXIT = 10
+ENDPOINT_DOWN_EXIT = 16
 # A detached launch that exits one of these from its own call refused before it spawned (band gate, balance
-# floor, capacity read, dispatch floor, spent allowance or usage-limit marker): nothing ran and nothing was billed.
-PLAN_REFUSAL_EXITS = frozenset({5, 6, 8, USAGE_LIMIT_EXIT})
+# floor, capacity read, dispatch floor, spent allowance or usage-limit marker, endpoint down at its live probe):
+# nothing ran and nothing was billed.
+PLAN_REFUSAL_EXITS = frozenset({5, 6, 8, USAGE_LIMIT_EXIT, ENDPOINT_DOWN_EXIT})
 
 
 class RefusedLaunch:
@@ -437,16 +444,40 @@ def _chain_jobs(chains, where):
     return flat
 
 
-def wake_groups(jobs):
-    """{label: group} for the jobs that name a `wakeWith` group; a blank or non-string group refuses."""
+SYNTHESIS_KINDS = ("lens", "reviewer")
+
+
+def wake_groups(jobs, measurement=None):
+    """{label: group} for the jobs whose results are pieces of one result; a blank or non-string `wakeWith` refuses.
+
+    A job's own `wakeWith` names its group. Without one, every job of a declared `measurement` joins the group
+    `measurement`, and a lens or reviewer joins `lenses`, since its findings feed one synthesis. Any other job is its
+    own unit: its result is actionable alone."""
     groups = {}
     for job in jobs:
-        if isinstance(job, dict) and "wakeWith" in job:
+        if not isinstance(job, dict):
+            continue
+        if "wakeWith" in job:
             group = job["wakeWith"]
             if not (isinstance(group, str) and group.strip()):
                 raise JobError(f"job {job.get('label') or '<unlabelled>'}: `wakeWith` must be a non-empty string")
             groups[job.get("label")] = group.strip()
+        elif measurement:
+            groups[job.get("label")] = "measurement"
+        elif job.get("kind") in SYNTHESIS_KINDS:
+            groups[job.get("label")] = "lenses"
     return groups
+
+
+def jobs_measurement(path):
+    """The jobs file's top-level `measurement` (the comparison its jobs make), or None for a bare list or a blank one."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            spec = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    value = spec.get("measurement") if isinstance(spec, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def job_lanes(jobs):
@@ -1429,50 +1460,6 @@ def check_row(job, label, alias, effort, data):
     return transport
 
 
-def nested_brief_refusal(label, prompt):
-    """Refuses a brief that tells its delegate to run a fan-out. A native job's Workflow call would be denied whole
-    for it, a sidecar's launcher would refuse it later; either way it fails here, before anything starts."""
-    try:
-        with open(prompt, encoding="utf-8", errors="replace") as fh:
-            hits = tool_profiles.nested_fanout_hits(fh.read(), str(REPO))
-    except OSError:
-        return
-    if hits:
-        lines = "\n".join(f"  line {h['line']}: {h['snippet']}" for h in hits)
-        raise JobError(f"job {label}: the brief tells its delegate to run a fan-out ({', '.join(sorted({t for h in hits for t in h['tools']}))}):\n{lines}\n"
-                       "No delegate profile carries Workflow or Agent, so the orchestrator dispatches every lens of a "
-                       "nested fan-out itself (orchestration §0): drop the line and dispatch those lenses from the parent.")
-
-
-def cover_brief_tools(job, label, kind):
-    """Adds to the job's `tools` delta each built-in its brief runs that its kind lacks, as the launcher's shape
-    path does (`tool_profiles._cover_brief`), since `resolve-kind` reads no brief. A need no delta may grant
-    (a tool the job removed) is refused here, before anything starts. An `arm`'s task row is the measured
-    variable, never widened."""
-    if kind == "arm":
-        return
-    try:
-        add, remove = tool_profiles.tools_delta(job.get("tools"))
-    except ValueError as err:
-        raise JobError(f"job {label}: {err}") from None
-    texts = []
-    for path in tool_profiles.brief_files(tool_profiles.job_kind_shape(job), job["promptFile"], job.get("contextFiles")):
-        try:
-            texts.append((path, tool_profiles.read_brief(path)))
-        except OSError as exc:
-            raise JobError(f"job {label}: brief file unreadable: {path} ({exc})") from None
-    builtins = job_builtins(job)
-    report = tool_profiles.brief_requirements(texts, job.get("workdir") or str(REPO))
-    needed = tool_profiles.widenable_needs(builtins, report, set(remove))
-    if needed:
-        job["tools"] = tool_profiles.signed_csv(add + needed, remove)
-        print(f"[fanout] {label}: tools widened by {','.join('+' + t for t in needed)}: its brief runs them")
-        return
-    refusal = tool_profiles.brief_refusal(builtins, report)
-    if refusal:
-        raise JobError(f"job {label}: {refusal}")
-
-
 def plan_job(job, data, out_dir, authorize, stage=None):
     """One job -> (label, argv, stdout path). Validates everything BEFORE any process starts.
 
@@ -1497,8 +1484,6 @@ def plan_job(job, data, out_dir, authorize, stage=None):
     if not os.path.exists(prompt):
         raise JobError(f"job {label}: promptFile not found: {prompt}")
     kind = check_job_kind(job, label)
-    nested_brief_refusal(label, job["promptFile"])
-    cover_brief_tools(job, label, kind)
     # Children run with cwd=REPO: a caller-relative path must reach them resolved, or it names another file.
     prompt = job["promptFile"] = os.path.abspath(prompt)
     # `label` names four output files AND keys the spend ledger, so it must be a bare filename:
@@ -1806,8 +1791,8 @@ def latest_attempt_record_path(out_dir, label):
     """The highest-numbered attempt's record path for `label` that some run has actually touched.
 
     Mirrors attempt_record_path's own numbering so the two can never disagree on what "attempt N"
-    means. "Touched" means at least one `.out`/`.err`/`.exit`/`.pid`/`.memory` sibling exists; an untouched
-    candidate is only where the NEXT attempt would land, not one anyone dispatched. None if the
+    means. "Touched" means at least one `.out`/`.err`/`.exit`/`.pid`/`.journal.jsonl` sibling exists; an
+    untouched candidate is only where the NEXT attempt would land, not one anyone dispatched. None if the
     label has never been planned into this out_dir at all.
     """
     out_dir = Path(out_dir)
@@ -1817,7 +1802,7 @@ def latest_attempt_record_path(out_dir, label):
         name = f"{label}.record.json" if n == 1 else f"{label}.attempt{n}.record.json"
         record = out_dir / name
         touched = any(Path(str(record) + suffix).exists()
-                      for suffix in (".out", ".err", ".exit", ".pid", ".memory"))
+                      for suffix in (".out", ".err", ".exit", ".pid", ".journal.jsonl"))
         if not touched:
             return best
         best = record
@@ -2026,7 +2011,7 @@ def _detached_pid(record_path):
 
 
 def _wait_detached(record_path, poll_interval=None):
-    """Block until `<record>.exit` appears, or the detached pid dies with none written.
+    """Block until the record's end is recorded (its journal's `ended` row, else `<record>.exit`), or the detached pid dies with none written.
 
     Returns (exit_code, died_without_exit). No timeout: Design §3 gives this loop none, so a
     genuinely long job only ever ends via its own exit file. The single exception is the
@@ -2035,18 +2020,13 @@ def _wait_detached(record_path, poll_interval=None):
     "the pid just exited" and "the file just landed" costs one extra sleep, never a false "died".
     """
     poll_interval = POLL_INTERVAL_SEC if poll_interval is None else poll_interval
-    exitf = str(record_path) + ".exit"
     grace_used = False
     while True:
-        if os.path.isfile(exitf):
+        # An empty code is an end caught between open and flush: poll again.
+        code = watch_records.ended_code(record_path)
+        if code:
             try:
-                with open(exitf, encoding="utf-8", errors="replace") as fh:
-                    code = fh.read().strip()
-                # An empty file is a write caught between open and flush: poll again.
-                if code:
-                    return int(code), False
-            except OSError:
-                pass
+                return int(code), False
             except ValueError:
                 return None, False
         pid = _detached_pid(record_path)
@@ -2106,8 +2086,65 @@ def duplicate_launches(planned):
 REVIEW_CLAIM = "review.claim"
 
 
-def _inventory_job(label, argv, launch_id, record_path, wake_with=None):
-    job = {"label": label, "launchId": launch_id, "recordPath": os.path.abspath(record_path)}
+LAUNCH_INTENT_GRACE_S = 3600  # an unclaimed intent older than this is a refused call's, never a launch's
+
+
+def jobs_key(path):
+    """A jobs file's identity in a launch intent: its real path, case-folded where the OS folds it."""
+    return os.path.normcase(os.path.realpath(os.path.abspath(str(path))))
+
+
+def write_launch_intent(directory, call, session, labels, jobs_path):
+    """The hook's record that tool call `call` launches `labels` from `jobs_path` into `directory`.
+    One file per call, written whole under a temp name and renamed, so no two calls share a file."""
+    path = Path(directory) / (".launch-intent-%s.json" % call)
+    tmp = path.parent / (path.name + ".tmp-%d" % os.getpid())
+    row = {"call": call, "session": session, "labels": sorted(set(labels)), "jobsPath": jobs_key(jobs_path),
+           "at": time.time()}
+    tmp.write_text(json.dumps(row), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def write_record_launch_intent(record, call, session, labels):
+    """The hook's record that tool call `call` launches the job at `record` (a direct launch, D3). The
+    launcher claims it with `sc_claim_call`. One file per call, written whole under a temp name and
+    renamed, so no two calls share a file."""
+    path = Path(str(record) + ".launch-intent-%s.json" % call)
+    tmp = path.parent / (path.name + ".tmp-%d" % os.getpid())
+    row = {"call": call, "session": session, "labels": sorted(set(labels)), "record": str(record),
+           "at": time.time()}
+    tmp.write_text(json.dumps(row), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def claim_launch_intent(directory, jobs_path, labels, claimant):
+    """The call whose intent launched these labels: the newest unclaimed intent for the same jobs file
+    that covers every label, within LAUNCH_INTENT_GRACE_S. The claim renames the file, so one claimer
+    wins and a second claim finds nothing. None when no intent matches."""
+    key, wanted, now = jobs_key(jobs_path), set(labels), time.time()
+    found = []
+    for path in Path(directory).glob(".launch-intent-*.json"):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        at = row.get("at")
+        if row.get("jobsPath") != key or not wanted <= set(row.get("labels") or []):
+            continue
+        if not isinstance(at, (int, float)) or now - at > LAUNCH_INTENT_GRACE_S:
+            continue
+        found.append((at, path, row))
+    for _, path, row in sorted(found, key=lambda item: item[0], reverse=True):
+        try:
+            os.replace(path, path.with_name(path.name + ".claimed-" + claimant))
+        except OSError:
+            continue
+        return row.get("call")
+    return None
+
+
+def _inventory_job(label, argv, launch_id, record_path, wake_with=None, call=None):
+    job = {"label": label, "launchId": launch_id, "recordPath": os.path.abspath(record_path), "call": call}
     if wake_with:
         job["wakeWith"] = wake_with
     launcher = launcher_of(argv)
@@ -2154,12 +2191,15 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
     process_line = "%s %spid=%d" % (
         time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "winpid=%d " % process if os.name == "nt" else "", process)
+    if _LAUNCH.get("call") is None and _LAUNCH.get("jobs"):
+        _LAUNCH["call"] = claim_launch_intent(out_dir, _LAUNCH["jobs"], [a[0] for a in allocated], fanout_id)
+    call = _LAUNCH.get("call")
     inventory = {"schemaVersion": 1, "fanoutId": fanout_id,
                  "parentSessionId": parent_session, "fanoutProcess": process_line, "afterSeats": after_seats,
                  # Absolute: the inventory's readers (the Stop hook, the watcher) run from other cwds.
                  # `workdir` lets the close tell a job writing in a worktree from one writing in its checkout;
                  # `startHead` is the commit it was cut from, the base of the changes the job made.
-                 "jobs": [_inventory_job(label, argv, launch_id, record_path, (wake_groups or {}).get(label))
+                 "jobs": [_inventory_job(label, argv, launch_id, record_path, (wake_groups or {}).get(label), call)
                           for label, argv, _, launch_id, record_path in allocated]}
     try:
         with open(inventory_path, "x", encoding="utf-8") as fh:
@@ -2295,7 +2335,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
                 after = freeze_fingerprint(wd, reads)
                 results[label] = {
                     **identity, "exit": None,
-                    "error": f"detached pid died without writing {record_path}.exit",
+                    "error": f"detached pid died without recording its end (no ended journal row or .exit) for {record_path}",
                     "stdout": out_path, "stderr": err_path, "record": None, "resumeWith": None,
                     **_delivery(out_dir, label, out_path, since),
                     "frozenInput": {"before": before, "after": after, "held": before == after},
@@ -2744,11 +2784,9 @@ def _attempt_state(record):
     if record is None:
         return "no-attempt", "no attempt record"
     where = _posix(record)
-    try:
-        with open(str(record) + ".exit", encoding="utf-8") as fh:
-            return "finished", f"exit={fh.read().strip()}  {where}"
-    except OSError:
-        pass
+    code = watch_records.ended_code(record)
+    if code is not None:
+        return "finished", f"exit={code}  {where}"
     pid = _detached_pid(record)
     if pid is None:
         return "pending", f"no pid recorded yet  {where}"
@@ -2851,7 +2889,7 @@ NATIVE_ARGS, NATIVE_JOBS, SIDECAR_JOBS = "native.args.json", "native.jobs.json",
 SIDECAR_ONLY_FIELDS = ("window", "longContext", "extraArgs", "toolsCsv", "baseBuiltins", "armDisclosure")
 _LANE_KEYS = ("_lane", "_exclusive", "_shared_single_flight")
 # Fan-out job fields a `dispatch.js` job carries under the same name.
-_PASSED_FIELDS = ("tier", "pick", "spec", "readOnly", "tools")
+_PASSED_FIELDS = ("tier", "pick", "spec", "tools")
 SCRATCH_REL = ".claude/scratch"
 
 
@@ -3011,7 +3049,7 @@ def fanout_document(jobs, spill_dir, extra_for=lambda job: {}):
 
 def native_job(job, session, data, shared_context=None):
     """The `dispatch.js` job for a fan-out `job` that `route_split` kept native: the row `session` pays for, pinned
-    by `_dispatch_pins.native_pin`, and the kind's shape and agent type (`tool_profiles.engine_job`)."""
+    by `_dispatch_pins.native_pin`, and its kind (`tool_profiles.engine_job`), which sets the engine's tools."""
     sys.path.insert(0, str(ROOT / "hooks"))
     import _dispatch_pins
     alias, effort = row_on_plan(job, session, data)
@@ -3106,7 +3144,7 @@ def width_unrun(cut, lanes, session):
 def print_plan(planned, max_parallel):
     for label, argv, out_path in planned:
         print(f"{label}\n  {' '.join(argv)}\n  -> {out_path}")
-    width = "no total cap" if max_parallel is None else f"{max_parallel} at a time"
+    width = "no count bound (each plan's room and memory decide)" if max_parallel is None else f"{max_parallel} at a time"
     print(f"\n{len(planned)} job(s), {width}. Nothing dispatched.")
 
 
@@ -3305,6 +3343,10 @@ def refold_dir(out_dir):
         if not candidate.exists():
             return candidate
         attempt += 1
+
+
+# Options that start no launch. sidecar_argv reads an argv carrying one as no fan-out launch.
+NON_LAUNCH_OPTIONS = ('-h', '--help', '--status', '--review-artifact', '--select')
 
 
 def build_parser():
@@ -3508,9 +3550,8 @@ def _admission_state(record, stream, since):
     yet, or ended with no exit written), or `unstarted` (the launcher has not claimed the record)."""
     code = None
     try:
-        with open(record + ".exit", encoding="utf-8", errors="replace") as fh:
-            code = int(fh.read().strip())
-    except (OSError, ValueError):
+        code = int(watch_records.ended_code(record))
+    except (TypeError, ValueError):
         pass
     written = stream_written(stream, since)
     if code is not None:
@@ -3536,15 +3577,19 @@ def await_admission(driver, out_dir, planned, fallbacks, max_parallel, since, wa
     running = set()
     registry = model_registry.load()
 
-    def held_by(label):
-        """What holds a queued job: its transport's cap when that many admitted jobs still run on the transport,
-        else --max-parallel when that many run in all, else the two causes the driver's files do not tell apart."""
+    def held_by(label, memory, busy):
+        """What a queued job waits on: the memory gate when its launcher stands in the WAIT marker (it has no claimed
+        record yet), else its transport's cap when that many admitted jobs still run on the transport, else
+        --max-parallel when `busy` workers (admitted jobs and memory waiters) fill it, else its plan's room (`Waves`),
+        the only other gate before a claim."""
+        if memory:
+            return f"memory headroom ({memory})"
         name, cap = transport_of(argvs[label], registry)
         if cap and sum(1 for other in running if transport_of(argvs[other], registry)[0] == name) >= cap[0]:
             return f"the {name} cap of {cap[0]} concurrent children (registry maxChildren)"
-        if max_parallel is not None and len(running) >= max_parallel:
+        if max_parallel is not None and busy >= max_parallel:
             return f"--max-parallel {max_parallel}"
-        return "its plan's room or memory headroom"
+        return "its plan's room"
     deadline, idle_since = time.time() + wait, None
 
     def plan_of(label):
@@ -3612,9 +3657,14 @@ def await_admission(driver, out_dir, planned, fallbacks, max_parallel, since, wa
         if outcome and not waiting:
             idle_since = idle_since or time.time()
             if time.time() - idle_since >= settle:
+                # A job holds a worker while its launcher waits on memory (the WAIT marker, before it claims its
+                # record); an admitted job holds one while it runs.
+                mem = {label: watch_records.memory_wait(records[label]) if records.get(label) else None
+                       for label in left}
+                busy = len([v for v in outcome.values() if v == "admitted"]) + len([m for m in mem.values() if m])
                 for label in left:
-                    say(label, f"queued, not launched yet (held by {held_by(label)}); the session watcher "
-                               f"reports it", "queued")
+                    say(label, f"queued, not launched yet (waits on {held_by(label, mem[label], busy)}); the "
+                               f"session watcher reports it", "queued")
                 return outcome
         else:
             idle_since = None
@@ -3631,7 +3681,7 @@ def await_admission(driver, out_dir, planned, fallbacks, max_parallel, since, wa
 
 
 REFUSED_FILE = "launch-refused.txt"
-_LAUNCH = {"inventory": False, "out_dir": None}
+_LAUNCH = {"inventory": False, "out_dir": None, "jobs": None, "call": None}
 
 
 class _Tee:
@@ -3687,7 +3737,7 @@ def main(argv=None):
     global REFUSED
     REFUSED = None
     argv = list(sys.argv[1:] if argv is None else argv)
-    _LAUNCH.update(inventory=False, out_dir=None)
+    _LAUNCH.update(inventory=False, out_dir=None, jobs=None, call=None)
     tees = (_Tee(sys.stdout), _Tee(sys.stderr))
     real = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = tees
@@ -3807,7 +3857,7 @@ def _main(argv):
     try:
         jobs, shared_context, spill_dir = load_jobs(args.jobs)
         lanes = job_lanes(jobs)
-        groups = wake_groups(jobs)
+        groups = wake_groups(jobs, jobs_measurement(args.jobs))
         if lanes and args.review:
             raise JobError("chains do not combine with --review: a review consolidates independent seats")
         selection = None
@@ -3831,6 +3881,7 @@ def _main(argv):
                                                    str(REPO))).resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         _LAUNCH["out_dir"] = out_dir
+        _LAUNCH["jobs"] = os.path.abspath(args.jobs)
         REFUSED = RefusedLaunch(out_dir, [j.get("label") for j in jobs])
         jobs = _drop_unfit_rows([normalize_job(j, data, shared_context) for j in jobs], data)
     except (JobError, model_registry.RegistryError) as err:

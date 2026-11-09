@@ -454,21 +454,11 @@ class Subject:
         wanted = _key(text)
         return [item for item in self.files if _key(item) == wanted]
 
-    def hits(self, cited):
-        """The subject files a cited path names: an exact path first, else a relative citation as a path suffix.
-        `route` asks every subject for an exact hit before any suffix hit."""
-        exact = self.exact_hits(cited)
-        text = self.subject_text(cited)
-        if exact or not text or Path(text).is_absolute():
-            return exact
-        wanted = _key(text)
-        return [item for item in self.files if ("/" + _key(item)).endswith("/" + wanted)]
-
     def file_of(self, row):
         """The subject file a finding is about: the one its `file` names, else the sole file of a one-file subject."""
         cited = row.get("file")
         if cited:
-            found = self.hits(cited)
+            found = self.exact_hits(cited)
             return found[0] if len(found) == 1 else None
         return self.files[0] if len(self.files) == 1 else None
 
@@ -635,8 +625,6 @@ def route(rows, subjects):
                 unrouted.append(row["id"])
             continue
         found = [subject.exact_hits(row["file"]) for subject in subjects]
-        if not any(found):
-            found = [subject.hits(row["file"]) for subject in subjects]
         hits = [i for i, files in enumerate(found) if files]
         if len(hits) == 1 and len(found[hits[0]]) == 1:
             routed[row["id"]] = hits[0]
@@ -673,7 +661,7 @@ def independent_verdicts(rows, subjects, out):
         for item in row.get("evidence") or []:
             copy = dict(item)
             for number, subject in enumerate(subjects if isinstance(item.get("file"), str) else []):
-                found = subject.hits(item["file"])
+                found = subject.exact_hits(item["file"])
                 if len(found) == 1:
                     snapshot = artifact_of(subject, found[0], number)
                     if snapshot:

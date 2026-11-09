@@ -3,12 +3,12 @@ const path = require('path')
 const assert = require('node:assert/strict')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const source = fs.readFileSync(path.join(__dirname, '../workflows/dispatch.js'), 'utf8').replace('export const meta', 'const meta')
-const job = (model, effort) => ({label: 'fixture', promptPath: 'fixture.md', model, effort, agentType: 'Explore'})
+const job = (model, effort) => ({label: 'fixture', promptPath: 'fixture.md', model, effort, kind: 'reviewer'})
 async function run(args) {
   const calls = []
   const agent = async (_prompt, opts) => { calls.push(opts); return 'done' }
   const output = await new AsyncFunction('args', 'agent', 'parallel', 'phase', 'log', source)(
-    args, agent, fs => Promise.all(fs.map(f => f())), () => {}, () => {})
+    require('./_engine_run').withKinds(args), agent, fs => Promise.all(fs.map(f => f())), () => {}, () => {})
   return {output, calls}
 }
 ;(async () => {

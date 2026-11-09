@@ -14,9 +14,9 @@ Xvfb daemon without XAUTHORITY management causes auth failures.
 
 This hook rewrites executing bare `dotnet test` segments on cloud to put
 `xvfb-run --auto-servernum` directly before `dotnet test`, adding `--settings .runsettings`
-when that invocation has none. A command wrapper before it (`time`, `{`, `exec`, `nohup`, `env`,
-with any assignments after them) does not hide the test. Quoted mentions, non-shell heredoc
-bodies and `dotnet test` named as another command's argument stay unchanged.
+when that invocation has none. A shell wrapper before it, for example `time`, `sudo`, `env -i`
+or `!`, together with that wrapper's flag arguments, does not hide the test. Quoted mentions,
+non-shell heredoc bodies and `dotnet test` named as another command's argument stay unchanged.
 """
 
 import json
@@ -24,8 +24,43 @@ import os
 import sys
 
 from _claude_scope import is_cloud
+from _command_text import executable_spans, command_words, executable_word
 
-_SHELL_PREFIXES = frozenset({'time', '{', 'exec', 'nohup', 'env'})
+# A wrapper runs the words after it instead of taking them as data. These are examples, not the
+# definition: a wrapper missing here leaves the test unwrapped, so add it with a case in
+# .claude/tests/test_cloud_test_enforcer.py.
+_WRAPPERS = frozenset({'time', '{', 'exec', 'nohup', 'env', 'command', 'builtin', '!', 'nice',
+                       'stdbuf', 'sudo'})
+# The wrapper options that consume the next word; every other `-` word is a switch.
+_WRAPPER_VALUE_OPTS = {
+    'nice': ('-n', '--adjustment'),
+    'sudo': ('-u', '-g', '-p', '-C', '-T', '-U', '-r', '-t', '-D', '-R', '-h', '-a', '-c'),
+    'stdbuf': ('-i', '-o', '-e', '--input', '--output', '--error'),
+    'env': ('-u', '-C', '-S', '--unset', '--chdir', '--split-string'),
+    'exec': ('-a',),
+}
+
+
+def _test_index(source_words, segment):
+    """Index of the `dotnet test` word pair the segment runs, after assignments, wrappers and their
+    flag arguments; None when `dotnet test` is another command's data."""
+    head = executable_word(source_words, segment)
+    wrapper = ''
+    while head < len(source_words):
+        if [word.value for word in source_words[head:head + 2]] == ['dotnet', 'test']:
+            return head
+        value = source_words[head].value
+        if value in _WRAPPERS:
+            wrapper = value
+        elif value.startswith('-'):
+            pass
+        else:
+            return None
+        head += 1
+        if source_words[head - 1].value in _WRAPPER_VALUE_OPTS.get(wrapper, ()):
+            head += 1
+        head += executable_word(source_words[head:], segment)
+    return None
 
 
 def main():
@@ -50,20 +85,16 @@ def main():
 
     command = tool_input.get("command", "")
 
-    from _command_text import executable_spans, command_words, executable_word
     replacements = []
     for at, end, segment in executable_spans(command):
         parsed = command_words(segment)
         if parsed is None:
             continue
         source_words, _ = parsed
-        head = executable_word(source_words, segment)
-        while head < len(source_words) and source_words[head].value in _SHELL_PREFIXES:
-            head += 1
-            head += executable_word(source_words[head:], segment)
-        words = [word.value for word in source_words[head:]]
-        if words[:2] != ['dotnet', 'test']:
+        head = _test_index(source_words, segment)
+        if head is None:
             continue
+        words = [word.value for word in source_words[head:]]
         settings = '' if '--settings' in words or any(w.startswith('--settings=') for w in words) else ' --settings .runsettings'
         start = source_words[head].start
         test_end = source_words[head + 1].end

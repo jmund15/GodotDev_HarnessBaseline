@@ -397,7 +397,7 @@ class FoldCheckTests(unittest.TestCase):
         subject = self.fx.subject()
         cited = str(self.fx.plan).upper().replace(self.fx.plan.name.upper(), self.fx.plan.name)
         with unittest.mock.patch.object(fold_check.os.path, "normcase", lambda value: value):
-            self.assertEqual(subject.hits(cited), [self.fx.rel])
+            self.assertEqual(subject.exact_hits(cited), [self.fx.rel])
 
     def test_route_gives_every_shared_routing_vector_its_expected_result(self):
         table = json.loads((ROOT / ".claude/tests/fold_routing_vectors.json").read_text(encoding="utf-8"))
@@ -749,7 +749,7 @@ class PathTableTests(unittest.TestCase):
             }
             for label, cited in cases.items():
                 with self.subTest(form=label):
-                    self.assertEqual(subject.hits(cited), [rel])
+                    self.assertEqual(subject.exact_hits(cited), [rel])
                     self.assertEqual(subject.exact_hits(cited), [rel])
 
     def test_a_citation_naming_another_worktree_does_not_hit_this_subject(self):
@@ -757,7 +757,7 @@ class PathTableTests(unittest.TestCase):
             root = Path(tmp).resolve() / ".claude" / "worktrees" / "sync-pr101"
             rel = ".claude/tools/post_check.py"
             subject = fold_check.Subject(root, [rel], {"kind": "blobs", "files": {rel: None}})
-            self.assertEqual(subject.hits(".claude/worktrees/other-wt/.claude/tools/post_check.py"), [])
+            self.assertEqual(subject.exact_hits(".claude/worktrees/other-wt/.claude/tools/post_check.py"), [])
 
     def test_importing_fold_check_does_not_load_the_proof_runner(self):
         probe = "import sys; sys.path.insert(0, sys.argv[1]); import fold_check; print('harness_tests' in sys.modules)"

@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import tempfile
 import threading
 import time
@@ -10,6 +11,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+# A battery run that reuses passes exports this to every proof; the fixtures here drive the runner itself.
+os.environ.pop("HARNESS_REUSE_PASSES", None)
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('harness_integrity_subject', ROOT / '.claude/scripts/harness_tests.py')
 runner = importlib.util.module_from_spec(spec)
@@ -92,18 +95,31 @@ class HarnessIntegrityTests(unittest.TestCase):
         self.assertEqual(exited.exception.code, 0)
         run.assert_not_called()
 
-    def test_only_measured_slow_proof_receives_longer_default_timeout(self):
-        # The built-in table (not a project's local `adaptation.json` override, which never
-        # publishes) is the only slow-proof entry every checkout shares.
-        slow_name, slow_timeout = next(iter(runner._BUILTIN_PROOF_TIMEOUTS.items()))
+    def test_direct_run_takes_the_default_or_its_explicit_timeout(self):
         with patch.object(runner, '_run_child', return_value=(0, '')) as process, \
-                patch.dict(runner._PROOF_TIMEOUTS, runner._BUILTIN_PROOF_TIMEOUTS, clear=True):
-            runner.run_proof(slow_name)
-            self.assertEqual(process.call_args.args[2], slow_timeout)
+                patch.dict(runner._PROOF_TIMEOUTS, {}, clear=True):
             runner.run_proof('test_ordinary.py')
             self.assertEqual(process.call_args.args[2], 120)
-            runner.run_proof(slow_name, timeout=10)
+            runner.run_proof('test_baseline_publish.py', timeout=10)
             self.assertEqual(process.call_args.args[2], 10)
+
+    def test_recorded_duration_sets_a_proof_timeout_red(self):
+        # Real input: test_baseline_publish.py, which carried a hand-set 720 s built-in cap.
+        name = 'test_baseline_publish.py'
+        self.assertEqual(runner._timeout_for(name, {name: 300}), 900)
+        self.assertEqual(runner._timeout_for(name, {name: 100}), 300)
+        self.assertEqual(runner._timeout_for(name, {}), 120)
+
+    def test_cold_timed_out_proof_reruns_alone_at_three_times_the_default_red(self):
+        # Real input: a checkout with no durations record, publish times out at its first attempt.
+        seen = []
+        def proof(_path, _timeout=None):
+            seen.append(_timeout)
+            if len(seen) == 1:
+                return 'fail', 0.0, 'TIMEOUT after %ss' % _timeout
+            return 'pass', 0.0, ''
+        self.run_pool(proof, ['test_baseline_publish.py'], jobs=1)
+        self.assertEqual(seen, [120, 360])
 
     def run_pool(self, proof, names, serial=(), jobs=2, durations=None, with_timing=False, flaky_seed=None):
         with tempfile.TemporaryDirectory(prefix='harness-pool-') as tmp:

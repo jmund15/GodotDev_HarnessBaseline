@@ -12,14 +12,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def project_owned(relpath):
-    """True when this checkout's lock marks the repo-relative `relpath` `forked` or `local`;
-    False when there is no readable lock."""
+    """True when this checkout's lock marks the repo-relative `relpath` `forked` or `local`, or has no
+    row for it (no row is unjudged, never shipped: X2 D1); False when there is no readable lock."""
     try:
         lock = json.loads((ROOT / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    entry = (lock.get("files") or {}).get(relpath) or {}
-    return entry.get("status") in ("forked", "local")
+    files = lock.get("files") or {}
+    if relpath not in files:
+        return True
+    return (files[relpath] or {}).get("status") in ("forked", "local")
 
 
 def rows():

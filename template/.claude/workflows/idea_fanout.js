@@ -7,7 +7,7 @@ export const meta = {
   ],
 }
 // POST-CHECK exempt (ideas not claims): it returns ideas and critiques, not claims about files.
-// Args: {generators: [{key, instr, model, effort}], critics?: [{key, instr, model, effort}], contextPrefix, genCount?, genFields?,
+// Args: {kind, generators: [{key, instr, model, effort}], critics?: [{key, instr, model, effort}], contextPrefix, genCount?, genFields?,
 //        critic?: {model, effort}}. Every generator and critic the caller declares pins its own model (and effort when the
 //        transport declares efforts). When args.critics is omitted, the engine's default critics start and take args.critic,
 //        which is then required and validated before any agent starts. No engine supplies a default pin.
@@ -15,12 +15,23 @@ export const meta = {
 // Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
 // string is a caller mistake, but an uncaught SyntaxError names neither this workflow nor the
 // expected shape, so the caller cannot self-correct and retries the same way. Fail legibly instead.
+// ENGINE-BLOCK-BEGIN A
 let A
+// ENGINE-BLOCK-END A
 try {
   A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
 } catch (e) {
   return { error: 'idea-fanout: args must be JSON-serializable {generators: [{key, instr, model, effort}, ...], contextPrefix}. Received a non-JSON string. ' + ((e && e.message) || '') }
 }
+// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge) for every child it spawns;
+// hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
+// child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
+// entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
+const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
+if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
+  return { error: 'idea-fanout: args.kind is required (scout|lens|reviewer|author|judge), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. Every generator and critic runs as that kind; ideation returns structured data and writes nothing.' }
+}
+const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 const generators = Array.isArray(A.generators) ? A.generators : []
 const contextPrefix = A.contextPrefix || '' // the pushed cluster CONTEXT, prepended to every agent prompt
 const genCount = A.genCount || '15-20'      // raw candidates each generator returns
@@ -36,15 +47,23 @@ if (generators.length < 2) {
 // every Workflow call: {name, ids, efforts?}. This engine holds no model list, so a
 // call the guard did not rewrite fails closed. Inlined per script because the Workflow sandbox has
 // no require/import.
+// ENGINE-BLOCK-BEGIN TRANSPORT
 const TRANSPORT = A.__transport
+// ENGINE-BLOCK-END TRANSPORT
+// ENGINE-BLOCK-BEGIN validStringList
 const validStringList = (value) => Array.isArray(value) && value.length > 0
   && value.every(item => typeof item === 'string' && item.trim())
+// ENGINE-BLOCK-END validStringList
 if (!TRANSPORT || typeof TRANSPORT !== 'object' || !validStringList(TRANSPORT.ids)
   || (TRANSPORT.efforts !== undefined && !validStringList(TRANSPORT.efforts))) {
   return { error: 'idea-fanout: args.__transport is missing or malformed. hooks/workflow_provider_guard.py injects the endpoint\'s model vocabulary ({name, ids, efforts?}); without it this engine has no legal pins and refuses to guess.' }
 }
+// ENGINE-BLOCK-BEGIN PIN
 const PIN = (m) => m
+// ENGINE-BLOCK-END PIN
+// ENGINE-BLOCK-BEGIN EFF
 const EFF = (e) => e
+// ENGINE-BLOCK-END EFF
 
 const VALID_MODELS = TRANSPORT.ids
 const VALID_EFFORTS = TRANSPORT.efforts
@@ -127,7 +146,9 @@ const CRITIC_SCHEMA = {
 // (feedback_no_unilateral_condensation) so Claude can expand them downstream.
 // The platform relays the triggering user message to every agent as authoritative; a lens whose
 // mandate looks unrelated can answer that message instead of its brief.
+// ENGINE-BLOCK-BEGIN RELAY_LINE
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
+// ENGINE-BLOCK-END RELAY_LINE
 
 const GEN_GUARD = [
   '',
@@ -138,43 +159,11 @@ const GEN_GUARD = [
   'Return ONLY your JSON candidate list per the schema — no prose around it.',
 ].join('\n')
 
-// TOOL PROFILES — the inventory each generator and each critic of this run launches with. A native
-// child INHERITS the session's MCP set, so an entry is `inherited` with effectiveMcp unknown unless
-// the child runs as its generated agent type (`agent-type`).
-const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
-// LEAN AGENT TYPE (plan lean-delegate-agent-types). Copied per engine: a Workflow script has no imports.
-// A job runs as its profile's generated `<prefix>-*` type only when it asked for `general-purpose` or no
-// type, its profile names an `agentType` with no add/remove delta, and hooks/workflow_provider_guard.py
-// proved its brief covered: `args.__coverage[key].covered` holds the profile's shape. No entry, no swap.
-// A swapped prompt ends with `args.__skillIndex`, because a `<prefix>-*` type has no Skill tool. A session
-// that predates the generated type rejects it; the job retries once, as asked (the known-good type), and is re-recorded.
-const LEAN = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { c: (a && a.__coverage) || {}, s: (a && typeof a.__skillIndex === 'string') ? a.__skillIndex : '' } } catch (e) { return { c: {}, s: '' } } })()
-const leanTypeOf = (keys, asked, tp) => {
-  const cov = keys.map(k => LEAN.c[k]).find(Boolean)
-  return ((asked == null || asked === 'general-purpose') && tp && tp.agentType
-    && !(tp.add || []).length && !(tp.remove || []).length
-    && cov && Array.isArray(cov.covered) && cov.covered.includes(tp.shape)) ? tp.agentType : null
-}
-const leanRecord = (tp, asked, swapped) => tp ? Object.assign({}, tp, swapped
-  ? { agentType: swapped, enforcement: 'agent-type', effectiveMcp: (tp.mcpServers || []).join(', ') }
-  : { agentType: asked || 'general-purpose' }) : null
-const leanAgent = (prompt, opts, swapped, rec) => {
-  if (!swapped) return agent(prompt, opts)
-  const asked = opts.agentType || 'general-purpose'
-  return agent(LEAN.s ? prompt + '\n\n' + LEAN.s : prompt, Object.assign({}, opts, { agentType: swapped })).catch(e => {
-    const msg = String((e && e.message) || e)
-    if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-    log('FALLBACK ' + opts.label + ' ' + swapped + '→' + asked)
-    rec[opts.label] = Object.assign({}, rec[opts.label], { agentType: 'general-purpose', enforcement: 'inherited', effectiveMcp: 'unknown/inherited' })
-    log('TOOL-PROFILES-REVISED ' + JSON.stringify(rec))
-    return agent(prompt, Object.assign({}, opts, { agentType: asked }))
-  })
-}
-const tpOf = (label) => TOOLP.d[label] || TOOLP.f['any'] || null
-const swapOf = (label) => leanTypeOf([label], undefined, tpOf(label))
+// TOOL PROFILES — every generator and critic of this run launches as the call's kind row.
+const tpOf = () => KP_RECORD
 const RECORDED = {}
 const tpLog = (labels) => {
-  for (const l of labels) RECORDED[l] = leanRecord(tpOf(l), undefined, swapOf(l))
+  for (const l of labels) RECORDED[l] = tpOf(l)
   log('TOOL-PROFILES ' + JSON.stringify(Object.fromEntries(labels.map(l => [l, RECORDED[l]]))))
 }
 
@@ -185,7 +174,7 @@ const genResults = await parallel(generators.map((g) => () => {
     + '## YOUR DIVERGENCE LENS: ' + (g.key || 'lens') + '\n' + (g.instr || '')
     + '\n\nReturn ' + genCount + ' candidate ideas as structured data.' + GEN_GUARD
   const label = 'gen:' + (g.key || 'lens')
-  return leanAgent(prompt, { label, phase: 'Generate', schema: GEN_SCHEMA, model: PIN(g.model), ...(g.effort !== undefined ? { effort: EFF(g.effort) } : {}) }, swapOf(label), RECORDED)
+  return agent(prompt, { label, phase: 'Generate', agentType: KP.agentType, schema: GEN_SCHEMA, model: PIN(g.model), ...(g.effort !== undefined ? { effort: EFF(g.effort) } : {}) })
     .then((r) => ({ key: g.key, candidates: (r && Array.isArray(r.candidates)) ? r.candidates : [], dead: !r }))
 }))
 
@@ -233,7 +222,7 @@ const critiqueResults = await parallel(critics.map((c) => () => {
     + '## MERGED CANDIDATE POOL (' + merged.length + ' items, indexed)\n' + pool
     + '\n\n## YOUR CRITIC LENS: ' + (c.key || 'critic') + '\n' + (c.instr || '') + CRITIC_GUARD
   const label = 'critic:' + (c.key || 'critic')
-  return leanAgent(prompt, { label, phase: 'Critique', schema: CRITIC_SCHEMA, model: PIN(pin.model), ...(pin.effort !== undefined ? { effort: EFF(pin.effort) } : {}) }, swapOf(label), RECORDED)
+  return agent(prompt, { label, phase: 'Critique', agentType: KP.agentType, schema: CRITIC_SCHEMA, model: PIN(pin.model), ...(pin.effort !== undefined ? { effort: EFF(pin.effort) } : {}) })
     .then((r) => ({
       key: c.key,
       notes: (r && Array.isArray(r.notes)) ? r.notes : [],

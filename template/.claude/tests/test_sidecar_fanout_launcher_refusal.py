@@ -5,7 +5,7 @@ would refuse from the job row alone, before it spawns or detaches anything.
 The captured failure (session 9b60b8a7, 2026-10-25T00:55Z): one Bash call wrote a jobs file (`alias: opus`,
 `shape: survey`) and ran `sidecar_fanout.py <jobs> --detach`. The PreToolUse hook could not read a file the
 same call wrote, `--detach` ran only the session-state doctrine check, and the detached child's launcher
-refused the pin ("Sidecar launch outside the tier its shape implies") into a `.err` file nobody read. The
+refused the pin ("Sidecar launch outside the tier its kind implies") into a `.err` file nobody read. The
 caller saw `fan-out detached: driver pid ...` and waited 25 minutes.
 
 Fakes only: `detach_driver`, `run_jobs`, the duplicate-launch scan, the capacity read and the doctrine
@@ -39,7 +39,7 @@ spec.loader.exec_module(sf)
 
 TMP = tempfile.mkdtemp(prefix="sfanout_refusal_")
 DATA = model_registry.load()
-TIERS = dc.shape_tiers()
+TIERS = dc.kind_tiers()
 CALLS = {"detach": 0, "run": 0}
 REFUSAL_HEAD = "Sidecar launch outside the tier its job implies"
 
@@ -74,8 +74,8 @@ def anthropic_aliases(shape, fits):
                   and (dc.tier_fit(row["alias"], tier, "anthropic", DATA) is None) is fits)
 
 
-UNFIT = anthropic_aliases("survey", False)
-FIT = anthropic_aliases("survey", True)
+UNFIT = anthropic_aliases("scout", False)
+FIT = anthropic_aliases("scout", True)
 assert len(UNFIT) >= 2 and FIT, ("the registry no longer has two unfit and one fit anthropic pin for the survey "
                                  "shape; pick another shape", UNFIT, FIT)
 
@@ -147,8 +147,7 @@ for mode in ("--detach", "--dry-run", None):
 
 def refused_text_is_the_launchers():
     """The tool prints the text `launcher_launch` prints: one source, `sidecar_dispatch_context.dispatch_checks`."""
-    expected = ctx.dispatch_checks([ctx.LaunchJob("unfit-a", UNFIT[0], "survey", "anthropic")],
-                                   {"unfit-a": "scout"})
+    expected = ctx.dispatch_checks([ctx.LaunchJob("unfit-a", UNFIT[0], "scout", "anthropic")])
     _code, out, err, *_ = run([job("unfit-a", UNFIT[0])], "--detach")
     return bool(expected) and expected in (out + err)
 
@@ -167,7 +166,7 @@ case("a kind that declares no tier is never refused for its pin", tier_less_kind
 # later reorder cannot move them behind `--detach`. These held before the fix; the tier fit is what moved.
 avoiding = sorted((row["alias"], rung) for row in DATA["models"] if row.get("alias") and row.get("transport") == "anthropic"
                   and model_registry.model_available(row["id"], DATA) for rung in model_registry.avoided_rungs(row)
-                  if dc.tier_fit(row["alias"], TIERS["survey"], "anthropic", DATA) is None)
+                  if dc.tier_fit(row["alias"], TIERS["scout"], "anthropic", DATA) is None)
 
 
 def avoided_effort_refused():
@@ -272,8 +271,8 @@ def _aliases(fits_tier, misses_tier):
                   and dc.tier_fit(row["alias"], misses_tier, "anthropic", DATA) is not None)
 
 
-ARCH_NOT_SURVEY = _aliases("architect", TIERS["survey"])
-REVIEW_NOT_ARCH = _aliases(TIERS["review"], "architect")
+ARCH_NOT_SURVEY = _aliases("architect", TIERS["scout"])
+REVIEW_NOT_ARCH = _aliases(TIERS["reviewer"], "architect")
 assert ARCH_NOT_SURVEY and REVIEW_NOT_ARCH, ("the registry no longer separates architect from the survey and review "
                                              "tiers on anthropic", ARCH_NOT_SURVEY, REVIEW_NOT_ARCH)
 
@@ -284,7 +283,7 @@ def written_tier_binds():
 
 
 def written_tier_refuses_the_pin_it_does_not_fit():
-    code, out, err, *_ = run([job("fan-read", ARCH_NOT_SURVEY[0], tier=TIERS["survey"])], "--dry-run")
+    code, out, err, *_ = run([job("fan-read", ARCH_NOT_SURVEY[0], tier=TIERS["scout"])], "--dry-run")
     text = out + err
     return code == 2 and REFUSAL_HEAD in text and "fan-read" in text and "the job's `tier`" in text
 

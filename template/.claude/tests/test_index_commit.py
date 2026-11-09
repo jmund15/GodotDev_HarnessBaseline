@@ -2,12 +2,11 @@
 r"""Proof for tools/index_commit.py, the private-index commit cycle.
 
 A throwaway git repo under TMP holds the whole fixture: the tool and the two modules it
-imports are copied in, and `baseline_sync.py classify` is replaced by a planted script named
-through INDEX_COMMIT_CLASSIFY_CMD. Nothing here touches the real checkout's index.
+imports are copied in. Nothing here touches the real checkout's index.
 
 Cases:
-- a new gitignored file under `.claude/tests/` is force-added and gains its lock row; the
-  staged lock blob holds HEAD's rows plus that row only, even when the working lock carries
+- a new gitignored file under `.claude/tests/` is force-added and gets no lock row (X2 D1); the
+  staged lock blob holds HEAD's rows only, even when the working lock carries
   an extra planted peer row;
 - a tracked path deleted from the working tree is staged as a deletion and its lock row removed;
 - a peer file staged in the shared index is absent from the private index and is still staged
@@ -38,33 +37,16 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 TOOL = REPO / ".claude" / "tools" / "index_commit.py"
+sys.path.insert(0, str(TOOL.parent))
+import lock_merge  # the lock's one serializer: the committed format every fixture lock must match
+
+
+def lock_text(lock):
+    return lock_merge.dump_lock(lock).decode("utf-8")
 HOOKS = REPO / ".claude" / "hooks"
 
 LOCK = ".claude/baseline.lock.json"
 HEAD_ROWS = {"keep_a.py", "keep_b.py"}
-
-STUB = '''"""Planted stand-in for `baseline_sync.py classify`: one `local` row per named path."""
-import hashlib
-import json
-import subprocess
-import sys
-from pathlib import Path
-
-assert sys.argv[1] == "classify", "the tool must call the classifier's own CLI shape: %r" % sys.argv
-assert "--status" in sys.argv, "baseline_sync.py classify refuses without --status: %r" % sys.argv
-root = Path(subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True,
-                           check=True).stdout.strip())
-rest = sys.argv[2:]
-paths = [a for i, a in enumerate(rest) if not a.startswith("-") and (i == 0 or rest[i - 1] != "--status")]
-lock_path = root / ".claude" / "baseline.lock.json"
-lock = json.loads(lock_path.read_text(encoding="utf-8"))
-for relpath in paths:
-    blob = subprocess.run(["git", "show", ":" + relpath], capture_output=True, check=True).stdout
-    lock.setdefault("files", {})[relpath] = {
-        "status": "local", "hash": hashlib.sha256(blob).hexdigest()}
-lock_path.write_text(json.dumps(lock, indent=2, ensure_ascii=False) + "\\n",
-                     encoding="utf-8", newline="\\n")
-'''
 
 LOCK_SCAFFOLD = {
     "baseline_repo": "https://example.invalid/baseline.git",
@@ -85,7 +67,6 @@ def check(label, ok, detail=""):
 def git_env(home):
     env = dict(os.environ)
     env.pop("GIT_INDEX_FILE", None)
-    env.pop("INDEX_COMMIT_CLASSIFY_CMD", None)
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["HOME"] = str(home)
     env["USERPROFILE"] = str(home)
@@ -113,9 +94,8 @@ def scene(tmp, name):
     shutil.copy2(TOOL.parent / "cli_usage.py", root / ".claude" / "tools" / "cli_usage.py")
     for module in ("_hook_state.py", "_file_lock.py"):
         shutil.copy2(HOOKS / module, root / ".claude" / "hooks" / module)
-    (root / ".claude" / "tools" / "classify_stub.py").write_text(STUB, encoding="utf-8", newline="\n")
     (root / ".gitignore").write_text(".claude/tests/\n", encoding="utf-8", newline="\n")
-    (root / LOCK).write_text(json.dumps(LOCK_SCAFFOLD, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (root / LOCK).write_text(lock_text(LOCK_SCAFFOLD), encoding="utf-8", newline="\n")
     for relpath in sorted(HEAD_ROWS) + ["gone.py", "peer.py"]:
         (root / relpath).write_text("head %s\n" % relpath, encoding="utf-8", newline="\n")
     env = git_env(root)
@@ -127,7 +107,6 @@ def scene(tmp, name):
 
 def tool(root, env, args, extra_env=None):
     run_env = dict(env)
-    run_env["INDEX_COMMIT_CLASSIFY_CMD"] = "python3 .claude/tools/classify_stub.py classify"
     if extra_env:
         run_env.update(extra_env)
     return subprocess.run([sys.executable, str(root / ".claude" / "tools" / "index_commit.py")] + args,
@@ -172,25 +151,24 @@ def case_new_gitignored_file(tmp):
     (root / ".claude" / "tests" / "new_proof.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
     work = json.loads((root / LOCK).read_text(encoding="utf-8"))
     work["files"]["planted_peer_row.py"] = {"status": "local", "hash": "f" * 64}
-    (root / LOCK).write_text(json.dumps(work, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (root / LOCK).write_text(lock_text(work), encoding="utf-8", newline="\n")
 
     proc = tool(root, env, ["stage", "--name", "newfile", "--", ".claude/tests/new_proof.py"])
     check("new gitignored path: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
     if proc.returncode != 0:
         return
     staged = names(root, idx_env(env, root, "newfile"), cached=True)
-    check("new gitignored path is force-added to the private index",
-          staged == [".claude/baseline.lock.json", ".claude/tests/new_proof.py"], staged)
+    check("new gitignored path is force-added to the private index; the unchanged lock is not staged",
+          staged == [".claude/tests/new_proof.py"], staged)
     private = lock_at(root, "", idx_env(env, root, "newfile"))
-    check("lock blob holds HEAD's rows plus the new row only",
-          sorted(private["files"]) == sorted(["keep_a.py", "keep_b.py", ".claude/tests/new_proof.py"]),
+    check("lock blob holds HEAD's rows only: an unjudged new path needs no row",
+          sorted(private["files"]) == sorted(["keep_a.py", "keep_b.py"]),
           sorted(private["files"]))
     check("the planted peer row is not in the lock blob",
           "planted_peer_row.py" not in private["files"], sorted(private["files"]))
-    check("the new row is a local row written by classify",
-          private["files"][".claude/tests/new_proof.py"].get("status") == "local",
+    check("stage writes no row for the unjudged path", ".claude/tests/new_proof.py" not in private["files"],
           private["files"].get(".claude/tests/new_proof.py"))
-    check("stage reports the added row", ".claude/tests/new_proof.py" in proc.stdout, proc.stdout)
+    check("stage reports no lock row for the unjudged path", "+ lock row" not in proc.stdout, proc.stdout)
     check("stage prints the GIT_INDEX_FILE commit line",
           "GIT_INDEX_FILE=.git/index-newfile git commit" in proc.stdout, proc.stdout)
     commit = commit_index(root, env, "newfile", "new proof")
@@ -200,8 +178,8 @@ def case_new_gitignored_file(tmp):
     check("a lock the commit changed is not left as a staged revert in the shared index",
           names(root, env, cached=True) == [], names(root, env, cached=True))
     text = (root / LOCK).read_text(encoding="utf-8")
-    check("resync keeps the working lock in its authored indent-2 format, never one compact line",
-          text.startswith("{\n  \"") and text.endswith("}\n"), text[:80])
+    check("resync keeps the working lock in the one-row-per-line format, never one compact line",
+          text == lock_text(json.loads(text)), text[:80])
 
 
 def case_deleted_path(tmp):
@@ -225,13 +203,13 @@ def case_forget_row_of_earlier_deletion(tmp):
     root, env = scene(tmp, "forget")
     seeded = json.loads((root / LOCK).read_text(encoding="utf-8"))
     seeded["files"]["gone.py"] = {"status": "tracked", "hash": "e" * 64}
-    (root / LOCK).write_text(json.dumps(seeded, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (root / LOCK).write_text(lock_text(seeded), encoding="utf-8", newline="\n")
     git(root, ["commit", "-q", "-m", "row for gone.py", "--", LOCK], env)
     git(root, ["rm", "-q", "gone.py"], env)
     git(root, ["commit", "-q", "-m", "delete gone.py, lock untouched"], env)
     work = json.loads((root / LOCK).read_text(encoding="utf-8"))
     work["files"]["planted_peer_row.py"] = {"status": "local", "hash": "f" * 64}
-    (root / LOCK).write_text(json.dumps(work, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (root / LOCK).write_text(lock_text(work), encoding="utf-8", newline="\n")
     proc = tool(root, env, ["stage", "--name", "forget", "--", "gone.py"])
     check("forget scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
     if proc.returncode != 0:
@@ -270,7 +248,7 @@ def case_peer_and_resync(tmp):
     root, env = scene(tmp, "resync")
     work = json.loads((root / LOCK).read_text(encoding="utf-8"))
     work["files"]["planted_peer_row.py"] = {"status": "local", "hash": "f" * 64}
-    (root / LOCK).write_text(json.dumps(work, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (root / LOCK).write_text(lock_text(work), encoding="utf-8", newline="\n")
     (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
     (root / "peer.py").write_text("peer staged\n", encoding="utf-8", newline="\n")
     git(root, ["add", "--", "peer.py"], env)
@@ -321,7 +299,7 @@ def case_changed_row_travels_with_its_path(tmp):
     pulled = dict(work["files"]["keep_a.py"], hash="a" * 64)
     work["files"]["keep_a.py"] = pulled
     work["files"]["keep_b.py"] = dict(work["files"]["keep_b.py"], hash="b" * 64)
-    (root / LOCK).write_text(json.dumps(work, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (root / LOCK).write_text(lock_text(work), encoding="utf-8", newline="\n")
     (root / "keep_a.py").write_text("pulled\n", encoding="utf-8", newline="\n")
     proc = tool(root, env, ["stage", "--name", "rowchange", "--", "keep_a.py"])
     check("row-change scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
@@ -429,7 +407,6 @@ def case_seeded_from_recorded_base(tmp):
     root, env = scene(tmp, "race")
     (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
     run_env = dict(env)
-    run_env["INDEX_COMMIT_CLASSIFY_CMD"] = "python3 .claude/tools/classify_stub.py classify"
     proc = subprocess.run([sys.executable, "-c", RACE_DRIVER], cwd=str(root), env=run_env,
                           capture_output=True, encoding="utf-8", timeout=180)
     check("race scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
@@ -448,6 +425,10 @@ def case_head_moved_lock_rows(tmp):
     """A lock-only commit lands between stage and a private-index commit that adds a row; its rows are reverted."""
     root, env = scene(tmp, "lockmoved")
     (root / ".claude" / "tests" / "row_proof.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
+    # A judged row in the working lock is what puts the lock into this private-index commit.
+    judged = json.loads((root / LOCK).read_text(encoding="utf-8"))
+    judged["files"][".claude/tests/row_proof.py"] = {"status": "local", "hash": "a" * 64}
+    (root / LOCK).write_text(lock_text(judged), encoding="utf-8", newline="\n")
     proc = tool(root, env, ["stage", "--name", "lockmoved", "--", ".claude/tests/row_proof.py"])
     check("lock-moved scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
     if proc.returncode != 0:
@@ -456,10 +437,10 @@ def case_head_moved_lock_rows(tmp):
     peer["files"]["keep_b.py"] = {"status": "local", "hash": "e" * 64}
     work = json.loads((root / LOCK).read_text(encoding="utf-8"))
     work["files"]["keep_b.py"] = peer["files"]["keep_b.py"]
-    (root / LOCK).write_text(json.dumps(peer, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (root / LOCK).write_text(lock_text(peer), encoding="utf-8", newline="\n")
     git(root, ["add", "--", LOCK], env)
     git(root, ["commit", "-q", "-m", "peer reclassifies keep_b.py"], env)
-    (root / LOCK).write_text(json.dumps(work, indent=2) + "\n", encoding="utf-8", newline="\n")
+    (root / LOCK).write_text(lock_text(work), encoding="utf-8", newline="\n")
     commit_index(root, env, "lockmoved", "mine")
     res = tool(root, env, ["resync", "--name", "lockmoved"])
     out = res.stdout + res.stderr
@@ -626,10 +607,10 @@ import json, sys
 from pathlib import Path
 sys.path.insert(0, '.claude/tools')
 import index_commit
-real = index_commit._classify
+real = index_commit._index_entries
 
-def peer_then_fail(root, index, paths):
-    real(root, index, paths)
+def peer_then_fail(root, paths, index=None):
+    real(root, paths, index=index)
     lock_path = Path(root) / index_commit.LOCK_RELPATH
     lock = json.loads(lock_path.read_text(encoding='utf-8'))
     lock['files']['peer_after_start.py'] = {'status': 'local', 'peer': True}
@@ -637,7 +618,7 @@ def peer_then_fail(root, index, paths):
     lock_path.write_text(json.dumps(lock), encoding='utf-8', newline='\\n')
     raise index_commit.IndexCommitError('planted later stage failure')
 
-index_commit._classify = peer_then_fail
+index_commit._index_entries = peer_then_fail
 sys.exit(index_commit.main(['stage', '--name', 'failedstage', '--', '.claude/tests/failedstage.py']))
 '''
 
@@ -645,14 +626,14 @@ sys.exit(index_commit.main(['stage', '--name', 'failedstage', '--', '.claude/tes
 def case_failed_stage_keeps_peer_rows(tmp):
     root, env = scene(tmp, 'failedstage')
     (root / '.claude/tests/failedstage.py').write_text('x = 1\n', encoding='utf-8')
-    run_env = dict(env, INDEX_COMMIT_CLASSIFY_CMD='python3 .claude/tools/classify_stub.py classify')
+    run_env = dict(env)
     proc = subprocess.run([sys.executable, '-c', FAILED_STAGE_DRIVER], cwd=root, env=run_env,
                           capture_output=True, text=True)
     check('later stage failure is reported', proc.returncode != 0 and 'planted later stage failure' in proc.stderr, proc.stdout + proc.stderr)
     rows = json.loads((root / LOCK).read_text(encoding='utf-8'))['files']
     check('failed stage keeps peer-added lock row', rows.get('peer_after_start.py') == {'status': 'local', 'peer': True}, rows)
     check('failed stage keeps peer-modified lock row', rows.get('keep_b.py') == {'status': 'local', 'changed_by_peer': True}, rows)
-    check('failed stage keeps valid classification', '.claude/tests/failedstage.py' in rows, rows)
+    check('failed stage writes no row for the unjudged path', '.claude/tests/failedstage.py' not in rows, rows)
     check('failed stage cleans only private artifacts', not (root / '.git/index-failedstage').exists() and not (root / '.git/index-failedstage.paths.json').exists())
     check('failed stage leaves shared index untouched', names(root, env, cached=True) == [])
 

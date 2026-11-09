@@ -3,7 +3,7 @@
 Hook: PreToolUse (Bash|PowerShell), run by pre_bash_dispatch — owns how a session waits on a job.
 
 Rule homes: CLAUDE.core.md §Shell Discipline (the orchestrator's wait; no repeated status check) and
-guards/any.md (a never-woken delegate's wait recipe). Evidence for every bound below:
+guards/common.md (a never-woken delegate's wait recipe). Evidence for every bound below:
 auto-memory/archive/gotcha_delegate_gets_no_background_wake.md. Counts are per caller (the
 orchestrator, or one subagent by payload `agent_id`; `session_id` is shared with the parent). The wait
 a caller should use depends on whether a backgrounded job wakes it:
@@ -27,7 +27,7 @@ a caller should use depends on whether a backgrounded job wakes it:
    the check-in deadline (`_bench_wait`); any doubt (a second test, an unresolvable path, a log outside bench's roots)
    leaves the command as it was. A subagent's timeout is clamped to
    SUBAGENT_WAIT_MS (under its 5-minute prompt cache), and so is a print-mode child's: the sidecar
-   launchers set its cache to 5 minutes. Neither is backgrounded: guards/any.md owns its bounded foreground wait.
+   launchers set its cache to 5 minutes. Neither is backgrounded: guards/common.md owns its bounded foreground wait.
 2. A never-woken caller's `run_in_background` call draws an advisory naming the missing wake.
 3. Repeated status poll. A status-only command (every segment a read: date, tail, wc, ls, grep,
    Get-CimInstance, Start-Sleep …, no `>` write) whose shape (only count and delay arguments normalized) matches the caller's
@@ -100,6 +100,11 @@ _LOOP_SLEEP = re.compile(
 _HEREDOC = re.compile(r"(?P<head>[^\n]*?)<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n(?P<body>.*?)^[ \t]*(?P=tag)[ \t]*$",
                       re.DOTALL | re.MULTILINE)
 _SHELL_WORDS = frozenset(("bash", "sh", "zsh", "dash", "pwsh", "powershell"))
+# A quoted `-c`/`-e`/`-p` program is code for the program before it; only a shell runs it as shell code.
+_INLINE_PROGRAM = re.compile(
+    r"""(?P<head>(?:^|(?<=[\s;&|(]))(?P<prog>[\w./\\:-]+)(?:\s+-[\w-]+)*?\s+-[cep]\s+)(?P<body>"(?:\\.|[^"\\])*"|'[^']*')""",
+    re.DOTALL)
+_INLINE_FLAGS = frozenset(("-c", "-e", "-p"))
 
 POLL_LIMIT = 4
 HANDBACK_MS = 1800000  # wait_log.py HANDBACK_S: the break-even past which the parent's one wake costs less than a child's trickle polls
@@ -125,7 +130,7 @@ _DETACHED_LINE = re.compile(r"(?<![&>|<])&[ \t]*(?=\r?\n|\Z)")
 _WAIT_RECIPE = (
     "wait in foreground calls: `until <done-test>; do sleep 30; done` with a Bash timeout of at most "
     "%d ms in a subagent or a `claude -p` child (its cache lives 5 minutes), repeated only while "
-    "the job runs (guards/any.md)" % SUBAGENT_WAIT_MS
+    "the job runs (guards/common.md)" % SUBAGENT_WAIT_MS
 )
 MONITOR_REASON = (
     "BLOCKED Monitor timeout_ms %d: the tool caps every Monitor at %d ms (%d minutes) and ends it there with no "
@@ -220,7 +225,11 @@ def shell_code(command):
             return m.group(0)
         return m.group(0)[:m.start("body") - m.start()] + "\n" * m.group("body").count("\n") + \
             m.group(0)[m.end("body") - m.start():]
-    return _HEREDOC.sub(blank, str(command or ""))
+    def blank_inline(m):
+        if m.group("prog").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe") in _SHELL_WORDS:
+            return m.group(0)
+        return m.group("head") + '""'
+    return _INLINE_PROGRAM.sub(blank_inline, _HEREDOC.sub(blank, str(command or "")))
 
 
 # Only a display count or a delay varies between polls of one target; file names and process ids keep their digits.
@@ -329,7 +338,7 @@ HANDBACK_REASON = (
     "BLOCKED wait: this caller's foreground loop waits total %d minutes since its last non-wait call, past the %d minutes "
     "after which the parent's one wake costs less than these polls, and no wake reaches a subagent or `claude -p` child. "
     "Return now with the log path, pid, expected end and the steps left after it, so the parent waits for it "
-    "(guards/any.md; the same hand-back `bench wait` gives)."
+    "(guards/common.md; the same hand-back `bench wait` gives)."
 )
 
 
@@ -414,6 +423,8 @@ def _proof_names(words):
         return []
     found = []
     for word in words[1:]:
+        if word in _INLINE_FLAGS and program not in _SHELL_WORDS:
+            return []
         path = word.strip("'\"").replace("\\", "/")
         name = path.rsplit("/", 1)[-1]
         if "/tests/" in "/" + path and _PROOF_NAME.match(name):
@@ -809,8 +820,17 @@ def _without_substitutions(code):
 def blind_pipe(command):
     """(producer, consumer) when a backgrounded pipeline's stdout reaches a later `tail` or `head` stage unredirected
     and unteed, else None. The task's output file already keeps every line for a later bounded Read, so the pipe only
-    hides progress until exit and drops the lines past its count. `tail -f` follows a file and stays live."""
+    hides progress until exit and drops the lines past its count. `tail -f` follows a file and stays live. A pipe inside
+    a `do ... done` body ends with each iteration, so it streams and passes."""
+    depth = 0
     for pipeline in re.split(r"\|\||&&|[;\n]|(?<![>&])&(?![&>])", _without_substitutions(shell_code(command))):
+        first = (_words(pipeline.strip()) or [""])[0]
+        if first == "do":
+            depth += 1
+        elif first == "done":
+            depth = max(0, depth - 1)
+        if depth:
+            continue
         stages = [s.strip(" \t()`$") for s in re.split(r"(?<![|>])\|(?!\|)(?=(?:[^'\"]|'[^']*'|\"[^\"]*\")*$)", pipeline)]
         for i, stage in enumerate(stages[:-1]):
             words = _words(stage)
@@ -880,7 +900,7 @@ def main():
         if _caller(payload) or unwoken:
             if budget > SUBAGENT_WAIT_MS:
                 updated = dict(tool_input, timeout=SUBAGENT_WAIT_MS)
-                note = '[wait] Clamped the foreground wait timeout from %d to %d ms (guards/any.md).' % (budget, SUBAGENT_WAIT_MS)
+                note = '[wait] Clamped the foreground wait timeout from %d to %d ms (guards/common.md).' % (budget, SUBAGENT_WAIT_MS)
         elif budget > SUBAGENT_WAIT_MS:
             writer = _live_writer(payload, command)
             notes = ['[wait] Backgrounded the long foreground wait; act on its one wake (CLAUDE.core.md §Shell Discipline).']

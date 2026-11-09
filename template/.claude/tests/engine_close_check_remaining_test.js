@@ -1,9 +1,10 @@
 const assert = require('assert/strict')
 const fs = require('fs')
 const path = require('path')
-const { load } = require('./_engine_run')
+const { load, withKinds } = require('./_engine_run')
 const os = require('os')
 const {spawnSync} = require('child_process')
+const gitBash = require('./_git_bash')
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'remaining-engines-'))
 fs.writeFileSync(path.join(temp, 'fixture'), 'true quote\n')
 const liveStart = fs.readFileSync(path.resolve(__dirname, 'fixtures/evidence/review/journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).find(row => row.type === 'started')
@@ -75,7 +76,7 @@ async function missingFlags(file, transform = source => source) {
     const printer = observedPrompt.split('Run exactly this command with Bash: ')[1].split('\n')[0].split(' ; ').pop()
     fs.writeFileSync(path.join(temp, observedPrompt.match(/--out (\S+)/)[1].replace(/^'|'$/g, '')), JSON.stringify({status: 'fail', counts: reply.counts,
       verdicts: Object.fromEntries(Object.entries(reply.verdicts).map(([k, v]) => [k, {verdict: v, items: []}]))}))
-    const printed = spawnSync('bash', ['-c', printer], {cwd: temp, encoding: 'utf8'})
+    const printed = spawnSync(gitBash(), ['-c', printer], {cwd: temp, encoding: 'utf8'})
     assert.equal(printed.status, 0, name + ': verdict printer failed: ' + printed.stderr)
     assert.deepEqual(JSON.parse(printed.stdout.trim().split('\n').pop()), {status: 'fail', counts: reply.counts, verdicts: reply.verdicts},
       name + ': the command must print status, counts and the verdict map from --out')
@@ -94,12 +95,12 @@ async function missingFlags(file, transform = source => source) {
     const evidence = [{file: path.join(temp, 'fixture'), quote: 'true quote'}]
     const claim = (subject, index) => ({subject, claim: subject, polarity: 'exists', bearing: index ? 'premise-contradiction' : 'context', evidence: index === 2 ? [] : [{file: path.join(temp, 'fixture'), quote: index ? 'fake quote' : 'true quote'}], confidence: 'verified'})
     const specs = {
-      explore_fanout: {args: {resultMode: 'full', lenses: [{key: 'lens', prompt: 'scan', model: 'producer', effort: 'low', agentType: 'Explore'}]}, reply: {claims: [claim('true', 0), claim('fake', 1), claim('empty', 2)], checked: checkedSource}, member: 'claims'},
-      review_fanout: {args: {resultMode: 'full', agents: [{key: 'lens', prompt: 'scan', model: 'producer', effort: 'low', mustRead: [{path: 'fixture', lines: 1}]}]}, reply: {findings: [0,1,2].map(i => ({agent: 'lens', action: 'FIX', category: 'bug', critical: false, file: 'fixture:' + (i+1), description: ['true','fake','empty'][i], old: null, new: null, question: null, options: null, scope: null, rationale: 'why', evidence: claim('x', i).evidence})), checked: checkedSource}, member: 'findings'},
-      doc_architecture_audit: {args: {context: 'context', model: 'producer', effort: 'low', tier: 'fanout'}, reply: {findings: [0,1,2].map(i => ({agent: 'da-structural', check: 'S2', severity: i === 1 ? 'critical' : 'warning', action: 'FIX', system: null, description: ['true','fake','empty'][i], recommendation: 'fix', handler: null, options: null, scope: [], evidence: claim('x',i).evidence}))}, member: 'findings'},
-      dispatch_chains: {args: {chains: [{name: 'lane', jobs: [{label: 'job', promptPath: 'brief', model: 'producer', effort: 'low', agentType: 'Explore'}]}]}, reply: '```claims\n' + [claim('true',0),claim('fake',1),claim('empty',2)].map(JSON.stringify).join('\n') + '\n```', member: null},
-      key_reachability: {args: {model: 'producer', effort: 'low', tasks: {task: {root: temp, ids: ['true','fake','empty']}}}, member: 'rulings'},
-      worklog_relevance: {args: {scope: 'scope', model: 'producer', effort: 'low'}, reply: {overlaps: [0,1,2].map(i => ({title: ['true','fake','empty'][i], domain: 'domain', relation: 'same-scope', why: 'why', recommendation: 'read-first', evidence: claim('x',i).evidence})), checked: {indexRead: true, obsidianOpened: true, shortlisted: [], stoppedAt: 'verified-overlaps', basis: 'read', evidence}}, member: 'overlaps'},
+      explore_fanout: {args: {resultMode: 'full', lenses: [{key: 'lens', prompt: 'scan', model: 'producer', effort: 'low', kind: 'reviewer'}]}, reply: {claims: [claim('true', 0), claim('fake', 1), claim('empty', 2)], checked: checkedSource}, member: 'claims'},
+      review_fanout: {args: {resultMode: 'full', agents: [{key: 'lens', prompt: 'scan', model: 'producer', effort: 'low', kind: 'reviewer', mustRead: [{path: 'fixture', lines: 1}]}]}, reply: {findings: [0,1,2].map(i => ({agent: 'lens', action: 'FIX', category: 'bug', critical: false, file: 'fixture:' + (i+1), description: ['true','fake','empty'][i], old: null, new: null, question: null, options: null, scope: null, rationale: 'why', evidence: claim('x', i).evidence})), checked: checkedSource}, member: 'findings'},
+      doc_architecture_audit: {args: {context: 'context', model: 'producer', effort: 'low', tier: 'fanout', kind: 'reviewer'}, reply: {findings: [0,1,2].map(i => ({agent: 'da-structural', check: 'S2', severity: i === 1 ? 'critical' : 'warning', action: 'FIX', system: null, description: ['true','fake','empty'][i], recommendation: 'fix', handler: null, options: null, scope: [], evidence: claim('x',i).evidence}))}, member: 'findings'},
+      dispatch_chains: {args: {chains: [{name: 'lane', jobs: [{label: 'job', promptPath: 'brief', model: 'producer', effort: 'low', kind: 'reviewer'}]}]}, reply: '```claims\n' + [claim('true',0),claim('fake',1),claim('empty',2)].map(JSON.stringify).join('\n') + '\n```', member: null},
+      key_reachability: {args: {kind: 'reviewer', model: 'producer', effort: 'low', tasks: {task: {root: temp, ids: ['true','fake','empty']}}}, member: 'rulings'},
+      worklog_relevance: {args: {kind: 'reviewer', scope: 'scope', model: 'producer', effort: 'low'}, reply: {overlaps: [0,1,2].map(i => ({title: ['true','fake','empty'][i], domain: 'domain', relation: 'same-scope', why: 'why', recommendation: 'read-first', evidence: claim('x',i).evidence})), checked: {indexRead: true, obsidianOpened: true, shortlisted: [], stoppedAt: 'verified-overlaps', basis: 'read', evidence}}, member: 'overlaps'},
     }
     const spec = specs[name]
     if (name === 'review_fanout') {
@@ -107,14 +108,14 @@ async function missingFlags(file, transform = source => source) {
       for (const field of ['premiseCommits','head','blobs']) {
         for (const invalid of ['../escape', '/absolute', 'x;bad']) {
           let calls = 0
-          const refused = await load(file)({...base, __transport:transport, ...spec.args, ledger:{...spec.args.ledger, [field]:invalid}}, async () => {calls++; return null}, tasks => Promise.all(tasks.map(fn => fn())), () => {}, () => {})
+          const refused = await load(file)(withKinds({...base, __transport:transport, ...spec.args, ledger:{...spec.args.ledger, [field]:invalid}}), async () => {calls++; return null}, tasks => Promise.all(tasks.map(fn => fn())), () => {}, () => {})
           assert.ok(refused.error && refused.error.includes(field), field + ': unsafe input accepted')
           assert.equal(calls, 0, field + ': validation must precede launch')
         }
       }
     }
     if (name === 'key_reachability') {
-      const unavailable = await load(file)({...base, __transport: transport, ...spec.args}, async () => {throw Error('producer unavailable')}, tasks => Promise.all(tasks.map(fn => fn())), () => {}, () => {})
+      const unavailable = await load(file)(withKinds({...base, __transport: transport, ...spec.args}), async () => {throw Error('producer unavailable')}, tasks => Promise.all(tasks.map(fn => fn())), () => {}, () => {})
       assert.equal(unavailable.verification.status, 'unavailable')
       assert.ok(unavailable.rulings.every(row => row.verdict === 'UNCHECKED' && row.lens && row.index === 1))
     }
@@ -122,7 +123,7 @@ async function missingFlags(file, transform = source => source) {
       const verdicts = {}
       let verifierCalls = 0
       const events = []
-      const result = await load(file, source => process.env.CLOSE_CHECK_DELETE_APPLY ? source.replace('applyVerdicts(items, verification.verdicts, keyOf)', 'items') : source)({...base, __transport: transport, root: temp, ...spec.args}, async (prompt, opts) => {
+      const result = await load(file, source => process.env.CLOSE_CHECK_DELETE_APPLY ? source.replace('applyVerdicts(items, verification.verdicts, keyOf)', 'items') : source)(withKinds({...base, __transport: transport, root: temp, ...spec.args}), async (prompt, opts) => {
         const record = value => {
           events.push({...liveStart, key: opts.label, agentId: opts.label, label: opts.label, phase: opts.phase, prompt})
           events.push({type: 'result', key: opts.label, agentId: opts.label, result: value})
@@ -139,7 +140,7 @@ async function missingFlags(file, transform = source => source) {
           const writes = (prompt.split('Run exactly this command with Bash: ')[0].split('in order:\n')[1] || '').split('\n').filter(Boolean)
           assert.ok(writes.length, name + ': missing launched seats write')
           for (const command of writes) {
-            const write = spawnSync('bash', ['-c', command], {cwd:temp, encoding:'utf8'})
+            const write = spawnSync(gitBash(), ['-c', command], {cwd:temp, encoding:'utf8'})
             assert.equal(write.status, 0, write.stderr)
           }
           const reportPath = prompt.match(/--out (\S+)/)[1]

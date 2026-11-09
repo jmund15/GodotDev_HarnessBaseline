@@ -14,7 +14,7 @@ delivers this module's assembly and none may re-implement the parse:
 A second implementation in awk or JS would drift and fail silently: a guard that extracts the
 wrong section still looks like a guard.
 
-`any` is CONCATENATED into every other shape rather than chained by reference. Its section
+`common` is CONCATENATED into every other shape rather than chained by reference. Its section
 carries the concurrency bar, the read-only bar, the confidence ladder and the terseness rail —
 the rules that bind every delegate — so it must not depend on the delegate choosing to follow
 a pointer it finds inside another file.
@@ -23,7 +23,7 @@ A higher baseline layer adds rails through an overlay, `<shape>.<layer>.md` (lay
 OVERLAY_LAYERS order). Each present overlay's tier section follows its base file's section; an
 overlay without that tier adds nothing, and a project without the layer has no overlay file.
 
-The ai-worker clause is rendered against THIS machine. `guards/any.md` names
+The ai-worker clause is rendered against THIS machine. `guards/common.md` names
 `mcp__ai-worker__read_files` as the bulk-copyable route, which is false on a machine where the
 server is not registered: the delegate would obey an instruction naming a tool that is not there
 and silently change search behavior. With `workstation_profile.ai_worker()` saying `"absent"` the
@@ -114,7 +114,7 @@ def _section(path: str, tier: str) -> str:
 
 def _guard_name(name: str) -> str:
     """The guard file set for a job `kind` (its table row's `guard`; `bench-score` has none and names
-    itself), or for a guard name a caller already holds (`survey`, `review`, `any`, ...). The legal set
+    itself), or for a guard name a caller already holds (`survey`, `review`, `common`, ...). The legal set
     is the table's: every kind, and every guard a kind row names. Anything else raises."""
     tools_dir = os.path.dirname(os.path.abspath(__file__))
     if tools_dir not in sys.path:
@@ -142,7 +142,7 @@ def guard_text(shape: str, tier: str) -> str:
     if tier == "none":
         return ""
 
-    names = ["any"] if shape == "any" else ["any", shape]
+    names = ["common"] if shape == "common" else ["common", shape]
     homes, parts = [], []
     for name in names:
         homes.append(".claude/guards/%s.md" % name)

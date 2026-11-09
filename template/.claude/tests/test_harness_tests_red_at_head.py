@@ -1,8 +1,7 @@
 """Re-runnable proof for scripts/harness_tests.py run_scoped: a bound proof that is also red at HEAD
 is a pre-existing red and does not block the stamp when its failure-marked lines are non-empty and all appear
 at HEAD; one green at HEAD, absent there, failing differently, or showing no failure line still blocks.
-HARNESS_NO_HEAD_RERUN skips the optional HEAD comparison. A HEAD run resolves the repo from the HEAD checkout, through
-cwd and CLAUDE_PROJECT_DIR alike.
+A HEAD run resolves the repo from the HEAD checkout, through cwd and CLAUDE_PROJECT_DIR alike.
 
     python3 .claude/tests/test_harness_tests_red_at_head.py
 """
@@ -168,9 +167,9 @@ def main():
         stamped, out, _, _ = scenario(old + ["FAIL: test_gone (suite.Case)"], old)
         check("(j) a worktree failure set that is a subset of HEAD's excuses", stamped, out[-600:])
         stamped, out, reruns, worktrees = scenario(old, old, env={"HARNESS_NO_HEAD_RERUN": "1"})
-        check("(k) with HARNESS_NO_HEAD_RERUN a red bound proof stays red and no HEAD checkout starts",
-              not stamped and reruns == 0 and worktrees == 1 and "HEAD rerun skipped" in out,
-              "stamped=%s reruns=%s worktrees=%s out=%r" % (stamped, reruns, worktrees, out[-600:]))
+        check("(k) with HARNESS_NO_HEAD_RERUN a red that also fails at HEAD is still excused: the variable has no effect",
+              stamped and "pre-existing red" in out and reruns == 1 and "HEAD rerun skipped" not in out,
+              "stamped=%s reruns=%s out=%r" % (stamped, reruns, out[-600:]))
         stamped, out, reruns, _ = scenario(old, old, commit=True)
         check("(l) a change already committed at HEAD excuses no red: HEAD carries it, and the line names --base",
               not stamped and reruns == 0 and "--base" in out, "stamped=%s reruns=%s out=%r" % (stamped, reruns, out[-600:]))

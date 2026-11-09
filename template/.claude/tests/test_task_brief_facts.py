@@ -467,6 +467,38 @@ def _main(tmp):
              "model | input | image route | draw or spend" not in receipt_line and "table as earlier this session" in receipt_line
              and "reading" in receipt_line and "draw " in receipt_line)
 
+    if module is not None and callable(getattr(module, "process", None)):
+        sys.path.insert(0, HOOKS)
+        import _hook_state
+        tag = getattr(module, "NOTICE_TAG", "[dispatch-prep]")
+
+        def notice(sid, met_skill, met_ladder):
+            _hook_state.clear_compaction_keys(sid)
+            if met_skill:
+                _hook_state.mark_skill_in_context(sid, "orchestration")
+            if met_ladder:
+                _hook_state.mark_ladder_slice(sid, ["executor"])
+            with planted_env(HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir,
+                             CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache), no_probe_spy([]):
+                first = (module.process(written(brief_path, "", session=sid)) or {}).get("context") or ""
+                second = (module.process(written(brief_path, "", session=sid)) or {}).get("context") or ""
+            return first, second
+
+        first, second = notice("prep-none", False, False)
+        line = next((l for l in first.splitlines() if l.startswith(tag)), "")
+        case("the first dispatch-prep brief of a window announces both loads and that a launch is denied",
+             'Skill(skill="orchestration")' in line and "for-role" in line and "DENIED" in line
+             and len(line) < 320)
+        case("the second brief of the same window stays silent", tag not in second)
+        both, _ = notice("prep-both", True, True)
+        case("no notice when the skill and the ladder are both in context", tag not in both)
+        skill_only, _ = notice("prep-skill", True, False)
+        case("the notice names only the missing requirement when the skill is loaded",
+             tag in skill_only and "for-role" in skill_only and 'Skill(skill="orchestration")' not in skill_only)
+        ladder_only, _ = notice("prep-ladder", False, True)
+        case("the notice names only the missing requirement when the ladder is credited",
+             tag in ladder_only and 'Skill(skill="orchestration")' in ladder_only and "for-role" not in ladder_only)
+
     if text:
         print("real executor brief table: %d bytes (target under 1536; measured, not gated)" % len(text.encode("utf-8")))
 

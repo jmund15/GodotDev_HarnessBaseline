@@ -23,7 +23,6 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -39,10 +38,11 @@ import baseline_compose  # noqa: E402
 import adaptation  # noqa: E402
 import layer_closure  # noqa: E402
 import cli_usage  # noqa: E402
+import lock_merge  # noqa: E402  the lock's one serializer; the merge driver writes the same bytes
 
 OPS = ("check", "diff", "pull", "update-lock", "resolve", "migrate", "upgrade",
        "classify", "judge", "triage", "forget", "gc", "fork", "track",
-       "ignore", "candidates", "paths", "init", "compose", "sub", "doctor")
+       "ignore", "candidates", "paths", "init", "compose", "sub", "doctor", "never-ship")
 ROOT_ACCEPTS = "<op> [relpaths] [flags]; ops: " + "|".join(OPS)
 ROOT_EXAMPLE = "python3 .claude/tools/baseline_sync.py judge .claude/tools/reap.py --verdict push"
 JUDGE_ACCEPTS = ("judge RELPATH [RELPATH ...] --verdict push|keep-local|fork [--accept-hit PATH] "
@@ -607,12 +607,16 @@ def load_lock(root: Path) -> dict:
 
 
 def save_lock(root: Path, lock: dict) -> None:
-    """Write the lock through a same-directory temp file and atomic replace."""
+    """Write the lock through `lock_merge.dump_lock` and a same-directory atomic replace. Every row's
+    `judged` block is pruned first, so no writer can re-introduce a copy of what `status` already says."""
+    for relpath, entry in (lock.get("files") or {}).items():
+        if isinstance(entry, dict):
+            _prune_judged(entry, relpath)
     to_write = dict(lock)
     subs = lock.get("substitutions")
     if isinstance(subs, dict) and "{{PROJECT_ROOT}}" in subs:
         to_write["substitutions"] = {**subs, "{{PROJECT_ROOT}}": ""}
-    payload = (json.dumps(to_write, indent=2, sort_keys=False, ensure_ascii=False) + "\n")
+    payload = lock_merge.dump_lock(to_write)
     lock_path = root / LOCK_RELPATH
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(
@@ -620,7 +624,7 @@ def save_lock(root: Path, lock: dict) -> None:
     )
     try:
         with os.fdopen(fd, "wb") as stream:
-            stream.write(_lf(payload.encode("utf-8")))
+            stream.write(_lf(payload))
             stream.flush()
             os.fsync(stream.fileno())
         replace_path(temporary, lock_path)
@@ -688,14 +692,18 @@ def require_v2_lock(lock: dict) -> None:
         raise BaselineError("v1 lock is read-only; run migrate first")
 
 
-def mutate_lock(root: Path, mutator, *, allow_v1: bool = False):
-    """Apply a mutation to a fresh lock snapshot under the lock mutex."""
+def mutate_lock(root: Path, mutator, *, allow_v1: bool = False,
+                source: BaselineSource | Path | None = None):
+    """Apply a mutation to a fresh lock snapshot under the lock mutex. With `source`, the snapshot
+    is migrated first, so the save writes the S2 shape rather than a legacy one."""
     if not allow_v1:
         require_v2_lock(load_lock(root))
     with lock_mutex(root):
         lock = load_lock(root)
         if not allow_v1:
             require_v2_lock(lock)
+        if source is not None:
+            migrate_lock(lock, source, root)
         result = mutator(lock)
         if result is not NO_CHANGE:
             save_lock(root, lock)
@@ -887,27 +895,6 @@ CANDIDATE_EXCLUDE_NAMES = (
 )
 
 
-def classify(root: Path, baseline: BaselineSource | Path, lock: dict,
-             relpath: str, entry: dict) -> str:
-    if entry.get("status") in ("forked", "watch", "local"):
-        return entry["status"]
-    up = upstream_text(baseline, relpath, lock["substitutions"])
-    lo = local_text(root, relpath)
-    if up is None:
-        return "removed-upstream"
-    if lo is None:
-        return "missing-local"
-    lock_hash = entry.get("hash")
-    up_h, lo_h = sha(up.encode()), sha(lo.encode())
-    if lo_h == up_h:
-        return "in-sync" if lock_hash == up_h else "in-sync-lock-stale"
-    if lo_h == lock_hash:
-        return "upstream-updated"
-    if up_h == lock_hash:
-        return "local-modified"
-    return "diverged"
-
-
 PLACEHOLDER_OK = {
     ".claude/commands/sync_baseline.md",
     ".claude/tools/baseline_sync.py",
@@ -957,52 +944,6 @@ def unimported_layer_files(root: Path) -> list[str]:
             if (root / ".claude" / name).exists() and name not in imported]
 
 
-def cmd_check(root: Path, lock: dict, baseline: BaselineSource, as_json: bool,
-              layers: list[str]) -> None:
-    results = {}
-    outside = 0
-    for relpath, entry in sorted(lock["files"].items()):
-        if not in_profile(entry, layers):
-            outside += 1
-            continue
-        results[relpath] = classify(root, baseline, lock, relpath, entry)
-    residual = residual_placeholders(root, lock)
-    if as_json:
-        print(json.dumps({
-            "baseline_commit": baseline_commit(baseline),
-            "results": results,
-            "residual_placeholders": dict(residual),
-            "profile": {"layers": layers, "files_outside": outside},
-        }, indent=2, ensure_ascii=False))
-        return
-    buckets: dict[str, list[str]] = {}
-    for relpath, state in results.items():
-        buckets.setdefault(state, []).append(relpath)
-    quiet = {"in-sync", "watch", "forked", "local"}
-    for state in sorted(buckets, key=lambda item: (item in quiet, item)):
-        files = buckets[state]
-        if state in quiet:
-            print(f"{state}: {len(files)} file(s)")
-        else:
-            print(f"{state}:")
-            for relpath in files:
-                print(f"  {relpath}")
-    if residual:
-        print("unsubstituted-placeholder (install did not expand these tokens):")
-        for relpath, keys in residual:
-            print(f"  {relpath}  [{', '.join(keys)}]")
-    actionable = [state for state in buckets if state not in quiet]
-    verdict = []
-    if actionable:
-        verdict.append(f"actionable states: {', '.join(sorted(actionable))}")
-    if residual:
-        verdict.append(f"{len(residual)} file(s) with unsubstituted placeholders — "
-                       "re-run bootstrap substitution or fix per file")
-    print("\nclean" if not verdict else "\n" + "\n".join(verdict))
-    if set(layers) != set(FULL_LAYERS):
-        print(f"profile: {','.join(layers)} — {outside} file(s) outside profile not shown")
-
-
 def _missing_error(relpath: str) -> BaselineError:
     return BaselineError(f"missing upstream: {relpath}")
 
@@ -1023,20 +964,6 @@ def cmd_diff(root: Path, lock: dict, baseline: BaselineSource, relpath: str,
     ))
 
 
-def _pull_targets(root: Path, lock: dict, baseline: BaselineSource,
-                  relpaths: list[str], layers: list[str]) -> list[str]:
-    if relpaths:
-        return relpaths
-    targets = []
-    for relpath, entry in sorted(lock["files"].items()):
-        if not in_profile(entry, layers):
-            continue
-        state = classify(root, baseline, lock, relpath, entry)
-        if state in ("upstream-updated", "in-sync-lock-stale", "removed-upstream"):
-            targets.append(relpath)
-    return targets
-
-
 def _ignored_untracked(root: Path, relpaths: list[str]) -> list[str]:
     """The paths a `.gitignore` rule hides from `git add` and the index does not already hold."""
     found: set[str] = set()
@@ -1046,66 +973,6 @@ def _ignored_untracked(root: Path, relpaths: list[str]) -> list[str]:
         if result.returncode == 0:
             found.update(_lf(result.stdout).decode("utf-8", errors="replace").splitlines())
     return [relpath for relpath in relpaths if relpath in found]
-
-
-def cmd_pull(root: Path, lock: dict, baseline: BaselineSource,
-             relpaths: list[str], layers: list[str]) -> None:
-    targets = _pull_targets(root, lock, baseline, relpaths, layers)
-    for relpath in targets:
-        up = upstream_text(baseline, relpath, lock["substitutions"])
-        if up is None:
-            raise _missing_error(relpath)
-        dest = root / relpath
-        _write_lf(dest, up)
-        lock["files"][relpath]["hash"] = sha(up.encode())
-        print(f"pulled: {relpath}")
-    lock["synced_commit"] = baseline_commit(baseline)
-    save_lock(root, lock)
-
-
-def cmd_update_lock(root: Path, lock: dict, baseline: BaselineSource,
-                    relpaths: list[str], layers: list[str]) -> None:
-    if not relpaths:
-        for relpath, entry in sorted(lock["files"].items()):
-            if not in_profile(entry, layers) or entry.get("status") != "tracked":
-                continue
-            if upstream_text(baseline, relpath, lock["substitutions"]) is None:
-                raise _missing_error(relpath)
-    targets = relpaths or [
-        relpath for relpath, entry in lock["files"].items()
-        if in_profile(entry, layers)
-        and classify(root, baseline, lock, relpath, entry) == "in-sync-lock-stale"
-    ]
-    for relpath in targets:
-        up = upstream_text(baseline, relpath, lock["substitutions"])
-        if up is None:
-            raise _missing_error(relpath)
-        lock["files"][relpath]["hash"] = sha(up.encode())
-        print(f"lock updated: {relpath}")
-    lock["synced_commit"] = baseline_commit(baseline)
-    lock["profile"] = ",".join(layers)
-    save_lock(root, lock)
-
-
-def cmd_set_status(root: Path, lock: dict, relpaths: list[str], status: str) -> None:
-    for relpath in relpaths:
-        entry = lock["files"].setdefault(relpath, {})
-        entry["status"] = status
-        if status in ("forked", "local"):
-            entry.pop("hash", None)
-        print(f"{relpath}: status={status}")
-    save_lock(root, lock)
-
-
-def cmd_paths(lock: dict, status_filter: str | None) -> None:
-    for relpath, entry in sorted(lock["files"].items()):
-        status = entry.get("status", "tracked")
-        if status_filter:
-            if status != status_filter:
-                continue
-        elif status not in ("tracked", "watch"):
-            continue
-        print(relpath)
 
 
 def _manifest_layer_map(root: Path, baseline_dir: str | None) -> dict[str, str]:
@@ -1121,24 +988,44 @@ def _manifest_layer_map(root: Path, baseline_dir: str | None) -> dict[str, str]:
     return {}
 
 
-def cmd_candidates(root: Path, lock: dict, layers: list[str], baseline_dir: str | None) -> None:
+def _proofs_of_shipped_tools(root: Path, lock: dict) -> set[str]:
+    """Proof files bound to a shipped tool row: the only row-less tests `candidates` lists (X2 D1)."""
+    files = lock.get("files") or {}
+    tools = [rel for rel, row in files.items() if _TOOL_RELPATH.search(rel) and _entry_status(row) in ("tracked", "forked")]
+    if not tools:
+        return set()
+    return {proof for proofs in _bound_proofs(root, tools).values() for proof in proofs}
+
+
+def candidate_paths(root: Path, lock: dict, relpaths: list[str]) -> list[str]:
+    """The committed `.claude/` paths among `relpaths` that still need a decision: no row, not never_ship,
+    not excluded, and not a row-less test of no shipped tool. `candidates` and publish's classify share it."""
     import fnmatch
+    subjects = _proofs_of_shipped_tools(root, lock)
+    found = []
+    for relpath in sorted(relpaths):
+        if relpath == LOCK_RELPATH or row_status(lock, relpath) is not None:
+            continue
+        if any(relpath.startswith(prefix) for prefix in CANDIDATE_EXCLUDE_PREFIXES):
+            continue
+        name = relpath.rsplit("/", 1)[-1]
+        if name.startswith("test_") and relpath.startswith(".claude/tests/") and relpath not in subjects:
+            continue
+        if any(fnmatch.fnmatch(name, pattern) for pattern in CANDIDATE_EXCLUDE_NAMES):
+            continue
+        found.append(relpath)
+    return found
+
+
+def cmd_candidates(root: Path, lock: dict, layers: list[str], baseline_dir: str | None) -> None:
     result = _git(root, ["ls-files", "--", ".claude"], check=False)
     if result.returncode != 0:
         sys.exit("error: candidates requires the project to be a git repository "
                  "(it scans committed .claude/ files) — run git init + commit first")
     manifest_layers = _manifest_layer_map(root, baseline_dir)
-    known = set(lock["files"])
     found = False
     outside = 0
-    for relpath in sorted(_lf(result.stdout).decode(errors="replace").splitlines()):
-        if relpath in known:
-            continue
-        if any(relpath.startswith(prefix) for prefix in CANDIDATE_EXCLUDE_PREFIXES):
-            continue
-        name = relpath.rsplit("/", 1)[-1]
-        if any(fnmatch.fnmatch(name, pattern) for pattern in CANDIDATE_EXCLUDE_NAMES):
-            continue
+    for relpath in candidate_paths(root, lock, _lf(result.stdout).decode(errors="replace").splitlines()):
         layer = manifest_layers.get(relpath)
         if layer is not None and layer not in layers:
             outside += 1
@@ -1149,50 +1036,6 @@ def cmd_candidates(root: Path, lock: dict, layers: list[str], baseline_dir: str 
         print("(no candidates — every committed .claude/ artifact is known to the lock)")
     if set(layers) != set(FULL_LAYERS):
         print(f"profile: {','.join(layers)} — {outside} candidate(s) outside profile not shown")
-
-
-def cmd_init(root: Path, baseline_dir: str, repo: str, ref: str,
-             subs: dict[str, str], profile: str,
-             source: BaselineSource | Path | None = None) -> None:
-    baseline = Path(baseline_dir).resolve()
-    manifest_path = baseline / MANIFEST_NAME
-    if not manifest_path.exists():
-        sys.exit(f"error: {manifest_path} not found — run tools/gen_manifest.py in the baseline first")
-    try:
-        manifest = json.loads(_lf(manifest_path.read_bytes()).decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        sys.exit(f"error: invalid baseline manifest: {exc}")
-    files = {}
-    upstream = source if source is not None else baseline
-    for entry in manifest["files"]:
-        relpath = entry["path"]
-        lo = local_text(root, relpath)
-        if lo is None:
-            continue
-        if entry.get("sync") == "seed":
-            files[relpath] = {"status": "watch", "layer": entry["layer"]}
-            continue
-        up = upstream_text(upstream, relpath, subs)
-        if up is not None and sha(up.encode()) == sha(lo.encode()):
-            files[relpath] = {
-                "status": "tracked", "hash": sha(up.encode()), "layer": entry["layer"]
-            }
-        else:
-            files[relpath] = {"status": "watch", "layer": entry["layer"]}
-    lock = {
-        "baseline_repo": repo,
-        "baseline_ref": ref,
-        "synced_commit": baseline_commit(upstream),
-        "profile": profile,
-        "substitutions": subs,
-        "files": files,
-    }
-    save_lock(root, lock)
-    tracked = sum(1 for entry in files.values() if entry["status"] == "tracked")
-    watch = sum(1 for entry in files.values() if entry["status"] == "watch")
-    print(f"lock written: {tracked} tracked, {watch} watch, "
-          f"{len(manifest['files']) - len(files)} not adopted")
-
 
 
 def _validate_relpath(relpath: str) -> str:
@@ -1234,10 +1077,6 @@ def resolve_layers_v2(lock: dict, layers_arg: str | None) -> list[str]:
     if not result:
         raise UsageError("--layers resolved to an empty set")
     return result
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _cat_file_many(repo: Path, specs: list[str]) -> list[bytes | None] | None:
@@ -1385,7 +1224,7 @@ def _seed_rows(root: Path, relpath: str, layer: str | None, files: dict,
     `settings.project.json` seed also makes `.claude/settings.json` a `composed` row when both
     inputs are on disk and no row decides it yet (§9: settings.json is never a manifest entry);
     the row's inputs carry the adopted layers' settings overlays."""
-    rows = {relpath: {"status": "local", "layer": layer, "judged": _decision(root, relpath, "keep-local")}}
+    rows = {relpath: {"status": "local", "layer": layer}}
     if relpath.endswith("settings.project.json"):
         composed_relpath = str(Path(relpath).parent / "settings.json").replace("\\", "/")
         composed_inputs = settings_composed_inputs(root, WATCH_COMPOSED_INPUTS.get(composed_relpath, []), layers)
@@ -1394,9 +1233,7 @@ def _seed_rows(root: Path, relpath: str, layer: str | None, files: dict,
             rows[composed_relpath] = {
                 "status": "composed",
                 "layer": layer,
-                "hash": None,
                 "inputs": composed_inputs,
-                "judged": None,
             }
     return rows
 
@@ -1411,23 +1248,211 @@ def _upstream_sha(source: BaselineSource | Path, relpath: str, substitutions: di
     return sha(text.encode("utf-8")) if text is not None else None
 
 
-def _decision(root: Path, relpath: str, verdict: str, *, sha_value: str | None = None,
-              borderline: bool = False, confirmed_at: str | None = None) -> dict | None:
+def _decision(root: Path, relpath: str, verdict: str | None, *, sha_value: str | None = None,
+              borderline: bool = False, accepted_hits: list[str] | None = None) -> dict | None:
+    """A judged block: the content it judged, the verdict when that says more than `status`, and the
+    flags a verdict carries. `save_lock` prunes it against the row's status."""
     if sha_value is None:
         sha_value = _content_sha(root, relpath)
     if sha_value is None:
         return None
-    return {
-        "sha": sha_value,
-        "verdict": verdict,
-        "at": _utc_now(),
-        "borderline": bool(borderline),
-        "confirmed_at": confirmed_at,
-    }
+    block: dict = {"sha": sha_value}
+    if verdict is not None:
+        block["verdict"] = verdict
+    if borderline:
+        block["borderline"] = True
+    if accepted_hits:
+        block["accepted_hits"] = sorted(accepted_hits)
+    return block
+
+
+STATUS_VERDICT = {"local": "keep-local", "forked": "fork", "composed": "keep-local"}
+
+
+def _prune_judged(entry: dict, relpath: str) -> None:
+    """Keep only what `status` cannot say: a verdict it does not imply, a `sha` a reader needs
+    (an open verdict, a fork, a retriage-class local row), and the flags. Everything else is a copy."""
+    judged = entry.get("judged")
+    if not isinstance(judged, dict) or not judged:
+        entry.pop("judged", None)
+        return
+    status = _entry_status(entry)
+    verdict = judged.get("verdict")
+    if verdict is not None and STATUS_VERDICT.get(status) == verdict and status != "tracked":
+        judged.pop("verdict", None)
+    keeps_sha = (bool(judged.get("verdict")) or status == "forked"
+                 or (status == "local" and relpath.startswith(RETRIAGE_LOCAL_PREFIXES)
+                     and not relpath.endswith(".jsonl")))
+    if not keeps_sha:
+        judged.pop("sha", None)
+    if not judged.get("borderline"):
+        judged.pop("borderline", None)
+    if not judged:
+        entry.pop("judged", None)
 
 
 def _entry_status(entry: dict) -> str:
     return str(entry.get("status", "tracked"))
+
+
+def row_status(lock: dict, relpath: str) -> str | None:
+    """A path's status: its row's, else `local` under the lock's `never_ship` prefixes, else None (unjudged).
+    An unjudged path is no decision, so `candidates` lists it until `classify` or `judge` records one."""
+    entry = (lock.get("files") or {}).get(relpath)
+    if entry is not None:
+        return _entry_status(entry)
+    if relpath.startswith(tuple(lock.get("never_ship") or ())):
+        return "local"
+    return None
+
+
+def _row_base(lock: dict, entry: dict) -> str | None:
+    """The upstream commit a row's local copy last reconciled with: its own `base`, else the pin.
+    An explicit `base: null` is a recorded unknown (a legacy `hash` naming no baseline commit),
+    never a guess the pin stands in for."""
+    if "base" in entry:
+        return entry["base"]
+    return lock.get("synced_commit")
+
+
+_PIN_BASE = object()
+_TOUCHES_CACHE: dict[str, dict[str, list[str]]] = {}
+
+
+def _template_touches(source: BaselineSource | Path) -> dict[str, list[str]]:
+    """relpath -> the baseline commits that changed it, newest first. One `git log` for the whole
+    baseline, read once per repository, so migrating many legacy rows costs one spawn."""
+    repo = str(source.path if isinstance(source, BaselineSource) else source)
+    cached = _TOUCHES_CACHE.get(repo)
+    if cached is None:
+        log = _git(Path(repo), ["log", "--all", "--format=%H", "--name-only", "--", "template/"],
+                   check=False)
+        cached = {}
+        commit = None
+        for line in log.stdout.decode("utf-8", errors="replace").splitlines():
+            if not line:
+                continue
+            if len(line) == 40 and all(char in "0123456789abcdef" for char in line):
+                commit = line
+            elif line.startswith("template/") and commit is not None:
+                cached.setdefault(line[len("template/"):], []).append(commit)
+        _TOUCHES_CACHE[repo] = cached
+    return cached
+
+
+def _legacy_base(source: BaselineSource | Path, relpath: str, recorded: str,
+                 subs: dict) -> str | None | object:
+    """The newest baseline commit whose rendered copy of `relpath` hashes to `recorded`; `_PIN_BASE`
+    when the pin's own copy does (the default base already records it); None when no commit does."""
+    upstream = upstream_text(source, relpath, subs)
+    if upstream is not None and sha(upstream.encode("utf-8")) == recorded:
+        return _PIN_BASE
+    repo = source.path if isinstance(source, BaselineSource) else Path(source)
+    reader = getattr(source, "read_at", None)
+    for commit in _template_touches(source).get(relpath, ()):
+        if reader is not None:
+            data = reader(commit, relpath)
+        else:
+            result = _git(repo, ["show", f"{commit}:template/{relpath}"], check=False)
+            data = _lf(result.stdout) if result.returncode == 0 else None
+        if data is None:
+            continue
+        if sha(rendered_upstream(relpath, data, subs).encode("utf-8")) == recorded:
+            return commit
+    return None
+
+
+def _drop_never_ship_rows(lock: dict) -> None:
+    """X2 D2: a `local` row under a `never_ship` prefix records no decision, since the prefix already
+    says the path never ships. Its `absent` rows (a declined upstream file) stay. Dropping it changes
+    no state: `row_status` reads the same `local` from the prefix."""
+    prefixes = tuple(lock.get("never_ship") or ())
+    if not prefixes:
+        return
+    files = lock.get("files") or {}
+    for relpath in [relpath for relpath in files if relpath.startswith(prefixes)]:
+        entry = files[relpath]
+        if (isinstance(entry, dict) and _entry_status(entry) == "local"
+                and not entry.get("absent")):
+            del files[relpath]
+
+
+def _validate_never_ship_prefix(prefix: str) -> str:
+    parts = prefix.split("/")
+    if (not prefix.startswith(".claude/") or not prefix.endswith("/") or "\\" in prefix
+            or "//" in prefix or ".." in parts or "." in parts or re.match(r"^[A-Za-z]:", prefix)):
+        raise UsageError(f"never-ship takes a directory prefix under .claude/ ending in '/': {prefix!r}")
+    return prefix
+
+
+def v2_never_ship(root: Path, prefixes: list[str], source: BaselineSource) -> int:
+    """Set the lock's `never_ship` prefixes (replacing them) and drop the `local` rows they now own.
+    Saves through `mutate_lock` with the baseline source, like every other writer, so the save also
+    migrates the lock. The one writer of that policy: a hand edit of the lock is not a supported route (X2 D2)."""
+    if not prefixes:
+        raise UsageError("never-ship requires at least one directory prefix under .claude/")
+    policy = sorted({_validate_never_ship_prefix(prefix) for prefix in prefixes})
+
+    def mutator(lock):
+        lock["never_ship"] = policy
+        _drop_never_ship_rows(lock)
+        return None
+
+    mutate_lock(root, mutator, source=source)
+    for prefix in policy:
+        print("never_ship: %s" % prefix)
+    return 0
+
+
+def _drop_settled_push(root: Path, source: BaselineSource | Path, lock: dict,
+                       relpath: str, entry: dict) -> None:
+    """A `push` verdict whose content already equals upstream at the row's base is settled: there is
+    nothing left to publish, so the verdict goes. Publish drops its own when it settles a row; this
+    retires one a lock carried from before it learned to."""
+    judged = entry.get("judged")
+    if not isinstance(judged, dict) or judged.get("verdict") != "push":
+        return
+    base_text = _upstream_text_at(source, relpath, _row_base(lock, entry),
+                                  lock.get("substitutions", {}))
+    if base_text is not None and local_text(root, relpath) == base_text:
+        entry.pop("judged", None)
+
+
+def migrate_lock(lock: dict, source: BaselineSource | Path, root: Path | None = None) -> None:
+    """Bring a loaded schema-2 lock row to the S2 shape before any state is computed or saved.
+
+    A legacy `hash` becomes the `base` commit whose rendered upstream text it names, or
+    `base: null` when no commit does (state `base-unknown`): a row that never recorded a hash had
+    no derivable reconcile point either. A settled `push` verdict is retired, so an old lock reads
+    and saves without a hand rewrite. A schema-1 lock is read-only: `upgrade` migrates it."""
+    if lock.get("schema") != 2:
+        return
+    _drop_never_ship_rows(lock)
+    files = lock.get("files") or {}
+    legacy = any(isinstance(entry, dict) and "hash" in entry for entry in files.values())
+    subs = lock.get("substitutions", {})
+    for relpath, entry in files.items():
+        if not isinstance(entry, dict):
+            continue
+        if "hash" in entry:
+            recorded = entry.pop("hash")
+            status = _entry_status(entry)
+            if status not in ("local", "watch", "absent", "composed") and "base" not in entry:
+                derived = None if recorded is None else _legacy_base(source, relpath, recorded, subs)
+                if derived is not _PIN_BASE:
+                    entry["base"] = derived
+        elif (legacy and _entry_status(entry) not in ("local", "watch", "absent", "composed")
+              and "base" not in entry):
+            entry["base"] = None
+        if root is not None:
+            _drop_settled_push(root, source, lock, relpath, entry)
+
+
+def _upstream_text_at(source: BaselineSource | Path, relpath: str, commit: str | None,
+                      subs: dict) -> str | None:
+    reader = getattr(source, "read_at", None)
+    data = reader(commit, relpath) if reader and commit else None
+    return None if data is None else rendered_upstream(relpath, data, subs)
 
 
 def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
@@ -1444,7 +1469,7 @@ def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
         base = entry.get("base")
         if not base:
             return "forked-base-unknown"
-        if base == source.sha:
+        if base == getattr(source, "sha", None):
             return "forked"
         # Every publish moves the pin; the fork moved only when its own upstream file did.
         reader = getattr(source, "read_at", None)
@@ -1456,26 +1481,65 @@ def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
         return "forked-upstream-moved"
     if status == "composed":
         local = local_text(root, relpath)
-        if entry.get("hash") is None or local is None or sha(local.encode("utf-8")) != entry.get("hash"):
+        try:
+            expected = _compose_row_output(root, relpath, list(entry.get("inputs") or []))
+        except BaselineError:
+            return "composed-drift"
+        if local is None or _lf(local.encode("utf-8")) != _lf(expected):
             return "composed-drift"
         return "in-sync"
-    upstream = upstream_text(source, relpath, lock.get("substitutions", {}))
+    subs = lock.get("substitutions", {})
+    upstream = upstream_text(source, relpath, subs)
     local = local_text(root, relpath)
+    if upstream is not None and local is not None and local == upstream:
+        return "in-sync"
+    base = _row_base(lock, entry)
+    if base is None:
+        # No reconcile point could be derived (a legacy `hash` naming no commit, or none at all):
+        # local and upstream cannot be separated, so report the unknown, never a guessed state.
+        return "base-unknown"
+    base_text = _upstream_text_at(source, relpath, base, subs)
     if upstream is None:
-        # No recorded upstream hash: the baseline never shipped this row, so nothing was removed.
-        return "removed-upstream" if entry.get("hash") else "unpublished"
+        # No upstream at the row's base either: the baseline never shipped this row, so nothing was removed.
+        return "removed-upstream" if base_text is not None else "unpublished"
     if local is None:
         return "missing-local"
-    upstream_hash = sha(upstream.encode("utf-8"))
-    local_hash = sha(local.encode("utf-8"))
-    lock_hash = entry.get("hash")
-    if local_hash == upstream_hash:
-        return "in-sync" if lock_hash == upstream_hash else "in-sync-lock-stale"
-    if local_hash == lock_hash:
-        return "upstream-updated"
-    if upstream_hash == lock_hash:
+    if base_text is None:
+        # The reconcile point is unreadable, so local and upstream cannot be separated: fail closed.
+        return "diverged"
+    if base_text == upstream:
         return "local-modified"
+    if local == base_text:
+        return "upstream-updated"
     return "diverged"
+
+
+def move_pin(lock: dict, source: BaselineSource | Path, new_pin: str, taken: set[str]) -> None:
+    """Move the lock's pin to `new_pin`. A row upstream changed between the old pin and the new one,
+    that this move did not take (`taken`), records `base: <old pin>`: its reconcile point stays where
+    its local copy last matched upstream. Every other row reconciles at the new pin."""
+    old = lock.get("synced_commit")
+    files = lock.get("files") or {}
+    if old and old != new_pin:
+        repo = source.path if isinstance(source, BaselineSource) else Path(source)
+        diff = _git(repo, ["diff", "--name-only", old, new_pin, "--", "template/"], check=False)
+        if diff.returncode != 0:
+            raise BaselineError(f"cannot diff {old}..{new_pin} in the baseline; refusing to move the pin")
+        changed = {line[len("template/"):] for line in
+                   diff.stdout.decode("utf-8", errors="replace").splitlines()
+                   if line.startswith("template/")}
+        for relpath, entry in files.items():
+            if relpath in taken:
+                entry.pop("base", None)
+            elif relpath in changed and "base" not in entry:
+                # A recorded unknown base (None) stays unknown: the move is no reconcile point.
+                entry["base"] = old
+    else:
+        for relpath in taken:
+            entry = files.get(relpath)
+            if entry is not None:
+                entry.pop("base", None)
+    lock["synced_commit"] = new_pin
 
 
 _UNREAD = object()
@@ -1511,7 +1575,9 @@ def _triage_needed(root: Path, source: BaselineSource | Path, lock: dict,
     if status != "tracked":
         return False
     current = _content_sha(root, relpath) if current_sha is _UNREAD else current_sha
-    return current is not None and current != entry.get("hash") and current != judged.get("sha")
+    base_text = _upstream_text_at(source, relpath, _row_base(lock, entry), lock.get("substitutions", {}))
+    base_sha = sha(base_text.encode("utf-8")) if base_text is not None else None
+    return current is not None and current != base_sha and current != judged.get("sha")
 
 
 def _diff_text(root: Path, source: BaselineSource | Path, lock: dict, relpath: str) -> str:
@@ -1545,7 +1611,7 @@ def _check_results(root: Path, lock: dict, source: BaselineSource,
         if (state == "local" and item and item.get("sync") not in ("seed", "offer")
                 and not lock["files"][relpath].get("absent") and (root / relpath).is_file()):
             results[relpath] = "local-shadows-upstream"
-    for relpath in sorted(_manifest_paths_v2(source, root, layers) - set(lock.get("files", {}))):
+    for relpath in sorted(p for p in _manifest_paths_v2(source, root, layers) if row_status(lock, p) is None):
         results[relpath] = "offered" if items[relpath].get("sync") == "offer" else "new-upstream"
     return results, outside
 
@@ -1571,6 +1637,7 @@ def _strict_findings(root: Path, source: BaselineSource, lock: dict,
             "new-upstream", "forked-upstream-moved", "forked-base-unknown",
             "composed-drift", "watch", "removed-upstream", "missing-local",
             "local-modified", "diverged", "unpublished", "local-shadows-upstream",
+            "base-unknown",
         }:
             findings.append((relpath, state))
         elif entry is not None and _triage_needed(root, source, lock, relpath, entry,
@@ -1590,16 +1657,17 @@ def _harness_tests():
     return harness_tests
 
 
-def _bound_proofs(root: Path, files: dict, tools: list[str]) -> dict[str, list[str]]:
-    """Each tool's proof rows bound by name or importer, never by a mention, whatever their status."""
+def _bound_proofs(root: Path, tools: list[str]) -> dict[str, list[str]]:
+    """Each tool's proof files bound by name or importer, never by a mention. A proof needs no row (D1):
+    its status is read from its row only where one exists."""
     ht = _harness_tests()
     bound = ht.shipped_proofs_by_tool(str(root), tools)
-    return {tool: [rel for rel in bound[tool] if rel in files and rel.count("/") == 2] for tool in tools}
+    return {tool: [rel for rel in bound[tool] if rel.count("/") == 2] for tool in tools}
 
 
 def _proves_at_layer(files: dict, tool: str, proof: str) -> bool:
     """A shipped proof counts for a tool only when every consumer of the tool's layer also receives it."""
-    if _entry_status(files[proof]) not in ("tracked", "forked"):
+    if proof not in files or _entry_status(files[proof]) not in ("tracked", "forked"):
         return False
     tool_layer, proof_layer = files[tool].get("layer"), files[proof].get("layer")
     if tool_layer in FULL_LAYERS and proof_layer in FULL_LAYERS:
@@ -1612,20 +1680,21 @@ def unproven_tools(root: Path, files: dict, candidates: list[str]) -> list[str]:
     below their own layer."""
     tools = [rel for rel in candidates
              if _TOOL_RELPATH.search(rel) and rel in files and _entry_status(files[rel]) in ("tracked", "forked")]
-    bound = _bound_proofs(root, files, tools)
+    bound = _bound_proofs(root, tools)
     return [tool for tool in tools if not any(_proves_at_layer(files, tool, proof) for proof in bound[tool])]
 
 
 def _refuse_unproven_new_tool(root: Path, files: dict, relpath: str, shas: dict[str, str | None],
                               pushing: dict[str, str], commit: str | None) -> None:
     """A new tool row publishes with a proof: one that ships, or one judged push at its current sha."""
-    bound = _bound_proofs(root, files, [relpath])[relpath]
+    bound = _bound_proofs(root, [relpath])[relpath]
     unread = [proof for proof in bound if proof not in shas]
     if unread:
         shas.update(_commit_shas(root, commit, unread) if commit else _content_shas(root, unread))
     for proof in bound:
-        judged = files[proof].get("judged") or {}
-        if (_entry_status(files[proof]) in ("tracked", "forked") or proof in pushing
+        row = files.get(proof) or {}
+        judged = row.get("judged") or {}
+        if ((proof in files and _entry_status(row) in ("tracked", "forked")) or proof in pushing
                 or (judged.get("verdict") == "push" and judged.get("sha") == shas.get(proof))):
             return
     raise BaselineError(
@@ -1714,10 +1783,6 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
         if set(layers) != set(FULL_LAYERS):
             print(f"profile: {','.join(layers)} — {outside} file(s) outside profile not shown")
     return 1 if strict and findings else 0
-
-def _classify_decision_verdict(status: str) -> str:
-    return {"tracked": "push", "local": "keep-local", "forked": "fork", "composed": "keep-local"}[status]
-
 
 def _whole_file_as_added_diff(relpath: str, text: str) -> str:
     """A synthetic unified diff whose every line of `text` is an ADDED line at `relpath`, so
@@ -1864,13 +1929,17 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
             layer = layer_override or (
                 (source_entry or {}).get("layer") if source_entry else (existing or {}).get("layer"))
             desired_inputs = list(inputs or []) if status == "composed" else None
+            # Only a fork and a retriage-class local row keep a judged sha; every other status is
+            # settled by itself, so its judged block is dropped and cannot disagree with the row.
+            keeps_sha = status == "forked" or (
+                status == "local" and relpath.startswith(RETRIAGE_LOCAL_PREFIXES)
+                and not relpath.endswith(".jsonl"))
             same = (
                 existing is not None
                 and _entry_status(existing) == status
-                and (existing.get("judged") or {}).get("sha") == current_sha
+                and (not keeps_sha or (existing.get("judged") or {}).get("sha") == current_sha)
                 and existing.get("layer") == layer
                 and existing.get("inputs") == desired_inputs
-                and existing.get("from") == source_relpath
                 and bool(existing.get("absent")) == absent
             )
             if same:
@@ -1878,17 +1947,10 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
             entry = dict(existing or {})
             entry["status"] = status
             entry["layer"] = layer
-            if source_relpath:
-                entry["from"] = source_relpath
-            else:
-                entry.pop("from", None)
             if status == "composed":
                 entry["inputs"] = desired_inputs
-                entry["hash"] = None
             else:
                 entry.pop("inputs", None)
-            if status in ("local", "forked"):
-                entry.pop("hash", None)
             if status == "forked":
                 already_forked = existing is not None and _entry_status(existing) == "forked"
                 entry["base"] = existing.get("base") if already_forked else None
@@ -1898,14 +1960,14 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
                 entry["absent"] = True
             else:
                 entry.pop("absent", None)
-            entry["judged"] = _decision(root, relpath, _classify_decision_verdict(status), sha_value=current_sha)
+            entry["judged"] = _decision(root, relpath, None, sha_value=current_sha)
             files[relpath] = entry
             changed.append(relpath)
         snapshots["after"] = copy.deepcopy(lock)
         return changed or NO_CHANGE
 
     try:
-        result = mutate_lock(root, apply)
+        result = mutate_lock(root, apply, source=source)
         if result is NO_CHANGE:
             print("no change")
         else:
@@ -1938,6 +2000,7 @@ _DEPENDENCY_MEANING = {
     "watch": "it never ships, so consumers lack it",
     "local-modified": "it differs from the baseline copy, so consumers get older bytes",
     "unpublished": "the baseline lacks it, so consumers lack it",
+    "no-row": "it has no lock row, so no consumer receives it; classify it tracked with a layer first",
 }
 
 
@@ -1964,9 +2027,14 @@ def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None,
         layers = layer_closure.consumer_layers(lock, {"files": list(shipped.values())})
         layers.setdefault(relpath, (files.get(relpath) or {}).get("layer") or "pure")
     try:
-        deps = [dep for dep in layer_closure.row_dependencies(root, relpath, layers, text) if dep in files]
+        found = layer_closure.row_dependencies(root, relpath, layers, text)
     except (OSError, ValueError) as exc:
         raise BaselineError(f"dependency check failed for {relpath}: {exc}")
+    deps = [dep for dep in found if dep in files]
+    # Only rows ship: a dependency with no row (a new fixture, a never_ship path) reaches no consumer
+    # unless the baseline already carries it. Runtime state under the excluded prefixes is never shipped.
+    rowless = [dep for dep in found if dep not in files and dep not in shipped and dep not in pushing
+               and not dep.startswith(CANDIDATE_EXCLUDE_PREFIXES)]
     old_deps: set[str] | None = None
     if source is not None:
         old_bytes = _read_upstream_bytes(source, relpath)
@@ -1982,7 +2050,7 @@ def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None,
             continue
         entry = files[dep]
         state = _v2_state(root, source, lock, dep, entry) if source is not None else _entry_status(entry)
-        if state in ("in-sync", "in-sync-lock-stale", "forked") or (state == "local" and dep in shipped):
+        if state in ("in-sync", "forked") or (state == "local" and dep in shipped):
             continue
         judged = entry.get("judged") or {}
         current = (_commit_shas(root, commit, [dep]) if commit else _content_shas(root, [dep])).get(dep)
@@ -1991,6 +2059,8 @@ def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None,
         if state == "local-modified" and old_deps is not None and dep in old_deps:
             continue
         states[dep] = state
+    for dep in rowless:
+        states[dep] = "no-row"
     if states:
         lines = [f"  {dep}: {state}; "
                  + (_ADDED_CITATION_MEANING if state == "local-modified" and old_deps is not None
@@ -2097,8 +2167,11 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
             if old.get("verdict") != "push":
                 report.append(f"not carried: {relpath} (judged {old.get('verdict') or 'never'}, not push)")
                 continue
-            # A pulled row's recorded upstream copy is already published, so a chain may start there too.
-            starts = {sha for sha in (old.get("sha"), files[relpath].get("hash")) if sha}
+            # A pulled row's recorded upstream copy is already published, so a chain may start
+            # there too: upstream at the row's base commit.
+            base_text = _upstream_text_at(source, relpath, _row_base(lock, files[relpath]), subs)
+            base_sha = sha(base_text.encode("utf-8")) if base_text is not None else None
+            starts = {value for value in (old.get("sha"), base_sha) if value}
             final_sha, first_before, final = _carry_walk(root, base, head, relpath, starts)
             if final_sha is None:
                 report.append(f"not carried: {relpath} ({first_before})")
@@ -2134,7 +2207,7 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
         return carried or NO_CHANGE
 
     try:
-        mutate_lock(root, apply)
+        mutate_lock(root, apply, source=source)
         for line in report:
             print(line)
         _print_closure_delta(root, snapshots.get("before"), snapshots.get("after"), source, source_error)
@@ -2142,6 +2215,15 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
         if source is not None:
             source.close()
     return 0
+
+
+def _committed_deletion(root: Path, commit: str | None, relpath: str, source, lock: dict) -> str | None:
+    """The commit that deleted `relpath` from this project, when upstream still carries it: a push of that
+    row publishes the deletion. None for a file never committed, or one upstream lacks."""
+    if source is None or _upstream_sha(source, relpath, lock.get("substitutions", {})) is None:
+        return None
+    found = _git(root, ["log", "-1", "--diff-filter=D", "--format=%H", commit or "HEAD", "--", relpath], check=False)
+    return _lf(found.stdout).decode(errors="replace").strip() or None if found.returncode == 0 else None
 
 
 def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
@@ -2160,10 +2242,14 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
         files = lock.get("files", {})
         decisions = {}
         current = _commit_shas(root, commit, relpaths) if commit else _content_shas(root, relpaths)
+        deletions = []
         for relpath in relpaths:
             if relpath not in files:
                 raise BaselineError(f"not a row: {relpath}")
             current_sha = current[relpath]
+            if current_sha is None and verdict == "push" and _committed_deletion(root, commit, relpath, source, lock):
+                deletions.append(relpath)
+                continue
             if current_sha is None:
                 raise BaselineError(f"could not read content for {relpath}")
             decisions[relpath] = current_sha
@@ -2178,17 +2264,21 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
         for relpath, current_sha in decisions.items():
             entry = files[relpath]
             old = entry.get("judged") or {}
-            confirmed_at = _utc_now() if confirm else None
-            # A tracked row never shipped (no hash, upstream lacks it) is local; left tracked it
-            # reads `removed-upstream` in `check --strict`.
+            # A tracked row never shipped (upstream lacks it, and its base holds no copy) is local;
+            # left tracked it reads `removed-upstream` in `check --strict`.
             unshipped = (
-                verdict == "keep-local" and _entry_status(entry) == "tracked" and not entry.get("hash")
+                verdict == "keep-local" and _entry_status(entry) == "tracked"
                 and source is not None and _upstream_sha(source, relpath, subs) is None
+                and _upstream_text_at(source, relpath, _row_base(lock, entry), subs) is None
             )
+            # A verdict the row's status already implies is pruned by `save_lock`, so a repeat is
+            # the sha plus no verdict; any other verdict is the sha plus that verdict.
+            copies_status = STATUS_VERDICT.get("local" if unshipped else _entry_status(entry)) == verdict
+            kept_verdict = None if copies_status else verdict
             same = (
                 old.get("sha") == current_sha
-                and old.get("verdict") == verdict
-                and (not confirm or old.get("confirmed_at") is not None)
+                and old.get("verdict") == kept_verdict
+                and (not confirm or not old.get("borderline"))
                 and not unshipped
             )
             if same and not (verdict == "push" and accept_hits):
@@ -2206,13 +2296,20 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
                     continue
             entry["judged"] = _decision(
                 root, relpath, verdict, sha_value=current_sha,
-                borderline=borderline, confirmed_at=confirmed_at,
+                borderline=borderline and not confirm, accepted_hits=accepted or None,
             )
-            if accepted:
-                entry["judged"]["accepted_hits"] = accepted
             if unshipped:
                 entry["status"] = "local"
-                entry.pop("hash", None)
+                entry.pop("base", None)
+            elif verdict == "keep-local" and "base" in entry and entry["base"] is None:
+                # The judgment is the row's reconcile point: it now reads at the pin.
+                entry.pop("base", None)
+            changed.append(relpath)
+        for relpath in deletions:
+            deleted = _committed_deletion(root, commit, relpath, source, lock)
+            if files[relpath].get("judged") == {"verdict": "push", "deleted": deleted}:
+                continue
+            files[relpath]["judged"] = {"verdict": "push", "deleted": deleted}
             changed.append(relpath)
         if refusals:
             raise BaselineError("\n".join(refusals))
@@ -2220,7 +2317,7 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
         return changed or NO_CHANGE
 
     try:
-        result = mutate_lock(root, apply)
+        result = mutate_lock(root, apply, source=source)
         if result is NO_CHANGE:
             print("no change")
         else:
@@ -2371,17 +2468,15 @@ def v2_fork(root: Path, relpaths: list[str], source: BaselineSource) -> int:
                 _entry_status(entry) == "forked"
                 and entry.get("base") == source.sha
                 and (entry.get("judged") or {}).get("sha") == current_sha
-                and (entry.get("judged") or {}).get("verdict") == "fork"
             ):
                 continue
             entry["status"] = "forked"
             entry["base"] = source.sha
-            entry.pop("hash", None)
-            entry["judged"] = _decision(root, relpath, "fork", sha_value=current_sha)
+            entry["judged"] = _decision(root, relpath, None, sha_value=current_sha)
             changed.append(relpath)
         return changed or NO_CHANGE
 
-    result = mutate_lock(root, apply)
+    result = mutate_lock(root, apply, source=source)
     if result is NO_CHANGE:
         print("no change")
     else:
@@ -2395,60 +2490,36 @@ def v2_track(root: Path, relpaths: list[str], source: BaselineSource) -> int:
 
     def apply(lock_value: dict):
         changed = []
+        subs = lock_value.get("substitutions", {})
         for relpath in relpaths:
             entry = lock_value.get("files", {}).get(relpath)
             if entry is None:
                 raise BaselineError(f"not a row: {relpath}")
             if _entry_status(entry) not in ("forked", "tracked"):
                 raise BaselineError(f"track requires a forked row: {relpath}")
-            kept_hash = entry.get("hash")
-            if kept_hash is None:
+            upstream = upstream_text(source, relpath, subs)
+            if upstream is None:
+                raise _missing_error(relpath)
+            local = local_text(root, relpath)
+            if local is None or local != upstream:
                 raise BaselineError(
-                    f"track requires a pulled hash: {relpath} — first run pull --force {relpath}"
+                    f"track requires content equal to upstream: {relpath} — first run pull --force {relpath}"
                 )
-            old = entry.get("judged") or {}
-            if (
-                _entry_status(entry) == "tracked"
-                and entry.get("hash") == kept_hash
-                and old.get("sha") == kept_hash
-                and old.get("verdict") == "push"
-            ):
+            if _entry_status(entry) == "tracked" and "base" not in entry and not entry.get("judged"):
                 continue
             entry["status"] = "tracked"
-            entry["hash"] = kept_hash
             entry.pop("base", None)
-            entry["judged"] = {
-                "sha": kept_hash,
-                "verdict": "push",
-                "at": _utc_now(),
-                "borderline": False,
-                "confirmed_at": None,
-            }
+            entry.pop("judged", None)
             changed.append(relpath)
         return changed or NO_CHANGE
 
-    result = mutate_lock(root, apply)
+    result = mutate_lock(root, apply, source=source)
     if result is NO_CHANGE:
         print("no change")
     else:
         for relpath in result:
             print(f"tracked: {relpath}")
     return 0
-
-
-def _merge_base_text(source: BaselineSource, relpath: str, base_hash: str | None, subs: dict) -> str | None:
-    """The upstream text a row's `hash` records: the newest upstream commit of the file whose forwarded text matches."""
-    if not base_hash:
-        return None
-    log = _git(source.path, ["log", "--format=%H", source.sha, "--", f"template/{relpath}"], check=False)
-    for commit in log.stdout.decode("utf-8", errors="replace").split():
-        data = source.read_at(commit, relpath)
-        if data is None:
-            continue
-        text = rendered_upstream(relpath, data, subs)
-        if sha(text.encode("utf-8")) == base_hash:
-            return text
-    return None
 
 
 def _merge3(local: str, base: str, upstream: str) -> tuple[str, int]:
@@ -2535,14 +2606,14 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 state = _v2_state(root, source, lock, path, entry)
                 if state == "forked-upstream-moved" or (state == "diverged" and not merge):
                     held.append((path, state))
-                if state in ("upstream-updated", "new-upstream", "in-sync-lock-stale") or (
+                if state in ("upstream-updated", "new-upstream") or (
                         merge and state == "diverged") or (
                     state == "removed-upstream" and _entry_status(entry) == "tracked"
                 ):
                     targets.append(path)
             unrowed = sorted(
                 path for path, layer in manifest_layers.items()
-                if path not in files and (not layer or layer in layers)
+                if row_status(lock, path) is None and (not layer or layer in layers)
             )
             offered[:] = [path for path in unrowed if manifest_items[path].get("sync") == "offer"]
             targets.extend(path for path in unrowed if path not in offered)
@@ -2597,6 +2668,8 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
             plans.append((relpath, "update", upstream))
         changed = []
         seeds = []
+        taken: set[str] = set()
+        subs = lock.get("substitutions", {})
         for relpath, action, upstream in plans:
             if action == "noop":
                 continue
@@ -2607,30 +2680,31 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                     kept_seeds.append(relpath)
                 seeds.append(relpath)
                 changed.append(relpath)
+                taken.add(relpath)
                 continue
             if action == "retire":
                 local = local_text(root, relpath)
-                if local is None or sha(local.encode("utf-8")) == files[relpath].get("hash"):
+                base_text = _upstream_text_at(source, relpath, _row_base(lock, files[relpath]), subs)
+                if local is None or (base_text is not None and local == base_text):
                     if local is not None:
                         (root / relpath).unlink()
                     del files[relpath]
                     retired.append(relpath)
                 else:
                     files[relpath]["status"] = "local"
-                    files[relpath].pop("hash", None)
                     files[relpath].pop("base", None)
                     kept_local.append(relpath)
                 changed.append(relpath)
+                taken.add(relpath)
                 continue
             if action == "merge":
                 if isinstance(upstream, BinaryText):
                     conflicts.append((relpath, "binary row; keep the local copy or take upstream with pull --force", None))
                     continue
-                subs = lock.get("substitutions", {})
-                base = _merge_base_text(source, relpath, files[relpath].get("hash"), subs)
+                base = _upstream_text_at(source, relpath, _row_base(lock, files[relpath]), subs)
                 local = local_text(root, relpath) or ""
                 if base is None:
-                    conflicts.append((relpath, "no upstream base matches the row's hash; merge by hand", None))
+                    conflicts.append((relpath, "no upstream copy at the row's base commit; merge by hand", None))
                     continue
                 text, hunks = _merge3(local, base, upstream)
                 if hunks:
@@ -2640,33 +2714,25 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                     conflicts.append((relpath, f"{hunks} hunks", copy_path))
                     continue
                 _write_row(root, source, relpath, text)
-                files[relpath]["hash"] = sha(upstream.encode("utf-8"))
                 merged.append(relpath)
                 changed.append(relpath)
+                taken.add(relpath)
                 continue
             _write_row(root, source, relpath, upstream)
-            upstream_hash = sha(upstream.encode("utf-8"))
             if action is None:
                 files[relpath] = {
                     "status": "tracked",
                     "layer": manifest_layers.get(relpath),
-                    "hash": upstream_hash,
-                    "judged": {
-                        "sha": upstream_hash,
-                        "verdict": "push",
-                        "at": _utc_now(),
-                        "borderline": False,
-                        "confirmed_at": None,
-                    },
                 }
+                taken.add(relpath)
             else:
-                if _entry_status(files[relpath]) == "local":
-                    files[relpath].pop("hash", None)
-                    files[relpath].pop("absent", None)
-                else:
-                    files[relpath]["hash"] = upstream_hash
-                    # A tracked row follows upstream: its verdict judges the copy just written, as a new row's does.
-                    files[relpath]["judged"] = _decision(root, relpath, "push", sha_value=upstream_hash)
+                # A row that follows upstream now holds the upstream copy: any verdict it carried
+                # judged older content. A `forked` or `local` row keeps its status and its base.
+                follows_upstream = _entry_status(files[relpath]) not in ("forked", "local")
+                files[relpath].pop("judged", None)
+                files[relpath].pop("absent", None)
+                if follows_upstream:
+                    taken.add(relpath)
             changed.append(relpath)
         # Seed rows are decided after every write, so a composed settings.json row sees the
         # settings.base.json this same pull delivered.
@@ -2674,11 +2740,11 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
             files.update(_seed_rows(root, relpath, manifest_layers.get(relpath), files, layers))
         if not changed:
             return NO_CHANGE
-        lock["synced_commit"] = source.sha
+        move_pin(lock, source, source.sha, taken)
         lock["profile"] = ",".join(layers)
         return changed
 
-    result = mutate_lock(root, apply)
+    result = mutate_lock(root, apply, source=source)
     if result is NO_CHANGE:
         print("no change")
     else:
@@ -2711,55 +2777,71 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
         print(f"conflict: {relpath} ({reason})" + (f" -> {copy_path}" if copy_path else ""))
     render_lane_agents(root)
     write_harness_ignore_block(root)
-    return 1 if conflicts else 0
+    proved = _prove_pulled(root, [] if result is NO_CHANGE else [
+        relpath for relpath in result
+        if relpath not in retired and relpath not in kept_local and relpath not in kept_seeds])
+    return 1 if conflicts or proved else 0
+
+
+def _prove_pulled(root: Path, written: list[str]) -> int:
+    """Run the proofs bound to the files a pull wrote; name each red one and the command that reruns it.
+    The pulled files stay written. Returns 1 on any red, else 0."""
+    runner = root / ".claude" / "scripts" / "harness_tests.py"
+    paths = [relpath for relpath in written if (root / relpath).exists()]
+    if not paths or not runner.is_file():
+        return 0
+    result = subprocess.run([sys.executable, str(runner), "--for", *paths], cwd=root,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    if result.returncode == 0:
+        print(f"proofs: green for {len(paths)} pulled path(s)")
+        return 0
+    blocked = [name for chunk in re.findall(r"blocked by ([^\r\n]+)", result.stdout) for name in chunk.split(", ")]
+    failed = re.findall(r"^(?:FAIL|not ok) (\S+)", result.stdout, re.M)
+    names = ", ".join(sorted(set(blocked + failed))) or "see output below"
+    print(f"red proof(s) after pull (exit {result.returncode}): {names}")
+    print(result.stdout[-2000:])
+    print("rerun: python3 .claude/scripts/harness_tests.py --for " + " ".join(paths))
+    return 1
 
 
 def v2_update_lock(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str]) -> int:
+    """Move the pin to the baseline's commit, taking the named rows with it. A named row must already
+    hold the upstream copy: the move records that this project has adopted that content."""
     _validate_relpaths(relpaths)
+    if not relpaths:
+        raise UsageError("update-lock needs relpaths: name the rows this move takes; a bare move would "
+                         "take every row and hide upstream changes (use `pull`)")
     skipped = 0
 
     def apply(lock: dict):
         nonlocal skipped
         files = lock.get("files", {})
-        if relpaths:
-            targets = []
-            for relpath in relpaths:
-                entry = files.get(relpath)
-                if entry is None:
-                    raise BaselineError(f"not a row: {relpath}")
-                if not in_profile(entry, layers):
-                    skipped += 1
-                    continue
-                targets.append(relpath)
-        else:
-            for relpath, entry in sorted(files.items()):
-                if _entry_status(entry) != "tracked" or not in_profile(entry, layers) or not entry.get("hash"):
-                    continue
-                if upstream_text(source, relpath, lock.get("substitutions", {})) is None:
-                    raise _missing_error(relpath)
-            targets = [
-                relpath for relpath, entry in files.items()
-                if _entry_status(entry) == "tracked"
-                and in_profile(entry, layers)
-                and _v2_state(root, source, lock, relpath, entry) == "in-sync-lock-stale"
-            ]
-        changed = []
+        subs = lock.get("substitutions", {})
+        targets = []
+        for relpath in relpaths:
+            entry = files.get(relpath)
+            if entry is None:
+                raise BaselineError(f"not a row: {relpath}")
+            if not in_profile(entry, layers):
+                skipped += 1
+                continue
+            targets.append(relpath)
         for relpath in targets:
-            upstream = upstream_text(source, relpath, lock.get("substitutions", {}))
+            upstream = upstream_text(source, relpath, subs)
             if upstream is None:
                 raise _missing_error(relpath)
-            upstream_hash = sha(upstream.encode("utf-8"))
-            if files[relpath].get("hash") == upstream_hash:
-                continue
-            files[relpath]["hash"] = upstream_hash
-            changed.append(relpath)
-        if not changed:
+            local = local_text(root, relpath)
+            if local is None or local != upstream:
+                raise BaselineError(f"update-lock takes only rows equal to upstream: {relpath} — "
+                                    f"pull it, or judge its change first")
+        if lock.get("synced_commit") == source.sha and not any(
+                files[relpath].get("base") for relpath in targets):
             return NO_CHANGE
-        lock["synced_commit"] = source.sha
+        move_pin(lock, source, source.sha, set(targets))
         lock["profile"] = ",".join(layers)
-        return changed
+        return targets
 
-    result = mutate_lock(root, apply)
+    result = mutate_lock(root, apply, source=source)
     if result is NO_CHANGE:
         print("no change")
     else:
@@ -2813,10 +2895,11 @@ def v2_resolve(root: Path, source: BaselineSource, relpaths: list[str]) -> int:
             if upstream_hash != copies[relpath][2]:
                 raise BaselineError(f"upstream moved since the merge copy of {relpath} was written; rerun "
                                     f"`pull --merge {relpath}` to merge the current upstream")
-            files[relpath]["hash"] = upstream_hash
+            # The merged copy reconciled against the upstream this merge saw: its base is that commit.
+            files[relpath]["base"] = source.sha
         return relpaths
 
-    mutate_lock(root, apply)
+    mutate_lock(root, apply, source=source)
     for relpath, (copy_path, text, _base) in copies.items():
         _write_lf(root / relpath, text)
         copy_path.unlink()
@@ -2844,7 +2927,7 @@ def _migrate_row(root: Path, source_row: dict, relpath: str,
     if old_status == "tracked" and relpath == ".claude/reference/memory_domains.md":
         layer = _migrated_layer(manifest_layers, relpath, "composed")
         row: dict = {"layer": layer}
-        row.update({"status": "composed", "hash": None, "inputs": WATCH_COMPOSED_INPUTS[relpath], "judged": None})
+        row.update({"status": "composed", "inputs": WATCH_COMPOSED_INPUTS[relpath]})
         return row
     if old_status == "watch" and relpath == ".claude/CLAUDE.md":
         layer = _migrated_layer(manifest_layers, relpath, "local")
@@ -2857,7 +2940,7 @@ def _migrate_row(root: Path, source_row: dict, relpath: str,
             final_status = "composed"
             layer = _migrated_layer(manifest_layers, relpath, final_status)
             row = {"layer": layer}
-            row.update({"status": "composed", "hash": None, "inputs": inputs, "judged": None})
+            row.update({"status": "composed", "inputs": inputs})
         else:
             final_status = "forked"
             layer = _migrated_layer(manifest_layers, relpath, final_status)
@@ -2885,9 +2968,9 @@ def _migrate_row(root: Path, source_row: dict, relpath: str,
         row.update({"status": "forked", "base": None, "judged": None})
         return row
     if old_status == "composed":
-        row.update({"status": "composed", "hash": source_row.get("hash"), "inputs": source_row.get("inputs", []), "judged": None})
+        row.update({"status": "composed", "inputs": source_row.get("inputs", [])})
         return row
-    row.update({"status": "tracked", "hash": source_row.get("hash"), "judged": None})
+    row.update({"status": "tracked"})
     return row
 
 
@@ -2986,13 +3069,7 @@ def v2_migrate(root: Path, source: BaselineSource, layers: list[str], abbreviati
         core = ".claude/CLAUDE.core.md"
         # An absent core file stays unrowed so `pull` delivers it as a new path.
         if core not in files and _content_sha(root, core) is not None:
-            core_hash = _upstream_sha(source, core, lock.get("substitutions", {}))
-            files[core] = {
-                "status": "tracked",
-                "layer": manifest_layers.get(core),
-                "hash": core_hash,
-                "judged": None,
-            }
+            files[core] = {"status": "tracked", "layer": manifest_layers.get(core)}
         if ".claude/settings.json" in files:
             notes.extend(_migrate_monolithic_settings(root, source, lock, files, layers))
         notes.append(_migrate_core_region(root, layers))
@@ -3015,23 +3092,14 @@ def v2_migrate(root: Path, source: BaselineSource, layers: list[str], abbreviati
 
 
 def v2_paths(lock: dict, status_filter: str | None, verdict_filter: str | None,
-              judged_since: str | None, as_json: bool, unshipped: bool = False, root: Path | None = None) -> int:
-    """`unshipped` keeps rows whose current content is the judged content and not the baseline copy the
-    lock records (`hash`), so a verdict an earlier publish left out stays listed however long ago it was
-    judged; a verdict on older content is triage's, not publish's."""
+              as_json: bool, unshipped: bool = False, root: Path | None = None) -> int:
+    """`unshipped` keeps rows whose current content is the judged content, so a push verdict an
+    earlier publish left over stays listed; a verdict on older content is triage's, not publish's."""
     current = _content_shas(root, list(lock.get("files", {}))) if unshipped else {}
     if status_filter is not None and status_filter not in V2_STATUSES:
         raise UsageError("unknown status")
     if verdict_filter is not None and verdict_filter not in VERDICTS:
         raise UsageError("unknown verdict")
-    since = None
-    if judged_since is not None:
-        try:
-            since = datetime.fromisoformat(judged_since.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise UsageError("unparseable --judged-since") from exc
-        if since.tzinfo is None:
-            raise UsageError("--judged-since must include a timezone")
     paths = []
     for relpath, entry in sorted(lock.get("files", {}).items()):
         if status_filter is not None and entry.get("status") != status_filter:
@@ -3039,22 +3107,11 @@ def v2_paths(lock: dict, status_filter: str | None, verdict_filter: str | None,
         judged = entry.get("judged") or {}
         if verdict_filter is not None and judged.get("verdict") != verdict_filter:
             continue
-        if unshipped and (current.get(relpath) is None or judged.get("sha") != current[relpath]
-                          or current[relpath] == entry.get("hash")):
-            if (judged.get("verdict") == "push" and current.get(relpath) is not None
-                    and judged.get("sha") != current[relpath] and current[relpath] != entry.get("hash")):
+        deletion = judged.get("deleted") and current.get(relpath) is None
+        if unshipped and not deletion and (current.get(relpath) is None or judged.get("sha") != current[relpath]):
+            if judged.get("verdict") == "push" and current.get(relpath) is not None:
                 print(f"stale verdict: {relpath} changed since it was judged push", file=sys.stderr)
             continue
-        if since is not None:
-            at = judged.get("at")
-            if not at:
-                continue
-            try:
-                parsed = datetime.fromisoformat(str(at).replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if parsed <= since:
-                continue
         paths.append(relpath)
     if as_json:
         print(json.dumps(paths, ensure_ascii=False))
@@ -3182,17 +3239,10 @@ def v2_compose(root: Path, lock: dict, layers: list[str], check: bool) -> int:
     for relpath in drift:
         _write_lf(root / relpath, outputs[relpath])
 
-    # A row whose file already equals its composition (e.g. `migrate` reset `hash` to null on an
-    # already-correct file) still needs its `hash`/`inputs` recorded -- `drift` alone tracks only
-    # files that needed WRITING, not rows whose lock metadata disagrees with the composed truth.
+    # A row whose file already equals its composition still records the `inputs` it composed from.
     rows_by_relpath = dict(rows)
-    stale_rows = []
-    for relpath, output in outputs.items():
-        row = rows_by_relpath[relpath]
-        new_hash = sha(output)
-        new_inputs = inputs_by_relpath[relpath]
-        if row.get("hash") != new_hash or row.get("inputs") != new_inputs:
-            stale_rows.append(relpath)
+    stale_rows = [relpath for relpath in outputs
+                  if rows_by_relpath[relpath].get("inputs") != inputs_by_relpath[relpath]]
     stale_rows.sort()
 
     if not drift and not stale_rows:
@@ -3205,10 +3255,8 @@ def v2_compose(root: Path, lock: dict, layers: list[str], check: bool) -> int:
             row = current.get("files", {}).get(relpath)
             if row is None:
                 continue
-            new_hash = sha(outputs[relpath])
             new_inputs = inputs_by_relpath[relpath]
-            if row.get("hash") != new_hash or row.get("inputs") != new_inputs:
-                row["hash"] = new_hash
+            if row.get("inputs") != new_inputs:
                 row["inputs"] = new_inputs
                 changed = True
         return None if changed else NO_CHANGE
@@ -3288,19 +3336,7 @@ def v2_init(root: Path, baseline_dir: str, repo: str, ref: str,
         if item.get("sync") == "seed":
             files.update(_seed_rows(root, relpath, item.get("layer"), files, layers))
         elif upstream is not None:
-            upstream_hash = sha(upstream.encode("utf-8"))
-            files[relpath] = {
-                "status": "tracked",
-                "layer": item.get("layer"),
-                "hash": upstream_hash,
-                "judged": {
-                    "sha": upstream_hash,
-                    "verdict": "push",
-                    "at": _utc_now(),
-                    "borderline": False,
-                    "confirmed_at": None,
-                },
-            }
+            files[relpath] = {"status": "tracked", "layer": item.get("layer")}
     lock = {
         "schema": 2,
         "profile": ",".join(layers),
@@ -3570,7 +3606,7 @@ def _doctor_auto_memory(root: Path) -> dict:
     return _doctor_row(item, "ok", expected)
 
 
-def _doctor_lane_agents(root: Path, lock: dict) -> dict:
+def _doctor_lane_agents(root: Path) -> dict:
     item = "lane-agents"
     fix = ("python3 .claude/tools/tool_profiles.py agents --write, or baseline_sync.py pull "
            "(renders them and records the local rows)")
@@ -3588,10 +3624,7 @@ def _doctor_lane_agents(root: Path, lock: dict) -> dict:
         return _doctor_row(item, "fail", f"cannot render: {exc}", fix)
     if drift:
         return _doctor_row(item, "fail", "; ".join(err.getvalue().strip().splitlines()[:3]), fix)
-    unrowed = [n for n in names if f"{LANE_AGENTS_RELPATH}/{n}" not in lock.get("files", {})]
-    if unrowed:
-        return _doctor_row(item, "fail", "no lock row for " + ", ".join(unrowed), fix)
-    return _doctor_row(item, "ok", f"{len(names)} lane agent file(s) current with local rows")
+    return _doctor_row(item, "ok", f"{len(names)} lane agent file(s) current")
 
 
 def _doctor_delivered_ignored(root: Path, lock: dict) -> dict:
@@ -3613,7 +3646,7 @@ def doctor_rows(root: Path, lock: dict) -> list[dict]:
             _doctor_script(root, "user-scope", "user_scope.py", ["check", "--repo", str(root)],
                            "user_scope.py check is green"),
             _doctor_script(root, "lens-registry", "lens.py", ["index"], "every registered lens resolves"),
-            _doctor_auto_memory(root), _doctor_lane_agents(root, lock)]
+            _doctor_auto_memory(root), _doctor_lane_agents(root)]
 
 
 def cmd_doctor(root: Path, lock: dict, as_json: bool) -> int:
@@ -3673,7 +3706,8 @@ def cmd_author_start(root: Path) -> int:
 
 
 def _validate_cli_usage(args) -> list[str] | None:
-    _validate_relpaths(args.relpaths)
+    if args.op != "never-ship":
+        _validate_relpaths(args.relpaths)
     if args.op == "diff" and len(args.relpaths) != 1:
         raise UsageError("diff requires exactly one relpath")
     if args.op in ("classify", "judge", "forget", "gc", "fork", "track", "paths", "triage", "migrate", "ignore"):
@@ -3738,13 +3772,6 @@ def _validate_cli_usage(args) -> list[str] | None:
             raise UsageError("unknown status")
         if args.verdict is not None and args.verdict not in VERDICTS:
             raise UsageError("unknown verdict")
-        if args.judged_since is not None:
-            try:
-                parsed_since = datetime.fromisoformat(args.judged_since.replace("Z", "+00:00"))
-            except ValueError as exc:
-                raise UsageError("unparseable --judged-since") from exc
-            if parsed_since.tzinfo is None:
-                raise UsageError("--judged-since must include a timezone")
     if args.op == "migrate" and args.relpaths:
         raise UsageError("migrate takes no relpaths")
     return [value for value in (args.inputs.split(",") if args.inputs else []) if value]
@@ -3807,7 +3834,6 @@ def build_parser():
     ap.add_argument("--confirm", action="store_true")
     ap.add_argument("--batch", type=int, default=20)
     ap.add_argument("--apply", action="store_true")
-    ap.add_argument("--judged-since")
     ap.add_argument("--unshipped", action="store_true")
     ap.add_argument("--commit")
     ap.add_argument("--carry", metavar="BASE..HEAD")
@@ -3903,7 +3929,7 @@ def main(argv=None) -> int:
             require_v2_lock(lock)
         layers = resolve_layers_v2(lock, args.layers)
         if args.op == "paths":
-            return v2_paths(lock, args.status, args.verdict, args.judged_since, args.json, args.unshipped, root)
+            return v2_paths(lock, args.status, args.verdict, args.json, args.unshipped, root)
         if args.op == "gc":
             return v2_gc(root, args.apply)
         if args.op == "forget":
@@ -3929,6 +3955,9 @@ def main(argv=None) -> int:
         source = None
         try:
             source = ensure_baseline(lock, root, args.baseline_dir)
+            # An old lock migrates before any reader sees it: its legacy `hash` rows derive their
+            # `base`, or record `base: null` (state `base-unknown`) when none can be derived.
+            migrate_lock(lock, source, root)
             if args.op == "check":
                 return v2_check(root, lock, source, args.json, layers, args.strict)
             if args.op == "diff":
@@ -3950,6 +3979,8 @@ def main(argv=None) -> int:
                 print("engine updated; the rest of the pull runs on it")
                 return subprocess.run([sys.executable, str(root / ENGINE_RELPATH), *raw_argv], cwd=root,
                                       env=dict(os.environ, **{ENGINE_UPDATED_ENV: "1"})).returncode
+            if args.op == "never-ship":
+                return v2_never_ship(root, args.relpaths, source)
             if args.op == "migrate":
                 return v2_migrate(root, source, resolve_layers_v2({}, args.layers), args.abbrev)
             if args.op == "triage":

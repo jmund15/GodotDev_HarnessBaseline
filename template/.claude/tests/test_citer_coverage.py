@@ -80,11 +80,11 @@ with tempfile.TemporaryDirectory(prefix="citer_declared_") as root:
     bare = root / "bare.md"
     bare.write_text("Review this plan.\n", encoding="utf-8")
     # A meta plan in must-read is not a subject unless the sweep declares it.
-    job = {"label": "seat", "shape": "review", "promptPath": str(bare),
+    job = {"label": "seat", "kind": "reviewer", "promptPath": str(bare),
            "mustRead": [{"path": str(meta), "lines": 1}]}
     check("must-read contents alone never declare a subject", citer_coverage.coverage_reason(job) is None)
     # A declared sweep verifies its own subject, even beside an unswept meta must-read.
-    job = {"label": "seat", "shape": "review", "promptPath": str(brief),
+    job = {"label": "seat", "kind": "reviewer", "promptPath": str(brief),
            "mustRead": [{"path": str(meta), "lines": 1}, {"path": str(declared), "lines": 1}]}
     check("a current declared sweep covers regardless of other must-read files",
           citer_coverage.coverage_reason(job) is None)
@@ -93,11 +93,11 @@ with tempfile.TemporaryDirectory(prefix="citer_declared_") as root:
     stale_brief = root / "stale.md"
     stale_brief.write_text("<!-- lens brief: planted -->\n> Sweep file: `" + stale.as_posix()
                            + "`. Grep that file for the surfaces you judge.\n", encoding="utf-8")
-    job = {"label": "seat", "shape": "review", "promptPath": str(stale_brief),
+    job = {"label": "seat", "kind": "reviewer", "promptPath": str(stale_brief),
            "mustRead": [{"path": str(declared), "lines": 1}]}
     check("a declared subject whose recorded hash is stale is refused", bool(citer_coverage.coverage_reason(job)))
     # A citer lens seat declares a sweep by its lens: with nothing declared a code-only subject owes none.
-    job = {"label": "seat", "key": "plc-doctrine-consistency", "shape": "author", "promptPath": str(bare),
+    job = {"label": "seat", "key": "plc-doctrine-consistency", "kind": "author", "promptPath": str(bare),
            "mustRead": [{"path": str(declared), "lines": 1}]}
     check("a citer lens seat with no declared sweep is not checked",
           citer_coverage.coverage_reason(job, stage="plan-check") is None)

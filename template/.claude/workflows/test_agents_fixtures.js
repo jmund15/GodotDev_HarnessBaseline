@@ -7,6 +7,16 @@ export const meta = {
     { title: 'Validate', detail: 'validator review on PASS-only; REJECTED overrides to FAIL' },
   ],
 }
+// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge) for every child it spawns;
+// hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
+// child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
+// entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
+const KIND_ARGS = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return a || {} } catch (e) { return {} } })()
+const KP = (KIND_ARGS.__kindProfile && typeof KIND_ARGS.__kindProfile === 'object') ? KIND_ARGS.__kindProfile : null
+if (typeof KIND_ARGS.kind !== 'string' || !KIND_ARGS.kind.trim() || !KP || KP.kind !== KIND_ARGS.kind || !KP.agentType) {
+  return { error: 'test-agents-fixtures: args.kind is required (scout|lens|reviewer|author|judge), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. Every child of the run launches as that kind.' }
+}
+const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 // POST-CHECK exempt (fixture self-scoring): it scores its own fixtures' output.
 // Args: {fixtures: [{id, agent, model, effort?, ...}], effort?, checklists, agentTemplates, findingSchema, validator: {model, effort}}.
 // Every fixture pins its own model, and its effort or the call's args.effort when the transport declares efforts.
@@ -209,8 +219,7 @@ if (!validatorOk) {
 // native child INHERITS the session's MCP set, so every entry is `inherited` with effectiveMcp
 // unknown, never a strict claim of enforcement. A validator whose fixture never PASSes is listed but
 // never spawned; that is the same set the engine can reach.
-const TOOLP = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return { d: (a && a.__toolProfiles) || {}, f: (a && a.__toolProfileDefaults) || {} } } catch (e) { return { d: {}, f: {} } } })()
-const tpOf = (label) => TOOLP.d[label] || TOOLP.f['review'] || null
+const tpOf = () => KP_RECORD
 log('TOOL-PROFILES ' + JSON.stringify(Object.fromEntries(
   fixtures.flatMap(fx => ['dispatch:' + fx.id, 'validate:' + fx.id]).map(l => [l, tpOf(l)]))))
 
@@ -220,7 +229,7 @@ const results = await pipeline(
   // stage 1: dispatch the agent under test (model from fixture; NO schema — must catch malformed JSON as FAIL)
   (fx) => {
     const pinned = fx.effort !== undefined ? { effort: EFF(fx.effort) } : {}
-    return agent(buildPrompt(fx), { label: 'dispatch:' + fx.id, phase: 'Dispatch', model: PIN(fx.model), ...pinned })
+    return agent(buildPrompt(fx), { agentType: KP.agentType, label: 'dispatch:' + fx.id, phase: 'Dispatch', model: PIN(fx.model), ...pinned })
       .then(response => ({ response }))
   },
   // stage 2: extract findings + 5-clause matcher (pure deterministic code)
@@ -235,7 +244,7 @@ const results = await pipeline(
   // stage 3: validation on PASS-only; REJECTED overrides to FAIL
   async (prev, fx) => {
     if (!prev.pass) { return prev }
-    const v = await agent(validatorPrompt(fx, prev.findings), { label: 'validate:' + fx.id, phase: 'Validate', model: PIN(A.validator.model), ...(A.validator.effort !== undefined ? { effort: EFF(A.validator.effort) } : {}), schema: VALIDATE_SCHEMA })
+    const v = await agent(validatorPrompt(fx, prev.findings), { agentType: KP.agentType, label: 'validate:' + fx.id, phase: 'Validate', model: PIN(A.validator.model), ...(A.validator.effort !== undefined ? { effort: EFF(A.validator.effort) } : {}), schema: VALIDATE_SCHEMA })
     if (!v.validated) {
       return { ...prev, pass: false, reason: 'Validator REJECTED: ' + v.reason, validated: false }
     }

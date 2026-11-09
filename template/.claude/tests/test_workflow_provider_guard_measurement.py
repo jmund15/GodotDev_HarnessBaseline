@@ -18,7 +18,7 @@ SCOUT_PIN = next(p for p in ("haiku",) if p)  # a scout-tier host alias; the len
 
 
 def call(measurement=None):
-    args = {"agents": [{"key": "plc-memory-alignment", "model": SCOUT_PIN, "effort": "low"}]}
+    args = {"agents": [{"key": "plc-memory-alignment", "kind": "reviewer", "model": SCOUT_PIN, "effort": "low"}]}
     if measurement is not None:
         args["measurement"] = measurement
     return {"tool_name": "Workflow", "tool_input": {"scriptPath": ".claude/workflows/review_fanout.js", "args": args}}

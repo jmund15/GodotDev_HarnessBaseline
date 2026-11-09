@@ -66,7 +66,7 @@ def wf(jobs=None, agents=None, script=None, script_path=None):
     ti = {"scriptPath": script_path or ".claude/workflows/dispatch.js"}
     args = {}
     if jobs is not None:
-        args["jobs"] = jobs
+        args["jobs"] = [dict({"kind": "scout"}, **j) for j in jobs]
     if agents is not None:
         args["agents"] = agents
     ti["args"] = args
@@ -200,6 +200,10 @@ def main():
         # A row that declares contextSuffix is dispatched with it: the guard rewrites every pin naming
         # the row (id or alias) so callers keep the bare name and the engines need no edit.
         def rewritten(args, transport="host", data=DATA):
+            for holder in [args] + list(args.get("chains") or []):
+                for key in ("jobs", "agents", "lenses"):
+                    if key in holder:
+                        holder[key] = [dict({"kind": "scout"}, **j) for j in holder[key]]
             out = wpg.transport_injection({"tool_name": "Workflow", "tool_input": {
                 "scriptPath": ".claude/workflows/dispatch.js", "args": args}}, transport, data)
             return (out or {}).get("args") or {}
@@ -237,7 +241,7 @@ def main():
         a = rewritten({"model": "h-long", "jobs": [{"label": "a", "model": "h-fan"}]})
         check("suffix: a root args.model is rewritten", a["model"] == "h-long[1m]" and a["jobs"][0]["model"] == "h-fan", a)
         a = rewritten({"jobs": [{"label": "a", "model": "h-fan"}]})
-        check("suffix: a call naming no declaring row is left byte-for-byte", a["jobs"] == [{"label": "a", "model": "h-fan"}], a["jobs"])
+        check("suffix: a call naming no declaring row is left byte-for-byte", a["jobs"] == [{"label": "a", "kind": "scout", "model": "h-fan"}], a["jobs"])
         v = a["__transport"]
         check("suffix: __transport.ids carries the suffixed forms and drops the bare ones",
               "h-long[1m]" in v["ids"] and "host-long-1[1m]" in v["ids"]
@@ -249,7 +253,7 @@ def main():
         check("suffix: another transport's declaring row is left bare in the pins and in ids",
               a["jobs"][0]["model"] == "off-long-1" and "off-long-1" in a["__transport"]["ids"]
               and "off-long-1[1m]" not in a["__transport"]["ids"], a["__transport"]["ids"])
-        raw_args = json.dumps({"jobs": [{"label": "a", "model": "h-long"}]})
+        raw_args = json.dumps({"jobs": [{"label": "a", "kind": "scout", "model": "h-long"}]})
         out = wpg.transport_injection({"tool_name": "Workflow", "tool_input": {"args": raw_args}}, "host", DATA)
         check("suffix: string args stay a string with the rewrite inside",
               isinstance(out["args"], str) and json.loads(out["args"])["jobs"][0]["model"] == "h-long[1m]", out.get("args"))

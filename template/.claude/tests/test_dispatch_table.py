@@ -220,11 +220,11 @@ def stop_payload(background=(), stop_hook_active=False):
 
 
 def test_launch_stores_writer_flag():
-    for shape, expected in (("author", True), ("survey", False)):
+    for kind, expected in (("author", True), ("scout", False)):
         e = Env()
         e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
                                "args": {"jobs": [{"label": "job", "model": "sonnet",
-                                                  "effort": "medium", "shape": shape}]}}), "--launch")
+                                                  "effort": "medium", "kind": kind}]}}), "--launch")
         assert e.pending()[0].get("writes") is expected, e.pending()
 
 
@@ -317,6 +317,15 @@ def test_dispatch_jobs_rows():
                                   "args": {"jobs": [{"label": "j1", "model": "haiku45", "effort": "low", "agentType": "Explore"}]}}),
                 "--launch")
     assert cells(msg, "j1") == ["j1", "haiku-4-5", "none", "Explore"], msg
+
+
+def test_dispatch_job_row_shows_its_kinds_agent_type():
+    e = Env()
+    msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
+                                  "args": {"jobs": [{"label": "r1", "model": "haiku45", "effort": "low", "kind": "reviewer"},
+                                                    {"label": "w1", "model": "haiku45", "effort": "low", "kind": "author"}]}}),
+                "--launch")
+    assert cells(msg, "r1")[3] == "lane-review" and cells(msg, "w1")[3] == "lane-author", msg
 
 
 def test_inline_script_literal_pins():
@@ -1703,6 +1712,35 @@ def test_fanout_inventory_is_bounded_by_its_calls_issue_time_alone():
                  "jobs": [{"label": name}]}
         assert (dispatch_table.resolve_sidecar_record(entry, SID, [entry]) == record) is found, name
         assert (entry.get("inventory") is not None) is found, name
+
+
+def test_inventory_naming_its_call_belongs_to_that_call_alone_at_the_same_issue_time():
+    """Two calls launch the same label into one out dir and their tool_use rows share a millisecond,
+    so neither is later than the other. The inventory names the call that wrote it (`call`), and
+    only that call owns it; the refused call reads no record."""
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "hooks"))
+    import dispatch_table
+    e = Env()
+    out_dir = os.path.join(e.root, "out")
+    os.makedirs(out_dir)
+    running = os.path.join(out_dir, "shared.record.json")
+    issued = time.time() - 7200
+    path = os.path.join(out_dir, "fanout-tie.inventory.json")
+    json.dump({"schemaVersion": 1, "fanoutId": "tie", "parentSessionId": SID,
+               "fanoutProcess": _pid_line(_exited_pid()),
+               "jobs": [{"label": "shared", "launchId": "l-shared", "recordPath": running, "call": "toolu_running"}]},
+              open(path, "w", encoding="utf-8"))
+    os.utime(path, (issued + 0.5, issued + 0.5))
+
+    def entry(call):
+        return {"kind": "sidecar", "id": out_dir + ":shared:" + call, "record": None, "fanout_dir": out_dir,
+                "launched_at": time.time(), "issued_at": issued, "jobs": [{"label": "shared"}]}
+    running_entry, refused_entry = entry("toolu_running"), entry("toolu_refused")
+    pending = [running_entry, refused_entry]
+    assert dispatch_table.resolve_sidecar_record(running_entry, SID, pending) == running, running_entry
+    assert dispatch_table.resolve_sidecar_record(refused_entry, SID, pending) is None, refused_entry
+
+
 # ---------------------------------------------------------------- the no-watcher block (2026-09-28)
 # A sidecar running with no live watcher means nothing wakes the session when that sidecar needs a
 # decision. `--complete` blocks on it; the running block still reaches the user through
@@ -1715,6 +1753,11 @@ def test_stop_blocks_a_running_sidecar_with_no_live_watcher():
     assert e.body.get("decision") == "block", e.body
     assert WATCH_COMMAND in e.body["reason"] and "1 sidecar(s)" in e.body["reason"], e.body
     assert "nowatch" in msg and "still running" in msg, msg
+    # The hook cannot see what work remains, so it asks for the arm only, never the turn's end
+    # (the roster reason shares the sentence).
+    assert "end the turn only when none remains" in e.body["reason"], e.body
+    with open(HOOK, encoding="utf-8") as fh:
+        assert "then end the turn" not in fh.read()
 
 
 def test_stop_does_not_block_a_sidecar_a_live_watcher_covers_by_name():
@@ -2376,6 +2419,60 @@ def test_a_clean_sidecar_finish_and_a_running_one_add_no_failed_end_to_the_block
     e.run(bash_payload("bash .claude/scripts/codex_proxy_sidecar.sh -l fine -f p.md"), "--launch", real=True)
     e.run(stop_payload(), "--complete", real=True)
     assert "ended" not in e.body.get("reason", ""), e.body
+
+
+# X1 S6: the launcher's `ended` row ends a record; `.exit` is only the fallback. The journal is a real
+# launch's (tests/fixtures/sidecar_journal), copied with the named suffixes dropped.
+JOURNAL_FIXTURES = os.path.join(CLAUDE_DIR, "tests", "fixtures", "sidecar_journal")
+
+
+def _real_launch(root, kind, label, drop=()):
+    for name in os.listdir(os.path.join(JOURNAL_FIXTURES, kind)):
+        if not name.endswith(tuple(drop)):
+            with open(os.path.join(JOURNAL_FIXTURES, kind, name), "rb") as src, \
+                    open(os.path.join(root, name), "wb") as dst:
+                dst.write(src.read())
+    return os.path.join(root, label + ".record.json")
+
+
+def test_s6_ended_journal_row_is_a_fanout_records_end_without_exit():
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "hooks"))
+    import dispatch_table
+    e = Env()
+    record = _real_launch(e.root, "failed_launch", "failed", drop=(".exit", ".pid"))
+    os.remove(record)  # no readable record JSON: the end must come from the journal
+    saved = dispatch_table._ledger_row, dispatch_table._issued_at, dispatch_table.inventory_written
+    dispatch_table._ledger_row = lambda *a: None
+    dispatch_table._issued_at = lambda *a: 0.0
+    dispatch_table.inventory_written = lambda entry: None
+    try:
+        entry = {"record": record, "fanout_dir": e.root, "jobs": [{"label": "failed"}]}
+        got = dispatch_table._sidecar_evidence(entry, {"session_id": SID})
+    finally:
+        dispatch_table._ledger_row, dispatch_table._issued_at, dispatch_table.inventory_written = saved
+    assert got == {}, ("an ended row with no .exit is finished, not running", got)
+
+
+def test_s6_ended_journal_row_is_not_awaiting_launch():
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "hooks"))
+    import dispatch_table
+    e = Env()
+    record = _real_launch(e.root, "failed_launch", "failed", drop=(".exit", ".pid"))
+    assert not dispatch_table._awaiting_launch({"fanout_dir": e.root, "record": record}), record
+
+
+def test_s6_ended_attempt_with_only_its_journal_resolves_to_its_relaunch():
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "hooks"))
+    import dispatch_table
+    e = Env()
+    first, second = _refused_then_relaunched(e)
+    os.remove(first + ".exit")
+    with open(os.path.join(JOURNAL_FIXTURES, "failed_launch", "failed.record.json.journal.jsonl"), "rb") as src, \
+            open(first + ".journal.jsonl", "wb") as dst:
+        dst.write(src.read())
+    entry = dict(e.pending()[0], record=first,
+                 inventory=os.path.join(os.path.dirname(first), "fanout-first.inventory.json"))
+    assert dispatch_table.resolve_sidecar_record(entry, SID, [entry]) == second, entry
 
 
 def _real_fanout_output():

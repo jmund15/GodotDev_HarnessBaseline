@@ -356,6 +356,9 @@ case("a returned changedPaths entry outside writeSet is flagged outside-writeSet
      lambda: _changed[0] == 0 and any("outside.txt" in l and "outside-writeSet" in l for l in _changed[1].splitlines()))
 
 _running = consume(plant_consume("running", "done\n", {"check": [PY_OK]}, status="running")[0], "w1")
+_stopped = consume(plant_consume("stopped", "done\n", {"check": [PY_OK]}, status="stopped")[0], "w1")
+case("a workflow run the host stopped is terminal, so its deliverable is consumed (not refused as not terminal)",
+     lambda: "not terminal" not in _stopped[2] and _stopped[0] == 0)
 _absent = consume(_ok_run, "no-such-label")
 case("a run that is not terminal, or a label absent from the run, is refused (exit 2)",
      lambda: _running[0] == 2 and "not terminal" in _running[2] and _absent[0] == 2 and "no-such-label" in _absent[2])
@@ -431,6 +434,15 @@ case("a fan-out inventory with no brief still refuses without --brief",
      lambda: _inv_nobrief[0] == 2 and "--brief" in _inv_nobrief[2])
 case("a fan-out inventory carrying brief lets consume run without --brief",
      lambda: _inv_brief[0] == 0 and "CHECK 1 PASS" in _inv_brief[1])
+
+# An ended journal row is the launcher's end record; .exit is not required once it exists.
+_jr_record, _jr_brief, _jr_dir = plant_sidecar("sc_journal_ended", {"check": [PY_OK]})
+os.remove(_jr_record + ".exit")
+with open(_jr_record + ".journal.jsonl", "w", encoding="utf-8", newline="\n") as _fh:
+    _fh.write(json.dumps({"event": "ended", "rc": 0, "record": _jr_record}) + "\n")
+_jr_pass = cli("consume", _jr_record, "--label", "w1", "--brief", _jr_brief, "--check-timeout", "20")
+case("a sidecar with an ended journal row and no .exit is terminal: consume runs its checks, exit 0",
+     lambda: _jr_pass[0] == 0 and "CHECK 1 PASS" in _jr_pass[1] and "not terminal" not in _jr_pass[2])
 
 
 # ---- consume: an amend file the job never read --------------------------------------------------

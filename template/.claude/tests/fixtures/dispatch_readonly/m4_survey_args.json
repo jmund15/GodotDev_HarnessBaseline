@@ -1,5 +1,5 @@
 {
- "source": "workflows/wf_7cba1aca-c5d.json args of the m4 survey dispatch, trimmed to job m4-FA",
+ "source": "workflows/wf_7cba1aca-c5d.json args of the m4 survey dispatch, trimmed to job m4-FA, with the job named by kind and __toolProfiles resolved from its kind row as the provider hook does now; __kindRows holds the rows the proof swaps in",
  "args": {
   "route": "parallel",
   "jobs": [
@@ -12,13 +12,7 @@
     "effort": "high",
     "transport": "anthropic",
     "currency": "plan-quota",
-    "agentType": "general-purpose",
-    "shape": "survey",
-    "tools": {
-     "add": [
-      "Bash"
-     ]
-    }
+    "kind": "lens"
    }
   ],
   "checker": {
@@ -48,150 +42,29 @@
   "__returns": {},
   "__toolProfiles": {
    "m4-FA": {
-    "shape": "survey",
     "builtins": [
      "Read",
      "Glob",
-     "Grep",
-     "Bash"
+     "Grep"
     ],
     "mcpServers": [
      "semantic-search",
      "ai-worker"
     ],
-    "add": [
-     "Bash"
-    ],
+    "add": [],
     "remove": [],
     "overrideMode": "shape-default",
     "enforcement": "inherited",
+    "effectiveMcp": "unknown/inherited",
     "mcpRegistrations": {
      "semantic-search": "plugin:semantic-search:semantic-search",
      "ai-worker": "ai-worker"
     },
+    "kind": "lens",
+    "disclosure": "pointer",
+    "guard": "survey",
     "agentType": "lane-survey",
-    "tier": "fanout",
-    "effectiveMcp": "unknown/inherited"
-   }
-  },
-  "__coverage": {
-   "m4-FA": {
-    "covered": [],
-    "needs": [
-     "Bash"
-    ],
-    "unread": []
-   }
-  },
-  "__toolProfileDefaults": {
-   "any": {
-    "shape": "any",
-    "builtins": [
-     "Read",
-     "Glob",
-     "Grep"
-    ],
-    "mcpServers": [
-     "semantic-search",
-     "ai-worker"
-    ],
-    "add": [],
-    "remove": [],
-    "overrideMode": "shape-default",
-    "enforcement": "inherited",
-    "mcpRegistrations": {
-     "semantic-search": "plugin:semantic-search:semantic-search",
-     "ai-worker": "ai-worker"
-    },
-    "effectiveMcp": "unknown/inherited"
-   },
-   "author": {
-    "shape": "author",
-    "builtins": [
-     "Read",
-     "Glob",
-     "Grep",
-     "Edit",
-     "Write",
-     "Bash"
-    ],
-    "mcpServers": [
-     "semantic-search",
-     "ai-worker"
-    ],
-    "add": [],
-    "remove": [],
-    "overrideMode": "shape-default",
-    "enforcement": "inherited",
-    "mcpRegistrations": {
-     "semantic-search": "plugin:semantic-search:semantic-search",
-     "ai-worker": "ai-worker"
-    },
-    "agentType": "lane-author",
-    "tier": "executor",
-    "effectiveMcp": "unknown/inherited"
-   },
-   "review": {
-    "shape": "review",
-    "builtins": [
-     "Read",
-     "Glob",
-     "Grep"
-    ],
-    "mcpServers": [
-     "semantic-search",
-     "ai-worker"
-    ],
-    "add": [],
-    "remove": [],
-    "overrideMode": "shape-default",
-    "enforcement": "inherited",
-    "mcpRegistrations": {
-     "semantic-search": "plugin:semantic-search:semantic-search",
-     "ai-worker": "ai-worker"
-    },
-    "agentType": "lane-review",
-    "tier": "executor",
-    "effectiveMcp": "unknown/inherited"
-   },
-   "survey": {
-    "shape": "survey",
-    "builtins": [
-     "Read",
-     "Glob",
-     "Grep"
-    ],
-    "mcpServers": [
-     "semantic-search",
-     "ai-worker"
-    ],
-    "add": [],
-    "remove": [],
-    "overrideMode": "shape-default",
-    "enforcement": "inherited",
-    "mcpRegistrations": {
-     "semantic-search": "plugin:semantic-search:semantic-search",
-     "ai-worker": "ai-worker"
-    },
-    "agentType": "lane-survey",
-    "tier": "fanout",
-    "effectiveMcp": "unknown/inherited"
-   },
-   "verify": {
-    "shape": "verify",
-    "builtins": [
-     "Read",
-     "Bash"
-    ],
-    "mcpServers": [],
-    "add": [],
-    "remove": [],
-    "overrideMode": "shape-default",
-    "enforcement": "inherited",
-    "mcpRegistrations": {},
-    "agentType": "lane-verify",
-    "tier": "fanout",
-    "effectiveMcp": "unknown/inherited"
+    "tier": "fanout"
    }
   },
   "__transport": {
@@ -217,11 +90,85 @@
     "max"
    ]
   },
-  "__shapeTiers": {
-   "survey": "fanout",
-   "review": "executor",
-   "author": "executor",
-   "verify": "fanout"
+  "__kindRows": {
+   "lens": {
+    "builtins": [
+     "Read",
+     "Glob",
+     "Grep"
+    ],
+    "mcpServers": [
+     "semantic-search",
+     "ai-worker"
+    ],
+    "add": [],
+    "remove": [],
+    "overrideMode": "shape-default",
+    "enforcement": "inherited",
+    "effectiveMcp": "unknown/inherited",
+    "mcpRegistrations": {
+     "semantic-search": "plugin:semantic-search:semantic-search",
+     "ai-worker": "ai-worker"
+    },
+    "kind": "lens",
+    "disclosure": "pointer",
+    "guard": "survey",
+    "agentType": "lane-survey",
+    "tier": "fanout"
+   },
+   "reviewer": {
+    "builtins": [
+     "Read",
+     "Glob",
+     "Grep"
+    ],
+    "mcpServers": [
+     "semantic-search",
+     "ai-worker"
+    ],
+    "add": [],
+    "remove": [],
+    "overrideMode": "shape-default",
+    "enforcement": "inherited",
+    "effectiveMcp": "unknown/inherited",
+    "mcpRegistrations": {
+     "semantic-search": "plugin:semantic-search:semantic-search",
+     "ai-worker": "ai-worker"
+    },
+    "kind": "reviewer",
+    "disclosure": "full",
+    "guard": "review",
+    "agentType": "lane-review",
+    "tier": "executor"
+   },
+   "author": {
+    "builtins": [
+     "Read",
+     "Glob",
+     "Grep",
+     "Edit",
+     "Write",
+     "Bash"
+    ],
+    "mcpServers": [
+     "semantic-search",
+     "ai-worker"
+    ],
+    "add": [],
+    "remove": [],
+    "overrideMode": "shape-default",
+    "enforcement": "inherited",
+    "effectiveMcp": "unknown/inherited",
+    "mcpRegistrations": {
+     "semantic-search": "plugin:semantic-search:semantic-search",
+     "ai-worker": "ai-worker"
+    },
+    "kind": "author",
+    "disclosure": "full",
+    "guard": "author",
+    "agentType": "lane-author",
+    "tier": "executor"
+   }
   }
  }
 }

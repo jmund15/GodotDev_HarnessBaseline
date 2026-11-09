@@ -78,13 +78,15 @@ class SchemaBeforeEffects(unittest.TestCase):
             sync.v2_compose(self.root, lock, ["pure"], False)
         self.assertEqual(self.snapshot(), before)
 
-    def test_v2_compose_writes_output_and_hash(self):
+    def test_v2_compose_writes_output_and_no_hash(self):
         lock = self.compose_fixture(2)
         with patch.object(sync, "check_adaptation_contract"), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(sync.v2_compose(self.root, lock, ["pure"], False), 0)
         output = self.root / ".claude/settings.json"
         self.assertEqual(json.loads(output.read_text())["env"], {"BASE": "1", "PROJECT": "2"})
-        self.assertEqual(sync.load_lock(self.root)["files"][".claude/settings.json"]["hash"], sync.sha(output.read_bytes()))
+        row = sync.load_lock(self.root)["files"][".claude/settings.json"]
+        self.assertIsNone(row.get("hash"), "git holds the composed output's bytes; the lock row records none")
+        self.assertEqual(row["inputs"], [".claude/settings.base.json", ".claude/settings.project.json"])
 
     def test_compose_check_remains_read_only_on_v1(self):
         lock = self.compose_fixture(1)

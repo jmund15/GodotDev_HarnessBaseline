@@ -10,6 +10,7 @@ name; engine-specific override cases plant the script path and per-job shape the
     python3 .claude/tests/test_workflow_provider_guard.py
 """
 import contextlib
+import functools
 import importlib.util
 import io
 import json
@@ -52,7 +53,27 @@ fn(input.args, agent, parallel, pipeline, () => {}, line => logs.push(String(lin
 """
 
 
+def with_profiles(name, args):
+    """`args` plus the rows the hook injects for them (`__toolProfiles`, `__kindProfile`), resolved by the
+    real hook functions; args the hook would refuse are returned unchanged so the engine's own refusal shows."""
+    payload = {"tool_name": "Workflow", "tool_input": {"scriptPath": ".claude/workflows/%s.js" % name, "args": args}}
+    try:
+        profiles = wpg._tool_profiles(payload)
+        if name == "review_fanout":
+            profiles["review:merge"] = wpg.resolve_request({"kind": "reviewer"})
+            profiles["review:fold"] = wpg.resolve_request({"kind": "author"})
+        call = wpg.call_kind_profile(payload)
+    except ValueError:
+        return args
+    out = dict(args, __toolProfiles=profiles)
+    if call:
+        out["__kindProfile"] = call
+    return out
+
+
 def run_engine(name, args):
+    if "__toolProfiles" not in args:
+        args = with_profiles(name, args)
     result = subprocess.run(
         ["node", "-e", NODE_ENGINE_RUNNER],
         input=json.dumps({"workflow": os.path.join(WORKFLOWS, name + ".js"), "args": args}),
@@ -120,17 +141,21 @@ _ABSENT = object()  # a patched attribute the module lacks is removed again, not
 
 
 def run_channel(payload, band="On pace", rooms=EVEN, registry_ok=True, state_dir=None,
-                transport="host", data=SYN, tiers=TIERS, patches=()):
+                transport="host", data=SYN, tiers=TIERS, patches=(), real_kind_tiers=False):
     """Feed one PreToolUse payload to the real main() on stdin; return (hookSpecificOutput, raw).
 
     `rooms` = {transport: normalized reading} planted behind `_dispatch_checks.read_capacity`.
     `patches` = [(owner, attribute, value)] planted after the standard world, so a case can plant a
-    failure in one dependency or restore a real function the world stubs."""
+    failure in one dependency or restore a real function the world stubs.
+    A job's kind implies its tier and overrides a written one, so the standard world plants no kind tiers and
+    a case sets its pins through `tier`; `real_kind_tiers=True` reads guards/tool_profiles.json."""
     checks = getattr(wpg, "_dispatch_checks", None)
     if not hasattr(checks, "read_capacity"):
         return {"crash": "workflow_provider_guard has no _dispatch_checks.read_capacity seam"}, ""
     state_dir = state_dir or tempfile.mkdtemp(prefix="wpg_state_")
     patches = ((checks, "read_capacity", lambda t, *_a, **_k: rooms.get(t)),) + tuple(patches)
+    if not real_kind_tiers:
+        patches = ((wpg, "kind_tiers", lambda: {}),) + patches
     sid = str(payload.get("session_id") or "default")
     path = os.path.join(state_dir, sid[:8] + ".json")
     if not os.path.exists(path):
@@ -236,7 +261,7 @@ def _entries(key, label, pins, extra, sid, script, effort="high"):
     rows = []
     for i, pin in enumerate(pins):
         model, tier = pin if isinstance(pin, tuple) else (pin, None)
-        row = {label: "j%d" % i, "promptPath": "x", "effort": effort, "agentType": "Explore"}
+        row = {label: "j%d" % i, "promptPath": "x", "effort": effort, "kind": "reviewer"}
         if model is not None:
             row["model"] = model
         if tier is not None:
@@ -256,19 +281,16 @@ def chains(pins, extra=None, sid="s0000001"):
     return p
 
 
-def job(label, model, shape=None, tier="architect", **extra):
+def job(label, model, kind="author", tier="architect", **extra):
     """One dispatch.js job with exactly the fields the case cares about."""
-    row = {"label": label, "promptPath": "x", "model": model, "effort": "high",
-           "agentType": "general-purpose", "tier": tier}
-    if shape:
-        row["shape"] = shape
+    row = {"label": label, "promptPath": "x", "model": model, "effort": "high", "kind": kind, "tier": tier}
     row.update(extra)
     return row
 
 
 def arm_job(label, model="h-arch"):
     """A rail-battery job: its built-ins come from the benchmark task row, so it declares `arm`."""
-    return job(label, model, shape="arm", tools={"base": ["Read", "Glob", "Grep"]})
+    return job(label, model, kind="scout")
 
 
 def job_call(rows, extra=None, sid="s0000001", script="dispatch.js"):
@@ -336,10 +358,10 @@ def channel_cases():
          run_channel(jobs([("h-arch", "fanout")])), "deny", ("h-arch", "`fanout`", EFFORT_LINE))
     case("a written tier the pin serves passes",
          run_channel(jobs([("h-arch", "architect")])), "allow")
-    case("a shape-implied job whose own tier the pin serves passes, the written tier winning over the shape's",
-         run_channel(job_call([job("w-arch", "h-arch", shape="survey", tier="architect")])), "allow")
-    case("a shape-implied job whose own tier the pin does not serve is denied",
-         run_channel(job_call([job("w-fan", "h-arch", shape="survey", tier="fanout")])), "deny", ("w-fan", "`fanout`"))
+    case("a kind-implied job whose own tier the pin serves passes, the written tier winning over the kind's",
+         run_channel(job_call([job("w-arch", "h-arch", kind="scout", tier="architect")])), "allow")
+    case("a kind-implied job whose own tier the pin does not serve is denied",
+         run_channel(job_call([job("w-fan", "h-arch", kind="scout", tier="fanout")])), "deny", ("w-fan", "`fanout`"))
     case("Hot with a roomier plan: a fitting call is allowed and carries no currency note",
          run_channel(jobs([("h-arch", "architect")]), band="Hot", rooms=OFF_ROOMIER), "allow", absent=NOTE_FREE)
     case("unknown band: a fitting call, still allowed with no note",
@@ -503,11 +525,11 @@ def channel_cases():
                   data=SEAT_SYN_NO_FAR_LAUNCHER),
          "allow", absent=NOTE_FREE + ("far_sidecar.sh", "sidecar_fanout.py"))
     case("RULE 3 decides fit through _dispatch_checks.tier_fit",
-         run_channel(job_call([job("j0", "h-fan", shape="review")]), patches=[
+         run_channel(job_call([job("j0", "h-fan", kind="reviewer")]), real_kind_tiers=True, patches=[
              (checks, "tier_fit", lambda *_a, **_k: "planted tier_fit refusal")]), "deny",
          ("planted tier_fit refusal", "Pin outside the tier this call implies"))
     case("an unreadable ladder does not suspend an implied tier",
-         run_channel(job_call([job("j0", "h-fan", shape="review")]), patches=[
+         run_channel(job_call([job("j0", "h-fan", kind="reviewer")]), real_kind_tiers=True, patches=[
              (wpg, "ladder_role_lines", lambda *_a, **_k: [])]), "deny",
          ("Pin outside the tier this call implies",))
 
@@ -535,11 +557,7 @@ def channel_cases():
     case("tool-profile refusal cites the pre-dispatch checklist and names the profile fix",
          run_channel(jobs([("h-fan", "fanout")]), patches=[
              (wpg, "tool_profile_refusal", lambda _p: "invalid tool profile: missing write")]), "deny",
-         ("orchestration §Pre-Dispatch Checklist", "+Tool delta or a wider profile"))
-    case("brief-coverage refusal cites the pre-dispatch checklist and names the coverage fix",
-         run_channel(jobs([("h-fan", "fanout")]), patches=[
-             (wpg, "coverage_refusal", lambda _p: "brief coverage: ask for general-purpose")]), "deny",
-         ("orchestration §Pre-Dispatch Checklist", "ask for general-purpose"))
+         ("orchestration §Pre-Dispatch Checklist", "Name the job's kind"))
     host_exhausted = (wpg.provider_capacity_guard, "refusal",
                       lambda t: "Provider capacity exhausted for host" if t == "host" else None)
     case("capacity refusal routes the job to the currency pick among the other plans",
@@ -621,7 +639,7 @@ def seats(rows, extra=None, sid="s0000001"):
     """review_fanout `agents`; each row is (key, model) or (key, model, tier)."""
     out = []
     for row in rows:
-        entry = {"key": row[0], "prompt": "p", "model": row[1], "effort": "high", "mustRead": [{"path": "x", "lines": 1}]}
+        entry = {"key": row[0], "prompt": "p", "model": row[1], "effort": "high", "kind": "reviewer", "mustRead": [{"path": "x", "lines": 1}]}
         if len(row) > 2:
             entry["tier"] = row[2]
         out.append(entry)
@@ -631,10 +649,10 @@ def seats(rows, extra=None, sid="s0000001"):
             "tool_input": {"scriptPath": ".claude/workflows/review_fanout.js", "args": args}}
 
 
-def shaped(shape, model, script="dispatch.js", tier=None, sid="s0000001"):
-    job = {"label": "j0", "promptPath": "x", "model": model, "effort": "high", "agentType": "Explore"}
-    if shape:
-        job["shape"] = shape
+def shaped(kind, model, script="dispatch.js", tier=None, sid="s0000001"):
+    job = {"label": "j0", "promptPath": "x", "model": model, "effort": "high"}
+    if kind:
+        job["kind"] = kind
     if tier:
         job["tier"] = tier
     args = {"jobs": [job]} if script == "dispatch.js" else {"chains": [{"name": "c", "jobs": [job]}]}
@@ -642,8 +660,8 @@ def shaped(shape, model, script="dispatch.js", tier=None, sid="s0000001"):
             "tool_input": {"scriptPath": ".claude/workflows/" + script, "args": args}}
 
 
-def shape_tier(shape):
-    return TOOL_PROFILES.load_table()["shapes"].get(shape, {}).get("tier")
+def kind_tier(kind):
+    return TOOL_PROFILES.load_table()["kinds"].get(kind, {}).get("tier")
 
 
 STRA_REGISTRY = """# Structure audit
@@ -695,6 +713,7 @@ def registry_shipped(key):
 
 def implied_tier_cases():
     out = []
+    run_channel = functools.partial(globals()["run_channel"], real_kind_tiers=True)
 
     def case(name, run, want, musts=(), absent=()):
         hook, raw = run
@@ -739,31 +758,73 @@ def implied_tier_cases():
     case("a lens tier fills only review_fanout: a registry lens key on another engine implies nothing",
          run_channel(other_engine), "allow", absent=("No tier declared",))
 
-    for shape in ("review", "survey", "author"):
-        tier = shape_tier(shape) or "executor"
-        case("dispatch.js job with shape %s and no tier takes the shape's tier (%s)" % (shape, tier),
-             run_channel(shaped(shape, TIERS[tier][0])), "allow")
-        case("dispatch.js job with shape %s and no tier: a pin outside the shape's tier -> deny" % shape,
-             run_channel(shaped(shape, OTHER_PIN[tier])), "deny", (tier, EFFORT_LINE))
-    case("a shape that declares no tier fills nothing -> allow: a missing tier never denies",
-         run_channel(shaped(None, "h-fan")), "allow", absent=("No tier declared",))
-    case("a written job tier replaces its shape's tier: the pin must serve the written one",
-         run_channel(shaped("review", "h-fan", tier="fanout")), "allow")
-    case("...and a pin the written tier does not serve is denied even when the shape's tier would take it",
-         run_channel(shaped("review", "h-exec", tier="fanout")), "deny", ("`fanout`", EFFORT_LINE))
-    case("a shape tier fills only dispatch.js: a chain job with a shape implies nothing",
-         run_channel(shaped("review", "h-exec", script="dispatch_chains.js")), "allow",
-         absent=("No tier declared",))
-    case("a shape-implied tier is checked even when args.tier names the pin's tier",
-         run_channel(job_call([job("j0", "h-fan", shape="review", tier=None)], {"tier": "fanout"})), "deny",
-         (shape_tier("review") or "executor", EFFORT_LINE))
+    for kind in ("scout", "reviewer", "author"):
+        tier = kind_tier(kind) or "executor"
+        case("dispatch.js job of kind %s and no tier takes the kind's tier (%s)" % (kind, tier),
+             run_channel(shaped(kind, TIERS[tier][0])), "allow")
+        case("dispatch.js job of kind %s and no tier: a pin outside the kind's tier -> deny" % kind,
+             run_channel(shaped(kind, OTHER_PIN[tier])), "deny", (tier, EFFORT_LINE))
+    case("a dispatch.js job with no kind is refused before spend",
+         run_channel(shaped(None, "h-fan")), "deny", ("names no kind",))
+    case("a dispatch.js job carrying a retired `shape` is refused, naming kind",
+         run_channel(job_call([job("j0", "h-fan", kind="reviewer", shape="review")])), "deny", ("shape", "kind"))
+    case("a dispatch.js job carrying agentType is refused, naming kind",
+         run_channel(job_call([job("j0", "h-fan", kind="reviewer", agentType="Explore")])), "deny", ("agentType", "kind"))
+    case("a kind delta with no covering agent file is refused before spend",
+         run_channel(job_call([job("j0", "h-fan", kind="scout", tools={"add": ["Bash"]})])), "deny",
+         ("no covering agent file",))
+    SINGLE_KIND = ("agentic_cloud", "sdf_cloud", "calibrate_cloud", "cloud_sdf", "mine_sdf_corpus", "rebuild_agentic",
+                   "rebuild_sdf", "w13_cloud_ceiling", "w_axis_and_floors", "test_agents_fixtures", "test_skill_pressure")
+    MEASUREMENT = ("agenttype_input_cost_probe", "effort_on_agenttype_probe", "harness_bloat_probe", "w13_cloud_ladder")
 
-    # Data: every declared shape tier is legal, and the tiered shapes are the ones dispatch.js runs.
-    rows = TOOL_PROFILES.load_table()["shapes"]
-    declared = {s: r.get("tier") for s, r in rows.items() if r.get("tier") is not None}
-    out.append(("every shape tier in guards/tool_profiles.json is a legal tier",
+    def engine_call(name, **args):
+        return {"tool_name": "Workflow", "session_id": "s0000001",
+                "tool_input": {"scriptPath": ".claude/workflows/%s.js" % name, "args": args}}
+
+    for engine in SINGLE_KIND:
+        row = wpg.call_kind_profile(engine_call(engine, kind="reviewer"))
+        out.append(("%s with kind reviewer gets __kindProfile lane-review injected" % engine,
+                    (row or {}).get("agentType") == "lane-review", repr(row)[:200]))
+        case("%s with no kind is denied before spend" % engine,
+             run_channel(engine_call(engine)), "deny", ("kind",))
+    for engine in MEASUREMENT:
+        reason = run_channel(engine_call(engine))[0].get("permissionDecisionReason") or ""
+        out.append(("%s (a measurement row) gets no __kindProfile and is never denied for lacking a kind" % engine,
+                    wpg.call_kind_profile(engine_call(engine)) is None and "kind" not in reason, reason[:300]))
+    case("a written job tier replaces its kind's tier: the pin must serve the written one",
+         run_channel(shaped("reviewer", "h-fan", tier="fanout")), "allow")
+    case("...and a pin the written tier does not serve is denied even when the kind's tier would take it",
+         run_channel(shaped("reviewer", "h-exec", tier="fanout")), "deny", ("`fanout`", EFFORT_LINE))
+    case("a kind tier fills only dispatch.js: a chain job with a kind implies nothing",
+         run_channel(shaped("reviewer", "h-exec", script="dispatch_chains.js")), "allow",
+         absent=("No tier declared",))
+    case("a kind-implied tier is checked even when args.tier names the pin's tier",
+         run_channel(job_call([job("j0", "h-fan", kind="reviewer", tier=None)], {"tier": "fanout"})), "deny",
+         (kind_tier("reviewer") or "executor", EFFORT_LINE))
+    case("a TOOL-PROFILE header carrying a delta and no kind denies",
+         run_channel(agent_tool("h-fan", ['TOOL-PROFILE: {"add": ["Bash"]}'])), "deny", ("kind",))
+
+    # Data: every declared kind tier is legal.
+    rows = TOOL_PROFILES.load_table()["kinds"]
+    declared = {k: r.get("tier") for k, r in rows.items() if r.get("tier") is not None}
+    out.append(("every kind tier in guards/tool_profiles.json is a legal tier",
                 bool(declared) and all(t in wpg.model_registry.TIER_ORDER for t in declared.values()),
                 repr(declared)))
+    out.append(("the kind tier map the guard reads holds the declared tiers",
+                wpg.kind_tiers() == declared, repr(wpg.kind_tiers())))
+    stripped = json.loads(json.dumps(TOOL_PROFILES.load_table()))
+    stripped["kinds"]["verify"].pop("tier", None)
+    saved_load = TOOL_PROFILES.load_table
+    TOOL_PROFILES.load_table = lambda *_a, **_k: stripped
+    try:
+        try:
+            wpg.checker_tier()
+            raised = False
+        except Exception:
+            raised = True
+    finally:
+        TOOL_PROFILES.load_table = saved_load
+    out.append(("checker_tier raises when the verify row declares no tier", raised, ""))
 
     # Guard -> engine: the same maps ride in as injected args, and each engine logs the filled tier.
     st = wpg._session_transport
@@ -801,15 +862,16 @@ def implied_tier_cases():
         if sa_shipped:
             out.append(("review_fanout logs the lens tier for a seat that declared none",
                         any("tier:%s" % seat_tier("sa-design-semantics") in l for l in pins), repr(pins or run)[:300]))
-        upd = wpg.transport_injection(shaped("review", "h-exec"), "host", SYN) or {}
-        injected = upd.get("args", {}).get("__shapeTiers")
-        out.append(("dispatch.js call gets __shapeTiers from the shape table",
-                    injected == declared, repr(injected)))
+        upd = wpg.transport_injection(shaped("reviewer", "h-exec"), "host", SYN) or {}
+        injected = upd.get("args", {}).get("__toolProfiles")
+        out.append(("dispatch.js call gets the kind row per label and no __shapeTiers",
+                    bool(injected) and injected["j0"]["agentType"] == "lane-review"
+                    and "__shapeTiers" not in upd.get("args", {}), repr(injected)[:300]))
         run = run_engine("dispatch", dict(upd.get("args") or {}, __transport=dict(
             TRANSPORT, ids=TRANSPORT["ids"] + ["h-exec"])))
         pins = [l for l in run.get("logs") or [] if l.startswith("PINS ")]
-        out.append(("dispatch.js logs the shape tier for a job that declared none",
-                    any("tier:%s" % shape_tier("review") in l for l in pins), repr(pins or run)[:300]))
+        out.append(("dispatch.js logs the kind tier for a job that declared none",
+                    any("tier:%s" % kind_tier("reviewer") in l for l in pins), repr(pins or run)[:300]))
 
         # The tier the guard checked is the tier the PINS row records: a lens seat's implied tier even when the
         # entry writes another one, and a dispatch.js job's own written tier over its shape's.
@@ -821,7 +883,7 @@ def implied_tier_cases():
             out.append(("review_fanout logs the lens tier for a seat that writes another tier",
                         any("tier:%s" % seat_tier("sa-design-semantics") in l for l in pins),
                         repr(pins or run)[:300]))
-        upd = wpg.transport_injection(shaped("review", "h-exec", tier="fanout"), "host", SYN) or {}
+        upd = wpg.transport_injection(shaped("reviewer", "h-exec", tier="fanout"), "host", SYN) or {}
         run = run_engine("dispatch", dict(upd.get("args") or {}, __transport=dict(
             TRANSPORT, ids=TRANSPORT["ids"] + ["h-exec"])))
         pins = [l for l in run.get("logs") or [] if l.startswith("PINS ")]
@@ -919,7 +981,7 @@ def injection_cases():
         # Guard -> engine handoff, both wire forms, through the real chain engine.
         chain_args = {"chains": [{"name": "lane", "jobs": [{"label": "handoff", "promptPath": "h.md",
                                                             "model": "off-fan-1", "effort": "max",
-                                                            "agentType": "Explore", "tier": "fanout"}]}]}
+                                                            "kind": "scout", "tier": "fanout"}]}]}
         for form in ("object", "string"):
             raw = chain_args if form == "object" else json.dumps(chain_args)
             upd = wpg.transport_injection({"tool_name": "Workflow", "tool_input": {
@@ -1087,8 +1149,7 @@ def failure_cases():
             out.append(("a %.1f s capacity probe leaves the band read only the time before the hook's kill"
                         % spent, injected(hook) and bounded, repr((timeouts, left, (records() or [{}])[-1]))[:300]))
 
-        for site, owner, attr in (("brief coverage", wpg, "coverage_map"),
-                                  ("rail map", wpg, "_rails_map"),
+        for site, owner, attr in (("rail map", wpg, "_rails_map"),
                                   ("legal pins", wpg._session_transport, "_dispatchable_rows")):
             planted = "planted transient read in %s" % site
             hook, raw = _crash_safe(lambda: run_channel(call, band="Surplus",
@@ -1409,17 +1470,17 @@ def _records(log):
 
 ENGINE_ARGS = {
     "dispatch": {"jobs": [{"label": "a", "promptPath": "x", "model": "h-fan", "effort": "low",
-                           "agentType": "Explore", "tier": "fanout"}]},
+                           "kind": "scout", "tier": "fanout"}]},
     "dispatch_chains": {"chains": [{"name": "c", "jobs": [{"label": "a", "promptPath": "x", "model": "h-fan",
-                                                          "effort": "low", "agentType": "Explore", "tier": "fanout"}]}]},
-    "review_fanout": {"agents": [{"key": "a", "prompt": "p", "model": "h-fan", "tier": "fanout",
+                                                          "effort": "low", "kind": "scout", "tier": "fanout"}]}]},
+    "review_fanout": {"agents": [{"key": "a", "prompt": "p", "model": "h-fan", "tier": "fanout", "kind": "scout",
                                   "mustRead": [{"path": "x", "lines": 1}]}],
                       "checker": {"model": "h-fan", "effort": "low"}},
-    "idea_fanout": {"contextPrefix": "ctx", "generators": [{"key": "a", "instr": "i", "model": "h-arch", "effort": "low"},
+    "idea_fanout": {"kind": "scout", "contextPrefix": "ctx", "generators": [{"key": "a", "instr": "i", "model": "h-arch", "effort": "low"},
                                                            {"key": "b", "instr": "j", "model": "h-fan", "effort": "low"}],
                     "critic": {"model": "h-fan", "effort": "low"}},
-    "worklog_relevance": {"scope": "x", "model": "h-fan", "effort": "low"},
-    "test_agents_fixtures": {"fixtures": [], "checklists": {}},
+    "worklog_relevance": {"kind": "scout", "scope": "x", "model": "h-fan", "effort": "low"},
+    "test_agents_fixtures": {"kind": "scout", "fixtures": [], "checklists": {}},
 }
 TIER_LOGGED = ("dispatch", "dispatch_chains", "review_fanout")
 
@@ -1470,25 +1531,20 @@ def live_case():
     return r.returncode == 0 and "Traceback" not in (r.stderr or "")
 
 
-def test_generated_agent_types_rewrite_in_one_injection():
-    from copy import deepcopy
+def test_kind_sets_agent_type_without_rewrite():
     payload = {"tool_name": "Workflow", "session_id": "s11agent", "tool_input": {
         "scriptPath": ".claude/workflows/dispatch.js", "args": {"jobs": [
-            {"label": "fix", "model": "h-fan", "tier": "fanout", "effort": "high",
-             "agentType": "lane-review", "prompt": "Run `git diff HEAD`."},
-            {"label": "keep", "model": "h-fan", "tier": "fanout", "effort": "high",
-             "agentType": "lane-review", "prompt": "Review this text."}]}}}
-    original = deepcopy(payload)
+            {"label": "rev", "model": "h-exec", "tier": "executor", "effort": "high", "kind": "reviewer",
+             "prompt": "Run `git diff HEAD`."},
+            {"label": "wri", "model": "h-exec", "tier": "executor", "effort": "high", "kind": "author",
+             "prompt": "Review this text."}]}}}
     out, raw = run_channel(payload)
     assert out.get("permissionDecision") != "deny", raw
     args = out["updatedInput"]["args"]
-    assert [j["agentType"] for j in args["jobs"]] == ["general-purpose", "lane-review"], raw
-    assert "__transport" in args and "__coverage" in args, raw
-    assert "general-purpose" in out.get("additionalContext", ""), raw
-    assert payload == original
-    payload["tool_input"]["args"] = json.dumps(payload["tool_input"]["args"])
-    out, raw = run_channel(payload)
-    assert json.loads(out["updatedInput"]["args"])["jobs"][0]["agentType"] == "general-purpose", raw
+    assert [j.get("agentType") for j in args["jobs"]] == [None, None], raw
+    profiles = args["__toolProfiles"]
+    assert (profiles["rev"]["agentType"], profiles["wri"]["agentType"]) == ("lane-review", "lane-author"), raw
+    assert "__coverage" not in args and "__skillIndex" not in args and "__toolProfileDefaults" not in args, raw
 
 
 def main():
@@ -1497,10 +1553,10 @@ def main():
                + failure_cases()
                + five_hour_cases() + engine_cases())
     try:
-        test_generated_agent_types_rewrite_in_one_injection()
-        results.append(('S11: uncovered agentType is corrected beside transport injection', True, ''))
+        test_kind_sets_agent_type_without_rewrite()
+        results.append(('a reviewer job runs as lane-review and an author job as lane-author, with no rewrite', True, ''))
     except Exception as exc:
-        results.append(('S11: uncovered agentType is corrected beside transport injection', False, repr(exc)))
+        results.append(('a reviewer job runs as lane-review and an author job as lane-author, with no rewrite', False, repr(exc)))
     for name, ok, detail in results:
         print(("ok   " if ok else "FAIL ") + name + ("" if ok else "   [%s]" % detail))
         if not ok:

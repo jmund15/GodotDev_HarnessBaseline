@@ -112,6 +112,7 @@ echo "PARSED_PROGRESS=$SC_PROGRESS"
 echo "PARSED_REST=$*"
 
 [ -n "${FAKE_SLEEP:-}" ] && sleep "$FAKE_SLEEP"
+[ -n "${FAKE_CHECK:-}" ] && sc_check_completion "$SC_RECORD" "$(pwd)"
 [ -n "${FAKE_JSON:-}" ] && printf '%s\n' "$FAKE_JSON"
 exit "${FAKE_EXIT:-0}"
 FAKE_LAUNCHER_EOF
@@ -437,6 +438,30 @@ if [ -r "/proc/$$/winpid" ]; then
   fi
 else
   pass "15 winpid unavailable on this host (POSIX control)"
+fi
+
+# --- 16. the detached host check skips on post_check.json, the file the host always writes ----
+REC16="$WORK/case16.record.json"
+printf '%s
+' '{"claims":[],"verification":{}}' > "${REC16}.claims.json"
+run_launcher out16 err16 rc16 -X -R "$REC16"
+poll_until 30 "${REC16}.exit"
+if [ "$rc16" = "0" ] && [ -f "${REC16}.post_check.json" ]; then
+  pass "16 a foreign claims.json does not suppress the detached host check"
+else
+  fail "16 foreign claims.json suppresses the host check" "rc=$rc16" "post_check.json present=$( [ -e "${REC16}.post_check.json" ] && echo yes || echo no )"
+fi
+
+# --- 17. a detached no-claims run is checked exactly once --------------------------------------
+REC17="$WORK/case17.record.json"
+FAKE_CHECK=1 run_launcher out17 err17 rc17 -X -R "$REC17"
+poll_until 30 "${REC17}.exit"
+c17_n="$(grep -c 'sidecar check:' "${REC17}.err" 2>/dev/null)"
+c17_n="${c17_n:-0}"
+if [ "$rc17" = "0" ] && [ "$c17_n" = "1" ]; then
+  pass "17 a detached run is checked exactly once"
+else
+  fail "17 detached run checked once" "rc=$rc17" "sidecar check lines=$c17_n (want 1)"
 fi
 
 echo "test_sidecar_detach: $PASS passed, $FAIL failed"

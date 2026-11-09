@@ -38,7 +38,7 @@ Workflow({
   scriptPath: ".claude/workflows/review_fanout.js",
   args: {
     contextPrefixPath: ".claude/scratch/rule_consistency/context.md",
-    agents: [ { key: "<batch>", promptPath: ".claude/scratch/rule_consistency/<batch>.md", tier: "fanout", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] }, /* one per batch; resolve the fan-out pin through orchestration; never inherit the session model */ ]
+    agents: [ { key: "<batch>", promptPath: ".claude/scratch/rule_consistency/<batch>.md", tier: "fanout", model: "<resolved native id>", effort: "<resolved effort>", kind: "reviewer", mustRead: [<must-read entries>] }, /* one per batch; resolve the fan-out pin through orchestration; never inherit the session model */ ]
   }
 })
 ```

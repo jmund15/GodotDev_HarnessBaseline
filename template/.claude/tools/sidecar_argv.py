@@ -1,5 +1,6 @@
 """The one reader of sidecar launch argv: which `*_sidecar.sh` and `sidecar_fanout.py` calls a shell
 command executes, and the launcher flags each call carries. Stdlib only."""
+import functools
 import os
 import re
 import shlex
@@ -28,8 +29,24 @@ _WRAPPERS = {
     'timeout': (frozenset({'-k', '-s', '--kill-after', '--signal'}), 1),
 }
 
-# lib/sidecar_common.sh SC_OPTSTRING letters that take a value (the `:`-suffixed ones).
-SIDECAR_VALUE_FLAGS = set("metnodfTRxPSrpLlaGBDCZKYQ")
+_SHELL_LIB = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts', 'lib', 'sidecar_common.sh')
+
+
+@functools.lru_cache(maxsize=None)
+def _sidecar_value_letters():
+    """The `:`-suffixed letters of lib/sidecar_common.sh's SC_OPTSTRING, read on first use. Raises when
+    the line cannot be read: an empty set would parse every launch as flagless."""
+    with open(_SHELL_LIB, encoding='utf-8') as fh:
+        match = re.search(r'^SC_OPTSTRING="([^"]*)"', fh.read(), re.M)
+    if match is None:
+        raise RuntimeError('SC_OPTSTRING not found in %s' % _SHELL_LIB)
+    return frozenset(re.findall(r'([A-Za-z]):', match.group(1)))
+
+
+def __getattr__(name):
+    if name == 'SIDECAR_VALUE_FLAGS':
+        return _sidecar_value_letters()
+    raise AttributeError(name)
 
 
 _HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
@@ -311,12 +328,13 @@ def sidecar_flag_pairs(args):
     Repeated flags remain visible. Parsing stops at `--`, a `--long` option, or the first operand;
     a value-taking flag without a value is represented with None for the caller to reject."""
     pairs, index = [], 0
+    value_letters = _sidecar_value_letters()
     while index < len(args):
         token = args[index]
         if not token.startswith('-') or token == '-' or token.startswith('--'):
             return pairs, index
         for pos, letter in enumerate(token[1:], 1):
-            if letter in SIDECAR_VALUE_FLAGS:
+            if letter in value_letters:
                 rest = token[pos + 1:]
                 if rest:
                     pairs.append((letter, rest))
@@ -337,14 +355,19 @@ def sidecar_flags(args):
     return dict(pairs)
 
 
-# Every `sidecar_fanout.build_parser()` option, classified; test_sidecar_argv fails on an unclassified one.
-# Non-launch options stay unknown to parse_fanout_args, so an argv carrying one is no launch.
-FANOUT_VALUE_OPTIONS = ('--max-parallel', '--out-dir', '--fold', '--fold-alias', '--fold-effort', '--fold-plan',
-                        '--fold-subject', '--ledger-roster', '--ledger-scope-json', '--ledger-stage',
-                        '--ledger-subject', '--ledger-task', '--plan', '--root', '--ledger-head',
-                        '--ledger-blobs', '--ledger-premise-commits')
-FANOUT_FLAG_OPTIONS = ('--authorize', '--compare', '--detach', '--dry-run', '--no-new-decision', '--refold', '--review')
-FANOUT_NON_LAUNCH_OPTIONS = ('-h', '--help', '--status', '--review-artifact', '--select')
+@functools.lru_cache(maxsize=None)
+def _fanout_options():
+    """(value options, flag options, every option) of sidecar_fanout's parser, read on first use. Non-launch
+    options are in `every` only. Raises when the parser cannot be built: empty sets would parse every
+    launch as no launch."""
+    import sidecar_fanout  # lazy: a command that names no fan-out never loads the parser
+    values, flags, every = set(), set(), set()
+    for action in sidecar_fanout.build_parser()._actions:
+        for option in action.option_strings:
+            every.add(option)
+            if option not in sidecar_fanout.NON_LAUNCH_OPTIONS:
+                (values if action.nargs != 0 else flags).add(option)
+    return frozenset(values), frozenset(flags), frozenset(every)
 
 
 def fanout_out_dir(jobs_path, out_value, spill_value, repo):
@@ -357,12 +380,11 @@ def fanout_out_dir(jobs_path, out_value, spill_value, repo):
     return os.path.join(os.path.dirname(os.path.abspath(jobs_path)), "fanout")
 
 
-def _full_fanout_option(token):
+def _full_fanout_option(token, known):
     """`token` with its option name spelled in full the way argparse resolves it (its default
     abbreviation rule: an exact name, else the one option the prefix starts); unchanged when it names
     none or several, which no launch is. A `=value` suffix stays."""
     name, equals, value = token.partition('=')
-    known = FANOUT_VALUE_OPTIONS + FANOUT_FLAG_OPTIONS + FANOUT_NON_LAUNCH_OPTIONS
     if not name.startswith('--') or name in known:
         return token
     matches = [option for option in known if option.startswith(name)]
@@ -373,11 +395,12 @@ def parse_fanout_args(args):
     """(jobs value, --out-dir value or None) as written in a `sidecar_fanout.py` argv, or None
     when the argv is not one jobs file plus known options. Option names may be abbreviated as
     argparse allows (`--out` for `--out-dir`). Paths are not resolved."""
+    values, flags, every = _fanout_options()
     jobs_value = out_value = None
     index = 0
     positional_only = False
     while index < len(args):
-        token = args[index] if positional_only else _full_fanout_option(args[index])
+        token = args[index] if positional_only else _full_fanout_option(args[index], every)
         if token == '':
             # An unquoted variable that expanded to nothing leaves no argument in the shell.
             index += 1
@@ -386,10 +409,10 @@ def parse_fanout_args(args):
             positional_only = True
             index += 1
             continue
-        if not positional_only and token in FANOUT_FLAG_OPTIONS:
+        if not positional_only and token in flags:
             index += 1
             continue
-        if not positional_only and token in FANOUT_VALUE_OPTIONS:
+        if not positional_only and token in values:
             if index + 1 >= len(args):
                 return None
             if token == '--out-dir':
@@ -400,7 +423,7 @@ def parse_fanout_args(args):
             out_value = token.split('=', 1)[1]
             index += 1
             continue
-        if not positional_only and token.split('=', 1)[0] in FANOUT_VALUE_OPTIONS and '=' in token:
+        if not positional_only and token.split('=', 1)[0] in values and '=' in token:
             index += 1
             continue
         if not positional_only and token.startswith('-'):

@@ -221,9 +221,21 @@ def case_index_commit_shares_lock_format(tmp):
     import lock_merge
     check("index_commit writes the lock through the driver's serializer",
           getattr(index_commit, "dump_lock", None) is lock_merge.dump_lock)
-    sample = {"files": {".claude/a.md": {"layer": "pure", "hash": "é"}}, "schema": 1}
-    check("the serializer writes indent-2 UTF-8 JSON with one trailing newline",
-          lock_merge.dump_lock(sample) == (json.dumps(sample, indent=2, ensure_ascii=False) + "\n").encode("utf-8"))
+    sample = {"files": {".claude/é.md": {"layer": "pure", "status": "tracked"},
+                        ".claude/b.md": {"layer": "pure", "status": "local"}}, "schema": 1}
+    data = lock_merge.dump_lock(sample)
+    text = data.decode("utf-8")
+    rows = []
+    for line in text.splitlines():
+        if line.startswith('    "'):
+            try:
+                pair = json.loads("{" + line.strip().rstrip(",") + "}")
+            except ValueError:
+                continue  # a row split over lines does not parse as one pair
+            rows.extend(pair)
+    check("the serializer writes one row per line, UTF-8, one trailing newline",
+          json.loads(text) == sample and sorted(rows) == sorted(sample["files"]) and text.endswith("\n")
+          and not text.endswith("\n\n") and "é" in text and b"\\u00e9" not in data, text)
 
 
 def e2e_repos(root):

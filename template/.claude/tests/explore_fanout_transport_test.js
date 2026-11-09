@@ -65,7 +65,7 @@ function check(label, condition, detail = '') {
   }
 }
 const lens = (overrides = {}) => ({
-  key: 'lens', prompt: 'Inspect.', model: 'opus', effort: 'low', agentType: 'general-purpose', ...overrides,
+  key: 'lens', prompt: 'Inspect.', model: 'opus', effort: 'low', kind: 'author', ...overrides,
 })
 const claim = (index, padding = '') => ({
   subject: 'subject-' + index, polarity: 'exists', claim: 'claim-' + index + padding,
@@ -173,18 +173,18 @@ async function run(args, returned = {
     !!caseFoldCollision.result.error && caseFoldCollision.calls.length === 0,
     JSON.stringify(caseFoldCollision.result))
 
-  for (const agentType of [undefined, '', '   ']) {
+  for (const kind of [undefined, '', '   ']) {
     const missingProfile = await run({
-      lenses: [{ key: 'profile', prompt: 'Inspect.', model: 'opus', effort: 'low', agentType }],
+      lenses: [{ key: 'profile', prompt: 'Inspect.', model: 'opus', effort: 'low', kind }],
     })
-    check('missing or blank agentType fails before dispatch: ' + JSON.stringify(agentType),
+    check('missing or blank kind fails before dispatch: ' + JSON.stringify(kind),
       !!missingProfile.result.error && missingProfile.calls.length === 0,
       JSON.stringify(missingProfile.result))
   }
 
-  const forwardedProfile = await run({ lenses: [lens({ agentType: 'claude' })] })
-  check('agentType forwards to native explore agent',
-    forwardedProfile.calls[0] && forwardedProfile.calls[0].agentType === 'claude',
+  const forwardedProfile = await run({ lenses: [lens({ kind: 'lens' })] })
+  check('the kind row sets the agent type of a native explore lens',
+    forwardedProfile.calls[0] && forwardedProfile.calls[0].agentType === 'lane-survey',
     JSON.stringify(forwardedProfile.calls))
 
   const blockedAfterClaim = await run({lenses: [lens({key: 'blocked'})]}, {
@@ -206,12 +206,12 @@ async function run(args, returned = {
       && blankCoverage.result.flags.some(row => row.kind === 'lens-invalid-shape'),
     JSON.stringify(blankCoverage.result))
 
-  for (const agentType of ['Explore', 'Plan']) {
+  for (const agentType of ['reviewer', 'lens']) {
     const inline = await run({
       spillDir: '.claude/scratch/explore-results',
-      lenses: [lens({ key: agentType.toLowerCase(), agentType })],
+      lenses: [lens({ key: agentType.toLowerCase(), kind: agentType })],
     })
-    check(agentType + ' profile never receives impossible spill contract',
+    check(agentType + ' kind never receives impossible spill contract',
       !inline.result.error
         && !inline.prompts[0].includes('SPILL-BEFORE-VALIDATE')
         && Array.isArray(inline.result.inlineLabels)
@@ -392,7 +392,7 @@ async function run(args, returned = {
     JSON.stringify(invalidMode.result))
 
   check('engine header documents the argument schema the command no longer lists',
-    /^\/\/ Args: \{lenses: \[\{key, promptPath, model, effort, agentType, tier\}\], contextPrefixPath/m.test(src))
+    /^\/\/ Args: \{lenses: \[\{key, promptPath, model, effort, kind, tier\}\], contextPrefixPath/m.test(src))
   const rendered = await run({ lenses: [lens()] })
   check('a rendered lens prompt carries no character-count target',
     rendered.prompts.length > 0 && rendered.prompts.every(p => !/chars target/.test(p)))

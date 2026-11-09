@@ -15,8 +15,8 @@ Usage: python3 .claude/tools/watch_records.py --session --wake. `--session` re-r
 session's `dispatch_table_pending` sidecar entries every poll and re-resolves each record, so a
 sidecar launched after arming is covered without a second watcher. `--wake` exits — waking the
 session — on the first unacknowledged decision event, including at the first poll: a record reaching DONE with a non-zero code, or
-DIED (not one this session stopped with `reap.py`, listed in `sidecar_stopped_launches`: it prints `STOPPED <label>` at the next wake, and a unit whose every job was stopped wakes nobody); a detached job's `.memory` wait (`WAITING-MEMORY` with its readings) prints as context, since the
-launcher resumes by itself; a record's `.stall` marker appearing while its upstream traffic is stale (`UPSTREAM_LIVE_S`); a record's `.usage` marker prints as context
+DIED (not one this session stopped with `reap.py`, listed in `sidecar_stopped_launches`: it prints `STOPPED <label>` at the next wake, and a unit whose every job was stopped wakes nobody); a detached job's `waiting-memory` journal row (`WAITING-MEMORY` with its readings) prints as context, since the
+launcher resumes by itself; a record's `stalled` journal row appearing while its upstream traffic is stale (`UPSTREAM_LIVE_S`); a record's `usage-limit` journal row prints as context
 (`USAGE-LIMIT <label> <transport> resets <UTC time|unknown>`, the launcher's first usage-limit retry; the job's DONE is the wake); a running record whose stream (`<record>.stream`, else `<label>.stream`) has sat on a result written
 after its launch for `sidecar_resume_check.RESULT_LINGER_S` (`LINGERING <label>`, the reading `sidecar_fanout.py --status`
 gives the same run); a fan-out's own process gone while it still lists jobs
@@ -34,15 +34,16 @@ within `DISCOVERED_RUN_SECONDS`: the launch hook's entry can land after the arm)
 a run's end wakes nobody, and a session watcher with nothing live stays armed. A running
 seat that compacts (a `compact_boundary` row in its transcript: a Workflow agent's `agent-<id>.jsonl`, a Claude sidecar's
 `<record>.stream`, a live roster's running bench cell's `<cell>.progress.jsonl`) adds `<label> compacted <n> (<m> min compacting)` to its check-in line, and one that compacted again after
-re-reading a file it had read before the previous compaction (the cycle: a seat that loses its subject, refills its window and
-compacts again) wakes the session with `COMPACTING [workflow <runId>] <label> compacted <n>, re-read <file>`, once per
-new compaction count. A running Workflow seat whose `agent-<id>.jsonl` has not grown for `WORKFLOW_STALL_SECONDS`
+re-reading a file it had read before the previous compaction, with no file written since that compaction (the cycle: a seat
+that loses what it gathered, refills its window and compacts again), wakes the session with
+`COMPACTING [workflow <runId>] <label> compacted <n>, re-read <file>`, once per new compaction count. A seat that wrote
+its findings before compacting lost nothing, so its compaction stays a check-in clause. A running Workflow seat whose `agent-<id>.jsonl` has not grown for `WORKFLOW_STALL_SECONDS`
 (`WATCH_RECORDS_STALL_SEC` overrides it) wakes with `STALLED workflow <runId> <label> idle=<n> min`, once per stall: the
 client's request for that seat never returned, and no engine watchdog ends it. A `--session --wake` call made while
 another live session-wide watcher is registered waits to take over without exiting. A bare `--await-launch`
 (or `--await-launch=<seconds>`) makes an explicit record watch that finds nothing running wait that long
 before it exits `NONE`; the bare form waits `dispatch_table.launch_grace()`. Session watches stay armed without it.
-A child no call of this session issued (a scoring daemon, a study's ruler, a delegate's own test launch: no `call` or `issued_at` on its entry, no fan-out, no bench campaign) ending cleanly wakes nobody: its parent reports its own end, and a failed child still wakes, except a memory-admission refusal (exit 12), which its caller retries.
+A child no call of this session issued (a scoring daemon, a study's ruler, a delegate's own test launch: no `call` or `issued_at` on its entry, no fan-out, no bench campaign) ending cleanly wakes nobody: its parent reports its own end, and a failed child still wakes, except a memory-admission refusal (exit 12), a re-pay refusal (exit 15) and a plan-capacity stop (exit 10), which its caller retries or holds.
 A zero-cost end before a result written while its transport's usage-limit marker was live (`refused_while_exhausted`) prints
 as context and wakes nobody: the job that hit the limit spent and woke, and the unit's end still wakes.
 A wake prints, under each ended job's `DONE`/`DONE workflow` line, the lines of `wake_digest.py`: the result head, the
@@ -70,7 +71,7 @@ ends on `GRID COMPLETE|PAUSED|HALTED|LOCKED|ABORT` or a dead grid pid; a failed 
 wake at once. A roster of several campaigns is one unit per campaign. A bench process tree registers none of
 its seats (`SIDECAR_DISPATCH_OWNER=bench`), so `--session` also watches each live roster whose worker process
 carries this session's `CLAUDE_CODE_SESSION_ID`: one `roster` unit per roster, live while its log is open, waking
-on `ROSTER <state> <name>: <last line>` when it ends, except a clean end (`DONE`) while another roster of this session is live, which prints at the next wake (a roster not live at arm is `bench.py wait`'s). An event already present
+on `ROSTER <state> <name>: <last line>` when it ends, except a clean end (`DONE`) while another roster of this session is live, which prints at the next wake (a roster not live at arm is `bench.py wait`'s). A detached bench job the session launched (`DETACHED <kind> pid=<n> log=<path>`: succession, probes, score) is a roster-shaped unit too: its launch writes `<logs>/detached/<pid>.json` with the launcher's `CLAUDE_CODE_SESSION_ID`, it is live while its pid lives, and it wakes on its log's `END` line, its pid's death with none (`DEAD`) or a park line as the log's last line (`HELD`). Its launch prints no `WAIT-CMD`, so this watcher owns its wait and check-in. An event already present
 at arm prints once; only an event acknowledged in session hook state suppresses the exit. A wake acknowledges
 the decision events it reports, so a watcher armed in any later turn does not exit on them (it still prints
 them as context), and every clean `DONE <label> exit=0` line it prints, which a later watcher omits.
@@ -88,7 +89,7 @@ The Stop hook removes a pending entry whose `.exit` exists and tells the user on
 finds no entry. The watcher then reads the ledger: a failed finish row of this session (`ended-before-result` or a
 non-zero exit) that no pending entry carries and that is younger than `dispatch_table.STALE_SECONDS` prints the same
 line (`unreported_ends`). A pending entry of that label that began a later attempt suppresses the line, because the
-end was a refusal its relaunch answers. The end has one identity (`ended_identity`) whichever reader finds it, so an end that woke
+end was a refusal its relaunch answers. A failed end that a later clean spend row of its label supersedes (that relaunch finished its result) is consumed and prints nothing. The end has one identity (`ended_identity`) whichever reader finds it, so an end that woke
 the session through its entry is not reported again, and an acknowledged one stays a quiet line until its row ages out.
 A record that DIED, or a job of a fan-out whose process is gone that DIED, whose launch id (the
 `launch=` in `<record>.pid`, else the record's or its inventory's `launchId`) a live process other
@@ -106,7 +107,10 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "hooks"))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 import _hook_state  # noqa: E402
+import exhausted_marker  # noqa: E402
 
 POLL_SECONDS = float(os.environ.get("WATCH_RECORDS_POLL_SEC", "0.5"))
 # The orchestrator's prompt cache lives one hour: a wake after it rewrites the whole context, a wake
@@ -131,7 +135,10 @@ ENDED = "ended-before-result"
 ADMISSION_REFUSED = "12"
 # Exit 15: the re-pay check refused finished work before anything ran; the scoring daemon holds the cell and reports it.
 REPAY_REFUSED = "15"
-CALLER_HANDLED = frozenset({ADMISSION_REFUSED, REPAY_REFUSED})
+# Exit 10: a plan-capacity stop (dispatch floor, spent allowance, usage limit); a background child's caller (the
+# scoring daemon's quota wait) sleeps to the reset and retries, so each child's refusal is context.
+CAPACITY_REFUSED = "10"
+CALLER_HANDLED = frozenset({ADMISSION_REFUSED, REPAY_REFUSED, CAPACITY_REFUSED})
 ARM_COMMAND = "python3 .claude/tools/watch_records.py --session --wake"
 ARM_CALL = "as its own Bash call with run_in_background: true and timeout 7200000"
 PANE_COMMAND = "python3 .claude/tools/watch_records.py --pane"
@@ -268,14 +275,74 @@ def inventory_process(record, path=None):
     return (_record_inventory(record, path) or {}).get("fanoutProcess")
 
 
+def journal_rows(record):
+    """The parsed rows of `<record>.journal.jsonl`, oldest first. An unparseable line is skipped."""
+    rows = []
+    try:
+        with open(str(record) + ".journal.jsonl", encoding="utf-8", errors="replace") as fh:
+            for text in fh:
+                try:
+                    row = json.loads(text)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
+def current_run(record):
+    """The journal rows since the last `started` row: one launch's transitions. A relaunch on the same
+    record appends after its own `started` row, so an earlier run's `waiting-memory`, `stalled` or
+    `usage-limit` row is never read as this run's. Rows with no `started` are one unnamed run."""
+    rows = journal_rows(record)
+    for index in range(len(rows) - 1, -1, -1):
+        if rows[index].get("event") == "started":
+            return rows[index:]
+    return rows
+
+
+def ended_code(record):
+    """The exit code a launch recorded, or None while it runs. The last `ended` row of `<record>.journal.jsonl`
+    is the end; `<record>.exit` is the fallback for a record its launcher wrote before the journal existed. An
+    `.exit` caught empty mid-write reads as "" (ended, code not yet written)."""
+    ended = [row for row in journal_rows(record) if row.get("event") == "ended"]
+    if ended:
+        return str(ended[-1].get("code", ""))
+    try:
+        with open(str(record) + ".exit", encoding="utf-8", errors="replace") as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def _journal_process_line(row):
+    """A `started` row's identity in the `<stamp> [winpid=N ]pid=N` form _process_line_gone reads."""
+    pid = row.get("pid")
+    if os.name == "nt":
+        return "%s winpid=%s pid=%s" % (row.get("ts", ""), row.get("winpid", pid), pid)
+    return "%s pid=%s" % (row.get("ts", ""), pid)
+
+
 def record_state(record, inventory=None):
     """This run's rung on the one "has it ended" ladder: (state, code, found_by).
 
     `state` is DONE, DIED, WATCH or NO-IDENTITY. `found_by` names the signal that decided it —
-    `exit`, `pid` or `inventory`, else "" — so a caller reading a different vocabulary for the
+    `journal` (the launcher's `<record>.journal.jsonl`: an `ended` row, or the last `started` row's
+    process), `exit`, `pid` or `inventory`, else "" — so a caller reading a different vocabulary for the
     same question maps this tuple instead of walking the files again, and a DIED or WATCH from the
     `pid` rung stays distinct from one found through the inventory.
     """
+    rows = journal_rows(record)
+    ended = [row for row in rows if row.get("event") == "ended"]
+    if ended:
+        return "DONE", str(ended[-1].get("code", "")), "journal"
+    started = [row for row in rows if row.get("event") == "started"]
+    if started:
+        gone = _process_line_gone(_journal_process_line(started[-1]))
+        if gone is not None:
+            return ("DIED", None, "journal") if gone else ("WATCH", None, "journal")
     exit_file = record + ".exit"
     try:
         with open(exit_file, encoding="utf-8") as fh:
@@ -294,13 +361,17 @@ def record_state(record, inventory=None):
 
 
 def memory_wait(record):
-    """The launcher's current admission-wait reading, or None when it has no WAIT marker."""
-    try:
-        with open(str(record) + '.memory', encoding='utf-8', errors='replace') as fh:
-            line = fh.read(8192).strip()
-    except OSError:
-        return None
-    return line if line.startswith(('WAIT memory headroom', 'STILL WAITING')) else None
+    """The launcher's current admission-wait reading, or None when this run has none standing. The
+    launcher writes one `waiting-memory` row per launch; its own next transition (the post-spawn
+    `started`) puts that row behind the run's current slice once admission finishes."""
+    for row in reversed(current_run(record)):
+        event = row.get("event")
+        if event in ("started", "ended"):
+            return None
+        if event == "waiting-memory":
+            message = str(row.get("message") or "")
+            return message if message.startswith(('WAIT memory headroom', 'STILL WAITING')) else None
+    return None
 
 
 def _norm_record(path):
@@ -397,6 +468,27 @@ def finish_rows(session_id):
                 except ValueError:
                     continue
                 if isinstance(row, dict) and row.get("outcome") and row.get("parentSessionId") == session_id:
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
+def clean_launch_rows(session_id):
+    """This session's spend rows of launches that finished clean (no `outcome`, exit 0), oldest first; one ledger read.
+    A failed launch writes no spend row, so a clean row of a label is a later launch of it that ran to its result."""
+    rows = []
+    try:
+        with open(ledger_path(), encoding="utf-8") as fh:
+            for text in fh:
+                if '"parentSessionId"' not in text or '"outcome"' in text:
+                    continue
+                try:
+                    row = json.loads(text)
+                except ValueError:
+                    continue
+                if (isinstance(row, dict) and row.get("parentSessionId") == session_id and row.get("label")
+                        and row.get("timestamp") and str(row.get("exitCode")) == "0"):
                     rows.append(row)
     except OSError:
         pass
@@ -542,10 +634,8 @@ def refused_while_exhausted(row):
     try:
         if float(row.get("costUSD") or 0) != 0:
             return False
-        base = os.environ.get("SIDECAR_EXHAUSTED_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "sidecar-exhausted")
-        with open(os.path.join(base, "%s.json" % row["transport"]), encoding="utf-8") as fh:
-            expires = json.load(fh).get("expiresAt")
-    except (OSError, ValueError, TypeError, AttributeError):
+        expires = (exhausted_marker.read(row["transport"]) or {}).get("expiresAt")
+    except (TypeError, ValueError):
         return False
     return isinstance(expires, (int, float)) and not isinstance(expires, bool) and expires > epoch(row.get("timestamp"))
 
@@ -556,12 +646,13 @@ def ended_identity(label, row):
     return ("finish", label, row.get("timestamp"))
 
 
-def unreported_ends(pending, rows, acknowledged, stale_seconds, now=None):
+def unreported_ends(pending, rows, acknowledged, stale_seconds, now=None, launches=()):
     """One pending-shaped entry per failed finish row of this session that no pending entry carries, younger than
     `stale_seconds`. The Stop hook consumes a pending entry whose `.exit` exists and tells the user only, so a
     watcher armed afterwards finds nothing; the launcher's finish row is the end's remaining trace. `reported`
     marks a row whose identity is acknowledged: it stays in the poll as a quiet line so the acknowledgment is
-    not pruned, and never wakes twice."""
+    not pruned, and never wakes twice. `launches` (`clean_launch_rows`) answers for a consumed failure: a clean
+    launch of its label whose spend row is later than the failure already took its job's result, so the failure is superseded."""
     now = time.time() if now is None else now
     carried = {id(entry["finish"]) for entry in pending if entry.get("finish")}
     watching = [entry for entry in pending if not superseded(entry, pending)]
@@ -576,6 +667,9 @@ def unreported_ends(pending, rows, acknowledged, stale_seconds, now=None):
         if any(job_identity(entry) == label and (attempt_start(entry) or 0.0) > epoch(row.get("timestamp"))
                for entry in watching):
             continue
+        if any(launch.get("label") == label and epoch(launch.get("timestamp")) > epoch(row.get("timestamp"))
+               for launch in launches):
+            continue  # consumed: a later clean launch of this label finished its result
         out.append({"kind": "sidecar", "id": "finish:%s:%s" % (label, row.get("timestamp")), "record": None,
                     "fanout_dir": None, "task_id": None, "jobs": [{"label": label}], "finish": row,
                     "reported": _wake_event_key(ended_identity(label, row)) in acknowledged})
@@ -600,7 +694,8 @@ def pending_sidecars(session_id, acknowledged=frozenset()):
         entry["finish"] = finish_row(entry, rows)
         entry["stopped"] = bool(stopped and entry.get("record")) and record_launch(entry["record"]) in stopped
     kept = [entry for entry in pending if not superseded(entry, pending)]
-    return kept + unreported_ends(kept, rows, acknowledged, dispatch_table.STALE_SECONDS)
+    return kept + unreported_ends(kept, rows, acknowledged, dispatch_table.STALE_SECONDS,
+                                  launches=clean_launch_rows(session_id))
 
 
 def fanout_launcher_running(entry):
@@ -774,14 +869,27 @@ def _read_paths(row):
                 yield str(path).replace("\\", "/")
 
 
+WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+
+
+def _wrote(row):
+    """True when one assistant transcript row calls a file-writing tool."""
+    message = row.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    return any(isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in WRITE_TOOLS
+               for block in (content if isinstance(content, list) else []))
+
+
 def agent_compaction(path):
     """One agent transcript (a Workflow `agent-<id>.jsonl` or a sidecar `<record>.stream`):
     {'count': compact_boundary rows, 'minutes': their summed duration or None when no row carries one,
     'reread': basename of a file read after the previous boundary that an earlier segment also read, taken from
-    the segment the LAST boundary closed, else None}. A non-None 'reread' is the compaction cycle: the seat lost
-    its subject and fetched it again. Unparseable lines (a partly written last line) are skipped; a missing file
-    is zero compactions. Cached per (size, mtime): a poll re-reads only a transcript that grew."""
-    out = {"count": 0, "minutes": None, "reread": None}
+    the segment the LAST boundary closed, else None, 'saved': whether that same segment wrote a file}. A non-None
+    'reread' is the compaction cycle: the seat lost its subject and fetched it again. A cycle with 'saved' kept what
+    it found in a file before compacting, so the compaction lost nothing. Unparseable lines (a partly written last
+    line) are skipped; a missing file is zero compactions. Cached per (size, mtime): a poll re-reads only a
+    transcript that grew."""
+    out = {"count": 0, "minutes": None, "reread": None, "saved": False}
     try:
         stat = os.stat(path)
     except OSError:
@@ -790,11 +898,11 @@ def agent_compaction(path):
     cached = _COMPACTION_CACHE.get(path)
     if cached and cached[0] == stamp:
         return dict(cached[1])
-    earlier, segment, again, duration = set(), set(), None, None
+    earlier, segment, again, wrote, duration = set(), set(), None, False, None
     try:
         with open(path, "rb") as fh:
             for raw in fh:
-                if b"compact_boundary" not in raw and b'"Read"' not in raw:
+                if b"compact_boundary" not in raw and b'"tool_use"' not in raw:
                     continue
                 try:
                     row = json.loads(raw)
@@ -809,15 +917,17 @@ def agent_compaction(path):
                         duration = (duration or 0) + ms
                     out["count"] += 1
                     out["reread"] = again
+                    out["saved"] = wrote
                     earlier |= segment
-                    segment, again = set(), None
+                    segment, again, wrote = set(), None, False
                 elif row.get("type") == "assistant":
                     for read in _read_paths(row):
                         if os.path.normcase(read) in earlier and again is None:
                             again = os.path.basename(read)
                         segment.add(os.path.normcase(read))
+                    wrote = wrote or _wrote(row)
     except OSError:
-        return {"count": 0, "minutes": None, "reread": None}
+        return {"count": 0, "minutes": None, "reread": None, "saved": False}
     out["minutes"] = None if duration is None else duration / 60000.0
     _COMPACTION_CACHE[path] = (stamp, dict(out))
     return out
@@ -1021,6 +1131,104 @@ def process_session(pid):
     return None
 
 
+DETACHED_PARK_RE = re.compile(r"^(?:\[[^\]]*\]\s+)?WAIT (?!ING)\S")
+# A dead job's registry row outlives every watcher that could still report its end: a session that resumes after
+# a week reads the job's log, not its row.
+DETACHED_KEEP_S = 7 * 86400
+
+
+def _still_for(path, seconds):
+    """True when the file at `path` is missing or unmodified for `seconds`."""
+    try:
+        return time.time() - os.path.getmtime(path) >= seconds
+    except (OSError, TypeError):
+        return True
+
+
+def _bench_lib():
+    """The project's bench library, or None where the checkout carries no benchmark campaign."""
+    scripts = os.path.join(os.path.dirname(HERE), "scripts", "benchmark_campaign", "scoring")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    try:
+        import bench_lib
+    except ImportError:
+        return None
+    return bench_lib
+
+
+def detached_row(entry, alive):
+    """The roster-shaped row (`name`, `state`, `last`) of one detached bench job's registry entry, or None when its
+    log is missing. The run is the log's current `START` run: it ends on that name's `END ok|halt|failed`
+    (DONE or HALTED), else on the worker's death (DEAD) or a park line as the last line (HELD, the same stop
+    `bench wait` exits 3 on). Otherwise it is LIVE."""
+    try:
+        with open(entry["log"], encoding="utf-8", errors="replace") as fh:
+            lines = [ln.strip() for ln in fh if ln.strip()]
+    except OSError:
+        return None
+    _owner, _at, end = _bench_lib().run_bounds(lines)
+    last = lines[-1][:120] if lines else "-"
+    if end:
+        state = "DONE" if end["status"] == "ok" else "HALTED"
+        last = end.group(0)
+    elif alive is False:
+        state = "DEAD"
+    elif DETACHED_PARK_RE.match(lines[-1] if lines else ""):
+        state = "HELD"
+    else:
+        state = "LIVE"
+    return {"name": "%s-%s" % (entry["kind"], entry["pid"]), "state": state, "last": last, "age": 0,
+            "terminal_status": end["status"] if end else None, "terminal_line": end.group(0) if end else None}
+
+
+def session_detached(session_id, bench_lib, pid_alive=None):
+    """`{"roster:<kind>-<pid>": unit}` for each detached bench job (succession, probes, score) this session launched.
+
+    The launch (`bench_lib.announce_detached`) writes `<logs>/detached/<pid>.json` with the launching session's
+    `CLAUDE_CODE_SESSION_ID`; a row of another session is not this one's. A job is one roster-shaped unit, so it
+    renders, stays live and wakes as a roster does. A row of any session whose worker is dead and whose log has
+    been still for `DETACHED_KEEP_S` is deleted here, so the registry stays bounded. A shared log (the probes log,
+    a campaign's score log, a resumed study's run log) holds only its latest launch's run, so a row whose log a
+    later-started row also names is superseded whatever its pid answers (Windows reuses pids): it prints nothing,
+    as a fan-out's dead entry does once a later launch of its label runs."""
+    try:
+        import daemon_lib
+    except ImportError:
+        return {}
+    probe = pid_alive or daemon_lib.native_pid_alive
+    entries = []
+    for path in glob.glob(os.path.join(bench_lib.detached_registry(), "*.json")):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                entry = json.load(fh)
+            alive = probe(int(entry["pid"]))
+            if alive is False and _still_for(entry.get("log"), DETACHED_KEEP_S):
+                os.remove(path)
+                continue
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        entries.append((entry, alive))
+    latest = {}
+    for entry, _alive in entries:
+        key = os.path.normcase(os.path.abspath(str(entry.get("log"))))
+        latest[key] = max(latest.get(key, float("-inf")), float(entry.get("started") or 0))
+    units = {}
+    for entry, alive in entries:
+        if entry.get("session") != session_id:
+            continue
+        key = os.path.normcase(os.path.abspath(str(entry.get("log"))))
+        if float(entry.get("started") or 0) < latest[key]:
+            continue
+        try:
+            row = detached_row(entry, alive)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if row:
+            units["roster:" + row["name"]] = {"roster": row, "records": [], "cells": []}
+    return units
+
+
 def session_rosters(session_id, pid_alive=None, verdicts=None):
     """A poll function returning `{"roster:<name>": unit}` for each bench roster this session started.
 
@@ -1037,13 +1245,13 @@ def session_rosters(session_id, pid_alive=None, verdicts=None):
         if last[0] is not None and now - last[0] < ROSTER_RECHECK_S:
             return last[1]
         try:
-            scripts = os.path.join(os.path.dirname(HERE), "scripts", "benchmark_campaign", "scoring")
-            if scripts not in sys.path:
-                sys.path.insert(0, scripts)
-            import bench_lib
+            bench_lib = _bench_lib()
+            if bench_lib is None:
+                last[:] = [now, {}]
+                return last[1]
             logs = bench_lib.roots.logs_dir()
             rows = bench_lib.roster_states(logs, pid_alive=pid_alive)
-            units = {}
+            units = session_detached(session_id, bench_lib, pid_alive)
             for row in rows:
                 name = row["name"]
                 if name not in owned and row["state"] == "LIVE":
@@ -1194,7 +1402,7 @@ def orphan_line(unit):
     stuck = [str(job.get("label") or "?") for job in jobs if job.get("recordPath")
              and _norm_record(job["recordPath"]) not in known
              and not os.path.exists(str(job["recordPath"]) + ".pid")
-             and not os.path.exists(str(job["recordPath"]) + ".exit")]
+             and ended_code(job["recordPath"]) is None]
     return "ORPHANED %s" % ", ".join(stuck) if stuck else None
 
 
@@ -1272,14 +1480,15 @@ def gone_fanout_orphans(unit):
 
 
 def stall_idle(record):
-    """The idle seconds in `<record>.stall`, or None when the marker is absent or unreadable."""
-    try:
-        with open(record + ".stall", encoding="utf-8") as fh:
-            text = fh.read()
-    except OSError:
-        return None
-    found = re.search(r"idle=(\d+)", text)
-    return found.group(1) if found else "?"
+    """The idle seconds this run's latest `stalled` row recorded, or None when no stall stands. A
+    `resumed` row or the run's end clears it."""
+    for row in reversed(current_run(record)):
+        event = row.get("event")
+        if event == "stalled":
+            return str(row.get("idle", "?"))
+        if event in ("resumed", "ended"):
+            return None
+    return None
 
 
 # The proxy writes one traffic file per upstream reasoning item, every 20-40 s while a turn reasons (2026-09-30
@@ -1380,22 +1589,14 @@ def stall_text(label, idle, age):
 
 
 def usage_line(record, label):
-    """`USAGE-LIMIT <label> <transport> resets <time|unknown>` from `<record>.usage`, or None when absent."""
-    try:
-        with open(record + ".usage", encoding="utf-8") as fh:
-            text = fh.read()
-    except OSError:
+    """`USAGE-LIMIT <label> <transport> resets <time|unknown>` from this run's `usage-limit` row, or None."""
+    row = next((row for row in reversed(current_run(record)) if row.get("event") == "usage-limit"), None)
+    if row is None:
         return None
-    try:
-        data = json.loads(text)
-    except ValueError:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    reset = data.get("resetsAt")
+    reset = row.get("resetsAt")
     when = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(reset))
             if isinstance(reset, (int, float)) and reset > 0 else "unknown")
-    return "USAGE-LIMIT %s %s resets %s" % (label, data.get("transport") or "unknown", when)
+    return "USAGE-LIMIT %s %s resets %s" % (label, row.get("transport") or "unknown", when)
 
 
 def _stream(pending):
@@ -1437,7 +1638,7 @@ def _wake(grouped, now=None):
                 live += 1
                 for agent in workflow_agents(entry):
                     seat = "workflow:%s:%s" % (entry.get("id"), agent["agentId"])
-                    if agent["reread"]:
+                    if agent["reread"] and not agent["saved"]:
                         lines.append(("compacting", ("compacting", seat, agent["count"]),
                                       "COMPACTING workflow %s %s compacted %d, re-read %s"
                                       % (entry.get("id"), agent["label"], agent["count"], agent["reread"]), True))
@@ -1464,7 +1665,7 @@ def _wake(grouped, now=None):
                 live += 1
                 for cell, stream in unit.get("cells") or []:
                     compaction = agent_compaction(stream)
-                    if compaction["reread"]:
+                    if compaction["reread"] and not compaction["saved"]:
                         lines.append(("compacting", ("compacting", stream, compaction["count"]),
                                       "COMPACTING roster %s %s compacted %d, re-read %s"
                                       % (row["name"], cell, compaction["count"], compaction["reread"]), True))
@@ -1534,7 +1735,7 @@ def _wake(grouped, now=None):
                               % (label, lingering // 60), True))
             stream = record_stream(record)
             compaction = agent_compaction(stream) if stream else None
-            if compaction and compaction["reread"]:
+            if compaction and compaction["reread"] and not compaction["saved"]:
                 lines.append(("compacting", ("compacting", record, compaction["count"]),
                               "COMPACTING %s compacted %d, re-read %s"
                               % (label, compaction["count"], compaction["reread"]), True))
@@ -1659,11 +1860,9 @@ def _wake_event_key(identity):
         except OSError:
             pass
         if identity[0] == 'usage':
-            try:
-                with open(str(identity[1]) + '.usage', encoding='utf-8') as stream:
-                    incarnation = [incarnation, json.load(stream).get('firstSeen')]
-            except (OSError, ValueError, AttributeError):
-                pass
+            row = next((row for row in reversed(current_run(identity[1]))
+                        if row.get("event") == "usage-limit"), None)
+            incarnation = [incarnation, row.get("ts") if row else None]
     return json.dumps([identity, incarnation], separators=(',', ':'))
 
 

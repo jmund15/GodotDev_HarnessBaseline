@@ -64,9 +64,9 @@ class Registration(unittest.TestCase):
         auth.parent.mkdir(parents=True)
         auth.write_text('{}', encoding='utf-8')
         # Profile resolution refuses a server the config does not define. A POSIX runner reads this HOME's
-        # `.claude.json`, so register every server a shape names there; Windows reads the developer's own.
+        # `.claude.json`, so register every server a kind names there; Windows reads the developer's own.
         import tool_profiles
-        servers = sorted({name for shape in tool_profiles.load_table()['shapes'].values() for name in shape['mcpServers']})
+        servers = sorted({name for shape in tool_profiles.load_table()['kinds'].values() for name in shape['mcpServers']})
         (self.work / '.claude.json').write_text(json.dumps({'mcpServers': {name: {'command': 'true'} for name in servers}}),
                                                 encoding='utf-8')
         plant = self.work / 'plant'
@@ -323,6 +323,58 @@ urllib.request.urlopen = urlopen
         self.assertIn('CLAUDE_CODE_SESSION_ID', proc.stderr)
         self.assertIn('not tracked', proc.stderr)
         self.assertEqual(self.counts(), {'tier': 1, 'preflight': 1})
+
+    def test_launch_journal_records_start_and_end(self):
+        # X1 S2 U2: a real foreground launch writes a started row at claim and an ended row with its rc.
+        proc = self.run_cmd([BASH, posix(LAUNCHER), *self.argv('journaled')])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        record = self.work / 'journaled.record.json'
+        journal = Path(str(record) + '.journal.jsonl')
+        rows = [json.loads(line) for line in journal.read_text(encoding='utf-8').splitlines()] if journal.exists() else []
+        events = [row.get('event') for row in rows]
+        self.assertIn('started', events, rows)
+        self.assertEqual(events[-1], 'ended', rows)
+        started = next(row for row in rows if row['event'] == 'started')
+        for key in ('ts', 'launchId', 'pid', 'session', 'label', 'record', 'call'):
+            self.assertIn(key, started, started)
+        self.assertEqual(started['label'], 'journaled')
+        ended = rows[-1]
+        self.assertEqual(ended['code'], 0, ended)
+        self.assertEqual(Path(record.parent / (record.name + '.exit')).read_text().strip(), '0')
+
+    def test_a_direct_launch_records_the_call_its_hook_intent_names(self):
+        # X1 S2 U6 / D3: the hook writes the intent at the record path, and the launch claims it, so the
+        # journal's rows carry the call a direct launch lost before the intent existed.
+        argv = self.argv('hooked')
+        payload = self.payload('bash ' + shlex.join([str(LAUNCHER).replace('\\', '/'), *argv]))
+        hook = self.run_cmd([sys.executable, str(HOOK)], payload)
+        decision = (json.loads(hook.stdout)['hookSpecificOutput'] if hook.stdout.strip() else {}).get('permissionDecision')
+        self.assertNotEqual(decision, 'deny', hook.stdout)
+        record = self.work / 'hooked.record.json'
+        intent = Path(str(record) + '.launch-intent-call-proof.json')
+        self.assertTrue(intent.exists(), sorted(p.name for p in self.work.iterdir()))
+        intent_row = json.loads(intent.read_text(encoding='utf-8'))
+        self.assertEqual((intent_row.get('call'), intent_row.get('session')), ('call-proof', self.sid), intent_row)
+        proc = self.run_cmd([BASH, posix(LAUNCHER), *argv])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        journal = Path(str(record) + '.journal.jsonl')
+        rows = [json.loads(line) for line in journal.read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(next(row for row in rows if row['event'] == 'started')['call'], 'call-proof', rows)
+        self.assertFalse(intent.exists(), 'the intent was not claimed')
+
+    def test_direct_launch_claims_the_call_its_intent_names(self):
+        # X1 S1 U4 / D3: the hook's intent at the record path names the call; the launch's rows carry it.
+        record = self.work / 'claimed.record.json'
+        intent = Path(str(record) + '.launch-intent-toolu_direct.json')
+        intent.write_text(json.dumps({'call': 'toolu_direct', 'session': self.sid}), encoding='utf-8')
+        proc = self.run_cmd([BASH, posix(LAUNCHER), *self.argv('claimed')])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(intent.exists(), 'the intent was not claimed')
+        self.assertTrue(Path(str(intent) + '.claimed').exists())
+        journal = Path(str(record) + '.journal.jsonl')
+        rows = [json.loads(line) for line in journal.read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(next(row for row in rows if row['event'] == 'started')['call'], 'toolu_direct', rows)
+        self.assertEqual(rows[-1]['call'], 'toolu_direct', rows)
 
 
 if __name__ == '__main__':

@@ -26,8 +26,8 @@
 #   4 child CLI missing · 5 band gate refusal (-A overrides) · 6 balance floor unmet
 #   (-A does NOT override) · 7 model UNAVAILABLE in the registry (-U overrides)
 #   8 provider capacity or dispatch band unreadable (sc_gate_capacity; no flag overrides it)
-#   9 RETIRED — the stall watchdog used to kill a silent child. A silent run now writes
-#   `<record>.stall` and keeps running. Do not reuse the code: consumers carry the old mapping.
+#   9 RETIRED — the stall watchdog used to kill a silent child. A silent run now appends a
+#   `stalled` journal row and keeps running. Do not reuse the code: consumers carry the old mapping.
 #   10 pre-spawn dispatch floor, spent allowance or live exhausted marker; after spawn, a provider
 #   usage limit stopped work (neither -A nor -U overrides)
 #   11 peak pricing window refused on a gate.peakPolicy=refuse row (-W overrides, on the user's
@@ -38,6 +38,8 @@
 #   same -l label or -R record) or resumes this -r session (sc_check_duplicate_launch); nothing started.
 #   Stop the old run first with the printed tools/reap.py command; no flag overrides it
 #   14 RETIRED (never reuse the code).
+#   16 endpoint unavailable right now (a `--check` live probe with no answer, HTTP 429 or 5xx): nothing
+#   started; a fan-out moves the job to its next listed row. No flag overrides it.
 #   15 re-pay refused: the spend ledger already holds a FINISHED row for this work key, or exists but cannot be read (tools/work_key.py:
 #   the brief's bytes, the harness revision, the pin and the label, or the key the starting tool declared in
 #   SIDECAR_WORK_KEY); nothing started. A deliberate repeat is different work: give it its own label. A
@@ -123,7 +125,7 @@ sc_reexec_snapshot() {
   # variable" under set -u on the very first re-exec -- measured 2026-09-14. Every launcher that
   # DOES set it (anthropic/codex_proxy/deepseek) is unaffected either way.
   SC_SNAPSHOT_OF="$launcher" SC_INVOKED_LAUNCHER="$SC_INVOKED_LAUNCHER" SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-}" \
-    exec bash "$snap" "$@"
+    SC_LAUNCHER_DIR_RUN="${SC_LAUNCHER_DIR:-}" exec bash "$snap" "$@"
 }
 
 # sc_x_takes_value <single letter> -> true if SC_OPTSTRING marks it as value-taking. A flag's own
@@ -205,6 +207,8 @@ sc_detach_launch() {
     SC_FINISH_HANDED_OFF=1   # the launch that won the claim owns this path's .exit and finish row
     sc_die 1 "record path already used; pass a new -R path ($pidf exists)"
   fi
+  sc_claim_call
+  sc_journal_started "$$"
   # After the claim, so a refusal writes only to a path this launch owns; before any spawn.
   sc_check_duplicate_launch "$SC_X_PROMPT" "$SC_X_RESUME" "$SC_X_LABEL" "$SC_X_RECORD"
   sc_dispatch_launch "$@"
@@ -237,21 +241,24 @@ sc_detach_launch() {
     sc_pid_line "$BASHPID" >> "$pidf"
     renamed="$snapdir/$(basename "$launcher").$BASHPID.sh"
     if ! mv "$claimcopy" "$renamed" 2>>"$err"; then
+      sc_journal ended "code=1"
       printf '%s\n' 1 > "${exitf}.tmp" && mv "${exitf}.tmp" "$exitf"
       echo "cannot rename detach snapshot claim" >> "$err"
       exit 0
     fi
     SIDECAR_DETACHED=1 SC_SNAPSHOT_OF="$launcher" SC_INVOKED_LAUNCHER="${SC_INVOKED_LAUNCHER:-}" \
       SC_DISPATCH_CHECKED="${SC_DISPATCH_CHECKED:-0}" SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-}" \
-      bash "$renamed" "${pass_args[@]}" >"$out" 2>>"$err"
+      SC_LAUNCHER_DIR_RUN="${SC_LAUNCHER_DIR:-}" bash "$renamed" "${pass_args[@]}" >"$out" 2>>"$err"
     jrc=$?
-    [ -f "${record}.claims.json" ] || sc_check_completion "$record" "${SC_X_WORKDIR:-$(pwd)}"
+    [ -f "${record}.post_check.json" ] || sc_check_completion "$record" "${SC_X_WORKDIR:-$(pwd)}"
+    sc_journal ended "code=$jrc"  # the job's own end, after .out; ended precedes .exit (R1)
     printf '%s\n' "$jrc" > "${exitf}.tmp" && mv "${exitf}.tmp" "$exitf"
   # The job owns no caller descriptor: a subshell that kept fd 1 or 2 held the caller's pipe
   # open until the run ended, so `$(...)` and a harness Bash call waited out the whole run.
   ) </dev/null >/dev/null 2>>"$err" &
   disown
   local child=$!
+  sc_journal_started "$child"  # the job's process, the one a reader checks for liveness
   SC_FINISH_HANDED_OFF=1   # A closed receipt pipe must not let the parent finish the live job.
   # The watcher reads the last pid= line; exiting before the job writes its own leaves the launcher's.
   local waited=0
@@ -301,7 +308,7 @@ SC_WORKDIR="$PWD"
 SC_PROMPT_FILE=""
 # `timeout` really does kill the child (exit 124, `[ $rc -eq 124 ]` in every launcher), so it is
 # OPT-IN and default OFF: the owner's directive is that no bound ends a paid run by itself, and a
-# run silent for SC_STALL_SEC now writes the `.stall` signal the session watches instead of dying.
+# run silent for SC_STALL_SEC now appends the `stalled` row the session watches instead of dying.
 # Pass -T <sec>, or SIDECAR_TIMEOUT=<sec>, only when the caller can name why it wants the kill.
 SC_TIMEOUT="${SIDECAR_TIMEOUT-}"
 SC_RECORD=""
@@ -407,6 +414,8 @@ sc_register_durable_files() {
     sc_on_exit 'sc_write_durable_files "$rc"'
   fi
   sc_pid_line "$$" > "${SC_RECORD}.pid" 2>/dev/null || :
+  sc_claim_call
+  sc_journal_started "$$"
 }
 
 # A record without a progress stream would run with the stall watchdog and the result grace off; `-R` watches
@@ -520,7 +529,9 @@ sc_dispatch_launch() {
   [ "${SC_DISPATCH_CHECKED:-0}" = 1 ] && return 0
   [ -n "${SC_INVOKED_LAUNCHER:-}" ] || return 0
   SC_DISPATCH_DEFAULT_MODEL="$SC_MODEL" python3 "$SC_ROOT/hooks/sidecar_dispatch_context.py" \
-    --launcher "$(sc_to_native "$SC_INVOKED_LAUNCHER")" "$@" || { rc=$?; case "$rc" in 10|11) ;; *) rc=2 ;; esac; exit "$rc"; }
+    --launcher "$(sc_to_native "$SC_INVOKED_LAUNCHER")" "$@" || { rc=$?; [ "$rc" = 1 ] && rc=2; exit "$rc"; }
+  # The hook owns which refusal keeps its code (10 capacity, 11 peak, 16 endpoint down) and maps the rest to 2;
+  # only its crash (python exit 1) is mapped here.
   SC_DISPATCH_CHECKED=1
 }
 
@@ -607,7 +618,7 @@ sc_apply_kind() {
   SC_KIND_APPLIED="$SC_SHAPE"
 }
 
-# The guard name a kind's row carries (survey|review|author|any|arm), for the registry's --shape.
+# The guard name a kind's row carries (survey|review|author|common|arm), for the registry's --shape.
 sc_kind_guard() {
   python3 "$SC_ROOT/tools/tool_profiles.py" kind-row --kind="$1" --field=guard 2>/dev/null | tr -d '\r'
 }
@@ -664,6 +675,7 @@ sc_validate_common() {
 #
 # SC_RESOLVED_BUILTINS  -> `--tools` (the child's built-in availability list)
 # SC_RESOLVED_TOOL_SPEC -> built-ins plus `mcp__<registered key>`, the form sc_mcp_config reads
+# SC_DISALLOWED         -> gains the kind's `denyTools` (--disallowedTools)
 # SC_TOOL_PROFILE       -> the record's toolProfile object (and the ledger row's)
 sc_resolve_tools() {
   local err out packed
@@ -686,12 +698,19 @@ sc_resolve_tools() {
 sys.path.insert(0, os.path.join(os.environ["SC_ROOT"], "tools"))
 import tool_profiles
 p = json.load(sys.stdin)
+sys.stdout.reconfigure(newline="\n")
 print(",".join(p["builtins"]))
-print(tool_profiles.tool_spec(p, list(p["mcpRegistrations"].values())))')" || {
+print(tool_profiles.tool_spec(p, list(p["mcpRegistrations"].values())))
+print(",".join(p["denyTools"]))')" || {
     sc_die 2 "[sidecar] could not read the resolved tool profile"; }
   SC_TOOL_PROFILE="$out"
   SC_RESOLVED_BUILTINS="${packed%%$'\n'*}"
   SC_RESOLVED_TOOL_SPEC="${packed#*$'\n'}"
+  local deny=""   # the substitution above strips an empty last line: a kind with no denial leaves no newline here
+  case "$SC_RESOLVED_TOOL_SPEC" in *$'\n'*) deny="${SC_RESOLVED_TOOL_SPEC#*$'\n'}" ;; esac
+  SC_RESOLVED_TOOL_SPEC="${SC_RESOLVED_TOOL_SPEC%%$'\n'*}"
+  # The kind's withheld MCP tools (a read-only kind holds ai-worker minus write_doc) join the denial.
+  [ -n "$deny" ] && SC_DISALLOWED="${SC_DISALLOWED:+$SC_DISALLOWED,}$deny"
   # `--allowedTools` pre-approves and never bounds, but it must still name what this child may
   # use: a delta `-t` (+mcp:godot) is not a tool list, and passing it verbatim would pre-approve
   # a tool by that literal name. SC_TOOLS stays the caller's raw input for anything else.
@@ -975,7 +994,7 @@ sc_gate_availability() {
 sc_drift_guard_active() { [ "${SC_SHAPE:-}" = "bench-score" ] && [ -n "${SC_PROMPT_FILE:-}" ]; }
 # BENCH_RULER_SCOPE adds the succession ruler's staged-file Read allowlist.
 sc_settings_with_bench_guard() { # <settings-json-or-empty> -> merged json on stdout ("" if nothing to pass)
-  python3 - "$1" "$SC_ROOT" "${SC_SHAPE:-}" "${SC_PROMPT_FILE:-}" "${BENCH_ARM:-}" "${BENCH_RULER_SCOPE:-}" "${SC_WORKDIR:-}" "${SC_RECORD:-}" "${SC_PROGRESS:-}" <<'PY'
+  python3 - "$1" "$SC_ROOT" "${SC_SHAPE:-}" "${SC_PROMPT_FILE:-}" "${BENCH_ARM:-}" "${BENCH_RULER_SCOPE:-}" "${SC_WORKDIR:-}" "${SC_RECORD:-}" "${SC_PROGRESS:-}" "${AC_AUTO_COMPACT_WINDOW:+${SC_MODEL:-}}" <<'PY'
 import json, os, shlex, sys
 from pathlib import Path
 base = json.loads(sys.argv[1]) if sys.argv[1].strip() else {}
@@ -984,7 +1003,19 @@ if sys.argv[4]:
     prompt = Path(sys.argv[4]).resolve().as_posix()
     command = 'python3 "%s" --prompt-file "%s"' % (
         (root / "hooks/sidecar_recompact_reprompt.py").as_posix(), prompt)
-    for event, matcher in (("SessionStart", "compact"), ("PreCompact", None)):
+    events = [("SessionStart", "compact"), ("PreCompact", None)]
+    # A Claude child given a compaction point (AC_AUTO_COMPACT_WINDOW) below its model's real window holds its
+    # first auto-compaction until it saves its findings (the hook's --hard-window).
+    hard = None
+    if len(sys.argv) > 10 and sys.argv[10]:
+        sys.path.insert(0, (root / "tools").as_posix())
+        import model_registry
+        entry = model_registry.resolve(sys.argv[10])
+        hard = model_registry.effective_window(entry, True) or model_registry.effective_window(entry, False)
+    if hard:
+        command += " --hard-window %d" % hard
+        events.append(("PostToolUse", None))
+    for event, matcher in events:
         rows_ = base.setdefault("hooks", {}).setdefault(event, [])
         if not any(row.get("matcher") == matcher and any(
                 "sidecar_recompact_reprompt.py" in hook.get("command", "")
@@ -1254,6 +1285,65 @@ sc_check_completion() {
   SC_CHECKED_RECORD="$1"
 }
 
+# sc_journal <event> [key=value ...] -- append one row to <record>.journal.jsonl (X1 S2 D1). Every row
+# carries the launch identity (D2); the caller's key=value pairs add the event's own fields. Numeric
+# values become numbers. A failed append never fails the launch: the record falls back to .exit.
+sc_journal() {
+  [ -n "${SC_RECORD:-}" ] || return 0
+  local event="$1"; shift
+  local rec
+  rec="$(sc_to_native "$SC_RECORD")" || return 0
+  JOURNAL_EVENT="$event" JOURNAL_PATH="$rec.journal.jsonl" JOURNAL_LAUNCH="${SC_LAUNCH_ID:-}" \
+    JOURNAL_SESSION="${SC_PARENT_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}" JOURNAL_LABEL="${SC_LABEL:-}" \
+    JOURNAL_CALL="${SC_CALL:-}" JOURNAL_RECORD="$rec" JOURNAL_FIELDS="$(printf '%s\n' "$@")" python3 - <<'PY' 2>/dev/null || :
+import json, os, time
+row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "schema": 1, "event": os.environ["JOURNAL_EVENT"],
+       "launchId": os.environ["JOURNAL_LAUNCH"] or None, "record": os.environ["JOURNAL_RECORD"],
+       "session": os.environ["JOURNAL_SESSION"] or None, "label": os.environ["JOURNAL_LABEL"] or None,
+       "call": os.environ["JOURNAL_CALL"] or None}
+for line in os.environ["JOURNAL_FIELDS"].splitlines():
+    key, _, value = line.partition("=")
+    if key:
+        row[key] = int(value) if value.isdigit() else value
+with open(os.environ["JOURNAL_PATH"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(row) + "\n")
+PY
+}
+
+# sc_journal_started <pid> -- the started row names the process a reader checks for liveness, with its
+# Windows pid where /proc exposes one. Written at each `.pid` line that names a process.
+sc_journal_started() {
+  local win=""
+  [ -r "/proc/$1/winpid" ] && win="$(cat "/proc/$1/winpid")"
+  if [ -n "$win" ]; then sc_journal started "pid=$1" "winpid=$win"; else sc_journal started "pid=$1"; fi
+}
+
+# sc_claim_call -- a direct launch takes the call its hook intent names (X1 S1 D3): the newest unclaimed
+# `<record>.launch-intent-<call>.json`, claimed by an atomic rename to `.claimed`. Sets SC_CALL; a launch
+# with no intent keeps SC_CALL empty and its journal row reads call: null.
+sc_claim_call() {
+  [ -n "${SC_RECORD:-}" ] || return 0
+  local rec found
+  rec="$(sc_to_native "$SC_RECORD")" || return 0
+  found="$(RECORD_V="$rec" python3 - <<'PY' 2>/dev/null
+import glob, json, os
+record = os.environ["RECORD_V"]
+for path in sorted(glob.glob(glob.escape(record) + ".launch-intent-*.json"), key=os.path.getmtime, reverse=True):
+    try:
+        os.rename(path, path + ".claimed")
+    except OSError:
+        continue
+    try:
+        with open(path + ".claimed", encoding="utf-8") as fh:
+            print(json.load(fh).get("call") or "")
+    except (OSError, ValueError):
+        print("")
+    break
+PY
+)" || return 0
+  SC_CALL="$found"
+}
+
 sc_write_durable_files() {
   local rc="$1" exitf outf
   [ -n "$SC_RECORD" ] || return 0
@@ -1272,6 +1362,7 @@ sc_write_durable_files() {
     fi
   fi
   sc_check_completion "$SC_RECORD" "${SC_WORKDIR:-$(pwd)}"
+  sc_journal ended "code=$rc"  # before .exit: ended is authoritative when both exist (R1)
   if printf '%s\n' "$rc" > "${exitf}.tmp" 2>/dev/null && mv "${exitf}.tmp" "$exitf" 2>/dev/null; then
     :
   else
@@ -1294,8 +1385,8 @@ sc_write_durable_files() {
 # ------------------------------------------------------------------ stall watchdog
 # A paid run with no work events and no CPU work in its process tree for SC_STALL_SEC seconds is
 # suspected dead (an upstream that never answers, a classifier that never returns, a child wedged
-# on a socket). A session dispatch gets `<record>.stall` (idle seconds and a UTC stamp) and keeps running;
-# the next work event deletes the marker, and the session decides — inspect the progress stream and
+# on a socket). A session dispatch appends a `stalled` journal row (idle seconds) and keeps running;
+# the next work event appends `resumed`, and the session decides — inspect the progress stream and
 # the process, then re-arm the watcher or stop the job through tools/reap.py. A bench arm (BENCH_ARM)
 # runs unattended, so its stall ends the child tree with rc 124 and a STALLED line the grid voids as a
 # resumable timeout. Duration alone never ends a run. The watch is on the
@@ -1409,7 +1500,6 @@ PY
   SC_INVENTORY="${prepared#*$'\t'}"
   SC_LAUNCH_PREPARED=1
   SC_USAGE_MARKED=0
-  rm -f "${SC_RECORD}.usage" 2>/dev/null  # a marker from an earlier launch on this path is not this run's
 }
 
 sc_cleanup_published_inventory() {
@@ -1440,30 +1530,19 @@ sc_watch_step() {
 }
 
 # sc_mark_usage -- on the FIRST usage-limit retry (or terminal usage-limit result) the watch step
-# sees, write <record>.usage once per launch. The session watcher (watch_records.py --wake) wakes on
-# it while the run keeps retrying, so a blocked seat is known at its first 429, not its tenth. A 429
-# run that clears inside one poll (SC_WATCH_POLL_SEC) folds back to 0 and is not marked.
+# sees, append one `usage-limit` journal row per launch. The session watcher (watch_records.py --wake)
+# wakes on it while the run keeps retrying, so a blocked seat is known at its first 429, not its tenth.
+# A 429 run that clears inside one poll (SC_WATCH_POLL_SEC) folds back to 0 and is not marked.
 sc_mark_usage() {
   [ "${SC_USAGE_MARKED:-0}" = 1 ] && return 0
   SC_USAGE_MARKED=1
   [ -n "${SC_RECORD:-}" ] || return 0
-  local marker
-  marker="$(sc_to_native "${SC_RECORD}.usage")" || return 0
-  MARKER_V="$marker" TRANSPORT_V="${SC_TRANSPORT:-unknown}" RETRIES_V="${_sc_run:-0}" \
-    RESET_V="${SC_USAGE_LIMIT_RESET:-}" HOOKS_V="$(sc_to_native "$SC_ROOT/hooks")" python3 -c '
-import json, os, sys, time
-sys.path.insert(0, os.environ["HOOKS_V"])
-from _hook_state import replace_path
-reset = os.environ["RESET_V"]
-line = json.dumps({"firstSeen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                   "transport": os.environ["TRANSPORT_V"], "retries": int(os.environ["RETRIES_V"] or 0),
-                   "resetsAt": int(reset) if reset.isdigit() else None})
-tmp = os.environ["MARKER_V"] + ".tmp"
-with open(tmp, "w", encoding="utf-8") as fh:
-    fh.write(line + "\n")
-replace_path(tmp, os.environ["MARKER_V"])
-' || { echo "[sidecar] could not write the usage marker ${SC_RECORD}.usage" >&2; return 0; }
-  echo "[sidecar] usage-limit retry on ${SC_TRANSPORT:-unknown}: wrote ${SC_RECORD}.usage; the run keeps retrying" >&2
+  if [ -n "${SC_USAGE_LIMIT_RESET:-}" ]; then
+    sc_journal usage-limit "transport=${SC_TRANSPORT:-unknown}" "retries=${_sc_run:-0}" "resetsAt=$SC_USAGE_LIMIT_RESET"
+  else
+    sc_journal usage-limit "transport=${SC_TRANSPORT:-unknown}" "retries=${_sc_run:-0}"
+  fi
+  echo "[sidecar] usage-limit retry on ${SC_TRANSPORT:-unknown}: recorded; the run keeps retrying" >&2
 }
 
 # A usage-limit stop: synthetic result event, exit 10, exhausted marker. Never resumed (sc_resume_loop).
@@ -1483,7 +1562,7 @@ sc_finish_usage_limit() { # [<progress-file>]
 
 # ------------------------------------------------------- launch memory admission (A5)
 # Foreground checks once and refuses at once (exit 12). Detached jobs wait through launch_memory.py,
-# publishing its WAIT readings in <record>.memory for the session watcher and fan-out status.
+# recording one `waiting-memory` journal row for the session watcher and fan-out status.
 # -T / SIDECAR_TIMEOUT bounds that admission wait when supplied; expiry is exit 12, with no child run.
 # Once per launch: codex calls this before its proxy, so sc_run_watched and resumes do not recheck.
 # The brief file and shape pick the job's floors (launch_memory.py); an inline prompt is heavy.
@@ -1494,19 +1573,21 @@ sc_check_launch_memory() {
   local said mem_rc class_args=()
   [ -z "${SC_PROMPT_FILE:-}" ] || class_args=(--brief "$(sc_to_native "$SC_PROMPT_FILE")" --shape "${SC_SHAPE:-}")
   if [ -n "${SIDECAR_DETACHED:-}" ]; then
-    local marker="${SC_RECORD}.memory" line
+    local lastf line _sc_mem_row=0
+    lastf="$(mktemp)"  # the latest reading, for the refusal text only; the journal row is the published state
     local memory_cmd=(python3 "$SC_ROOT/tools/launch_memory.py" wait --label "${SC_LABEL:-sidecar}" "${class_args[@]}")
     [ -z "${SC_TIMEOUT:-}" ] || memory_cmd=(timeout "$SC_TIMEOUT" "${memory_cmd[@]}")
     "${memory_cmd[@]}" 2>&1 | while IFS= read -r line; do
       printf '%s\n' "$line" >&2
       case "$line" in
         "WAIT memory headroom"*|"STILL WAITING"*)
-          printf '%s\n' "$line" > "${marker}.tmp" && mv "${marker}.tmp" "$marker" ;;
+          printf '%s\n' "$line" > "$lastf"
+          if [ "$_sc_mem_row" = 0 ]; then sc_journal waiting-memory "message=$line"; _sc_mem_row=1; fi ;;
       esac
     done
     mem_rc=${PIPESTATUS[0]}
-    said="$(cat "$marker" 2>/dev/null)"
-    rm -f "$marker" "${marker}.tmp"
+    said="$(cat "$lastf" 2>/dev/null)"
+    rm -f "$lastf"
     case $mem_rc in
       0) return 0 ;;
       124) sc_die 12 "REFUSED memory headroom for ${SC_LABEL:-sidecar}: wait bound ${SC_TIMEOUT}s reached; ${said:-no reading emitted}" ;;
@@ -1577,7 +1658,7 @@ sc_run_watched() {
   fi
   tmp="$(mktemp)"
   _sc_last=$(date +%s)
-  local _sc_cpu="" _sc_cpu_at="$_sc_last" _sc_stalled=0
+  local _sc_cpu="" _sc_cpu_at="$_sc_last" _sc_stalled=0 _sc_stall_row=0
   # Watch only this run's bytes: a resumed run appends to the previous segment's -P file.
   _sc_off=$(stat -c %s "$progress" 2>/dev/null || echo 0)
   ( "$run_fn" | tee -a "$progress" > "$tmp" ) &
@@ -1613,9 +1694,10 @@ sc_run_watched() {
     fi
     if [ -n "$SC_RECORD" ] && [ "${SC_STALL_SEC:-0}" -gt 0 ]; then
       if [ "$idle" -ge "$SC_STALL_SEC" ]; then
-        printf 'idle=%s at=%s\n' "$idle" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${SC_RECORD}.stall" 2>/dev/null || :
-      elif [ -f "${SC_RECORD}.stall" ]; then
-        rm -f "${SC_RECORD}.stall"
+        if [ "$_sc_stall_row" = 0 ]; then sc_journal stalled "idle=$idle"; _sc_stall_row=1; fi
+      elif [ "$_sc_stall_row" = 1 ]; then
+        sc_journal resumed "idle=$idle"
+        _sc_stall_row=0
       fi
     fi
   done
@@ -1624,7 +1706,6 @@ sc_run_watched() {
   [ "$_sc_stalled" = 1 ] && rc=124
   SC_RUN_FINISHED=1
   OUTPUT="$(cat "$tmp")"; rm -f "$tmp"
-  if [ -n "$SC_RECORD" ]; then rm -f "${SC_RECORD}.stall"; fi  # the run ended; no stall stands
   # The child can exit on its terminal usage-limit result between two polls.
   [ "$SC_USAGE_LIMITED" = 1 ] || sc_watch_step "$progress"
   sc_finish_usage_limit "$progress"
@@ -1788,7 +1869,7 @@ sc_build_disclosure() {
   local auto_tmp auto_arg
   auto_tmp="$(mktemp)"
   cat > "$auto_tmp" <<'SC_AUTONOMY'
-[sidecar] You run UNATTENDED. No human reads anything you write until you exit, so a question in your final message is answered by nobody and the run is recorded as having delivered nothing. Never end on a question or a request for direction. When a choice is yours to make, make it, state it in the deliverable as an assumption, and finish. When a gate, a failing suite or a missing input blocks a step, record the blocker in the deliverable and still return everything the brief asked for. Run every command whose result you need in the foreground and wait for it. This overrides any run_in_background default your instructions carry: nothing wakes you after your turn ends, so a background job you start dies with your turn. A run that outlasts the foreground Bash cap starts detached and is waited on in foreground until-loop calls (guards/any.md).
+[sidecar] You run UNATTENDED. No human reads anything you write until you exit, so a question in your final message is answered by nobody and the run is recorded as having delivered nothing. Never end on a question or a request for direction. When a choice is yours to make, make it, state it in the deliverable as an assumption, and finish. When a gate, a failing suite or a missing input blocks a step, record the blocker in the deliverable and still return everything the brief asked for. Run every command whose result you need in the foreground and wait for it. This overrides any run_in_background default your instructions carry: nothing wakes you after your turn ends, so a background job you start dies with your turn. A run that outlasts the foreground Bash cap starts detached and is waited on in foreground until-loop calls (guards/common.md).
 SC_AUTONOMY
   sc_on_exit "rm -f \"$auto_tmp\" 2>/dev/null || :"
   # The CLI keeps only the last --append-system-prompt-file, so every part below goes into this one file, passed once.
@@ -1800,9 +1881,9 @@ SC_AUTONOMY
       # a busy-dir rm must not fail the script.
       sc_on_exit 'rm -rf "$SC_RUN_CWD" 2>/dev/null || :'
       local shape="${SC_SHAPE:-}"
-      # Assemble exactly what the SessionStart hook would inline — any.md plus the kind's guard
+      # Assemble exactly what the SessionStart hook would inline — common.md plus the kind's guard
       # file at one tier, followed by this child model's registry driver notes. The raw
-      # shape file ships BOTH tiers and omits any.md, and no hook fires in the isolated
+      # shape file ships BOTH tiers and omits common.md, and no hook fires in the isolated
       # tiers to correct it. SC_MODEL is already resolved by sc_resolve_model to the id
       # the launcher sends to the CLI/proxy; `detailed` matches the hook's default.
       local guard_tmp
@@ -1924,7 +2005,7 @@ try:
             print(f"ladder row: {row['model']} ({row['strengths']}); rung: {row['effort']}")
         if not matched:
             print('ladder row: none for this tier and requested model')
-    rating = orchestration_metrics.latest_shape_rating(tool_profiles.job_kind_shape({'kind': profile}) if kind_row else profile, model, data)
+    rating = orchestration_metrics.latest_shape_rating(tool_profiles.kind_guard(profile) if kind_row else profile, model, data)
     print(f"shape rating: {rating['shape']}; note: {rating.get('note') or 'not recorded'}" if rating else 'shape rating: none exists')
 except (OSError, ValueError, model_registry.RegistryError) as exc:
     print(f'dispatch facts: unreadable ({exc})')

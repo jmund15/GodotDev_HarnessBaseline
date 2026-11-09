@@ -166,7 +166,7 @@ class ReviewPreparation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             context = Path(tmp) / 'context.md'
             context.write_text('subject\n', encoding='utf-8')
-            job = {'label': 'seat', 'shape': 'review', 'mandates': ['lens'],
+            job = {'label': 'seat', 'kind': 'reviewer', 'mandates': ['lens'],
                    'contextFiles': [str(context)]}
             for value in ('omitted', None, [], [{'path': 'subject', 'lines': True}]):
                 candidate = dict(job)

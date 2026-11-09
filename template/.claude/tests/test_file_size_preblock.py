@@ -139,7 +139,7 @@ def _with_env(env, fn):
 
 
 def test_block_message_names_a_route_this_machine_actually_has():
-    """C7: `guards/any.md` and this message both route bulk copyable I/O to ai-worker; on a machine
+    """C7: `guards/common.md` and this message both route bulk copyable I/O to ai-worker; on a machine
     where it is not registered the message must name the route that IS there (bounded Read or a
     subagent), and it must not lose the bounded Read that always passes this gate."""
     with tempfile.TemporaryDirectory() as d:

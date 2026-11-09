@@ -45,7 +45,7 @@ DATA = {
 TIERS = {"orchestrator": ["h-orch"], "architect": ["h-arch"], "executor": ["h-arch"],
          "fanout": ["h-fan"], "scout": ["h-fan"]}
 JOBS = {"jobs": [{"label": "a", "model": "h-arch", "promptPath": "x", "effort": "low",
-                  "agentType": "general-purpose", "tier": "architect"}]}
+                  "kind": "judge", "tier": "architect"}]}
 wpg._session_transport.HOST_TRANSPORT = "host"
 wpg.model_registry.role_tiers = lambda *_a, **_k: TIERS
 
@@ -146,7 +146,7 @@ def guard_output(payload):
 
 
 def review_call(fold):
-    args = {"agents": [{"key": "k", "model": "h-arch", "promptPath": "x"}], "fold": fold}
+    args = {"agents": [{"key": "k", "kind": "reviewer", "model": "h-arch", "promptPath": "x"}], "fold": fold}
     return {"tool_name": "Workflow", "tool_input": {"scriptPath": ".claude/workflows/review_fanout.js", "args": args}}
 
 
@@ -175,54 +175,54 @@ def rails_text(name, args, transport="host", key="name"):
 
 
 txt, _ = rails_text("dispatch", {"jobs": [
-    {"label": "a", "model": "h-arch", "shape": "review", "promptPath": "x", "effort": "low", "agentType": "Explore"},
-    {"label": "b", "model": "h-fan", "promptPath": "x", "effort": "low", "agentType": "Explore"},
-    {"label": "c", "model": "h-orch", "railTier": "none", "promptPath": "x", "effort": "low", "agentType": "Explore"}]})
+    {"label": "a", "model": "h-arch", "kind": "reviewer", "promptPath": "x", "effort": "low"},
+    {"label": "b", "model": "h-fan", "promptPath": "x", "effort": "low", "kind": "judge"},
+    {"label": "c", "model": "h-orch", "railTier": "none", "promptPath": "x", "effort": "low", "kind": "judge"}]})
 check("dispatch: exactly the pairs its jobs use, each the guard_text assembly",
-      txt == {"review/condensed": _gt.guard_text("review", "condensed"), "any/detailed": _gt.guard_text("any", "detailed")},
+      txt == {"review/condensed": _gt.guard_text("review", "condensed"), "common/detailed": _gt.guard_text("common", "detailed")},
       sorted((txt or {}).keys()))
 txt, _ = rails_text("dispatch", {"jobs": [{"label": "a", "model": "h-fan", "railTier": "minimal", "promptPath": "x",
-                                           "effort": "low", "agentType": "Explore"}]})
-check("dispatch: a job railTier override picks its pair", sorted((txt or {}).keys()) == ["any/minimal"], txt and list(txt))
-txt, _ = rails_text("review-fanout", {"agents": [{"key": "k", "model": "h-arch", "promptPath": "x"}, {"key": "m", "promptPath": "x"}]})
+                                           "effort": "low", "kind": "judge"}]})
+check("dispatch: a job railTier override picks its pair", sorted((txt or {}).keys()) == ["common/minimal"], txt and list(txt))
+txt, _ = rails_text("review-fanout", {"agents": [{"key": "k", "kind": "reviewer", "model": "h-arch", "promptPath": "x"}, {"key": "m", "kind": "reviewer", "promptPath": "x"}]})
 check("review-fanout: review shape; an omitted model keys on the engine default's tier",
       sorted((txt or {}).keys()) == ["review/condensed", "review/detailed"], txt and sorted(txt))
-txt, _ = rails_text("review-fanout", {"agents": [{"key": "k", "model": "h-arch", "promptPath": "x"}],
+txt, _ = rails_text("review-fanout", {"agents": [{"key": "k", "kind": "reviewer", "model": "h-arch", "promptPath": "x"}],
                                      "fold": {"subjects": [{"root": ".", "snapshot": "s.json", "files": ["p.md"]}],
                                               "templatePath": "t.md", "tier": "architect"}})
 check("review-fanout with args.fold and no fold model: no tier pin stands in, so no author rails",
       sorted((txt or {}).keys()) == ["review/condensed"], txt and sorted(txt))
-txt, _ = rails_text("review-fanout", {"agents": [{"key": "k", "model": "h-arch", "promptPath": "x"}],
+txt, _ = rails_text("review-fanout", {"agents": [{"key": "k", "kind": "reviewer", "model": "h-arch", "promptPath": "x"}],
                                      "fold": {"subjects": [{"root": ".", "snapshot": "s.json", "files": ["p.md"]}],
                                               "templatePath": "t.md", "model": "h-orch"}})
 check("review-fanout with args.fold: an explicit fold model keys on its own tier",
       sorted((txt or {}).keys()) == ["author/minimal", "review/condensed"], txt and sorted(txt))
-txt, _ = rails_text("explore-fanout", {"lenses": [{"key": "k", "model": "h-orch", "promptPath": "x"}]})
+txt, _ = rails_text("explore-fanout", {"lenses": [{"key": "k", "kind": "scout", "model": "h-orch", "promptPath": "x"}]})
 check("explore-fanout: survey shape", sorted((txt or {}).keys()) == ["survey/minimal"], txt and sorted(txt))
-txt, _ = rails_text("dispatch-chains", {"chains": [{"name": "c", "jobs": [{"label": "a", "model": "h-arch", "shape": "author",
+txt, _ = rails_text("dispatch-chains", {"chains": [{"name": "c", "jobs": [{"label": "a", "model": "h-arch", "kind": "author",
                                                                          "promptPath": "x", "effort": "low"}]}]})
 check("dispatch-chains: job shape", sorted((txt or {}).keys()) == ["author/condensed"], txt and sorted(txt))
 txt, _ = rails_text("C:/x/.claude/workflows/dispatch_chains.js",
-                    {"chains": [{"name": "c", "jobs": [{"label": "a", "model": "h-arch", "promptPath": "x"}]}]}, key="scriptPath")
-check("a scriptPath resume is identified by its basename", sorted((txt or {}).keys()) == ["any/condensed"], txt and sorted(txt))
+                    {"chains": [{"name": "c", "jobs": [{"label": "a", "model": "h-arch", "kind": "judge", "promptPath": "x"}]}]}, key="scriptPath")
+check("a scriptPath resume is identified by its basename", sorted((txt or {}).keys()) == ["common/condensed"], txt and sorted(txt))
 txt, a = rails_text("harness-review-panel", {"jobs": [{"label": "a", "model": "h-arch"}]})
 check("an unknown workflow gets __rails but no __railsText", txt is None and "__rails" in a, sorted(a))
 txt, _ = rails_text("dispatch", {"jobs": [{"label": "a", "model": "off-fan-1", "promptPath": "x", "effort": "low",
-                                           "agentType": "Explore"}]}, transport="off")
-check("a provider-transport call gets __railsText too", sorted((txt or {}).keys()) == ["any/detailed"], txt and sorted(txt))
+                                           "kind": "judge"}]}, transport="off")
+check("a provider-transport call gets __railsText too", sorted((txt or {}).keys()) == ["common/detailed"], txt and sorted(txt))
 real = wpg._guard_text
 try:
     def boom(_s, _t):
         raise ValueError("no section")
     wpg._guard_text = boom
     txt, a = rails_text("dispatch", {"jobs": [{"label": "a", "model": "h-arch", "promptPath": "x", "effort": "low",
-                                               "agentType": "Explore"}]})
+                                               "kind": "judge"}]})
     check("a guard_text failure still emits __rails and no pair entry", "__rails" in a and not (txt or {}), (txt, sorted(a)))
 finally:
     wpg._guard_text = real
 txt, a = rails_text("dispatch", json.dumps({"jobs": [{"label": "a", "model": "h-arch", "promptPath": "x", "effort": "low",
-                                                       "agentType": "Explore"}]}))
-check("a string-args call stays a string and carries __railsText", sorted((txt or {}).keys()) == ["any/condensed"])
+                                                       "kind": "judge"}]}))
+check("a string-args call stays a string and carries __railsText", sorted((txt or {}).keys()) == ["common/condensed"])
 
 # ---- __driverNotes: the registry's per-model corrections, keyed by the model string a job pins ----
 NOTE = {"text": "Keep going until the brief is done.", "evidenceRef": "ref-1", "weakness": "stops early",
@@ -237,24 +237,24 @@ def notes_of(name, args, key="name"):
 
 block = "[session] Driver notes (h-arch):\n- Keep going until the brief is done. (ref-1)"
 got, _ = notes_of("dispatch", {"jobs": [
-    {"label": "a", "model": "h-arch", "promptPath": "x", "effort": "low", "agentType": "Explore"},
-    {"label": "b", "model": "h-fan", "promptPath": "x", "effort": "low", "agentType": "Explore"}]})
+    {"label": "a", "model": "h-arch", "promptPath": "x", "effort": "low", "kind": "judge"},
+    {"label": "b", "model": "h-fan", "promptPath": "x", "effort": "low", "kind": "judge"}]})
 check("dispatch: a job whose model row has driverNotes gets the sidecar-format block, keyed by its pin; a model without notes gets no key",
       got == {"h-arch": block}, got)
 got, a = notes_of("dispatch", {"jobs": [{"label": "b", "model": "h-fan", "promptPath": "x", "effort": "low",
-                                         "agentType": "Explore"}]})
+                                         "kind": "judge"}]})
 check("dispatch: no model with notes means no __driverNotes key", "__driverNotes" not in a, got)
-got, _ = notes_of("explore-fanout", {"lenses": [{"key": "k", "model": "h-arch", "promptPath": "x"}]})
+got, _ = notes_of("explore-fanout", {"lenses": [{"key": "k", "kind": "scout", "model": "h-arch", "promptPath": "x"}]})
 check("explore-fanout: lens models resolve notes", got == {"h-arch": block}, got)
 got, _ = notes_of("dispatch-chains", {"chains": [{"name": "c", "jobs": [{"label": "a", "model": "h-arch", "promptPath": "x",
-                                                                      "effort": "low"}]}]})
+                                                                      "effort": "low", "kind": "judge"}]}]})
 check("dispatch-chains: chain job models resolve notes", got == {"h-arch": block}, got)
-got, _ = notes_of("review-fanout", {"agents": [{"key": "k", "model": "h-fan", "promptPath": "x"}],
+got, _ = notes_of("review-fanout", {"agents": [{"key": "k", "kind": "reviewer", "model": "h-fan", "promptPath": "x"}],
                                    "fold": {"subjects": [{"root": ".", "snapshot": "s.json", "files": ["p.md"]}],
                                             "templatePath": "t.md", "model": "h-arch"}})
 check("review-fanout: the fold model resolves notes", got == {"h-arch": block}, got)
 got, _ = notes_of("dispatch", {"jobs": [{"label": "a", "model": "h-arch", "promptPath": "x", "effort": "low",
-                                         "agentType": "Explore"}]}, key="name")
+                                         "kind": "judge"}]}, key="name")
 check("the block is guard_text's own rendering with the same data (one format for every delivery)",
       got == {"h-arch": _gt.driver_notes_block("h-arch", DATA)}, got)
 got, _ = notes_of("harness-review-panel", {"jobs": [{"label": "a", "model": "h-arch"}]})

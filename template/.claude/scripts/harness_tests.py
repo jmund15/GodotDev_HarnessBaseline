@@ -133,11 +133,9 @@ def durations_path():
 
 _PATTERNS = ("test_*.py", "*_test.py", "*_test.js", "test_*.mjs", "test_*.sh", "*_test.sh", "test_*.ps1")
 _TIMEOUT_SEC = 120
-# Git-fixture suites. Alone: publish 191-248 s, sync 132 s. With 2-3 peer suites running the
-# publish proof passed 480 s three times on 2026-09-24, so the caps hold 3x headroom.
-_BUILTIN_PROOF_TIMEOUTS = {"test_baseline_publish.py": 720, "test_baseline_sync.py": 450}
-_PROOF_TIMEOUTS = dict(_BUILTIN_PROOF_TIMEOUTS)
-# The same 3x headroom for a proof with no cap: its last recorded pass times 3, never under the default.
+# A proof's timeout is its last recorded pass times `_LOAD_FACTOR` (never under the default). A
+# `proof_timeouts` entry in adaptation.json overrides it for the proof it names.
+_PROOF_TIMEOUTS = {}
 _LOAD_FACTOR = 3
 
 
@@ -186,7 +184,6 @@ def _policy_from(claude_dir):
     saved = [dict(t) for t in tables]
     for table in tables:
         table.clear()
-    _PROOF_TIMEOUTS.update(_BUILTIN_PROOF_TIMEOUTS)
     _merge_adaptation_proof_config(claude_dir)
     try:
         yield
@@ -345,7 +342,6 @@ def git_local_env_vars():
 
 
 GIT_REPO_ENV = git_local_env_vars()
-NO_HEAD_RERUN_ENV = "HARNESS_NO_HEAD_RERUN"
 STAMP_INDEX_ENV = "HARNESS_STAMP_INDEX"
 
 
@@ -1670,12 +1666,15 @@ class _PassCache:
     def _matched(self, proof, key):
         """The proof's row when its key still holds, else None. A row with an observed key is judged by it
         alone: the static reach cannot see a listed directory gain an entry or git state move, so a static
-        match there would reuse a stale pass. A row without one is judged by the static key."""
+        match there would reuse a stale pass. A row without one is judged by the static key, unless the
+        observable run recorded no manifest (`observed` is False): its reads are unknown, so no key proves it."""
         for row in self.variants(proof):
             okey = row.get("okey")
             if okey:
                 if self.observed_key(proof, _unpack_manifest(row)) == okey:
                     return row
+            elif row.get("observed") is False:
+                continue
             elif key and row.get("key") == key:
                 return row
         return None
@@ -1691,7 +1690,7 @@ class _PassCache:
     def hit(self, proof, key, cases=None):
         return bool(key) and self._matched(proof, key) is not None and self.observations(proof, key, cases) is not None
 
-    def record(self, proof, key=None, observations=None, manifest=None):
+    def record(self, proof, key=None, observations=None, manifest=None, observable=False):
         key = key or self.key(proof)
         if not key:
             return
@@ -1728,6 +1727,8 @@ class _PassCache:
             row = {"key": key, "ts": round(now, 1), "observations": observations or [], "checkout": checkout}
             if okey:
                 row.update(zm=_pack_manifest(manifest), okey=okey)
+            if observable:
+                row["observed"] = manifest is not None
             rows[rel] = [row] + [r for r in rows.get(rel, [])
                                  if r.get("checkout") not in (checkout, None)
                                  and (r.get("key"), r.get("okey")) != (key, okey)]
@@ -1928,11 +1929,12 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
                 manifest = cache.manifest(path, reads) if reads else None
             except Exception:  # noqa: BLE001 - a manifest fault costs only the observed key, never the run
                 manifest = None
+            observable = reads is not None
             if cases[path]:
                 if all(r['status'] == 'pass' for r in observations[path]):
-                    cache.record(path, key, observations[path], manifest=manifest)
+                    cache.record(path, key, observations[path], manifest=manifest, observable=observable)
             else:
-                cache.record(path, key, manifest=manifest)
+                cache.record(path, key, manifest=manifest, observable=observable)
         return result
 
     done, done_lock = {"n": 0, "at": time.time(), "left": sum(expected(p) for p in selected), "ran": 0.0}, threading.Lock()
@@ -2217,9 +2219,10 @@ def _reds_at(repo_root, rev, failing):
     the comparison checkout reads as the same path under `repo_root`, so the two outputs compare."""
     with _revision_checkout(repo_root, rev, failing) as tmp:
         reds = {}
-        for path in failing:
+        for i, path in enumerate(failing, 1):
             at_rev = os.path.join(tmp, os.path.relpath(path, repo_root))
             if os.path.isfile(at_rev):
+                _progress("classifying red %d of %d: rerun %s at %s" % (i, len(failing), os.path.basename(path), rev[:8]))
                 status, _elapsed, detail = _launch(at_rev, root=tmp)
                 if status == "fail":
                     # Preserve the public repo-root projection, including Python's
@@ -2671,14 +2674,16 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
                     if proof in unexplained:
                         tried = unexplained[proof]
                         print("PASSES ONLY IN THE WORKING TREE %s: fails at committed HEAD in a private checkout%s; "
-                              "the cause is unknown: the checkout's location, or an input outside its reach"
+                              "the cause is unknown: the checkout's location, or an input outside its reach; "
+                              "next: the bisect below names the commit, or make the proof plant what it reads"
                               % (name, " even with %s planted" % ", ".join(tried) if tried else ""))
                         red["passesInWorkingTree"] = True
                     first = _first_red(snapshot, base, head, proof, details[proof], (), commits=candidates[proof])
                     if first:
                         first = _side_commit(snapshot, first, proof, details[proof], reach_of[proof])
                     subject = _git(snapshot, ["show", "-s", "--format=%s", first]).strip() if first else "untraced"
-                    print("FIRST RED %s at %s %s" % (name, first or "unknown", subject))
+                    print("FIRST RED %s at %s %s; next: fix this commit, or hand it to its owner's fix job"
+                          % (name, first or "unknown", subject))
                     for trailer in (_git(snapshot, ["show", "-s", "--format=%(trailers:key=Claude-Session,valueonly)",
                                                     first]).split() if first else ()):
                         print("  Claude-Session: " + trailer)
@@ -2733,7 +2738,7 @@ def run_scoped(repo_root, touched, verbose=False, mode="for", base=None, behavio
     pre-existing. That revision is `base` when given, else HEAD while a given path or selected
     proof differs from it. With all of them committed, HEAD carries the change, so no red is
     excused without `base`. A never-committed proof absent there runs its working copy against its inputs. New
-    failure lines, unavailable coverage and changed inputs block; HARNESS_NO_HEAD_RERUN skips comparison.
+    failure lines, unavailable coverage and changed inputs block.
     """
     if base:
         try:
@@ -2771,10 +2776,7 @@ def run_scoped(repo_root, touched, verbose=False, mode="for", base=None, behavio
     # A never-committed proof alone does not make HEAD precede the change under test.
     carried = bool(not base and tested_head and not _git(
         repo_root, ["status", "--porcelain", "--untracked-files=no", "--"] + in_scope + selected).strip())
-    if failing and os.environ.get(NO_HEAD_RERUN_ENV):
-        print("harness_tests: HEAD rerun skipped (%s), every red proof keeps blocking; run --for in the "
-              "background to excuse a pre-existing red" % NO_HEAD_RERUN_ENV)
-    elif failing and carried:
+    if failing and carried:
         print("harness_tests: the given paths are committed at HEAD %s, so HEAD carries the change and excuses "
               "no red; pass --base <the revision before the change> to compare there" % tested_head[:8])
     elif failing and compare:
@@ -2901,8 +2903,10 @@ def run_all(repo_root, include_excluded=False, verbose=False, behavior_out=None)
         return 1
 
     statuses = {}
+    # A caller that asks (the publish battery) reuses recorded passes; a bare `--all` stays fresh.
+    cache = _pass_cache(repo_root, selected) if os.environ.get("HARNESS_REUSE_PASSES") else None
     passed, failed, indeterminate, elapsed_total = _run_selected(
-        selected, verbose, statuses, options=RunOptions(repo=repo_root, mode="all", behavior_out=behavior_out))
+        selected, verbose, statuses, options=RunOptions(cache=cache, repo=repo_root, mode="all", behavior_out=behavior_out))
     skipped = [p for p in indeterminate if statuses.get(p) == "skipped"]
     indeterminate = [p for p in indeterminate if statuses.get(p) != "skipped"]
 

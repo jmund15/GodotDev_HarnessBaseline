@@ -21,9 +21,9 @@ const check = (ok, label) => { console.log((ok ? 'ok   ' : 'FAIL ') + label); if
 ;(async () => {
   let prompt = null, schema = null
   const logs = []
-  const agent = async (p, opts) => { prompt = p; schema = opts.schema; return BLOCKED }
+  const agent = async (p, opts) => { if (opts.phase === 'Relevance') { prompt = p; schema = opts.schema }; return BLOCKED }
   const out = await engineRun.load(path.join(WF, 'worklog_relevance.js'))(engineRun.withHost(
-    { scope: 'fixture scope', model: 'fixture-model', effort: 'low', tier: 'fanout',
+    { scope: 'fixture scope', kind: 'lens', model: 'fixture-model', effort: 'low', tier: 'fanout',
       checker: { model: 'fixture-model', effort: 'low' } }), agent,
     thunks => Promise.all(thunks.map(fn => fn())), () => {}, message => logs.push(message))
   const enumOf = s => s.properties.checked.properties.stoppedAt.enum

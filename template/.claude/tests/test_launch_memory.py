@@ -17,6 +17,7 @@ writes its own record and finishes.
 Every case must produce output; a zero-match run is a failure, never a pass.
 """
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -651,15 +652,23 @@ if os.environ.get('PROOF_MEMORY_FILE'):
     recover = tmp / "mem-recover.record.json"
     proc = subprocess.run([BASH, posix(launcher), "-l", "mem-recover", "-T", "60", "-X", "-R", posix(recover)],
                           capture_output=True, text=True, timeout=60, env=recover_env)
-    marker = Path(str(recover) + ".memory")
+    journal = Path(str(recover) + ".journal.jsonl")
+
+    def wait_rows():
+        try:
+            rows = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except (OSError, ValueError):
+            return []
+        return [row for row in rows if row.get("event") == "waiting-memory"]
+
     deadline = time.time() + 10
-    while not marker.exists() and not Path(str(recover) + ".exit").exists() and time.time() < deadline:
+    while not wait_rows() and not Path(str(recover) + ".exit").exists() and time.time() < deadline:
         time.sleep(0.1)
-    wait_text = marker.read_text(encoding="utf-8") if marker.exists() else ""
+    wait_text = (wait_rows()[-1].get("message") or "") if wait_rows() else ""
     if proc.returncode == 0 and "commit 1.00 GiB" in wait_text and not (tmp / "child.txt").exists():
         ok("detached planted low reading publishes a visible wait before any child")
     else:
-        bad("detached planted wait", "rc=%s marker=%r" % (proc.returncode, wait_text))
+        bad("detached planted wait", "rc=%s row=%r" % (proc.returncode, wait_text))
     wr_spec = importlib.util.spec_from_file_location("watch_records", CLAUDE / "tools/watch_records.py")
     wr = importlib.util.module_from_spec(wr_spec)
     wr_spec.loader.exec_module(wr)
@@ -685,8 +694,8 @@ if os.environ.get('PROOF_MEMORY_FILE'):
         time.sleep(0.1)
     recovered_err = Path(str(recover) + ".err").read_text(encoding="utf-8", errors="replace")
     if (end.exists() and end.read_text().strip() == "0" and (tmp / "child.txt").exists()
-            and "READY memory headroom" in recovered_err and not marker.exists()):
-        ok("detached job launches on recovery, clears its wait marker, and exits 0")
+            and "READY memory headroom" in recovered_err and wr.memory_wait(str(recover)) is None):
+        ok("detached job launches on recovery, clears its wait row, and exits 0")
     else:
         bad("detached recovery", recovered_err[-600:])
     before = len(reads_log.read_text().splitlines()) if reads_log.exists() else 0

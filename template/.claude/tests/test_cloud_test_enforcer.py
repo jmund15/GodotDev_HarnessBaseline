@@ -55,13 +55,16 @@ def test_assignment_mentions_are_data():
 
 def test_shell_prefixes_do_not_hide_the_test():
     xvfb = 'xvfb-run --auto-servernum dotnet test --settings .runsettings'
-    for prefix in ('time ', 'time { ', 'exec ', 'nohup ', 'env ', 'env CI=1 ', 'time env CI=1 '):
+    for prefix in ('time ', 'time { ', 'exec ', 'nohup ', 'env ', 'env CI=1 ', 'time env CI=1 ',
+                   'command ', 'sudo ', 'builtin ', '! ', 'nice ', 'nice -n 10 ', 'stdbuf -oL ',
+                   'env -i ', 'sudo -u root ', 'sudo -E '):
         assert rewritten(run(prefix + 'dotnet test --filter X')) == prefix + xvfb + ' --filter X', prefix
     assert rewritten(run('time { dotnet test --filter X; }')) == 'time { ' + xvfb + ' --filter X; }'
 
 
 def test_prefix_words_elsewhere_are_not_prefixes():
-    for command in ('echo time dotnet test', 'time printf dotnet test', 'env CI=1 printf dotnet test'):
+    for command in ('echo dotnet test', 'echo time dotnet test', 'time printf dotnet test',
+                    'env CI=1 printf dotnet test', 'command -p printf dotnet test'):
         assert json.loads(run(command).stdout) == {}, command
 
 

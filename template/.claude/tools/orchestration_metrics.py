@@ -210,7 +210,7 @@ CANDIDATES_FILE = os.path.join(_PROJECT_DIR, '.claude', 'orchestration_candidate
 CANDIDATE_RATIO_MIN = 2.0
 CANDIDATE_TURNS_MAX = 1.5
 CANDIDATE_MIN_N = 2
-EFFORT_ORDER = {'low': 0, 'medium': 1, 'high': 2, 'xhigh': 3, 'max': 4}
+EFFORT_ORDER = {e: i for i, e in enumerate(model_registry.EFFORT_ORDER)}
 
 # Incremental outcome ledger, written as each dispatch's result is consumed rather than
 # at session end. Recording needs context ("was this reworked / discarded?") that
@@ -3028,8 +3028,8 @@ def _is_number(value):
 
 
 def _effort_rank(effort):
-    """Ladder rung order (low to max), then any other requested effort by name, then `?`."""
-    return (EFFORT_ORDER.get(effort, 6 if effort == '?' else 5), effort)
+    """Ladder rung order (low to ultra), then any other requested effort by name, then `?`."""
+    return (EFFORT_ORDER.get(effort, 7 if effort == '?' else 6), effort)
 
 
 def _cell_column(row):

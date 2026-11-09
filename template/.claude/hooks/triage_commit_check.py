@@ -40,8 +40,8 @@ for _d in (HERE, TOOLS):
         sys.path.insert(0, _d)
 
 from _commit_scope import authored_paths, publishes_index  # noqa: E402
-from _git_commit import (commit_invocations, commit_message, commit_source, in_project, run_git,  # noqa: E402
-                         staged_paths)
+from _git_commit import (commit_invocations, commit_message, commit_source, commit_trailer_lines,  # noqa: E402
+                         in_project, run_git, staged_paths)
 import triage  # noqa: E402
 
 OWED = ("[review] %d staged file(s) not reviewed since they changed: %d edited after a reviewed blob, "
@@ -204,6 +204,8 @@ def _triage_block(invocation, session_id, tags, paths):
     except OSError as exc:
         raise _ReadError("cannot read the content this commit publishes (%s)" % exc)
     message = commit_message(invocation.rest, invocation.cwd)
+    if message is None:
+        message = "\n".join(commit_trailer_lines(invocation.rest)) or None
     fields, error, from_record = _recorded(message, session_id, with_source=True)
     return triage_verdict(result, fields, error, message, invocation.sub,
                           lambda: _standing_state(invocation), from_record)

@@ -1,6 +1,6 @@
 # Guard: bench-score — the benchmark score daemon's driver
 
-Read ONLY the section your dispatch names; if none is named, read `## detailed`. `any.md`'s section of the same tier binds you too and arrives with this file.
+Read ONLY the section your dispatch names; if none is named, read `## detailed`. `common.md`'s section of the same tier binds you too and arrives with this file.
 
 ## detailed
 

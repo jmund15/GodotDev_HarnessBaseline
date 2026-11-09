@@ -37,11 +37,10 @@ pb = sf.provider_bands
 import copy  # noqa: E402
 
 DATA = model_registry.load()
-SHAPE = "survey"
-KIND = "scout"  # the job kind whose guard shape is SHAPE; a job's signature carries its kind
+KIND = "scout"  # the job kind the pins are checked for
 ALIAS = next(row["alias"] for row in DATA["models"]
              if row.get("transport") == "anthropic" and row.get("alias") and model_registry.model_available(row["id"], DATA)
-             and dc.tier_fit(row["alias"], dc.shape_tiers()[SHAPE], "anthropic", DATA) is None)
+             and dc.tier_fit(row["alias"], dc.kind_tiers()[KIND], "anthropic", DATA) is None)
 MODEL = model_registry.resolve(ALIAS, DATA)["id"]
 PA, PB, PC = "anthropic", "anthropic-secondary", "anthropic-console"
 
@@ -607,7 +606,8 @@ def scene(jobs=None, chains=None, start=None, used=None, max_parallel=1, plans=(
             patch.object(sf.Waves, "decide", decide), \
             patch.object(sf, "_wait_detached", side_effect=lambda record, poll_interval=None: (codes[record], False)), \
             contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-        code = sf.main([str(jobsfile), "--out-dir", str(out), "--max-parallel", str(max_parallel)])
+        flag = [] if max_parallel is None else ["--max-parallel", str(max_parallel)]
+        code = sf.main([str(jobsfile), "--out-dir", str(out)] + flag)
     ctx.update(code=code, text=stdout.getvalue() + stderr.getvalue())
     return ctx
 
@@ -618,6 +618,37 @@ def named(count, plan=PA):
 
 def inventory_labels(got):
     return {row["label"] for row in json.loads(next(got["out"].glob("*.inventory.json")).read_text(encoding="utf-8"))["jobs"]}
+
+
+def width_peak(target, seconds=3):
+    """A launch hook that holds each launch until `target` jobs run at once (or `seconds` pass): the peak is the width."""
+    peak = []
+
+    def hold(label, ctx):
+        end = time.time() + seconds
+        while len(ctx["running"]) < target and time.time() < end:
+            time.sleep(0.02)
+        peak.append(len(ctx["running"]))
+    return peak, hold
+
+
+def six_jobs_with_room_run_at_once_with_no_flag():
+    """RED at HEAD: no flag means the retired default of 4, so the fifth and sixth jobs wait for a worker."""
+    peak, hold = width_peak(6)
+    got = scene(named(6), start={PA: 10}, max_parallel=None, on_launch=hold)
+    return max(peak) == 6 and len(got["launches"]) == 6
+
+
+def a_plan_with_room_for_two_runs_six_jobs_two_at_a_time_with_no_flag():
+    peak, hold = width_peak(2, seconds=1)
+    got = scene(named(6), start={PA: 88}, max_parallel=None, on_launch=hold)
+    return max(peak) == 2 and len(got["launches"]) == 6
+
+
+def an_explicit_flag_still_caps_six_jobs_with_room():
+    peak, hold = width_peak(3, seconds=1)
+    got = scene(named(6), start={PA: 10}, max_parallel=2, on_launch=hold)
+    return max(peak) == 2 and len(got["launches"]) == 6
 
 
 def an_over_forecast_plan_prints_its_wave_and_keeps_the_global_bound():
@@ -1013,6 +1044,9 @@ for fn in (incident_goes_to_the_plan_that_holds_it, incident_alone_is_admitted_w
            a_window_is_priced_by_its_own_history_not_the_one_with_fewest_points_left,
            a_plan_does_not_hold_a_job_when_any_window_cannot_though_another_has_fewer_points,
            the_pick_line_names_the_window_whose_headroom_and_drain_it_prints,
+           six_jobs_with_room_run_at_once_with_no_flag,
+           a_plan_with_room_for_two_runs_six_jobs_two_at_a_time_with_no_flag,
+           an_explicit_flag_still_caps_six_jobs_with_room,
            a_plan_whose_summed_forecast_fits_is_still_paced_and_the_observed_draw_holds_the_fifth_job,
            each_window_is_observed_against_its_own_first_reading,
            a_job_its_plan_cannot_hold_beside_the_running_ones_moves_to_a_sibling_that_holds_it,

@@ -104,6 +104,7 @@ def load_manifest(path):
 _LOCATION = re.compile(r"^(.*):([1-9]\d*)(?:-([1-9]\d*))?$")
 _COMMAND = re.compile(r"^(?:bash|python\d*|opencode|git|npm|dot(?:net)|curl)\s", re.I)
 _NON_PATH = re.compile(r"^(?:context7|websearch|memory)(?:[:\s(]|$)", re.I)
+_COMMIT = re.compile(r"(?:(?:git(?:\s+show)?|commit)\s+)?(?P<sha>[0-9a-fA-F]{7,40})(?::(?P<path>.+))?")
 _GREP_PREFIX = re.compile(r"^\s*(?:(?:[A-Za-z]:)?[\w.\\/-]+:\d+:\s*|\d+[:\t]\s*|\[\d+\]\s*)", re.M)
 
 
@@ -338,6 +339,31 @@ def _check_quote(kind, cited, quote, artifact, ctx, legacy):
     return _result(kind, VERIFIED, "quote-found", **extra)
 
 
+def _commit_text(ctx, sha, path):
+    """`git show <sha>` text, or the file `<sha>:<path>` at that commit; None when git cannot read it."""
+    try:
+        code, text, _err = _run_git(["show", f"{sha}:{path}" if path else sha], ctx.root, ctx.timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return text if code == 0 else None
+
+
+def _check_commit(cited, sha, path, quote, ctx):
+    """The quote must appear in the commit's text: its message and diff, or the one file `<sha>:<path>`."""
+    resolved = _path_git(ctx.root, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
+    if resolved is None or resolved.returncode:
+        return _result("file", UNVERIFIED, "unresolved-commit", file=cited)
+    text = _commit_text(ctx, sha, path)
+    if text is None:
+        return _result("file", UNVERIFIED, "path-absent-at-commit" if path else "unreadable-commit", file=cited)
+    if not isinstance(quote, str) or not quote.strip():
+        return _result("file", UNVERIFIED, "empty-quote", file=cited)
+    exact = quoted_text(quote).strip()
+    if not (exact and exact in text) and not _match(prepare(text), quote) and not _raw_hit(text, quote):
+        return _result("file", UNVERIFIED, "quote-absent", file=cited)
+    return _result("file", VERIFIED, "quote-found", file=cited, commit=sha)
+
+
 def _check_file(item, ctx):
     cited = item.get("file")
     if cited is None or not str(cited).strip():
@@ -345,6 +371,9 @@ def _check_file(item, ctx):
     cited = str(cited).strip()
     if cited.startswith(("http://", "https://")) or _NON_PATH.match(cited):
         return _result("file", UNCHECKED, "external", file=cited)
+    commit = _COMMIT.fullmatch(cited)
+    if commit and not _resolve(ctx, cited).exists():
+        return _check_commit(cited, commit.group("sha"), commit.group("path"), item.get("quote"), ctx)
     if _COMMAND.match(cited):
         return _result("file", UNCHECKED, "not-a-path", file=cited)
     return _check_quote("file", cited, item.get("quote"), item.get("artifact"), ctx, bool(item.get("legacy")))

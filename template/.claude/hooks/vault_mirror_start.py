@@ -6,7 +6,8 @@ rules/vault_mirror.md without its path-scoped frontmatter when the file is prese
 line as `[vault] <line>`, or `[vault] vault mirror UNAVAILABLE: <reason>` when the tool is missing,
 silent or past its time. Off the cloud it prints a `[vault] sync REFUSED: <reason>` or
 `[vault] sync STALE: <age>` line when this machine's `sync_status.json` says the last sync failed or is
-older than two sync intervals, and nothing when the sync is healthy or never ran here. It always exits 0:
+older than two sync intervals, and nothing when the sync is healthy or never ran here. A status file it
+cannot read prints `[vault] sync UNKNOWN: status unreadable (<ExcType>)`. It always exits 0:
 a lost mirror must not fail the session, and the line tells the agent to treat design docs as unavailable.
 
 The folders and names come from tools/vault_sync.project.json. With that file absent the hook prints
@@ -44,12 +45,14 @@ def mirror_line(root: Path, timeout: int = TOOL_TIMEOUT_S) -> str:
 
 
 def sync_status_line(git_dir: Path, now: float | None = None) -> str:
-    """The line for a failed or stale local sync, '' when healthy, absent or unreadable."""
+    """The line for a failed or stale local sync, '' when healthy or absent, UNKNOWN when present but unreadable."""
     try:
         row = json.loads((git_dir / 'sync_status.json').read_text(encoding='utf-8'))
         at = calendar.timegm(time.strptime(row['at'], '%Y-%m-%dT%H:%M:%SZ'))
-    except (OSError, ValueError, KeyError, TypeError):
+    except FileNotFoundError:
         return ''
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return f'[vault] sync UNKNOWN: status unreadable ({type(exc).__name__})'
     if not row.get('ok'):
         reasons = [f"{r.get('kind')} {r.get('path')}" for r in row.get('refusals') or [] if isinstance(r, dict)]
         return f"[vault] sync REFUSED: {'; '.join(reasons) or row.get('error') or 'no reason recorded'}"

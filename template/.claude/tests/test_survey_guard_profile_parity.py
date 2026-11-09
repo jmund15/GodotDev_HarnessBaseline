@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proof: a delegate's rails name the LSP tool only when its kind's profile grants it.
 
-Every kind's rails are composed by tools/guard_text.py from guards/any*.md plus its own guard's files. A
+Every kind's rails are composed by tools/guard_text.py from guards/common*.md plus its own guard's files. A
 kind whose `builtins` list (guards/tool_profiles.json) lacks LSP cannot call it, so a rail telling it to
 anchor with LSP, or to avoid LSP under a concurrent dispatch, is an instruction it cannot follow. A kind
 with `builtins: null` runs the full tool set and may be told about LSP.

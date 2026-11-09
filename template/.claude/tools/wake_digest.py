@@ -80,6 +80,20 @@ def _amend_line(brief, label, record, fanout_dir):
     return ["  AMEND UNREAD %s: the job never read this amendment; its work follows the brief alone" % unread] if unread else []
 
 
+def _launched_at(record):
+    """The epoch seconds this run's last `started` journal row recorded (X1 S2 D2), or None when the
+    launch left no row. The row is the producer's stamp; a `.pid` file's mtime only says when that file
+    was last written."""
+    import watch_records
+    for row in reversed(watch_records.current_run(record)):
+        if row.get("event") == "started":
+            try:
+                return calendar.timegm(time.strptime(str(row.get("ts")), "%Y-%m-%dT%H:%M:%SZ"))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def sidecar_lines(label, record, fanout_dir=None, brief=None):
     """The indented digest lines of one ended sidecar job.
 
@@ -91,10 +105,7 @@ def sidecar_lines(label, record, fanout_dir=None, brief=None):
     claims_path = str(record) + ".claims.json"
     claims = _json(claims_path)
     deliverable = str(dispatch_result.deliverable_path(fanout_dir, label)) if fanout_dir else None
-    try:
-        launched = os.path.getmtime(str(record) + ".pid")
-    except OSError:
-        launched = None
+    launched = _launched_at(record)
 
     def current(path):
         try:

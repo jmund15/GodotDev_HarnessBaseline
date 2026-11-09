@@ -197,7 +197,7 @@ test('H8 a C# gap of only namespace, using and directive lines is not a chunk; a
 	assert.ok(withCode.some((c) => c.kind === 'file' && c.content.includes('delegate void InventoryChanged')), JSON.stringify(withCode))
 	const documented = chunkCsharp('using System;\nusing Godot;\nnamespace Foo;\n/// <summary>Inventory tracks every stored item.</summary>\npublic class Inventory { }\n')
 	assert.ok(documented.some((c) => c.content.includes('Inventory tracks every stored item')), `a type's /// summary stays indexed: ${JSON.stringify(documented)}`)
-	const typeless = chunkCsharp('namespace {{PROJECT_NAME}};\nusing System;\nusing Godot;\nusing GCol = Godot.Collections;\nusing Sys = System.IO;\n')
+	const typeless = chunkCsharp('namespace Foo;\nusing System;\nusing Godot;\nusing GCol = Godot.Collections;\nusing Sys = System.IO;\n')
 	assert.equal(typeless.length, 1, 'a file with no declarations stays one whole-file chunk')
 })
 

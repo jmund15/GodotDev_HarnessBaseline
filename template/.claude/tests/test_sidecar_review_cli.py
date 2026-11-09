@@ -114,7 +114,7 @@ class SidecarReviewCliTests(unittest.TestCase):
             label = job["label"]
             return label, ["stub", "-R", str(out / f"{label}.record.json")], str(out / f"{label}.out.json")
 
-        def execute(planned, _parallel, _out, after_seats=False):
+        def execute(planned, _parallel, _out, after_seats=False, wake_groups=None):
             results = {}
             for label, _argv, output in planned:
                 self.launched.append(label)
@@ -264,7 +264,7 @@ class SidecarReviewCliTests(unittest.TestCase):
         jobs = [{"label": "one", "kind": "reviewer", "mandates": ["plc-instruction-quality"],
                  "contextFiles": [str(ROOT / ".claude/CLAUDE.md")], "mustRead": [CLAUDE_MD]}]
 
-        def execute(planned, _parallel, _out, after_seats=False):
+        def execute(planned, _parallel, _out, after_seats=False, wake_groups=None):
             results = {}
             for label, _argv, output in planned:
                 Path(output).write_text(json.dumps({"type": "result", "is_error": False, "structured_output": {
@@ -500,7 +500,7 @@ class SidecarFoldCliTests(unittest.TestCase):
 
         real_run_jobs = fanout.run_jobs
 
-        def execute(planned, _parallel, _out, after_seats=False):
+        def execute(planned, _parallel, _out, after_seats=False, wake_groups=None):
             # A completed run persisted its inventory before launching (sidecar_fanout.run_jobs); the stub
             # must keep that fact, or main() writes launch-refused.txt for a run that never refused.
             fanout._LAUNCH["inventory"] = True

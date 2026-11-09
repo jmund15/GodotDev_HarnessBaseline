@@ -256,23 +256,28 @@ def currency_cases(tmp, ok, env):
     def launch(alias, shape, session):
         return run("bash %s -G %s -m %s -f brief.md" % (ok, shape, alias), cenv, session=session)
 
-    unfit = launch(go_fan_only, "review", "sdcfit01")
+    unfit = launch(go_fan_only, "reviewer", "sdcfit01")
     reason = unfit.get("permissionDecisionReason", "")
     cases.append(("a Go alias outside the review shape's tier is DENIED, naming the tier's rows on go",
                   unfit.get("permissionDecision") == "deny" and go_fan_only in reason
                   and "`executor` rows on go" in reason and go_exec in reason and "orchestration §5" in reason))
-    fit = launch(go_exec, "review", "sdcfit02")
+    fit = launch(go_exec, "reviewer", "sdcfit02")
     cases.append(("a Go alias serving the review shape's tier passes tier fit",
                   fit.get("permissionDecision") != "deny"))
+    judge = launch(go_fan_only, "judge", "sdcfit04")
+    judge_reason = judge.get("permissionDecisionReason", "")
+    cases.append(("a direct -G judge launch pinned to a fanout-only row is DENIED: the kind row's executor tier binds",
+                  judge.get("permissionDecision") == "deny" and go_fan_only in judge_reason
+                  and "`executor` rows on go" in judge_reason))
     cases.append(("an alias the registry does not know is left to the launcher's own gate",
-                  launch("fake", "review", "sdcfit03").get("permissionDecision") != "deny"))
+                  launch("fake", "reviewer", "sdcfit03").get("permissionDecision") != "deny"))
     # The plan rooms, the probation mark and the cheaper claimants reach the session before the call; an
     # admitted launch carries none of them, on a plan that spends faster than its window or not.
-    any_shape = launch(go_exec, "any", "sdccur01")
-    cases.append(("a -G any Go launch with anthropic ranked higher is admitted with no currency advisory",
+    any_shape = launch(go_exec, "judge", "sdccur01")
+    cases.append(("a -G judge Go launch with anthropic ranked higher is admitted with no currency advisory",
                   any_shape.get("permissionDecision") != "deny" and late_advice(any_shape) == []))
-    cases.append(("...the same verdict as the -G review launch", late_advice(fit) == []))
-    host = launch(host_exec, "review", "sdccur02")
+    cases.append(("...the same verdict as the -G reviewer launch", late_advice(fit) == []))
+    host = launch(host_exec, "reviewer", "sdccur02")
     cases.append(("a launch on the plan with the most quota for its window carries no late advisory",
                   late_advice(host) == []))
     marked = json.loads(json.dumps(data))
@@ -281,7 +286,7 @@ def currency_cases(tmp, ok, env):
     registry = os.path.join(tmp, "probation_registry.json")
     with open(registry, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(marked, fh)
-    on_probation = run("bash %s -G review -m %s -f brief.md" % (ok, go_exec),
+    on_probation = run("bash %s -G reviewer -m %s -f brief.md" % (ok, go_exec),
                        dict(cenv, HARNESS_MODEL_REGISTRY=registry), session="sdcprob1")
     cases.append(("a sidecar pin the owner marked for its shape's tier is admitted with no probation line",
                   on_probation.get("permissionDecision") != "deny" and late_advice(on_probation) == []
@@ -295,7 +300,7 @@ def currency_cases(tmp, ok, env):
                       late_advice(launch(dear, "author", "sdccheap1")) == []))
     else:
         cases.append(("the live ladder has two anthropic executor rows at different costs", False))
-    paid = launch(paid_exec, "review", "sdccur03")
+    paid = launch(paid_exec, "reviewer", "sdccur03")
     cases.append(("a pay-per-token launch while a fit plan still has quota is admitted with no currency line",
                   paid.get("permissionDecision") != "deny" and late_advice(paid) == []))
 
@@ -395,7 +400,7 @@ def plan_cases(tmp):
                                                                 lambda *_a, **_k: forced):
         sidecar._dispatch_checks.set_deadline(time.monotonic())
         try:
-            direct = sidecar.sidecar_launch("bash %s -G review -m %s -f brief.md -l wrap1" % (wrapper, host_exec))
+            direct = sidecar.sidecar_launch("bash %s -G reviewer -m %s -f brief.md -l wrap1" % (wrapper, host_exec))
             jobs = sidecar.launch_jobs(direct, None, root)
             cases.append(("a direct wrapper launch carries its plan as the job's 4th element",
                           [j[3:] for j in jobs] == [("anthropic-secondary",)]))
@@ -772,7 +777,7 @@ def checked_fanout(tmp_path, monkeypatch):
                           "--fold-subject", ".::snap_a.json::.claude/plans/a.md",
                           "--fold-subject", ".::snap_b.json::.claude/plans/b.md"])
 
-    def check(loaded=True, suffix="", mode=None):
+    def check(loaded=True, suffix="", mode=None, call="fold-call"):
         if loaded:
             arm_slice(dict(os.environ), "fold0001", ["executor"])
         cmd = command
@@ -787,7 +792,7 @@ def checked_fanout(tmp_path, monkeypatch):
             elif mode == "compare":
                 cmd += " --compare"
         return _deny_reason({"tool_name": "Bash", "session_id": "fold0001", "cwd": str(tmp_path),
-                             "tool_use_id": "fold-call", "tool_input": {"command": cmd + suffix}})
+                             "tool_use_id": call, "tool_input": {"command": cmd + suffix}})
 
     def compact():
         _hook_state.clear_compaction_keys("fold0001")
@@ -798,8 +803,8 @@ def checked_fanout(tmp_path, monkeypatch):
         directory = directory or out
         name = label + ("" if attempt == 1 else f".attempt{attempt}") + ".record.json"
         argv = ["-m", alias, "-f", str(directory / (label + "_prompt.md")), "-l", label,
-                "-X", "-R", str(directory / name), "-e", effort, "-D", "full", "-G",
-                "author" if label.startswith("review-fold-") else "review",
+                "-X", "-R", str(directory / name), "-e", effort, "-G",
+                "author" if label.startswith("review-fold-") else "reviewer",
                 "-P", str(directory / (label + ".stream"))]
         if label == "pc-plc-test-readiness":
             loaded, _shared, _spill = sidecar.sidecar_fanout.load_jobs(path)
@@ -907,6 +912,21 @@ def test_memory_retry_and_plan_fallback_consume_new_attempts(checked_fanout, cap
     assert launch("pc-plc-test-readiness", "anthropic") == 0, capsys.readouterr().err
     assert launch("pc-plc-test-readiness", plan, attempt=2) == 0, capsys.readouterr().err
     assert launch("pc-plc-test-readiness", plan, attempt=2) == 2
+
+
+def test_each_fanout_call_writes_its_own_launch_intent(checked_fanout):
+    """Two calls launch into one out dir: the hook writes one intent per call, so the fan-out can
+    claim the call that launched it. A shared file name would let the second call overwrite the first."""
+    check, _compact, _launch, path, out = checked_fanout
+    assert check(call="toolu_one") is None
+    assert check(call="toolu_two") is None
+    intents = {}
+    for intent in out.glob(".launch-intent-*.json"):
+        row = json.loads(intent.read_text(encoding="utf-8"))
+        intents[row["call"]] = row
+    assert set(intents) == {"toolu_one", "toolu_two"}, sorted(p.name for p in out.iterdir())
+    assert "pc-plc-test-readiness" in intents["toolu_one"]["labels"], intents["toolu_one"]
+    assert os.path.basename(intents["toolu_two"]["jobsPath"]) == "jobs.json", intents["toolu_two"]
 
 
 def test_large_fanout_keeps_the_first_queued_childs_receipt(checked_fanout, capsys):
@@ -1118,7 +1138,7 @@ def main():
     cases.append(("an unloaded skill and ladder: one deny names both retries",
                   neither.get("permissionDecision") == "deny"
                   and 'Skill(skill="orchestration")' in neither_reason and "model_ladder_evidence.md" in neither_reason))
-    tiered_launch = "bash %s -p prompt.md -m fake -G survey" % ok
+    tiered_launch = "bash %s -p prompt.md -m fake -G scout" % ok
     arm_slice(env, "sdc00964", ["fanout"])
     sliced = run(tiered_launch, env, session="sdc00964", ladder=False)
     cases.append(("a shape-tiered launch is admitted by the slice of that shape's tier",
@@ -1212,7 +1232,7 @@ def main():
     for label, command in (
         ("a command-substitution carrier gets no decision", approved_launch + " $(echo x)"),
         ("a sudo-prefixed launch gets no decision", "sudo " + approved_launch),
-        ("an unsuspend flag gets no decision", "bash %s -U -G survey" % ok),
+        ("an unsuspend flag gets no decision", "bash %s -U -G scout" % ok),
     ):
         hso = run(command, env, session="sdc01002")
         cases.append((label, hso.get("permissionDecision") is None))

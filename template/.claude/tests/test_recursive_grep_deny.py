@@ -2,10 +2,11 @@
 """Proof for the recursive-grep deny in hooks/unbounded_scan_guard.py, fed through the real
 PreToolUse entry hooks/pre_bash_dispatch.py.
 
-Rewrite arms are plain recursive greps whose every path is tracked repo content: they run as
-`git grep --untracked` (the same files minus gitignored ones). Deny arms are the shapes the facts do
-not settle: ignored trees, indirect runs (find, xargs, a shell -c, PowerShell), unknown flags, GNU-only
-regex escapes. Allow arms mention a recursive grep without running one.
+Every recursive grep is denied; there is no rewrite. The deny names the bounded forms, and the
+`rg -uu` form it names finds a tracked file a .gitignore rule matches. Deny arms cover the shapes
+the parse must reach: plain tracked-directory greps, ignored trees, indirect runs (find, xargs, a
+shell -c, PowerShell), unknown flags, GNU-only regex escapes. Allow arms mention a recursive grep
+without running one, or name only files.
 A dispatcher exit outside {0, 2}, or a traceback on stderr, is CRASH, never allow.
 
     python3 .claude/tests/test_recursive_grep_deny.py
@@ -21,22 +22,20 @@ import uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 DISPATCH = os.path.join(REPO, ".claude", "hooks", "pre_bash_dispatch.py")
-sys.path.insert(0, os.path.join(REPO, ".claude", "tools"))
-from sidecar_launch import git_bash  # noqa: E402
 
-REWRITE = [
-    ("grep -rn -- '-needle' .", "git grep --untracked -n -e -needle -- ."),
-    ("grep -rln ProjectSuite .", "git grep --untracked -l -n -e ProjectSuite -- ."),
-    ("grep -rn noclobber .claude/", "git grep --untracked -n -e noclobber -- .claude/"),
-    ("grep -rn foo", "git grep --untracked -n -e foo -- ."),
-    ("grep -rn -e foo -e bar", "git grep --untracked -n -e foo -e bar -- ."),
-    ("grep -rn foo .claude | head -5", "git grep --untracked -n -e foo -- .claude | head -5"),
-    ("grep -rni 'Spawn Impact' .claude/hooks", "git grep --untracked -n -i -e 'Spawn Impact' -- .claude/hooks"),
-    ("grep -rn 'a\\|b' .claude", "git grep --untracked -n -e 'a\\|b' -- .claude"),
-    ("echo start\ngrep -rn foo .", "echo start\ngit grep --untracked -n -e foo -- ."),
-    ("grep -rn foo --include=*.py .claude/hooks",
-     "MSYS_NO_PATHCONV=1 "  # bash_backslash_fidelity prefixes a ref:path-shaped operand on every host
-     + "git grep --untracked -n -e foo -- ':(glob).claude/hooks/**/*.py'"),
+# Commands the retired rewrite converted to `git grep --untracked` or a bounded `rg -uu`. The
+# second is a real logged call from the replay; each must deny now.
+FORMER_REWRITES = [
+    "grep -rn -- '-needle' .",
+    "grep -rln ProjectSuite .",
+    "grep -rn noclobber .claude/",
+    "grep -rn foo",
+    "grep -rn -e foo -e bar",
+    "grep -rn foo .claude | head -5",
+    "grep -rni 'Spawn Impact' .claude/hooks",
+    "grep -rn 'a\\|b' .claude",
+    "echo start\ngrep -rn foo .",
+    "grep -rn foo --include=*.py .claude/hooks",
 ]
 
 DENY = [
@@ -118,13 +117,13 @@ def main():
         if not ok:
             failures.append(label + (" :: " + detail[:300] if detail else ""))
 
-    for command, want in REWRITE:
+    for command in FORMER_REWRITES:
         verdict, text = dispatch("Bash", command, env)
-        got = text.split("\n[scan]", 1)[0]
-        check("rewrite %r -> %r" % (command, want), verdict == "rewrite" and got == want, verdict + " " + text)
-        if verdict == "rewrite":
-            check("rewrite %r tells the model what ran and cites CLAUDE.core.md §9" % command,
-                  "git grep --untracked" in text and "CLAUDE.core.md §9" in text.split("\n", 1)[-1], text)
+        check("deny (former rewrite) %r" % command, verdict == "deny", verdict + " " + text)
+        if verdict == "deny":
+            check("deny (former rewrite) %r tells the model what to run, never a rewrite" % command,
+                  "Grep tool" in text and "rg -n" in text and "git grep -n" in text
+                  and "CLAUDE.core.md §9" in text, text)
 
     for tool, command in DENY:
         verdict, text = dispatch(tool, command, env)
@@ -150,29 +149,30 @@ def main():
     return 1 if failures else 0
 
 
-# Captured corpus commands, trimmed to the grep-bearing statements. Fixtures supply their paths.
-CORPUS_SHAPES = [
-    "grep -rln 'private index\\|private-index\\|stale base\\|stale index' .claude/auto-memory | head",
-    'grep -rn "AskUserQuestion" .claude/commands .claude/skills | wc -l; echo ---',
-    'grep -rln ".git" .claude/hooks 2>/dev/null | head',
-    'git status 2>&1 | head; grep -rn "new .claude/ file\\|lock row\\|no lock row\\|missing a lock" .claude/hooks/ .claude/tools/baseline_sync.py 2>/dev/null | head -5 | cut -c1-200',
-    'grep -rn --include=*.py --include=*.sh --include=*.md -E "worst_of|compute_band\\(|band_for\\(" .claude --exclude-dir=worktrees --exclude-dir=cache',
-]
-
-
-def planted_repo(tmp_path):
-    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
-    for directory in ('auto-memory', 'commands', 'skills', 'hooks', 'worktrees', 'cache'):
-        path = tmp_path / '.claude' / directory
-        path.mkdir(parents=True)
-        (path / 'fixture.py').write_text('private index AskUserQuestion .git worst_of\n', encoding='utf-8')
-    (tmp_path / '.claude' / 'tools').mkdir()
-    (tmp_path / '.claude' / 'tools' / 'baseline_sync.py').write_text('lock row\n', encoding='utf-8')
-    subprocess.run(['git', '-C', str(tmp_path), 'add', '.'], check=True)
+def planted_ignored_repo(tmp_path):
+    """A git repo with a tracked file under an ignored directory; `git grep` alone misses it."""
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True, capture_output=True)
+    (tmp_path / '.gitignore').write_text('scratch/\n', encoding='utf-8')
+    (tmp_path / 'plain.txt').write_text('ti_needle\n', encoding='utf-8')
+    (tmp_path / 'scratch').mkdir()
+    (tmp_path / 'scratch' / 'forced.txt').write_text('ti_needle\n', encoding='utf-8')
+    git = ['git', '-C', str(tmp_path)]
+    subprocess.run(git + ['add', '.gitignore', 'plain.txt'], check=True, capture_output=True)
+    subprocess.run(git + ['add', '-f', 'scratch/forced.txt'], check=True, capture_output=True)
     return tmp_path
 
 
-def hook_rewrite(command, cwd):
+def run_rg(*args, cwd=None):
+    """ripgrep as the agents' search tools run it: a real `rg`, else Claude Code's embedded one (argv0 rg)."""
+    if shutil.which("rg"):
+        return subprocess.run(["rg"] + list(args), cwd=cwd, capture_output=True, text=True, timeout=120)
+    exe = os.environ.get("CLAUDE_CODE_EXECPATH") or os.path.expanduser("~/.local/bin/claude.exe")
+    if not os.path.exists(exe):
+        raise SystemExit("CANNOT-RUN: no ripgrep available for the deny-form check")
+    return subprocess.run(["rg"] + list(args), cwd=cwd, executable=exe, capture_output=True, text=True, timeout=120)
+
+
+def hook_verdict(command, cwd):
     hook = os.path.join(REPO, '.claude', 'hooks', 'unbounded_scan_guard.py')
     payload = {'tool_name': 'Bash', 'cwd': str(cwd), 'tool_input': {'command': command}}
     p = subprocess.run([sys.executable, hook], input=json.dumps(payload), capture_output=True,
@@ -184,137 +184,44 @@ def hook_rewrite(command, cwd):
 import pytest
 
 
-@pytest.mark.parametrize('command', CORPUS_SHAPES)
-def test_corpus_shapes_rewrite_and_preserve_results(tmp_path, command):
-    root = planted_repo(tmp_path)
-    hso = hook_rewrite(command, root)
-    assert 'updatedInput' in hso, (command, hso)
-    rewritten = hso['updatedInput']['command']
-    assert 'CLAUDE.core.md §9' in hso['additionalContext']
-    old = run_bash(command, root)
-    new = run_bash(rewritten, root)
-    # grep walks in directory order and git grep in sorted order; the lines must agree, not their order.
-    assert (new.returncode, sorted(new.stdout.splitlines()), new.stderr) == (old.returncode, sorted(old.stdout.splitlines()), old.stderr), rewritten
+@pytest.mark.parametrize('command', FORMER_REWRITES)
+def test_former_rewrites_are_denied(command):
+    hso = hook_verdict(command, REPO)
+    assert hso.get('permissionDecision') == 'deny' and 'updatedInput' not in hso, (command, hso)
+    assert '-uu' in hso['permissionDecisionReason'], hso['permissionDecisionReason']
 
 
-def test_separate_include_exclude_and_literal_cd(tmp_path):
-    root = planted_repo(tmp_path)
-    command = 'cd .claude && grep -rn --include "*.py" --exclude-dir cache --exclude fixture.md worst_of .'
-    hso = hook_rewrite(command, root)
-    assert 'updatedInput' in hso, hso
-    rewritten = hso['updatedInput']['command']
-    assert ':(glob)**/*.py' in rewritten and ':(exclude,glob)**/cache/**' in rewritten
-    assert ':(exclude,glob)**/fixture.md' in rewritten
-    old = run_bash(command, root)
-    new = run_bash(rewritten, root)
-    # git's filenames omit grep's leading './' and grep walks in directory order, git grep in sorted order; the selected files and matching lines must agree.
-    assert sorted(new.stdout.splitlines()) == sorted(line.removeprefix(b'./') for line in old.stdout.splitlines())
-    assert new.returncode == old.returncode
+def test_deny_names_the_bounded_forms():
+    reason = hook_verdict('grep -rn foo .', REPO)['permissionDecisionReason']
+    assert 'Grep tool' in reason and 'head_limit' in reason
+    assert 'rg -n <pat> <dir> --max-count N' in reason and '-uu' in reason
+    assert 'git grep -n <pat> -- <path>' in reason
 
 
-def posix_drive(path):
-    """Git Bash spelling of a Windows path: C:\\x\\y -> /c/x/y."""
-    return "/" + path[0].lower() + path[2:].replace("\\", "/")
+def test_the_deny_command_finds_a_tracked_ignored_file(tmp_path):
+    """The deny names `rg -uu`; that form must return a tracked file the gitignore rule covers,
+    which plain `git grep` misses. This is the flip the rewrite used to make silently."""
+    root = planted_ignored_repo(tmp_path)
+    reason = hook_verdict('grep -rn ti_needle scratch', root)['permissionDecisionReason']
+    assert 'deny' == hook_verdict('grep -rn ti_needle scratch', root)['permissionDecision']
+    assert '-uu' in reason
+    done = run_rg('-uu', '-n', 'ti_needle', 'scratch', '--max-count', '20', cwd=root)
+    assert 'forced.txt' in done.stdout, done.stdout + done.stderr
 
 
-def run_bash(command, cwd):
-    """Run a command in Git Bash, the shell the Bash tool uses. `bash` by name resolves to WSL's
-    System32 copy, which has no Git tree paths; `rg` is a shell function over Claude Code's bundled
-    ripgrep (ARGV0=rg) that a spawned shell lacks, so a hardlink named rg.exe stands in for it."""
-    shell = git_bash()
-    env = dict(os.environ)
-    path_key = next(key for key in env if key.upper() == "PATH")  # Windows keeps `Path`; a second `PATH` key is ignored
-    if not shutil.which("rg"):
-        exe = os.environ.get("CLAUDE_CODE_EXECPATH", "")
-        if not os.path.isfile(exe):
-            pytest.skip("no rg reachable from a spawned bash")
-        shim = tempfile.mkdtemp(prefix="rgbin_")
-        try:
-            os.link(exe, os.path.join(shim, "rg.exe"))
-        except OSError:
-            pytest.skip("cannot hardlink the bundled rg beside the proof's temp root")
-        env[path_key] = shim + os.pathsep + env[path_key]
-        env["ARGV0"] = "rg"
-    return subprocess.run([shell, "-c", command], cwd=cwd, capture_output=True, stdin=subprocess.DEVNULL, env=env)
-
-
-def same_matches(old, new):
-    # rg prints Windows separators inside a walked tree; grep prints `/`.
-    lines = [sorted(line.replace(b"\\", b"/") for line in run.stdout.splitlines()) for run in (old, new)]
-    return old.returncode == new.returncode and lines[0] == lines[1]
-
-
-def test_glob_path_operand_expands_one_level_as_bash_does(tmp_path):
-    root = planted_repo(tmp_path)
-    command = "grep -rn private .claude/*"
-    hso = hook_rewrite(command, root)
-    assert 'updatedInput' in hso, hso
-    rewritten = hso['updatedInput']['command']
-    assert '*' not in rewritten, rewritten
-    assert same_matches(run_bash(command, root), run_bash(rewritten, root)), rewritten
-
-
-def test_cd_to_git_bash_drive_path_sets_the_scope(tmp_path):
-    if os.name != "nt":
-        pytest.skip("a Git Bash drive path (/c/...) exists only on Windows")
-    root = planted_repo(tmp_path)
-    command = "cd %s && grep -rn worst_of .claude" % posix_drive(str(root))
-    hso = hook_rewrite(command, root)
-    assert 'updatedInput' in hso, hso
-    rewritten = hso['updatedInput']['command']
-    assert same_matches(run_bash(command, root), run_bash(rewritten, root)), rewritten
-
-
-def test_r_after_the_pattern_rewrites(tmp_path):
-    root = planted_repo(tmp_path)
-    command = "grep worst_of -rn .claude"
-    hso = hook_rewrite(command, root)
-    assert 'updatedInput' in hso, hso
-    assert same_matches(run_bash(command, root), run_bash(hso['updatedInput']['command'], root))
-
-
-def test_ignored_tree_inside_repo_runs_bounded_rg_uu(tmp_path):
-    root = planted_repo(tmp_path)
-    (root / ".gitignore").write_text("scratch/\n", encoding="utf-8")
-    (root / ".claude" / "scratch").mkdir()
-    (root / ".claude" / "scratch" / "fixture.py").write_text("worst_of\n", encoding="utf-8")
-    command = "grep -rn worst_of .claude/scratch"
-    hso = hook_rewrite(command, root)
-    assert 'updatedInput' in hso, hso
-    rewritten = hso['updatedInput']['command']
-    assert rewritten.startswith("rg -uu ") and "--max-count 200" in rewritten, rewritten
-    assert same_matches(run_bash(command, root), run_bash(rewritten, root)), rewritten
-
-
-def test_a_tracked_operand_beside_an_ignored_one_stays_denied(tmp_path):
-    root = planted_repo(tmp_path)
-    (root / ".gitignore").write_text("scratch/\n", encoding="utf-8")
-    (root / ".claude" / "scratch").mkdir()
-    command = "grep -rn worst_of . .claude/scratch"
-    hso = hook_rewrite(command, root)
+def test_a_tracked_operand_beside_an_ignored_one_is_denied(tmp_path):
+    root = planted_ignored_repo(tmp_path)
+    hso = hook_verdict('grep -rn ti_needle . scratch', root)
     assert hso.get('permissionDecision') == 'deny' and 'updatedInput' not in hso, hso
 
 
-def test_include_and_exclude_outside_git_run_as_rg_globs(tmp_path):
-    plain = tmp_path / "plain"
-    (plain / "cache").mkdir(parents=True)
-    for name in ("a.py", "b.md", "cache/c.py"):
-        (plain / name).write_text("worst_of\n", encoding="utf-8")
-    command = 'grep -rn --include "*.py" --exclude-dir cache worst_of plain'
-    hso = hook_rewrite(command, tmp_path)
-    assert 'updatedInput' in hso, hso
-    rewritten = hso['updatedInput']['command']
-    assert rewritten.startswith("rg -uu ") and "'*.py'" in rewritten and "'!cache/'" in rewritten, rewritten
-    assert same_matches(run_bash(command, tmp_path), run_bash(rewritten, tmp_path)), rewritten
-
-
 def test_unexpressed_shapes_stay_denied(tmp_path):
-    root = planted_repo(tmp_path)
+    root = planted_ignored_repo(tmp_path)
     for command in ('grep -rnz foo .', 'find . -exec grep foo {} +',
                     'bash -c "grep -rn foo ."', 'cd "$UNKNOWN" && grep -rn foo .',
                     "grep -rn 'a\\+b' .", 'grep -rn foo . > output.txt; grep -rnz foo .',
                     'grep -rn foo .claude/**', 'grep -rn foo .claude/nomatch*'):
-        hso = hook_rewrite(command, root)
+        hso = hook_verdict(command, root)
         assert hso.get('permissionDecision') == 'deny' and 'updatedInput' not in hso, (command, hso)
 
 

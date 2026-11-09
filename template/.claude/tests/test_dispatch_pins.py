@@ -1,5 +1,5 @@
 """Proof cases for hooks/_dispatch_pins.py — the Workflow/Agent pin parser shared by the provider guard
-and the dispatch table: each engine's effort default, the review_fanout model default, shape/railTier
+and the dispatch table: each engine's effort default, the review_fanout model default, kind/railTier
 passthrough, and a script read with its JS comments blanked."""
 import os
 import sys
@@ -81,12 +81,12 @@ def test_non_review_agents_get_no_model_default():
     assert jobs["a1"]["effort"] is None, jobs
 
 
-def test_shape_and_rail_tier_pass_through():
+def test_kind_and_rail_tier_pass_through():
     jobs = by_label(pins().dispatch_jobs(wf(".claude/workflows/dispatch.js", {"jobs": [
-        {"label": "s1", "model": "h-arch", "effort": "low", "shape": "author", "railTier": "condensed"},
+        {"label": "s1", "model": "h-arch", "effort": "low", "kind": "author", "railTier": "condensed"},
         {"label": "s2", "model": "h-arch", "effort": "low"}]})))
-    assert (jobs["s1"]["shape"], jobs["s1"]["railTier"]) == ("author", "condensed"), jobs
-    assert (jobs["s2"]["shape"], jobs["s2"]["railTier"]) == (None, None), jobs
+    assert (jobs["s1"]["kind"], jobs["s1"]["railTier"]) == ("author", "condensed"), jobs
+    assert (jobs["s2"]["kind"], jobs["s2"]["railTier"]) == (None, None), jobs
 
 
 def test_string_args_are_parsed():
@@ -146,7 +146,7 @@ def test_sidecar_fanout_author_spec_is_a_writer():
     with tempfile.TemporaryDirectory(prefix="writer_spec_") as root:
         path = os.path.join(root, "jobs.json")
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"jobs": [{"label": "fix", "shape": "author"}]}, fh)
+            json.dump({"jobs": [{"label": "fix", "kind": "author"}]}, fh)
         command = 'python3 .claude/tools/sidecar_fanout.py "%s"' % path.replace("\\", "/")
         assert pins().writes("Bash", {"command": command}), command
 
@@ -180,7 +180,7 @@ def test_author_writing_only_gitignored_paths_is_not_a_writer():
         def fanout(prompt):
             path = os.path.join(root, "jobs-%s.json" % os.path.basename(prompt)).replace("\\", "/")
             with open(path, "w", encoding="utf-8") as fh:
-                json.dump({"jobs": [{"label": "w", "shape": "author", "promptPath": prompt}]}, fh)
+                json.dump({"jobs": [{"label": "w", "kind": "author", "promptPath": prompt}]}, fh)
             return {"command": 'python3 .claude/tools/sidecar_fanout.py "%s"' % path}
 
         saved = os.environ.get("CLAUDE_PROJECT_DIR")
@@ -192,7 +192,7 @@ def test_author_writing_only_gitignored_paths_is_not_a_writer():
                 assert pins().writes("Bash", fanout(prompt)) is expected, ("fanout", prompt)
                 sidecar = {"command": "bash .claude/scripts/claude_sidecar.sh -G author -l w -f %s" % prompt}
                 assert pins().writes("Bash", sidecar) is expected, ("sidecar", prompt)
-                workflow = wf(".claude/workflows/dispatch.js", {"jobs": [{"shape": "author", "promptPath": prompt}]})
+                workflow = wf(".claude/workflows/dispatch.js", {"jobs": [{"kind": "author", "promptPath": prompt}]})
                 assert pins().writes("Workflow", workflow["tool_input"]) is expected, ("workflow", prompt)
         finally:
             if saved is None:
@@ -205,9 +205,9 @@ def test_writer_classification():
     cases = [
         (wf(".claude/workflows/review_fanout.js", {"fold": True}), True),
         (wf(".claude/workflows/review_fanout.js", {}), False),
-        (wf(".claude/workflows/dispatch.js", {"jobs": [{"shape": "author"}]}), True),
-        (wf(".claude/workflows/dispatch.js", {"jobs": [{"shape": "survey"}]}), False),
-        (wf(".claude/workflows/dispatch_chains.js", {"chains": [{"jobs": [{"shape": "author"}]}]}), True),
+        (wf(".claude/workflows/dispatch.js", {"jobs": [{"kind": "author"}]}), True),
+        (wf(".claude/workflows/dispatch.js", {"jobs": [{"kind": "scout"}]}), False),
+        (wf(".claude/workflows/dispatch_chains.js", {"chains": [{"jobs": [{"kind": "author"}]}]}), True),
         ({"tool_name": "Bash", "tool_input": {"command": "python3 .claude/tools/sidecar_fanout.py jobs.json --fold brief.md"}}, True),
         ({"tool_name": "Bash", "tool_input": {"command": "bash .claude/scripts/claude_sidecar.sh -G author -l fix"}}, True),
         ({"tool_name": "Bash", "tool_input": {"command": "bash .claude/scripts/claude_sidecar.sh -G survey -l read"}}, False),

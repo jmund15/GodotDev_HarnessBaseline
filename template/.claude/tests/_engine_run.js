@@ -23,13 +23,39 @@ const load = (script, transform = source => source) => {
   return (...args) => run(WorkflowDate, workflowMath, ...args)
 }
 
+// The kind rows hooks/workflow_provider_guard.py resolves from guards/tool_profiles.json into args.__toolProfiles
+// (by job label or lens key) and args.__kindProfile (the call-level `args.kind` of a single-kind engine).
+const ROW = { add: [], remove: [], overrideMode: 'shape-default', enforcement: 'inherited', effectiveMcp: 'unknown/inherited',
+  mcpServers: ['semantic-search', 'ai-worker'] }
+const KIND_ROWS = {
+  scout: { ...ROW, kind: 'scout', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-survey', tier: 'fanout', guard: 'survey', disclosure: 'bare' },
+  lens: { ...ROW, kind: 'lens', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-survey', tier: 'fanout', guard: 'survey', disclosure: 'pointer' },
+  reviewer: { ...ROW, kind: 'reviewer', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-review', tier: 'executor', guard: 'review', disclosure: 'full' },
+  author: { ...ROW, kind: 'author', builtins: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], agentType: 'lane-author', tier: 'executor', guard: 'author', disclosure: 'full' },
+  judge: { ...ROW, kind: 'judge', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-review', tier: 'executor', guard: 'common', disclosure: 'full' },
+}
+const withKinds = (args) => {
+  const a = { ...args }
+  const entries = [
+    ...(Array.isArray(a.jobs) ? a.jobs.map(j => [j, j && j.label]) : []),
+    ...(Array.isArray(a.chains) ? a.chains.flatMap(c => ((c && c.jobs) || []).map(j => [j, j && j.label])) : []),
+    ...(Array.isArray(a.lenses) ? a.lenses.map(l => [l, l && l.key]) : []),
+    ...(Array.isArray(a.agents) ? a.agents.map(g => [g, g && g.key]) : []),
+  ]
+  const profiles = { 'review:merge': KIND_ROWS.reviewer, 'review:fold': KIND_ROWS.author }
+  for (const [entry, key] of entries) if (entry && key && KIND_ROWS[entry.kind]) profiles[key] = KIND_ROWS[entry.kind]
+  a.__toolProfiles = { ...profiles, ...(a.__toolProfiles || {}) }
+  if (a.kind && KIND_ROWS[a.kind] && a.__kindProfile === undefined) a.__kindProfile = KIND_ROWS[a.kind]
+  return a
+}
+
 const withHost = (args, host = HOST) =>
-  Object.prototype.hasOwnProperty.call(args || {}, '__transport') ? args : { ...args, __transport: { ...host } }
+  withKinds(Object.prototype.hasOwnProperty.call(args || {}, '__transport') ? args : { ...args, __transport: { ...host } })
 
 const run = ({ script, args, reply }) => load(script)(withHost(args),
   async () => reply, thunks => Promise.all(thunks.map(fn => Promise.resolve().then(fn))), () => {}, () => {})
 
-module.exports = { load, run, withHost, HOST }
+module.exports = { load, run, withHost, withKinds, HOST, KIND_ROWS }
 
 if (require.main === module) {
   run(JSON.parse(fs.readFileSync(0, 'utf8')))
