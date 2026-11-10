@@ -133,6 +133,31 @@ class TriggerInputsTests(DoctrineFixture):
         self.assertIn(DOCTRINE, result.stderr)
         self.assertFalse(out.exists())
 
+    def test_existing_run_folder_takes_the_next_free_path(self):
+        # A second freeze into the same run path keeps the first packet and writes the next `_r2` folder,
+        # instead of refusing the call whose only problem is a folder the first freeze left behind.
+        self._write(DOCTRINE, "A\n")
+        self._commit("landed doctrine")
+        subprocess.run(["git", "-C", str(self.repo), "add", "--", DOCTRINE], check=True)
+        roster = self.root / "roster.json"
+        roster.write_text(json.dumps(ROSTER), encoding="utf-8")
+        run = self.repo / ".claude/scratch/audit"
+        command = [sys.executable, str(TOOL), "--root", str(self.repo), "--base-ref", self.base_sha,
+                   "--session-base", self.base_sha, "--roster", str(roster),
+                   "--out", str(run / "inputs.json"), "--files", DOCTRINE]
+        first = subprocess.run(command, env={**os.environ, **self.env()}, capture_output=True, text=True)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        before = (run / "inputs.json").read_text(encoding="utf-8")
+        second = subprocess.run(command, env={**os.environ, **self.env()}, capture_output=True, text=True)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        packet = json.loads(second.stdout)
+        self.assertTrue(packet["doctrineCommits"].startswith(".claude/scratch/audit_r2/"),
+                        packet["doctrineCommits"])
+        self.assertEqual(packet["sessionBase"], self.base_sha)
+        self.assertEqual((run / "inputs.json").read_text(encoding="utf-8"), before,
+                         "the first run's packet is rewritten")
+        self.assertTrue((self.repo / packet["doctrineCommits"]).is_file())
+
     def test_without_base_ref_the_range_is_upstream_to_head(self):
         self._write(DOCTRINE, "A\n")
         pushed = self._commit("pushed doctrine")

@@ -105,6 +105,9 @@ _INLINE_PROGRAM = re.compile(
     r"""(?P<head>(?:^|(?<=[\s;&|(]))(?P<prog>[\w./\\:-]+)(?:\s+-[\w-]+)*?\s+-[cep]\s+)(?P<body>"(?:\\.|[^"\\])*"|'[^']*')""",
     re.DOTALL)
 _INLINE_FLAGS = frozenset(("-c", "-e", "-p"))
+# Only the program's own script runs; later words are its argv, except under `python -m`, whose runner
+# (pytest) executes each path. These python flags take a value word.
+_VALUE_FLAGS = frozenset(("-X", "-W", "-Q"))
 
 POLL_LIMIT = 4
 HANDBACK_MS = 1800000  # wait_log.py HANDBACK_S: the break-even past which the parent's one wake costs less than a child's trickle polls
@@ -421,14 +424,25 @@ def _proof_names(words):
     program = words[0] if words else ""
     if not (_PYTHON.match(program) or program in _PROOF_RUNNERS):
         return []
-    found = []
-    for word in words[1:]:
+    found, module, rest = [], False, iter(words[1:])
+    for word in rest:
         if word in _INLINE_FLAGS and program not in _SHELL_WORDS:
             return []
+        if word == "-m" and _PYTHON.match(program):
+            module = True
+            next(rest, None)
+            continue
+        if word in _VALUE_FLAGS and _PYTHON.match(program):
+            next(rest, None)
+            continue
+        if word.startswith("-") and not module:
+            continue
         path = word.strip("'\"").replace("\\", "/")
         name = path.rsplit("/", 1)[-1]
         if "/tests/" in "/" + path and _PROOF_NAME.match(name):
             found.append(name)
+        if not module:
+            break
     return found
 
 

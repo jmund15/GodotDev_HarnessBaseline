@@ -23,8 +23,9 @@ subject's diff. A subject's whole frozen source is written too and linked from i
 only a mandate whose lens judges source text lists it (`source_required`). Every admitted
 (file, mandate) pair is checked to keep an artifact in its own view before the packet is
 written; the views, never a `subject-N` filename, are what a caller maps to a seat. An
-existing packet is refused. The caller forwards head, blobs and premiseCommits unchanged
-through its review route.
+existing run folder is never overwritten: the freeze writes the first free `_rN` sibling
+folder, and the returned paths name it. The caller forwards head, blobs and premiseCommits
+unchanged through its review route.
 """
 import argparse
 import json
@@ -108,15 +109,25 @@ def session_decisions(root, session, task=None):
     return rows
 
 
+def next_free_out(out: Path) -> Path:
+    """`out` when its folder is free, else the first free `_rN` sibling: a finished run's inputs stay put."""
+    if not out.parent.exists():
+        return out
+    parent, stem = out.parent.parent, out.parent.name
+    n = 2
+    while (parent / f"{stem}_r{n}").exists():
+        n += 1
+    return parent / f"{stem}_r{n}" / out.name
+
+
 def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=False, committed_only=(),
            session=None, task=None, plan=None):
     """Freeze the audit's inputs under `out`'s folder and return the packet dict `main` prints."""
     root = Path(root).resolve()
     out = Path(out)
     out = (root / out).resolve() if not out.is_absolute() else out.resolve()
+    out = next_free_out(out)
     out.relative_to(root)
-    if out.parent.exists():
-        raise ledger.ToolError(f"input folder already exists: {out.parent}; use a fresh run path")
     head = git(root, "rev-parse", "HEAD").strip()
     # An explicit --base-ref names the range to audit, pushed or not; without one the outgoing range is upstream..HEAD.
     upstream = None if base_ref else git(root, "rev-parse", "--verify", "-q", "@{u}", optional=True)
@@ -305,7 +316,7 @@ def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=Fa
     print("session_audit inputs: " + "; ".join(
         f"{mandate} view {view['bytes']:,}B / {len(view['mustRead'])} artifacts"
         for mandate, view in views.items()), file=sys.stderr)
-    result = {"head": head, "base": base, "files": files, "commits": commits,
+    result = {"head": head, "base": base, "sessionBase": session_base, "files": files, "commits": commits,
               "premiseCommits": ids, "blobs": blob_path, "doctrineCommits": doctrine_artifact["artifact"],
               "restateGroups": groups_artifact["artifact"], "restateScanExit": scan_exit,
               "mustRead": must_read, "artifacts": artifacts, "views": views, "sizes": sizes,

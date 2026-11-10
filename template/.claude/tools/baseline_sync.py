@@ -9,6 +9,7 @@ for upstream comparisons.
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import copy
 import difflib
@@ -2777,10 +2778,13 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
         print(f"conflict: {relpath} ({reason})" + (f" -> {copy_path}" if copy_path else ""))
     render_lane_agents(root)
     write_harness_ignore_block(root)
-    proved = _prove_pulled(root, [] if result is NO_CHANGE else [
+    written = [] if result is NO_CHANGE else [
         relpath for relpath in result
-        if relpath not in retired and relpath not in kept_local and relpath not in kept_seeds])
-    return 1 if conflicts or proved else 0
+        if relpath not in retired and relpath not in kept_local and relpath not in kept_seeds]
+    proved = _prove_pulled(root, written)
+    hits = local_attr_hits(root, written)
+    _report_local_attr_hits(hits)
+    return 1 if conflicts or proved or hits else 0
 
 
 def _prove_pulled(root: Path, written: list[str]) -> int:
@@ -2802,6 +2806,155 @@ def _prove_pulled(root: Path, written: list[str]) -> int:
     print(result.stdout[-2000:])
     print("rerun: python3 .claude/scripts/harness_tests.py --for " + " ".join(paths))
     return 1
+
+
+_ATTR_SCAN_DIRS = (".claude/hooks/", ".claude/tools/", ".claude/scripts/")
+
+
+class _ModuleBindings(ast.NodeVisitor):
+    """Top-level names a module binds, descending through module-level control flow but not into a
+    function or class body. `open_ended` when a star import or a module `__getattr__` makes the set
+    unknowable, so no absent name can be called absent."""
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+        self.open_ended = False
+
+    def visit_FunctionDef(self, node) -> None:
+        self.names.add(node.name)
+        if node.name == "__getattr__":
+            self.open_ended = True
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node) -> None:
+        self.names.add(node.name)
+
+    def visit_Import(self, node) -> None:
+        for alias in node.names:
+            self.names.add(alias.asname or alias.name.split(".")[0])
+
+    def visit_ImportFrom(self, node) -> None:
+        for alias in node.names:
+            if alias.name == "*":
+                self.open_ended = True
+            else:
+                self.names.add(alias.asname or alias.name)
+
+    def visit_Name(self, node) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.names.add(node.id)
+
+
+def _module_bindings(text: str) -> tuple[set[str], bool] | None:
+    """`(names, open_ended)` for a module source, or None when it does not parse."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+    visitor = _ModuleBindings()
+    visitor.visit(tree)
+    return visitor.names, visitor.open_ended
+
+
+def _implicit_attr(name: str) -> bool:
+    """Attributes every module answers without binding them in its source."""
+    return name.startswith("__") and name.endswith("__")
+
+
+def local_attr_hits(root: Path, written: list[str]) -> list[tuple[str, int, str, str]]:
+    """`(importer, line, module, name)` for each static `module.name` a local hooks/tools/scripts Python
+    file reads and the pulled copy of `module` no longer binds at its top level. A file the pull wrote is
+    the new copy, never local code. Reads only; the local file is never rewritten."""
+    root = Path(root)
+    written_set = {relpath for relpath in written
+                   if relpath.startswith(_ATTR_SCAN_DIRS) and relpath.endswith(".py")}
+    modules: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for relpath in sorted(written_set):
+        if not (root / relpath).is_file():
+            continue
+        stem = Path(relpath).stem
+        if stem in modules and modules[stem] != relpath:
+            ambiguous.add(stem)
+        modules[stem] = relpath
+    modules = {stem: rel for stem, rel in modules.items() if stem not in ambiguous}
+    definitions: dict[str, set[str]] = {}
+    for stem, relpath in modules.items():
+        try:
+            text = (root / relpath).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        parsed = _module_bindings(text)
+        if parsed is None or parsed[1]:
+            continue
+        definitions[stem] = parsed[0]
+    if not definitions:
+        return []
+    hits: set[tuple[str, int, str, str]] = set()
+    for directory in _ATTR_SCAN_DIRS:
+        base = root / directory
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            relpath = path.relative_to(root).as_posix()
+            if relpath in written_set:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, SyntaxError, ValueError):
+                continue
+            aliases: dict[str, str] = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        stem = alias.name.split(".")[0]
+                        if stem in definitions:
+                            aliases[alias.asname or stem] = stem
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    stem = node.module.split(".")[0]
+                    if stem not in definitions:
+                        continue
+                    for alias in node.names:
+                        if alias.name != "*" and alias.name not in definitions[stem] \
+                                and not _implicit_attr(alias.name):
+                            hits.add((relpath, node.lineno, modules[stem], alias.name))
+            # A module alias rebound inside a function (a parameter or a local) may not name the
+            # module at its use. A module-level `except: alias = None` fallback does not: the import
+            # path keeps the alias bound to the module, and that guard is the common real shape.
+            shadowed: set[str] = set()
+            for func in ast.walk(tree):
+                if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    continue
+                args = func.args
+                for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]:
+                    if arg is not None:
+                        shadowed.add(arg.arg)
+                for inner in ast.walk(func):
+                    if isinstance(inner, ast.Name) and isinstance(inner.ctx, (ast.Store, ast.Del)):
+                        shadowed.add(inner.id)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Attribute) or not isinstance(node.value, ast.Name):
+                    continue
+                stem = aliases.get(node.value.id)
+                if stem is None or node.value.id in shadowed:
+                    continue
+                if node.attr not in definitions[stem] and not _implicit_attr(node.attr):
+                    hits.add((relpath, node.lineno, modules[stem], node.attr))
+    return sorted(hits)
+
+
+def _report_local_attr_hits(hits: list[tuple[str, int, str, str]]) -> None:
+    """Name each local read of an attribute the pulled module dropped. The pull stays written: the
+    break is in local code, and the next step is the caller's to take."""
+    if not hits:
+        return
+    print(f"local reference(s) to an attribute a pulled module no longer defines ({len(hits)}):")
+    for importer, line, module, name in hits:
+        print(f"  {importer}:{line} reads {Path(module).stem}.{name}")
+    print("the pulled copy stays; fix the local call, or keep your own copy of the module")
 
 
 def v2_update_lock(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str]) -> int:
