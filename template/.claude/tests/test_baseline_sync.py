@@ -2142,6 +2142,67 @@ def test_explicit_pull_refuses_unrowed_differing_local() -> None:
         assert (root / clash).read_bytes() == b"theirs\n"
 
 
+def test_pull_reports_a_local_caller_of_a_removed_module_attribute() -> None:
+    mod = ".claude/tools/api.py"
+    by_attr = ".claude/tools/caller.py"
+    by_name = ".claude/hooks/caller_hook.py"
+    guarded = ".claude/scripts/caller_guarded.py"
+    stale = b"import api\napi.gone()\n"
+    stale_name = b"from api import gone\n"
+    guarded_stale = b"try:\n    import api\nexcept ImportError:\n    api = None\napi.gone()\n"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            mod: {"upstream": b"def gone():\n    return 1\n"},
+            by_attr: {"status": "local", "local": stale, "upstream": stale},
+            by_name: {"status": "local", "local": stale_name, "upstream": stale_name},
+            guarded: {"status": "local", "local": guarded_stale, "upstream": guarded_stale},
+        })
+        _write(baseline / "template" / mod, b"def kept():\n    return 1\n")
+        _commit(baseline, "remove gone")
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_HARNESS.encode())
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 1, _out(pull)
+        out = _out(pull)
+        assert f"{by_attr}:2 reads api.gone" in out, out
+        assert f"{by_name}:1 reads api.gone" in out, out
+        assert f"{guarded}:5 reads api.gone" in out, out
+        assert (root / by_attr).read_bytes() == stale, "scan must never rewrite local code"
+
+
+def test_pull_silent_when_the_pulled_copy_still_defines_the_name() -> None:
+    mod = ".claude/tools/api.py"
+    caller = ".claude/tools/caller.py"
+    stale = b"import api\napi.gone()\n"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            mod: {"upstream": b"def gone():\n    return 1\n"},
+            caller: {"status": "local", "local": stale, "upstream": stale},
+        })
+        _write(baseline / "template" / mod, b"def gone():\n    return 2\ndef added():\n    return 3\n")
+        _commit(baseline, "keep gone")
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_HARNESS.encode())
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert "local reference" not in _out(pull), _out(pull)
+
+
+def test_pull_silent_when_no_local_file_reads_the_removed_name() -> None:
+    mod = ".claude/tools/api.py"
+    caller = ".claude/tools/caller.py"
+    reads_other = b"import api\napi.kept()\n"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            mod: {"upstream": b"def gone():\n    return 1\n"},
+            caller: {"status": "local", "local": reads_other, "upstream": reads_other},
+        })
+        _write(baseline / "template" / mod, b"def kept():\n    return 1\n")
+        _commit(baseline, "remove gone")
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_HARNESS.encode())
+        pull = _run_baseline(root, baseline, "pull")
+        assert pull.returncode == 0, _out(pull)
+        assert "local reference" not in _out(pull), _out(pull)
+
+
 def test_migrate_core_row_absent_until_pulled() -> None:
     core = ".claude/CLAUDE.core.md"
     with _fixture() as path:
@@ -4265,6 +4326,9 @@ def main() -> int:
         test_bare_pull_skips_unrowed_differing_local,
         test_bare_pull_names_a_diverged_row_it_holds,
         test_explicit_pull_refuses_unrowed_differing_local,
+        test_pull_reports_a_local_caller_of_a_removed_module_attribute,
+        test_pull_silent_when_the_pulled_copy_still_defines_the_name,
+        test_pull_silent_when_no_local_file_reads_the_removed_name,
         test_migrate_core_row_absent_until_pulled,
         test_migrate_replaces_core_region_with_imports,
         test_migrate_leaves_regionless_claude_md,

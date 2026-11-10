@@ -58,9 +58,10 @@ neither is refused, because a tier names a work shape and the ladder's effort ce
 commands/checklists/code_quality.md by section letter; {{TEST_QUALITY_CHECKLIST}} is test_quality.md
 below its frontmatter and {{CODE_QUALITY_CHECKLIST}} is code_quality.md whole. Each code_quality
 placeholder also carries the same letters of its `<stem>_godot.md` companion when the engine layer ships it. {{CONTEXT}} becomes a pointer to --context-path
-(dispatch.js `contextPath` already tells the agent to read it first). Unresolved placeholders are an
-error, never silently left in a brief. `--pr-num`/`--branch` are required only by a selected
-template that uses their placeholder.
+(dispatch.js `contextPath` already tells the agent to read it first). A frozen packet passed as
+`--must-read-from` also settles the session-audit placeholders `prepare` fills (`DOCTRINE_COMMITS`,
+`HARNESS_HUNKS`); an unresolved placeholder that no packet settles is an error, never silently left
+in a brief. `--pr-num`/`--branch` are required only by a selected template that uses their placeholder.
 
 Every seat carries a must-read list (commands/agents/review_agents.md *Seat coverage contract*): the
 subject files or diff paths its lens covers, one per line in a list file. `--must-read` gives the panel's
@@ -160,9 +161,10 @@ NATIVE_EFFORTS = tuple(_session_transport.legal_effort_values("anthropic"))
 # A placeholder the CALLER supplies as a flag rather than as a `--sub` file: the refusal names the
 # flag, because an absent --pr-num silently substituted with empty text produces a brief that reads
 # as complete and reviews nothing.
-# Placeholders whose consuming command defines an absent value of `none` (session_audit.md:109 SHORT_PLAN).
-# A placeholder missing here still refuses: DESIGN_LIST has no documented absent value.
-NONE_DEFAULTS = {"SHORT_PLAN": "none"}
+# Placeholders whose consuming command defines an absent value of `none` (session_audit.md:109 SHORT_PLAN;
+# a hot set the audit did not build). A placeholder missing here still refuses: DESIGN_LIST has no
+# documented absent value.
+NONE_DEFAULTS = {"SHORT_PLAN": "none", "HOT_SET": "none"}
 FLAG_PLACEHOLDERS = {"PR_NUM": "--pr-num", "BRANCH": "--branch"}
 
 # The review route's shape and schema. One home per authored value: the schema path is
@@ -450,6 +452,21 @@ def packet_entries(views: dict, mandates: list[str]) -> list[dict]:
     """A seat's must-read entries from the packet's views of its `mandates`, each artifact once in order."""
     paths = list(dict.fromkeys(path for mandate in mandates for path in views.get(mandate, [])))
     return must_read_entries(paths)
+
+
+def audit_subs(root: Path, packet: dict, session_base: str | None = None) -> dict[str, str]:
+    """The session-audit placeholders a frozen packet settles: the doctrine commit pointer and the diff list."""
+    subs = {"DOCTRINE_COMMITS": (f"Read `{packet['doctrineCommits']}` in full."
+                                 if packet.get("doctrineCommits") else "none")}
+    diffs = [art for art in packet.get("artifacts") or []
+             if art.get("kind") == "subject-diff" and art.get("file")]
+    before = _base_sizes(root, session_base or packet.get("sessionBase") or packet.get("base"),
+                         [art["file"] for art in diffs])
+    subs["HARNESS_HUNKS"] = "\n".join(["The harness diff, one file per subject file; read each in full:"] + [
+        f"- `{art['artifact']}`: {art['file']}, bytes: {before.get(art['file'], 0)} → "
+        f"{(root / art['file']).stat().st_size if (root / art['file']).is_file() else 0}"
+        for art in diffs])
+    return subs
 
 
 def must_read_section(entries: list[dict]) -> str:
@@ -958,22 +975,12 @@ def prepare_command(argv: list[str]) -> None:
         for mandate, view in (packets.get("views") or {}).items():
             packet_views[mandate] = [str((root / path).resolve()) for path in view.get("mustRead") or []]
         subs = list(spec.get("subs") or [])
-        for name in ("DOCTRINE_COMMITS", "HARNESS_HUNKS", "HOT_SET"):
-            if any(str(entry).startswith(name + "=") for entry in subs):
+        given = {str(entry).partition("=")[0] for entry in subs}
+        # A pointer, never the text: the seat's must-read list delivers these files, and an inlined
+        # copy doubles the reading and puts quoted doctrine where the capability scan reads orders.
+        for name, text in audit_subs(root, packets, spec["sessionAudit"].get("sessionBase")).items():
+            if name in given:
                 continue
-            # A pointer, never the text: the seat's must-read list delivers these files, and an inlined
-            # copy doubles the reading and puts quoted doctrine where the capability scan reads orders.
-            if name == "DOCTRINE_COMMITS" and packets.get("doctrineCommits"):
-                text = f"Read `{packets['doctrineCommits']}` in full."
-            elif name == "HARNESS_HUNKS":
-                diffs = [art for art in packets.get("artifacts") or [] if art.get("kind") == "subject-diff"]
-                before = _base_sizes(root, spec["sessionAudit"].get("sessionBase"), [art.get("file") for art in diffs])
-                text = "\n".join(["The harness diff, one file per subject file; read each in full:"] + [
-                    f"- `{art['artifact']}`: {art.get('file')}, bytes: {before.get(art.get('file'), 0)} → "
-                    f"{(root / art['file']).stat().st_size if (root / art['file']).is_file() else 0}"
-                    for art in diffs])
-            else:
-                text = "none"
             path = out / f"sub_{name}.txt"
             path.write_text(text, encoding="utf-8", newline="\n")
             subs.append(f"{name}={path}")
@@ -1187,6 +1194,12 @@ def build_briefs(a: BriefParams) -> list[dict]:
     for s in a.sub:
         k, _, p = s.partition("=")
         subs[k] = Path(p).read_text(encoding="utf-8")
+    if a.must_read_from:
+        # The packet that settles the seat's must-read list also settles the session-audit placeholders
+        # `prepare` fills, so a direct brief call needs no --sub for them. A --sub still wins.
+        packet = json.loads(Path(a.must_read_from).read_text(encoding="utf-8"))
+        for name, text in audit_subs(REPO, packet).items():
+            subs.setdefault(name, text)
 
     selected = set(a.keys)
     tier_overrides = {}

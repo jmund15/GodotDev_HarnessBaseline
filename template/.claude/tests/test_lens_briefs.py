@@ -179,6 +179,50 @@ def packet_seat_checks():
           repr(outcome) + repr(entries))
 
 
+def packet_placeholder_defaults():
+    """A frozen session-audit packet settles the placeholders `prepare` fills, with no --sub flags."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        context = root / "context.md"
+        context.write_text("context\n", encoding="utf-8")
+        diff = root / "subject-0.diff"
+        diff.write_text("diff\n", encoding="utf-8")
+        doctrine = root / "doctrine-commits.md"
+        doctrine.write_text("commits\n", encoding="utf-8")
+        packet = root / "inputs.json"
+        packet.write_text(json.dumps({
+            "base": "HEAD", "sessionBase": "HEAD", "doctrineCommits": doctrine.as_posix(),
+            "artifacts": [{"kind": "subject-diff", "artifact": diff.as_posix(), "file": "src/thing.py"}],
+            "views": {"harness-quality": {"mustRead": [diff.as_posix(), doctrine.as_posix()]}}}),
+            encoding="utf-8")
+        plan = root / "plan.json"
+        plan.write_text(json.dumps({"roster": [{"key": "seat-a"}]}), encoding="utf-8")
+        body = ["```\n", "Doctrine: {{DOCTRINE_COMMITS}}\nHunks: {{HARNESS_HUNKS}}\nHot: {{HOT_SET}}\n", "```\n"]
+        found = {"seat-a": types.SimpleNamespace(registry="review", lines=body, kfm=False, citers=False,
+                                                 mandates=["harness-quality"])}
+        saved = (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal, lens_briefs.seat_overage)
+        lens.catalog = lambda: ({"review": "preamble"}, found)
+        lens.doctrine = lambda lenses: ""
+        lens.seat_tier = lambda key: "fanout"
+        lens_briefs.lens_tier_refusal = lambda **kwargs: []
+        lens_briefs.seat_overage = lambda **kwargs: None
+        try:
+            out = root / "out"
+            outcome = run_main(["--plan", str(plan), "--out", str(out), "--prefix", "p",
+                                "--context-path", str(context), "--model", sorted(lens_briefs.NATIVE_PINS)[0],
+                                "--effort", sorted(lens_briefs.NATIVE_EFFORTS)[0],
+                                "--must-read-from", str(packet)])
+            brief = (out / "p_seat-a.md").read_text(encoding="utf-8") if (out / "p_seat-a.md").exists() else ""
+        finally:
+            (lens.catalog, lens.doctrine, lens.seat_tier, lens_briefs.lens_tier_refusal,
+             lens_briefs.seat_overage) = saved
+    check("a packet settles the session-audit placeholders with no --sub", outcome == "returned", str(outcome))
+    check("the brief leaves no session-audit placeholder unresolved", "{{" not in brief, brief[:600])
+    check("the doctrine pointer names the packet's frozen commit artifact", doctrine.as_posix() in brief, brief[:600])
+    check("the harness-hunks list names the packet's subject diff", diff.as_posix() in brief, brief[:600])
+    check("a HOT_SET the packet does not fill reads none", "Hot: none" in brief, brief[:600])
+
+
 def bar_checks():
     """A sidecar seat's brief carries the run's bar (the sidecar prompt has no engine contract); a native seat's
     brief never does, since the engine appends it to the native seat's contract."""
@@ -354,6 +398,7 @@ def main():
     job_tier_checks()
     packet_view_checks()
     packet_seat_checks()
+    packet_placeholder_defaults()
     merged_seat_checks()
     bar_checks()
     entry_checks()
