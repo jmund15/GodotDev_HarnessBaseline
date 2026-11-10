@@ -389,7 +389,8 @@ function Test-NativeCrashExit {
 
 function Get-ClockTicksPerSecond {
     $tck = 0
-    if ([int]::TryParse((& getconf CLK_TCK 2>$null), [ref] $tck) -and $tck -gt 0) { return $tck }
+    $getconf = (Get-Command getconf -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+    if ($getconf -and [int]::TryParse((& $getconf CLK_TCK 2>$null), [ref] $tck) -and $tck -gt 0) { return $tck }
     100
 }
 

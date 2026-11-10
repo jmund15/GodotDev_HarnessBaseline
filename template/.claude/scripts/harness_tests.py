@@ -30,7 +30,7 @@ and leaves the run incomplete (exit 3). rules/harness_tooling.md owns cadence an
 
 import argparse
 import base64
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout
 import io
 import math
 import fnmatch
@@ -362,6 +362,21 @@ _CALLER_IDENTITY_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SIDECAR", "CLAUDE
                         "CLAUDE_CODE_SIDECAR_LABEL", "SIDECAR_PARENT_SESSION_ID")
 
 
+def _land_path(value):
+    """`value` without the folders Git Bash prepends on Windows (its install's `usr/bin`, `usr/local/bin`,
+    `mingw64/bin` and `bin`, and `~/bin`). The land runner starts proofs from pwsh, whose PATH holds none of
+    them, so a proof that needs a Git tool by bare name fails there; without them it fails in a session too."""
+    if os.name != "nt":
+        return value
+    bash = _bash_exe()
+    git_root = os.path.dirname(os.path.dirname(bash)) if os.path.isabs(bash) else None
+    shell = {os.path.normcase(os.path.normpath(os.path.join(git_root, *parts)))
+             for parts in (("usr", "bin"), ("usr", "local", "bin"), ("mingw64", "bin"), ("bin",))} if git_root else set()
+    shell.add(os.path.normcase(os.path.normpath(os.path.join(os.path.expanduser("~"), "bin"))))
+    return os.pathsep.join(entry for entry in value.split(os.pathsep)
+                           if entry and os.path.normcase(os.path.normpath(entry)) not in shell)
+
+
 def _chmod_and_retry(func, path, _exc):
     # Git fixtures leave read-only object files, which Windows refuses to unlink.
     os.chmod(path, stat.S_IWRITE)
@@ -493,6 +508,8 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
     # inside it, and 4 x 4 git-spawning processes timed out proofs that pass alone.
     env.setdefault("HARNESS_CASE_JOBS", "2")
     env.update({name: temp_root for name in _TEMP_ENV})
+    if "PATH" in env:
+        env["PATH"] = _land_path(env["PATH"])
     # A runner the proof starts takes its slots here: waiting on the machine slot this proof holds
     # would deadlock. The caller's deadline binds this run, not the proof's own runs.
     env["HARNESS_SLOT_DIR"] = os.path.join(temp_root, "slots")
@@ -675,6 +692,8 @@ _CORPUS_SCANNING = {
     "test_hook_state.py": (".claude/hooks",),
     "test_claudemd_citations.py": (".claude",),
     "test_guard_text.py": (".claude/guards",),
+    # Its live case checks every tracked row's citations, so a new file a row names can turn it red.
+    "test_layer_closure.py": (".claude",),
 }
 
 
@@ -1106,16 +1125,45 @@ def _take_slots(exclusive):
         time.sleep(0.25)
 
 
+_MACHINE_HELD = False
+
+
+@contextmanager
+def _machine_hold():
+    """Every machine slot, taken once for a run's alone work (its `SERIAL` proofs and alone retries), which
+    then runs back to back. Each separate exclusive take waits for every proof running on the machine to end,
+    and no run there starts a proof meanwhile; one take per run pays that drain once. Yields False when the
+    deadline passes first or the slot store is unusable: each launch then takes or reports its own slots."""
+    global _MACHINE_HELD
+    if _MACHINE_HELD:
+        yield True
+        return
+    try:
+        handles = _take_slots(True)
+    except SlotStoreError:
+        handles = None
+    if handles is None:
+        yield False
+        return
+    _MACHINE_HELD = True
+    try:
+        yield True
+    finally:
+        _MACHINE_HELD = False
+        for handle in handles:
+            _file_lock.release(handle)
+
+
 def _launch(path, timeout=None, exclusive=False, root=None, recheck=None, timing=None, *, behavior_cases=None, receipt_sink=None,
             reads_sink=None):
     """The one place a proof process starts, for first runs, retries and HEAD comparisons: it takes the
-    machine slot (`exclusive` or a `SERIAL` proof takes every slot), then `recheck()` may answer from
+    machine slot (`exclusive` or a `SERIAL` proof takes every slot; none while `_machine_hold` holds them all), then `recheck()` may answer from
     the pass cache, then the deadline caps or refuses the run. Returns `_SKIPPED` when the deadline
     passes first, `cannot-run` when the slot store is unusable, else the `run_proof` result. A `timing`
     dict receives `wait_s`, the seconds until the slots were held (0 with slots off)."""
     asked = time.time()
     try:
-        handles = _take_slots(exclusive or os.path.basename(path) in SERIAL)
+        handles = [] if _MACHINE_HELD else _take_slots(exclusive or os.path.basename(path) in SERIAL)
     except SlotStoreError as exc:
         return ("cannot-run", 0.0, str(exc))
     finally:
@@ -1904,7 +1952,9 @@ class RunOptions(NamedTuple):
     """How `_run_selected` runs. `cache` is a `_PassCache` or None; `root` is the checkout the proofs
     run in (None means the live one). A run is recorded to `harness_runs.json` only when `mode` names
     it; `row`, when given, also receives the recorded row. `stop` latches a newer close superseding this
-    one: queued proofs and retries skip while already running proofs drain and cache their passes."""
+    one: queued proofs and retries skip while already running proofs drain and cache their passes. `red`
+    judges the proofs that failed again alone ({path: detail}): True when they make the run red, so its
+    timeout retries are not run. None counts every such proof."""
     cache: object = None
     root: object = None
     mode: object = None
@@ -1914,6 +1964,7 @@ class RunOptions(NamedTuple):
     base: object = "HEAD"
     behavior_out: object = None
     repo: object = None
+    red: object = None
 
 
 def _run_selected(selected, verbose, statuses=None, details=None, options=RunOptions()):
@@ -1928,7 +1979,10 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     temp race) is a runner condition; a second failure is red. A timeout is re-run alone even with no
     recorded pass, at `_LOAD_FACTOR` times its timeout, or at its `proof_timeouts` cap, which already holds
     that headroom, and its pass there is not flaky: the first timeout came from a missing duration; an assertion failure with no recorded pass is
-    not re-run, because a known red would only repeat. Past `HARNESS_DEADLINE` no proof starts or
+    not re-run, because a known red would only repeat. The run takes the machine once for all its alone work
+    (`_machine_hold`). Assertion failures retry first; once one fails alone and `options.red` agrees it makes
+    the run red, the timeout retries are `skipped`: they could only tell flaky from red in a run that cannot
+    pass, and a proof with no recorded pass runs again in the next run. Past `HARNESS_DEADLINE` no proof starts or
     retries, and one the deadline cuts short is `skipped`, counted with the indeterminate ones.
     Returns (passed, failed, indeterminate, wall seconds); a `statuses` dict
     receives each proof's final status and a `details` dict its final detail. A run with an `options.mode`
@@ -2030,31 +2084,48 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     with ThreadPoolExecutor(max_workers=_jobs()) as pool:
         for path, result in zip(pooled, pool.map(lambda p: progressed(p, attempt(p, _timeout_for(p, known))), pooled)):
             results[path] = result
-    for path in alone:
-        results[path] = progressed(path, attempt(path, _timeout_for(path, known)))
-    pool_s = time.time() - start
     flaky, alone_n, alone_s = [], 0, 0.0
-    retrying = [p for p in selected if not cases[p] and results[p][0] == "fail"
-                and (os.path.basename(p) in known or _timed_out(results[p]))]
-    for path in selected:
-        timed_out = _timed_out(results[path])
-        cold = timed_out and os.path.basename(path) not in known
-        if path in retrying:
-            _progress("alone retry %d of %d: %s; first failure: %s"
-                      % (retrying.index(path) + 1, len(retrying), os.path.basename(path), _last_line(results[path][2])))
-            capped = os.path.basename(path) in _PROOF_TIMEOUTS
-            timeout = _timeout_for(path, known) * (_LOAD_FACTOR if timed_out and not capped else 1)
-            retry = attempt(path, timeout, exclusive=True)
-            if retry[0] != "skipped":
-                alone_n, alone_s = alone_n + 1, alone_s + retry[1]
-            if retry[0] == "skipped":
-                if timed_out:
-                    results[path] = retry
-                continue
-            if retry[0] == "pass" and not cold:
-                flaky.append((path, results[path][2]))
-                _record_flaky(path, results[path][2], retry[1])
-            results[path] = retry
+    with _machine_hold() if alone else nullcontext():
+        for path in alone:
+            results[path] = progressed(path, attempt(path, _timeout_for(path, known)))
+        pool_s = time.time() - start
+        # Assertion failures first: they are the likely reds, and once one fails alone the run cannot pass, so
+        # the timeout retries after it, which can only tell flaky from red, do not run.
+        retrying = sorted((p for p in selected if not cases[p] and results[p][0] == "fail"
+                           and (os.path.basename(p) in known or _timed_out(results[p]))),
+                          key=lambda p: _timed_out(results[p]))
+        red_alone, decided = {}, None
+        with _machine_hold() if retrying else nullcontext():
+            for index, path in enumerate(retrying, 1):
+                timed_out = _timed_out(results[path])
+                cold = timed_out and os.path.basename(path) not in known
+                if timed_out and decided is None:
+                    decided = bool(red_alone) and (options.red(red_alone) if options.red else True)
+                    if decided:
+                        _progress("%d timeout retr%s not run: the run is already red (%s failed alone)"
+                                  % (len(retrying) - index + 1, "y" if len(retrying) - index == 0 else "ies",
+                                     ", ".join(sorted(os.path.basename(p) for p in red_alone))))
+                if timed_out and decided:
+                    results[path] = ("skipped", 0.0, "not run: the run is already red (%s failed alone)"
+                                     % ", ".join(sorted(os.path.basename(p) for p in red_alone)))
+                    continue
+                _progress("alone retry %d of %d: %s; first failure: %s"
+                          % (index, len(retrying), os.path.basename(path), _last_line(results[path][2])))
+                capped = os.path.basename(path) in _PROOF_TIMEOUTS
+                timeout = _timeout_for(path, known) * (_LOAD_FACTOR if timed_out and not capped else 1)
+                retry = attempt(path, timeout, exclusive=True)
+                if retry[0] != "skipped":
+                    alone_n, alone_s = alone_n + 1, alone_s + retry[1]
+                if retry[0] == "skipped":
+                    if timed_out:
+                        results[path] = retry
+                    continue
+                if retry[0] == "pass" and not cold:
+                    flaky.append((path, results[path][2]))
+                    _record_flaky(path, results[path][2], retry[1])
+                if retry[0] == "fail" and not timed_out:
+                    red_alone[path] = retry[2]
+                results[path] = retry
     _record_durations({p: r for p, r in results.items() if p not in reused and r[0] != "skipped"})
 
     passed, failed, indeterminate = 0, 0, []
@@ -2306,6 +2377,16 @@ def _reds_at(repo_root, rev, failing):
                         detail = (detail or '').replace(there, here)
                     reds[path] = detail
         return reds
+
+
+def _new_reds(repo_root, base, reds, memo):
+    """The proofs of `reds` ({path: detail}) whose failure is not pre-existing at `base`. Each proof reruns at
+    base once: `memo` keeps its result ({path: base detail or None}) for the close's classification."""
+    fresh = [p for p in reds if p not in memo]
+    if fresh:
+        found = _reds_at(repo_root, base, fresh)
+        memo.update({p: found.get(p) for p in fresh})
+    return [p for p in reds if not (memo.get(p) and _is_pre_existing(reds[p], memo[p], repo_root, repo_root))]
 
 
 def _git_soft(repo_root, args):
@@ -2690,8 +2771,16 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
             _progress(_selection_estimate(selected))
             cache = _pass_cache(snapshot, selected)
             row = {}
+            empty_base, at_base = _is_empty_base(repo_root, base), {}
+
+            def blocks(reds):
+                """A red alone blocks this close unless its proof was never committed or it is pre-existing at base."""
+                committed = {p: d for p, d in reds.items()
+                             if not _never_committed(repo_root, _norm(os.path.relpath(p, snapshot)))}
+                return bool(committed) and (empty_base or bool(_new_reds(snapshot, base, committed, at_base)))
+
             _run_selected(selected, verbose, statuses, details,
-                          RunOptions(cache, snapshot, "close", row, superseded, paths, base, behavior_out))
+                          RunOptions(cache, snapshot, "close", row, superseded, paths, base, behavior_out, red=blocks))
             if superseded():
                 print("harness_tests: a newer close superseded this one; it stops without a verdict", flush=True)
                 return 2
@@ -2701,7 +2790,9 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
             failing = [p for p in failing if os.path.basename(p) not in untracked_red]
             for name in untracked_red:
                 print("UNCOMMITTED PROOF RED %s (not in this push)" % name)
-            base_reds = {} if _is_empty_base(repo_root, base) else _reds_at(snapshot, base, failing)
+            if not empty_base:
+                _new_reds(snapshot, base, {p: details[p] for p in failing}, at_base)
+            base_reds = {p: at_base[p] for p in failing if at_base.get(p)}
             main_base, main_reds = _default_merge_base(snapshot, head, base, remote), {}
             if main_base:
                 main_reds = _reds_at(snapshot, main_base, [p for p in failing if not (
