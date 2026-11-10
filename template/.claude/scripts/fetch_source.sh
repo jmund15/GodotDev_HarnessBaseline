@@ -85,7 +85,7 @@ for url in "$@"; do
     rc=1; continue
   fi
 
-  mv "$art.part" "$art"
+  mv "$art.part" "$art"  # bare-rename: the artifact goes to the caller on exit; no watcher polls it
   printf 'OK\t%s\t%s\t%s\t%s\n' "$code" "$bytes" "$(winpath "$art")" "$url"
 done
 

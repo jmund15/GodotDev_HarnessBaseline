@@ -32,8 +32,16 @@ from urllib.parse import unquote, urlsplit
 # `_pinned_template_tokens`), never at its own module scope -- so this top-level import can
 # never race a half-initialized sibling.
 _TOOLS_DIR = Path(__file__).resolve().parent
-if str(_TOOLS_DIR) not in sys.path:
-    sys.path.insert(0, str(_TOOLS_DIR))
+_HOOKS_DIR = _TOOLS_DIR.parent / "hooks"
+for _d in (_TOOLS_DIR, _HOOKS_DIR):
+    if str(_d) not in sys.path:
+        sys.path.insert(0, str(_d))
+try:
+    from _hook_state import replace_path  # noqa: E402
+except ImportError:
+    # A pull proof's temp checkout carries `tools/` without `hooks/`: the engine still runs there, and
+    # nothing in that checkout reads concurrently, so the bare rename keeps its pre-helper behavior.
+    replace_path = os.replace
 import baseline_identity  # noqa: E402
 import baseline_compose  # noqa: E402
 import adaptation  # noqa: E402
@@ -155,23 +163,6 @@ class BinaryText(str):
 
 def normalize(data: bytes) -> bytes:
     return _lf(data)
-
-
-def replace_path(source: Path | str, target: Path | str, wait_s: float = 10.0) -> None:
-    """os.replace that waits out a reader holding the target.
-
-    Windows refuses a rename onto a path another process holds open (WinError 5); an indexer
-    or scanner reading a journal or lock is enough. Retry until `wait_s` passes, then raise.
-    """
-    deadline = time.monotonic() + wait_s
-    while True:
-        try:
-            os.replace(source, target)
-            return
-        except PermissionError:
-            if time.monotonic() >= deadline:
-                raise
-            time.sleep(0.1)
 
 
 def read_path_bytes(path: Path | str, wait_s: float = 10.0) -> bytes:

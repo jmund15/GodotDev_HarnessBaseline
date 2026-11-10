@@ -2,8 +2,9 @@
 """Cases for hooks/shell_census.py: the planted 60-min shell is reported (the guard bites), a
 5-min shell and a non-claude process are not, a bash -c chain collapses to one root, a sidecar
 with a stale -P stream is flagged, an empty process list renders nothing, ownership classifies
-own/other/unknown roots correctly, and per-session emission dedupes on an unchanged key while
-re-arming after a compaction and after a malformed stdin payload."""
+own/other/unknown roots correctly, a displayed row's dead owner is proved from its environment
+tag and rendered with its facts while nothing is stopped, and per-session emission dedupes on an
+unchanged key while re-arming after a compaction and after a malformed stdin payload."""
 import json
 import os
 import sys
@@ -42,8 +43,9 @@ procs = [{"pid": 10, "ppid": 1, "age": 60, "cmd": WRAP % "tail -f some.log"}]
 rows = shell_census.select(procs)
 case("planted 60-min shell reported", len(rows) == 1 and rows[0]["pid"] == 10 and rows[0]["tail"] == "tail -f some.log",
      repr(rows))
-case("unknown owner renders only a count", shell_census.render(rows) ==
-     '[shells] 1 long-running shell(s), owner unknown; leave them running.')
+case("unknown owner renders its pid and the fact reap cannot prove a dead owner",
+     "pid 10" in shell_census.render(rows) and "reap cannot prove a dead owner" in shell_census.render(rows)
+     and "leave them running" in shell_census.render(rows), shell_census.render(rows))
 case("header never claims \"this harness spawned\"", "this harness spawned" not in shell_census.render(rows),
      shell_census.render(rows))
 case("unresolved ancestry renders as owner unknown, not this harness",
@@ -90,9 +92,9 @@ case("a live watcher shell is silent",
      repr(_watcher_text))
 _unwatched_text = shell_census.run({"session_id": "nowatch0-0000-0000-000000000000"}, watcher_procs,
                                    own_pid=999, own_root=100)
-case("the same unresolved shell without a registered watcher gets a count",
-     "owner unknown" in _unwatched_text and "pid" not in _unwatched_text,
-     repr(_unwatched_text))
+case("the same unresolved shell without a registered watcher is named with the proof limit",
+     "owner unknown" in _unwatched_text and "pid 35" in _unwatched_text
+     and "reap cannot prove a dead owner" in _unwatched_text, repr(_unwatched_text))
 
 # 5. empty input renders nothing (the hook is silent, not "clean")
 case("empty process list renders empty string", shell_census.render(shell_census.select([])) == "")
@@ -136,7 +138,7 @@ procs = ancestry() + [{"pid": 42, "ppid": 9999, "age": 60, "name": "bash.exe", "
 rows = shell_census.select(procs, own_pid=999)
 txt = shell_census.render(rows)
 case("broken ancestry chain is owner unknown, not own",
-     rows[0]["owner"] == "unknown" and "pid 42" not in txt and "owner unknown" in txt, txt)
+     rows[0]["owner"] == "unknown" and "pid 42" in txt and "owner unknown" in txt, txt)
 
 # --- emission / dedupe (drives shell_census.run(), the per-session path main() calls) ---
 
@@ -266,6 +268,80 @@ one, six = ppid_reads(1), ppid_reads(6)
 case("ppid reads do not scale with the number of candidate roots (%d for 1 root, %d for 6)" % (one, six),
      six - one < 90, "1 root=%d 6 roots=%d" % (one, six))
 
+# 13f. a long shell whose owner session is proven dead gets that fact on its row (pid, age, CPU,
+# session, launch membership); a live session's shell stays silent; an untagged shell keeps the
+# unknown-owner wording. Nothing is stopped and no ledger row is written: the census only reports.
+import json as _json  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+sys.path.insert(0, os.path.join(HERE, "..", "hooks"))
+import reap as _reap  # noqa: E402
+
+CENSUS_SESSION = "census-session-0001"
+DEAD = "deaddead-1111-2222-3333-444444444444"
+SWEEP_LIVE = "11111111-2222-3333-4444-555555555555"
+PANE = ('"C:\\Program Files\\Git\\bin\\bash.exe" -c "source /c/x/.claude/shell-snapshots/snap-b.sh '
+        '2>/dev/null || true && eval \'python3 .claude/tools/watch_records.py --pane\' < /dev/null"')
+
+
+def _env(launch=None, session=None, parent=None):
+    out = b"PATH=/usr/bin\0"
+    for k, v in (("SIDECAR_LAUNCH_ID", launch), ("CLAUDE_CODE_SESSION_ID", session),
+                 ("SIDECAR_PARENT_SESSION_ID", parent)):
+        if v:
+            out += k.encode() + b"=" + v.encode() + b"\0"
+    return out
+
+
+_census_root = _tempfile.mkdtemp(prefix="shell_census_proof_")
+_projects = _Path(_census_root) / "projects"
+(_projects / "C--x-{{PROJECT_NAME}}").mkdir(parents=True)
+for _sid in (CENSUS_SESSION, DEAD):
+    (_projects / "C--x-{{PROJECT_NAME}}" / (_sid + ".jsonl")).write_text("{}\n", encoding="utf-8")
+_reg = _Path(_census_root) / "sessions"
+_reg.mkdir()
+for _pid, _sid in ((100, CENSUS_SESSION), (910, SWEEP_LIVE)):
+    (_reg / ("%d.json" % _pid)).write_text(_json.dumps({"pid": _pid, "sessionId": _sid}), encoding="utf-8")
+_envs = {501: _env(session=DEAD), 502: _env(session=DEAD), 511: _env(session=SWEEP_LIVE)}
+_killed = []
+_reap.PROJECTS_ROOT = _projects
+_reap.session_registry_dirs = lambda: [_reg]
+_reap.environ_of = lambda pid: _envs.get(pid, b"")
+_reap.launch_environ = _reap.environ_of
+_reap.msys_environ = lambda pid: b""
+_reap.process_exited = lambda pid, start: False
+_reap.taskkill = lambda pid, tree=True: (_killed.append(pid) or True)
+_reap.LEDGER = _Path(_census_root) / "ledger.jsonl"
+
+census_procs = [
+    {"pid": 100, "ppid": 1, "name": "claude.exe", "cmd": "C:/x/claude.exe --session-id " + CENSUS_SESSION},
+    # the pane wrapper's ancestry no longer reaches a session root: only its own tag names one
+    {"pid": 501, "ppid": 9999, "name": "bash.exe", "cmd": PANE, "age": 300, "cpu": 7300},
+    {"pid": 502, "ppid": 501, "name": "python3.exe", "cmd": "python3 .claude/tools/watch_records.py --pane", "age": 300},
+    {"pid": 910, "ppid": 1, "name": "claude.exe", "cmd": "C:/x/claude.exe"},
+    {"pid": 511, "ppid": 910, "name": "bash.exe", "cmd": PANE, "age": 300},
+    {"pid": 520, "ppid": 9999, "name": "bash.exe", "cmd": PANE, "age": 300, "cpu": 4000},
+]
+_census_text = shell_census.run({"session_id": CENSUS_SESSION}, census_procs, own_pid=999, own_root=100)
+case("a dead session's long shell renders its facts and no process is stopped",
+     _killed == [] and "pid 501" in _census_text and "session deaddead has no live host" in _census_text
+     and not _reap.LEDGER.exists(), repr(_census_text))
+case("the dead-session row carries the CPU cost that mattered and its launch membership",
+     "CPU-hours" in _census_text and "no launch id in its own environment" in _census_text, repr(_census_text))
+case("a live session's shell is silent and an untagged shell keeps the unknown-owner wording",
+     "pid 511" not in _census_text and "pid 520" in _census_text and "reap cannot prove a dead owner" in _census_text,
+     repr(_census_text))
+
+# 13g. the proof runs on a cached snapshot too: nothing about it needs a fresh CIM read, and no
+# path in the census writes a ledger row.
+_rows = shell_census.select(census_procs, own_pid=999, own_root=100)
+shell_census.prove_rows(_rows, census_procs, CENSUS_SESSION)
+case("a cached snapshot proves the same dead owner and stops nothing",
+     any(r["pid"] == 501 and r.get("owner") == "dead" for r in _rows) and _killed == []
+     and not _reap.LEDGER.exists(), repr(_rows))
+
 # 14. malformed stdin: main() exits 0 with no traceback
 import subprocess  # noqa: E402
 hook_path = os.path.join(HERE, "..", "hooks", "shell_census.py")
@@ -326,4 +402,5 @@ with tempfile.TemporaryDirectory() as cwd_tmp, tempfile.TemporaryDirectory() as 
     case("without CLAUDE_PROJECT_DIR the cache lands under the hook's checkout root",
          os.path.exists(os.path.join(fake_root, ".claude", ".cache", "shell-census.json")))
 
+print("\ntest_shell_census: %d failed" % fails)
 sys.exit(1 if fails else 0)

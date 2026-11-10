@@ -41,6 +41,9 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
+from _hook_state import replace_path  # noqa: E402
+
 __all__ = [
     "AI_WORKER_VALUES", "DEFAULT_PROFILE", "FULL_MIN_MIB", "PROFILE_ENV", "SCHEMA", "SMALL_MIN_MIB",
     "TIERS", "ai_worker", "gpu_tier", "input_hashes", "local_tier", "main_checkout_root", "preflight",
@@ -138,7 +141,7 @@ def write_profile(profile):
         handle, temp = tempfile.mkstemp(prefix=".workstation_profile_", suffix=".json", dir=directory)
         with os.fdopen(handle, "w", encoding="utf-8") as fh:
             json.dump(profile, fh, ensure_ascii=True, indent=2, sort_keys=True)
-        os.replace(temp, path)
+        replace_path(temp, path)
         return True
     except (OSError, ValueError, TypeError):
         if temp:

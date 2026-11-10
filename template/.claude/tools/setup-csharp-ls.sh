@@ -72,7 +72,7 @@ RENAMED_EXE="$DOTNET_TOOLS_DIR/csharp-ls-original.exe"
 if [[ -f "$ORIGINAL_EXE" ]]; then
   echo "[2/4] Renaming csharp-ls.exe → csharp-ls-original.exe (overwrites old version if present)..."
   if [[ "$DRY_RUN" == false ]]; then
-    mv -f "$ORIGINAL_EXE" "$RENAMED_EXE"
+    mv -f "$ORIGINAL_EXE" "$RENAMED_EXE"  # bare-rename: the aside name of an executable this setup owns
   else
     echo "  Would rename: $ORIGINAL_EXE → $RENAMED_EXE (with -f overwrite)"
   fi

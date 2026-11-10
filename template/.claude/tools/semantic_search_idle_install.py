@@ -49,6 +49,13 @@ import sys
 import threading
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+try:
+    from _hook_state import replace_path
+except ImportError:
+    # The installed checker is a lone copy under ~/.claude/semantic-search-idle, with no hooks/ beside it.
+    replace_path = os.replace
+
 PLUGIN_KEY = "semantic-search@dreb"
 PROXY_SOURCE = Path(".claude/tools/semantic_search_idle_proxy.mjs")
 CHECKER_SOURCE = Path(".claude/tools/semantic_search_idle_install.py")
@@ -137,14 +144,14 @@ def write_json_atomic(path: Path, data) -> None:
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
+    replace_path(tmp, path)
 
 
 def write_bytes_atomic(path: Path, data: bytes) -> None:
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_bytes(data)
-    os.replace(tmp, path)
+    replace_path(tmp, path)
 
 
 # --------------------------------------------------------------------------- registry / manifest

@@ -74,6 +74,9 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+from _hook_state import replace_path  # noqa: E402
+
 LOG_PATH = Path("logs/routing_audit.jsonl")
 STATS_PATH = Path("logs/routing_audit_stats.json")
 ARCHIVE_DIR = Path("logs/routing-audit-archive")
@@ -315,7 +318,7 @@ def _replace_log(entries: list[dict]) -> None:
     with tmp.open("w", encoding="utf-8") as f:
         for entry in entries:
             f.write(json.dumps(entry, ensure_ascii=True) + "\n")
-    os.replace(tmp, LOG_PATH)
+    replace_path(tmp, LOG_PATH)
 
 
 # === Reporting ===============================================================

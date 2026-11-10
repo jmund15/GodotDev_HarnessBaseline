@@ -60,7 +60,7 @@ _NODE_RECORDER = os.path.join(_RECORDER_DIR, "node_recorder.js")
 _PROGRESS_MIN, _PROGRESS_EVERY = 25, 25  # a scoped commit run stays quiet; a close reports about 20 lines
 
 sys.path.insert(0, os.path.join(_CLAUDE_DIR, "hooks"))
-from _hook_state import update_json_locked, read_json_salvage, HARNESS_DIRS as DIRS, \
+from _hook_state import update_json_locked, read_json_salvage, replace_path, HARNESS_DIRS as DIRS, \
     SETUP_SURFACE_FILES as SURFACES, CODE_EXT as _CODE_EXT, \
     is_harness_code as _is_code  # noqa: E402
 import _file_lock  # noqa: E402
@@ -312,10 +312,21 @@ _DETAIL_LINES = 20
 
 
 def _detail_excerpt(detail):
-    """A proof's output as printed: its failure-marked lines above the tail, then the last `_DETAIL_LINES`."""
+    """A proof's output as printed: its failure-marked lines above the tail, each with the deeper-indented
+    lines under it (the detail a case prints beside its FAIL), then the last `_DETAIL_LINES`."""
     lines = detail.strip().splitlines()
     head, tail = lines[:-_DETAIL_LINES], lines[-_DETAIL_LINES:]
-    return [line for line in head if FAILURE_LINE.search(line)] + tail
+    kept, marked_indent = [], None
+    for line in head:
+        indent = len(line) - len(line.lstrip())
+        if FAILURE_LINE.search(line.strip()):
+            kept.append(line)
+            marked_indent = indent
+        elif marked_indent is not None and line.strip() and indent > marked_indent:
+            kept.append(line)
+        else:
+            marked_indent = None
+    return kept + tail
 
 
 # What `git rev-parse --local-env-vars` printed on git 2.x; used only when git cannot answer.
@@ -1786,6 +1797,27 @@ def _budget_line(row):
             % (row.get("wall_s", 0), _CLOSE_BUDGET_S, _PROOF_BUDGET_S, named, row.get("queue_s", 0)))
 
 
+def _time_line(row, runs):
+    """The close's time facts beside its budget line: pool seconds, the alone retries' count and seconds, and the
+    load ratio: this run's summed proof time over the same proofs' fastest passes in `runs` (this run's own row
+    excluded). A proof with no earlier pass stays out of both sums and is counted."""
+    fastest = {}
+    for earlier in runs:
+        if not isinstance(earlier, dict) or earlier.get("ts") == row.get("ts"):
+            continue
+        for p in earlier.get("proofs", []):
+            if p.get("status") == "pass" and not p.get("reused") and p.get("run_s", 0) > 0:
+                fastest[p["proof"]] = min(p["run_s"], fastest.get(p["proof"], p["run_s"]))
+    ran = [p for p in row.get("proofs", []) if p.get("status") == "pass" and not p.get("reused") and p.get("run_s", 0) > 0]
+    seen = [p for p in ran if p["proof"] in fastest]
+    load = ("load x%.1f (%.1fs over %.1fs fastest, %d of %d proofs with history)"
+            % (sum(p["run_s"] for p in seen) / sum(fastest[p["proof"]] for p in seen),
+               sum(p["run_s"] for p in seen), sum(fastest[p["proof"]] for p in seen), len(seen), len(ran))
+            if seen else "load unknown (0 of %d proofs with history)" % len(ran))
+    return ("harness_tests: close time: pool %.1fs; alone retries %d, %.1fs; %s"
+            % (row.get("pool_s", 0), row.get("alone_n", 0), row.get("alone_s", 0), load))
+
+
 def _record_flaky(path, first_detail, retry_elapsed):
     """Append one row per pool failure that passed alone, so a flaky proof stays visible and gets
     fixed. `failures` keeps the failing case lines: the summary alone cannot name the case to trace
@@ -1812,7 +1844,7 @@ def _append_diagnostic(log, row):
                 tmp = "%s.%d.tmp" % (log, os.getpid())
                 with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
                     fh.write("\n".join(rows[-200:]) + "\n")
-                os.replace(tmp, log)
+                replace_path(tmp, log)
     except (OSError, TimeoutError):
         pass
 
@@ -1833,6 +1865,39 @@ def _flaky_history(days=30):
     except OSError:
         return {}
     return counts
+
+
+def _known_red_history(proof, log=None):
+    """(first ts, row count) of the closes that recorded `proof` red in the known-red log, before this run
+    appends its own row; (None, 0) when the log has no earlier row. `log` names the file to read."""
+    path = log or _beside_stamp(KNOWN_RED_LOG, "harness_known_red.jsonl")
+    first, count = None, 0
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("proof") != proof:
+                    continue
+                count += 1
+                ts = row.get("ts")
+                if isinstance(ts, (int, float)) and (first is None or ts < first):
+                    first = ts
+    except OSError:
+        return None, 0
+    return first, count
+
+
+def _known_red_note(proof, log=None):
+    """The clause a pre-existing red line carries: when the proof was first recorded red, and how many
+    closes did before this one. A proof with no earlier row says so."""
+    first, count = _known_red_history(proof, log)
+    if not count:
+        return " (no earlier row in harness_known_red.jsonl)"
+    return " (first recorded red %s, %d earlier close%s)" % (
+        time.strftime("%Y-%m-%d", time.gmtime(first)), count, "" if count == 1 else "s")
 
 
 class RunOptions(NamedTuple):
@@ -1967,14 +2032,21 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
             results[path] = result
     for path in alone:
         results[path] = progressed(path, attempt(path, _timeout_for(path, known)))
-    flaky = []
+    pool_s = time.time() - start
+    flaky, alone_n, alone_s = [], 0, 0.0
+    retrying = [p for p in selected if not cases[p] and results[p][0] == "fail"
+                and (os.path.basename(p) in known or _timed_out(results[p]))]
     for path in selected:
         timed_out = _timed_out(results[path])
         cold = timed_out and os.path.basename(path) not in known
-        if not cases[path] and results[path][0] == "fail" and (os.path.basename(path) in known or timed_out):
+        if path in retrying:
+            _progress("alone retry %d of %d: %s; first failure: %s"
+                      % (retrying.index(path) + 1, len(retrying), os.path.basename(path), _last_line(results[path][2])))
             capped = os.path.basename(path) in _PROOF_TIMEOUTS
             timeout = _timeout_for(path, known) * (_LOAD_FACTOR if timed_out and not capped else 1)
             retry = attempt(path, timeout, exclusive=True)
+            if retry[0] != "skipped":
+                alone_n, alone_s = alone_n + 1, alone_s + retry[1]
             if retry[0] == "skipped":
                 if timed_out:
                     results[path] = retry
@@ -2058,6 +2130,7 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
             "ts": time.time(), "session": os.environ.get("CLAUDE_CODE_SESSION_ID") or None, "mode": mode,
             "head": head, "wall_s": round(wall, 1), "selected": len(selected), "reused": len(reused),
             "queue_s": round(sum(waits.values()), 1),
+            "pool_s": round(pool_s, 1), "alone_n": alone_n, "alone_s": round(alone_s, 1),
             "proofs": [{"proof": os.path.basename(p), "status": results[p][0], "run_s": round(results[p][1], 1),
                         "wait_s": round(waits.get(p, 0.0), 1), "reused": p in reused} for p in selected]})
         _record_run(record)
@@ -2635,8 +2708,8 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
                     p in base_reds and _is_pre_existing(details[p], base_reds[p], snapshot, snapshot))])
             for proof, detail in main_reds.items():
                 if _is_pre_existing(details[proof], detail, snapshot, snapshot):
-                    print("harness_tests: pre-existing red on the default branch at %s: %s"
-                          % (main_base[:8], os.path.basename(proof)))
+                    print("harness_tests: pre-existing red on the default branch at %s: %s%s"
+                          % (main_base[:8], os.path.basename(proof), _known_red_note(os.path.basename(proof))))
                     base_reds[proof] = details[proof]
             new_red, old_red = [], []
             candidates = {}
@@ -2661,7 +2734,7 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
             for proof in failing:
                 name = os.path.basename(proof)
                 if proof in base_reds and _is_pre_existing(details[proof], base_reds[proof], snapshot, snapshot):
-                    print("harness_tests: pre-existing red at base %s: %s" % (base[:8], name))
+                    print("harness_tests: pre-existing red at base %s: %s%s" % (base[:8], name, _known_red_note(name)))
                     _record_known_red(name, base, _last_line(details[proof]), _last_line(base_reds[proof]))
                     old_red.append(name)
                 elif proof in uncommitted:
@@ -2707,6 +2780,8 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
         print("harness_tests: close %s: %d paths, %d proofs, %d new red, %d need uncommitted inputs, %d pre-existing red"
               % (verdict, len(paths), len(selected), len(new_red) - dirty_red, dirty_red, len(old_red)))
         print(_budget_line(row))
+        runs = read_json_salvage(runs_path()).get("runs", []) if os.path.exists(runs_path()) else []
+        print(_time_line(row, runs if isinstance(runs, list) else []))
         if verdict == "green":
             print("harness_tests: push the commit this close proved: git push %s %s:%s" % (remote, head, target))
         return 0 if verdict == "green" else 1 if verdict == "red" else 2
@@ -2790,8 +2865,9 @@ def run_scoped(repo_root, touched, verbose=False, mode="for", base=None, behavio
                           "\n    worktree: %s\n    %s: %s"
                           % (os.path.basename(path), label, compare[:8], tail_worktree, label, tail_head))
                     continue
-                print("harness_tests: pre-existing red at %s %s: %s\n    worktree: %s\n    %s: %s"
-                      % (label, compare[:8], os.path.basename(path), tail_worktree, label, tail_head))
+                print("harness_tests: pre-existing red at %s %s: %s%s\n    worktree: %s\n    %s: %s"
+                      % (label, compare[:8], os.path.basename(path),
+                         _known_red_note(os.path.basename(path)), tail_worktree, label, tail_head))
                 _record_known_red(os.path.basename(path), compare, tail_worktree, tail_head)
                 statuses[path] = "pre-existing-red"
                 failed -= 1

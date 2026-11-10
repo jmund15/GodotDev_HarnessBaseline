@@ -8,7 +8,7 @@ Concurrent runtime-test lanes never exceed the runtime slot count their test har
 
 ## Worktree caveat
 
-`isolation: "worktree"` is for write-parallel work only; it costs setup time and disk per agent, and its submodule must be initialized before builds. Main owns broad verification; worktree-lane verification follows the runtime-slot rule above, and jobs sharing one checkout serialize their runs on its lock.
+`isolation: "worktree"` is for write-parallel work only; it costs setup time and disk per agent, and its submodule must be initialized before builds. For a sidecar job, the parent creates the worktree and names it as the job's `workdir`: `dispatch_result.py consume` runs the job's checks and reads its changed paths there, so a job briefed to create its own worktree reads `CHECK FAIL` and `CHANGED unchanged`. Main owns broad verification; worktree-lane verification follows the runtime-slot rule above, and jobs sharing one checkout serialize their runs on its lock.
 
 A job reads its harness rules (`.claude/`) from the checkout it runs in, so cut its branch from main, or bring main's `.claude/` onto the branch it is cut from before launch (merge main, or check out main's `.claude/` there when the app code would conflict); a branch whose `.claude/` lags main's hands the job rules main has replaced. Only a run that measures old text (a probe arm) starts from an older base on purpose.
 

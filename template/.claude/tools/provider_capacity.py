@@ -11,7 +11,11 @@ that cannot take the lock within `LIVE_BUDGET_SECONDS` falls back as a failed li
 A usage endpoint that answers HTTP 429 is rate limiting the reader, and a second read during that
 window only extends the lockout, so a `rate-limit` failure puts its transport in a cooldown: no
 probe starts until `_rateLimitedUntil[transport]`, and until then the last reading is served as a
-cache fallback up to `STALE_FALLBACK_SECONDS` old. A read that answers clears the cooldown."""
+cache fallback up to `STALE_FALLBACK_SECONDS` old. A read that answers clears the cooldown.
+
+A reader that knows why it cannot read emits status `unknown` with that reason, and the reading
+caches and serves like any other: a consumer prints `reason_text` instead of probing again, and an
+owner action that clears the reason calls `forget`."""
 import copy
 import importlib.util
 import json
@@ -45,10 +49,10 @@ RETRY_SLEEP_SECONDS = 2.0
 LIVE_BUDGET_SECONDS = 40.0
 STATUSES = {
     "available", "exhausted", "dispatch-floor", "insufficient", "auth-error",
-    "network-error", "malformed", "unsupported",
+    "network-error", "malformed", "unknown", "unsupported",
 }
 SOURCE_KINDS = {"live", "cache", "unsupported"}
-CACHEABLE = {"available", "exhausted", "dispatch-floor", "insufficient"}
+CACHEABLE = {"available", "exhausted", "dispatch-floor", "insufficient", "unknown"}
 FAILURE_STATUSES = {"auth-error", "network-error", "malformed"}
 # The failure kinds a cache fallback may carry: the live probe's fault, or the endpoint's own
 # rate limit.
@@ -126,6 +130,15 @@ def validate_reading(value, transport, cost_model):
     if status == "unsupported":
         if source != "unsupported" or quota is not None or balance is not None:
             errors.append("unsupported result shape is invalid")
+    elif status == "unknown":
+        # The reader cannot establish the reading and says why. Distinct from `malformed` (a source
+        # that yielded nothing usable) because the reason is a fact a consumer prints and a warm
+        # cannot change.
+        error = value.get("error")
+        if quota is not None or balance is not None:
+            errors.append("unknown carries no quota or balance")
+        if not isinstance(error, dict) or not isinstance(error.get("message"), str) or not error["message"]:
+            errors.append("unknown needs a stated reason")
     elif status in FAILURE_STATUSES:
         error = value.get("error")
         if source != "live" or quota is not None or balance is not None:
@@ -478,6 +491,18 @@ def routing_view(reading):
     return {"band": band, "binding": row("bindingWindow"), "routing": row("routingWindow")}
 
 
+def reason_text(reading):
+    """The reading's own stated reason, one line, or None: `unknown: <message>` for an `unknown`
+    status, else the failure's typed message."""
+    if not isinstance(reading, dict):
+        return None
+    error = reading.get("error") if isinstance(reading.get("error"), dict) else {}
+    message = " ".join(str(error.get("message") or "").split())
+    if reading.get("status") == "unknown":
+        return "unknown: " + (message or "the reader gave no reason")
+    return message or None
+
+
 def floor_refusal(reading, now=None):
     """The measured admission cutoff, shared by native, launcher and plan-room output."""
     quota = reading.get("quota") or {}
@@ -524,6 +549,40 @@ def cached(transport, data=None, now=None, cache_path=None):
     if not isinstance(cfg, dict):
         return None
     return _fresh(cache_path or _cache_path(), transport, cfg.get("costModel"), now)
+
+
+def last_cached(transport, data=None, now=None, cache_path=None):
+    """The transport's newest cached reading whatever its age, or None when none validates or its
+    window has already reset. A stale band and its age are facts a cold plan's clause prints."""
+    data = data if data is not None else model_registry.load()
+    now = time.time() if now is None else now
+    cfg = (data.get("transports") or {}).get(transport)
+    if not isinstance(cfg, dict):
+        return None
+    entry = _read_cache(cache_path or _cache_path(), transport, cfg.get("costModel"), now,
+                        max_age=float("inf"))
+    if entry is None or _reset_passed(entry, now):
+        return None
+    return entry
+
+
+def forget(transport, cache_path=None):
+    """Drop `transport`'s cached reading after an owner action cleared its reason, so the next reader
+    probes. False when the cache cannot be locked, never a racy write."""
+    path = cache_path or _cache_path()
+    state = _load_hook_state()
+    if state is None:
+        return False
+
+    def drop(blob):
+        blob.pop(transport, None)
+        return blob
+
+    try:
+        written, _ = state.update_json_locked(str(path), drop)
+    except Exception:
+        return False
+    return written
 
 
 def reading(transport, data=None, now=None, cache_path=None, runner=None):

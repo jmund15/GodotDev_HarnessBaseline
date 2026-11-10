@@ -43,6 +43,7 @@ import os
 import re
 import tempfile
 import time
+from pathlib import Path
 
 __all__ = [
     "HARNESS_DIRS",
@@ -70,6 +71,9 @@ __all__ = [
     "clear_compaction_keys",
     "is_subagent_payload",
     "log_path",
+    "SKILL_REATTACH_CHARS",
+    "reattach_over_cap",
+    "replace_path",
     "append_jsonl_rotating",
 ]
 
@@ -141,8 +145,28 @@ _DEFAULT_STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 
 _ONCE_KEY = "fired_once"
 _COMPACTION_KEY = "fired_since_compaction"
-# The client cuts a re-attached skill body at this many characters (`tools/load_census.py` reports bodies over it).
+# The client cuts a re-attached skill body at this many characters.
 SKILL_REATTACH_CHARS = 20_000
+
+
+def reattach_over_cap(root) -> list[dict]:
+    """Invocable skill and command bodies under the `.claude` directory `root` longer than SKILL_REATTACH_CHARS
+    characters, longest first. The client cuts a re-attached body at that length, counted in characters with
+    newlines kept. `tools/load_census.py` reports these rows and `git_guardrails.py` reports the touched ones at
+    commit; the definition lives here because both ship to projects that may hold an older census."""
+    root = Path(root)
+    rows = []
+    paths = (list(root.glob("commands/*.md")) + list(root.glob("commands/checklists/*.md"))
+             + list(root.glob("skills/*/SKILL.md")))
+    for p in sorted(paths):
+        try:
+            with open(p, encoding="utf-8", newline="") as fh:
+                chars = len(fh.read())
+        except (OSError, UnicodeError):
+            continue
+        if chars > SKILL_REATTACH_CHARS:
+            rows.append({"path": ".claude/" + str(p.relative_to(root)).replace("\\", "/"), "chars": chars})
+    return sorted(rows, key=lambda r: -r["chars"])
 _COMPACTED_AT_KEY = "compacted_at"
 LADDER_SLICE_KEY = "ladder_slice_tiers"
 LADDER_RECEIPT_KEY = "ladder_receipt"

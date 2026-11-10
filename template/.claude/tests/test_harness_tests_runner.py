@@ -959,6 +959,16 @@ def case_a_failure_line_above_the_tail_stays_in_the_excerpt(failures):
         failures.append("the excerpt no longer ends with the detail's tail")
     if harness_tests._detail_excerpt("ok   a\nok   b") != ["ok   a", "ok   b"]:
         failures.append("a short detail is not printed whole and once")
+    indented = "\n".join(["  PASS  case %d" % i for i in range(3)] + ["  FAIL  T8 the case that broke"]
+                         + ["  PASS  later case %d" % i for i in range(harness_tests._DETAIL_LINES + 5)])
+    if "  FAIL  T8 the case that broke" not in harness_tests._detail_excerpt(indented):
+        failures.append("an indented FAIL line above the tail (test_runtime_slots.ps1's shape) was dropped from the excerpt")
+    detailed = "\n".join(["  PASS  case %d" % i for i in range(3)]
+                         + ["  FAIL  T37 the case that broke", "        coldWaitMs=9 warmWaitMs=1", "  PASS  a case after"]
+                         + ["  PASS  later case %d" % i for i in range(harness_tests._DETAIL_LINES + 5)])
+    kept = harness_tests._detail_excerpt(detailed)
+    if "        coldWaitMs=9 warmWaitMs=1" not in kept or "  PASS  a case after" in kept:
+        failures.append("a failing case's deeper-indented detail line must ride with its FAIL line, and only that line: %r" % kept[:3])
 
 
 def case_platform_skip_is_counted_not_passed(failures):
@@ -1056,9 +1066,68 @@ def case_close_untracked_red_is_advisory_tracked_red_blocks(failures):
         failures.append("close untracked red: " + trace.strip().splitlines()[-1])
 
 
+def _run_stubbed_row(repo, path, outcomes):
+    """_run_selected over `path` with run_proof stubbed and the run recorded: (printed text, the recorded row)."""
+    def stub(proof, timeout=None, root=None):
+        return outcomes.pop(0)
+
+    real_run, saved, row = harness_tests.run_proof, dict(os.environ), {}
+    harness_tests.run_proof = stub
+    os.environ["HARNESS_SLOT_DIR"] = os.path.join(repo, "slots")
+    try:
+        _, out = _run_quiet(harness_tests._run_selected, [path], False, None, None,
+                            harness_tests.RunOptions(mode="test", row=row))
+    finally:
+        harness_tests.run_proof = real_run
+        os.environ.clear()
+        os.environ.update(saved)
+    return out, row
+
+
+def case_each_alone_retry_prints_a_progress_line_and_the_row_counts_them(failures):
+    """A pool failure retried alone prints `alone retry k of n: <proof>` with its first failure's last line before
+    the retry starts, and the recorded row carries the pool seconds and the retries' count and seconds."""
+    repo, path = _timing_repo("test_flaky_case.py", {"test_flaky_case.py": 1.0})
+    out, row = _run_stubbed_row(repo, path, [("fail", 1.0, "setup\nAssertionError: boom"), ("pass", 7.5, "")])
+    line = "harness_tests: alone retry 1 of 1: test_flaky_case.py; first failure: AssertionError: boom"
+    ok = line in out and out.index(line) < out.index("FLAKY") and row.get("alone_n") == 1 \
+        and row.get("alone_s") == 7.5 and "pool_s" in row
+    print("%-4s each alone retry prints a progress line before it starts, and the row counts the retries"
+          % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("alone retry line: row=%s out=%s" % (row, out[-300:]))
+
+
+def case_the_close_time_line_states_pool_retries_and_load_against_the_fastest_history(failures):
+    """Load = this run's summed proof time over the same proofs' fastest earlier passes; proofs with no history
+    stay out of both sums and are counted."""
+    def proofs(*rows):
+        return [{"proof": n, "status": s, "run_s": t, "reused": r} for n, s, t, r in rows]
+
+    history = [{"ts": 1, "proofs": proofs(("a.py", "pass", 10.0, False), ("b.py", "pass", 20.0, False))},
+               {"ts": 2, "proofs": proofs(("a.py", "pass", 12.0, False), ("b.py", "fail", 1.0, False),
+                                          ("c.py", "pass", 0.0, True))},
+               {"ts": 3, "proofs": proofs(("a.py", "pass", 99.0, False))}]
+    row = {"ts": 3, "pool_s": 40.0, "alone_n": 2, "alone_s": 30.5,
+           "proofs": proofs(("a.py", "pass", 30.0, False), ("b.py", "pass", 40.0, False),
+                            ("d.py", "pass", 5.0, False), ("c.py", "pass", 0.0, True))}
+    line = harness_tests._time_line(row, history)
+    want = ("harness_tests: close time: pool 40.0s; alone retries 2, 30.5s; "
+            "load x2.3 (70.0s over 30.0s fastest, 2 of 3 proofs with history)")
+    ok = line == want
+    none = harness_tests._time_line(dict(row, ts=9, proofs=proofs(("d.py", "pass", 5.0, False))), [])
+    ok = ok and none.endswith("load unknown (0 of 1 proofs with history)")
+    print("%-4s the close time line states pool, alone retries and load against the fastest history"
+          % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("time line: %r / %r" % (line, none))
+
+
 def main():
     failures, failed_cases = [], 0
-    cases = HEAVY_CASES + CASES + (case_commit_budget_selection, case_commit_runner_timeout,
+    cases = HEAVY_CASES + CASES + (case_each_alone_retry_prints_a_progress_line_and_the_row_counts_them,
+                                   case_the_close_time_line_states_pool_retries_and_load_against_the_fastest_history,
+                                   case_commit_budget_selection, case_commit_runner_timeout,
                                    case_a_failure_line_above_the_tail_stays_in_the_excerpt,
                                    case_platform_skip_is_counted_not_passed,
                                    case_a_node_proof_platform_skip_survives_the_tap_comment_prefix,

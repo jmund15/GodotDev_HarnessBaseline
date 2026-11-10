@@ -127,17 +127,22 @@ function readPluginVersion() {
 }
 
 const SERVER_VERSION = readPluginVersion()
+// Every build of a result module whose output format was reviewed against this proxy. A plugin update
+// that changes one adds its hash here after that review; consumers on an older plugin keep the earlier one.
 const RESULT_MODULE_HASHES = {
-	'format.js': '03e3f8771e24baafe010894f2338c23e02de0d7bdc404c59068afa7356ee80a6',
-	'mcp-server.js': 'c4f7f52d6220fc50c99df4664eec7e642d4199620f403eb3c731b18aa4564896',
+	'format.js': ['03e3f8771e24baafe010894f2338c23e02de0d7bdc404c59068afa7356ee80a6'],
+	'mcp-server.js': [
+		'c4f7f52d6220fc50c99df4664eec7e642d4199620f403eb3c731b18aa4564896',
+		'49c42b31c0d87cea6c26e6b93a651f5eb7fd3214a29eff7e1e4321d3044c9048',
+	],
 }
 const RESULT_FORMAT_DRIFT = resultFormatDrift()
 
 function resultFormatDrift() {
-	for (const [name, expected] of Object.entries(RESULT_MODULE_HASHES)) {
+	for (const [name, reviewed] of Object.entries(RESULT_MODULE_HASHES)) {
 		try {
 			const actual = createHash('sha256').update(readFileSync(path.join(PLUGIN_ROOT, 'dist', name))).digest('hex')
-			if (actual === expected) continue
+			if (reviewed.includes(actual)) continue
 		} catch {}
 		return `Semantic search result format drift: ${name}; review the upstream result format before reinstalling the proxy.`
 	}

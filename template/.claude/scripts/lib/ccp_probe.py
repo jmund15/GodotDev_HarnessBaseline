@@ -28,7 +28,9 @@ Subcommands:
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / ".claude" / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hooks"))
 from cli_usage import usage
+from _hook_state import replace_path  # noqa: E402
 import glob
 import json
 import math
@@ -249,7 +251,7 @@ def annotate_record_effort(record_path, attested_effort, ledger_path=None):
                 json.dump(record, fh, indent=2)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.replace(temp_path, record_path)
+            replace_path(temp_path, record_path)
         except Exception:
             try:
                 os.unlink(temp_path)

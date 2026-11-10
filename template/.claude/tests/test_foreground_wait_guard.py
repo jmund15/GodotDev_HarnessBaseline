@@ -1,6 +1,8 @@
 """Proof for hooks/foreground_wait_guard.py: a Monitor watch past the tool's own ceiling is denied; one under it passes.
+A backgrounded pipeline's trailing `| tail`/`| head` is dropped for the caller, and every other blind shape is denied.
 
-Real PreToolUse payloads on stdin. The Monitor branch reads no state, so the proof plants none.
+Real PreToolUse payloads on stdin. The Monitor branch reads no state, so the proof plants none; the blind cases read
+none either.
 
     python3 .claude/tests/test_foreground_wait_guard.py
 """
@@ -69,16 +71,47 @@ for label, command, background in (
 def decision_of(command, background):
     rc, out, err = run(bash(command, background))
     hso = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
-    return rc, hso.get("permissionDecision"), out + err
+    return rc, hso, out + err
 
 
+# A blind stage that ends the command is dropped for the caller: the call already says the right one.
+for label, command, want in (
+        ("a tail count", "python3 .claude/scripts/harness_tests.py --close | tail -15",
+         "python3 .claude/scripts/harness_tests.py --close"),
+        ("a stderr redirect then a tail count", "python3 x.py 2>&1 | tail -n 20", "python3 x.py 2>&1"),
+        ("a bare tail count", "python3 x.py | tail -5", "python3 x.py"),
+        ("a head stage", "npm run build | head -n 40", "npm run build"),
+        ("a scoped harness run piped into tail",
+         "cd /r && python3 .claude/scripts/harness_tests.py --proofs-for x.py 2>&1 | tail -15",
+         "cd /r && python3 .claude/scripts/harness_tests.py --proofs-for x.py 2>&1"),
+        ("two stacked blind stages", "python3 x.py | tail -5 | head -3", "python3 x.py")):
+    rc, hso, detail = decision_of(command, True)
+    got = (hso.get("updatedInput") or {}).get("command")
+    check("backgrounded, %s is rewritten to %r" % (label, want),
+          rc == 0 and hso.get("permissionDecision") is None and got == want, detail)
+    check("...and the note names the dropped stage and the output file",
+          "output file keeps every line" in (hso.get("additionalContext") or ""), detail)
+
+# Every other blind shape keeps the deny: dropping the stage would change what runs or where its result goes.
 for label, command in (
-        ("a streaming harness run piped into tail", "python3 .claude/scripts/harness_tests.py --close | tail -15"),
-        ("a scoped harness run piped into tail", "cd /r && python3 .claude/scripts/harness_tests.py --proofs-for x.py 2>&1 | tail -15"),
+        ("a blind stage mid-pipeline", "python3 x.py | tail -n 20 | cat"),
+        ("a blind stage inside a subshell", "(python3 x.py | tail -n 5)"),
         ("a test run filtered then cut by head", "(npx vitest run 2>&1 | grep -E 'Tests |FAIL' | head -8); echo end"),
-        ("a plain command piped into head", "npm run build | head -40")):
-    rc, verdict, detail = decision_of(command, True)
-    check("backgrounded, " + label + " is denied", rc == 0 and verdict == "deny", detail)
+        ("a blind stage followed by a command", "python3 x.py | tail -n 5; echo done"),
+        ("a blind stage followed by a logical and", "python3 x.py | tail -n 5 && echo ok"),
+        ("a blind stage carrying a redirection", "python3 x.py | tail -n 5 > out.txt"),
+        ("a command carrying a substitution", "python3 $(cat listing.txt) | tail -n 5")):
+    rc, hso, detail = decision_of(command, True)
+    check("backgrounded, " + label + " is denied", rc == 0 and hso.get("permissionDecision") == "deny", detail)
+
+# A foreground call, and a pipe that feeds a captured string or a quoted argument, are not the task's output pipe.
+for label, command, background in (
+        ("a foreground call piped into tail", "python3 x.py | tail -5", False),
+        ("a pipe inside a command substitution", "echo $(python3 x.py | tail -n 5)", True),
+        ("a quoted pipe", 'echo "a | tail"', True)):
+    rc, hso, detail = decision_of(command, background)
+    check(label + " is left alone",
+          rc == 0 and hso.get("permissionDecision") is None and not hso.get("updatedInput"), detail)
 
 for label, command, background in (
         ("a backgrounded job teed to a file before tail", "npm run build | tee build.log | tail -3", True),
@@ -86,8 +119,8 @@ for label, command, background in (
         ("a backgrounded job writing a file, then tail of that file", "npm run build > b.log 2>&1; tail -5 b.log", True),
         ("a backgrounded filter with no truncation", "npx vitest run 2>&1 | grep FAIL", True),
         ("a foreground command piped into tail", "git log --oneline | tail -5", False)):
-    rc, verdict, detail = decision_of(command, background)
-    check(label + " is not denied", rc == 0 and verdict != "deny", detail)
+    rc, hso, detail = decision_of(command, background)
+    check(label + " is not denied", rc == 0 and hso.get("permissionDecision") != "deny", detail)
 
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:

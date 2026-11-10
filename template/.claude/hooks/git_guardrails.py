@@ -474,18 +474,15 @@ def _reattach_cap_verdict(repo_root, touched):
     """The advisory for a commit that touches a skill or command body longer than the client's re-attach cap.
 
     The client cuts a re-attached body at `SKILL_REATTACH_CHARS` characters, so an over-cap body returns
-    truncated after a compaction. The count is `load_census.reattach_over_cap`'s, the
+    truncated after a compaction. The count is `_hook_state.reattach_over_cap`'s, the
     one definition of over-cap, so this report and the census never disagree. It names only bodies this
     commit touches: a body an earlier commit left over is on the census, not on this commit. A report,
     never a deny.
     """
     try:
-        tools = os.path.join(_CLAUDE_DIR, "tools")
-        if tools not in sys.path:
-            sys.path.insert(0, tools)
-        import load_census as lc
-        rows = lc.reattach_over_cap(Path(repo_root) / ".claude")
-        cap = lc.SKILL_REATTACH_CHARS
+        import _hook_state as hs
+        rows = hs.reattach_over_cap(Path(repo_root) / ".claude")
+        cap = hs.SKILL_REATTACH_CHARS
     except Exception:
         return None                      # advisory machinery missing: never block a commit on it
     wanted = {p.replace("\\", "/") for p in touched}

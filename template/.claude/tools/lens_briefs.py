@@ -634,6 +634,11 @@ PREP_ENGINES = {"session-audit": ".claude/workflows/review_fanout.js",
                 "pr-ready": ".claude/workflows/review_fanout.js"}
 PREP_STAGES = {"session-audit": "candidate", "plan-check": "plan-check", "pr-review": "pr-review",
                "design-redteam": "design", "pr-ready": "pr-ready"}
+# The one kind each mode's jobs run as (guards/tool_profiles.json `kinds`; reference/sidecar_dispatch.md
+# §Job kind owns the choice). Explore lenses survey with the registry's doctrine, so they run as `lens`;
+# every other mode's seats return a verdict on a plan or diff, so they run as `reviewer`.
+MODE_KIND = {mode: "reviewer" for mode in PREP_MODES}
+MODE_KIND["explore"] = "lens"
 
 
 def _rel(path: Path, root: Path) -> str:
@@ -723,6 +728,13 @@ def _base_sizes(root: Path, base: str | None, files: list[str]) -> dict[str, int
 def _spec_ledger(spec: dict) -> dict:
     """The spec's `ledger`; a session audit's subject, files, task and base default from its `sessionAudit`."""
     ledger = dict(spec.get("ledger") or {})
+    subject = ledger.get("subject")
+    if isinstance(subject, str):
+        kind, sep, path = subject.partition(":")
+        if sep and kind in ("plan", "doc"):
+            # A path subject is read by the review engine's `plan:<path>`/`doc:<path>` check, which
+            # admits no backslash: a native Windows path is written POSIX so the engine accepts it.
+            ledger["subject"] = kind + ":" + path.replace("\\", "/")
     audit = spec.get("sessionAudit")
     if audit:
         if audit.get("session"):
@@ -825,6 +837,7 @@ def _later_round_diff(spec: dict, root: Path) -> str:
 def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list[dict], manual: list[dict],
                   lists: dict, context: Path) -> list[dict]:
     """Materialize registry seats through `build_briefs` and registry-less seats from the spec's own brief text."""
+    kind = MODE_KIND[spec["mode"]]
     jobs = []
     if registry:
         roster = out / "brief_roster.json"
@@ -843,7 +856,7 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
             pr_num=None if spec.get("prNum") is None else str(spec["prNum"]),
             branch=str(spec["branch"]) if spec.get("branch") else None,
             subject_plan=[str(plan_arg) for plan_arg in spec.get("subjectPlans") or []],
-            sub=[str(sub) for sub in spec.get("subs") or []], kfm_root=str(out / "kfm"))
+            sub=[str(sub) for sub in spec.get("subs") or []], kfm_root=str(out / "kfm"), kind=kind)
         for seat in registry:
             key = seat["key"]
             if key in lists:
@@ -878,7 +891,7 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
                      "promptPath": str(path.resolve()).replace("\\", "/"),
                      "model": seat.get("pin") or pins.get(key) or pins.get("panel"),
                      "effort": seat.get("effort") or efforts.get(key) or efforts.get("panel"),
-                     "tier": seat.get("tier"), "agentType": "general-purpose"})
+                     "tier": seat.get("tier"), "kind": kind})
     return jobs
 
 
@@ -888,7 +901,7 @@ def _engine_args(spec: dict, root: Path, out: Path, prefix: str, context: Path, 
     if mode == "explore":
         lenses = [{"key": job.get("seat") or job.get("key"), "promptPath": job["promptPath"],
                    "model": job["model"], "effort": job["effort"],
-                   "agentType": job.get("agentType", "general-purpose"), "tier": job.get("tier")}
+                   "kind": job["kind"], "tier": job.get("tier")}
                   for job in jobs]
         args = {"lenses": lenses, "contextPrefixPath": str(context)}
         if spec.get("checker"):
@@ -900,7 +913,7 @@ def _engine_args(spec: dict, root: Path, out: Path, prefix: str, context: Path, 
                    "mandates": job.get("mandates"), "mustRead": job.get("mustRead"),
                    "promptPath": job.get("promptPath") or job.get("promptFile"),
                    "model": job.get("model") or job.get("alias"), "effort": job["effort"],
-                   "agentType": job.get("agentType", "general-purpose")}
+                   "kind": job["kind"]}
                   for job in jobs]
         args = {"agents": agents, "contextPrefixPath": str(context)}
         if fold:
@@ -924,6 +937,21 @@ def _receipt_line(spec: dict, pinned: list[str]) -> str:
     if missing:
         line += "; missing receipt: " + ", ".join(missing)
     return line
+
+
+def _refuse_retired_keys(spec: dict) -> None:
+    """Refuse a spec that names the retired `agentType`: the job's `kind` alone sets the agent type, so a
+    spec carrying one is told the replacement instead of having it silently dropped."""
+    def named(where: str, obj: dict) -> None:
+        if "agentType" in obj:
+            sys.exit(f"prepare: {where} names `agentType`; the agent type follows the job's `kind` "
+                     "(the `kinds` in guards/tool_profiles.json, chosen per mode by `prepare`). "
+                     "Drop `agentType`.")
+    named("the spec", spec)
+    for field in ("seats", "roster"):
+        for seat in spec.get(field) or []:
+            if isinstance(seat, dict):
+                named(f"{field} seat {seat.get('key') or '(unkeyed)'}", seat)
 
 
 def _refuse_bad_spec(spec: dict, root: Path) -> None:
@@ -964,6 +992,7 @@ def prepare_command(argv: list[str]) -> None:
     if spec["mode"] not in PREP_ENGINES and not spec.get("engine"):
         sys.exit(f"prepare: mode {spec['mode']} runs an engine the calling command names; add `engine` to the spec")
     root = Path(spec.get("root") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+    _refuse_retired_keys(spec)
     _refuse_bad_spec(spec, root)
     out = Path(a.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -1110,13 +1139,15 @@ class BriefParams:
                  effort_for: list[str] | None = None, must_read: str | None = None,
                  must_read_for: list[str] | None = None, must_read_from: str | None = None,
                  subject_plan: list[str] | None = None, vault: str | None = None, task: str | None = None,
-                 kfm_root: str | None = None):
+                 kfm_root: str | None = None, kind: str = REVIEW_KIND):
         self.out, self.prefix, self.context_path, self.model = out, prefix, context_path, model
         self.keys, self.plan, self.pr_num, self.branch, self.target = keys, plan, pr_num, branch, target
         self.sub, self.model_for, self.tier, self.tier_for = list(sub or []), list(model_for or []), tier, list(tier_for or [])
         self.effort, self.effort_for, self.must_read = effort, list(effort_for or []), must_read
         self.must_read_for, self.must_read_from = list(must_read_for or []), must_read_from
         self.subject_plan, self.vault, self.task, self.kfm_root = list(subject_plan or []), vault, task, kfm_root
+        # The kind every job of this panel runs as; `prepare` picks it per mode, the CLI defaults to reviewer.
+        self.kind = kind
 
 
 def build_briefs(a: BriefParams) -> list[dict]:
@@ -1357,7 +1388,7 @@ def build_briefs(a: BriefParams) -> list[dict]:
                 "model": model_overrides.get(k) or a.model,
                 "tier": tier,
                 "effort": effort,
-                "kind": REVIEW_KIND,
+                "kind": a.kind,
             })
             continue
 

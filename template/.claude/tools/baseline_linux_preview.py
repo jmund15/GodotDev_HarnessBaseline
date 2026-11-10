@@ -3,7 +3,7 @@
 
     python3 .claude/tools/baseline_linux_preview.py [<journal-id>]   # default: newest worktree
     python3 .claude/tools/baseline_linux_preview.py --worktree PATH  # a tree anywhere
-    python3 .claude/tools/baseline_linux_preview.py --setup          # once: python 3.x + node 20 + pwsh, no sudo
+    python3 .claude/tools/baseline_linux_preview.py --setup          # once: python 3.x + node 20 + pwsh + dotnet runtime, no sudo
 
 Windows validation cannot see Linux-only failures: a `C:/` path is relative on POSIX, and real
 symlinks exist. Each one otherwise surfaces only as a red PR check, costing a closed PR and a
@@ -11,7 +11,7 @@ fresh dry run. This tool runs every `run:` step of every job, one lane per job, 
 `.github/workflows/baseline.yml` in order, so it tracks CI without a copied step list. Unlike
 CI, it runs every step after a failure.
 
-The worktree is copied, without `.git`, to `~/baseline-linux-preview` and committed to a fresh
+The worktree is copied, without `.git`, to the run's own tree under `~/baseline-linux-preview` and committed to a fresh
 repo, as `actions/checkout` gives. Never `/tmp`: the delete guards admit temp paths as safe
 targets, which flips the proofs that plant an unsafe path. `~/.local/ci-tools/{py/bin,node/bin,pwsh}`
 lead PATH. WSL's Windows `/mnt` entries are dropped from it, as a runner has none. `--setup` downloads the latest Python (a uv-managed venv, as setup-python's `3.x`), Node 20
@@ -76,6 +76,9 @@ UV_PYTHON_INSTALL_DIR="$T/pythons" "$T/uv/uv" venv --seed --managed-python py
 "$T/py/bin/python" --version
 "$T/node/bin/node" --version
 "$T/pwsh/pwsh" -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+curl -fsSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+bash dotnet-install.sh --runtime dotnet --channel LTS --install-dir "$T/dotnet" && rm -f dotnet-install.sh
+"$T/dotnet/dotnet" --list-runtimes
 """
 
 
@@ -154,15 +157,18 @@ def preview_script(src: str, jobs: list[tuple[str, list[tuple[str, str]]]], orig
     """The bash script WSL runs: snapshot `src` once under $HOME, copy it per job, then run every job
     as its own lane at once, each step in its own shell. `origin` becomes the snapshot's origin remote,
     as checkout sets it; proofs read it. `exec_paths` are the 100755 entries, which get their
-    executable bit back after the 644 reset. Each lane has its own copy and HOME, as a CI job has its
-    own checkout and runner; all lanes share one slot pool of PREVIEW_SLOTS (an already-set
+    executable bit back after the 644 reset. Each run has its own tree, named by its pid, so a
+    second preview never deletes a running one; a run removes the trees of runs that ended. Each lane
+    has its own copy and HOME, as a CI job has its own checkout and runner; all lanes of all runs share
+    one slot pool of PREVIEW_SLOTS (an already-set
     HARNESS_MACHINE_SLOTS wins). Lane logs print in job order; the exit is 1 when any lane failed."""
     parts = [
         "set -u",
         STRIP_HOST_PATH,
-        'export PATH="$HOME/.local/ci-tools/py/bin:$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$PATH"',
-        'D="$HOME/baseline-linux-preview"',
-        'rm -rf "$D" && mkdir -p "$D/src" && cd "$D/src" || exit 3',
+        'export PATH="$HOME/.local/ci-tools/py/bin:$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$HOME/.local/ci-tools/dotnet:$PATH"',
+        'R="$HOME/baseline-linux-preview"; D="$R/run.$$"',
+        'for d in "$R"/run.*; do [ -d "$d" ] && ! kill -0 "${d##*.}" 2>/dev/null && rm -rf "$d"; done',
+        'mkdir -p "$D/src" && cd "$D/src" || exit 3',
         "tar -C %s --exclude=.git -cf - . | tar -xf - || exit 3" % _quote(src),
         # drvfs reports every file executable; checkout gives 100644 except the 100755 entries, restored below
         "find . -type f -exec chmod 644 {} +",
@@ -177,7 +183,7 @@ def preview_script(src: str, jobs: list[tuple[str, list[tuple[str, str]]]], orig
         parts.append("git remote add origin %s || exit 3" % _quote(origin))
     parts += [
         'cd "$D"',
-        'export HARNESS_SLOT_DIR="$D/.slots"',
+        'export HARNESS_SLOT_DIR="$R/.slots"',
         'export HARNESS_MACHINE_SLOTS="${HARNESS_MACHINE_SLOTS:-%d}"' % PREVIEW_SLOTS,
         "pids=()",
     ]

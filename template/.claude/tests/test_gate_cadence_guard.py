@@ -363,11 +363,14 @@ def completed_peer_cases():
     path = trx.with_suffix('.green')
     writer = repo / 'producer.ps1'
     writer.write_text('''param($Source, $DigestScript, $Repo, $Record, $Trx, $Digest, $Started)
-$tokens = $null; $errors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($Source, [ref]$tokens, [ref]$errors)
-if ($errors.Count) { throw $errors[0] }
-foreach ($name in @('Get-SuiteTreeDigest', 'Save-SuiteGreen')) {
-    $fn = $ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}, $true)
+$asts = foreach ($file in @($Source, (Join-Path (Split-Path -Parent $Source) 'RuntimeSlots.ps1'))) {
+    $tokens = $null; $errors = $null
+    [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors)
+    if ($errors.Count) { throw $errors[0] }
+}
+# Save-SuiteGreen renames through Move-FileIntoPlace, which the real script gets by dot-sourcing RuntimeSlots.ps1.
+foreach ($name in @('Move-FileIntoPlace', 'Get-SuiteTreeDigest', 'Save-SuiteGreen')) {
+    $fn = $asts | ForEach-Object { $_.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}, $true) } | Select-Object -First 1
     if (-not $fn) { throw "missing producer $name" }
     Invoke-Expression $fn.Extent.Text
 }
