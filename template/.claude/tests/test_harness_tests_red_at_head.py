@@ -99,6 +99,47 @@ def run_case():
     return repo, rc, out, before, after, harness_tests.tree_entries(repo)
 
 
+def known_red_case():
+    """A proof already in the known-red log prints the date it was first recorded red there and how many
+    closes recorded it. The prior rows are cut from the real .claude/logs/harness_known_red.jsonl."""
+    repo = tempfile.mkdtemp(prefix="harnessredhead_")
+    for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git"] + args, cwd=repo, check=True)
+    old = ["FAIL: test_old (suite.Case)", "FAILED (failures=1)"]
+    write(repo, "hooks/alpha.py", "X = 1\n")
+    write(repo, "tests/test_alpha.py", lines_proof(old))
+    subprocess.run(["git", "add", "-A", "-f"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=repo, check=True)
+    harness_tests.EXCLUDED, harness_tests.HEAVY, harness_tests.PROOF_BINDINGS = {}, {}, {}
+    harness_tests.STAMP_PATH = os.path.join(repo, "stamp.json")
+    harness_tests.KNOWN_RED_LOG = None
+    seed = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True).stdout.strip()
+    write(repo, "hooks/alpha.py", "X = 1\nY = 2\n")
+    prior = [
+        {"ts": 1794236832.92, "proof": "test_alpha.py", "head": "d2e4689185d0eebf9093d4cccd85fd5559d42f6d",
+         "tail_worktree": "FAILED (failures=1)", "tail_head": "FAILED (failures=1)"},
+        {"ts": 1794247152.326748, "proof": "test_alpha.py", "head": "b88443c4b4adf3900c86875c536e1b24d488425e",
+         "tail_worktree": "FAILED (failures=1)", "tail_head": "FAILED (failures=1)"},
+        {"ts": 1794247152.33156, "proof": "test_vault_sync_config.py", "head": "b88443c4b4adf3900c86875c536e1b24d488425e",
+         "tail_worktree": "FAILED (failures=3, errors=10)", "tail_head": "FAILED (failures=3, errors=10)"},
+    ]
+    log = os.path.join(repo, "harness_known_red.jsonl")
+    with open(log, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("".join(json.dumps(row) + "\n" for row in prior))
+    buf = io.StringIO()
+    old_cwd, old_env = os.getcwd(), dict(os.environ)
+    os.chdir(repo)
+    os.environ["CLAUDE_PROJECT_DIR"] = repo
+    try:
+        with contextlib.redirect_stdout(buf):
+            harness_tests.run_scoped(repo, [".claude/hooks/alpha.py"], base=seed)
+    finally:
+        os.chdir(old_cwd)
+        os.environ.clear()
+        os.environ.update(old_env)
+    return buf.getvalue()
+
+
 def lines_proof(lines):
     return "import sys\nprint(%r)\nsys.exit(1)\n" % "\n".join(lines)
 
@@ -207,6 +248,8 @@ def main():
         check("(a) the pre-existing red is logged with proof, head and both tails",
               len(rows) == 1 and rows[0].get("proof") == "test_alpha.py"
               and {"ts", "head", "tail_worktree", "tail_head"} <= set(rows[0]), rows)
+        check("(a) a pre-existing red with no earlier row says so",
+              bool(line) and "no earlier row in harness_known_red.jsonl" in line[0], line)
         check("(b) a proof green at HEAD but red in the working tree leaves its input unstamped",
               not stamped("beta"), out[-600:])
         check("(c) a red proof absent at HEAD leaves its input unstamped", not stamped("gamma"), out[-600:])
@@ -222,6 +265,13 @@ def main():
         check("(d) no temp worktree stays registered", listed.count("worktree ") == 1, listed)
     except Exception as exc:
         check("run_case", False, "%s: %s" % (type(exc).__name__, exc))
+    try:
+        out = known_red_case()
+        note = [l for l in out.splitlines() if "pre-existing red" in l and "test_alpha.py" in l]
+        check("(n) a pre-existing red already in the known-red log names its first recorded date and close count",
+              bool(note) and "(first recorded red 2026-11-09, 2 earlier closes)" in note[0], out[-600:])
+    except Exception as exc:
+        check("known_red_case", False, "%s: %s" % (type(exc).__name__, exc))
     print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
     for failure in FAILURES:
         print("  FAIL " + failure)

@@ -124,7 +124,7 @@ function Save-SuiteGreen {
     $temp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
     try {
         $record | ConvertTo-Json | Set-Content -LiteralPath $temp -Encoding utf8
-        Move-Item -LiteralPath $temp -Destination $Path -Force
+        Move-FileIntoPlace -TempPath $temp -Path $Path
     } finally { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
 }
 

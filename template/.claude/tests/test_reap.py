@@ -6,7 +6,9 @@ only a ledger note), verifies a --reason class when one is named, and refuses a 
 shared infra anywhere in the tree, and a kill it cannot record. Whether the owner ordered the stop is the
 auto-mode classifier's to judge, so no case here reads a stop verb, a keep word, a name or a transcript.
 
-The process table and the kill are planted; nothing here touches the OS.
+The process table and the kill are planted, except case 20: it starts two short-lived children of
+its own (a dead-tagged launcher and its seat), runs the real `leftovers` listing over exactly
+those rows, and checks that both still run. Nothing here stops a process it did not start.
 Run: python3 .claude/tests/test_reap.py
 """
 import atexit, io, json, os, re, shutil, subprocess, sys, tempfile, time
@@ -93,10 +95,15 @@ def plant_registry(sessions=None):
 
 
 def run(argv, tbl, env=None, ledger=None, environ=None, transcript="default", sessions=None, kill_ok=True,
-        peb=None, msys=None, ps=None):
+        peb=None, msys=None, ps=None, extra_transcripts=None):
     killed = []
     rows = [owner_row("carry on with the board")] if transcript == "default" else transcript
     reap.PROJECTS_ROOT = plant_transcript(rows)
+    for key, sids in (extra_transcripts or {}).items():
+        proj = reap.PROJECTS_ROOT / key
+        proj.mkdir(exist_ok=True)
+        for sid in sids:
+            (proj / (sid + ".jsonl")).write_text("{}\n", encoding="utf-8")
     registry = plant_registry(sessions)
     reap.session_registry_dirs = lambda: [registry]
     reap.process_table = lambda: dict(tbl)
@@ -120,6 +127,88 @@ def run(argv, tbl, env=None, ledger=None, environ=None, transcript="default", se
         except SystemExit as ex:
             rc = ex.code
     return rc, killed, buf.getvalue()
+
+
+LEFTOVERS_PROBE = r'''
+import io, json, sys
+from contextlib import redirect_stdout
+from pathlib import Path
+tools, projects, ledger, sid, pids = sys.argv[1:6]
+sys.path.insert(0, tools)
+import reap
+wanted = [int(p) for p in pids.split(",")]
+real = reap.process_table
+snapshot = real()
+rows = {p: snapshot[p] for p in wanted if p in snapshot}
+reap.process_table = lambda: dict(rows)
+reap.PROJECTS_ROOT = Path(projects)
+reap.LEDGER = Path(ledger)
+out = io.StringIO()
+with redirect_stdout(out):
+    rc = reap.leftovers_main([], env={"CLAUDE_CODE_SESSION_ID": sid})
+after = real()
+alive = {str(p): (p in after and after[p].get("start") == rows.get(p, {}).get("start")) for p in wanted}
+results = []
+try:
+    results = [json.loads(line).get("result") for line in Path(ledger).read_text(encoding="utf-8").splitlines()]
+except (OSError, ValueError):
+    pass
+print(json.dumps({"rc": rc, "out": out.getvalue(), "alive": alive, "ledger": results}))
+'''
+
+
+def leftovers_stops_nothing():
+    """Start a dead-tagged live launcher and its seat, run `reap.py leftovers` over exactly those
+    two rows, and report whether both still run and the listing named both.
+
+    The children expire on their own (`sleep 40`); nothing here stops one. The harness spawns them
+    with `detach_options` so they get a hidden console."""
+    sys.path.insert(0, str(HERE.parent / "hooks"))
+    from _bounded_run import detach_options  # noqa: E402
+
+    dead, sid, launch = ("deaddead-1111-2222-3333-444444444444", "leftproof-0001",
+                         "leftproof-launch-0001")
+    td = Path(tempfile.mkdtemp(prefix="reap_leftovers_", dir=SCRATCH))
+    projects = td / "projects"
+    (projects / "C--x-{{PROJECT_NAME}}").mkdir(parents=True)
+    for name in (dead, sid):
+        (projects / "C--x-{{PROJECT_NAME}}" / (name + ".jsonl")).write_text("{}\n", encoding="utf-8")
+    script = td / "proof_sidecar.sh"
+    # Absolute path: a launcher spawned outside Git Bash (the land runner's pwsh) has no /usr/bin on PATH.
+    script.write_text("/usr/bin/sleep 40\n", encoding="utf-8", newline="\n")
+    # The test session's own tags (this proof may run under a sidecar) would make it a launcher of
+    # some other launch; only the two tags this case sets belong in these children.
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "SIDECAR", "REAP_"))}
+    quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    launcher = subprocess.Popen([reap.git_bash() or "bash", str(script)], **quiet,
+                                **detach_options({**base, "CLAUDE_CODE_SESSION_ID": dead,
+                                                  "SIDECAR_LAUNCH_ID": launch}))
+    seat = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(40)"], **quiet,
+                            **detach_options({**base, "SIDECAR_PARENT_SESSION_ID": dead,
+                                              "SIDECAR_LAUNCH_ID": launch}))
+    pids = (launcher.pid, seat.pid)
+    # The CIM snapshot must see both before the listing runs; otherwise the case proves nothing.
+    deadline = time.time() + 15
+    table = {}
+    while time.time() < deadline:
+        table = REAL_PROCESS_TABLE()
+        if all(p in table for p in pids):
+            break
+        time.sleep(0.5)
+    probe = td / "probe.py"
+    probe.write_text(LEFTOVERS_PROBE, encoding="utf-8", newline="\n")
+    run = subprocess.run([sys.executable, str(probe), str(HERE.parent / "tools"), str(projects),
+                          str(td / "ledger.jsonl"), sid, "%d,%d" % pids],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    try:
+        data = json.loads(run.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return False, "probe printed %r / stderr %r" % (run.stdout[-500:], run.stderr[-500:])
+    both_listed = all(str(p) in data["out"] for p in pids)
+    both_alive = all(data["alive"].values())
+    return (both_listed and both_alive and data["rc"] == 0 and "killed" not in data["ledger"]), (
+        "rc=%r listed=%r alive=%r ledger=%r\n%s" % (data["rc"], both_listed, data["alive"],
+                                                    data["ledger"], data["out"][-900:]))
 
 
 def main():
@@ -848,7 +937,8 @@ def main():
     runner_parent = row(7290, 1, "testhost.exe", "testhost.exe --port 1")
     rc, killed, out = run(["680", "--reason", "orphan", "--why", "x"], table([runner, runner_parent]),
                           environ=planted18)
-    ck("... and refused while its parent lives", rc == 2 and killed == [], out[-400:])
+    ck("... and a dead session's plain child is reapable while its parent lives (the dead owner settles it)",
+       rc == 0 and killed == [680], out[-400:])
     rc, killed, out = run(["680", "--reason", "orphan", "--why", "x"], table([runner, live_host]),
                           environ=planted18, sessions={910: DEAD})
     ck("... and refused while a live host serves its session", rc == 2 and killed == [] and "DIFFERENT" in out,
@@ -1156,6 +1246,81 @@ def main():
     ck("a refusal on an observed fact (process gone) prints its verdict without accepts: or example:",
        rc == 2 and killed == [] and "REFUSED" in out and "accepts:" not in err.getvalue()
        and "example:" not in err.getvalue(), out[-200:] + err.getvalue()[-300:])
+
+    # 19. the class the census could see but not prove (2026-11-10): a dead session's pane watcher
+    #     under a bash wrapper that is still alive. The owner's transcript is in this project; the
+    #     machine's MCP servers also carry the dead id and must not read as a live host.
+    D = "deaddead-1111-2222-3333-444444444444"
+    O = "0ther000-aaaa-bbbb-cccc-dddddddddddd"
+    L = "11111111-2222-3333-4444-555555555555"
+    PANE = ('"C:\\Program Files\\Git\\bin\\bash.exe" -c "source /c/x/.claude/shell-snapshots/snap-b.sh '
+            '2>/dev/null || true && eval \'python3 .claude/tools/watch_records.py --pane\' < /dev/null"')
+    wrapper = row(501, SESSION_PID, "bash.exe", PANE)
+    watcher = row(502, 501, "python3.exe", "python3 .claude/tools/watch_records.py --pane")
+    dead_mcp = row(503, SESSION_PID, "python.exe", "python C:/x/semantic-search-mcp.py")
+    live_host = row(910, 1, "claude.exe", '"C:\\Users\\x\\.local\\bin\\claude.exe"')
+    dead_env = {501: env18(session=D), 502: env18(session=D), 503: env18(session=D)}
+    sess = {SESSION_PID: SID, 910: L}
+    dead_table = table([wrapper, watcher, dead_mcp, live_host])
+    rc, killed, out = run(["501", "--reason", "orphan", "--dry-run"], dead_table,
+                          environ=lambda pid: dead_env.get(pid, b""), sessions=sess,
+                          extra_transcripts={"C--x-{{PROJECT_NAME}}": [D]})
+    ck("a dead session's leftover under a live wrapper is proven orphan (dry-run)",
+       rc == 0 and killed == [] and "DRY 501" in out, out[-500:])
+
+    # the same shape, owner transcript in ANOTHER project: controlled by that project, not us
+    other_env = {521: env18(session=O)}
+    other_wrapper = row(521, 9999, "bash.exe", PANE)
+    rc, killed, out = run(["521", "--reason", "orphan", "--dry-run"], table([other_wrapper]),
+                          environ=lambda pid: other_env.get(pid, b""), sessions=sess,
+                          extra_transcripts={"C--y-OtherProject": [O]})
+    ck("another project's dead leftover is refused", rc == 2 and killed == [] and "DRY" not in out, out[-400:])
+
+    # a live session's process: its host's registry row names the session, so it is untouched
+    peer_env = {511: env18(session=L)}
+    peer_wrapper = row(511, 9999, "bash.exe", PANE)
+    rc, killed, out = run(["511", "--reason", "orphan", "--dry-run"], table([peer_wrapper, live_host]),
+                          environ=lambda pid: peer_env.get(pid, b""), sessions=sess,
+                          extra_transcripts={"C--x-{{PROJECT_NAME}}": [L]})
+    ck("a live session's pane watcher is never stopped", rc == 2 and killed == [] and "DRY" not in out, out[-400:])
+
+    # the classification behind `leftovers`: the dead session's leftover is `dead`; the live
+    # session's, the other project's and shared infra are reported with the fact that withheld the
+    # proof; nothing is stopped and no ledger row is written.
+    with tempfile.TemporaryDirectory() as td:
+        wipe = []
+        reap.PROJECTS_ROOT = plant_transcript([owner_row("carry on")])
+        (reap.PROJECTS_ROOT / "C--x-{{PROJECT_NAME}}").mkdir(exist_ok=True)
+        (reap.PROJECTS_ROOT / "C--x-{{PROJECT_NAME}}" / (D + ".jsonl")).write_text("{}\n", encoding="utf-8")
+        (reap.PROJECTS_ROOT / "C--y-OtherProject").mkdir(exist_ok=True)
+        (reap.PROJECTS_ROOT / "C--y-OtherProject" / (O + ".jsonl")).write_text("{}\n", encoding="utf-8")
+        registry = plant_registry(sess)
+        reap.session_registry_dirs = lambda: [registry]
+        reap.environ_of = lambda pid: {**dead_env, **peer_env, **other_env}.get(pid, b"")
+        reap.launch_environ = reap.environ_of
+        reap.msys_environ = lambda pid: b""
+        reap.process_exited = lambda pid, start: False
+        reap.taskkill = lambda pid, tree=True: (wipe.append(pid) or True)
+        reap.LEDGER = Path(td) / "ledger.jsonl"
+        with reap.invocation(SID, "C--x-{{PROJECT_NAME}}"):
+            findings = reap.leftover_findings(dead_table | table([peer_wrapper, other_wrapper]),
+                                              sid=SID, project_key="C--x-{{PROJECT_NAME}}")
+        statuses = {f["pid"]: f["status"] for f in findings}
+        ck("the classification marks the dead session's leftover dead and stops nothing",
+           statuses.get(501) == "dead" and wipe == [] and not reap.LEDGER.exists(),
+           f"{statuses} wipe={wipe}")
+        ck("the classification reports the live session's, the other project's and shared infra",
+           statuses.get(511) == "live" and statuses.get(521) == "other-project" and statuses.get(503) == "infra",
+           str(statuses))
+
+    # 20. `leftovers` stops nothing. A dead session's live launcher and its seat are NOT targeted
+    #     here, and nothing can prove the pane shell's job is unwanted: the launch is built to
+    #     outlive its session. The case starts its own two children (they expire on their own),
+    #     runs the real listing, and asks the OS afterwards whether both still run.
+    ck_win("leftovers lists a dead session's launcher and its seat and stops neither", *leftovers_stops_nothing())
+
+    helped = subprocess.run([sys.executable, str(HERE.parent / "tools" / "reap.py"), "--help"],
+                            capture_output=True, text=True)
 
     helped = subprocess.run([sys.executable, str(HERE.parent / "tools" / "reap.py"), "--help"],
                             capture_output=True, text=True)

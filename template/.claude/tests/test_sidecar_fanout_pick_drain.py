@@ -360,6 +360,23 @@ def the_placement_line_names_an_unreadable_plan_once_and_drops_it():
             and err1.count("unreadable") == 1 and "unreadable" not in err2)
 
 
+def a_stated_unknown_prints_its_reason_without_malformed():
+    """Cut from `console_credit_probe.py` run on this machine 2026-11-10: anthropic-console-secondary's
+    cycle ended, and the reader states that. The fan-out line carries that reason, never a `malformed`
+    status the reader did not return."""
+    plant(PA)
+    stated = {"schemaVersion": 1, "transport": "anthropic-console-secondary", "costModel": "plan-quota",
+              "sourceKind": "live", "observedAt": "2026-11-10T05:18:23.817Z", "status": "unknown",
+              "error": {"kind": "unknown",
+                        "message": "credit cycle ended 2026-10-31; the owner's next re-anchor sets the new cycle"},
+              "liveFailure": None, "quota": None, "balance": None}
+    readings = {PA: reading(PA, 20), "anthropic-console-secondary": stated}
+    getattr(sf, "_REPORTED_UNREADABLE", set()).clear()
+    got, err = run_pick([PA, "anthropic-console-secondary"], readings)
+    return (got == PA and "unreadable (unknown: credit cycle ended 2026-10-31" in err
+            and "malformed" not in err)
+
+
 def hook_admits_forecasts_but_refuses_spent_allowance():
     import sidecar_dispatch_context as hook
     from types import SimpleNamespace
@@ -1014,6 +1031,7 @@ for fn in (incident_goes_to_the_plan_that_holds_it, incident_alone_is_admitted_w
            hook_admits_forecasts_but_refuses_spent_allowance,
            a_roomy_plan_blocked_by_a_short_window_is_waited_for_over_a_drained_long_window,
            the_placement_line_names_an_unreadable_plan_once_and_drops_it,
+           a_stated_unknown_prints_its_reason_without_malformed,
            plan_job_records_each_jobs_plan_signature_and_route_candidates,
            each_plan_gets_its_own_first_wave_from_its_own_rate,
            a_plan_with_nothing_in_flight_launches_even_when_its_headroom_is_under_one_forecast,

@@ -10,8 +10,8 @@ or its checkout step failed, and its log carries no LAND_RESULT line: the land s
 red from `land_run.ps1` is never re-run, and neither is a job still running or a run whose log cannot be read.
 Re-runs stop after MAX_ATTEMPTS, so a runner that keeps dropping jobs ends red instead of looping.
 
-`watch` waits for the land run of one pushed commit and prints one terminal line: `LANDED <sha>` (the `landed=` sha when the runner rebased, else the pushed one), `SUPERSEDED <sha> by <branch>` (a later land branch carries it),
-`RED <stage line>`, `CANCELLED run <id>` (cancelled on purpose, so never re-run), `LOST <run> after <n> attempts` or `UNREAD run <id>` (its log cannot be read or has no LAND_RESULT line: exit 2, never LANDED from the pushed sha); at `--timeout-min` it prints `TIMEOUT` and exits 2. When the branch has runs but none for `--sha`, it prints `NO RUN matches <sha> among <runs seen>` once and, if that holds for NO_MATCH_MIN minutes, prints it again and exits 2; a branch with no runs at all keeps waiting. It re-runs a lost job itself too, which covers a land-retry workflow that never
+`watch` waits for the land run of one pushed commit and prints one terminal line: `LANDED <sha>` (the `landed=` sha when the runner rebased, else the pushed one; a close that excused pre-existing reds appends ` (2 pre-existing red: a.py, b.py)`), `SUPERSEDED <sha> by <branch>` (a later land branch carries it),
+`RED <stage line>` (one from the close carries the same `pre-existing=<n> <proofs>` field), `CANCELLED run <id>` (cancelled on purpose, so never re-run), `LOST <run> after <n> attempts` or `UNREAD run <id>` (its log cannot be read or has no LAND_RESULT line: exit 2, never LANDED from the pushed sha); at `--timeout-min` it prints `TIMEOUT` and exits 2. When the branch has runs but none for `--sha`, it prints `NO RUN matches <sha> among <runs seen>` once and, if that holds for NO_MATCH_MIN minutes, prints it again and exits 2; a branch with no runs at all keeps waiting. It re-runs a lost job itself too, which covers a land-retry workflow that never
 started; a second re-run of a run already in progress is refused by GitHub and ignored here.
 """
 import argparse
@@ -85,9 +85,24 @@ def retry(run, attempt):
 
 def land_line(run):
     """The last LAND_RESULT payload of a run's log; None when the log cannot be read or has no verdict line."""
+    return land_read(run)[0]
+
+
+def land_read(run):
+    """(the last LAND_RESULT payload, the close's time facts) of a run's log; (None, '') when the log cannot be read."""
     rc, out, _ = gh('run', 'view', str(run), '--log')
     lines = [l for l in out.splitlines() if 'LAND_RESULT=' in l] if rc == 0 else []
-    return lines[-1].split('LAND_RESULT=', 1)[1] if lines else None
+    return (lines[-1].split('LAND_RESULT=', 1)[1], close_facts_of(out)) if lines else (None, '')
+
+
+def close_facts_of(log):
+    """The close's time facts in a land log, as ' (close 3371.0s of 300s budget; pool ...)': the budget line's wall
+    seconds and budget, then the payload of the close's `close time:` line when it printed one. '' for a log with neither."""
+    budget = re.search(r'harness_tests: close budget: ([\d.]+)s of (\d+)s', log)
+    if not budget:
+        return ''
+    timed = re.search(r'harness_tests: close time: (.+)', log)
+    return ' (close %ss of %ss budget%s)' % (budget.group(1), budget.group(2), '; ' + timed.group(1).strip() if timed else '')
 
 
 def unread_line(run):
@@ -98,6 +113,15 @@ def landed_of(result, sha):
     """The sha a green land put on main: its `landed=` field when the runner rebased, else the pushed commit."""
     m = re.search(r'\blanded=([0-9a-f]{40})', result)
     return m.group(1) if m else sha
+
+
+def pre_existing_of(result):
+    """The close's excused reds a land result carries: (count, 'a.py, b.py') from its `pre-existing=` field,
+    (0, '') when the close excused none."""
+    m = re.search(r'\bpre-existing=(\d+)(?: ([^:\s]+))?', result)
+    if not m:
+        return 0, ''
+    return int(m.group(1)), (m.group(2) or '').replace(',', ', ')
 
 
 def no_run_line(sha, seen):
@@ -219,12 +243,15 @@ def watch(branch, sha, timeout_min, no_match_min=NO_MATCH_MIN):
                 last = state
             if r['status'] == 'completed':
                 if r['conclusion'] == 'success':
-                    result = land_line(r['databaseId'])
+                    result, facts = land_read(r['databaseId'])
                     if result is None:
                         print(unread_line(r['databaseId']))
                         return 2
                     by = re.search(r'^superseded\b.*\bby=(\S+)', result)
-                    print('SUPERSEDED %s by %s' % (sha, by.group(1)) if by else 'LANDED %s' % landed_of(result, sha))
+                    count, proofs = pre_existing_of(result)
+                    note = ' (%d pre-existing red: %s)' % (count, proofs) if count else ''
+                    print('SUPERSEDED %s by %s' % (sha, by.group(1)) if by
+                          else 'LANDED %s%s%s' % (landed_of(result, sha), note, facts))
                     if not by:
                         try:
                             print(catch_up())
@@ -241,8 +268,8 @@ def watch(branch, sha, timeout_min, no_match_min=NO_MATCH_MIN):
                     print('UNREAD %s; polling again' % err, flush=True)
                     state = 'pending'
                 if state == 'judged':
-                    result = land_line(r['databaseId'])
-                    print('RED %s' % result if result is not None else unread_line(r['databaseId']))
+                    result, facts = land_read(r['databaseId'])
+                    print('RED %s%s' % (result, facts) if result is not None else unread_line(r['databaseId']))
                     return 1 if result is not None else 2
                 if state == 'unread':
                     print(unread_line(r['databaseId']))

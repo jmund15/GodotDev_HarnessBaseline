@@ -189,10 +189,21 @@ def workflow_lines(host, events):
 
 
 def transcript_path(session_id):
-    """The session's transcript `<projects>/<project>/<session>.jsonl`, else None."""
+    """The session's transcript `<projects>/<project>/<session>.jsonl`, else None.
+
+    The store glob it falls back to walks every project folder this client ever made: 4513 of them, 0.34 s
+    (measured 2026-11-10). A session's store is keyed on the directory it was launched in — `projects_dir`'s
+    `re.sub(r"[^A-Za-z0-9]", "-", cwd)` — so the project dirs of this process and of `CLAUDE_PROJECT_DIR` are
+    tried by name first, and the glob answers only a session started somewhere else."""
     import model_registry
-    found = glob.glob(os.path.join(glob.escape(str(model_registry.session_projects_dir())), "*",
-                                   "%s.jsonl" % session_id))
+    root = str(model_registry.session_projects_dir())
+    for cwd in (os.environ.get("CLAUDE_PROJECT_DIR"), os.getcwd()):
+        if not cwd:
+            continue
+        exact = os.path.join(root, re.sub(r"[^A-Za-z0-9]", "-", cwd), "%s.jsonl" % session_id)
+        if os.path.isfile(exact):
+            return exact
+    found = glob.glob(os.path.join(glob.escape(root), "*", "%s.jsonl" % session_id))
     return found[0] if found else None
 
 

@@ -171,7 +171,7 @@ def materialize(entries: list[Entry], directory: Path) -> str:
     (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n",
                                             encoding="utf-8", newline="\n")
     try:
-        os.replace(staging, directory)
+        os.replace(staging, directory)  # bare-rename: materialize returns early when the destination exists
     except OSError:
         shutil.rmtree(staging, ignore_errors=True)
         if not snapshot_is_current(directory, CATALOG):

@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 Read at an `add` or `user-add` invocation, including one the CLAUDE.md auto-detect chain routes here. Entry formats and call shorthands: `worklog_formats.md`. Mirror-patch format: `worklog_mirror.md`.
 
+Run an ADD's write steps with `python3 .claude/tools/worklog.py add`, which performs steps 1–9 for every ADD route and leaves the propose-and-confirm rules below as the decision on whether to add.
+
 ## Cross-cutting rules for both adds
 
 - **De-duplication:** before any add, scan the in-context mirror for a near-duplicate title in the same domain; surface the existing item unless the user confirms it's distinct. The mirror omits Future Scope — for Future-Scope-shaped candidates, read `## Future Scope` too.

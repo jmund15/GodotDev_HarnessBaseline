@@ -994,7 +994,7 @@ sc_gate_availability() {
 sc_drift_guard_active() { [ "${SC_SHAPE:-}" = "bench-score" ] && [ -n "${SC_PROMPT_FILE:-}" ]; }
 # BENCH_RULER_SCOPE adds the succession ruler's staged-file Read allowlist.
 sc_settings_with_bench_guard() { # <settings-json-or-empty> -> merged json on stdout ("" if nothing to pass)
-  python3 - "$1" "$SC_ROOT" "${SC_SHAPE:-}" "${SC_PROMPT_FILE:-}" "${BENCH_ARM:-}" "${BENCH_RULER_SCOPE:-}" "${SC_WORKDIR:-}" "${SC_RECORD:-}" "${SC_PROGRESS:-}" "${AC_AUTO_COMPACT_WINDOW:+${SC_MODEL:-}}" <<'PY'
+  python3 - "$1" "$SC_ROOT" "${SC_SHAPE:-}" "${SC_PROMPT_FILE:-}" "${BENCH_ARM:-}" "${BENCH_RULER_SCOPE:-}" "${SC_WORKDIR:-}" "${SC_RECORD:-}" "${SC_PROGRESS:-}" "${AC_AUTO_COMPACT_WINDOW:+${SC_MODEL:-}}" "${SC_RESOLVED_BUILTINS:-}" <<'PY'
 import json, os, shlex, sys
 from pathlib import Path
 base = json.loads(sys.argv[1]) if sys.argv[1].strip() else {}
@@ -1005,13 +1005,23 @@ if sys.argv[4]:
         (root / "hooks/sidecar_recompact_reprompt.py").as_posix(), prompt)
     events = [("SessionStart", "compact"), ("PreCompact", None)]
     # A Claude child given a compaction point (AC_AUTO_COMPACT_WINDOW) below its model's real window holds its
-    # first auto-compaction until it saves its findings (the hook's --hard-window).
+    # first auto-compaction until it saves its findings (the hook's --hard-window). The hold is wired only for a
+    # child whose resolved tools include one of the hook's save tools: a read-only child cannot answer the nudge.
     hard = None
     if len(sys.argv) > 10 and sys.argv[10]:
         sys.path.insert(0, (root / "tools").as_posix())
         import model_registry
         entry = model_registry.resolve(sys.argv[10])
         hard = model_registry.effective_window(entry, True) or model_registry.effective_window(entry, False)
+        if hard:
+            sys.path.insert(0, (root / "hooks").as_posix())
+            try:
+                from sidecar_recompact_reprompt import WRITE_TOOLS
+            except Exception:
+                WRITE_TOOLS = ()
+            tools = {t.strip() for t in (sys.argv[11] if len(sys.argv) > 11 else "").split(",") if t.strip()}
+            if not tools.intersection(WRITE_TOOLS):
+                hard = None
     if hard:
         command += " --hard-window %d" % hard
         events.append(("PostToolUse", None))

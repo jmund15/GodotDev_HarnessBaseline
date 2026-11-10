@@ -78,6 +78,7 @@ CLAUDE_DIR = TOOLS.parent
 sys.path.insert(0, str(TOOLS))
 sys.path.insert(0, str(TOOLS.parent / "hooks"))
 from _bounded_run import run_bounded  # noqa: E402
+from _hook_state import replace_path  # noqa: E402
 import adaptation  # noqa: E402
 import model_registry  # noqa: E402
 import plugin_registry  # noqa: E402
@@ -528,25 +529,13 @@ def write(dest_dir, name, text):
     _atomic(path, text)
 
 
-def _replace_with_retry(src, dst):
-    """Windows denies a replace while another process holds `dst` mid-replace; that hold lasts
-    milliseconds, so retry briefly before reporting the denial."""
-    for delay in (0.05, 0.2, 0.5, 1.0):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            time.sleep(delay)
-    os.replace(src, dst)
-
-
 def _atomic(path, text):
     fd, tmp = tempfile.mkstemp(prefix=".tmp_sync_", dir=str(path.parent))
     try:
         with open(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
         try:
-            _replace_with_retry(tmp, path)
+            replace_path(tmp, path)
         except PermissionError as original:
             try:
                 current = _read_text(path)

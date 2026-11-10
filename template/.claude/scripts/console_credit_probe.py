@@ -28,9 +28,10 @@ THE SUMMED LEDGER IS `~/.claude/sidecar_ledger.jsonl` and `-L`/`SIDECAR_LEDGER_P
 launcher writes would understate the spend. `HOME` is honoured, because that is the variable the
 launcher's own default resolves from.
 
-FAIL POSTURE. Anything that leaves the spend unknowable prints the `malformed` status, which
-carries no quota envelope at all, so every consumer reads it as unreadable and never as room: no
-usable anchor for this plan, an anchor older than the cycle it is offsetting, a cycle whose
+FAIL POSTURE. Anything that leaves the spend unknowable prints the `unknown` status: no quota
+envelope, and the reason stated, so every consumer reads it as unreadable, never as room, and shows
+the reason instead of re-reading it. The cases: no usable anchor for this plan, an anchor older than
+the cycle it is offsetting, a cycle whose
 `cycleEnd` has passed (R3: a stale cycle is refused, never guessed), a ledger row of this plan that
 carries no price or no usable timestamp (R2: unaccounted spend is not spent-unknown, it is unknown).
 A line of the ledger that is not an object names no plan and is skipped, so one writer's torn line
@@ -150,13 +151,13 @@ def outcome(status, plan, *, quota=None, error=None):
 
 
 def unknown(plan, message):
-    """The reading for a spend this probe cannot establish: typed, and with no quota envelope.
+    """The reading for a spend this probe cannot establish: no quota envelope, and the reason stated.
 
-    `malformed` is the status that already exists for "the source did not yield a usable number",
-    and every consumer of the schema treats it as unreadable (the launcher refuses at it, the bands
-    drop the plan with `why`), which is what an unaccounted credit deserves.
+    `unknown` is the schema's status for a reader that knows why it cannot read. A warm cannot clear
+    it, only the owner's step the message names can, so every consumer prints the reason instead of
+    re-reading.
     """
-    return outcome("malformed", plan, error={"kind": "malformed", "message": message})
+    return outcome("unknown", plan, error={"kind": "unknown", "message": message})
 
 
 def cycle_for(plan):
@@ -267,8 +268,8 @@ def summarize(plan, cycle, anchor, spend, marker=None, now=None, stored=()):
     marked = (isinstance(marker, dict) and isinstance(marker.get("cycleEnd"), str)
               and marker["cycleEnd"] == cycle["cycleEnd"])
     if cycle["end"] <= now:
-        return unknown(plan, "the %s credit cycle ended %s (cycleEnd %s); the owner's next re-anchor "
-                             "sets the new cycle" % (plan, _utc(cycle["end"]), cycle["cycleEnd"]))
+        return unknown(plan, "credit cycle ended %s; the owner's next re-anchor sets the new cycle"
+                       % cycle["cycleEnd"])
     # The window is the credit, so its percentage is spend against the grant and never past 100:
     # the schema bounds usedPercent there, and the exhausted status already carries the override.
     percent = min(100.0, max(0.0, (used / cycle["grant"]) * 100.0))
@@ -346,6 +347,11 @@ def write_anchor(account, remaining, now=None):
     stamp = _utc(time.time() if now is None else now)
     blob[plan] = {"asOf": stamp, "remainingUSD": value}
     _write_json(path, blob)
+    try:
+        import provider_capacity
+        provider_capacity.forget(plan)
+    except Exception:  # noqa: BLE001 -- the anchor is the fix; a stale cache only delays its reading
+        pass
     return "anchored %s at $%.2f remaining as of %s (%s)" % (plan, value, stamp, path), True
 
 

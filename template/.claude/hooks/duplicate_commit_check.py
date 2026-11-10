@@ -46,6 +46,7 @@ for _d in (HERE, TOOLS):
 from _commit_scope import authored_paths, publishes_index  # noqa: E402
 from _git_commit import (commit_invocations, commit_source, git_environ, in_project, resolve_index,  # noqa: E402
                          run_git, staged_paths)
+from _hook_state import replace_path  # noqa: E402
 import extract_numbers as en  # noqa: E402
 
 RESTATE_SCAN = os.path.join(TOOLS, "restate_scan.py")
@@ -131,7 +132,7 @@ def _write_report(path, text):
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
-        os.replace(scratch, path)
+        replace_path(scratch, path)
     except BaseException:
         try:
             os.unlink(scratch)

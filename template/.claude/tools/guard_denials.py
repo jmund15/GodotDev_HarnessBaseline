@@ -6,8 +6,12 @@ import argparse
 import json
 import os
 import re
+import sys
 import tempfile
 from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
+from _hook_state import replace_path  # noqa: E402
 
 import model_registry
 
@@ -135,7 +139,7 @@ def write_cache(cache_path, entries):
     try:
         with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as handle:
             json.dump(entries, handle, sort_keys=True)
-        os.replace(tmp, cache_path)
+        replace_path(tmp, cache_path)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)

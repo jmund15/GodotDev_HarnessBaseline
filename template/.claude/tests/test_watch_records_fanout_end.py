@@ -24,10 +24,14 @@ import unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "..", "tools")
+sys.path.insert(0, os.path.join(HERE, "..", "hooks"))
+import _hook_state  # noqa: E402
 SID = "9b60b8a7-97fc-4406-b403-639453559942"
 LIVE, ENDED = "derive-live", "derive-ended"
 LAUNCH = "72abcd6d-439f-45d1-9d5a-aeebb937980e"
 ENDED_REASON = "the launcher exited 2 before a result"
+# A hang bound, never a wait: silence cases wait for two polls and exits wait for the process.
+HANG_BOUND = 120
 
 
 def stamp(epoch):
@@ -105,15 +109,8 @@ class Session:
 
     def pending(self, entries):
         """Replace only the pending list, as the Stop hook does: the watcher's acknowledgments stay."""
-        path = os.path.join(self.state, SID[:8] + ".json")
-        try:
-            with open(path, encoding="utf-8") as fh:
-                state = json.load(fh)
-        except (OSError, ValueError):
-            state = {}
-        state["dispatch_table_pending"] = entries
-        with open(path, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(state, fh)
+        _hook_state.update_json_locked(os.path.join(self.state, SID[:8] + ".json"),
+                                       lambda state: state.__setitem__("dispatch_table_pending", entries))
 
     def ledger(self, *rows):
         with open(self.ledger_path, "w", encoding="utf-8", newline="\n") as fh:
@@ -126,23 +123,52 @@ class Session:
 
     def watch(self):
         env = dict(os.environ, CLAUDE_CODE_SESSION_ID=SID, CLAUDE_CONFIG_DIR=self.config, HARNESS_HOOK_STATE_DIR=self.state,
-                   SIDECAR_LEDGER_PATH=self.ledger_path, WATCH_RECORDS_POLL_SEC="0.1", PYTHONIOENCODING="utf-8")
-        return subprocess.Popen([sys.executable, os.path.join(TOOLS, "watch_records.py"), "--session", "--wake"],
+                   SIDECAR_LEDGER_PATH=self.ledger_path, WATCH_RECORDS_POLL_SEC="0.1", PYTHONIOENCODING="utf-8",
+                   WATCH_RECORDS_POLL_MARK=os.path.join(self.root, "polls.log"))
+        open(os.path.join(self.root, "polls.log"), "w").close()
+        proc = subprocess.Popen([sys.executable, os.path.join(TOOLS, "watch_records.py"), "--session", "--wake"],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        proc.mark = os.path.join(self.root, "polls.log")
+        return proc
 
     def close(self):
         shutil.rmtree(self.root, ignore_errors=True)
 
 
-def outcome(proc, seconds):
-    """(text, exited): the watcher's stdout when it exits within `seconds`, else what it printed before it was stopped."""
+def poll_count(path):
     try:
-        out, _err = proc.communicate(timeout=seconds)
-        return out.strip(), True
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        out, _err = proc.communicate()
-        return out.strip(), False
+        with open(path, encoding="utf-8") as fh:
+            return len(fh.read().splitlines())
+    except OSError:
+        return 0
+
+
+def wait_polls(proc, polls=2, seconds=HANG_BOUND):
+    """True once `polls` more polls finished with the watcher alive; False when it exited first. Never stops it."""
+    target = poll_count(proc.mark) + polls
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if poll_count(proc.mark) >= target:
+            return True
+        if proc.poll() is not None:
+            return False
+        time.sleep(0.02)
+    return poll_count(proc.mark) >= target
+
+
+def outcome(proc, polls=0):
+    """(text, exited): the watcher's stdout when it exits (a hang bound, not a wait); or, with `polls`, what it
+    printed before it was stopped after that many finished polls. A silence verdict names the polls it read after."""
+    if polls:
+        deadline = time.time() + HANG_BOUND
+        while time.time() < deadline and proc.poll() is None and poll_count(proc.mark) < polls:
+            time.sleep(0.02)
+        if proc.poll() is None:
+            proc.kill()
+            return proc.communicate()[0].strip(), False
+        return proc.communicate()[0].strip(), True
+    out, _err = proc.communicate(timeout=HANG_BOUND)
+    return out.strip(), True
 
 
 class FanoutEnd(unittest.TestCase):
@@ -163,7 +189,7 @@ class FanoutEnd(unittest.TestCase):
     def test_refused_call_leftover_does_not_wake_unresolved_for_the_live_relaunch(self):
         refused, relaunch = self.refused_then_relaunched()
         self.s.pending([refused, relaunch])
-        text, exited = outcome(self.s.watch(), 4)
+        text, exited = outcome(self.s.watch(), polls=2)
         self.assertNotIn("UNRESOLVED", text)
         self.assertFalse(exited, "the watcher must keep watching the running job, printed: %r" % text)
 
@@ -173,20 +199,20 @@ class FanoutEnd(unittest.TestCase):
         refused, relaunch = self.refused_then_relaunched()
         refused["fanout_dir"] = os.path.join(self.s.root, "run")
         self.s.pending([refused, relaunch])
-        text, exited = outcome(self.s.watch(), 4)
+        text, exited = outcome(self.s.watch(), polls=2)
         self.assertNotIn("UNRESOLVED", text)
         self.assertFalse(exited, "the watcher must keep watching the running job, printed: %r" % text)
 
     def test_unresolved_still_fires_when_no_later_call_launched_the_job(self):
         self.s.pending([self.s.entry(LIVE, self.s.now - 500)])
-        text, exited = outcome(self.s.watch(), 6)
+        text, exited = outcome(self.s.watch())
         self.assertIn("UNRESOLVED " + LIVE, text)
         self.assertTrue(exited)
 
     def test_a_later_call_that_also_allocated_no_record_does_not_hide_it(self):
         now = self.s.now
         self.s.pending([self.s.entry(LIVE, now - 500), self.s.entry(LIVE, now - 488)])
-        text, exited = outcome(self.s.watch(), 6)
+        text, exited = outcome(self.s.watch())
         self.assertIn("UNRESOLVED " + LIVE, text)
         self.assertTrue(exited)
 
@@ -196,7 +222,7 @@ class FanoutEnd(unittest.TestCase):
         self.assertEqual(os.path.getsize(record), 0)
         inventory = self.s.inventory("eb581e94-7e51-478f-9937-6a6eca3ca7c3", LIVE, now - 465)
         self.s.pending([self.s.entry(LIVE, now - 488, record, inventory=inventory)])
-        text, exited = outcome(self.s.watch(), 4)
+        text, exited = outcome(self.s.watch(), polls=2)
         self.assertFalse(exited, "an empty record JSON is a running job, printed: %r" % text)
         for word in ("UNRESOLVED", "DIED", "DONE", "NO-IDENTITY", "ENDED"):
             self.assertNotIn(word, text)
@@ -205,10 +231,10 @@ class FanoutEnd(unittest.TestCase):
         now = self.s.now
         self.s.pending([])
         self.s.ledger(self.s.finish_row(ENDED, now - 300))
-        text, exited = outcome(self.s.watch(), 8)
+        text, exited = outcome(self.s.watch())
         self.assertTrue(exited, "an unreported failed end wakes the session")
         self.assertIn("ENDED %s exit=2 %s" % (ENDED, ENDED_REASON), text)
-        again, exited = outcome(self.s.watch(), 1)
+        again, exited = outcome(self.s.watch(), polls=2)
         self.assertFalse(exited)
         self.assertNotIn("ENDED", again)
         self.assertNotIn("NONE", again)
@@ -222,11 +248,11 @@ class FanoutEnd(unittest.TestCase):
         entry = self.s.entry(ENDED, now - 300, self.s.record(ENDED), inventory=inventory)
         self.s.pending([entry])
         self.s.ledger(self.s.finish_row(ENDED, now - 270))
-        text, exited = outcome(self.s.watch(), 8)
+        text, exited = outcome(self.s.watch())
         self.assertTrue(exited)
         self.assertIn("ENDED %s exit=2" % ENDED, text)
         self.s.pending([])
-        again, exited = outcome(self.s.watch(), 1)
+        again, exited = outcome(self.s.watch(), polls=2)
         self.assertFalse(exited)
         self.assertNotIn("ENDED", again)
 
@@ -236,7 +262,7 @@ class FanoutEnd(unittest.TestCase):
         self.s.ledger(self.s.finish_row("old-ended", now - 25 * 3600),
                       self.s.finish_row("clean", now - 60, outcome="finished-without-record", code=0),
                       self.s.finish_row("someone-elses", now - 60, session="00000000-0000-0000-0000-000000000000"))
-        text, exited = outcome(self.s.watch(), 1)
+        text, exited = outcome(self.s.watch(), polls=2)
         self.assertFalse(exited)
         self.assertEqual(text, "")
 
@@ -246,10 +272,10 @@ class FanoutEnd(unittest.TestCase):
         record = self.s.running(ENDED, now - 90)
         self.s.pending([self.s.entry(ENDED, now - 120, record, inventory=inventory)])
         proc = self.s.watch()
-        time.sleep(2.0)
+        self.assertTrue(wait_polls(proc, 2), "a running job keeps the watcher alive")
         self.assertIsNone(proc.poll(), "a running job keeps the watcher alive")
         self.s.ended(ENDED, 1, with_json=True)
-        text, exited = outcome(proc, 8)
+        text, exited = outcome(proc)
         self.assertTrue(exited)
         self.assertIn("DONE %s exit=1" % ENDED, text)
 
@@ -270,7 +296,7 @@ class FanoutEnd(unittest.TestCase):
         with open(os.path.join(self.s.dir, ENDED + ".out.json"), "w", encoding="utf-8") as fh:
             fh.write(stream(brief + ".amend.md") + '{"type":"result","result":"done"}\n')
         self.s.pending([self.s.entry(ENDED, now - 300, record, inventory=inventory)])
-        text, exited = outcome(self.s.watch(), 8)
+        text, exited = outcome(self.s.watch())
         self.assertTrue(exited)
         self.assertIn("DONE %s exit=1" % ENDED, text)
         return text
@@ -330,7 +356,7 @@ class WakeUnit(unittest.TestCase):
         self.s.ended(label, code, with_json=True)
 
     def assertAsleep(self, proc, why):
-        time.sleep(2.0)
+        self.assertTrue(wait_polls(proc, 2), "%s: the watcher exited" % why)
         self.assertIsNone(proc.poll(), why)
 
     def test_ungrouped_clean_end_wakes_while_siblings_run(self):
@@ -338,7 +364,7 @@ class WakeUnit(unittest.TestCase):
         proc = self.s.watch()
         self.assertAsleep(proc, "three running jobs keep the watcher alive")
         self.finish("a")
-        text, exited = outcome(proc, 8)
+        text, exited = outcome(proc)
         self.assertTrue(exited, "an ungrouped clean end is its own unit and wakes; printed: %r" % text)
         self.assertIn("DONE a exit=0", text)
         self.assertIn("STILL RUNNING 2", text)
@@ -350,7 +376,7 @@ class WakeUnit(unittest.TestCase):
         self.finish("a")
         self.assertAsleep(proc, "a clean end must not wake while a member of its group runs")
         self.finish("b")
-        text, exited = outcome(proc, 8)
+        text, exited = outcome(proc)
         self.assertTrue(exited, "the group's last end wakes; printed: %r" % text)
         self.assertIn("DONE a exit=0", text)
         self.assertIn("DONE b exit=0", text)
@@ -360,7 +386,7 @@ class WakeUnit(unittest.TestCase):
         proc = self.s.watch()
         self.assertAsleep(proc, "running group keeps the watcher alive")
         self.finish("a", 1)
-        text, exited = outcome(proc, 8)
+        text, exited = outcome(proc)
         self.assertTrue(exited, "a failed member wakes while its group runs; printed: %r" % text)
         self.assertIn("DONE a exit=1", text)
 
@@ -372,7 +398,7 @@ class WakeUnit(unittest.TestCase):
         self.finish("c")
         self.assertAsleep(proc, "each group still has a running member")
         self.finish("d")
-        text, exited = outcome(proc, 8)
+        text, exited = outcome(proc)
         self.assertTrue(exited, "group `two` ended and wakes though group `one` runs; printed: %r" % text)
         self.assertIn("DONE c exit=0", text)
         self.assertIn("DONE d exit=0", text)
@@ -383,7 +409,7 @@ class WakeUnit(unittest.TestCase):
         proc = self.s.watch()
         self.assertAsleep(proc, "running jobs keep the watcher alive")
         self.finish("solo")
-        text, exited = outcome(proc, 8)
+        text, exited = outcome(proc)
         self.assertTrue(exited, "the ungrouped job wakes; printed: %r" % text)
         self.assertIn("DONE solo exit=0", text)
 
@@ -394,14 +420,14 @@ class WakeUnit(unittest.TestCase):
         self.finish("a")
         self.finish("b")
         self.assertAsleep(proc, "ended seats of a fan-out that still runs its fold stage wake nobody")
-        _, exited = outcome(proc, 0.1)
+        _, exited = outcome(proc, polls=2)
         self.assertFalse(exited)
 
     def test_ends_in_one_poll_arrive_in_one_wake(self):
         self.fanout({"a": None, "b": None, "c": None})
         self.finish("a")
         self.finish("b")
-        text, exited = outcome(self.s.watch(), 8)
+        text, exited = outcome(self.s.watch())
         self.assertTrue(exited)
         self.assertIn("DONE a exit=0", text)
         self.assertIn("DONE b exit=0", text)
@@ -409,10 +435,10 @@ class WakeUnit(unittest.TestCase):
     def test_a_clean_end_that_woke_is_not_reported_again_by_the_next_watcher(self):
         self.fanout({"a": None, "b": None})
         self.finish("a")
-        first, exited = outcome(self.s.watch(), 8)
+        first, exited = outcome(self.s.watch())
         self.assertTrue(exited)
         self.assertIn("DONE a exit=0", first)
-        again, exited = outcome(self.s.watch(), 3)
+        again, exited = outcome(self.s.watch(), polls=2)
         self.assertFalse(exited, "b still runs, so the re-armed watcher keeps watching; printed: %r" % again)
         self.assertNotIn("DONE a", again)
 

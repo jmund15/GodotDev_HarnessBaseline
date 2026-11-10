@@ -409,8 +409,10 @@
       "label": "GPT-6.1 Terra", "family": "terra", "version": "gpt-6.1-terra", "lifecycle": "current", "order": 74, "costRank": 1, "effortValues": ["low", "medium", "high", "xhigh", "max", "ultra"],
       "prior": "mid",
       "_priorComment": "Owner's stated expectation 2026-09-14 for the terra family (terra ~ sonnet); intake input only, not a measurement.",
-      "_comment": "Replaces gpt-5.6-terra under alias `terra` (2026-10-27, owner request to ingest it). Listed in ~/.codex/models_cache.json (fetched 2026-10-27T16:06Z, client 0.159.0) as gpt-6.1-terra: context_window 500000, max_context_window 872000, reasoning low..ultra (default low). effortValues follow that catalog, the transport's own vocabulary; OpenAI's API page lists none..max instead. The predecessor held no roles and no measured effort, so there is nothing to inherit: roles [] and effort unmeasured until bench intake scores land.",
-      "roles": [],
+      "_comment": "Replaces gpt-5.6-terra under alias `terra` (2026-10-27, owner request to ingest it). Listed in ~/.codex/models_cache.json (fetched 2026-10-27T16:06Z, client 0.159.0) as gpt-6.1-terra: context_window 500000, max_context_window 872000, reasoning low..ultra (default low). effortValues follow that catalog, the transport's own vocabulary; OpenAI's API page lists none..max instead. The predecessor held no roles and no measured effort, so there is nothing to inherit. Roles set 2026-11-10 from the intake cells and the owner's ruling that day: scout, plus an added design seat (supplementary architect). Executor and fanout are withheld: three tight-spec execution runs (low, high, and a high re-run on a clean setup) each returned after Step 1 of 7; the driver note below was not delivered in any of them (a bench arm runs a frozen harness).",
+      "roles": ["scout"],
+      "supplementary": ["architect"],
+      "driverNotes": [{"text": "Work unattended: never stop to ask. On a multi-step job, keep a per-step checklist and return only when every step has a disposition. A failed tool call or a red you did not cause is not a blocker: a search that times out, a test that fails on files you did not change, a run that exceeds its budget. Note it, take another route (Grep for the search, the targeted filter for the test) and carry on with the next step. Report a step under couldNotSatisfy only when every route you can name has failed, and name the routes tried.", "evidenceRef": "vault-results intake-terra-2026-10-27, intake-terra-effort-t6-2026-10-28 and retest-t6-terra-high-2026-11-09, v13cells/ARM-T6-TERRA-r1 (progress.jsonl, deliverable.json)", "weakness": "Three T6 runs (low, high, high again on a clean setup) finished Step 1 of 7 correctly and returned with Steps 2-7 undone. At low it ran the full regression after Step 1, met one Integration failure outside its change and a batch over budget, and stopped. At high its first search call timed out, and it named that as the reason the later steps were not done. On the clean re-run every suite passed after Step 1; it stopped anyway, citing a baseline provenance stamp it had not changed.", "removeWhen": "a /pin_ab run on an unattended multi-step job, with this note suppressed on one arm, returns only after every step has a disposition on both arms, and a run that meets a planted red outside its change continues on the suppressed arm."}],
       "price": {"cacheMissPer1M": 1.0, "cacheHitPer1M": 0.05, "cacheWritePer1M": 1.25, "outputPer1M": 5.0, "currency": "USD", "asOf": "2026-10-27", "source": "https://developers.openai.com/api/docs/models/gpt-6.1-terra"},
       "_limitsSource": "contextTokens 500000 and maxContextTokens 872000 from ~/.codex/models_cache.json (2026-10-27). The API page states 1,050,000 context and 128,000 max output; maxOutputTokens stays null like every codex row, since the proxied client reports its own default. No compactAtTokens: input past 272k bills at the long-context tier (2x input and cache, 1.5x output, API page), and lifting the step cap was an owner trade made for sol only.",
       "limits": {
@@ -422,8 +424,10 @@
       },
       "effort": {
         "avoid": [],
-        "evidence": "unmeasured",
-        "_evidenceComment": "No battery cell has run on this row, so it holds no rung and states UNMEASURED."
+        "evidence": "see-ladder",
+        "measuredVersion": "gpt-6.1-terra",
+        "evidenceRef": "vault-results intake-terra-2026-10-27, intake-terra-2, intake-terra-effort, intake-terra-t1max, intake-terra-t2max, intake-terra-effort-t6-2026-10-28 and retest-t6-terra-high-2026-11-09; the ladder's `scout pool` row states the starting efforts",
+        "_evidenceComment": "Intake cells ran at low, medium, high and max, one run each. The design and planning tasks scored higher at max than at medium, one run per effort, so a repeat could close the gap. Tight-spec execution scored the same at low and high. Three cells are void for a search call that aborted after 1800 s (lifecycle.json)."
       },
       "authTier": "open",
       "gate": {"minBand": "Surplus"}

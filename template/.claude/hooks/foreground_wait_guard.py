@@ -48,7 +48,14 @@ a caller should use depends on whether a backgrounded job wakes it:
    run long, and a raised call holds every other wake. The one exception is a proof batch whose every proof has a
    recorded time summing within the timeout (`_timed_fit`), the only job length the harness records. A delegate
    or print-mode child keeps its timeout: no wake reaches it, so one bounded call is its wait.
-5. Blind pipe (denies, background calls only). A `run_in_background` pipeline whose producer stage (a script, a runner, any command that is not a short read) reaches a later `tail` or `head` unredirected and unteed is denied (`blind_pipe`): the task's output file already keeps every line, so the pipe only holds them until the job exits and drops the ones past its count. A short read (`grep`, `git status/log/diff`, `cat`, `sed`, `find`...) ends with the call and passes, as do `tail -f`, a `tee` stage and a `tail` of a file.
+5. Blind pipe (background calls only). A `run_in_background` pipeline whose producer stage (a script, a runner, any
+   command that is not a short read) reaches a later `tail` or `head` unredirected and unteed is the blind pipe
+   (`blind_pipe`): the task's output file already keeps every line, so the stage only holds them until the job exits
+   and then drops the ones past its count. A stage that ends the command's last pipeline, outside any group,
+   substitution, redirection and trailing operator, is removed for the caller and the note says so (`blind_rewrite`):
+   the call's exit code is then the job's own, the failure `tail` reported as success. Every other shape is denied
+   with the command to run instead. A short read (`grep`, `git status/log/diff`, `cat`,
+   `sed`, `find`...) ends with the call and passes, as do `tail -f`, a `tee` stage and a `tail` of a file.
 6. Hand-back (denies, never-woken callers). A subagent or print-mode child's foreground loop waits are clamped to SUBAGENT_WAIT_MS each and their clamped time is totalled since its last non-wait call; past HANDBACK_MS (30 minutes) the next wait is denied with the hand-back text (return the log path, pid, expected end and the steps left), the same hand-back `bench wait` gives (`wait_log.py` HANDBACK_S). Rule home: CLAUDE.core.md §Shell Discipline.
 
 7. Monitor past its cap. A Monitor call whose `timeout_ms` exceeds MONITOR_CAP_MS is denied: the tool ends every watch
@@ -725,8 +732,11 @@ def _deny(reason):
     return 0
 
 
-def _advise(text):
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}))
+def _advise(text, updated=None):
+    out = {"hookEventName": "PreToolUse", "additionalContext": text}
+    if updated:
+        out["updatedInput"] = updated
+    print(json.dumps({"hookSpecificOutput": out}))
 
 
 def _check_in(payload, command, tool_input, note, bounded=False):
@@ -751,9 +761,15 @@ def _check_in(payload, command, tool_input, note, bounded=False):
 
 
 BLIND_REASON = (
-    "[wait] DENIED: this backgrounded %s pipes its output into `%s`, which holds every line until the job exits and "
-    "drops the lines past its count (CLAUDE.core.md §Shell Discipline). Drop the `| %s`: the background task's output "
-    "file keeps every line, and a bounded Read of it after the wake takes the part you need."
+    "[wait] DENIED: this backgrounded %s pipes its output into `%s` where this guard cannot drop the stage for you "
+    "(mid-pipeline, inside a `()` or `$()`, or followed by a command, a redirection or an operator the pipe would "
+    "change), and it holds every line until the job exits and drops the lines past its count (CLAUDE.core.md §Shell "
+    "Discipline). Drop the `| %s` yourself: the background task's output file keeps every line, and a bounded Read of "
+    "it after the wake takes the part you need."
+)
+BLIND_NOTE = (
+    "[wait] Dropped the trailing `| %s` from this background call: the task's output file keeps every line, so a "
+    "bounded Read of it after the wake takes the part you need."
 )
 
 
@@ -862,6 +878,37 @@ def blind_pipe(command):
     return None
 
 
+def blind_rewrite(command):
+    """`command` with its trailing blind `| tail`/`| head` stage removed, while that stage ends the command's last
+    pipeline, else None (the caller denies). A heredoc, a substitution, a quoted group, a redirection on the removed
+    stage, or a second operator after it leaves the command alone: the removal would change what runs or where the
+    result goes."""
+    code = str(command or "").strip()
+    while True:
+        if shell_code(code) != code or _without_substitutions(code) != code:
+            return None
+        bare = _QUOTED_SPAN.sub(lambda m: " " * len(m.group(0)), code)
+        if re.search(r"[`()]", bare):
+            return None
+        seps = list(re.finditer(r"\|\||&&|[;\n]|(?<![>&])&(?![&>])", bare))
+        start = seps[-1].end() if seps else 0
+        pipes = [m for m in re.finditer(r"(?<![|>])\|(?!\|)", bare) if m.start() >= start]
+        if not pipes:
+            return None
+        cut = pipes[-1]
+        words = _words(code[cut.end():].strip())
+        if not words or words[0] not in ("tail", "head") or {"-f", "-F", "--follow"} & set(words[1:]):
+            return None
+        if ">" in re.sub(r"\d?>&\d", "", bare[cut.end():]):
+            return None
+        before = code[:cut.start()].rstrip()
+        if not before.strip():
+            return None
+        if not blind_pipe(before):
+            return before
+        code = before
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -885,18 +932,27 @@ def main():
         _wait_total_ms(payload, 0)
     if tool_input.get("run_in_background"):
         blind = blind_pipe(command)
+        note = None
         if blind:
-            return _deny(BLIND_REASON % (blind[0], blind[1], blind[1]))
+            rewritten = blind_rewrite(command)
+            if rewritten is None:
+                return _deny(BLIND_REASON % (blind[0], blind[1], blind[1]))
+            command = rewritten
+            tool_input = dict(tool_input, command=command)
+            note = BLIND_NOTE % blind[1]
         if not (unwoken or _caller(payload)) and foreground_watch_arm(command) and _watcher_live(payload):
             return _deny(COVERED_REASON)
         if unwoken:
-            _advise(NO_WAKE_ADVICE)
+            _advise(" ".join(n for n in (note, NO_WAKE_ADVICE) if n), tool_input if note else None)
         elif _LOOP_SLEEP.search(shell_code(command)):
             bench = _bench_wait(command)
             if bench:
-                _check_in(payload, bench[0], dict(tool_input, command=bench[0]), BENCH_NOTE % bench[1], bounded=True)
+                _check_in(payload, bench[0], dict(tool_input, command=bench[0]),
+                          " ".join(n for n in (note, BENCH_NOTE % bench[1]) if n), bounded=True)
             else:
-                _check_in(payload, command, tool_input, None)
+                _check_in(payload, command, tool_input, note)
+        elif note:
+            _advise(note, tool_input)
         return 0
     if not (unwoken or _caller(payload)) and foreground_watch_arm(command):
         return _deny(WATCH_REASON % (_watch_records().ARM_COMMAND, _watch_records().ARM_CALL))

@@ -694,8 +694,8 @@ def credit_reading(transport, used, left_days, days=10, status="available", has_
 def unknown_reading(transport):
     """The probe's fail-closed reading: no anchor, a stale cycle or unaccounted spend."""
     return {"schemaVersion": 1, "transport": transport, "costModel": "plan-quota", "sourceKind": "live",
-            "observedAt": "2027-01-15T08:00:00Z", "status": "malformed", "quota": None, "balance": None,
-            "error": {"kind": "malformed", "message": "no anchor recorded"}, "liveFailure": None}
+            "observedAt": "2027-01-15T08:00:00Z", "status": "unknown", "quota": None, "balance": None,
+            "error": {"kind": "unknown", "message": "no anchor recorded"}, "liveFailure": None}
 
 
 def credit_registry(status="available"):
@@ -748,6 +748,34 @@ def credit_cases(case):
     why = {r["transport"]: r.get("why") for r in got.get("ranked") or [] if r.get("room") is None}
     case("an unanchored credit reading drops out as unreadable, never ranked as room",
          got.get("transport") == "anthropic" and "unreadable" in str(why.get(CONSOLE)), repr(got))
+
+    # Cut from `console_credit_probe.py` run on this machine 2026-11-10 (anthropic-console-secondary),
+    # trimmed: the reader states a lasting reason, so every surface prints that reason and never a
+    # `malformed` status it did not return.
+    stated = {"schemaVersion": 1, "transport": CONSOLE_SECOND, "costModel": "plan-quota",
+              "sourceKind": "live", "observedAt": "2026-11-10T05:18:23.817Z", "status": "unknown",
+              "error": {"kind": "unknown",
+                        "message": "credit cycle ended 2026-10-31; the owner's next re-anchor sets the new cycle"},
+              "liveFailure": None, "quota": None, "balance": None}
+    reason_text = getattr(pb.provider_capacity, "reason_text", None)
+    reason = reason_text(stated) if reason_text else None
+    row = pb.plan_room(CONSOLE_SECOND, credit_registry(), reader({CONSOLE_SECOND: stated}), NOW)
+    import contextlib
+    import io
+    real_reading = pb.provider_capacity.reading
+    pb.provider_capacity.reading = lambda name, **_kw: dict(stated, transport=name)
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            pb.main(["list"])
+    finally:
+        pb.provider_capacity.reading = real_reading
+    line = next((row_text for row_text in out.getvalue().splitlines()
+                 if row_text.startswith(CONSOLE_SECOND + "\t")), "")
+    case("the pick row and `list` state an unknown plan's reason in the same words, with no malformed",
+         bool(reason_text) and bool(reason) and row.get("why") == "unreadable: " + reason
+         and reason in line and "malformed" not in line and "malformed" not in str(row.get("why"))
+         and "uncomputable" not in line, repr((row.get("why"), line)))
 
     # The probe's own cause (the unpriced ledger row and the step that clears it) reaches the reader's why.
     cause = ("a console-secondary ledger row after the anchor (c3-exec, 2026-10-15T02:36:09Z) carries no priced "

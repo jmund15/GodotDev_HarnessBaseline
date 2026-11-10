@@ -13,31 +13,46 @@ decision (`auto-memory/gotcha_concurrent_session_hazards.md`). Each selected roo
 chain to the nearest `claude.exe`/`node.exe` ancestor and comparing that pid to this session's
 root: "own" when they match, "other" when both resolve and differ, "owner unknown" when either
 cannot be resolved (a missing table entry or the walk-limit). Unresolved ancestry never defaults
-to "own" or to "other" — see `session_root_pid`. Only this session's shells render in full. Unknown-owner shells get a count;
-other sessions' shells and watchers emit nothing.
+to "own" or to "other" — see `session_root_pid`. Other sessions' shells and watchers emit
+nothing.
+
+PROOF. Before an unknown-owner row prints, the hook reads the process's own environment (or a
+tagged ancestor's) for a session id and asks reap.py whether a live HOST serves it. A live host
+makes the row another session's shell (silent), this session's id makes it "own", and no live
+host states `session <sid8> has no live host` plus the launch membership on the row. A row with
+no readable tag keeps the unknown-owner wording. The hook proves ownership only for the rows it
+displays; it never classifies the whole tagged population of the machine. It stops nothing: a
+detached launch, a benchmark or a long build outlives the session that started it and a later
+session consumes its result, so no fact on this machine shows such a process is unwanted. The
+agent that decides one is unwanted names its pid to reap.py.
 
 EMISSION. Printing the same content every prompt after the model has already decided what to do
-about it burns context for no new information. A key (own pids with their STALE flag, plus the
-unknown-owner count) is stored per session via `_hook_state`; the hook is silent when the key
-repeats, and re-arms once after a compaction (`transcript_backup.py` calls
-`_hook_state.clear_compaction_keys`), since a compacted session lost the earlier delivery from its
-context.
+about it burns context for no new information. A key (own pids with their STALE flag, each dead
+row's pid, session and launch, plus the unknown-owner pids) is stored per session via
+`_hook_state`; the hook is silent when the key repeats, and re-arms once after a compaction
+(`transcript_backup.py` calls `_hook_state.clear_compaction_keys`), since a compacted session lost
+the earlier delivery from its context.
 
 Rule home: CLAUDE.core.md §Shell Discipline ("Watch background jobs through their completion/monitor
 contract"); a sidecar silent for `SIDECAR_STALL_SEC` appends a `stalled` journal row from
 lib/sidecar_common.sh `sc_run_watched` and keeps running, so a stall is a `STALLED` wake from the
 session watcher, never a kill.
 
-Fail-open: any error exits 0 with no output.
+Fail-open: any error exits 0 with no output. A failed ownership proof leaves the row
+unknown-owner; it never blocks a prompt.
 
-One CIM query per prompt (~1 s), returning pid/ppid/name for every process (needed to walk
-ancestry) and command line/age only for the bash/python candidates selection needs. The result is
-cached machine-wide in .claude/.cache/shell-census.json for CACHE_SEC — the cache holds the raw
-process list, not the rendered text, because ownership (and therefore the render) is per session
-and a shared rendered cache would show one session another session's "own" label. Another hook
-process took a cached list, so this process's own pid is not in it: `resolve_own_root` stores the
-session root per session from a fresh snapshot and reuses it only while the cached table still
-lists that pid under a session-process name; otherwise the hook takes a fresh snapshot.
+One CIM query per prompt (~0.8 s), returning pid/ppid/name/start/CPU for every process (needed to
+walk ancestry and to report the cost that matters) and command line only for the process names the
+selection and the proof read. The result is cached machine-wide in .claude/.cache/shell-census.json
+for CACHE_SEC — the cache holds the raw process list, not the rendered text, because ownership (and
+therefore the render) is per session and a shared rendered cache would show one session another
+session's "own" label. Another hook process took a cached list, so this process's own pid is not in
+it: `resolve_own_root` stores the session root per session from a fresh snapshot and reuses it only
+while the cached table still lists that pid under a session-process name; otherwise the hook takes
+a fresh snapshot. Measured 2026-11-10, medians of 5 cold / 10 warm runs on this machine's table:
+warm 0.084 s at fb0887ad7, 0.088 s at bf52ffb70, 0.147 s once the census proves displayed rows
+(a reap import plus one environment read and one liveness answer per unknown row); cold 1.28 s,
+1.31 s, 1.33 s.
 """
 import json
 import os
@@ -52,6 +67,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
 from _hook_state import (  # noqa: E402
     fire_once_since_compaction,
     read_json_salvage,
+    replace_path,
     state_path,
     update_json_locked,
 )
@@ -70,9 +86,12 @@ _PS = (
     "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
     "$now=Get-Date; Get-CimInstance Win32_Process | ForEach-Object { "
     "$isCand = $_.Name -match '^(bash|python)'; "
+    "$cmdName = $_.Name -match '^(bash|python|node|claude|cmd|dotnet|conhost|godot)'; "
     "$age = if ($isCand) { [int]($now - $_.CreationDate).TotalMinutes } else { $null }; "
-    "$cmd = if ($isCand) { $_.CommandLine } else { $null }; "
-    "[pscustomobject]@{ pid=$_.ProcessId; ppid=$_.ParentProcessId; name=$_.Name; age=$age; cmd=$cmd } "
+    "$cmd = if ($cmdName) { $_.CommandLine } else { $null }; "
+    "$start = if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } else { $null }; "
+    "$cpu = if ($_.KernelModeTime -ne $null -and $_.UserModeTime -ne $null) { [long](($_.KernelModeTime + $_.UserModeTime) / 10000000) } else { $null }; "
+    "[pscustomobject]@{ pid=$_.ProcessId; ppid=$_.ParentProcessId; name=$_.Name; age=$age; cmd=$cmd; start=$start; cpu=$cpu } "
     "} | ConvertTo-Json -Compress"
 )
 
@@ -249,7 +268,8 @@ def select(procs, own_pid=None, age_min=AGE_MIN, now=None, own_root=None, watche
         else:
             owner = "other"
         row = {"pid": pid, "age": int(p.get("age") or 0), "tail": _tail(cmd), "stream": None,
-               "owner": owner, "watcher": bool(watchers & subtree_pids(children, pid))}
+               "owner": owner, "watcher": bool(watchers & subtree_pids(children, pid)),
+               "cpu": p.get("cpu")}
         m = re.search(r"-P\s+\"?([^\s\"]+\.jsonl)", cmd)
         if m:
             path = m.group(1)
@@ -264,10 +284,66 @@ def select(procs, own_pid=None, age_min=AGE_MIN, now=None, own_root=None, watche
     return rows
 
 
+def _cpu_note(row):
+    """The CPU the row has used, the cost that decides whether a long shell matters. Empty when the
+    OS gave no reading or the process is young and cheap."""
+    cpu = row.get("cpu")
+    if not isinstance(cpu, (int, float)):
+        return ""
+    if cpu >= 3600:
+        return " | %.1f CPU-hours" % (cpu / 3600.0)
+    if cpu >= 60:
+        return " | %d CPU-min" % int(cpu // 60)
+    return ""
+
+
+def prove_rows(rows, procs, session_id):
+    """Fill every displayed row whose ancestry cannot name an owner from its own environment tag,
+    asking reap.py whether a live host serves that session: "own" when the tag names this session,
+    "other" when a live host serves it, and "dead" (with the owner and launch membership) when none
+    does. A row with no readable tag, or one whose host answer is unreadable, stays "unknown".
+
+    Only the displayed rows are proved; the tagged population of the machine is never classified
+    here, and nothing is stopped (`leftover_findings` is the on-demand listing)."""
+    unknown = [r for r in rows if r.get("owner") == "unknown" and not r.get("watcher")]
+    if not unknown:
+        return
+    try:
+        import reap
+        table = {}
+        for p in procs:
+            pid = _int(p.get("pid"))
+            if pid is not None:
+                table[pid] = {"pid": pid, "ppid": p.get("ppid"), "name": p.get("name") or "",
+                              "cmd": p.get("cmd"), "start": p.get("start")}
+        live = {}
+        with reap.invocation(session_id):
+            for r in unknown:
+                owner, _source = reap.owner_of(table, r["pid"])
+                if not owner:
+                    continue
+                if owner == session_id:
+                    r["owner"] = "own"
+                    continue
+                if owner not in live:
+                    live[owner] = reap.session_live(table, owner)
+                if live[owner] is True:
+                    r["owner"] = "other"
+                elif live[owner] is False:
+                    r["owner"] = "dead"
+                    r["dead_session"] = owner[:8]
+                    r["launch"] = reap.launch_of(r["pid"])
+                    r["launcher"] = reap.is_launcher(table[r["pid"]])
+    except Exception:
+        pass  # fail-open: an unproved row keeps the unknown-owner wording
+
+
 def render(rows):
-    """Own shells render in full; unknown owners get a count; peers and watchers stay silent."""
+    """Own shells render in full; a dead session's shells render their facts; unknown owners keep
+    the unknown-owner wording; peers and watchers stay silent."""
     rest = [r for r in rows if not r.get("watcher")]
     full = [r for r in rest if r.get("owner") == "own"]
+    dead = [r for r in rest if r.get("owner") == "dead"]
     unknown = [r for r in rest if r.get("owner") == "unknown"]
     lines = []
     if full:
@@ -279,10 +355,23 @@ def render(rows):
             extra = ""
             if r["stream"] is not None:
                 extra = " | -P stream idle %d min%s" % (r["stream"], " (STALE)" if r["stream"] >= STALE_STREAM_MIN else "")
-            label = " (owner unknown)" if r.get("owner") == "unknown" else ""
-            lines.append("  pid %d  age %dh%02dm%s%s | %s" % (r["pid"], r["age"] // 60, r["age"] % 60, label, extra, r["tail"]))
+            lines.append("  pid %d  age %dh%02dm%s%s | %s" % (r["pid"], r["age"] // 60, r["age"] % 60,
+                                                             _cpu_note(r), extra, r["tail"]))
+    if dead:
+        import reap
+        lines.append("[shells] %d long-running shell(s) whose session has no live host — decide now whether "
+                      "the work is still wanted. A raw kill is denied; the only route is the reaper "
+                      "(`python3 .claude/tools/reap.py <pid> --dry-run` first)." % len(dead))
+        for r in sorted(dead, key=lambda x: -(x.get("cpu") or 0)):
+            lines.append("  pid %d  age %dh%02dm%s | session %s has no live host | %s | %s"
+                         % (r["pid"], r["age"] // 60, r["age"] % 60, _cpu_note(r), r["dead_session"],
+                            reap.launch_role(r.get("launch"), r.get("launcher")), r["tail"]))
     if unknown:
-        lines.append("[shells] %d long-running shell(s), owner unknown; leave them running." % len(unknown))
+        lines.append("[shells] %d long-running shell(s), owner unknown; reap cannot prove a dead owner, "
+                      "so leave them running:" % len(unknown))
+        for r in sorted(unknown, key=lambda x: -(x.get("cpu") or 0))[:5]:
+            lines.append("  pid %d  age %dh%02dm%s | %s" % (r["pid"], r["age"] // 60, r["age"] % 60,
+                                                            _cpu_note(r), r["tail"]))
     return "\n".join(lines)
 
 
@@ -292,8 +381,10 @@ def emission_key(rows):
         [r["pid"], bool(r["stream"] is not None and r["stream"] >= STALE_STREAM_MIN)]
         for r in rows if r.get("owner") == "own" and not r.get("watcher")
     )
-    unknown = sum(1 for r in rows if r.get("owner") == "unknown" and not r.get("watcher"))
-    return {"rows": full, "unknown": unknown}
+    dead = sorted((r["pid"], r.get("dead_session"), r.get("launch"))
+                  for r in rows if r.get("owner") == "dead" and not r.get("watcher"))
+    unknown = sorted(r["pid"] for r in rows if r.get("owner") == "unknown" and not r.get("watcher"))
+    return {"rows": full, "dead": dead, "unknown": unknown}
 
 
 def should_emit(session_id, key):
@@ -312,14 +403,15 @@ def should_emit(session_id, key):
 
 
 def run(payload, procs, now=None, own_pid=None, own_root=None, watchers=None):
-    """Core logic, injectable for tests: no live CIM query, no stdin. Returns the text to print,
-    or "" when there is nothing to show or the dedupe key repeats."""
+    """Core logic, injectable for tests: no live CIM query, no stdin, no stop. Returns the text to
+    print, or "" when there is nothing to show or the dedupe key repeats."""
     session_id = (payload or {}).get("session_id") or "unknown"
     if own_pid is None:
         own_pid = os.getpid()
     if watchers is None:
         watchers = watcher_pids(session_id)
     rows = select(procs, own_pid=own_pid, now=now, own_root=own_root, watcher_pids=watchers)
+    prove_rows(rows, procs, session_id)
     text = render(rows)
     if not text:
         return ""
@@ -359,7 +451,7 @@ def main():
                 tmp = cache + ".%d.tmp" % os.getpid()
                 with open(tmp, "w", encoding="utf-8") as fh:
                     json.dump({"at": now, "procs": procs}, fh)
-                os.replace(tmp, cache)
+                replace_path(tmp, cache)
             except Exception:
                 pass
             own_root = resolve_own_root(session_id, procs, os.getpid(), fresh=True)

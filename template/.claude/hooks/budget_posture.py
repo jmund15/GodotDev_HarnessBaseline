@@ -22,9 +22,10 @@ The two windows govern different decisions and are never collapsed:
 
 Each plan's room is a fact on the line, never a pick: which row and plan pay is the session's
 choice (the model ladder's selection line). Plans are read from provider_capacity's cache only
-(this hook never starts a probe itself). A plan with no fresh cached reading reads `unknown`; the
-hook then starts one detached `provider_bands.py warm` for the cold plans, at most once per plan
-per provider_capacity.CACHE_TTL_SECONDS, and prints `<transport> warming`.
+(this hook never starts a probe itself). A plan with no fresh cached reading shows its last band
+with its age and is warmed, and one whose reader states why it cannot read shows that reason and is
+not warmed. The hook starts one detached `provider_bands.py warm` for the cold plans, at most once
+per plan per provider_capacity.CACHE_TTL_SECONDS, and prints `<transport> warming`.
 HARNESS_CAPACITY_WARM=0 starts nothing (proofs set it). Each plan entry shows quota left and time
 left for its worst-band window, and both windows when their bands differ.
 
@@ -101,15 +102,23 @@ TOOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def cold_plans():
-    """The plan-quota transports with no fresh cached reading, from provider_capacity's cache only."""
+    """The plan-quota transports worth a warm: no fresh cached reading and no stated reason. A plan
+    whose reader said why it cannot read is never warmed, because no warm can change that reason."""
     try:
         sys.path.insert(0, TOOLS)
         import model_registry
         import provider_bands
         import provider_capacity
         data = model_registry.load()
-        return sorted(t for t in provider_bands.plan_quota_transports(data)
-                      if provider_capacity.cached(t, data=data) is None)
+        cold = []
+        for name in provider_bands.plan_quota_transports(data):
+            if provider_capacity.cached(name, data=data) is not None:
+                continue
+            last = provider_capacity.last_cached(name, data=data)
+            if isinstance(last, dict) and last.get("status") == "unknown":
+                continue
+            cold.append(name)
+        return sorted(cold)
     except Exception:
         return []
 
@@ -387,17 +396,86 @@ def other_quota_bits(plan):
     return rows
 
 
-def quota_key(row):
-    """The row's emission-dedupe text: its band word alone, so the line stays a fact and not a pick."""
-    return f"{row['name']} {row['band']}" if row["band"] else f"{row['name']} unknown"
+def short_reason(text, limit=70):
+    """The first clause of a reader's stated reason: the line names the plan and carries one clause."""
+    head = text.split("; ")[0].rstrip(".")
+    return head if len(head) <= limit else head[:limit - 3] + "..."
 
 
-def quota_clause(row, warm, now):
-    """The posture line's clause for one `other_quota_bits` row: its band word alone; `warm` names the plans a
-    warm is running for."""
+def reading_age(reading, now):
+    """`23m` or `2h` since the reading was observed, or None when it carries no time."""
+    try:
+        sys.path.insert(0, TOOLS)
+        import provider_capacity
+        observed = provider_capacity._epoch(reading.get("observedAt"))
+    except Exception:
+        return None
+    if observed is None:
+        return None
+    minutes = max(0, int((now - observed) / 60))
+    return "%dm" % minutes if minutes < 120 else "%dh" % (minutes // 60)
+
+
+def plan_token(row, reading=None):
+    """The row's stable text: its band word, a cold plan's last band, the reader's stated reason, or
+    `unknown` when nothing is known. One derivation for the line and its dedupe key."""
+    if row["band"]:
+        return f"{row['name']} {row['band']}"
+    try:
+        sys.path.insert(0, TOOLS)
+        import provider_capacity
+        view = provider_capacity.routing_view(reading) if isinstance(reading, dict) else None
+        if view:
+            return f"{row['name']} {view['band']}"
+        reason = provider_capacity.reason_text(reading)
+    except Exception:
+        reason = None
+    return f"{row['name']} {short_reason(reason)}" if reason else f"{row['name']} unknown"
+
+
+def last_readings(names):
+    """{name: its fresh cached reading, else its last one}: what a cold plan's clause can still say."""
+    out = {}
+    try:
+        sys.path.insert(0, TOOLS)
+        import provider_capacity
+    except Exception:
+        return {}
+    for name in names:
+        try:
+            got = provider_capacity.cached(name)
+            out[name] = got if got is not None else provider_capacity.last_cached(name)
+        except Exception:
+            out[name] = None
+    return out
+
+
+def quota_key(row, reading=None):
+    """The row's emission-dedupe text: its stable token, so a reading aging past its TTL alone says
+    nothing new."""
+    return plan_token(row, reading)
+
+
+def quota_clause(row, warm, now, reading=None):
+    """The posture line's clause for one `other_quota_bits` row: its band word alone; a cold plan
+    shows its last band with the reading's age (and is still warmed), or the reader's stated reason
+    (no `warming`: no warm can change it). `warm` names the plans a warm is running for."""
     if row["band"] is not None:
-        return quota_key(row)
-    return quota_key(row) + (", warming" if row["name"] in warm else "")
+        return plan_token(row)
+    try:
+        sys.path.insert(0, TOOLS)
+        import provider_capacity
+        view = provider_capacity.routing_view(reading) if isinstance(reading, dict) else None
+        reason = provider_capacity.reason_text(reading)
+    except Exception:
+        view, reason = None, None
+    if view:
+        age = reading_age(reading, now)
+        text = plan_token(row, reading) + (" (reading %s old)" % age if age else "")
+        return text + (", warming" if row["name"] in warm else "")
+    if reason:
+        return plan_token(row, reading)
+    return plan_token(row) + (", warming" if row["name"] in warm else "")
 
 
 def free_pool_text():
@@ -764,7 +842,8 @@ def main():
     # nothing would say so -- which is exactly how a fully spent Codex account stayed invisible.
     plan = seat_plan()
     quota_rows = other_quota_bits(plan)
-    quota = [quota_key(row) for row in quota_rows]
+    last = last_readings([row["name"] for row in quota_rows if row["band"] is None])
+    quota = [quota_key(row, last.get(row["name"])) for row in quota_rows]
     # A plan whose cached reading just aged out reads `unknown` until its warm lands; that moves the
     # key and says nothing new.
     cold = cold_plans()
@@ -793,7 +872,7 @@ def main():
         else:
             host_plan = plan if plan != _session_transport.UNKNOWN else "anthropic"
             bits = [provider_entry(host_plan, capacity=own_capacity, now=now, label="this session")]
-        bits += [quota_clause(row, warm, now) for row in quota_rows]
+        bits += [quota_clause(row, warm, now, last.get(row["name"])) for row in quota_rows]
         if pool:
             bits.append(pool)
         if on_provider_seat:

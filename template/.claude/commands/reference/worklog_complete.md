@@ -4,6 +4,8 @@ disable-model-invocation: true
 
 # `/worklog` — COMPLETE
 
+Run it with `python3 .claude/tools/worklog.py complete "<title or search>"`; the steps below are that tool's contract.
+
 Read at a `complete` invocation, and from the triage `complete` disposition. Entry formats: `worklog_formats.md`. Mirror-patch format: `worklog_mirror.md`.
 
 ## Operation: COMPLETE
