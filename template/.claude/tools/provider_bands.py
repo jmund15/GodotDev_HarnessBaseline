@@ -35,7 +35,7 @@ Human-readable plan entries show quota left, time left, and for the routing wind
 rate leaves unused at the reset (`unused_at_reset`), never a bare ratio.
 
 CLI:
-    provider_bands.py list                      each plan-quota transport's band and pressure
+    provider_bands.py list                      each plan-quota transport's band and pressure, or the reader's stated reason
     provider_bands.py probe <transport>          one transport's routing-band view as JSON
     provider_bands.py pick <tier> --json         the most-room plan, for a tool choosing a plan for a fixed row
     provider_bands.py warm <transport>...        read each transport, refreshing a missing or expired cache entry
@@ -428,6 +428,11 @@ def plan_room(transport, data, read, now):
     if status == "exhausted":
         return {"transport": transport, "room": None, "why": "exhausted",
                 "windows": facts, "longRoom": long_value, "longWindow": long_name}
+    if status == "unknown":
+        # The reader states why it cannot read: that reason is the whole answer, in the words every
+        # other surface prints. A warm cannot change it, so it is never called `warming`.
+        return {"transport": transport, "room": None,
+                "why": "unreadable: " + (provider_capacity.reason_text(got) or "unknown")}
     if status != "available":
         cause = str((got.get("error") or {}).get("message") or "") if isinstance(got.get("error"), dict) else ""
         return {"transport": transport, "room": None,
@@ -1076,9 +1081,15 @@ def session_plan():
 def main(argv):
     if not argv or argv[0] == "list":
         for name in plan_quota_transports():
-            got = reading(name) or {}
-            print(f"{name}\t{got.get('band') or 'uncomputable'}\t{got.get('pressure')}"
-                  f"\t{got.get('planType') or '?'}")
+            try:
+                capacity = provider_capacity.reading(name) or {}
+            except Exception:
+                capacity = {}
+            view = provider_capacity.routing_view(capacity)
+            band = view["band"] if view else (
+                provider_capacity.reason_text(capacity) or "uncomputable")
+            pressure = view["binding"].get("pressure") if view else None
+            print(f"{name}\t{band}\t{pressure}\t{capacity.get('planType') or '?'}")
         return 0
     if argv[0] == "room":
         print("provider_bands.py room is retired: run "

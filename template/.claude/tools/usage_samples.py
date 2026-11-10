@@ -30,7 +30,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
-from _hook_state import update_json_locked  # noqa: E402
+from _hook_state import replace_path, update_json_locked  # noqa: E402
 
 MAX_AGE_SECONDS = 600
 RETENTION_DAYS = 35
@@ -66,7 +66,7 @@ def _prune(path, cutoff):
     fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".jsonl", dir=directory)
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
         fh.writelines(kept)
-    os.replace(tmp, path)
+    replace_path(tmp, path)
 
 
 def record(samples, now=None, path=None):

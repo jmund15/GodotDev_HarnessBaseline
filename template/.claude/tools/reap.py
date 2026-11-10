@@ -77,14 +77,30 @@ beside the whole transcript. The tool reads no transcript for it, no stop verb, 
               has no live launcher (a launch id) or no live parent (none): nothing can consume its
               result. The targets' own trees and console hosts (conhost.exe) inherit the session id and
               never count as its host. The host test:
-              a session is live when a live process's `<login>/sessions/<pid>.json` row names it (every
-              login model_registry.login_dirs declares), when a live process matching the session-host
-              patterns of `never` names it after --session-id or --resume, or when a live process with no
-              launch id or sidecar tag carries it as CLAUDE_CODE_SESSION_ID (a tool shell, an MCP
-              server). A live claude host with no registry row and no id in its command line, whose
-              children carry a CLAUDE_CODE_SESSION_ID, is a session nobody can name: every session is
-              then unknown and the rule refuses.
+              a session is live when a live SESSION HOST serves it: a live process's
+              `<login>/sessions/<pid>.json` row names it (every login model_registry.login_dirs
+              declares), or a live process matching the session-host patterns of `never` names it
+              after --session-id or --resume. A tool shell, MCP server or console host that merely
+              carries the id is a DEPENDENT, never a host: it outlives the session, so counting it
+              kept dead sessions looking alive for days (2026-11-10). A live claude host with no
+              registry row and no id in its command line, whose children carry a
+              CLAUDE_CODE_SESSION_ID, is a session nobody can name: every session is then unknown
+              and the rule refuses.
+              A parent that is alive does not clear a dead session's leftover: a pane watcher's bash
+              wrapper outlives the session that launched it. A leftover whose owner transcript names
+              another project is that project's to stop.
   ledger      every kill (and every refusal) is appended to .claude/logs/reap_ledger.jsonl.
+
+    python3 .claude/tools/reap.py leftovers
+
+List every live process whose own environment (or a tagged ancestor's) names a session, with the
+facts that decide what each one is: pid, age, cumulative CPU, owner session, whether it is a
+launcher or a member of a launch (with the launch id), its status and command line. A dead
+session's proven leftover of this project is `dead`; the rest are reported with the fact that
+withheld the proof. It stops nothing and takes no --dry-run: a detached launch, a benchmark or a
+long build is built to outlive the session that started it and a later session consumes its
+result, so no fact here shows a process is unwanted. A pid the caller names is stopped by the
+explicit path above, on its proof.
 
     python3 .claude/tools/reap.py live-launch [--prompt <file>] [--label <name>] [--record <file>]
                                               [--resume <sid>] [--self <winpid>] [--launch <id>] [--fanout <id>]
@@ -123,6 +139,7 @@ process table unreadable.
 MSYS pids (what Git Bash `kill` and `ps` print) are mapped to Windows pids through `ps -W`.
 """
 import argparse
+import contextlib
 import datetime
 import json
 import os
@@ -198,6 +215,10 @@ NEVER = (
      "shared INFRA (an MCP/LSP server other sessions use)"),
 )
 HOST_PATTERNS = tuple(pat for pat, _ in NEVER[:2])
+# A headless seat (`claude.exe -p ...`) is a session host for its own session. Its registry row
+# names the session; with no row, its children carrying a session id make the answer unknown
+# (fail closed) instead of proving the session dead.
+SEAT_HOST = re.compile(r"claude(?:\.exe)?\"?\s+(?:.*\s)?-p(?:\s|$)", re.I)
 HOST_SESSION = re.compile(r"--(?:session-id|resume)[=\s]+\"?([A-Za-z0-9_-]+)")
 SEAT_RESUME = re.compile(r"--resume[=\s]+\"?([A-Za-z0-9_-]+)")
 LAUNCHER_SCRIPT = re.compile(r"[\w.-]*_sidecar\.sh\b", re.I)
@@ -249,7 +270,8 @@ def _proc_table():
             continue
         started = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(boot + int(fields[19]) / tick))
         out[pid] = {"pid": pid, "ppid": int(fields[1]), "name": head.partition("(")[2],
-                    "cmd": cmd, "start": started}
+                    "cmd": cmd, "start": started,
+                    "cpu": (int(fields[11]) + int(fields[12])) / tick}
     return out
 
 
@@ -258,15 +280,18 @@ def _on_windows():
 
 
 def process_table(timeout=60):
-    """{pid: {pid, ppid, name, cmd, start}} for every process: CIM on Windows, /proc elsewhere. Empty dict when
-    unreadable."""
+    """{pid: {pid, ppid, name, cmd, start, cpu}} for every process: CIM on Windows, /proc elsewhere.
+    `cpu` is the cumulative user+kernel seconds the OS reports, or None. Empty dict when unreadable."""
     return _cim_table(timeout) if _on_windows() else _proc_table()
 
 
 def _cim_table(timeout=60):
     """process_table's Windows reader, through Get-CimInstance. Empty dict when unreadable."""
     ps = ("Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine,"
-          " @{n='Start';e={$_.CreationDate.ToString('yyyy-MM-dd HH:mm:ss')}} | ConvertTo-Json -Compress")
+          " @{n='Start';e={$_.CreationDate.ToString('yyyy-MM-dd HH:mm:ss')}},"
+          " @{n='Cpu';e={if ($_.KernelModeTime -ne $null -and $_.UserModeTime -ne $null)"
+          " { [long](($_.KernelModeTime + $_.UserModeTime) / 10000000) } else { $null }}}"
+          " | ConvertTo-Json -Compress")
     for exe in ("pwsh", "powershell"):
         try:
             r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", ps],
@@ -287,7 +312,8 @@ def _cim_table(timeout=60):
             pid = row.get("ProcessId")
             if isinstance(pid, int):
                 out[pid] = {"pid": pid, "ppid": row.get("ParentProcessId"), "name": row.get("Name") or "",
-                            "cmd": row.get("CommandLine") or "", "start": row.get("Start") or ""}
+                            "cmd": row.get("CommandLine") or "", "start": row.get("Start") or "",
+                            "cpu": row.get("Cpu")}
         return out
     return {}
 
@@ -637,7 +663,9 @@ def session_registry_dirs():
 
 
 def registered_sessions(table):
-    """{live pid: {sessionId, ...}} from every login's session registry."""
+    """{live pid: {sessionId, ...}} from every login's session registry, read once per invocation."""
+    if _RUN is not None and _RUN.get("registry") is not None:
+        return _RUN["registry"]
     out = {}
     for folder in session_registry_dirs():
         for path in Path(folder).glob("*.json"):
@@ -645,39 +673,47 @@ def registered_sessions(table):
             pid, session = data.get("pid"), data.get("sessionId")
             if isinstance(pid, int) and pid in table and isinstance(session, str):
                 out.setdefault(pid, set()).add(session)
+    if _RUN is not None:
+        _RUN["registry"] = out
     return out
 
 
 def session_live(table, session, exclude=frozenset()):
     """True when a live host serves `session`, False when none does, None when a live Claude Code host's
-    session cannot be read (module docstring, `dead session`). `exclude` holds the targets' own trees."""
+    session cannot be read (module docstring, `dead session`). `exclude` holds the targets' own trees.
+
+    Only a HOST proves a session live: its registry row, or a host in its command line. A live tool
+    shell, MCP server or console host that merely carries the id is a DEPENDENT, not a host -- it
+    outlives the session and would keep a dead session looking alive forever (2026-11-10: the
+    eleven watchers' ids were carried by the machine's MCP servers and long-lived shells)."""
     cache = _RUN.setdefault("live", {}) if _RUN is not None else {}
     key = (session, exclude)
     if key in cache:
         return cache[key]
     registry = registered_sessions(table)
     verdict = False if not any(session in found for found in registry.values()) else True
-    for pid in sorted(table) if verdict is False else ():
-        # A console host inherits the id of whatever console it serves; it is never a shell or a server.
-        if pid in exclude or (table[pid].get("name") or "").lower() == "conhost.exe":
-            continue
-        block = launch_block(pid)
-        if (_env_value(block, SID_ENV) == session and not _env_value(block, LAUNCH_ENV)
-                and not _env_value(block, PARENT_ENV)):
-            verdict = True
-            break
-        cmd = table[pid].get("cmd") or ""
-        if not any(pat.search(cmd) for pat in HOST_PATTERNS):
-            continue
-        named = HOST_SESSION.search(cmd)
-        if named:
-            if named.group(1) == session:
-                verdict = True
-                break
-            continue
-        if pid not in registry and any(_env_value(launch_block(k), SID_ENV)
-                                       for k, r in table.items() if r.get("ppid") == pid):
-            verdict = None
+    if verdict is False:
+        # Only a host can prove a session live (the docstring above), so the walk visits hosts,
+        # not the whole table: a dead session's loops then cost O(hosts), not O(processes).
+        hosts = [pid for pid in sorted(table)
+                 if (table[pid].get("name") or "").lower() != "conhost.exe"
+                 and (any(pat.search(table[pid].get("cmd") or "") for pat in HOST_PATTERNS)
+                      or SEAT_HOST.search(table[pid].get("cmd") or ""))]
+        children = {}
+        for pid, row in table.items():
+            children.setdefault(row.get("ppid"), []).append(pid)
+        for pid in hosts:
+            if pid in exclude:
+                continue
+            cmd = table[pid].get("cmd") or ""
+            named = HOST_SESSION.search(cmd)
+            if named:
+                if named.group(1) == session:
+                    verdict = True
+                    break
+                continue
+            if pid not in registry and any(_env_value(launch_block(k), SID_ENV) for k in children.get(pid, ())):
+                verdict = None
     cache[key] = verdict
     return verdict
 
@@ -692,12 +728,103 @@ def leftover_proof(table, pid, sid, exclude=frozenset()):
     owner = _env_value(block, PARENT_ENV) or _env_value(block, SID_ENV)
     if not owner or owner == sid or session_live(table, owner, exclude) is not False:
         return None
+    mine = (_RUN or {}).get("project_key") if _RUN is not None else None
+    owner_key = project_key_of_session(owner)
+    if owner_key and mine and not same_project(owner_key, mine):
+        return None
     if not launch:
-        return "leftover of dead session %s: no live session host serves it, and its parent is gone" % owner[:8]
+        return "leftover of dead session %s: no live session host serves it" % owner[:8]
     if launchers_of(table, launch, pid):
         return None
     return ("leftover of dead session %s: no live session host serves it, and launch %s has no live launcher"
             % (owner[:8], launch))
+
+
+def owner_of(table, pid):
+    """(session id, tag source) the session whose process this is, or (None, None).
+
+    CLAUDE_CODE_SESSION_ID first: it names the session whose shell or seat this process is.
+    SIDECAR_PARENT_SESSION_ID is inherited by everything under a seat and is the only tag left
+    after a launcher scrubs CLAUDE_* from a detached child, so it is the fallback, not the proof.
+
+    An MSYS snapshot re-exec has a bare PEB (MSYS keeps the inherited tag in its own block), so
+    when neither tag is in the process's own block the nearest ANCESTOR that carries one names its
+    session: a launcher's tree belongs to the shell that started it. `_starts_after` stops the
+    walk at a reused pid. One PEB read per process, once per invocation."""
+    cur, seen = pid, set()
+    for _ in range(12):
+        if cur in seen:
+            break
+        seen.add(cur)
+        block = launch_block(cur)
+        own = _env_value(block, SID_ENV)
+        if own:
+            return own, "CLAUDE_CODE_SESSION_ID" if cur == pid else "an ancestor's CLAUDE_CODE_SESSION_ID"
+        tag = _env_value(block, PARENT_ENV)
+        if tag:
+            return tag, ("SIDECAR_PARENT_SESSION_ID" if cur == pid
+                         else "an ancestor's SIDECAR_PARENT_SESSION_ID")
+        parent = (table.get(cur) or {}).get("ppid")
+        if parent not in table or _starts_after(table[parent], table[cur]):
+            break
+        cur = parent
+    return None, None
+
+
+def project_key_of_session(sid):
+    """The Claude project folder (`~/.claude/projects/<key>`) holding `sid`'s transcript, or None."""
+    if _RUN is not None:
+        keys = _RUN.setdefault("project_keys", {})
+        if sid in keys:
+            return keys[sid]
+    transcript = session_transcript(sid)
+    key = transcript.parent.name if transcript else None
+    if _RUN is not None:
+        _RUN["project_keys"][sid] = key
+    return key
+
+
+def same_project(a, b):
+    """True when two Claude project keys are the same repository. A checkout and its worktrees share
+    the leading key: `<root>--claude-worktrees-<name>` starts with `<root>--`."""
+    if not a or not b:
+        return False
+    return a == b or a.startswith(b + "--") or b.startswith(a + "--")
+
+
+def dead_leftover_proof(table, pid, sid=None, project_key=None, exclude=frozenset(), require_project=False,
+                        live=None):
+    """The proof that `pid` is a DEAD session's leftover belonging to this project, else None.
+
+    Facts only: its own environment (or a tagged ancestor's) names an owner session other than
+    this one; no live session host serves that owner; the owner's transcript sits in the same
+    project (a worktree of it counts). A sidecar member whose launch still has a live launcher is
+    not a leftover: the launcher can still consume its result. A parent that is alive is not part
+    of the proof -- a pane watcher's bash wrapper lives on after the session that launched it dies.
+
+    `require_project` is for the `leftovers` listing's `dead` status: an owner with NO transcript
+    cannot be attributed to this project. The explicit-pid path keeps the older, narrower rule."""
+    row = table.get(pid)
+    if not row:
+        return None
+    owner, source = owner_of(table, pid)
+    if not owner or owner == sid:
+        return None
+    launch = launch_of(pid)
+    if not is_launcher(row) and launch and launchers_of(table, launch, pid):
+        return None
+    if live is None:
+        live = session_live(table, owner, exclude)
+    if live is not False:
+        return None
+    mine = project_key if project_key is not None else project_key_of_session(sid)
+    owner_key = project_key_of_session(owner)
+    if require_project and not (owner_key and mine and same_project(owner_key, mine)):
+        return None
+    if owner_key and mine and not same_project(owner_key, mine):
+        return None
+    return ("leftover of dead session %s (%s): no live session host serves it"
+            % (owner[:8], source))
 
 
 def is_server_image(row):
@@ -822,10 +949,30 @@ def launched_prompt(sid, prompt):
 
 
 def session_transcript(sid):
-    """This session's main transcript: the single `<projects>/<key>/<sid>.jsonl`, else None."""
+    """This session's main transcript: the single `<projects>/<key>/<sid>.jsonl`, else None.
+
+    One scandir of every project folder builds the map for all sessions in one invocation: a
+    glob per session id cost 90 ms each (a sweep over ~70 ids took 6 s, 2026-11-10)."""
     if not sid or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sid):
         return None
-    hits = [p for p in PROJECTS_ROOT.glob("*/%s.jsonl" % sid) if p.is_file()]
+    cache = _RUN.get("transcripts") if _RUN is not None else None
+    if cache is None:
+        cache = {}
+        try:
+            with os.scandir(PROJECTS_ROOT) as projects:
+                for project in projects:
+                    if not project.is_dir():
+                        continue
+                    with os.scandir(project.path) as files:
+                        for entry in files:
+                            if entry.is_file() and entry.name.endswith(".jsonl"):
+                                cache.setdefault(entry.name[:-len(".jsonl")], []).append(
+                                    Path(project.path) / entry.name)
+        except OSError:
+            cache = {}
+        if _RUN is not None:
+            _RUN["transcripts"] = cache
+    hits = cache.get(sid) or []
     return hits[0] if len(hits) == 1 else None
 
 
@@ -846,6 +993,13 @@ def orphan_evidence(table, pid):
             k = live[0]
             return False, "launcher %d of launch %s is alive (%s)" % (k, launch, (table[k].get("cmd") or "")[:60])
         return True, "no launcher of launch %s is alive" % launch
+    # A dead session's leftover: no live host serves its owner, so nothing can consume its result.
+    # This reaches the pane watcher whose bash wrapper is still alive, which the parent test below
+    # refused (2026-11-10: five such watchers sat for days while every prompt named them).
+    context = _RUN or {}
+    dead = dead_leftover_proof(table, pid, context.get("sid"), context.get("project_key"))
+    if dead:
+        return True, dead
     ppid = row.get("ppid")
     if isinstance(ppid, int) and ppid in table:
         return False, "parent %d is alive (%s)" % (ppid, (table[ppid].get("cmd") or "")[:60])
@@ -1119,13 +1273,27 @@ def reap_strays(table, pid, strays, args, base):
                for k, label, proof, kill, fields in strays)
 
 
-def main(argv=None, env=None):
+@contextlib.contextmanager
+def invocation(sid=None, project_key=None):
+    """The per-invocation caches (`launch_block`, `environ_of`, the transcript and registry scans),
+    set up for a read-only caller outside `main()`. A nested use reuses the outer cache."""
     global _RUN
-    _RUN = {"env": {}, "launch": {}, "census": None}
+    if _RUN is not None:
+        yield _RUN
+        return
+    _RUN = {"env": {}, "launch": {}, "census": None, "sid": sid, "project_key": project_key}
     try:
-        return _main(argv, env)
+        yield _RUN
     finally:
         _RUN = None
+
+
+def main(argv=None, env=None):
+    env = os.environ if env is None else env
+    sid = env.get("CLAUDE_CODE_SESSION_ID") or None
+    with invocation(sid) as run:
+        run["project_key"] = project_key_of_session(sid) if sid else None
+        return _main(argv, env)
 
 
 def live_launches(table, prompt=None, resume=None, self_pid=None, launch=None, fanout=None, label=None, record=None):
@@ -1489,6 +1657,128 @@ def live_launch_main(argv):
     return 3
 
 
+def leftover_findings(table, sid=None, project_key=None):
+    """Every live process whose own environment (or a tagged ancestor's) names a session, with the
+    facts that classify it: [{pid, owner, status, detail, launch, launcher}].
+
+    status is `dead` (proven: a dead session's leftover of THIS project), `other-project` (its
+    owner's transcript sits in another project), `infra` (a NEVER process or shared infra: never a
+    target, whatever its owner), `live`, or `unproven` (its owner is proven dead, but no proof of
+    this project's ownership holds). Nothing here is stopped: no fact in this table separates a
+    leftover from a detached launch, a benchmark or a build that a later session still consumes.
+
+    The candidate set is the processes whose own environment names a session, so a harness-launched
+    process is covered whatever its command line: a watcher, a pane, a launcher, a seat, a bench
+    daemon, a proof's child. A console host is not a candidate (it inherits the id of its console)."""
+    mine = project_key if project_key is not None else project_key_of_session(sid)
+    findings, liveness = [], {}
+    for pid in sorted(table):
+        row = table[pid]
+        if (row.get("name") or "").lower() == "conhost.exe":
+            continue
+        owner, _source = owner_of(table, pid)
+        if not owner or owner == sid:
+            continue
+        finding = {"pid": pid, "owner": owner, "launch": launch_of(pid), "launcher": is_launcher(row)}
+        # A NEVER target and anything under shared INFRA (an MCP/LSP server, a transport proxy)
+        # are reported, never counted as leftovers: they serve other sessions.
+        infra = next((never_reason(table[a], table) for a in [pid] + ancestors(table, pid)
+                      if never_reason(table[a], table) and "HOST" not in never_reason(table[a], table)), None)
+        if infra:
+            finding.update(status="infra", detail=infra + "; never a target")
+            findings.append(finding)
+            continue
+        # One liveness answer per owner session. With the host-only rule the target's own tree
+        # cannot change it, so distinct per-pid excludes would only recompute it.
+        if owner not in liveness:
+            liveness[owner] = session_live(table, owner)
+        live = liveness[owner]
+        if live is True:
+            finding.update(status="live", detail="its session is live")
+        elif live is None:
+            finding.update(status="unproven",
+                           detail="a live host's session cannot be read, so its owner cannot be proven dead")
+        else:
+            owner_key = project_key_of_session(owner)
+            if owner_key and mine and not same_project(owner_key, mine):
+                finding.update(status="other-project", detail="its session belongs to another project")
+            else:
+                proof = dead_leftover_proof(table, pid, sid, mine,
+                                            frozenset([pid] + descendants(table, pid)),
+                                            require_project=True, live=live)
+                if proof:
+                    finding.update(status="dead", detail=proof)
+                else:
+                    finding.update(status="unproven", detail=(
+                        "its owner's transcript is in no project, so this project's ownership cannot be proven"
+                        if owner_key is None else
+                        "a launcher of its launch is alive, or no ownership proof holds"))
+        findings.append(finding)
+    return findings
+
+
+def _cpu_note(row):
+    """The cumulative CPU the OS reports for the process, the cost that decides whether it matters."""
+    cpu = row.get("cpu")
+    if not isinstance(cpu, (int, float)):
+        return "CPU unknown"
+    if cpu >= 3600:
+        return "%.1f CPU-hours" % (cpu / 3600.0)
+    if cpu >= 60:
+        return "%d CPU-min" % int(cpu // 60)
+    return "%d CPU-sec" % int(cpu)
+
+
+def launch_role(launch, launcher):
+    """How a process relates to its launch, for a report: launcher or member, and the launch id."""
+    if launch:
+        return "%s of launch %s" % ("launcher" if launcher else "member", launch)
+    if launcher:
+        return "launcher, no launch id in its own environment"
+    return "no launch id in its own environment"
+
+
+def describe_leftover(table, finding):
+    """One `leftovers` line: pid, age, CPU, owner session, launch membership, status and command."""
+    row = table.get(finding["pid"]) or {}
+    cmd = re.sub(r"\s+", " ", row.get("cmd") or "")
+    return ("  pid %d  age %s  %s  session %s  %s  [%s] %s :: %s"
+            % (finding["pid"], _age(row), _cpu_note(row), (finding.get("owner") or "")[:8],
+               launch_role(finding.get("launch"), finding.get("launcher")), finding["status"],
+               finding.get("detail") or "", cmd[-110:]))
+
+
+def leftovers_main(argv, env=None):
+    """`reap.py leftovers`: list the processes of sessions with no live host, each with the facts
+    that classify it. It stops nothing; the caller names a pid to reap."""
+    env = os.environ if env is None else env
+    if "--dry-run" in argv:
+        print("REFUSED: leftovers takes no --dry-run; it stops nothing. Name a pid to reap it.")
+        return 2
+    argparse.ArgumentParser(prog="reap.py leftovers").parse_args(argv)
+    sid = env.get("CLAUDE_CODE_SESSION_ID") or None
+    with invocation(sid) as run:
+        key = project_key_of_session(sid) if sid else None
+        if not sid or not key:
+            print("REFUSED: no session id or no transcript for it; the pair tells this project's "
+                  "leftovers from another project's")
+            return 2
+        run["project_key"] = key
+        table = process_table()
+        if not table:
+            print("REFUSED: process table unreadable")
+            return 2
+        findings = leftover_findings(table, sid, key)
+    statuses = {}
+    for finding in findings:
+        statuses[finding["status"]] = statuses.get(finding["status"], 0) + 1
+        if finding["status"] != "live":
+            print(describe_leftover(table, finding))
+    print("leftovers: nothing stopped; %s"
+          % (", ".join("%s=%d" % (k, v) for k, v in sorted(statuses.items())) or "no tagged process"))
+    return 0
+
+
 def _main(argv=None, env=None):
     env = os.environ if env is None else env
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -1496,6 +1786,8 @@ def _main(argv=None, env=None):
         return live_launch_main(argv[1:])
     if argv and argv[0] == "inspect":
         return inspect_main(argv[1:], env)
+    if argv and argv[0] == "leftovers":
+        return leftovers_main(argv[1:], env)
     ap = build_parser()
     args = ap.parse_args(argv)
     if args.reason in RETIRED_REASONS:

@@ -48,7 +48,8 @@ def _state_path(session_id):
 def _hold(payload, hard_window):
     """True when this PreCompact is held: an auto-compaction in a child whose launcher set a compaction point
     below the model's real window, whose context still has HOLD_ROOM below that window, that has not saved
-    since its hold began and has not let MAX_NUDGES nudges pass unanswered."""
+    since its hold began and has not let MAX_NUDGES nudges pass unanswered. The launcher passes --hard-window
+    only when the child's resolved tools include one of WRITE_TOOLS, so a read-only child is never held."""
     if payload.get("trigger") != "auto" or not hard_window or not os.environ.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"):
         return False
     pending = _pending_tokens(payload.get("transcript_path"))

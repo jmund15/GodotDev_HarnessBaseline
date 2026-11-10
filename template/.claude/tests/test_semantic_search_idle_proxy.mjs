@@ -753,7 +753,9 @@ test('S2.9 a cancelled call is forwarded as a cancellation and leaves the proxy 
 		const controller = new AbortController()
 		const pending = fe.client.callTool({ name: 'search', arguments: { query: 'cancel-me', searchDir: '.' } },
 			undefined, { signal: controller.signal, timeout: 60000 })
-		await new Promise((r) => setTimeout(r, 700))
+		// The abort must land while the backend holds the call, however long the backend takes to start.
+		await waitFor(() => existsSync(logPath) && /received id=\d+ q=cancel-me/.test(readFileSync(logPath, 'utf8')),
+			40000, 'the backend to receive the call')
 		controller.abort()
 		await assert.rejects(pending, (err) => err.name === 'AbortError' || /abort/i.test(String(err.message)))
 		OWNED_PIDS.add(fe.pids()[0])

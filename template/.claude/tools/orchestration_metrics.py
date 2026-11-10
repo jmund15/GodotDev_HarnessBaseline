@@ -75,6 +75,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'hooks'))
 from _file_lock import locked  # noqa: E402
+from _hook_state import replace_path  # noqa: E402
 from _win_path import drive_path  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_registry  # noqa: E402
@@ -184,8 +185,6 @@ ARCHIVE = os.path.join(_PROJECT_DIR, '.claude', 'orchestration_metrics.jsonl')
 ARCHIVE_MAX_BYTES = 5 * 1024 * 1024
 ARCHIVE_MAX_ROTATIONS = 6
 ARCHIVE_LOCK_TIMEOUT_SECONDS = 10.0
-REPLACE_ATTEMPTS = 5
-REPLACE_RETRY_DELAY_SECONDS = 0.2
 # Falsification outcomes, recorded at consumption (see module docstring).
 OUTCOMES = ('clean', 'defects', 'rework', 'discarded')
 FALSIFYING = model_tier_readout.FALSIFYING
@@ -290,7 +289,7 @@ def _atomic_write_json(path, value, indent=2):
             fh.write('\n')
             fh.flush()
             os.fsync(fh.fileno())
-        _replace_with_retry(tmp, path)
+        replace_path(tmp, path)
     finally:
         try:
             os.unlink(tmp)
@@ -330,16 +329,6 @@ def _archive_lock():
         yield
 
 
-def _replace_with_retry(source, target):
-    for attempt in range(1, REPLACE_ATTEMPTS + 1):
-        try:
-            return os.replace(source, target)
-        except PermissionError:
-            if attempt == REPLACE_ATTEMPTS:
-                raise
-            time.sleep(REPLACE_RETRY_DELAY_SECONDS)
-
-
 def _rotate_archive():
     if ARCHIVE_MAX_ROTATIONS <= 0:
         try:
@@ -355,9 +344,9 @@ def _rotate_archive():
     for index in range(ARCHIVE_MAX_ROTATIONS - 1, 0, -1):
         source = ARCHIVE + '.%d' % index
         if os.path.exists(source):
-            _replace_with_retry(source, ARCHIVE + '.%d' % (index + 1))
+            replace_path(source, ARCHIVE + '.%d' % (index + 1))
     if os.path.exists(ARCHIVE):
-        _replace_with_retry(ARCHIVE, ARCHIVE + '.1')
+        replace_path(ARCHIVE, ARCHIVE + '.1')
 
 
 def _atomic_replace_bytes(path, content):
@@ -369,7 +358,7 @@ def _atomic_replace_bytes(path, content):
             fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
-        _replace_with_retry(tmp, path)
+        replace_path(tmp, path)
     finally:
         try:
             os.unlink(tmp)

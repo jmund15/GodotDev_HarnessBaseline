@@ -24,6 +24,9 @@ import sys
 import tempfile
 import xml.etree.ElementTree
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
+from _hook_state import replace_path  # noqa: E402
+
 __all__ = [
     "MARKER_DIRS", "MARKER_NAME", "check_fingerprint", "cloud_setup_current", "declared_fingerprint",
     "fingerprint", "godot_project", "local_nuget_feeds", "preflight", "write_fingerprint",
@@ -131,7 +134,7 @@ def write_fingerprint(path):
         handle, temp = tempfile.mkstemp(prefix=".fingerprint_", suffix=".sh", dir=directory)
         with os.fdopen(handle, "wb") as fh:
             fh.write(updated)
-        os.replace(temp, path)
+        replace_path(temp, path)
     except OSError as exc:
         if temp:
             try:

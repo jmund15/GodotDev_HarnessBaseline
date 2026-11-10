@@ -266,6 +266,198 @@ try:
 finally:
     _hook_state.update_json_locked = _real_update
 
+# --- one owner for every rename onto a file another process may hold ---------------------------
+# Windows refuses a rename onto a path another process holds open (WinError 5/32). `replace_path` waits the
+# reader out. This scan covers the class: every writer under tools/, hooks/ and scripts/ that replaces a state,
+# record, inventory, cache, log, registry or vault file, whichever call reaches the syscall (os.replace,
+# os.rename, shutil.move, Path.replace, PowerShell Move-Item/[IO.File]::Move, shell mv). A bare rename fails
+# here unless its own line, or a comment line directly above it, carries `bare-rename: <reason>`. The reason
+# sits at the site, so this proof names no file of another layer or project.
+import re as _re  # noqa: E402
+import shutil  # noqa: E402
+
+CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CLASS_DIRS = ("tools", "hooks", "scripts")
+OWNER_FILES = {"hooks/_hook_state.py"}
+PY_RENAME_CALLS = {"os.replace", "os.rename", "shutil.move"}
+PS_RENAME = _re.compile(r"\[(?:System\.)?IO\.File\]::Move\(|(?:^|[;\s])Move-Item\b")
+SH_RENAME = _re.compile(r"^\s*mv\s")
+RENAME_REASON = _re.compile(r"#.*\bbare-rename:\s*\S")
+
+
+def _py_rename_sites(source):
+    """(line, enclosing function) for every rename-shaped call in one Python source."""
+    tree = ast.parse(source)
+    owner = {}
+
+    def label(node, current):
+        for child in ast.iter_child_nodes(node):
+            name = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else current
+            if hasattr(child, "lineno"):
+                owner[child.lineno] = name
+            label(child, name)
+
+    label(tree, "<module>")
+    path_vars = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
+                and getattr(node.value.func, "id", "") == "Path":
+            path_vars.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    sites = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
+                and "%s.%s" % (func.value.id, func.attr) in PY_RENAME_CALLS:
+            sites.append((node.lineno, owner.get(node.lineno, "<module>")))
+        elif isinstance(func, ast.Attribute) and func.attr == "replace" and len(node.args) == 2:
+            receiver = func.value
+            inline = isinstance(receiver, ast.Call) and getattr(receiver.func, "id", "") == "Path"
+            tainted = isinstance(receiver, ast.Name) and receiver.id in path_vars
+            # A Path rename passes paths, never two literals; string `.replace("\\", "/")` stays out.
+            literal_args = all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in node.args)
+            if (inline or tainted) and not literal_args:
+                sites.append((node.lineno, owner.get(node.lineno, "<module>")))
+    return sites
+
+
+def _has_reason(lines, number):
+    """True when 1-based line `number`, or a comment-only line directly above it, states the reason."""
+    if RENAME_REASON.search(lines[number - 1]):
+        return True
+    above = lines[number - 2] if number >= 2 else ""
+    return above.lstrip().startswith("#") and bool(RENAME_REASON.search(above))
+
+
+def _class_rename_sites(root):
+    """["<relative path>:<line> <function>()", ...] for every bare rename under `root`'s class folders that
+    states no reason."""
+    found = {}
+    for folder in CLASS_DIRS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(root, folder)):
+            dirnames[:] = [n for n in dirnames if n not in ("__pycache__", "node_modules", "vendor")]
+            for name in filenames:
+                rel = os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/")
+                if rel in OWNER_FILES:
+                    continue
+                try:
+                    text = io.open(os.path.join(dirpath, name), encoding="utf-8").read()
+                except (OSError, UnicodeDecodeError):
+                    continue
+                sites = []
+                if name.endswith(".py"):
+                    try:
+                        sites = _py_rename_sites(text)
+                    except SyntaxError:
+                        sites = []
+                elif name.endswith(".ps1"):
+                    sites = [(i + 1, "<file>") for i, line in enumerate(text.splitlines())
+                             if PS_RENAME.search(line) and not line.lstrip().startswith("#")]
+                elif name.endswith(".sh"):
+                    sites = [(i + 1, "<file>") for i, line in enumerate(text.splitlines())
+                             if SH_RENAME.search(line) and not line.lstrip().startswith("#")]
+                lines = text.splitlines()
+                for line, func in sites:
+                    if not _has_reason(lines, line):
+                        found.setdefault(rel, []).append("%s:%d %s()" % (rel, line, func))
+    return sorted(site for sites in found.values() for site in sites)
+
+
+_bare = _class_rename_sites(CLAUDE_DIR)
+check("a rename onto a file another process may hold goes through replace_path, or states why not",
+      not _bare, "; ".join(_bare))
+
+# The scan on a planted tree: it reports each unexplained rename and passes each explained one.
+_plant = tempfile.mkdtemp(prefix="rename_scan_")
+try:
+    for _rel, _body in {
+        "tools/a.py": "import os\ndef save(t, p):\n    os.replace(t, p)\n"
+                      "def keep(t, p):\n    os.replace(t, p)  # bare-rename: p is a fresh name\n"
+                      "def text(s):\n    return s.replace('a', 'b')\n",
+        "hooks/b.py": "import shutil\ndef move(a, b):\n    # bare-rename: b is proven absent\n"
+                      "    shutil.move(a, b)\n    # a later, unexplained one\n    shutil.move(b, a)\n",
+        "scripts/c.sh": "mv \"$a\" \"$b\"  # bare-rename: a fresh name\nmv \"$b\" \"$c\"\n# mv in a comment\n",
+        "scripts/d.ps1": "Move-Item -LiteralPath $t -Destination $p -Force\n"
+                         "# bare-rename:\n[IO.File]::Move($t, $p, $true)\n",
+        "hooks/_hook_state.py": "import os\ndef replace_path(source, target):\n    os.replace(source, target)\n",
+    }.items():
+        _path = os.path.join(_plant, _rel)
+        os.makedirs(os.path.dirname(_path), exist_ok=True)
+        with io.open(_path, "w", encoding="utf-8", newline="\n") as _fh:
+            _fh.write(_body)
+    _planted = _class_rename_sites(_plant)
+finally:
+    shutil.rmtree(_plant, ignore_errors=True)
+check("the rename scan reports an unexplained site in each language and passes an explained one",
+      _planted == ["hooks/b.py:6 move()", "scripts/c.sh:2 <file>()", "scripts/d.ps1:1 <file>()",
+                   "scripts/d.ps1:3 <file>()", "tools/a.py:3 save()"],
+      repr(_planted))
+
+
+# --- three real writers land their write on a target a reader holds open -----------------------
+def _held_target(path, ready, release):
+    """Hold `path` open like a watcher mid-read until `release` is set."""
+    with io.open(path, "rb"):
+        ready.set()
+        release.wait(10)
+
+
+def drive_held(seed_path, write):
+    """Run `write()` while another thread holds `seed_path` open; return what the write raised, if anything."""
+    ready, release = threading.Event(), threading.Event()
+    holder = threading.Thread(target=_held_target, args=(seed_path, ready, release))
+    holder.start()
+    ready.wait(5)
+    raised = []
+
+    def run():
+        try:
+            write()
+        except BaseException as exc:  # noqa: BLE001 - the proof reports what a writer did
+            raised.append(exc)
+
+    writer = threading.Thread(target=run)
+    writer.start()
+    time.sleep(0.25)  # a corrected writer is inside replace_path's wait by now
+    release.set()
+    writer.join(15)
+    holder.join(5)
+    return raised[0] if raised else None
+
+
+sys.path.insert(0, os.path.join(CLAUDE_DIR, "tools"))
+import worklog  # noqa: E402
+import dispatch_result  # noqa: E402
+import sidecar_fanout  # noqa: E402
+
+vault = os.path.join(d, "vault.md")
+with io.open(vault, "w", encoding="utf-8", newline="\n") as fh:
+    fh.write("old\n")
+_vault_err = drive_held(vault, lambda: worklog.write_atomic(vault, "new\n"))
+check("the worklog vault writer lands on a held target",
+      _vault_err is None and io.open(vault, encoding="utf-8").read() == "new\n", repr(_vault_err))
+
+out_dir = os.path.join(d, "fanout")
+os.makedirs(out_dir)
+deliverable = dispatch_result.deliverable_path(out_dir, "wr1")
+with io.open(str(deliverable), "w", encoding="utf-8", newline="\n") as fh:
+    fh.write("old\n")
+_deliverable_err = drive_held(str(deliverable),
+                              lambda: dispatch_result.write_deliverable(out_dir, "wr1", "new\n"))
+check("the dispatch deliverable writer lands on a held target",
+      _deliverable_err is None and io.open(str(deliverable), encoding="utf-8").read() == "new\n",
+      repr(_deliverable_err))
+
+inventory = os.path.join(d, "fanout-x.inventory.json")
+with io.open(inventory, "w", encoding="utf-8") as fh:
+    fh.write('{"old":1}')
+_inventory_err = drive_held(inventory, lambda: sidecar_fanout.save_fanout_inventory(
+    inventory, {"schemaVersion": 1, "jobs": []}))
+check("the fan-out inventory writer lands on a held target",
+      _inventory_err is None and json.load(io.open(inventory, encoding="utf-8"))["schemaVersion"] == 1,
+      repr(_inventory_err))
+
 print("\n%d/%d checks pass" % (ran - len(failures), ran))
 for f in failures:
     print("  FAIL " + f)

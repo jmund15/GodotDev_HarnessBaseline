@@ -204,6 +204,37 @@ _absent = cli("check", os.path.join(CHECKS, "absent.md"), *_ARGS)
 _badspec = cli("check", _clean_path, "--block", "rules")
 _noargs = cli("check", _clean_path)
 
+# A job working in a linked worktree writes its report to the main checkout: scratch is gitignored, so only
+# that checkout holds it. `consume` runs the job's checks in the worktree, where a repo-relative report path
+# does not exist.
+_WT_MAIN, _WT_LINKED = os.path.join(TMP, "wt_main"), os.path.join(TMP, "wt_linked")
+os.makedirs(os.path.join(_WT_MAIN, "scratch"))
+
+
+def _wt_git(*args):
+    return subprocess.run(["git", "-c", "user.name=proof", "-c", "user.email=proof@example.invalid", *args],
+                          cwd=_WT_MAIN, capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+
+def _wt_check(relpath):
+    r = subprocess.run([sys.executable, TOOL, "check", relpath, *_ARGS], cwd=_WT_LINKED, capture_output=True,
+                       text=True, encoding="utf-8", errors="replace")
+    return r.returncode, r.stdout, r.stderr
+
+
+_wt_git("init", "-q")
+_wt_git("commit", "-q", "--allow-empty", "-m", "seed")
+_wt_made = _wt_git("worktree", "add", "-q", "-b", "linked", _WT_LINKED)
+with open(os.path.join(_WT_MAIN, "scratch", "report.md"), "w", encoding="utf-8", newline="\n") as _fh:
+    _fh.write(_CLEAN)
+_wt_found = _wt_check("scratch/report.md")
+_wt_absent = _wt_check("scratch/none.md")
+
+case("a repo-relative spill missing from a linked worktree is read from the main checkout",
+     lambda: _wt_made.returncode == 0 and _wt_found[0] == 0 and "rules: 2 rows" in _wt_found[1])
+case("a spill missing from the worktree and the main checkout exits 2",
+     lambda: _wt_absent[0] == 2 and "none.md" in _wt_absent[2])
+
 case("a clean spill exits 0 with a row count per block",
      lambda: _clean[0] == 0 and "rules: 2 rows" in _clean[1] and "numbers: 1 rows" in _clean[1])
 case("a row missing a key exits 1 naming block, row and key",

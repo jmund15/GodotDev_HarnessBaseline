@@ -55,7 +55,9 @@ REGISTRY = ROOT / ".claude" / "reference" / "external_models.json"
 VALIDATOR = ROOT / ".claude" / "tools" / "model_registry.py"
 
 sys.path.insert(0, str(VALIDATOR.parent))
+sys.path.insert(0, str(ROOT / ".claude" / "hooks"))
 from model_registry import canonical_input_types, product_line  # noqa: E402
+from _hook_state import replace_path  # noqa: E402
 
 def http_json(url, key=None, method="GET", payload=None, timeout=HTTP_TIMEOUT):
     headers = {"User-Agent": "harness-opencode-refresh/1.0",
@@ -572,7 +574,7 @@ def go_main(args):
     try:
         with open(tmp, "w", encoding="utf-8", newline="") as fh:
             fh.write(new_text)
-        os.replace(tmp, registry)
+        replace_path(tmp, registry)
         written = json.loads(registry.read_text(encoding="utf-8"))
         model_registry._validate(written, str(registry))
         model_registry.check_ladder(path=str(ladder), data=written)

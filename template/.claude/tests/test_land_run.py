@@ -35,7 +35,20 @@ if os.path.exists("close_incomplete.txt"):
         open("close_incomplete.txt", "w").write(str(left - 1))
         print("harness_tests: close incomplete: 1 paths, 1 proofs, 0 new red, 0 need uncommitted inputs, 0 pre-existing red")
         raise SystemExit(2)
+# Pre-existing red lines cut from the real land log (land_42727930589.log) with the history clause the close adds.
+if os.path.exists("close_pre_existing.txt"):
+    print("harness_tests: pre-existing red at base a04b1e39: test_instruction_quality_split.py (first recorded red 2026-11-09, 5 earlier closes)")
+    print("harness_tests: pre-existing red at base a04b1e39: workflow_amend_line_test.js (no earlier row in harness_known_red.jsonl)")
+if os.path.exists("close_red.txt"):
+    print("harness_tests: close red: 1 paths, 1 proofs, 1 new red, 0 need uncommitted inputs, 2 pre-existing red")
+    raise SystemExit(1)
 sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+# Lines the real close prints while it works, cut from a land run's log.
+print("harness_tests: close: 436 selected proof(s), ~694s at recorded times on 12 job(s), 4 with no recorded time (unknown)")
+print("PASS 2.7s test_dispatch_size.py")
+print("harness_tests: 24 of 436 proofs done (0 reused), 61s; ~633s left at recorded times, pace x1.0")
+print("FLAKY C:/r/.claude/tests/test_baseline_sync.py: failed in the pool (FAILED (failures=1)), passed alone; logged to C:/r/.git/harness/harness_flaky.jsonl")
+print("harness_tests: classifying red 1 of 3: rerun test_dispatch_size.py at a04b1e39")
 print("harness_tests: close green: 1 paths, 1 proofs, 0 new red")
 print("harness_tests: push with: git push origin %%s:main" %% sha)
 ''' % (ENV_PROBES,)
@@ -123,6 +136,31 @@ def main():
               and "LAND_RESULT=green" in out, out)
         branches = git("branch", "--list", "land/*", cwd=origin)
         check("... and deletes the land branch", branches == "", branches)
+        check("... and the land log carries every line the close prints about its own progress, and no per-proof pass",
+              "proofs done (0 reused)" in out and "classifying red 1 of 3" in out and "436 selected" in out
+              and "PASS 2.7s" not in out, out)
+        check("... and carries the close's FLAKY lines, so a proof that failed in the pool is named",
+              "FLAKY C:/r/.claude/tests/test_baseline_sync.py: failed in the pool" in out, out)
+        check("a green land whose close excused no pre-existing red carries no pre-existing field",
+              "pre-existing=" not in out, out)
+
+    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+        origin, work, sha = make(tmp)
+        write(os.path.join(work, "close_pre_existing.txt"), "")
+        rc, out = land(work, sha, "land/t1")
+        check("a green land names the close's pre-existing reds, how many and which, on its result line",
+              rc == 0 and "LAND_RESULT=green" in out
+              and "pre-existing=2 test_instruction_quality_split.py,workflow_amend_line_test.js" in out, out)
+
+    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+        origin, work, sha = make(tmp)
+        write(os.path.join(work, "close_pre_existing.txt"), "")
+        write(os.path.join(work, "close_red.txt"), "")
+        before = git("rev-parse", "main", cwd=origin)
+        rc, out = land(work, sha, "land/t1")
+        check("a red close names the same pre-existing reds on its result line, and main stays put",
+              rc == 1 and "LAND_RESULT=red stage=close" in out and "pre-existing=2 " in out
+              and "workflow_amend_line_test.js" in out and git("rev-parse", "main", cwd=origin) == before, out)
 
     with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
         origin, work, sha = make(tmp)

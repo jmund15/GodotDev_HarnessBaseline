@@ -25,15 +25,18 @@ def test_main_background_run_has_no_started_line(tmp_path, monkeypatch):
     assert changed['run_in_background'] is True and notes == []
 
 
-def test_unknown_shell_is_only_a_count_and_peers_watchers_are_silent():
+def test_unknown_shell_is_named_with_its_proof_limit_and_peers_watchers_are_silent():
     def row(pid, owner, watcher=False):
         return {'pid': pid, 'age': 90, 'stream': None, 'tail': 'private command',
                 'owner': owner, 'watcher': watcher}
     unknown = shells.render([row(111, 'unknown')])
-    assert len(unknown.splitlines()) == 1 and '1' in unknown and 'unknown' in unknown
-    assert 'pid' not in unknown and 'decide' not in unknown and 'private command' not in unknown
+    lines = unknown.splitlines()
+    assert len(lines) == 2 and 'unknown' in lines[0] and 'reap cannot prove a dead owner' in lines[0]
+    assert 'pid 111' in lines[1] and 'private command' in lines[1] and 'decide' not in unknown
     assert shells.render([row(222, 'other'), row(333, 'own', True)]) == ''
-    assert shells.emission_key([row(111, 'unknown')]) == shells.emission_key([row(444, 'unknown')])
+    # an unknown pid is part of the rendered output, so the key follows it: a different pid re-arms
+    assert shells.emission_key([row(111, 'unknown')]) != shells.emission_key([row(444, 'unknown')])
+    assert shells.emission_key([row(111, 'unknown')]) == shells.emission_key([row(111, 'unknown')])
     assert shells.emission_key([row(222, 'other')]) == shells.emission_key([])
     assert 'pid 555' in shells.render([row(555, 'own')])
 

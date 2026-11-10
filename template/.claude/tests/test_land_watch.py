@@ -97,6 +97,54 @@ def run_watch(result_line, conclusion='success'):
 
 rc, out, _ = run_watch('green sha=%s branch=land/t1 landed=%s' % (PUSHED, REBASED))
 check('watch prints the landed= sha as its LANDED line', rc == 0 and out.splitlines()[-2] == 'LANDED ' + REBASED)
+FIXTURE_LOG = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',
+                                'land_close_log_excerpt.txt'), encoding='utf-8').read()  # cut from run 42795583929
+TIME_LINE = ('land	Prove and land	2026-11-10T10:58:17.5555200Z   harness_tests: close time: pool 2156.0s; '
+             'alone retries 6, 1172.4s; load x3.7 (18118.0s over 4910.0s fastest, 529 of 529 proofs with history)\n')
+
+
+def watch_log(log, conclusion='success'):
+    """watch over one completed run whose `gh run view --log` reply is `log`; the terminal line."""
+    def fake_gh(*a):
+        if a[:2] == ('run', 'list'):
+            return 0, json.dumps([{'databaseId': 7, 'headSha': PUSHED, 'status': 'completed',
+                                   'conclusion': conclusion, 'attempt': 1}]), ''
+        if a[:1] == ('api',):
+            return 0, json.dumps({'jobs': JUDGED_RED}), ''
+        return 0, log, ''
+    land_watch.gh = fake_gh
+    land_watch.catch_up = lambda path=None: 'CATCH-UP planted'
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = land_watch.watch('land/t1', PUSHED, 1)
+    return rc, [l for l in buf.getvalue().splitlines() if l.startswith(('LANDED', 'RED'))]
+
+
+rc, lines = watch_log(FIXTURE_LOG)
+check('a real land log with only the budget line adds the close seconds and budget to LANDED',
+      rc == 0 and lines == ['LANDED %s (close 3371.0s of 300s budget)' % PUSHED])
+rc, lines = watch_log(FIXTURE_LOG.replace('LAND_RESULT', TIME_LINE + 'LAND_RESULT', 1))
+check('a log with the time line adds pool, alone retries and load to LANDED',
+      rc == 0 and lines == ['LANDED %s (close 3371.0s of 300s budget; pool 2156.0s; alone retries 6, 1172.4s; '
+                            'load x3.7 (18118.0s over 4910.0s fastest, 529 of 529 proofs with history))' % PUSHED])
+rc, lines = watch_log('LAND_RESULT=red stage=close sha=%s branch=land/t1 :: new red\n' % PUSHED
+                      + FIXTURE_LOG.split('LAND_RESULT')[0], conclusion='failure')
+check('a red whose close finished carries the close facts too',
+      rc == 1 and len(lines) == 1 and lines[0].startswith('RED red stage=close')
+      and lines[0].endswith('(close 3371.0s of 300s budget)'))
+rc, lines = watch_log('LAND_RESULT=green sha=%s branch=land/t1\n' % PUSHED)
+check('a log with no close facts prints LANDED unchanged', rc == 0 and lines == ['LANDED ' + PUSHED])
+
+rc, out, _ = run_watch('green sha=%s branch=land/t1 pre-existing=2 '
+                       'test_instruction_quality_split.py,workflow_amend_line_test.js' % PUSHED)
+check('a green land names the close\'s pre-existing reds, how many and which, on its LANDED line',
+      rc == 0 and out.splitlines()[-2] == 'LANDED %s (2 pre-existing red: test_instruction_quality_split.py, '
+      'workflow_amend_line_test.js)' % PUSHED)
+rc, out, _ = run_watch('red stage=close sha=%s branch=land/t1 pre-existing=1 '
+                       'test_instruction_quality_split.py :: no green close' % PUSHED, conclusion='failure')
+check('a red close names the same pre-existing reds on its RED line',
+      rc == 1 and out.splitlines()[-1].startswith('RED red stage=close')
+      and 'pre-existing=1 test_instruction_quality_split.py' in out.splitlines()[-1])
 rc, out, _ = run_watch('superseded sha=%s branch=land/t1 by=land/t2' % PUSHED)
 check('a superseded land prints SUPERSEDED with the branch that carries it, not LANDED',
       rc == 0 and out.splitlines()[-1] == 'SUPERSEDED %s by land/t2' % PUSHED)

@@ -227,7 +227,9 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ROOT = Path(__file__).resolve().parent.parent          # .claude/
 REPO = ROOT.parent
 sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "hooks"))
 import model_registry  # noqa: E402
+from _hook_state import replace_path  # noqa: E402
 import provider_bands  # noqa: E402  -- owns a plan's room; a job naming no plan pays where it is largest
 import sidecar_argv  # noqa: E402  -- owns the out-dir rule the launch hook reads too
 import sidecar_launch  # noqa: E402  -- owns the shell choice; see plan_job's argv[0]
@@ -2094,6 +2096,14 @@ def jobs_key(path):
     return os.path.normcase(os.path.realpath(os.path.abspath(str(path))))
 
 
+def save_fanout_inventory(inventory_path, inventory):
+    """Rewrite a fan-out's inventory document whole: `<name>.inventory.tmp` beside it, then a waited rename."""
+    tmp = Path(inventory_path).with_suffix('.tmp')
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(inventory, fh, separators=(',', ':'))
+    replace_path(tmp, inventory_path)
+
+
 def write_launch_intent(directory, call, session, labels, jobs_path):
     """The hook's record that tool call `call` launches `labels` from `jobs_path` into `directory`.
     One file per call, written whole under a temp name and renamed, so no two calls share a file."""
@@ -2102,7 +2112,7 @@ def write_launch_intent(directory, call, session, labels, jobs_path):
     row = {"call": call, "session": session, "labels": sorted(set(labels)), "jobsPath": jobs_key(jobs_path),
            "at": time.time()}
     tmp.write_text(json.dumps(row), encoding="utf-8")
-    os.replace(tmp, path)
+    replace_path(tmp, path)
 
 
 def write_record_launch_intent(record, call, session, labels):
@@ -2114,7 +2124,7 @@ def write_record_launch_intent(record, call, session, labels):
     row = {"call": call, "session": session, "labels": sorted(set(labels)), "record": str(record),
            "at": time.time()}
     tmp.write_text(json.dumps(row), encoding="utf-8")
-    os.replace(tmp, path)
+    replace_path(tmp, path)
 
 
 def claim_launch_intent(directory, jobs_path, labels, claimant):
@@ -2136,7 +2146,7 @@ def claim_launch_intent(directory, jobs_path, labels, claimant):
         found.append((at, path, row))
     for _, path, row in sorted(found, key=lambda item: item[0], reverse=True):
         try:
-            os.replace(path, path.with_name(path.name + ".claimed-" + claimant))
+            replace_path(path, path.with_name(path.name + ".claimed-" + claimant))
         except OSError:
             continue
         return row.get("call")
@@ -2196,6 +2206,9 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
     call = _LAUNCH.get("call")
     inventory = {"schemaVersion": 1, "fanoutId": fanout_id,
                  "parentSessionId": parent_session, "fanoutProcess": process_line, "afterSeats": after_seats,
+                 # The watcher times an attempt by this stamp, so it is set once here: `save_inventory`
+                 # rewrites this same document, and the file's mtime moves with each rewrite.
+                 "writtenAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                  # Absolute: the inventory's readers (the Stop hook, the watcher) run from other cwds.
                  # `workdir` lets the close tell a job writing in a worktree from one writing in its checkout;
                  # `startHead` is the commit it was cut from, the base of the changes the job made.
@@ -2244,10 +2257,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
             unseat(name)
 
     def save_inventory():
-        tmp = inventory_path.with_suffix('.tmp')
-        with open(tmp, 'w', encoding='utf-8') as fh:
-            json.dump(inventory, fh, separators=(',', ':'))
-        os.replace(tmp, inventory_path)
+        save_fanout_inventory(inventory_path, inventory)
 
     def point_inventory_at(label, record_path):
         """The job's inventory row follows its latest attempt, so the watcher sees one job whichever attempt runs."""
@@ -2457,7 +2467,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
         if stream and os.path.isfile(stream):
             kept = _posix(Path(out_dir) / f"{label}.attempt{attempt_number(was)}.salvage.jsonl")
             try:
-                os.replace(stream, kept)
+                replace_path(stream, kept)
             except OSError:
                 kept = None  # the launcher truncates the stream; the salvage copy is lost, the continuation is not
         row = next(j for j in inventory["jobs"] if j["label"] == label)

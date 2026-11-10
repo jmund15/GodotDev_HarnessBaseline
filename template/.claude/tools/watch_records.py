@@ -31,7 +31,7 @@ Bash/PowerShell background tasks (a main-session launch row with no `<task-notif
 Workflow runs (a pending `workflow` entry whose host record `<session>/workflows/<id>.json` is absent or not
 in `DONE_STATES`, or a run dir under `<session>/subagents/workflows/` with no entry, no host record and a write
 within `DISCOVERED_RUN_SECONDS`: the launch hook's entry can land after the arm), each printed as `RUNNING workflow <name> <runId> <pins> for <n> min, agents <k> of <m> done`;
-a run's end wakes nobody, and a session watcher with nothing live stays armed. A running
+a run's end wakes nobody, and a session watcher with nothing live stays armed. It ends only when nothing can receive its wake: the shell that carries its output (its parent) or the session host that owns that shell is gone (`HOST GONE: <reason>`, read from the client's session registry; `WATCH_RECORDS_HOST_SEC` sets the check interval), which also ends a duplicate still waiting to take over. A running
 seat that compacts (a `compact_boundary` row in its transcript: a Workflow agent's `agent-<id>.jsonl`, a Claude sidecar's
 `<record>.stream`, a live roster's running bench cell's `<cell>.progress.jsonl`) adds `<label> compacted <n> (<m> min compacting)` to its check-in line, and one that compacted again after
 re-reading a file it had read before the previous compaction, with no file written since that compaction (the cycle: a seat
@@ -57,7 +57,8 @@ or `NONE` are `UNRATED <n>: <run:label>, ...` when the session has unrated dispa
 Usage: python3 .claude/tools/watch_records.py --pane. The owner's live view: a background shell that polls the session's
 `checkin_lines` every `PANE_SECONDS` (`WATCH_RECORDS_PANE_SEC` overrides it) and appends a frame, closed by a stamp line,
 when they change or every `PANE_HEARTBEAT_SECONDS`. It appends, never rewrites: the desktop client reads
-only the bytes past its saved offset of the output file. It never exits by itself and no wake reads it;
+only the bytes past its saved offset of the output file. It does not exit while its session lives and no wake reads it,
+and it ends `HOST GONE` when its session's host or parent shell is gone, like the session watcher;
 the session's shells that ran this tool are not live work. It registers under `sidecar_pane`; a second pane beside a
 live one exits COVERED. While work is live and no pane runs, a session wake's last lines carry `PANE none: ...`.
 Any other flag is a usage error (exit 2), never a record path. A fan-out job that ends cleanly wakes the session on its own, once,
@@ -113,6 +114,13 @@ import _hook_state  # noqa: E402
 import exhausted_marker  # noqa: E402
 
 POLL_SECONDS = float(os.environ.get("WATCH_RECORDS_POLL_SEC", "0.5"))
+# How often a waiting watcher tests whether anything can still receive its wake. The arm-time probe lists each
+# login's `sessions` folder (11 small rows on this machine) and measured 0.92 ms; later probes test two pids,
+# 0.04 ms (measured 2026-11-10). 10 s bounds a dead session's watcher to that long at under 0.001% of a core.
+HOST_CHECK_SECONDS = float(os.environ.get("WATCH_RECORDS_HOST_SEC", "10"))
+# The store glob that answers a missing transcript walked 4513 project folders in 0.34 s (measured 2026-11-10).
+# A session's transcript exists before any command in it runs, so a miss is a fixture or a typo, not a race.
+TRANSCRIPT_RETRY_SECONDS = 10.0
 # The orchestrator's prompt cache lives one hour: a wake after it rewrites the whole context, a wake
 # before it reads the cache at a tenth of the input price. `_hook_state.ORCHESTRATOR_CHECKIN_SECONDS` owns the value.
 CHECKIN_SECONDS = float(os.environ.get("WATCH_RECORDS_CHECKIN_SEC", _hook_state.ORCHESTRATOR_CHECKIN_SECONDS))
@@ -140,6 +148,8 @@ REPAY_REFUSED = "15"
 CAPACITY_REFUSED = "10"
 CALLER_HANDLED = frozenset({ADMISSION_REFUSED, REPAY_REFUSED, CAPACITY_REFUSED})
 ARM_COMMAND = "python3 .claude/tools/watch_records.py --session --wake"
+# The terminal line of a watcher whose session can no longer receive its wake; `%s` is the reason.
+HOST_GONE = "HOST GONE: %s; nothing can receive this wake, so the watcher exits"
 ARM_CALL = "as its own Bash call with run_in_background: true and timeout 7200000"
 PANE_COMMAND = "python3 .claude/tools/watch_records.py --pane"
 PANE_CALL = "as its own Bash call with run_in_background: true and timeout 86400000"
@@ -243,6 +253,116 @@ def process_line():
     pid = os.getpid()
     return "%s %spid=%d" % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                               "winpid=%d " % pid if os.name == "nt" else "", pid)
+
+
+def _registry_started(row):
+    """A session-registry row's process start (`procStart`, 100 ns units since 1601) as epoch seconds, or 0.0."""
+    try:
+        return int(row["procStart"]) / 1e7 - 11644473600
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
+
+def _registry_rows():
+    """Every session-registry row this machine's logins hold: `<login>/sessions/<pid>.json`."""
+    import model_registry
+    try:
+        logins = model_registry.login_dirs()
+    except Exception:  # an unreadable model registry must never end a watcher: see host_anchor's posture
+        return
+    for login in logins:
+        folder = os.path.join(login, "sessions")
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".json"):
+                continue
+            row = _hook_state.read_json_salvage(os.path.join(folder, name))
+            if isinstance(row, dict):
+                yield row
+
+
+def host_anchor(session_id):
+    """(pid, creation epoch) of a live process the session registry names for `session_id`, else None.
+
+    The client writes one row per live host into its login's `sessions/` folder: the host's pid, the session id
+    and its process start. A row whose pid is gone, or whose pid now runs a process that started later, anchors
+    nothing. No row at all means the host is not observable (an old client, or a proof fixture), and the caller
+    enforces nothing: only a positive registry row ever ends a watcher."""
+    try:
+        for row in _registry_rows():
+            pid = row.get("pid")
+            if row.get("sessionId") != session_id or not isinstance(pid, int):
+                continue
+            live = _process_started(pid)
+            if live is None:
+                continue
+            started = _registry_started(row)
+            if started and live and abs(live - started) > START_SLACK_S:
+                continue
+            return pid, started or live
+    except Exception:  # fail open: nothing observed means nothing enforced, never an ended watcher
+        return None
+    return None
+
+
+class Lifetime:
+    """Whether anything can still receive this watcher's wake.
+
+    A wake lands only if two processes live: the shell that caught this watcher's output (its parent, opened by
+    the session's Bash tool) and the session host behind that shell. The host is read once from the session
+    registry at arm, then both are tested for liveness `HOST_CHECK_SECONDS` apart. A live pid whose process
+    start no longer matches is a reused pid, not a survivor.
+    """
+
+    def __init__(self, session_id, now=None):
+        self.session = session_id
+        self.parent = os.getppid()
+        self.parent_start = _process_started(self.parent) if self.parent else None
+        self.anchor = host_anchor(session_id)
+        self.checked = time.time() if now is None else now
+        self.gone = None
+
+    def verdict(self, now=None):
+        """None while a receiver may still exist, else the reason this watcher cannot be heard."""
+        now = time.time() if now is None else now
+        if self.gone is None and now - self.checked >= HOST_CHECK_SECONDS:
+            self.checked = now
+            self.gone = self._check()
+        return self.gone
+
+    def _check(self):
+        if self.parent:
+            started = _process_started(self.parent)
+            if started is None or (self.parent_start and started
+                                   and abs(started - self.parent_start) > START_SLACK_S):
+                return "the shell that carries its output is gone (pid %d)" % self.parent
+        if self.anchor is None:
+            self.anchor = host_anchor(self.session)
+            return None
+        pid, started = self.anchor
+        live = _process_started(pid)
+        if live is None or (started and live and abs(live - started) > START_SLACK_S):
+            return "no live session host serves session %s (host pid %d)" % (self.session[:8], pid)
+        return None
+
+
+_TRANSCRIPTS = {}  # session id -> (path or None, the time a miss may be retried)
+
+
+def _transcript_path(session_id):
+    """The session's transcript file, resolved once and then kept; a miss is retried TRANSCRIPT_RETRY_SECONDS
+    apart instead of on every poll."""
+    path, retry = _TRANSCRIPTS.get(session_id, (None, 0.0))
+    if path and os.path.isfile(path):
+        return path
+    if time.time() < retry:
+        return None
+    path = _digest().transcript_path(session_id)
+    _TRANSCRIPTS[session_id] = (path, time.time() + TRANSCRIPT_RETRY_SECONDS)
+    return path
 
 
 def _record_inventory(record, path=None):
@@ -455,54 +575,100 @@ def epoch(stamp):
         return 0.0
 
 
-def finish_rows(session_id):
-    """This session's launcher finish rows (rows carrying `outcome`), oldest first; one ledger read."""
-    rows = []
+_LEDGER_READS = {}  # (ledger path, session id) -> {"file": (st_dev, st_ino), "offset": int, "finish", "clean"}
+
+
+def _ledger_rows(session_id):
+    """This session's (finish rows, clean launch rows), oldest first.
+
+    The ledger is append-only and shared by every session on the machine: at 34 MB over 16k rows, one poll that
+    re-read it cost 0.25-0.53 s of CPU every 0.5 s (measured on this repository 2026-11-10). The first read parses
+    the file; each later one parses only the bytes appended since, at a saved offset. A file that shrank or was
+    replaced (its dev/inode changed) restarts from zero, and a half-written last line is left for the next call.
+    """
+    path = ledger_path()
+    key = (path, session_id)
+    read = _LEDGER_READS.get(key)
     try:
-        with open(ledger_path(), encoding="utf-8") as fh:
-            for text in fh:
-                if '"outcome"' not in text:
-                    continue
-                try:
-                    row = json.loads(text)
-                except ValueError:
-                    continue
-                if isinstance(row, dict) and row.get("outcome") and row.get("parentSessionId") == session_id:
-                    rows.append(row)
+        info = os.stat(path)
+        size, ident = info.st_size, (info.st_dev, info.st_ino)
     except OSError:
-        pass
-    return rows
+        _LEDGER_READS.pop(key, None)
+        return [], []
+    if read is None or read["file"] != ident or size < read["offset"]:
+        read = _LEDGER_READS[key] = {"file": ident, "offset": 0, "finish": [], "clean": []}
+    if size > read["offset"]:
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(read["offset"])
+                data = fh.read(size - read["offset"])
+        except OSError:
+            return list(read["finish"]), list(read["clean"])
+        end = data.rfind(b"\n") + 1
+        for raw in data[:end].splitlines():
+            text = raw.decode("utf-8", "replace")
+            if '"parentSessionId"' not in text:
+                continue
+            try:
+                row = json.loads(text)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("parentSessionId") != session_id:
+                continue
+            if '"outcome"' in text:
+                if row.get("outcome"):
+                    read["finish"].append(row)
+            elif row.get("label") and row.get("timestamp") and str(row.get("exitCode")) == "0":
+                read["clean"].append(row)
+        read["offset"] += end
+    return list(read["finish"]), list(read["clean"])
+
+
+def finish_rows(session_id):
+    """This session's launcher finish rows (rows carrying `outcome`), oldest first; the incremental ledger read."""
+    return _ledger_rows(session_id)[0]
 
 
 def clean_launch_rows(session_id):
-    """This session's spend rows of launches that finished clean (no `outcome`, exit 0), oldest first; one ledger read.
-    A failed launch writes no spend row, so a clean row of a label is a later launch of it that ran to its result."""
-    rows = []
-    try:
-        with open(ledger_path(), encoding="utf-8") as fh:
-            for text in fh:
-                if '"parentSessionId"' not in text or '"outcome"' in text:
-                    continue
-                try:
-                    row = json.loads(text)
-                except ValueError:
-                    continue
-                if (isinstance(row, dict) and row.get("parentSessionId") == session_id and row.get("label")
-                        and row.get("timestamp") and str(row.get("exitCode")) == "0"):
-                    rows.append(row)
-    except OSError:
-        pass
-    return rows
+    """This session's spend rows of launches that finished clean (no `outcome`, exit 0), oldest first; the same
+    incremental ledger read. A failed launch writes no spend row, so a clean row of a label is a later launch of
+    it that ran to its result."""
+    return _ledger_rows(session_id)[1]
+
+
+_INVENTORY_WRITTEN = {}  # inventory path -> the creation stamp of its last successful read
 
 
 def inventory_written(entry):
-    """When the fan-out inventory that allocated `entry`'s record was written (it is written once),
-    as epoch seconds; None for a direct launch or an unreadable inventory. That attempt's finish row
-    is written after it, so an earlier attempt's row never answers for a relaunch."""
-    try:
-        return os.path.getmtime(entry["inventory"])
-    except (KeyError, TypeError, OSError):
+    """When the fan-out created the inventory that allocated `entry`'s record, as epoch seconds; None for a
+    direct launch or an inventory no poll has read. It is the document's `writtenAt`, which the fan-out stamps
+    once and every later save keeps, so saving the same inventory for another job does not move it; an inventory
+    written before that field existed falls back to the file's mtime. The fan-out saves by renaming a temp file
+    over this path, so a poll can be refused mid-rename: the last successful read answers, never the relocated
+    file's mtime, which would move the attempt past the finish row of its own end. That attempt's finish row is
+    written after it, so an earlier attempt's row never answers for a relaunch."""
+    path = entry.get("inventory")
+    if not path:
         return None
+    for attempt in range(3):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (TypeError, OSError, ValueError, AttributeError):
+            if attempt < 2:
+                time.sleep(0.005)
+            continue
+        written = epoch(data.get("writtenAt"))
+        if not written:
+            try:
+                written = os.path.getmtime(path)
+            except (OSError, TypeError):
+                return None
+        if len(_INVENTORY_WRITTEN) > 128:
+            _INVENTORY_WRITTEN.pop(next(iter(_INVENTORY_WRITTEN)))
+        _INVENTORY_WRITTEN[path] = written
+        return written
+    return _INVENTORY_WRITTEN.get(path)
 
 
 def record_launched(record):
@@ -1599,9 +1765,24 @@ def usage_line(record, label):
     return "USAGE-LIMIT %s %s resets %s" % (label, row.get("transport") or "unknown", when)
 
 
+POLL_MARK_ENV = "WATCH_RECORDS_POLL_MARK"
+
+
+def _mark_poll(mark):
+    """Append one line to the proof's poll mark: `WATCH_RECORDS_POLL_MARK` names a file a proof reads to know a
+    poll's reads finished, instead of sleeping. Unset in a session; nothing the watcher prints changes."""
+    if mark:
+        try:
+            with open(mark, "a", encoding="utf-8") as fh:
+                fh.write(".\n")
+        except OSError:
+            pass
+
+
 def _stream(pending):
     """Each record's ending, once, then ALL REPORTED."""
     warned = set()
+    mark = os.environ.get(POLL_MARK_ENV)
     while pending:
         for record in pending[:]:
             state, code, _ = record_state(record)
@@ -1614,6 +1795,7 @@ def _stream(pending):
                 print("DONE %s exit=%s" % (label, code) if state == "DONE" else
                       "DIED %s" % label, flush=True)
                 pending.remove(record)
+        _mark_poll(mark)
         if pending:
             time.sleep(POLL_SECONDS)
     print("ALL REPORTED", flush=True)
@@ -1922,7 +2104,7 @@ def _idle_since(source, armed):
         return armed
 
 
-def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregister=None):
+def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregister=None, lifetime=None):
     """Poll `source()` (a `{key: unit}` map) and apply the wake rule. Returns the exit code.
 
     A wake that ends in `STILL RUNNING` finishes its state writes and calls `unregister()` before it prints
@@ -1945,6 +2127,7 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
     """
     seen, standing_stalls, deferred, first = set(), set(), [], True
     armed, printed, said, reported = time.time(), [], [], _acknowledged(ack_path) if ack_path else set()
+    mark = os.environ.get(POLL_MARK_ENV)
 
     def say(kind, identity, text, triggers):
         print(text, flush=True)
@@ -1984,8 +2167,14 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
         close(live)
     while True:
         polled = time.time()
+        if lifetime:
+            gone = lifetime.verdict(polled)
+            if gone:
+                print(HOST_GONE % gone, flush=True)
+                return leave()
         grouped = source()
         lines, live, standing = _wake(grouped)
+        _mark_poll(mark)
         current = {identity for _, identity, _, _ in lines}
         deferred = [line for line in deferred if line[0] != "shell" or line[1] in current]
         cleared = standing_stalls - standing
@@ -2058,7 +2247,7 @@ class ShellEnds:
 
     def poll(self):
         if self.path is None:
-            self.path = _digest().transcript_path(self.session_id)
+            self.path = _transcript_path(self.session_id)
         if self.path is None:
             return self.notices
         if self.offset is None:
@@ -2073,7 +2262,7 @@ class ShellEnds:
 
     def running(self):
         if self.path is None:
-            self.path = _digest().transcript_path(self.session_id)
+            self.path = _transcript_path(self.session_id)
         return _digest().running_shells(self.path, self.scan) if self.path else set()
 
     def persist(self):
@@ -2126,7 +2315,7 @@ def _session_source(session_id, state_path=None):
 
     def discovered(known):
         if not session_dir:
-            path = _digest().transcript_path(session_id)
+            path = _transcript_path(session_id)
             if path is None:
                 return {}
             session_dir.append(path[:-len(".jsonl")])
@@ -2195,8 +2384,9 @@ def session_closing(session_id):
 
 
 def pane_main(session_id):
-    """Poll the check-in lines every PANE_SECONDS until killed, appending a frame when `pane_due`. Exits COVERED beside a
-    live pane."""
+    """Poll the check-in lines every PANE_SECONDS, appending a frame when `pane_due`. Exits COVERED beside a live pane,
+    and exits HOST GONE when no session can receive its frames: the pane is unread by design while its session
+    lives, but a pane nobody can read is the same orphan the session watcher ends on."""
     path, identity, covering = _hook_state.state_path(session_id), process_line(), []
 
     def claim(state):
@@ -2210,8 +2400,12 @@ def pane_main(session_id):
         print("COVERED by %s: a live pane is registered" % covering[0], flush=True)
         return 0
     source, last_key, last_at = _session_source(session_id), None, 0.0
+    lifetime = Lifetime(session_id)
     try:
         while True:
+            if lifetime.verdict():
+                print(HOST_GONE % lifetime.gone, flush=True)
+                return 0
             try:
                 lines = checkin_lines(source())
             except Exception as exc:
@@ -2302,19 +2496,26 @@ def main(args=None):
     if not pending and not session_wide:
         print("Usage: watch_records.py <record> [<record> ...] | --session [--wake]", file=sys.stderr)
         return 2
+    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    lifetime = Lifetime(session_id) if session_wide else None
     path, identity, covering = registration(pending, session_wide=session_wide)
     while covering and session_wide:
         time.sleep(POLL_SECONDS)
-        path, identity, covering = registration(pending, session_wide=True)
+        if lifetime.verdict():
+            print(HOST_GONE % lifetime.gone, flush=True)
+            return 0
+        # A read-only look each poll: the takeover wait is minutes to hours long, and a locked rewrite of the
+        # session's state file every 0.5 s of it writes 7 KB that no reader asked for.
+        if not session_watcher_live(_hook_state.read_json_salvage(path) or {}):
+            path, identity, covering = registration(pending, session_wide=True)
     if covering:
         print("COVERED by %s: a live session watcher is registered, so nothing to do" % covering, flush=True)
         return 0
     try:
-        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
         source = _session_source(session_id, path) if session_wide else _records_source(pending)
         closing = session_closing(session_id) if session_wide else None
         return wake_loop(source, ack_path=path, await_launch=await_launch, closing=closing,
-                         unregister=lambda: deregister(path, identity)) \
+                         unregister=lambda: deregister(path, identity), lifetime=lifetime) \
             if wake or any(is_run_dir(p) for p in pending) else _stream(pending)
     finally:
         deregister(path, identity)

@@ -62,6 +62,13 @@ if hasattr(sys.stdout, "reconfigure"):
 
 REPO = Path(__file__).resolve().parents[2]
 HOOKS = REPO / ".claude" / "hooks"
+sys.path.insert(0, str(HOOKS))
+try:
+    from _hook_state import replace_path  # noqa: E402
+except ImportError:
+    # A bench sandbox copies a checkout without `.claude/hooks`; its ruler imports this module for
+    # the deliverable writer alone, and nothing there reads the file concurrently.
+    replace_path = os.replace
 
 
 def _consume_deps():
@@ -114,7 +121,7 @@ def write_deliverable(out_dir, label, text):
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
-        os.replace(tmp, path)
+        replace_path(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)
@@ -898,15 +905,31 @@ def _block_spec(value):
     return name.strip(), keys
 
 
+def _spill_path(spill):
+    """`spill`, or the same relative path under the main checkout when it is absent here and this is a linked
+    worktree: scratch is gitignored, so a job working in a worktree writes its report to the main checkout,
+    and `consume` runs that job's checks in the worktree."""
+    path = Path(spill)
+    if path.is_absolute() or path.exists():
+        return path
+    try:
+        from _checkout_root import linked_main_root
+    except ImportError:
+        return path
+    main_root = linked_main_root(os.getcwd())
+    return Path(main_root) / path if main_root and (Path(main_root) / path).exists() else path
+
+
 def main_check(argv):
     ap = argparse.ArgumentParser(prog="dispatch_result.py check",
                                  description="Check the fenced JSON Lines blocks of a spill file.")
-    ap.add_argument("spill", help="the spill markdown file")
+    ap.add_argument("spill", help="the spill markdown file; a relative path missing from a linked worktree "
+                                  "is read from the main checkout")
     ap.add_argument("--block", action="append", required=True, type=_block_spec,
                     metavar="NAME=KEY,KEY", help="a fenced block and the keys each row must hold")
     args = ap.parse_args(argv)
     try:
-        text = Path(args.spill).read_text(encoding="utf-8")
+        text = _spill_path(args.spill).read_text(encoding="utf-8")
     except OSError as exc:
         print(f"{args.spill}: {exc}", file=sys.stderr)
         return 2

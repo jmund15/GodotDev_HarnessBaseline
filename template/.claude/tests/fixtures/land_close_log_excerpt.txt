@@ -1,0 +1,5 @@
+land	Prove and land	2026-11-10T10:37:57.4583592Z   harness_tests: 529 of 529 proofs done (9 reused), 2156s; ~0s left at recorded times, pace x1.5
+land	Prove and land	2026-11-10T10:58:17.5553806Z   harness_tests: close green: 302 paths, 529 proofs, 0 new red, 0 need uncommitted inputs, 0 pre-existing red
+land	Prove and land	2026-11-10T10:58:17.5555104Z   harness_tests: close budget: 3371.0s of 300s; proofs over 10s: test_bench_walk_succession.py 996.2s, test_bench_walk_recovery.py 955.4s, test_baseline_sync.py 925.9s, test_bench_printed_commands.py 913.8s, test_bench_walk_intake.py 807.8s; queue wait 14.7s
+land	Prove and land	2026-11-10T10:58:17.5556354Z   harness_tests: push the commit this close proved: git push origin 297062c00be1e8898a64c9073a6194344d9a8504:main
+land	Prove and land	2026-11-10T10:58:20.3864430Z LAND_RESULT=green sha=297062c00be1e8898a64c9073a6194344d9a8504 branch=land/ff16328c

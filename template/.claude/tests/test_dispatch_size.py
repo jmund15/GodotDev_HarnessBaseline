@@ -796,6 +796,12 @@ class PreflightTests(Plant):
         os.environ["HARNESS_HOOK_STATE_DIR"] = state
         self.addCleanup(lambda: os.environ.pop("HARNESS_HOOK_STATE_DIR", None) if saved is None
                         else os.environ.__setitem__("HARNESS_HOOK_STATE_DIR", saved))
+        # skill_dispatch_gate resolves the skill tree from CLAUDE_PROJECT_DIR before the payload's `cwd`; the
+        # harness runner sets it to the checkout, so the plant must own it or the planted skill never resolves.
+        project = os.environ.get("CLAUDE_PROJECT_DIR")
+        os.environ["CLAUDE_PROJECT_DIR"] = self.root
+        self.addCleanup(lambda: os.environ.pop("CLAUDE_PROJECT_DIR", None) if project is None
+                        else os.environ.__setitem__("CLAUDE_PROJECT_DIR", project))
         self.sid = "pf000001"
         self.transcript = self.text("t.jsonl", "")
 

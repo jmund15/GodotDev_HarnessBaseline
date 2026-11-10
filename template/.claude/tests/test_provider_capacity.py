@@ -519,6 +519,36 @@ def main():
     cases.append(("a dormant-only capture is an available Surplus reading",
                   pc.validate_reading(dormant_only, "anthropic", "plan-quota") == []))
 
+    # Cut from `console_credit_probe.py` run on this machine 2026-11-10 (anthropic-console-secondary),
+    # trimmed: a reader that cannot establish the spend states why, and that is not `malformed`.
+    unknown = {
+        "schemaVersion": 1, "transport": "anthropic", "costModel": "plan-quota",
+        "sourceKind": "live", "observedAt": iso(now), "status": "unknown",
+        "error": {"kind": "unknown",
+                  "message": "credit cycle ended 2026-10-31; the owner's next re-anchor sets the new cycle"},
+        "liveFailure": None, "quota": None, "balance": None,
+    }
+    cases.append(("a reader's stated unknown validates: no quota, a typed reason",
+                  pc.validate_reading(unknown, "anthropic", "plan-quota") == []))
+    cases.append(("an unknown with no stated reason is rejected",
+                  bool(pc.validate_reading(dict(unknown, error={"kind": "unknown", "message": ""}),
+                                           "anthropic", "plan-quota"))))
+    unknown_cache = root / "unknown.json"
+    unknown_cache.write_text(json.dumps({"anthropic": dict(unknown, observedAt=iso(now - 700))}),
+                             encoding="utf-8")
+    last = getattr(pc, "last_cached", None)
+    cases.append(("a stated unknown is never a fresh reading, but it is the plan's last one",
+                  pc.cached("anthropic", data=data, now=now, cache_path=str(unknown_cache)) is None
+                  and last is not None
+                  and (last("anthropic", data=data, now=now, cache_path=str(unknown_cache))
+                       or {}).get("status") == "unknown"))
+    forget = getattr(pc, "forget", None)
+    forget_cache = root / "forget.json"
+    forget_cache.write_text(json.dumps({"anthropic": aged(100), "deepseek": balance()}), encoding="utf-8")
+    dropped = bool(forget) and forget("anthropic", cache_path=str(forget_cache))
+    cases.append(("forget drops one transport's cached reading and keeps its siblings",
+                  dropped and sorted(json.loads(forget_cache.read_text(encoding="utf-8"))) == ["deepseek"]))
+
     # The cache is one file with one entry per transport, written by concurrent probes (a fan-out,
     # a gate preflight, two sessions). The write therefore goes through hooks/_hook_state.py's
     # locked read-modify-write, and a lock that cannot be taken writes NOTHING: a fallback write

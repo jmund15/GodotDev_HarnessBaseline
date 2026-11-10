@@ -20,8 +20,10 @@ from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import exhausted_marker  # noqa: E402
 import model_registry as mr  # noqa: E402
+from _hook_state import replace_path  # noqa: E402
 
 TRANSPORT = "opencode-cli"
 POOL = "free"
@@ -70,7 +72,7 @@ def cool(member, seconds=COOLDOWN_SECONDS):
     fd, temp_path = tempfile.mkstemp(prefix=".exhausted-", dir=path.parent)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
-    os.replace(temp_path, path)
+    replace_path(temp_path, path)
     return data
 
 

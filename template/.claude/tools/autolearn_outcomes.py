@@ -29,6 +29,7 @@ import cli_usage  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
 from _file_lock import locked  # noqa: E402
+from _hook_state import replace_path  # noqa: E402
 
 LOCK_TIMEOUT = 5.0
 
@@ -107,7 +108,7 @@ def cmd_record(args):
                 temp = fh.name
                 for r in rows:
                     fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-            os.replace(temp, args.file)
+            replace_path(temp, args.file)
             temp = None
     except (TimeoutError, OSError) as exc:
         print("autolearn_outcomes: could not record in %s: %s" % (args.file, exc), file=sys.stderr)

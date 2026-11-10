@@ -72,7 +72,7 @@ The engine returns a bounded preview of the claims. Capture `transcriptDir` from
 
 ## Phase 3: Consolidate & Report
 
-- Account for every required lens. A `flags` entry of kind `lens-did-not-run` or `lens-no-return` is an UNCOVERED dimension, not a clean one; recover from `<spillDir>/<key>.spill.md` first.
+- Account for every required lens. A `flags` entry of kind `lens-did-not-run` or `lens-no-return` is an UNCOVERED dimension, not a clean one; when the flag names a spill file, recover from it first (the engine writes one only for a lens whose profile has `Write`).
 - Account for every context question: name the claims that answer it. A question with none is UNCOVERED, like a lens that did not run.
 - For an `absent` claim a design or plan decision will rest on, its `{command, output: ""}` evidence is rerun in-run (`reference/evidence_contract.md`); per protocol Step 1.5, rerun first-party only when the claim is not VERIFIED.
 - Verify premise contradictions first-party. Reconcile conflicting claims against evidence, never sort order or vote count.

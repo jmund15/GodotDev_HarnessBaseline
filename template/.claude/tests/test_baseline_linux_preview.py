@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
@@ -88,8 +89,11 @@ def main():
     script = blp.preview_script("/mnt/c/w/tree", jobs)
     cases.append(("the snapshot lives under $HOME, never /tmp (delete guards admit temp paths)",
                   '"$HOME/baseline-linux-preview"' in script and "/tmp" not in script))
-    cases.append(("ci-tools python, node and pwsh lead PATH",
-                  'PATH="$HOME/.local/ci-tools/py/bin:$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:$PATH"' in script))
+    cases.append(("ci-tools python, node, pwsh and dotnet lead PATH",
+                  'PATH="$HOME/.local/ci-tools/py/bin:$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:'
+                  '$HOME/.local/ci-tools/dotnet:$PATH"' in script))
+    cases.append(("setup installs the dotnet host a runner ships (the runtime-slot proof launches `dotnet pwsh.dll`)",
+                  "dotnet-install.sh" in blp.SETUP_SCRIPT and "$T/dotnet" in blp.SETUP_SCRIPT))
     stripped = subprocess.run([bash_exe(), "--noprofile", "--norc", "-c",
                                "PATH=/usr/bin:/mnt/c/Win/npm:/bin; %s; printf %%s \"$PATH\"" % blp.STRIP_HOST_PATH],
                               capture_output=True, text=True)
@@ -194,13 +198,14 @@ def main():
                   and "iconv -f UTF-16" in blp.SETUP_SCRIPT))
 
 
+    posix = lambda p: (subprocess.run([bash_exe(), "-c", 'cygpath -u "$1"', "_", str(p)],
+                                      capture_output=True, text=True).stdout.strip()
+                       if os.name == "nt" else str(p))
+
     def run_lanes(job_list, tag):
         home = Path(tempfile.mkdtemp(prefix="blp_home_"))
         tree = Path(tempfile.mkdtemp(prefix="blp_tree_"))
         (tree / "f.txt").write_text("x\n", encoding="utf-8", newline="\n")
-        posix = lambda p: (subprocess.run([bash_exe(), "-c", 'cygpath -u "$1"', "_", str(p)],
-                                          capture_output=True, text=True).stdout.strip()
-                           if os.name == "nt" else str(p))
         env = dict(os.environ, HOME=str(home))
         env.pop("HARNESS_MACHINE_SLOTS", None)
         out = subprocess.run([bash_exe(), "--noprofile", "--norc", "-c", blp.preview_script(posix(tree), job_list(posix(home))) ],
@@ -223,8 +228,35 @@ def main():
     cases.append(("the fail line sits inside its own lane's log block",
                   re.search(r"::lane ok \d+s\n(?:.*\n)*?::fail boom rc=7 \d+s\n(?:.*\n)*?::lane bad \d+s", out.stdout) is not None))
     cases.append(("each lane gets its own HOME and the shared slot dir and width",
-                  'HOME="$D/a.home"' in script_of_two(blp) and 'HARNESS_SLOT_DIR="$D/.slots"' in script_of_two(blp)
+                  'HOME="$D/a.home"' in script_of_two(blp) and 'HARNESS_SLOT_DIR="$R/.slots"' in script_of_two(blp)
                   and "PREVIEW_SLOTS" in dir(blp) and blp.PREVIEW_SLOTS == 4))
+
+    home = Path(tempfile.mkdtemp(prefix="blp_home_"))
+    tree = Path(tempfile.mkdtemp(prefix="blp_tree_"))
+    (tree / "f.txt").write_text("x\n", encoding="utf-8", newline="\n")
+    env = dict(os.environ, HOME=str(home))
+    env.pop("HARNESS_MACHINE_SLOTS", None)
+    launch = lambda job_list: subprocess.Popen(
+        [bash_exe(), "--noprofile", "--norc", "-c", blp.preview_script(posix(tree), job_list)],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    hold = ("touch %s/first_up\nfor i in $(seq 1 300); do [ -e %s/second_done ] && exit 0; sleep 0.1; done; exit 1"
+            % (posix(home), posix(home)))
+    first = launch([("a", [("hold", hold)])])
+    deadline = time.time() + 30
+    while not (home / "first_up").exists() and time.time() < deadline:
+        time.sleep(0.1)
+    second = launch([("b", [("quick", "true")])])
+    second_out = second.communicate(timeout=60)[0]
+    (home / "second_done").write_text("", encoding="utf-8")
+    first_out = first.communicate(timeout=60)[0]
+    cases.append(("a preview started while another runs leaves the first run's lanes and logs whole",
+                  first.returncode == 0 and "::pass hold" in first_out and "::lane a " in first_out))
+    cases.append(("the second preview passes beside the first",
+                  second.returncode == 0 and "::lane b " in second_out))
+    third = launch([("c", [("quick", "true")])])
+    third.communicate(timeout=60)
+    cases.append(("a run removes the trees of runs that ended, so one tree is left",
+                  len(list((home / "baseline-linux-preview").glob("run.*"))) == 1))
 
     failed = 0
     for label, ok in cases:

@@ -64,7 +64,14 @@ from pathlib import Path
 EXCLUDED_DIRS = frozenset({'.obsidian', '.search-index'})
 EXCLUDED_SUFFIXES = ('.db',)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import vault_read
+try:
+    from _hook_state import replace_path  # noqa: E402
+except ImportError:
+    # The cloud mirror ships `vault_sync.py` alone, with no hooks/ beside it, and nothing there reads
+    # the file concurrently, so the bare rename keeps its pre-helper behavior.
+    replace_path = os.replace
 
 DEFAULT_ROOT = vault_read.DEFAULT_VAULT / 'DevProjects'
 DELETION_CAP = 10
@@ -396,7 +403,7 @@ def _record(git_dir: Path, code: int, report: dict) -> None:
            'error': report['error']}
     tmp = git_dir / 'sync_status.json.tmp'
     tmp.write_text(json.dumps(row, indent=1), encoding='utf-8')
-    os.replace(tmp, git_dir / 'sync_status.json')
+    replace_path(tmp, git_dir / 'sync_status.json')
     if code or report['pushed']:
         log = git_dir / 'sync_log.jsonl'
         old = log.read_text(encoding='utf-8').splitlines() if log.exists() else []
@@ -489,12 +496,12 @@ def mirror(target, repo=None, now: datetime | None = None) -> str:
             if dest.exists():
                 # Linux moves a directory to another parent only while the directory itself is writable.
                 _chmod_tree(dest, 0o644, 0o755)
-                os.replace(dest, backup)
+                replace_path(dest, backup)
             try:
-                os.replace(staging / folder, dest)
+                replace_path(staging / folder, dest)
             except OSError:
                 if backup.exists():
-                    os.replace(backup, dest)
+                    replace_path(backup, dest)
                     _chmod_tree(dest, 0o444, 0o555)
                 raise
             _chmod_tree(dest, 0o444, 0o555)
