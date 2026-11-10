@@ -5062,6 +5062,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_harness_tests_gate_time.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_harness_tests_integrity.py",
       "layer": "pure",
       "sync": "auto"

@@ -677,6 +677,7 @@
     ".claude/tests/test_harness_shell_write_guard.py": "pure",
     ".claude/tests/test_harness_tests_cannot_run.py": "pure",
     ".claude/tests/test_harness_tests_checkout_reap.py": "pure",
+    ".claude/tests/test_harness_tests_gate_time.py": "pure",
     ".claude/tests/test_harness_tests_integrity.py": "pure",
     ".claude/tests/test_harness_tests_latency.py": "pure",
     ".claude/tests/test_harness_tests_name_binding.py": "pure",

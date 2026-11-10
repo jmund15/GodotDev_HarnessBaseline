@@ -225,8 +225,11 @@ urllib.request.urlopen = urlopen
         self.assertIn('brief: unreadable', missing.stdout)
         self.assertNotIn('brief: 0 bytes', missing.stdout)
 
-    def test_wrapper_registers_and_checks(self):
-        proc = self.wrapper(self.argv())
+    def test_wrapper_registers_checks_and_a_reused_record_keeps_the_new_pin(self):
+        # -Y <pick>,<spec> records why the pin was chosen; an omitted -Y records null, never a guessed
+        # value, and a relaunch on the same record carries the new pin and the new (absent) basis.
+        argv = self.argv()
+        proc = self.wrapper([*argv, '-e', 'low', '-Y', 'cell,tight'])
         self.assertEqual(proc.returncode, 0, proc.stderr)
         rows = self.pending()
         self.assertEqual(len(rows), 1, rows)
@@ -246,19 +249,14 @@ urllib.request.urlopen = urlopen
             watch.kill()
             watch.wait()
         self.assertIn('wrapped', output.read_text(encoding='utf-8'))
-
-    def test_direct_hook_launch_registers_once_checks_once(self):
-        argv = self.argv('direct')
-        payload = self.payload('bash ' + shlex.join([str(LAUNCHER).replace('\\', '/'), *argv]))
-        before = self.run_cmd([sys.executable, str(HOOK)], payload)
-        # an admitted launch carries no advisory, so the hook may print nothing at all
-        decision = (json.loads(before.stdout)['hookSpecificOutput'] if before.stdout.strip() else {}).get('permissionDecision')
-        self.assertNotEqual(decision, 'deny', before.stdout)
-        proc = self.run_cmd([BASH, posix(LAUNCHER), *argv])
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.run_cmd([sys.executable, str(TABLE), '--launch'], payload)
-        self.assertEqual(len(self.pending()), 1)
-        self.assertEqual(self.counts(), {'tier': 1, 'preflight': 1})
+        record = self.work / 'wrapped.record.json'
+        self.assertEqual(json.loads(record.read_text(encoding='utf-8')).get('pinBasis'), 'cell,tight')
+        self.assertEqual(self.wrapper([*argv, '-e', 'high']).returncode, 0)
+        rows = self.pending()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['jobs'][0]['effort'], 'high')
+        self.assertIsNone(json.loads(record.read_text(encoding='utf-8')).get('pinBasis'))
+        self.assertEqual(self.counts(), {'tier': 2, 'preflight': 2})
 
     def test_fanout_one_entry_per_job(self):
         jobs = self.work / 'jobs.json'
@@ -301,20 +299,6 @@ urllib.request.urlopen = urlopen
         self.assertIn('literal -R and -l', proc.stderr)
         self.assertEqual(self.pending(), [])
 
-    def test_reused_record_keeps_the_new_pin_and_pin_basis(self):
-        # -Y <pick>,<spec> records why the pin was chosen; an omitted -Y records null, never a guessed
-        # value, and a relaunch on the same record carries the new pin and the new (absent) basis.
-        argv = self.argv('reused')
-        self.assertEqual(self.wrapper([*argv, '-e', 'low', '-Y', 'cell,tight']).returncode, 0)
-        record = self.work / 'reused.record.json'
-        self.assertEqual(json.loads(record.read_text(encoding='utf-8')).get('pinBasis'), 'cell,tight')
-        self.assertEqual(self.wrapper([*argv, '-e', 'high']).returncode, 0)
-        rows = self.pending()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]['jobs'][0]['effort'], 'high')
-        self.assertIsNone(json.loads(record.read_text(encoding='utf-8')).get('pinBasis'))
-        self.assertEqual(self.counts(), {'tier': 2, 'preflight': 2})
-
     def test_no_session_runs_untracked_with_note(self):
         self.env.pop('CLAUDE_CODE_SESSION_ID')
         proc = self.wrapper(self.argv('untracked'))
@@ -342,15 +326,16 @@ urllib.request.urlopen = urlopen
         self.assertEqual(ended['code'], 0, ended)
         self.assertEqual(Path(record.parent / (record.name + '.exit')).read_text().strip(), '0')
 
-    def test_a_direct_launch_records_the_call_its_hook_intent_names(self):
+    def test_direct_hook_launch_registers_once_checks_once_and_records_the_call_its_intent_names(self):
         # X1 S2 U6 / D3: the hook writes the intent at the record path, and the launch claims it, so the
         # journal's rows carry the call a direct launch lost before the intent existed.
-        argv = self.argv('hooked')
+        argv = self.argv('direct')
         payload = self.payload('bash ' + shlex.join([str(LAUNCHER).replace('\\', '/'), *argv]))
-        hook = self.run_cmd([sys.executable, str(HOOK)], payload)
-        decision = (json.loads(hook.stdout)['hookSpecificOutput'] if hook.stdout.strip() else {}).get('permissionDecision')
-        self.assertNotEqual(decision, 'deny', hook.stdout)
-        record = self.work / 'hooked.record.json'
+        before = self.run_cmd([sys.executable, str(HOOK)], payload)
+        # an admitted launch carries no advisory, so the hook may print nothing at all
+        decision = (json.loads(before.stdout)['hookSpecificOutput'] if before.stdout.strip() else {}).get('permissionDecision')
+        self.assertNotEqual(decision, 'deny', before.stdout)
+        record = self.work / 'direct.record.json'
         intent = Path(str(record) + '.launch-intent-call-proof.json')
         self.assertTrue(intent.exists(), sorted(p.name for p in self.work.iterdir()))
         intent_row = json.loads(intent.read_text(encoding='utf-8'))
@@ -361,6 +346,9 @@ urllib.request.urlopen = urlopen
         rows = [json.loads(line) for line in journal.read_text(encoding='utf-8').splitlines()]
         self.assertEqual(next(row for row in rows if row['event'] == 'started')['call'], 'call-proof', rows)
         self.assertFalse(intent.exists(), 'the intent was not claimed')
+        self.run_cmd([sys.executable, str(TABLE), '--launch'], payload)
+        self.assertEqual(len(self.pending()), 1)
+        self.assertEqual(self.counts(), {'tier': 1, 'preflight': 1})
 
     def test_direct_launch_claims_the_call_its_intent_names(self):
         # X1 S1 U4 / D3: the hook's intent at the record path names the call; the launch's rows carry it.
