@@ -52,6 +52,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools"))
 from _hook_state import (  # noqa: E402
     fire_once_since_compaction,
     read_json_salvage,
+    replace_path,
     state_path,
     update_json_locked,
 )
@@ -359,7 +360,7 @@ def main():
                 tmp = cache + ".%d.tmp" % os.getpid()
                 with open(tmp, "w", encoding="utf-8") as fh:
                     json.dump({"at": now, "procs": procs}, fh)
-                os.replace(tmp, cache)
+                replace_path(tmp, cache)
             except Exception:
                 pass
             own_root = resolve_own_root(session_id, procs, os.getpid(), fresh=True)

@@ -495,14 +495,39 @@ def clean_launch_rows(session_id):
     return rows
 
 
+_INVENTORY_WRITTEN = {}  # inventory path -> the creation stamp of its last successful read
+
+
 def inventory_written(entry):
-    """When the fan-out inventory that allocated `entry`'s record was written (it is written once),
-    as epoch seconds; None for a direct launch or an unreadable inventory. That attempt's finish row
-    is written after it, so an earlier attempt's row never answers for a relaunch."""
-    try:
-        return os.path.getmtime(entry["inventory"])
-    except (KeyError, TypeError, OSError):
+    """When the fan-out created the inventory that allocated `entry`'s record, as epoch seconds; None for a
+    direct launch or an inventory no poll has read. It is the document's `writtenAt`, which the fan-out stamps
+    once and every later save keeps, so saving the same inventory for another job does not move it; an inventory
+    written before that field existed falls back to the file's mtime. The fan-out saves by renaming a temp file
+    over this path, so a poll can be refused mid-rename: the last successful read answers, never the relocated
+    file's mtime, which would move the attempt past the finish row of its own end. That attempt's finish row is
+    written after it, so an earlier attempt's row never answers for a relaunch."""
+    path = entry.get("inventory")
+    if not path:
         return None
+    for attempt in range(3):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (TypeError, OSError, ValueError, AttributeError):
+            if attempt < 2:
+                time.sleep(0.005)
+            continue
+        written = epoch(data.get("writtenAt"))
+        if not written:
+            try:
+                written = os.path.getmtime(path)
+            except (OSError, TypeError):
+                return None
+        if len(_INVENTORY_WRITTEN) > 128:
+            _INVENTORY_WRITTEN.pop(next(iter(_INVENTORY_WRITTEN)))
+        _INVENTORY_WRITTEN[path] = written
+        return written
+    return _INVENTORY_WRITTEN.get(path)
 
 
 def record_launched(record):
@@ -1599,9 +1624,24 @@ def usage_line(record, label):
     return "USAGE-LIMIT %s %s resets %s" % (label, row.get("transport") or "unknown", when)
 
 
+POLL_MARK_ENV = "WATCH_RECORDS_POLL_MARK"
+
+
+def _mark_poll(mark):
+    """Append one line to the proof's poll mark: `WATCH_RECORDS_POLL_MARK` names a file a proof reads to know a
+    poll's reads finished, instead of sleeping. Unset in a session; nothing the watcher prints changes."""
+    if mark:
+        try:
+            with open(mark, "a", encoding="utf-8") as fh:
+                fh.write(".\n")
+        except OSError:
+            pass
+
+
 def _stream(pending):
     """Each record's ending, once, then ALL REPORTED."""
     warned = set()
+    mark = os.environ.get(POLL_MARK_ENV)
     while pending:
         for record in pending[:]:
             state, code, _ = record_state(record)
@@ -1614,6 +1654,7 @@ def _stream(pending):
                 print("DONE %s exit=%s" % (label, code) if state == "DONE" else
                       "DIED %s" % label, flush=True)
                 pending.remove(record)
+        _mark_poll(mark)
         if pending:
             time.sleep(POLL_SECONDS)
     print("ALL REPORTED", flush=True)
@@ -1945,6 +1986,7 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
     """
     seen, standing_stalls, deferred, first = set(), set(), [], True
     armed, printed, said, reported = time.time(), [], [], _acknowledged(ack_path) if ack_path else set()
+    mark = os.environ.get(POLL_MARK_ENV)
 
     def say(kind, identity, text, triggers):
         print(text, flush=True)
@@ -1986,6 +2028,7 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
         polled = time.time()
         grouped = source()
         lines, live, standing = _wake(grouped)
+        _mark_poll(mark)
         current = {identity for _, identity, _, _ in lines}
         deferred = [line for line in deferred if line[0] != "shell" or line[1] in current]
         cleared = standing_stalls - standing

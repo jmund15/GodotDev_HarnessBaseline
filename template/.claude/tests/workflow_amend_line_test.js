@@ -6,6 +6,7 @@ const fs = require('fs')
 const path = require('path')
 const os = require('os')
 const { execFileSync } = require('child_process')
+const gitBash = require('./_git_bash')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const HOST_TRANSPORT = { name: 'host', ids: ['m-big', 'm-small'] }
 const AMEND = (p) => 'Amendments: the harness delivers ' + p + '.amend.md to you when your parent writes or changes it; a delivered amendment overrides the brief, and your report names what you applied.'
@@ -57,9 +58,12 @@ const jobs = [{ label: 'w', promptPath: 'w.md', kind: 'author' }, { label: 'r', 
   const brief = path.join(dir, 'b.md').replace(/\\/g, '/')
   fs.writeFileSync(brief, 'brief\n')
   const lib = path.join(__dirname, '..', 'scripts', 'lib', 'sidecar_common.sh').replace(/\\/g, '/')
-  const read = (shape) => execFileSync('bash', ['-c', 'source "$1"; SC_PROMPT_FILE="$2"; SC_SHAPE="$3"; sc_read_prompt; printf %s "$SC_PROMPT"', '_', lib, brief, shape], { encoding: 'utf8' })
+  // The sidecar launchers run under Git Bash (tools/sidecar_launch.git_bash); a bare `bash` on the runner's PATH
+  // is System32's WSL shim, which has no cygpath and cannot open a C:/ path.
+  const bash = gitBash()
+  const read = (shape) => execFileSync(bash, ['-c', 'source "$1"; SC_PROMPT_FILE="$2"; SC_SHAPE="$3"; sc_read_prompt; printf %s "$SC_PROMPT"', '_', lib, brief, shape], { encoding: 'utf8' })
   try {
-    const nativeBrief = process.platform === 'win32' ? execFileSync('cygpath', ['-w', brief], { encoding: 'utf8' }).trim() : brief
+    const nativeBrief = process.platform === 'win32' ? execFileSync(bash, ['-c', 'cygpath -w "$1"', '_', brief], { encoding: 'utf8' }).trim() : brief
     check('a sidecar author brief ends with its amend line', read('author').includes(AMEND(nativeBrief)))
     check('a sidecar review brief carries none', !read('review').includes('.amend.md'))
   } catch (e) {

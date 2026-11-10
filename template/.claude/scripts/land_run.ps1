@@ -31,8 +31,12 @@ foreach ($settings in $settingsFiles) {
 }
 if (-not $env:HOME) { $env:HOME = $homeDir }
 
+# The close's excused pre-existing reds, as ` pre-existing=<n> <proof>,<proof>`; empty until a close runs and
+# when it excused none. A red after the close carries it on the same result line.
+$script:preExisting = ''
+
 function Stop-Land([string] $Stage, [string] $Detail) {
-    Write-Output "LAND_RESULT=red stage=$Stage sha=$Sha branch=$Branch :: $Detail"
+    Write-Output "LAND_RESULT=red stage=$Stage sha=$Sha branch=$Branch$script:preExisting :: $Detail"
     exit 1
 }
 
@@ -130,12 +134,20 @@ for ($round = 1; $round -le 2; $round++) {
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         Write-Output "LAND stage=close base=$($base.Substring(0, 12)) sha=$($tip.Substring(0, 12))"
         & python3 .claude/scripts/harness_tests.py --close --base $base *>&1 | Tee-Object -FilePath $closeLog | ForEach-Object {
-            if ($_ -match '^(FAIL|FIRST RED|NEEDS|harness_tests: (close|pre-existing|push|bisect))') { Write-Output "  $_" }
+            # Every line the close prints about itself passes, its progress included: only per-proof passes are dropped.
+            if ($_ -match '^(FAIL|FIRST RED|NEEDS|harness_tests: )') { Write-Output "  $_" }
         }
         $closeText = Get-Content -Raw -LiteralPath $closeLog
         if ($closeText -notmatch 'harness_tests: close incomplete: .* 0 new red,') { break }
     }
     Remove-Item Env:HARNESS_DEADLINE
+    # One line per pre-existing red names its proof; a proof pre-existing at both the default branch and the base
+    # prints twice, so keep the first of each. The line's shape is `harness_tests: pre-existing red ...: <proof> (<note>)`.
+    $pre = [System.Collections.Generic.List[string]]::new()
+    foreach ($m in [regex]::Matches($closeText, '(?m)^harness_tests: pre-existing red [^\r\n]*?: (\S+?)(?: \(.*\))?[ \t]*\r?$')) {
+        if (-not $pre.Contains($m.Groups[1].Value)) { $pre.Add($m.Groups[1].Value) }
+    }
+    $script:preExisting = if ($pre.Count -gt 0) { " pre-existing=$($pre.Count) $($pre -join ',')" } else { '' }
     $proven = [regex]::Match($closeText, 'git push origin ([0-9a-f]{40}):').Groups[1].Value
     if ($closeText -notmatch 'harness_tests: close green' -or $proven -ne $tip) {
         Stop-Land 'close' "no green close for $($tip.Substring(0, 12)); log $closeLog"
@@ -172,4 +184,4 @@ for ($round = 1; $round -le 2; $round++) {
 
 $kept = Remove-LandBranch
 $landed = if ($tip -ne $Sha) { " landed=$tip" } else { '' }
-Write-Output "LAND_RESULT=green sha=$Sha branch=$Branch$landed$kept"
+Write-Output "LAND_RESULT=green sha=$Sha branch=$Branch$landed$script:preExisting$kept"

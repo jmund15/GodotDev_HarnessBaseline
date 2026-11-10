@@ -148,6 +148,87 @@ def ok(proc):
     return proc.returncode == 0, (proc.stdout[-600:], proc.stderr[-1200:])
 
 
+HOOK = REPO / ".claude" / "hooks" / "workflow_provider_guard.py"
+EXPLORE_ENGINE = REPO / ".claude" / "workflows" / "explore_fanout.js"
+REVIEW_ENGINE = REPO / ".claude" / "workflows" / "review_fanout.js"
+FIXTURE_RESULT = {"findings": [], "claims": [], "gaps": [],
+                  "checked": {"toolsUsed": ["Read:fixture"], "stoppedAt": "done", "basis": "fixture"}}
+_HOOK = None
+
+
+def _hook():
+    """The real provider hook module, loaded once from its file."""
+    global _HOOK
+    if _HOOK is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("prepare_proof_provider_guard", str(HOOK))
+        _HOOK = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_HOOK)
+    return _HOOK
+
+
+def inject(args, engine):
+    """`args` as hooks/workflow_provider_guard.py leaves them for `engine`: the real registry, the real
+    per-kind profile resolution. Returns (injected args, None) or (None, the hook's refusal text)."""
+    hook = _hook()
+    saved = os.environ.pop("HARNESS_WORKFLOW_ARGS_OWNER", None)
+    try:
+        payload = {"tool_name": "Workflow", "tool_input": {"scriptPath": str(engine), "args": args}}
+        tool_input = hook.transport_injection(payload, "anthropic", hook._session_transport._registry())
+    except Exception as exc:
+        return None, "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        if saved is not None:
+            os.environ["HARNESS_WORKFLOW_ARGS_OWNER"] = saved
+    if tool_input is None:
+        return None, "the provider hook injected nothing"
+    injected = tool_input.get("args")
+    return (json.loads(injected) if isinstance(injected, str) else injected), None
+
+
+def engine_error(args, engine):
+    """The real engine's own input-check error for `args`, or None when that check passed."""
+    run = subprocess.run(["node", str(HERE / "_engine_run.js")],
+                         input=json.dumps({"script": str(engine), "args": args, "reply": FIXTURE_RESULT}),
+                         capture_output=True, text=True, encoding="utf-8", timeout=240)
+    try:
+        result = json.loads(run.stdout)
+    except ValueError:
+        return "engine produced no JSON (rc %s): %s" % (run.returncode, run.stderr[-400:])
+    return (result or {}).get("error") if isinstance(result, dict) else None
+
+
+def check_engine(label, f, engine):
+    """prepare's `args.json`, injected by the real provider hook, passes the real engine's input check.
+
+    A hook refusal fails the case; its detail adds the engine's own verdict on the same args, carrying
+    only the hook's vocabulary, so a retired-key writer shows the cause the engine names."""
+    args = f.args()
+    if not args:
+        check(label + ": prepare wrote args.json", False, "no args.json")
+        return
+    injected, refused = inject(args, engine)
+    if refused:
+        hook = _hook()
+        data = hook._session_transport._registry()
+        vocabulary = {"name": "anthropic", "ids": sorted(hook._legal_pins("anthropic", data))}
+        efforts = hook._declared_efforts("anthropic", data)
+        if efforts is not None:
+            vocabulary["efforts"] = efforts
+        diagnostic = dict(args, __transport=vocabulary)
+        if "agents" in args:
+            diagnostic["checker"] = {"model": vocabulary["ids"][0],
+                                     "effort": (efforts or ["medium"])[0]}
+        detail = refused
+        raw = engine_error(diagnostic, engine)
+        if raw:
+            detail += " | the engine says: " + raw
+        check(label + ": the provider hook injects the prepared args", False, detail)
+        return
+    error = engine_error(injected, engine)
+    check(label + ": the engine accepts the prepared args", not error, error)
+
+
 def mode_explore():
     f = Fixture()
     proc = f.prepare(mode="explore", lenses=["exp-integration-surface"],
@@ -167,6 +248,7 @@ def mode_explore():
           isinstance(args, dict) and all(Path(j["promptPath"]).is_file() for j in args.get("lenses") or []), args)
     check("explore: the printed next call passes the args file",
           good and "Workflow(" in proc.stdout and "argsFile" in proc.stdout, proc.stdout[-500:])
+    check_engine("explore", f, EXPLORE_ENGINE)
 
 
 def plan_check_roster():
@@ -201,6 +283,7 @@ def mode_plan_check():
           bool(kfm)
           and "Known failure modes" in (f.out / "p_plc-memory-alignment.md").read_text(encoding="utf-8")
           if (f.out / "p_plc-memory-alignment.md").exists() else False, list(map(str, kfm)))
+    check_engine("plan-check", f, REVIEW_ENGINE)
 
 
 def mode_pr_review():
@@ -220,6 +303,7 @@ def mode_pr_review():
           isinstance(args, dict) and (args.get("ledger") or {}).get("scopeJson"), args.get("ledger"))
     check("pr-review: prepare prints the crossFamily obligation it composed",
           good and "crossFamily:" in proc.stdout and "required" in proc.stdout, proc.stdout[-800:])
+    check_engine("pr-review", f, REVIEW_ENGINE)
 
 
 def mode_design_redteam():
@@ -237,6 +321,7 @@ def mode_design_redteam():
     check("design-redteam: prepare writes a dispatchable args.json with the design stage",
           good and isinstance(args, dict) and (args.get("ledger") or {}).get("stage") == "design",
           (detail, args.get("ledger") if isinstance(args, dict) else None))
+    check_engine("design-redteam", f, REVIEW_ENGINE)
 
 
 PR_READY_SEATS = [
@@ -266,6 +351,7 @@ def mode_pr_ready():
           isinstance(args, dict) and all(a.get("effort") == EFFORT_HI for a in args.get("agents") or []), args)
     check("pr-ready: each registry-less seat's brief file exists",
           isinstance(args, dict) and all(Path(a["promptPath"]).is_file() for a in args.get("agents") or []), args)
+    check_engine("pr-ready", f, REVIEW_ENGINE)
 
 
 def mode_session_audit():
@@ -329,6 +415,7 @@ def mode_session_audit():
     check("session-audit: the documented spec, with no `ledger`, records against session:<sid> and the task",
           good and ledger.get("subject") == "session:prepsess" and ledger.get("task") == "task-1"
           and ledger.get("stage") == "candidate", (detail, ledger))
+    check_engine("session-audit", f, REVIEW_ENGINE)
 
 
 def doc_defined_none_placeholder():
@@ -417,7 +504,7 @@ def sidecar_target():
     check("sidecar: the printed next call carries the spec's fold and ledger",
           parsed is not None and parsed.fold_alias == PANEL and parsed.fold_effort == EFFORT_HI
           and parsed.fold_subject and parsed.ledger_stage == "design"
-          and parsed.ledger_subject == "doc:" + str(f.plan), line)
+          and parsed.ledger_subject == "doc:" + str(f.plan).replace("\\", "/"), line)
 
 
 def stale_kfm_snapshot():
@@ -527,7 +614,8 @@ def base_sizes_past_a_command_line():
 def spec_refused_before_any_write():
     f = Fixture()
     common = dict(mode="explore", lenses=["exp-integration-surface"], engine=str(f.root / "engine.js"),
-                  pins={"panel": PANEL}, efforts={"panel": EFFORT}, spillDir=str(f.scratch("run", "spill")))
+                  pins={"panel": PANEL}, efforts={"panel": EFFORT}, spillDir=str(f.scratch("run", "spill")),
+                  checker={"model": PANEL, "effort": EFFORT})
     proc = f.prepare(subjectFiles=[], seatFiles={"exp-integration-surface": [str(f.plan)]}, fold={"tier": "architect", "model": PANEL, "effort": EFFORT_HI}, **common)
     check("a fold with no subjectFiles is refused naming `subjectFiles`",
           proc.returncode != 0 and "subjectFiles" in proc.stderr, proc.stderr[-400:])
@@ -538,6 +626,15 @@ def spec_refused_before_any_write():
           proc.returncode != 0 and "sessionAudit.plan" in proc.stderr, proc.stderr[-400:])
     check("the refused plan spec wrote no brief", not f.out.exists() or not any(x.is_file() for x in f.out.rglob("*")),
           sorted(x.name for x in f.out.glob("*")) if f.out.exists() else "")
+    top = f.prepare(agentType="lane-author", **common)
+    check("a spec naming the retired `agentType` is refused naming `kind`",
+          top.returncode != 0 and "agentType" in top.stderr and "kind" in top.stderr, top.stderr[-400:])
+    seat = f.prepare(seats=[{"key": "exp-integration-surface", "agentType": "lane-author"}],
+                     pins={"panel": PANEL}, efforts={"panel": EFFORT}, mode="explore",
+                     engine=str(f.root / "engine.js"),
+                     checker={"model": PANEL, "effort": EFFORT})
+    check("a seat naming the retired `agentType` is refused naming `kind`",
+          seat.returncode != 0 and "agentType" in seat.stderr and "kind" in seat.stderr, seat.stderr[-400:])
 
 
 def main():

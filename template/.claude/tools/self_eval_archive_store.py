@@ -15,6 +15,7 @@ from contextlib import contextmanager
 HOOKS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks")
 sys.path.insert(0, HOOKS)
 from _file_lock import locked  # noqa: E402
+from _hook_state import replace_path  # noqa: E402
 from self_eval_archive_guard import (  # noqa: E402
     LEDGER_ROTATIONS, check as validate_document, entry_warnings,
 )
@@ -152,7 +153,7 @@ def _atomic_replace(path, content):
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        replace_path(temporary, path)
     finally:
         try:
             os.unlink(temporary)

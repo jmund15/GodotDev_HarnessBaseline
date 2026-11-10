@@ -51,6 +51,28 @@
 . (Join-Path $PSScriptRoot 'GodotProcess.ps1')
 . (Join-Path $PSScriptRoot 'CSharpSource.ps1')
 
+# The one PowerShell rename onto a path a reader may hold (a slot, suite or cache record a watcher, peer session
+# or editor reads). Windows refuses the move while a reader has the target open, and .NET does not retry, so
+# this waits the reader out, as hooks/_hook_state.py `replace_path` does for Python. It lives here, not in a file
+# of its own, because every caller already dot-sources this script and proofs copy fixed script lists.
+# -WaitMs keeps a caller's deadline: a slot record is dropped after 500 ms, a suite record waits the full 10 s.
+function Move-FileIntoPlace {
+    param(
+        [Parameter(Mandatory)] [string] $TempPath,
+        [Parameter(Mandatory)] [string] $Path,
+        [int] $WaitMs = 10000
+    )
+    $deadline = (Get-Date).AddMilliseconds($WaitMs)
+    while ($true) {
+        # bare-rename: this loop is the waited rename
+        try { [System.IO.File]::Move($TempPath, $Path, $true); return }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+            if ((Get-Date) -gt $deadline) { throw }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
 # A name count, not a capacity claim: the default below is the measured count; the measurement and its re-measure
 # triggers: auto-memory/archive/gotcha_runtime_suite_pipe_contention.md (running.md §Runtime slots owns the rollback).
 $script:RuntimeSlotMax = 8
@@ -227,14 +249,7 @@ function Write-SlotRecord {
         $path = Join-Path $RecordDir "$Name.json"
         $tmp = Join-Path $RecordDir ("$Name.$PID.$([guid]::NewGuid().ToString('N')).tmp")
         [System.IO.File]::WriteAllText($tmp, ($Record | ConvertTo-Json -Depth 4))
-        $deadline = (Get-Date).AddMilliseconds(500)
-        while ($true) {
-            try { [System.IO.File]::Move($tmp, $path, $true); return }
-            catch [System.IO.IOException], [System.UnauthorizedAccessException] {
-                if ((Get-Date) -gt $deadline) { throw }
-                Start-Sleep -Milliseconds 10
-            }
-        }
+        Move-FileIntoPlace -TempPath $tmp -Path $path -WaitMs 500
     } catch {
         if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
         if ($Required) { throw "Write-SlotRecord $Name failed: $($_.Exception.Message)" }
@@ -338,7 +353,7 @@ function Write-RecompileSnapshotCache {
     try {
         [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Path)) | Out-Null
         [IO.File]::WriteAllText($temp, ([ordered] @{ schema = 1; files = $Files } | ConvertTo-Json -Depth 5 -Compress))
-        [IO.File]::Move($temp, $Path, $true)
+        Move-FileIntoPlace -TempPath $temp -Path $Path
     } catch {
         Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
     }

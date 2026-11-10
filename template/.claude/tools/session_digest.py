@@ -36,6 +36,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent / "hooks"))
+from _hook_state import replace_path  # noqa: E402
 from _transcript_summary import TranscriptSummaryBuilder, owner_line  # noqa: E402
 from _owner_text import classify, meta_arguments  # noqa: E402
 import _owner_text  # noqa: E402
@@ -1232,7 +1233,7 @@ def write_json_atomic(path: Path, value: dict) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_name, path)
+        replace_path(temp_name, path)
     except Exception:
         try:
             os.unlink(temp_name)
@@ -1250,7 +1251,7 @@ def write_text_atomic(path: Path, text: str) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp_name, path)
+        replace_path(temp_name, path)
     except Exception:
         try:
             os.unlink(temp_name)

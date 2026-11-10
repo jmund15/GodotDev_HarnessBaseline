@@ -452,7 +452,7 @@ def _reset_shared_index(root, git_dir, entries):
             with os.fdopen(fd, "wb") as fh:
                 fd = None
                 fh.write(private.read_bytes())
-            os.replace(lock, shared_index)
+            _hook_state.replace_path(lock, shared_index)
             owned = False
             return peer_left
         finally:

@@ -60,7 +60,7 @@ _NODE_RECORDER = os.path.join(_RECORDER_DIR, "node_recorder.js")
 _PROGRESS_MIN, _PROGRESS_EVERY = 25, 25  # a scoped commit run stays quiet; a close reports about 20 lines
 
 sys.path.insert(0, os.path.join(_CLAUDE_DIR, "hooks"))
-from _hook_state import update_json_locked, read_json_salvage, HARNESS_DIRS as DIRS, \
+from _hook_state import update_json_locked, read_json_salvage, replace_path, HARNESS_DIRS as DIRS, \
     SETUP_SURFACE_FILES as SURFACES, CODE_EXT as _CODE_EXT, \
     is_harness_code as _is_code  # noqa: E402
 import _file_lock  # noqa: E402
@@ -1812,7 +1812,7 @@ def _append_diagnostic(log, row):
                 tmp = "%s.%d.tmp" % (log, os.getpid())
                 with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
                     fh.write("\n".join(rows[-200:]) + "\n")
-                os.replace(tmp, log)
+                replace_path(tmp, log)
     except (OSError, TimeoutError):
         pass
 
@@ -1833,6 +1833,39 @@ def _flaky_history(days=30):
     except OSError:
         return {}
     return counts
+
+
+def _known_red_history(proof, log=None):
+    """(first ts, row count) of the closes that recorded `proof` red in the known-red log, before this run
+    appends its own row; (None, 0) when the log has no earlier row. `log` names the file to read."""
+    path = log or _beside_stamp(KNOWN_RED_LOG, "harness_known_red.jsonl")
+    first, count = None, 0
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("proof") != proof:
+                    continue
+                count += 1
+                ts = row.get("ts")
+                if isinstance(ts, (int, float)) and (first is None or ts < first):
+                    first = ts
+    except OSError:
+        return None, 0
+    return first, count
+
+
+def _known_red_note(proof, log=None):
+    """The clause a pre-existing red line carries: when the proof was first recorded red, and how many
+    closes did before this one. A proof with no earlier row says so."""
+    first, count = _known_red_history(proof, log)
+    if not count:
+        return " (no earlier row in harness_known_red.jsonl)"
+    return " (first recorded red %s, %d earlier close%s)" % (
+        time.strftime("%Y-%m-%d", time.gmtime(first)), count, "" if count == 1 else "s")
 
 
 class RunOptions(NamedTuple):
@@ -2635,8 +2668,8 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
                     p in base_reds and _is_pre_existing(details[p], base_reds[p], snapshot, snapshot))])
             for proof, detail in main_reds.items():
                 if _is_pre_existing(details[proof], detail, snapshot, snapshot):
-                    print("harness_tests: pre-existing red on the default branch at %s: %s"
-                          % (main_base[:8], os.path.basename(proof)))
+                    print("harness_tests: pre-existing red on the default branch at %s: %s%s"
+                          % (main_base[:8], os.path.basename(proof), _known_red_note(os.path.basename(proof))))
                     base_reds[proof] = details[proof]
             new_red, old_red = [], []
             candidates = {}
@@ -2661,7 +2694,7 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
             for proof in failing:
                 name = os.path.basename(proof)
                 if proof in base_reds and _is_pre_existing(details[proof], base_reds[proof], snapshot, snapshot):
-                    print("harness_tests: pre-existing red at base %s: %s" % (base[:8], name))
+                    print("harness_tests: pre-existing red at base %s: %s%s" % (base[:8], name, _known_red_note(name)))
                     _record_known_red(name, base, _last_line(details[proof]), _last_line(base_reds[proof]))
                     old_red.append(name)
                 elif proof in uncommitted:
@@ -2790,8 +2823,9 @@ def run_scoped(repo_root, touched, verbose=False, mode="for", base=None, behavio
                           "\n    worktree: %s\n    %s: %s"
                           % (os.path.basename(path), label, compare[:8], tail_worktree, label, tail_head))
                     continue
-                print("harness_tests: pre-existing red at %s %s: %s\n    worktree: %s\n    %s: %s"
-                      % (label, compare[:8], os.path.basename(path), tail_worktree, label, tail_head))
+                print("harness_tests: pre-existing red at %s %s: %s%s\n    worktree: %s\n    %s: %s"
+                      % (label, compare[:8], os.path.basename(path),
+                         _known_red_note(os.path.basename(path)), tail_worktree, label, tail_head))
                 _record_known_red(os.path.basename(path), compare, tail_worktree, tail_head)
                 statuses[path] = "pre-existing-red"
                 failed -= 1

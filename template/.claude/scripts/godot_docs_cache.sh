@@ -80,7 +80,7 @@ PY="$(command -v python3 || command -v python)" || die "no python3 or python on 
 
 echo "$PIN" > "$STAGE/.stamp"
 [[ -d "$CACHE" ]] && rm -rf "$CACHE"
-mv "$STAGE" "$CACHE"
+mv "$STAGE" "$CACHE"  # bare-rename: the line above removes the target, so this never lands on a live path
 trap - EXIT
 
 echo "godot_docs_cache: installed $staged classes at $PIN"

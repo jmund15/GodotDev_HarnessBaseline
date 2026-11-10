@@ -23,6 +23,8 @@ HOOK = ROOT / "hooks" / "dispatch_table.py"
 WATCH = ROOT / "tools" / "watch_records.py"
 SID = "s17replay-0000-0000-0000-000000000000"
 PASSED = 0
+# A hang bound, never a wait: the watcher-stays-armed case waits for its own poll-finished marks.
+HANG_BOUND = 120
 # The machine's live usage-limit markers must not reach any case.
 NO_MARKERS = tempfile.mkdtemp(prefix="exhausted_none_")
 
@@ -121,30 +123,33 @@ class Env:
 
     def watch(self):
         run = subprocess.run([sys.executable, str(WATCH), "--session", "--wake"], capture_output=True,
-                             text=True, timeout=90, encoding="utf-8",
+                             text=True, timeout=HANG_BOUND, encoding="utf-8",
                              env=dict(self.env, CLAUDE_CODE_SESSION_ID=SID,
                                       WATCH_RECORDS_POLL_SEC="0.05", WATCH_RECORDS_CHECKIN_SEC="600"))
         check(run.returncode == 0 and not run.stderr.strip(), "the watcher exited cleanly", run.stderr)
         return run.stdout
 
     def watch_stays_armed(self):
-        """(exited, stdout) of a session watcher given many polls after it registered, then stopped: a session
-        watch exits only on a decision event, because an idle exit is itself a paid notification."""
+        """(exited, stdout) of a session watcher after two finished polls: a session watch exits only on a decision
+        event, because an idle exit is itself a paid notification. The marks are the watcher's own poll-finished
+        events, so a loaded machine slows the verdict's poll and never the verdict."""
+        mark = self.root / "polls.log"
+        mark.write_text("", encoding="utf-8")
         proc = subprocess.Popen([sys.executable, str(WATCH), "--session", "--wake"], stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                                env=dict(self.env, CLAUDE_CODE_SESSION_ID=SID,
-                                         WATCH_RECORDS_POLL_SEC="0.05", WATCH_RECORDS_CHECKIN_SEC="600"))
-        deadline = time.time() + 60
+                                env=dict(self.env, CLAUDE_CODE_SESSION_ID=SID, WATCH_RECORDS_POLL_SEC="0.05",
+                                         WATCH_RECORDS_CHECKIN_SEC="600", WATCH_RECORDS_POLL_MARK=str(mark)))
+        deadline = time.time() + HANG_BOUND
         while time.time() < deadline and proc.poll() is None:
-            data = json.loads(self.path().read_text()) if self.path().exists() else {}
-            if any(watcher.get("session") for watcher in data.get("sidecar_watchers") or []):
+            try:
+                polls = len(mark.read_text(encoding="utf-8").splitlines())
+            except OSError:
+                polls = 0
+            if polls >= 2:
                 break
-            time.sleep(0.05)
-        try:
-            proc.wait(timeout=2)
-            exited = True
-        except subprocess.TimeoutExpired:
-            exited = False
+            time.sleep(0.02)
+        exited = proc.poll() is not None
+        if not exited:
             proc.kill()
         return exited, proc.communicate()[0]
 

@@ -97,6 +97,16 @@ def run_watch(result_line, conclusion='success'):
 
 rc, out, _ = run_watch('green sha=%s branch=land/t1 landed=%s' % (PUSHED, REBASED))
 check('watch prints the landed= sha as its LANDED line', rc == 0 and out.splitlines()[-2] == 'LANDED ' + REBASED)
+rc, out, _ = run_watch('green sha=%s branch=land/t1 pre-existing=2 '
+                       'test_instruction_quality_split.py,workflow_amend_line_test.js' % PUSHED)
+check('a green land names the close\'s pre-existing reds, how many and which, on its LANDED line',
+      rc == 0 and out.splitlines()[-2] == 'LANDED %s (2 pre-existing red: test_instruction_quality_split.py, '
+      'workflow_amend_line_test.js)' % PUSHED)
+rc, out, _ = run_watch('red stage=close sha=%s branch=land/t1 pre-existing=1 '
+                       'test_instruction_quality_split.py :: no green close' % PUSHED, conclusion='failure')
+check('a red close names the same pre-existing reds on its RED line',
+      rc == 1 and out.splitlines()[-1].startswith('RED red stage=close')
+      and 'pre-existing=1 test_instruction_quality_split.py' in out.splitlines()[-1])
 rc, out, _ = run_watch('superseded sha=%s branch=land/t1 by=land/t2' % PUSHED)
 check('a superseded land prints SUPERSEDED with the branch that carries it, not LANDED',
       rc == 0 and out.splitlines()[-1] == 'SUPERSEDED %s by land/t2' % PUSHED)

@@ -10,8 +10,8 @@ or its checkout step failed, and its log carries no LAND_RESULT line: the land s
 red from `land_run.ps1` is never re-run, and neither is a job still running or a run whose log cannot be read.
 Re-runs stop after MAX_ATTEMPTS, so a runner that keeps dropping jobs ends red instead of looping.
 
-`watch` waits for the land run of one pushed commit and prints one terminal line: `LANDED <sha>` (the `landed=` sha when the runner rebased, else the pushed one), `SUPERSEDED <sha> by <branch>` (a later land branch carries it),
-`RED <stage line>`, `CANCELLED run <id>` (cancelled on purpose, so never re-run), `LOST <run> after <n> attempts` or `UNREAD run <id>` (its log cannot be read or has no LAND_RESULT line: exit 2, never LANDED from the pushed sha); at `--timeout-min` it prints `TIMEOUT` and exits 2. When the branch has runs but none for `--sha`, it prints `NO RUN matches <sha> among <runs seen>` once and, if that holds for NO_MATCH_MIN minutes, prints it again and exits 2; a branch with no runs at all keeps waiting. It re-runs a lost job itself too, which covers a land-retry workflow that never
+`watch` waits for the land run of one pushed commit and prints one terminal line: `LANDED <sha>` (the `landed=` sha when the runner rebased, else the pushed one; a close that excused pre-existing reds appends ` (2 pre-existing red: a.py, b.py)`), `SUPERSEDED <sha> by <branch>` (a later land branch carries it),
+`RED <stage line>` (one from the close carries the same `pre-existing=<n> <proofs>` field), `CANCELLED run <id>` (cancelled on purpose, so never re-run), `LOST <run> after <n> attempts` or `UNREAD run <id>` (its log cannot be read or has no LAND_RESULT line: exit 2, never LANDED from the pushed sha); at `--timeout-min` it prints `TIMEOUT` and exits 2. When the branch has runs but none for `--sha`, it prints `NO RUN matches <sha> among <runs seen>` once and, if that holds for NO_MATCH_MIN minutes, prints it again and exits 2; a branch with no runs at all keeps waiting. It re-runs a lost job itself too, which covers a land-retry workflow that never
 started; a second re-run of a run already in progress is refused by GitHub and ignored here.
 """
 import argparse
@@ -98,6 +98,15 @@ def landed_of(result, sha):
     """The sha a green land put on main: its `landed=` field when the runner rebased, else the pushed commit."""
     m = re.search(r'\blanded=([0-9a-f]{40})', result)
     return m.group(1) if m else sha
+
+
+def pre_existing_of(result):
+    """The close's excused reds a land result carries: (count, 'a.py, b.py') from its `pre-existing=` field,
+    (0, '') when the close excused none."""
+    m = re.search(r'\bpre-existing=(\d+)(?: ([^:\s]+))?', result)
+    if not m:
+        return 0, ''
+    return int(m.group(1)), (m.group(2) or '').replace(',', ', ')
 
 
 def no_run_line(sha, seen):
@@ -224,7 +233,10 @@ def watch(branch, sha, timeout_min, no_match_min=NO_MATCH_MIN):
                         print(unread_line(r['databaseId']))
                         return 2
                     by = re.search(r'^superseded\b.*\bby=(\S+)', result)
-                    print('SUPERSEDED %s by %s' % (sha, by.group(1)) if by else 'LANDED %s' % landed_of(result, sha))
+                    count, proofs = pre_existing_of(result)
+                    note = ' (%d pre-existing red: %s)' % (count, proofs) if count else ''
+                    print('SUPERSEDED %s by %s' % (sha, by.group(1)) if by
+                          else 'LANDED %s%s' % (landed_of(result, sha), note))
                     if not by:
                         try:
                             print(catch_up())

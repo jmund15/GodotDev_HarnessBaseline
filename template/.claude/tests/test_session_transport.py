@@ -296,9 +296,29 @@ def main():
 
     plan_checks = plan_cases(check)
 
+    # The OpenCode launcher hands its child the registered Go URL with `/v1` stripped: that host matches two
+    # registered endpoints and neither exactly, so only the declared transport names the paying plan.
+    go_child = {"ANTHROPIC_BASE_URL": "https://opencode.ai/zen/go"}
+    check(st.resolve(env=go_child, data=DATA)[0] == st.UNKNOWN,
+          "a Go child's base URL alone names no transport")
+    check(st.resolve(env=dict(go_child, CLAUDE_CODE_TRANSPORT="go"), data=DATA)[0] == "go",
+          "a Go child that declares its transport resolves to go")
+    launcher_checks = 2
+    scripts = os.path.join(HERE, "..", "scripts")
+    for name in sorted(os.listdir(scripts)):
+        if not name.endswith("_sidecar.sh"):
+            continue
+        with open(os.path.join(scripts, name), encoding="utf-8") as fh:
+            text = fh.read()
+        if '"$SC_CLAUDE" -p' not in text:
+            continue
+        launcher_checks += 1
+        check('CLAUDE_CODE_TRANSPORT="$SC_TRANSPORT"' in text,
+              "%s declares the paying transport to its Claude child" % name)
+
     failed = nonlocal_failed[0]
 
-    total = len(CASES) + 4 + 16 + plan_checks
+    total = len(CASES) + 4 + 16 + plan_checks + launcher_checks
     print("\n%d/%d passed" % (total - failed, total))
     return 1 if failed else 0
 

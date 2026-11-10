@@ -356,6 +356,76 @@ def cold_warm():
 
 WARM = cold_warm()
 
+# The real reader's words for anthropic-console-secondary, from `console_credit_probe.py` on this
+# machine 2026-11-10 (trimmed).
+UNKNOWN_REASON = "credit cycle ended 2026-10-31; the owner's next re-anchor sets the new cycle"
+
+
+def _entry(transport, status, observed_ago, **extra):
+    """A cached capacity reading of the real shape, stamped `observed_ago` seconds back."""
+    now = time.time()
+    entry = {"schemaVersion": 1, "transport": transport, "costModel": "plan-quota", "sourceKind": "live",
+             "observedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - observed_ago)),
+             "status": status, "error": None, "liveFailure": None, "balance": None, "quota": None}
+    entry.update(extra)
+    return entry
+
+
+def stated_unknown_and_expired():
+    """(line, warmed names, expired clause shown) for one prompt on a cache holding two stated-unknown
+    plans and one plan whose readable band merely aged past the cache TTL."""
+    import contextlib
+    import importlib.util
+    import io
+    spec = importlib.util.spec_from_file_location("budget_posture_stated", HOOK)
+    bp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bp)
+    import provider_bands  # noqa: F401  imported before stdout is captured: provider_capacity reconfigures it
+    now = time.time()
+    tmp = tempfile.mkdtemp(prefix="bptstated_")
+    write_capture(tmp, "bptstated1", 45)
+    cache = os.path.join(tempfile.mkdtemp(prefix="bptstatedcache_"), "provider_capacity.json")
+    blob = {
+        "codex": _entry("codex", "unknown", 60,
+                        error={"kind": "unknown", "message": UNKNOWN_REASON}),
+        "anthropic-console-secondary": _entry(
+            "anthropic-console-secondary", "unknown", 60,
+            error={"kind": "unknown", "message": UNKNOWN_REASON}),
+        "go": _entry("go", "available", 690, quota={
+            "windows": [{"name": "seven_day", "usedPercent": 60, "resetsAt": now + SEVEN_DAY / 2,
+                         "windowDurationMins": 10080, "pressure": 1.2, "band": "Hot"}],
+            "dispatchBand": "Hot", "routingBand": "Hot", "routingWindow": "seven_day",
+            "bindingWindow": "seven_day", "credits": None}),
+    }
+    with open(cache, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(blob, fh)
+    calls = []
+    saved = (tempfile.tempdir, dict(os.environ), bp.start_warm, sys.stdin)
+    line = ""
+    try:
+        tempfile.tempdir = tmp
+        os.environ.update(HARNESS_HOOK_STATE_DIR=tempfile.mkdtemp(prefix="bptstate_"),
+                          PROVIDER_CAPACITY_CACHE=cache)
+        for key in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_TRANSPORT", "ANTHROPIC_BASE_URL"):
+            os.environ.pop(key, None)
+        bp.start_warm = lambda transports: calls.append(sorted(transports)) or True
+        sys.stdin = io.StringIO(json.dumps(dispatched_prompt("bptstated1")))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            bp.main()
+        line = next((text for text in buf.getvalue().splitlines()
+                     if text.startswith("[budget-posture]") and "codex" in text), "")
+    finally:
+        tempfile.tempdir = saved[0]
+        os.environ.clear()
+        os.environ.update(saved[1])
+        bp.start_warm, sys.stdin = saved[2], saved[3]
+    warmed = {name for batch in calls for name in batch}
+    return line, warmed, "go Hot (reading 11m old), warming" in line
+
+
+STATED = stated_unknown_and_expired()
+
 
 def spawns_nothing_when_disabled():
     """HARNESS_CAPACITY_WARM=0 is the only thing that keeps start_warm from spawning."""
@@ -408,6 +478,16 @@ CASES = [
     ("...and a second prompt inside the cache TTL starts no second warm",
      lambda: len(WARM) == 2 and WARM[1][1] == []),
     ("HARNESS_CAPACITY_WARM=0 starts nothing", spawns_nothing_when_disabled),
+
+    # ---- a stated reason is a fact on the line, not a warm that can never change it ----
+    ("a plan whose reader states why it is unknown prints that reason, never `warming`",
+     lambda: "codex unknown: credit cycle ended 2026-10-31" in STATED[0]
+     and "codex unknown, warming" not in STATED[0] and "codex" not in STATED[1]),
+    ("...and no warm starts for another plan with a stated reason either",
+     lambda: "anthropic-console-secondary unknown: credit cycle ended 2026-10-31" in STATED[0]
+     and "anthropic-console-secondary" not in STATED[1]),
+    ("a reading that merely expired shows its last band with its age and is still warmed",
+     lambda: STATED[2] and "go" in STATED[1]),
 
     # ---- the seat's OWN band is part of the dedupe key ---------------------
     ("a provider band moving Surplus -> Hot re-emits the posture",

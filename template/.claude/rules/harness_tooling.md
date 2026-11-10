@@ -93,7 +93,7 @@ peer's dirty working tree; selected proofs absent at that revision and never com
 A missing or stale result, a new tracked red or unavailable coverage blocks push, not local commits.
 
 A failure whose marked lines also appear at the upstream base, or at the default branch's merge-base when a sync merged in commits that base lacks, is pre-existing: printed and logged
-to `harness_known_red.jsonl`, not new. An untracked, never-committed proof runs its working copy
+to `harness_known_red.jsonl`, not new. The line names when that proof was first recorded red there and how many closes recorded it, or says it has no earlier row. An untracked, never-committed proof runs its working copy
 against the base's inputs. Its red prints `UNCOMMITTED PROOF RED <proof> (not in this push)` and blocks neither push nor stamp: its own commit's close gates it. A red that passes in the shared checkout is rerun at committed HEAD with its dirty, untracked or ignored inputs planted. If planting makes it pass, the close names those inputs and still blocks push: commit an input that belongs to the change, and make the proof plant any input it reads from scratch or another session's work. `/session_end` §7b
 leaves another session's in-progress red to its owner. A timeout or output without a
 failure-marked line never excuses a red. A close started while this session's author or fold dispatch writes in its checkout waits for it and names it. An author whose `writeSet` is wholly gitignored cannot change the commits close proves, so close never waits for it. Close then proves the committed HEAD of that moment once: a later commit never restarts it, and a newer `--close` supersedes it at once, waiting or running, so a commit never needs the close stopped. Before dispatching a fix for reds, run `--close --now`, which skips that wait, so each red arrives classified (pre-existing, or its FIRST RED commit and owner); map the new ones to fix jobs by cause and write set (`orchestration` §2).
@@ -141,7 +141,9 @@ Hooks fire concurrently on one tool call and share
 writers interleave into one complete document plus a fragment. Use `hooks/_hook_state.py`:
 `update_json_locked(path, updater)` for every read-modify-write (per-file lock, salvage read, atomic
 replace), and `write_json_atomic` only for a whole-file write that reads nothing back. A read, change
-and plain write, even an atomic one, drops fields a sibling hook saved in between. Salvage stops existing damage from being permanent. `tests/test_hook_state.py` scans every hook for an unlocked writer.
+and plain write, even an atomic one, drops fields a sibling hook saved in between. Salvage stops existing damage from being permanent.
+
+A rename onto a file another process may hold open (a state, record, inventory, cache, log or vault file) goes through `replace_path` in the same module, or the `Move-FileIntoPlace` function from PowerShell: Windows refuses a bare rename while a reader holds the target. A rename no other process can hold (a fresh name, a destination proven absent) stays bare and says why on its own line or the comment line above: `# bare-rename: <reason>`. `tests/test_hook_state.py` scans every hook for an unlocked writer, and `hooks/`, `tools/` and `scripts/` for a bare rename with no stated reason.
 
 A content id a later step resolves (a review ledger blob, a fold snapshot) is stored when computed: `git hash-object -w`. An unwritten id strands its record when the file moves on; the project's frozen-blob proof lists any compare-only exception.
 
