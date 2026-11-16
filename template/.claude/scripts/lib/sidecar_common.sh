@@ -1008,20 +1008,27 @@ if sys.argv[4]:
     # first auto-compaction until it saves its findings (the hook's --hard-window). The hold is wired only for a
     # child whose resolved tools include one of the hook's save tools: a read-only child cannot answer the nudge.
     hard = None
+    sys.path.insert(0, (root / "hooks").as_posix())
+    try:
+        from sidecar_recompact_reprompt import WRITE_TOOLS
+    except Exception:
+        WRITE_TOOLS = ()
+    tools = {t.strip() for t in (sys.argv[11] if len(sys.argv) > 11 else "").split(",") if t.strip()}
+    can_write = bool(tools.intersection(WRITE_TOOLS))
     if len(sys.argv) > 10 and sys.argv[10]:
         sys.path.insert(0, (root / "tools").as_posix())
         import model_registry
         entry = model_registry.resolve(sys.argv[10])
         hard = model_registry.effective_window(entry, True) or model_registry.effective_window(entry, False)
-        if hard:
-            sys.path.insert(0, (root / "hooks").as_posix())
-            try:
-                from sidecar_recompact_reprompt import WRITE_TOOLS
-            except Exception:
-                WRITE_TOOLS = ()
-            tools = {t.strip() for t in (sys.argv[11] if len(sys.argv) > 11 else "").split(",") if t.strip()}
-            if not tools.intersection(WRITE_TOOLS):
-                hard = None
+        if not can_write:
+            hard = None
+    # A read-only child cannot save findings itself, so the hook copies each continuation summary beside the
+    # record, where the parent's recovery reads it. An unreadable tool set or a launch with no record path fails
+    # closed: no spill.
+    record_path = sys.argv[8] or sys.argv[9]
+    if tools and not can_write and record_path:
+        command += ' --spill "%s"' % (os.path.abspath(record_path).replace("\\", "/") + ".compaction.md")
+        events += [("PostToolUse", None), ("Stop", None)]
     if hard:
         command += " --hard-window %d" % hard
         events.append(("PostToolUse", None))
@@ -1822,6 +1829,15 @@ sc_register_finish_row() {
   sc_on_exit 'sc_write_finish_row "$rc"'
 }
 
+# sc_rotate_ledger <ledger path or __default__> -- the ledger's one bound: before a row is appended, a ledger past
+# tools/spend_ledger.py's size limit is renamed to a segment the readers list. Never fails the launch.
+sc_rotate_ledger() {
+  local ledger="${1:-}"
+  [ "$ledger" = "__default__" ] && ledger="$SC_LEDGER_DEFAULT"
+  [ -n "$ledger" ] || return 0
+  python3 "$SC_ROOT/tools/spend_ledger.py" rotate --path "$(sc_to_native "$ledger")" >/dev/null 2>&1 || :
+}
+
 sc_write_finish_row() {
   local rc="$1" ledger outcome reason=""
   [ "$SC_FINISH_HANDED_OFF" = 1 ] && return 0
@@ -1830,6 +1846,7 @@ sc_write_finish_row() {
   ledger="$SC_LEDGER"
   [ "$ledger" = "__default__" ] && ledger="$SC_LEDGER_DEFAULT"
   [ -n "$ledger" ] || return 0
+  sc_rotate_ledger "$ledger"
   if [ "$SC_RUN_FINISHED" = 1 ] && [ -z "$SC_RECORD" ] && [ -z "$SC_FINISH_REASON" ]; then
     outcome="finished-without-record"
   else
@@ -2093,15 +2110,42 @@ sc_below_normal_prefix() {
 # `python3` may be native Windows Python, which cannot resolve an MSYS path — /tmp and /c/...
 # open as FileNotFoundError and the record is silently lost. Hand it native paths where
 # cygpath exists; elsewhere this is the identity.
+# A launch converts about thirty paths, and a `cygpath` exec costs 25 ms or more under load each. The common
+# shapes (a drive path, a /c/ path, a /tmp path, one already native) convert in bash with the same answer;
+# the one /tmp root is read once at source time, since a `$(sc_to_native ..)` subshell cannot cache it.
+# Anything else (a `..`, a `.` segment, a doubled slash, any other mount, a relative path) still goes
+# through cygpath, which normalizes them.
+SC_TMP_NATIVE=""
+if command -v cygpath >/dev/null 2>&1; then SC_TMP_NATIVE="$(cygpath -w /tmp)"; fi
 sc_to_native() {
   [ -z "$1" ] && return 0
+  local p="$1" rest drive
+  if [ -n "$SC_TMP_NATIVE" ]; then
+    case "$p" in
+      *'/../'*|*'/./'*|*'//'*|*'/..'|*'/.'|*'\'*) ;;
+      /tmp/*) rest="${p#/tmp/}"; printf '%s' "$SC_TMP_NATIVE\\${rest//\//\\}"; return 0 ;;
+      [A-Za-z]:/*) drive="${p:0:1}"; rest="${p:2}"; printf '%s' "${drive^^}:${rest//\//\\}"; return 0 ;;
+      /[A-Za-z]/*) drive="${p:1:1}"; rest="${p:2}"; printf '%s' "${drive^^}:${rest//\//\\}"; return 0 ;;
+    esac
+    case "$p" in
+      [A-Z]:\\*) case "$p" in */*) ;; *) printf '%s' "$p"; return 0 ;; esac ;;
+    esac
+  fi
   if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi
 }
 
 # The one launch-id generator: sc_prepare_record accepts only the canonical hyphenated UUID. Exported,
 # so every process the launch starts (proxy, shim, child) carries it.
 sc_ensure_launch_id() {
-  [ -n "$SC_LAUNCH_ID" ] || SC_LAUNCH_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  if [ -z "$SC_LAUNCH_ID" ]; then
+    # Built in bash: a Python start costs 0.1 s, and the id needs only to be unique per launch, which the
+    # microsecond clock and the pid give; $RANDOM fills the rest. Version-4 and variant nibbles keep it canonical.
+    local us hex variant
+    us="${EPOCHREALTIME/./}"
+    printf -v hex '%013x%07x%04x%04x%04x' "$us" "$BASHPID" "$RANDOM" "$RANDOM" "$RANDOM"
+    printf -v variant '%x' $(( 0x${hex:16:1} & 3 | 8 ))
+    SC_LAUNCH_ID="${hex:0:8}-${hex:8:4}-4${hex:13:3}-${variant}${hex:17:3}-${hex:20:12}"
+  fi
   [ -n "$SC_LAUNCH_ID" ] || return 1
   export SIDECAR_LAUNCH_ID="$SC_LAUNCH_ID"
 }
@@ -2121,6 +2165,7 @@ sc_write_record() {
   raw_tmp="$(mktemp)"
   printf '%s' "$output" > "$raw_tmp"
   ledger_default="$SC_LEDGER_DEFAULT"
+  sc_rotate_ledger "$SC_LEDGER"
   sc_check_completion "$SC_RECORD" "$SC_WORKDIR" "$raw_tmp"
 
   LIBDIR_V="$(sc_to_native "$SC_ROOT/scripts/lib")" RAW_V="$(sc_to_native "$raw_tmp")" EFFORT_V="$SC_EFFORT" MODEL_V="$SC_MODEL" RC_V="$rc" \

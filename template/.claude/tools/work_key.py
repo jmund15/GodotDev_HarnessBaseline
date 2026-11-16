@@ -32,6 +32,9 @@ import json
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import spend_ledger  # noqa: E402
+
 REPAID = 15
 KEY_ENV = "SIDECAR_WORK_KEY"
 
@@ -64,23 +67,18 @@ def finished(row):
 def find_finished(key, ledger):
     """The first finished ledger row holding this key whose launch no void row cancels, or None. A missing ledger
     holds nothing; OSError when the ledger exists but cannot be read."""
-    if not os.path.exists(ledger):
-        return None
     done, voided = [], set()
-    with open(ledger, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            if key not in line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue  # a partial line from a concurrent append
-            if not isinstance(row, dict) or row.get("workKey") != key:
-                continue
-            if row.get("voids"):
-                voided.add(row["voids"])
-            elif finished(row):
-                done.append(row)
+    for line in spend_ledger.iter_lines(ledger, needle=key):  # every segment: finished work is refused whenever it was paid
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue  # a partial line from a concurrent append
+        if not isinstance(row, dict) or row.get("workKey") != key:
+            continue
+        if row.get("voids"):
+            voided.add(row["voids"])
+        elif finished(row):
+            done.append(row)
     return next((row for row in done if row.get("launchId") not in voided), None)
 
 

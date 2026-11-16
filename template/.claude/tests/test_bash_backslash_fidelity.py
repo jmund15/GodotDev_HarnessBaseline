@@ -130,34 +130,39 @@ def run(script, payload, env, args=()):
     return p, hso, crashed
 
 
-def payload(command, transcript, tool="Bash", sid=None, extra=None):
+def payload(command, transcript, tool="Bash", sid=None, extra=None, cwd=REPO):
     ti = {"command": command, "description": "proof call", "timeout": 1234}
     ti.update(extra or {})
     return {"hook_event_name": "PreToolUse", "tool_name": tool,
             "session_id": sid or ("bbf" + uuid.uuid4().hex[:8]), "transcript_path": transcript,
-            "cwd": REPO, "tool_input": ti}
+            "cwd": cwd, "tool_input": ti}
 
 
 def test_s9_colon_operands(tmp_path):
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=str(tmp_path / 'state'),
                HARNESS_BASH_FIDELITY_RECORD=str(tmp_path / 'absent.json'))
-    for command in ('git show HEAD:.claude/CLAUDE.core.md | head -1',
+    # Measured on Git Bash: MSYS rewrites an operand as a path list only when text before the colon holds a
+    # slash (`origin/main:f` arrives as `origin\main;f`); `HEAD:f`, `main:f` and `:f` arrive intact.
+    for command in ('git show HEAD:.claude/CLAUDE.core.md | head -1', 'git show main:README.md',
+                    'git show :.claude/baseline.lock.json', 'git show HEAD:/tmp/x', 'git cat-file -p HEAD~1:README.md',
+                    'git show HEAD:a/b:c'):
+        p, out, crashed = run(HOOK, payload(command, ''), env)
+        assert not crashed and p.returncode == 0 and 'updatedInput' not in out, (command, out)
+    for command in ('git show origin/main:.claude/CLAUDE.core.md | head -1',
                     'git -C /repo show refs/heads/main:folder/file',
-                    'gh api repos/owner/repo/contents/HEAD:README.md'):
+                    'git diff origin/main:a.txt HEAD:a.txt',
+                    'gh api repos/owner/repo/contents/x/HEAD:README.md'):
         p, out, crashed = run(HOOK, payload(command, ''), env)
         assert not crashed and p.returncode == 0
         assert out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 ' + command
         p, again, crashed = run(HOOK, payload(out['updatedInput']['command'], ''), env)
         assert not crashed and 'updatedInput' not in again
-    command = 'cd /repo && git show HEAD:README.md'
+    command = 'cd /repo && git show origin/main:README.md'
     p, out, crashed = run(HOOK, payload(command, ''), env)
-    assert not crashed and out['updatedInput']['command'] == 'cd /repo && MSYS_NO_PATHCONV=1 git show HEAD:README.md'
-    command = 'git show HEAD:README.md; git show HEAD:README.md'
+    assert not crashed and out['updatedInput']['command'] == 'cd /repo && MSYS_NO_PATHCONV=1 git show origin/main:README.md'
+    command = 'git show origin/main:README.md; git show origin/main:README.md'
     p, out, crashed = run(HOOK, payload(command, ''), env)
-    assert not crashed and out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 git show HEAD:README.md; MSYS_NO_PATHCONV=1 git show HEAD:README.md'
-    command = 'git show :.claude/baseline.lock.json'
-    p, out, crashed = run(HOOK, payload(command, ''), env)
-    assert not crashed and out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 ' + command
+    assert not crashed and out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 git show origin/main:README.md; MSYS_NO_PATHCONV=1 git show origin/main:README.md'
     for command in ('git status', 'git -C C:/repo status', 'git remote add x https://example.invalid/repo',
                     "printf '%s' 'git show HEAD:path'", "python3 - <<'EOF'\nprint('git show HEAD:path')\nEOF"):
         p, out, crashed = run(HOOK, payload(command, ''), env)
@@ -351,7 +356,8 @@ def main():
         check("pre_bash_dispatch imports", False, repr(exc))
     write_record(record, True, False)
     deny_cmd = "rm -rf build" + PAIR + "out"
-    p, hso, crashed = run(DISPATCH, payload(deny_cmd, transcript), base_env)
+    # Run from the filesystem root: the repo may sit under the system temp, which the guard exempts.
+    p, hso, crashed = run(DISPATCH, payload(deny_cmd, transcript, cwd=os.path.abspath(os.sep)), base_env)
     check("dangerous_shell_guard deny still wins through the dispatcher (exit 2, no updatedInput)",
           p.returncode == 2 and "updatedInput" not in p.stdout, "rc=%s %s %s" % (p.returncode, p.stdout, p.stderr))
     p, hso, crashed = run(DISPATCH, payload(QUOTE_STRINGS[0], transcript), base_env)

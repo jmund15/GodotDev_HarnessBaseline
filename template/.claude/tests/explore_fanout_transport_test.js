@@ -397,6 +397,12 @@ async function run(args, returned = {
   check('a rendered lens prompt carries no character-count target',
     rendered.prompts.length > 0 && rendered.prompts.every(p => !/chars target/.test(p)))
 
+  // The guard words its own rule but copies the shared source's shell variants (dispatch_spill_root_test.js pins dispatch.js).
+  const guard = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'guards', 'single_flight.json'), 'utf8'))
+  const unescaped = src.replace(/\\'/g, "'")
+  check('the concurrency guard carries the shared source\'s shell and no-shell variants',
+    [guard.withShell, guard.noShell].every(part => unescaped.includes(part)))
+
   console.log(`explore_fanout transport: ${passed} passed, ${failed} failed`)
   process.exit(failed ? 1 : 0)
 })().catch(err => {

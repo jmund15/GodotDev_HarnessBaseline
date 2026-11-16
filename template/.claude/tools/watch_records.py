@@ -13,14 +13,14 @@ listed run's, its age counts from the dir's creation, and its end prints `NONE`.
 
 Usage: python3 .claude/tools/watch_records.py --session --wake. `--session` re-reads this
 session's `dispatch_table_pending` sidecar entries every poll and re-resolves each record, so a
-sidecar launched after arming is covered without a second watcher. `--wake` exits — waking the
+sidecar launched after arming is covered without a second watcher, and so is one adopted from a session with no live host (`dispatch_table.adopt_sidecars`, run by `session_digest.py --handoff`). `--wake` exits — waking the
 session — on the first unacknowledged decision event, including at the first poll: a record reaching DONE with a non-zero code, or
 DIED (not one this session stopped with `reap.py`, listed in `sidecar_stopped_launches`: it prints `STOPPED <label>` at the next wake, and a unit whose every job was stopped wakes nobody); a detached job's `waiting-memory` journal row (`WAITING-MEMORY` with its readings) prints as context, since the
 launcher resumes by itself; a record's `stalled` journal row appearing while its upstream traffic is stale (`UPSTREAM_LIVE_S`); a record's `usage-limit` journal row prints as context
 (`USAGE-LIMIT <label> <transport> resets <UTC time|unknown>`, the launcher's first usage-limit retry; the job's DONE is the wake); a running record whose stream (`<record>.stream`, else `<label>.stream`) has sat on a result written
 after its launch for `sidecar_resume_check.RESULT_LINGER_S` (`LINGERING <label>`, the reading `sidecar_fanout.py --status`
 gives the same run); a fan-out's own process gone while it still lists jobs
-that will never start; or every record of one dispatch unit (one `wakeWith` group or ungrouped job of a fan-out, one benchmark campaign, or one
+that will never start; or every record of one dispatch unit (one `wakeWith` group of a fan-out, one benchmark campaign, or one
 direct launch) ending; or, while work still runs, `CHECKIN_SECONDS` after the later of the arm and the session transcript's last write (50 min by default, inside the
 orchestrator's one-hour prompt cache and before its idle compaction (`_hook_state.ORCHESTRATOR_CHECKIN_SECONDS`); `WATCH_RECORDS_CHECKIN_SEC` overrides it), printing a
 `RUNNING` line per job with its age and last write, a `progress:` clause line under it (`agent_progress.clause`: the measures its
@@ -52,7 +52,10 @@ that ended since the transcript byte offset saved in session hook state (`sideca
 `SHELL <id> <status> exit=<n>` with its output path, failure-marker lines and tail; a shell that ran this watcher is skipped.
 A shell end whose task-notification already appears as a delivered main-session attachment is omitted. If that
 leaves no work or unreported event, the armed watcher stays idle: exiting it would send a duplicate notification.
-Ended Workflow runs and undelivered shells never trigger a decision wake: they print with the next wake, once. The last lines before `STILL RUNNING`
+Ended Workflow runs and undelivered shells never trigger a decision wake: they print with the next wake, once. A running shell is live
+work, so it earns the check-in and keeps the watcher registered; its end is the client's own notification, and the watcher that
+stays armed with nothing live exits only on `HOST GONE`. The Stop hook blocks on a running shell with no live session watcher
+by the same test (`session_running_shells`: the Stop payload's running task ids, kept to those `wake_digest.running_shells` names). The last lines before `STILL RUNNING`
 or `NONE` are `UNRATED <n>: <run:label>, ...` when the session has unrated dispatches.
 Usage: python3 .claude/tools/watch_records.py --pane. The owner's live view: a background shell that polls the session's
 `checkin_lines` every `PANE_SECONDS` (`WATCH_RECORDS_PANE_SEC` overrides it) and appends a frame, closed by a stamp line,
@@ -61,9 +64,13 @@ only the bytes past its saved offset of the output file. It does not exit while 
 and it ends `HOST GONE` when its session's host or parent shell is gone, like the session watcher;
 the session's shells that ran this tool are not live work. It registers under `sidecar_pane`; a second pane beside a
 live one exits COVERED. While work is live and no pane runs, a session wake's last lines carry `PANE none: ...`.
-Any other flag is a usage error (exit 2), never a record path. A fan-out job that ends cleanly wakes the session on its own, once,
+Any other flag is a usage error (exit 2), never a record path. A fan-out job that ends cleanly wakes the session
 unless another job of its `wakeWith` group (the group its inventory row records) still runs, or its fan-out still runs an
-after-seat stage; the group's last end wakes. A fan-out job with no group is its own unit.
+after-seat stage; the group's last end wakes. The fan-out writes a group on every job: the job's own name, else
+`measurement` or `lenses`, else `WAKE_ALONE` for an author, else `WAKE_CALL`, which every job launched together shares, so a fan-out wakes the session
+once. `WAKE_ALONE` is a group of one, however many jobs say it: its end wakes the session while its siblings run. A
+held clean end prints at the next wake, at the latest the check-in. An inventory with no group on a job (written
+before the fan-out wrote one) makes that job its own unit. A failure wakes at once whatever the group.
 Any other successful job whose unit still has running jobs wakes nobody.
 A benchmark campaign's cells (direct launches labelled `<campaign>-<date>:<task>:<model>:r<n>`) are one unit: while
 `<logs>/<campaign>/grid.log` has a `CELL` line after its last terminal `GRID` line and `grid.pid` is alive, the grid
@@ -112,6 +119,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import _hook_state  # noqa: E402
 import exhausted_marker  # noqa: E402
+import spend_ledger  # noqa: E402
 
 POLL_SECONDS = float(os.environ.get("WATCH_RECORDS_POLL_SEC", "0.5"))
 # How often a waiting watcher tests whether anything can still receive its wake. The arm-time probe lists each
@@ -159,6 +167,8 @@ PANE_SECONDS = float(os.environ.get("WATCH_RECORDS_PANE_SEC", "20"))
 PANE_HEARTBEAT_SECONDS = 600  # an unchanged pane reprints so its stamp shows it is alive
 STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # the launch ids reap.py stopped for this session
 SHELL_OFFSET_KEY = "sidecar_wake_shell_offset"  # the transcript byte offset the last wake scanned to for ended shells
+WAKE_CALL = "call"  # the group a fan-out writes on every job that names none: jobs launched together wake the session once
+WAKE_ALONE = "alone"  # a job's own `wakeWith` value for "wake me on my end": it is a group of one, however many jobs say it
 REPORTED_ONCE_KINDS = ("end", "shell")  # a non-triggering line of these kinds prints once, then is acknowledged
 PROJECT_ROOT = os.environ.get("CLAUDE_PROJECT_DIR") or os.path.dirname(os.path.dirname(HERE))
 # The check-in's judge-and-act rule, printed with every check-in so it is in context where the judgment is made.
@@ -578,25 +588,57 @@ def epoch(stamp):
 _LEDGER_READS = {}  # (ledger path, session id) -> {"file": (st_dev, st_ino), "offset": int, "finish", "clean"}
 
 
+# The span of rows a reader here uses: `dispatch_table.STALE_SECONDS` drops a pending entry older than this and
+# `unreported_ends` reports no end older than it, and every row that answers for an entry is newer than the entry.
+LEDGER_WINDOW_S = 24 * 3600
+
+
+def _take_ledger_lines(read, lines, session_id):
+    """Sort this session's rows out of ledger `lines` into `read`'s finish and clean lists."""
+    for text in lines:
+        if '"parentSessionId"' not in text:
+            continue
+        try:
+            row = json.loads(text)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("parentSessionId") != session_id:
+            continue
+        if '"outcome"' in text:
+            if row.get("outcome"):
+                read["finish"].append(row)
+        elif row.get("label") and row.get("timestamp") and str(row.get("exitCode")) == "0":
+            read["clean"].append(row)
+
+
 def _ledger_rows(session_id):
-    """This session's (finish rows, clean launch rows), oldest first.
+    """This session's (finish rows, clean launch rows) of the last `LEDGER_WINDOW_S`, oldest first.
 
     The ledger is append-only and shared by every session on the machine: at 34 MB over 16k rows, one poll that
     re-read it cost 0.25-0.53 s of CPU every 0.5 s (measured on this repository 2026-11-10). The first read parses
-    the file; each later one parses only the bytes appended since, at a saved offset. A file that shrank or was
-    replaced (its dev/inode changed) restarts from zero, and a half-written last line is left for the next call.
+    the window's segments (`spend_ledger`) and the live file; each later one parses only the live bytes appended
+    since, at a saved offset. A file that shrank or was replaced (its dev/inode changed: a rotation) restarts from
+    the window's segments, and a half-written last line is left for the next call. A line without the session's id
+    is skipped before it is parsed.
     """
     path = ledger_path()
     key = (path, session_id)
     read = _LEDGER_READS.get(key)
+    needle = json.dumps(session_id)
     try:
         info = os.stat(path)
         size, ident = info.st_size, (info.st_dev, info.st_ino)
     except OSError:
-        _LEDGER_READS.pop(key, None)
-        return [], []
+        size, ident = 0, None
     if read is None or read["file"] != ident or size < read["offset"]:
         read = _LEDGER_READS[key] = {"file": ident, "offset": 0, "finish": [], "clean": []}
+        try:
+            for seg in spend_ledger.paths(path, since=time.time() - LEDGER_WINDOW_S)[:-1]:
+                with open(seg, encoding="utf-8", errors="replace") as fh:
+                    _take_ledger_lines(read, (line for line in fh if needle in line), session_id)
+        except OSError:
+            _LEDGER_READS.pop(key, None)
+            return [], []
     if size > read["offset"]:
         try:
             with open(path, "rb") as fh:
@@ -605,35 +647,37 @@ def _ledger_rows(session_id):
         except OSError:
             return list(read["finish"]), list(read["clean"])
         end = data.rfind(b"\n") + 1
-        for raw in data[:end].splitlines():
-            text = raw.decode("utf-8", "replace")
-            if '"parentSessionId"' not in text:
-                continue
-            try:
-                row = json.loads(text)
-            except ValueError:
-                continue
-            if not isinstance(row, dict) or row.get("parentSessionId") != session_id:
-                continue
-            if '"outcome"' in text:
-                if row.get("outcome"):
-                    read["finish"].append(row)
-            elif row.get("label") and row.get("timestamp") and str(row.get("exitCode")) == "0":
-                read["clean"].append(row)
+        _take_ledger_lines(read, (raw.decode("utf-8", "replace") for raw in data[:end].splitlines()
+                                  if needle.encode() in raw), session_id)
         read["offset"] += end
     return list(read["finish"]), list(read["clean"])
 
 
-def finish_rows(session_id):
-    """This session's launcher finish rows (rows carrying `outcome`), oldest first; the incremental ledger read."""
-    return _ledger_rows(session_id)[0]
+def _owner_rows(session_id, entries, part):
+    """`_ledger_rows` part `part` for this session, plus the rows of each adopted entry's label (`adopted_from`):
+    a launcher writes its rows under the session that launched it, whichever table now lists the job. The
+    launching session's other rows stay its own."""
+    adopted = {}
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("adopted_from") not in (None, session_id):
+            adopted.setdefault(entry["adopted_from"], set()).add(_entry_label(entry))
+    rows = list(_ledger_rows(session_id)[part])
+    for owner, labels in sorted(adopted.items()):
+        rows += [row for row in _ledger_rows(owner)[part] if row.get("label") in labels]
+    return sorted(rows, key=lambda row: epoch(row.get("timestamp"))) if adopted else rows
 
 
-def clean_launch_rows(session_id):
+def finish_rows(session_id, entries=()):
+    """This session's launcher finish rows (rows carrying `outcome`), oldest first; the incremental ledger read.
+    `entries` are the table entries whose adopted launchers' rows belong with them."""
+    return _owner_rows(session_id, entries, 0)
+
+
+def clean_launch_rows(session_id, entries=()):
     """This session's spend rows of launches that finished clean (no `outcome`, exit 0), oldest first; the same
     incremental ledger read. A failed launch writes no spend row, so a clean row of a label is a later launch of
     it that ran to its result."""
-    return _ledger_rows(session_id)[1]
+    return _owner_rows(session_id, entries, 1)
 
 
 _INVENTORY_WRITTEN = {}  # inventory path -> the creation stamp of its last successful read
@@ -854,14 +898,14 @@ def pending_sidecars(session_id, acknowledged=frozenset()):
     pending = [e for e in state.get("dispatch_table_pending") or []
                if isinstance(e, dict) and e.get("kind") == "sidecar"]
     stopped = set(state.get(STOPPED_LAUNCHES_KEY) or [])
-    rows = finish_rows(session_id)
+    rows = finish_rows(session_id, pending)
     for entry in pending:
         dispatch_table.resolve_sidecar_record(entry, session_id, pending)
         entry["finish"] = finish_row(entry, rows)
         entry["stopped"] = bool(stopped and entry.get("record")) and record_launch(entry["record"]) in stopped
     kept = [entry for entry in pending if not superseded(entry, pending)]
     return kept + unreported_ends(kept, rows, acknowledged, dispatch_table.STALE_SECONDS,
-                                  launches=clean_launch_rows(session_id))
+                                  launches=clean_launch_rows(session_id, pending))
 
 
 def fanout_launcher_running(entry):
@@ -919,7 +963,7 @@ def running_writers(session_id, repo=None, own_launch=None):
         return []
     import dispatch_table
     pending = dispatch_table.read_table(session_id).get("dispatch_table_pending") or []
-    rows = finish_rows(session_id)
+    rows = finish_rows(session_id, pending)
     now, out = time.time(), []
     for entry in pending:
         if not isinstance(entry, dict) or not entry.get("writes"):
@@ -1552,7 +1596,7 @@ def group_holds(unit, label):
     place (`NO-IDENTITY`) does not hold, so an unreadable job never silences a finished result."""
     jobs = _inventory(unit)[1]
     group = next((j.get("wakeWith") for j in jobs if j.get("label") == label), None)
-    if not (isinstance(group, str) and group):
+    if not (isinstance(group, str) and group) or group == WAKE_ALONE:
         return False
     return any(record_state(j["recordPath"])[0] == "WATCH" for j in jobs
                if j.get("label") != label and j.get("wakeWith") == group and j.get("recordPath"))
@@ -2130,6 +2174,8 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
     mark = os.environ.get(POLL_MARK_ENV)
 
     def say(kind, identity, text, triggers):
+        if identity in said:
+            return  # a line prints once per watcher: a group member's held end and its later waking end are one event
         print(text, flush=True)
         said.append(identity)
         if kind in REPORTED_ONCE_KINDS and triggers in (False, "once"):
@@ -2227,6 +2273,18 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
             print("NONE", flush=True)
             return leave()
         time.sleep(POLL_SECONDS)
+
+
+def session_running_shells(session_id, transcript, live):
+    """The ids among `live` (the background task ids a Stop payload lists as running now) that are this session's running
+    Bash/PowerShell background tasks by the watcher's own test (`ShellEnds.running`, `wake_digest.running_shells`): a
+    main-session launch row with no end notice, launched recently, that did not run this watcher or its pane. The Stop hook
+    calls this so it blocks on exactly the shells the watcher counts as live work. It parses the whole transcript once, so
+    it runs only when `live` is not empty and no session watcher is armed."""
+    path = transcript or _transcript_path(session_id)
+    if not path or not live:
+        return set()
+    return set(_digest().running_shells(path, _digest().new_shell_scan())) & {str(task) for task in live}
 
 
 class ShellEnds:

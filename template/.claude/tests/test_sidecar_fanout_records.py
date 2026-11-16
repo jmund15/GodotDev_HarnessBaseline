@@ -188,6 +188,14 @@ case("an inventory job with no wake group carries no `wakeWith`",
      lambda: "wakeWith" not in _without_brief)
 
 
+def _write_spec(spec):
+    import json
+    path = os.path.join(TMP, "spec_%d.json" % len(os.listdir(TMP)))
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(spec, fh)
+    return path
+
+
 def _refuses(jobs):
     try:
         sf.wake_groups(jobs)
@@ -196,11 +204,36 @@ def _refuses(jobs):
     return False
 
 
-case("wake_groups maps each grouped label to its group and leaves ungrouped jobs out",
+case("wake_groups maps each grouped label to its group and puts an ungrouped job in the call's group",
      lambda: sf.wake_groups([{"label": "a", "wakeWith": "seats"}, {"label": "b"}, {"label": "c", "wakeWith": "seats"}])
-     == {"a": "seats", "c": "seats"})
+     == {"a": "seats", "b": "call", "c": "seats"})
+# Jobs launched together wake the session once, at the last end: each wake re-reads the whole context. A job whose
+# result the session needs before the others says `wakeWith: "alone"`, and no other job holds its wake. An author's
+# result is always actionable on its own (merge it, launch what it gates), so an ungrouped author is alone.
+case("wake_groups puts an ungrouped author alone and every other ungrouped job of one call in one group",
+     lambda: sf.wake_groups([{"label": "a", "kind": "author"}, {"label": "b", "kind": "scout"}, {"label": "c"}])
+     == {"a": "alone", "b": "call", "c": "call"})
+case("a job that says wakeWith alone keeps the name and never joins the call's group",
+     lambda: sf.wake_groups([{"label": "a", "wakeWith": "alone"}, {"label": "b"}, {"label": "c", "wakeWith": "alone"}])
+     == {"a": "alone", "b": "call", "c": "alone"})
 case("wake_groups refuses a blank or non-string group",
      lambda: all(_refuses([{"label": "a", "wakeWith": bad}]) for bad in ("", "  ", 3, None, ["x"])))
+# Jobs that are pieces of one result wake once, at the last: a declared measurement's arms, and lenses or reviewers,
+# whose findings feed one synthesis.
+case("wake_groups puts every ungrouped job of a declared measurement in one group",
+     lambda: sf.wake_groups([{"label": "a", "kind": "author"}, {"label": "b", "kind": "scout"}],
+                            measurement="hold vs nocompact") == {"a": "measurement", "b": "measurement"})
+case("wake_groups groups ungrouped lens and reviewer jobs by kind, an author alone and the rest by call",
+     lambda: sf.wake_groups([{"label": "l1", "kind": "lens"}, {"label": "r1", "kind": "reviewer"},
+                             {"label": "s1", "kind": "scout"}, {"label": "w1", "kind": "author"}])
+     == {"l1": "lenses", "r1": "lenses", "s1": "call", "w1": "alone"})
+case("a job's own wakeWith name outranks the measurement and kind defaults",
+     lambda: sf.wake_groups([{"label": "a", "kind": "lens", "wakeWith": "solo"}, {"label": "b", "kind": "lens"}],
+                            measurement="m") == {"a": "solo", "b": "measurement"})
+case("jobs_measurement reads a jobs file's top-level measurement, and None for a bare list or a blank one",
+     lambda: [sf.jobs_measurement(_write_spec(spec)) for spec in
+              ({"measurement": "hold vs nocompact", "jobs": []}, [{"label": "a"}], {"measurement": "  ", "jobs": []})]
+     == ["hold vs nocompact", None, None])
 
 
 def _grouped_inventory():
@@ -217,6 +250,48 @@ def _grouped_inventory():
 
 case("run_jobs writes each job's wake group into the fan-out inventory the watcher reads",
      lambda: _grouped_inventory() == {"g1": "seats", "g2": "seats", "solo": None})
+
+
+# X1 S6: a real launch's journal ends the detached record; `.exit` is not needed. The copies come from
+# tests/fixtures/sidecar_journal, with the named suffixes dropped and the dead launch's `.pid` kept.
+JOURNAL_FIXTURES = os.path.join(HERE, "fixtures", "sidecar_journal")
+
+
+def _real_launch_copy(kind, label, drop):
+    root = tempfile.mkdtemp(prefix="sf_s6_")
+    for name in os.listdir(os.path.join(JOURNAL_FIXTURES, kind)):
+        if not name.endswith(tuple(drop)):
+            with open(os.path.join(JOURNAL_FIXTURES, kind, name), "rb") as src, \
+                    open(os.path.join(root, name), "wb") as dst:
+                dst.write(src.read())
+    return os.path.join(root, label + ".record.json")
+
+
+def _s6_attempt_state():
+    state, detail = sf._attempt_state(_real_launch_copy("failed_launch", "failed", (".exit",)))
+    if (state, "exit=3" in detail) != ("finished", True):
+        raise AssertionError((state, detail))
+    return True
+
+
+def _s6_admission_state():
+    record = _real_launch_copy("failed_launch", "failed", (".exit",))
+    got = sf._admission_state(record, os.path.join(os.path.dirname(record), "missing.stream"), 0.0)
+    if got != ("refused", 3):
+        raise AssertionError(got)
+    return True
+
+
+def _s6_wait_detached():
+    got = sf._wait_detached(_real_launch_copy("failed_launch", "failed", (".exit",)), poll_interval=0.01)
+    if got != (3, False):
+        raise AssertionError(got)
+    return True
+
+
+case("S6 _attempt_state reads an ended journal row as finished", _s6_attempt_state)
+case("S6 _admission_state reads the journal's code as refused", _s6_admission_state)
+case("S6 _wait_detached returns the journal's code", _s6_wait_detached)
 
 
 def main():

@@ -1,4 +1,5 @@
 """Init and sync on planted vaults and bare origins: isolation, history, refusals, locks and errors."""
+import atexit
 import importlib.util
 import json
 import os
@@ -10,6 +11,12 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+# Every git here names its repository (`--git-dir`, a path argument), so none reads the checkout; the proof still starts
+# them in an empty temp folder, so no git command runs with this checkout as its directory.
+_HERE = Path.cwd()
+_CWD = tempfile.mkdtemp(prefix='vault_sync_cwd_')
+os.chdir(_CWD)
+atexit.register(lambda: (os.chdir(_HERE), shutil.rmtree(_CWD, ignore_errors=True)))
 _STAGE = tempfile.TemporaryDirectory()
 for _name in ('vault_sync.py', 'vault_read.py'):
     shutil.copy(ROOT / '.claude/tools' / _name, Path(_STAGE.name) / _name)
@@ -251,4 +258,8 @@ class Sync(Vault):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    # Each test plants its own vault and origin and spends its time spawning git, so the methods run side by side
+    # in their own processes (the stall and lock cases patch the module, which a shared process would leak).
+    import sys
+    from _case_pool import run_cases, unittest_cases
+    sys.exit(run_cases(unittest_cases(Init, Sync)))

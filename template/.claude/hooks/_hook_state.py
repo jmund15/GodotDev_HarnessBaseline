@@ -48,7 +48,7 @@ from pathlib import Path
 __all__ = [
     "HARNESS_DIRS",
     "CODE_EXT",
-    "SETTINGS_FILES",
+    "settings_files",
     "is_settings_file",
     "is_harness_code",
     "in_harness_dirs",
@@ -100,16 +100,17 @@ def is_settings_file(rel):
     return _SETTINGS_RE.fullmatch(rel.replace(os.sep, "/")) is not None
 
 
-def _settings_files():
+def settings_files():
+    """The shipped `settings*.json` files under `.claude`, listed when called, never at import: the proof
+    runner keys a pass on every directory a proof lists, so an import-time listing put each ignored local
+    file into the key of every proof that imports this module, and a session's pass never matched the
+    close checkout's. Only a caller that needs the overlay names pays for the listing."""
     claude_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
         names = sorted(os.listdir(claude_dir))
     except OSError:
         return ()
     return tuple(".claude/" + n for n in names if is_settings_file(".claude/" + n))
-
-
-SETTINGS_FILES = _settings_files()
 
 
 def is_harness_code(rel):
@@ -268,7 +269,9 @@ def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=N
     whole after the latest compaction counts too, but only while that copy's body still matches the skill's
     `SKILL.md` under `root` (`_compaction_record.skill_file_digest`); the attachment is a session-start snapshot,
     so a whole copy can be stale. The first such read marks every current skill of that attachment. A skill with
-    no `SKILL.md` on disk (bundled or plugin) cannot go stale, so it counts. An attachment not yet on disk, or an
+    no `SKILL.md` on disk (bundled or plugin) cannot go stale, so it counts. `root` defaults to
+    `CLAUDE_PROJECT_DIR` (a Git Bash `/c/...` spelling is converted for Windows Python) else the cwd; a root
+    that is no readable directory is an unknown, so no copy counts. An attachment not yet on disk, or an
     unreadable transcript, counts as not re-attached."""
     key = "skill_in_context:" + name + _agent_suffix(agent_id)
     state = read_json_salvage(state_path(session_id))
@@ -279,12 +282,15 @@ def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=N
         return False
     try:
         import _compaction_record
+        import _win_path
         whole = _compaction_record.reattached_whole(transcript_path, state.get(_COMPACTED_AT_KEY))
     except Exception:
         return False
     if not whole:
         return False
-    root = root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    root = _win_path.native_path(root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    if not os.path.isdir(root):
+        return False
     current = [skill for skill, digest in whole.items()
                if _compaction_record.skill_file_digest(skill, root) in (None, digest)]
     for skill in current:

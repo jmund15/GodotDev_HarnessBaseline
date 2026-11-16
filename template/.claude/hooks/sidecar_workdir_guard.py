@@ -8,7 +8,9 @@ cp/mv/install destination, dd of=, a sed -i or perl -i file, an interpreter's in
 `git -C <main>`, or a python command holding a main-checkout path literal beside a write call.
 The spill dir (where the launcher's -R/-P files and the job's `<label>.md` report live), each path the
 brief's `task` block writeSet names (a glob allows the directory before its first wildcard segment), and any
-path outside the main checkout stay allowed. A brief that is absent, unreadable or declares no writeSet adds nothing. A job whose workdir is the main checkout is unaffected.
+path outside the main checkout stay allowed. A brief that is absent, unreadable or declares no writeSet adds nothing. The brief itself is never writable,
+wherever it sits (spill dir, workdir, a declared dir, outside the checkout): the guard re-reads its writeSet on
+every call, so a child that could edit it would widen its own allowance. A job whose workdir is the main checkout is unaffected.
 A payload it cannot parse is denied. A Bash target it cannot resolve statically (variable, substitution, glob) is allowed.
 Armed by lib/sidecar_common.sh from adaptation.json sidecar_hook_rows; rule home: reference/sidecar_dispatch.md.
 Channel: exit 2 + stderr.
@@ -31,6 +33,10 @@ GIT_WRITES = {"add", "rm", "mv", "commit", "reset", "checkout", "restore", "stas
 _UNRESOLVED = re.compile(r"[$`*?\[\]{}()~]")
 _PY_WRITE = re.compile(r"""write_text|write_bytes|\.write\(|shutil\.|os\.(?:rename|replace|remove)|open\([^)]*,\s*[rb]*['"][wax+]""")
 _PY_PATH = re.compile(r"""['"]((?:[A-Za-z]:)?[\\/][^'"\s]+)['"]""")
+
+
+BRIEF_DENY = ("Denied: %s is this job's brief, whose writeSet this guard enforces; a job never edits it "
+              "(reference/sidecar_dispatch.md, worktree jobs). Write your output under the job's workdir or spill dir.\n")
 
 
 def parts(p, base=""):
@@ -84,12 +90,15 @@ def allowed(path, work, spill, declared):
     return inside(path, work) or inside(path, spill) or any(inside(path, root) for root in declared)
 
 
-def bash_violation(command, cwd, work, main_root, spill, declared=()):
+def bash_violation(command, cwd, work, main_root, spill, declared=(), brief=()):
+    """`(path, "brief" | "main")` for the first clear write to the brief or into the main checkout, else None."""
     def bad(path, base):
         if not path or _UNRESOLVED.search(path) or path.startswith("/dev/"):
             return None
         p = parts(resolve_cd(base, path))
-        return path if inside(p, main_root) and not allowed(p, work, spill, declared) else None
+        if brief and p == brief:
+            return path, "brief"
+        return (path, "main") if inside(p, main_root) and not allowed(p, work, spill, declared) else None
 
     for write in written_targets(command, "Bash", cwd):
         hit = bad(write.path, write.base)
@@ -117,7 +126,9 @@ def main():
     spill = parts(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else ()
     if work == main_root:
         return 0
-    declared = declared_roots(sys.argv[4] if len(sys.argv) > 4 else "", sys.argv[1])
+    brief_path = sys.argv[4] if len(sys.argv) > 4 else ""
+    declared = declared_roots(brief_path, sys.argv[1])
+    brief = parts(brief_path, sys.argv[1]) if brief_path else ()
     try:
         data = json.loads(sys.stdin.read())
         tool_input = data.get("tool_input") or {}
@@ -126,8 +137,12 @@ def main():
         return 2
     if data.get("tool_name") == "Bash":
         cmd = tool_input.get("command")
-        hit = bash_violation(cmd, data.get("cwd") or sys.argv[1], work, main_root, spill, declared) if isinstance(cmd, str) else None
+        hit = bash_violation(cmd, data.get("cwd") or sys.argv[1], work, main_root, spill, declared, brief) if isinstance(cmd, str) else None
+        if hit and hit[1] == "brief":
+            sys.stderr.write(BRIEF_DENY % hit[0])
+            return 2
         if hit:
+            hit = hit[0]
             sys.stderr.write(
                 "Denied: this command writes %s in the main checkout, outside this job's workdir %s "
                 "(reference/sidecar_dispatch.md, worktree jobs). Write under %s instead.\n"
@@ -141,6 +156,9 @@ def main():
         if not isinstance(raw, str) or not raw:
             continue
         path = parts(raw, data.get("cwd") or sys.argv[1])
+        if brief and path == brief:
+            sys.stderr.write(BRIEF_DENY % raw)
+            return 2
         if inside(path, main_root) and not allowed(path, work, spill, declared):
             sys.stderr.write(
                 "Denied: %s is in the main checkout, outside this job's workdir %s "

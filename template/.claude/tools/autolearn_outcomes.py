@@ -10,7 +10,9 @@ Usage:
     autolearn_outcomes.py history --target T [--target T ...] [--file PATH]
 
 `record` validates the row shape, appends it and keeps only the newest `--cap` rows (default 500).
-`recorded` counts a slip that landed nothing. `--fix` names what a landing changed: text, reach,
+`recorded` counts a slip that landed nothing. A `recorded` row whose target shares a path with earlier `recorded`
+rows that no later `applied` row on that path has closed prints those rows (date, session, signal) after the
+confirmation: the record call is where a repeat is noticed, so it names the open rows there. `--fix` names what a landing changed: text, reach,
 tool, hook, remove (a deletion or narrowing), or none. `metric` is the dashboard metric key the fix is meant to move.
 `lookup` prints, as JSON lines, the declined rows whose target equals T, so the re-proposal check
 is a deterministic read: a decline whose reason still holds is not proposed again.
@@ -82,6 +84,37 @@ def problems(row):
     return out
 
 
+def _targets(row):
+    """The file paths a row's target names (`;`-joined, with `#anchor` or a section name dropped)."""
+    return {t.split("#", 1)[0] for t in re.split(r"[;\s]+", str(row.get("target") or "")) if t}
+
+
+def open_recorded(rows, target):
+    """The `recorded` rows naming a path of `target` that no later `applied` row on one of its paths has closed."""
+    paths = _targets({"target": target})
+    open_rows = []
+    for r in rows:
+        if not paths & _targets(r):
+            continue
+        if r.get("outcome") == "applied":
+            open_rows = []
+        elif r.get("outcome") == "recorded":
+            open_rows.append(r)
+    return open_rows
+
+
+def repeat_lines(rows, row):
+    """Facts for a `recorded` row that repeats an open choice: each earlier row's date, session and signal."""
+    if row["outcome"] != "recorded":
+        return []
+    earlier = open_recorded(rows, row["target"])
+    if not earlier:
+        return []
+    return (["autolearn_outcomes: repeat: %d earlier recorded row(s) name %s with no applied row since:"
+             % (len(earlier), row["target"])]
+            + ["  %s %s %s" % (r.get("date"), str(r.get("session"))[:8], str(r.get("signal"))[:140]) for r in earlier])
+
+
 def cmd_record(args):
     row = {k: getattr(args, k) for k in REQUIRED}
     if args.row:
@@ -101,6 +134,7 @@ def cmd_record(args):
         os.makedirs(directory, exist_ok=True)
         with locked(args.file + ".lock", LOCK_TIMEOUT):
             rows, _ = read_rows(args.file)
+            repeats = repeat_lines(rows, row)
             rows.append(row)
             rows = rows[-args.cap:]
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
@@ -117,6 +151,8 @@ def cmd_record(args):
         if temp is not None:
             os.unlink(temp)
     print("autolearn_outcomes: recorded %s for %s (%d rows kept)" % (row["outcome"], row["target"], len(rows)))
+    for line in repeats:
+        print(line)
     return 0
 
 

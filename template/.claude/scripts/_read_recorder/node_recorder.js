@@ -1,6 +1,6 @@
 'use strict';
 // Node twin of sitecustomize.py: the runner sets HARNESS_READ_LOG and puts `--require <this file>` on NODE_OPTIONS,
-// so a JS proof and every node child that inherits the environment append `["r"|"w"|"l"|"p"|"s", value]` lines
+// so a JS proof and every node child that inherits the environment append `["r"|"w"|"l"|"p"|"t"|"s", value]` lines
 // to `<dir>/<pid>.jsonl`. ESM module loads bypass `fs` and stay unrecorded.
 const LOG = process.env.HARNESS_READ_LOG;
 if (LOG) {
@@ -47,13 +47,15 @@ if (LOG) {
   };
   const READ = ['readFileSync', 'readFile', 'createReadStream'];
   const LIST = ['readdirSync', 'readdir', 'opendirSync', 'opendir'];
-  const PROBE = ['statSync', 'stat', 'lstatSync', 'lstat', 'existsSync', 'accessSync', 'access', 'realpathSync', 'readlinkSync', 'readlink'];
+  const STAT = ['statSync', 'stat', 'lstatSync', 'lstat'];
+  const PROBE = ['existsSync', 'accessSync', 'access', 'realpathSync', 'readlinkSync', 'readlink'];
   const WRITE = ['writeFileSync', 'writeFile', 'appendFileSync', 'appendFile', 'createWriteStream', 'mkdirSync', 'mkdir',
     'rmSync', 'rm', 'unlinkSync', 'unlink', 'rmdirSync', 'rmdir', 'truncateSync', 'truncate', 'mkdtempSync', 'mkdtemp'];
   for (const target of [fs, fs.promises]) {
     for (const n of READ) wrap(target, n, (a) => note('r', a[0]));
     for (const n of LIST) wrap(target, n, (a) => note('l', a[0]));
     for (const n of PROBE) wrap(target, n, (a) => note('p', a[0]));
+    for (const n of STAT) wrap(target, n, (a) => note('t', a[0]));
     for (const n of WRITE) wrap(target, n, (a) => note('w', a[0]));
     for (const n of ['openSync', 'open']) {
       wrap(target, n, (a) => {
@@ -80,7 +82,10 @@ if (LOG) {
   };
   const spawned = (argv, opts) => {
     const cwd = opts && opts.cwd ? path.resolve(String(opts.cwd)) : process.cwd();
-    emit('s', { argv: argv.map(String), cwd, recorded: inherits(argv[0], opts) });
+    const env = opts && opts.env ? opts.env : process.env;
+    const genv = {};
+    for (const k of Object.keys(env)) if (k.toUpperCase().startsWith('GIT_')) genv[k] = String(env[k]);
+    emit('s', { argv: argv.map(String), cwd, recorded: inherits(argv[0], opts), genv });
   };
   const cp = require('child_process');
   const optionsOf = (rest) => rest.find((x) => x && typeof x === 'object' && !Array.isArray(x));

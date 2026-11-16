@@ -64,8 +64,8 @@ def worktree_pinned_manifest():
             git(main, "worktree", "remove", "--force", str(tree))
 
 
-def stale_clone_pinned_manifest():
-    """`pinned_manifest` where the pin is newer than the cache clone: the baseline remote holds it."""
+def stale_clone_pinned_manifest(**options):
+    """`pinned_manifest(**options)` where the pin is newer than the cache clone: the baseline remote holds it."""
     import subprocess
 
     def git(cwd, *args):
@@ -84,7 +84,7 @@ def stale_clone_pinned_manifest():
         git(tmp, "clone", "-q", str(up), str(clone))
         (up / "baseline.manifest.json").write_text('{"files": [{"path": "a", "layer": "pure"}]}', encoding="utf-8")
         git(up, "commit", "-qam", "two")
-        return lc.pinned_manifest(root, {"synced_commit": git(up, "rev-parse", "HEAD")})
+        return lc.pinned_manifest(root, {"synced_commit": git(up, "rev-parse", "HEAD")}, **options)
 
 
 def dependencies(files, layers, relpath):
@@ -109,6 +109,25 @@ def main():
     got = dependencies({row: "import helper\nimport json\n", helper: "x = 1\n"},
                        {row: "pure", helper: "pure"}, row)
     check("row_dependencies returns the shipped module a python row imports", got == [helper], got)
+    parses, real_parse = [0], lc.ast.parse
+
+    def counting_parse(*args, **kwargs):
+        parses[0] += 1
+        return real_parse(*args, **kwargs)
+    memo_files = {row: "import helper\n# memo probe\n", helper: "x = 1\n# memo probe\n"}
+    lc.ast.parse = counting_parse
+    try:
+        planted(memo_files, {row: "pure", helper: "pure"})
+        first = parses[0]
+        planted(memo_files, {row: "pure", helper: "pure"})
+        again = parses[0] - first
+        planted({**memo_files, row: "import helper\n# memo probe, edited\n"}, {row: "pure", helper: "pure"})
+        edited = parses[0] - first - again
+    finally:
+        lc.ast.parse = real_parse
+    check("a second scan of unchanged files parses none of them again; an edited file parses again "
+          "(a lock write scans before and after, ~60 s each)", first > 0 and again == 0 and edited > 0,
+          (first, again, edited))
     got = dependencies({row: "import helper\n", helper: "x = 1\n"}, {row: "pure"}, row)
     check("row_dependencies returns an imported module no layer ships", got == [helper], got)
     got = dependencies({row: "import json, os\n"}, {row: "pure"}, row)
@@ -472,6 +491,10 @@ def main():
     check("a pin the cache clone lacks is fetched from the baseline remote, then read",
           got == {"files": [{"path": "a", "layer": "pure"}]}, got)
 
+    got = stale_clone_pinned_manifest(fetch=False)
+    check("a caller on a deadline reads the local clone only: a pin the clone lacks is unreadable, never fetched",
+          got is None, got)
+
     with tempfile.TemporaryDirectory() as tmp:
         for rel, text in ((hook, "import tres_guard\n"), (guard, "x = 1\n")):
             Path(tmp, rel).parent.mkdir(parents=True, exist_ok=True)
@@ -480,6 +503,63 @@ def main():
         got = lc.lock_findings(Path(tmp), lock, {"files": []})
     check("lock_findings scans the lock's tracked rows over the consumer view",
           [f.render() for f in got] == [f"{hook}: needs-godot {guard}"], [f.render() for f in got])
+
+    emit, stale = ".claude/tools/emit.py", ".claude/data/candidates.json"
+    wrapper = ".claude/tools/emit_wrap.py"
+    joined_under = 'import os\nOUT = os.path.join(HERE, "..", "scratch", "candidates.json")\n'
+    got = planted({emit: joined_under, stale: "{}\n"}, {emit: "pure", stale: "godot"})
+    check("a data name joined under a gitignored folder is output, not a dependency", got == [], kinds(got))
+    got = dependencies({emit: joined_under, stale: "{}\n"}, {emit: "pure", stale: "godot"}, emit)
+    check("row_dependencies omits a name joined under a gitignored folder", got == [], got)
+    div_under = 'from pathlib import Path\nOUT = Path(__file__).parent / ".cache" / "candidates.json"\n'
+    got = planted({emit: div_under, stale: "{}\n"}, {emit: "pure", stale: "godot"})
+    check("a Path division under a gitignored folder is output, not a dependency", got == [], kinds(got))
+    got = planted({emit: 'import os\nOUT = os.path.join("logs/run", "candidates.json")\n', stale: "{}\n"},
+                  {emit: "pure", stale: "godot"})
+    check("a gitignored folder inside one joined piece shadows the later names too", got == [], kinds(got))
+    for label, body in (
+            ("open(..., 'w')", 'with open("candidates.json", "w") as out:\n    out.write("{}")\n'),
+            ("open(..., mode='a')", 'open("candidates.json", mode="a")\n'),
+            ("Path.write_text", 'from pathlib import Path\n(Path(__file__).parent / "candidates.json").write_text("{}")\n'),
+            ("Path(...).write_bytes", 'from pathlib import Path\nPath("candidates.json").write_bytes(b"{}")\n'),
+            ("os.path.join under open(w)", 'import os\nopen(os.path.join(HERE, "candidates.json"), "w")\n')):
+        got = planted({emit: body, stale: "{}\n"}, {emit: "pure", stale: "godot"})
+        check(f"a name the file only writes ({label}) is not a dependency", got == [], kinds(got))
+    for label, body in (
+            ("open(...)", 'data = open("candidates.json").read()\n'),
+            ("open(..., 'r')", 'data = open("candidates.json", "r").read()\n'),
+            ("a join under a shipped folder", 'import os\nSRC = os.path.join(HERE, "data", "candidates.json")\n'),
+            ("Path.read_text", 'from pathlib import Path\ndata = (Path(__file__).parent / "candidates.json").read_text()\n'),
+            ("a bare constant", 'SRC = "candidates.json"\n')):
+        got = planted({emit: body, stale: "{}\n"}, {emit: "pure", stale: "godot"})
+        check(f"a name the file reads ({label}) is still a dependency",
+              kinds(got) == [(emit, "needs-godot", stale)], kinds(got))
+    got = planted({emit: 'import os\nOUT = os.path.join(HERE, "scratch", "candidates.json")\nopen("candidates.json", "w")\n'
+                         'data = open("map.json").read()\n', stale: "{}\n", ".claude/data/map.json": "{}\n"},
+                  {emit: "pure", stale: "godot", ".claude/data/map.json": "godot"})
+    check("a file that writes one name and reads another depends only on the one it reads",
+          kinds(got) == [(emit, "needs-godot", ".claude/data/map.json")], kinds(got))
+    got = planted({wrapper: 'import emit\n', emit: joined_under, stale: "{}\n"},
+                  {wrapper: "pure", emit: "pure", stale: "godot"})
+    check("an importer of the writing tool inherits nothing from its output name", got == [], kinds(got))
+
+    helper_rel = ".claude/tools/helper.py"
+    users = {
+        ".claude/tools/a_user.py": "import helper\n",
+        ".claude/tools/b_other.py": "import json\n",
+        ".claude/commands/c_doc.md": "Run `.claude/tools/helper.py` first.\n",
+        ".claude/tests/fixtures/evidence/r1/tree/.claude/tools/copy.py": "import helper\n",
+        helper_rel: "import json\n",
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, ".claude/tools").mkdir(parents=True)
+        Path(tmp, helper_rel).write_text("x = 1\n", encoding="utf-8")
+        got = lc.dependents(Path(tmp), {rel: "pure" for rel in users}, users, {helper_rel})
+    check("dependents names the shipped rows whose scan resolves to a target, never a fixture copy or the target itself",
+          got == {helper_rel: [".claude/commands/c_doc.md", ".claude/tools/a_user.py"]}, got)
+    with tempfile.TemporaryDirectory() as tmp:
+        got = lc.dependents(Path(tmp), {rel: "pure" for rel in users}, users, {".claude/tools/b_other.py"})
+    check("dependents of a row nothing cites is empty", got == {".claude/tools/b_other.py": []}, got)
 
     lock_path = REPO / ".claude" / "baseline.lock.json"
     if not lock_path.exists():

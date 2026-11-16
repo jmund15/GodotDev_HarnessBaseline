@@ -1,12 +1,15 @@
-"""Plain-script proof for guard_denials, using a transcript cut from real sessions and trimmed.
+"""Plain-script proof for guard_denials, reading `fixtures/guard_denials/denials.jsonl`.
 
-`.claude/tests/fixtures/` never ships, so the transcript is planted here: one error tool result per
-denial signature, one transient classifier outage, and two prose quotes of deny text that are not
-denials. Each result follows its own tool_use, so the denominator is the file's own.
+The fixture holds the tool_use and tool_result lines cut from real project transcripts (sessions of
+this project, trimmed to the fields the scanner reads, with project names neutral): one error tool result per denial signature,
+one transient classifier outage, and two non-error results that quote deny text. The wait-loop and
+heredoc-guard rows are carried from an earlier capture of the same shape, because no project transcript
+holds those two denials now. Each result follows its own tool_use, so the denominator is the file's own.
 """
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -20,46 +23,42 @@ DENIAL_CATEGORIES = ['index-write', 'commit-stamp', 'recursive-grep', 'sleep-wai
                      'kill-denied', 'shape-guard', 'dispatch-denied', 'dispatch-doctrine', 'harness-edit',
                      'classifier-denied', 'classifier-no-verdict']
 
-# One deny text per signature, at the head of its tool result.
-DENIALS = [
-    'an index write runs in its own Bash call',
-    'BLOCKED commit (CLAUDE.core.md §Shell Discipline)',
-    'RECURSIVE GREP DENIED: `grep -r` can run away without bound',
-    'Blocked: sleep is not a wait',
-    'BLOCKED foreground wait loop',
-    'BLOCKED heredoc with nested quotes',
-    'BLOCKED TaskStop on a dispatched agent',
-    'Blocked by bash_shape_guard',
-    'Dispatch denied: the write set is outside the job',
-    'the dispatch doctrine is not in context',
-    'Harness edit to .claude/hooks/x DENIED',
-    'denied by the Claude Code auto mode classifier',
-    'auto mode classifier gave no verdict for Bash: timed out',
-]
-OUTAGE = ('2fd3246a-138e-425c-8911-21cf89a135a2',
-          'auto mode classifier gave no verdict for Bash (timed out)')
-PROSE = [('0c6e5ef0-7e88-44c3-a09e-44eaa73f4e08', 'diff: -BLOCKED commit (the hook\'s own text, quoted)'),
-         ('14d4c412-691b-474d-9753-bcfbe35e3f24', 'friction report: RECURSIVE GREP DENIED is quoted here')]
-STAMP = '2026-09-23T00:00:00Z'
+FIXTURE = os.path.join(HERE, 'fixtures', 'guard_denials', 'denials.jsonl')
 
 
-def _pair(call_id, session, text, is_error):
-    tool_use = {'type': 'assistant', 'sessionId': session, 'timestamp': STAMP,
-                'message': {'content': [{'type': 'tool_use', 'id': call_id, 'name': 'Bash'}]}}
-    tool_result = {'type': 'user', 'sessionId': session, 'timestamp': STAMP,
-                   'message': {'content': [{'type': 'tool_result', 'tool_use_id': call_id,
-                                            'content': text, 'is_error': is_error}]}}
-    return [tool_use, tool_result]
+def fixture_lines():
+    with open(FIXTURE, encoding='utf-8') as handle:
+        return [line for line in handle if line.strip()]
 
 
-def _planted_rows():
-    rows = []
-    for number, text in enumerate(DENIALS, 1):
-        rows += _pair('d%d' % number, 'denials', 'PreToolUse:Bash hook error: ' + text, True)
-    rows += _pair('o1', OUTAGE[0], OUTAGE[1], True)
-    for number, (session, text) in enumerate(PROSE, 1):
-        rows += _pair('p%d' % number, session, text, False)
-    return rows
+def fixture_results():
+    """(row, tool_result item) for every tool result in the fixture."""
+    out = []
+    for line in fixture_lines():
+        row = json.loads(line)
+        content = row.get('message', {}).get('content')
+        for item in content if isinstance(content, list) else []:
+            if isinstance(item, dict) and item.get('type') == 'tool_result':
+                out.append((row, item))
+    return out
+
+
+def _text(item):
+    return gd.flatten(item.get('content'))
+
+
+def outage_row():
+    """The transient outage: an error result the scanner does not classify as a denial."""
+    for row, item in fixture_results():
+        if item.get('is_error') is True and 'gave no verdict' in _text(item) and gd.classify(_text(item)) is None:
+            return row
+    return None
+
+
+def prose_sessions():
+    """Sessions of the non-error results that quote a deny text."""
+    return {row.get('sessionId') for row, item in fixture_results()
+            if item.get('is_error') is not True and gd.classify(_text(item))}
 
 
 class Suite:
@@ -80,10 +79,6 @@ class Suite:
 
 
 S = Suite()
-
-
-def fixture_lines():
-    return [json.dumps(row) + '\n' for row in _planted_rows()]
 
 
 def make_tree(root):
@@ -129,18 +124,19 @@ def test_transient_classifier_outage_is_not_a_denial():
     with tempfile.TemporaryDirectory() as tmp:
         make_tree(tmp)
         found = gd.scan([os.path.join(tmp, 'projects')])
-    outage = [row for row in found['denials'] if row['session'] == '2fd3246a-138e-425c-8911-21cf89a135a2']
-    S.check(outage == [] and found['calls'].get('2026-09-23|2fd3246a-138e-425c-8911-21cf89a135a2') == 1,
+    row = outage_row()
+    key = '%s|%s' % (gd.utc_day(row.get('timestamp')), row.get('sessionId'))
+    outage = [d for d in found['denials'] if d['session'] == row.get('sessionId')]
+    S.check(outage == [] and found['calls'].get(key) == 1,
             'test_transient_classifier_outage_is_not_a_denial', repr(outage))
 
 
 def test_a_prose_quote_of_a_deny_text_is_not_a_denial():
-    """Two real non-error tool results quote each new deny phrase (a diff and a friction report) without being one."""
+    """The non-error results that quote a deny text (fixture rows) are not denials."""
     with tempfile.TemporaryDirectory() as tmp:
         make_tree(tmp)
         found = gd.scan([os.path.join(tmp, 'projects')])
-    quoted = [row for row in found['denials']
-              if row['session'] in ('0c6e5ef0-7e88-44c3-a09e-44eaa73f4e08', '14d4c412-691b-474d-9753-bcfbe35e3f24')]
+    quoted = [row for row in found['denials'] if row['session'] in prose_sessions()]
     S.check(quoted == [], 'test_a_prose_quote_of_a_deny_text_is_not_a_denial', repr(quoted))
 
 
@@ -225,6 +221,22 @@ def test_project_roots_keep_this_projects_directories():
             gd.default_roots = saved
     expected = [os.path.join(base, slug), os.path.join(base, slug + '--claude-worktrees-w1')]
     S.check(found == expected, 'test_project_roots_keep_this_projects_directories', repr(found))
+
+
+def _cli(*args):
+    return subprocess.run([sys.executable, os.path.join(TOOLS, 'guard_denials.py'), *args], capture_output=True,
+                          text=True, encoding='utf-8', errors='replace')
+
+
+def test_cli_unknown_flag_exits_nonzero():
+    S.check(_cli('--no-such-flag').returncode != 0, 'test_cli_unknown_flag_exits_nonzero')
+
+
+def test_cli_missing_root_is_reported_as_a_gap():
+    with tempfile.TemporaryDirectory() as tmp:
+        done = _cli('--roots', os.path.join(tmp, 'absent'))
+        coverage = json.loads(done.stdout.splitlines()[-1])
+    S.check(coverage['gaps'] and coverage['files'] == 0, 'test_cli_missing_root_is_reported_as_a_gap', done.stdout)
 
 
 if __name__ == '__main__':

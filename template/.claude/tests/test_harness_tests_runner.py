@@ -528,7 +528,7 @@ def case_a_touched_path_binds_its_own_proofs_not_its_importers(failures):
     for rel, text in sources.items():
         with open(os.path.join(repo, ".claude", rel), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
-    for name, text in (("test_a_core.py", ""), ("test_b.py", "# b.py\n"), ("test_mentions_alpha.py", "# a.py\n"),
+    for name, text in (("test_a_core.py", ""), ("test_b.py", "B = 'b.py'\n"), ("test_mentions_alpha.py", "A = 'a.py'\n"),
                        ("test_declared.py", ""), ("test_via_helper.py", ""), ("test_other_bystander.py", "")):
         with open(os.path.join(repo, ".claude", "tests", name), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
@@ -558,8 +558,8 @@ def case_settings_and_jsonl_paths_bind_only_their_own_proofs(failures):
     for rel, text in ((".claude/settings.base.json", "{}\n"), (".claude/orchestration_metrics.jsonl", "{}\n")):
         with open(os.path.join(repo, *rel.split("/")), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
-    for name, text in (("test_names_base.py", "# settings.base.json\n"), ("test_names_main.py", "# settings.json\n"),
-                       ("test_orchestration_metrics.py", ""), ("test_reads_metrics.py", "# orchestration_metrics.jsonl\n")):
+    for name, text in (("test_names_base.py", "S = 'settings.base.json'\n"), ("test_names_main.py", "S = 'settings.json'\n"),
+                       ("test_orchestration_metrics.py", ""), ("test_reads_metrics.py", "M = 'orchestration_metrics.jsonl'\n")):
         with open(os.path.join(repo, ".claude", "tests", name), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
     seed_commit(repo)
@@ -631,7 +631,7 @@ def _heavy_repo():
     write_proof(repo, "test_pass.py", 0)
     marker = os.path.join(repo, "heavy-ran.txt")
     with open(os.path.join(repo, ".claude", "tests", "test_h.py"), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("import sys\n# exercises sub.py\nopen(%r, 'w').write('ran')\nsys.exit(0)\n" % marker)
+        fh.write("import sys\nSUB = 'sub.py'\nopen(%r, 'w').write('ran')\nsys.exit(0)\n" % marker)
     seed_commit(repo)
     harness_tests.EXCLUDED = {}
     harness_tests.HEAVY = {"test_h.py": "slow"}
@@ -913,7 +913,7 @@ def case_commit_budget_selection(failures):
     for name in names:
         path = write_proof(repo, name, 0)
         with open(path, "a", encoding="utf-8", newline="\n") as fh:
-            fh.write("# commit_contract.md\n")
+            fh.write("CONTRACT = 'commit_contract.md'\n")
     write_proof(repo, "test_unrelated.py", 1)
     seed_commit(repo)
     harness_tests.STAMP_PATH = os.path.join(repo, "stamp.json")
@@ -1123,15 +1123,27 @@ def case_the_close_time_line_states_pool_retries_and_load_against_the_fastest_hi
         failures.append("time line: %r / %r" % (line, none))
 
 
-def main():
+PARTS = 3
+
+
+def main(part=1):
+    """Part `part` of PARTS: the cases build their own temp repos, so they split round-robin over processes that run
+    beside each other. The heavy cases set `harness_tests.HEAVY` themselves and run first in part 1; every other case
+    expects it empty."""
+    for other in range(2, PARTS + 1):  # a deleted part file would silently drop its cases
+        assert os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                           "test_harness_tests_runner_part%d.py" % other)), "missing part %d" % other
     failures, failed_cases = [], 0
-    cases = HEAVY_CASES + CASES + (case_each_alone_retry_prints_a_progress_line_and_the_row_counts_them,
-                                   case_the_close_time_line_states_pool_retries_and_load_against_the_fastest_history,
-                                   case_commit_budget_selection, case_commit_runner_timeout,
-                                   case_a_failure_line_above_the_tail_stays_in_the_excerpt,
-                                   case_platform_skip_is_counted_not_passed,
-                                   case_a_node_proof_platform_skip_survives_the_tap_comment_prefix,
-                                   case_close_untracked_red_is_advisory_tracked_red_blocks)
+    plain = list(CASES) + [case_each_alone_retry_prints_a_progress_line_and_the_row_counts_them,
+                           case_the_close_time_line_states_pool_retries_and_load_against_the_fastest_history,
+                           case_commit_budget_selection, case_commit_runner_timeout,
+                           case_a_failure_line_above_the_tail_stays_in_the_excerpt,
+                           case_platform_skip_is_counted_not_passed,
+                           case_a_node_proof_platform_skip_survives_the_tap_comment_prefix,
+                           case_close_untracked_red_is_advisory_tracked_red_blocks]
+    cases = list(HEAVY_CASES) * (part == 1) + plain[part - 1::PARTS]
+    if part != 1:
+        harness_tests.HEAVY = {}
     for case in cases:
         before = len(failures)
         case(failures)

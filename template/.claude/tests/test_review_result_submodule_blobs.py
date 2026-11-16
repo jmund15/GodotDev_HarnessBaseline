@@ -1,6 +1,9 @@
 """A --ledger-blobs entry under a submodule is checked against the submodule's object store, not the superproject's."""
+import atexit
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -8,6 +11,13 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import review_result
+
+# Every git here names a temp repository (`init <path>`, the fixture's `cwd`), so the process starts in an empty temp
+# folder: no git command runs with this checkout as its directory.
+_HERE = Path.cwd()
+_CWD = tempfile.mkdtemp(prefix="review_blobs_cwd_")
+os.chdir(_CWD)
+atexit.register(lambda: (os.chdir(_HERE), shutil.rmtree(_CWD, ignore_errors=True)))
 
 GIT = ["git", "-c", "protocol.file.allow=always", "-c", "user.name=t", "-c", "user.email=t@t"]
 

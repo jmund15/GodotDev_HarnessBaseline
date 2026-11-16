@@ -28,6 +28,9 @@ args `Workflow({scriptPath, args: {argsFile}})` expands. Spec keys: `mode` (`exp
 `efforts`, `tiers`, `fold`, `subjectFiles`, `seatFiles`, `subjectPlans`, `context`, `task`,
 `sessionAudit`, `ledger`, `spillDir`, `transcriptDir`, `checker`, `target`, `subs`, `round`, `root`,
 `engine`, `prNum`, `branch`, `session`, `commands`.
+`mode: "delegate"` is the ad-hoc dispatch shape (`commands/delegate.md`): `jobs` in the fan-out's own fields, each
+with its `brief` file and an optional `worktree`; it writes `<run dir>/jobs.json`, makes the worktrees, runs the
+size preflight and prints the launch and return calls (`tools/delegate_prepare.py` owns the spec).
 A seat with no lens-registry key (the five `/pr_ready` lenses) carries its brief text or file path as
 `brief`. It prints each seat's reading and fit, every dropped mandate with its `coveredBy`, every tier
 the envelope pins and any tier lacking a delivered `for-role` receipt, and the exact next call; it
@@ -987,8 +990,12 @@ def prepare_command(argv: list[str]) -> None:
         spec = json.loads(Path(a.spec).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         sys.exit(f"prepare: --spec {a.spec}: {exc}")
+    if isinstance(spec, dict) and spec.get("mode") == "delegate":
+        import delegate_prepare
+        root = Path(spec.get("root") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+        sys.exit(delegate_prepare.run(spec, a.out, root))
     if not isinstance(spec, dict) or spec.get("mode") not in PREP_MODES:
-        sys.exit(f"prepare: spec mode must be one of {', '.join(PREP_MODES)}")
+        sys.exit(f"prepare: spec mode must be one of {', '.join(PREP_MODES)}, or delegate")
     if spec["mode"] not in PREP_ENGINES and not spec.get("engine"):
         sys.exit(f"prepare: mode {spec['mode']} runs an engine the calling command names; add `engine` to the spec")
     root = Path(spec.get("root") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()

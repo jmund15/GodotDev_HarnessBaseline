@@ -5,7 +5,9 @@ require a green harness close before push (floor guard), and advise a harness co
 `instruction_quality` loaded (`_skill_verdict`; retire-when review-by 2027-03-15), name a staged skill or
 command body past the client's re-attach cap (`_reattach_cap_verdict`), report cheap bound
 proofs at commit that failed, ran incomplete, could not run or were left to the close (process
-advisory), and deny a commit
+advisory), name a tool whose every tracked proof `adaptation.json` `proof_excluded` keeps from running
+(`_excluded_proof_note`; process advisory), report `layer_closure` findings over the touched tracked
+lock rows (`_layer_closure_note`; process advisory, local cache clone only), and deny a commit
 that a git index write (`add`, `rm`, `reset`, `stash`, ...; `_commit_scope.writes_index`) precedes in the
 same command: every commit guard reads the index before the command runs, so it would judge the commit
 without that write. A repo the same command creates with `git init` is exempt.
@@ -74,6 +76,13 @@ try:
 except Exception as _exc:
     authored_paths = publishes_index = writes_index = None
     _SCOPE_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
+# The pull proof record: a pulled path whose proof is pending or red cannot commit. Guarded like the helpers above.
+try:
+    import _pull_proof  # noqa: E402
+    _PULL_PROOF_IMPORT_ERROR = None
+except Exception as _exc:
+    _pull_proof = None
+    _PULL_PROOF_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 from _git_commit import (  # noqa: E402
     git_environ,
     git_invocation, git_invocations, executable_text, run_git,
@@ -390,14 +399,72 @@ def _setup_surface(path):
     return path.replace("\\", "/") in (SURFACES or ())
 
 
-def _has_proof(tests_dir, name, git_env=None):
-    """A proof counts only when git tracks it: a file that exists on disk but was never committed
+def _tracked_proofs(tests_dir, name, git_env=None):
+    """The tracked proof files for a tool: a file that exists on disk but was never committed
     reaches no other checkout."""
     import glob
     hits = (glob.glob(os.path.join(tests_dir, "test_%s*.py" % name))
             or glob.glob(os.path.join(tests_dir, "%s_test.*" % name)))
-    return any(run_git(["ls-files", "--error-unmatch", "--", h], tests_dir, git_env) is not None
-               for h in hits)
+    return [h for h in hits if run_git(["ls-files", "--error-unmatch", "--", h], tests_dir, git_env) is not None]
+
+
+def _excluded_proofs(repo_root):
+    """`adaptation.json` `proof_excluded` of the checkout being committed: {proof file name: reason}, the proofs the
+    close never runs."""
+    sys.path.insert(0, os.path.join(_CLAUDE_DIR, "tools"))
+    try:
+        import adaptation
+    finally:
+        sys.path.pop(0)
+    return adaptation.get(os.path.join(repo_root, ".claude"), "proof_excluded")
+
+
+def _layer_closure_note(repo_root, touched):
+    """The advisory for a commit that touches tracked rows of `baseline.lock.json`: `layer_closure.scan` over just those
+    rows, so a tracked file citing or reading a file no layer ships (the failure `tests/test_layer_closure.py` gives the
+    close) shows at commit. None when the checkout has no lock, no touched row is tracked or every touched row closes.
+    The pinned manifest is read from the local cache clone only, so the check never waits on a fetch; a pin it cannot
+    read, or any other failure, is named as a check that did not run."""
+    lock_path = os.path.join(repo_root, ".claude", "baseline.lock.json")
+    if not os.path.isfile(lock_path):
+        return None
+    try:
+        sys.path.insert(0, os.path.join(_CLAUDE_DIR, "tools"))
+        try:
+            import layer_closure
+        finally:
+            sys.path.pop(0)
+        with open(lock_path, encoding="utf-8") as fh:
+            lock = json.load(fh)
+        rows = set(touched) & layer_closure.lock_checked(lock)
+        if not rows:
+            return None
+        root = Path(repo_root)
+        manifest = layer_closure.pinned_manifest(root, lock, fetch=False)
+        if manifest is None:
+            return ("[harness commit] layer closure not checked for %d touched tracked row(s): the pinned baseline "
+                    "manifest is not in the local cache clone." % len(rows))
+        found = layer_closure.scan(root, layer_closure.consumer_layers(lock, manifest), rows)
+    except Exception as exc:
+        return "[harness commit] layer closure not checked: %s: %s." % (type(exc).__name__, exc)
+    if not found:
+        return None
+    return ("[harness commit] layer closure: %d finding(s) over the touched tracked rows; tests/test_layer_closure.py "
+            "fails the close on each: %s." % (len(found), "; ".join(f.render() for f in found[:10])
+                                              + ("; ..." if len(found) > 10 else "")))
+
+
+def _excluded_proof_note(norm, proofs, repo_root):
+    """The advisory for an edited tool whose every tracked proof is in `proof_excluded`; None when the close runs
+    one of them or the tool has none."""
+    if not proofs:
+        return None
+    excluded = _excluded_proofs(repo_root)
+    names = [os.path.basename(p) for p in proofs]
+    if not all(n in excluded for n in names):
+        return None
+    return ("[harness commit] %s: every tracked proof is in adaptation.json proof_excluded, so the close never runs "
+            "%s." % (norm, "; ".join("%s (%s)" % (n, excluded[n]) for n in names)))
 
 
 def _stamp_path(repo_root):
@@ -855,6 +922,25 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
         return ("BLOCKED harness commit — `git %s` failed; cannot verify commit scope." % failed_cmd
                 + unexpanded_hint(failed_cmd))
 
+    if publishes_index(sub, rest):
+        # A pulled path commits only once its proof is green. Its record unreadable, the commit is denied too.
+        if _pull_proof is None:
+            if os.path.exists(os.path.join(repo_root, ".claude", "logs", "baseline_pull_proof.json")):
+                return ("BLOCKED commit — the pull proof record exists but its reader is unavailable (%s). "
+                        "Repair hooks/_pull_proof.py; for that repair commit prefix `%s=1`."
+                        % (_PULL_PROOF_IMPORT_ERROR, BYPASS_VAR))
+        else:
+            try:
+                pending = _pull_proof.blocked(repo_root, [p.replace("\\", "/") for p in paths])
+            except _pull_proof.Unreadable as exc:
+                return ("BLOCKED commit — the pull proof record is unreadable (%s). Run "
+                        "`python3 .claude/tools/baseline_sync.py pull`: it keeps the record aside and proves "
+                        "every uncommitted baseline path again." % exc)
+            if pending:
+                return ("BLOCKED pull commit — the proof of pulled path(s) is pending or red: %s. Run "
+                        "`python3 .claude/tools/baseline_sync.py pull` to rerun them, then commit."
+                        % ", ".join(pending))
+
     touched = sorted(p for p in paths if p.replace("\\", "/").startswith(".claude/"))
     surfaces = sorted(p for p in paths if _setup_surface(p))
     if not touched and not surfaces:
@@ -887,6 +973,10 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
     if reattach:
         ADVISORIES.append(reattach)
 
+    closure = _layer_closure_note(repo_root, changed)
+    if closure:
+        ADVISORIES.append(closure)
+
     tests_dir = os.path.join(repo_root, ".claude", "tests")
     include_dirty, _amend, pathspec = parse_commit_args(rest)
     pathspec, _problem = full_pathspec(rest, cwd, pathspec)
@@ -896,11 +986,15 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
         for prefix in (".claude/hooks/", ".claude/tools/"):
             if norm.startswith(prefix) and norm.endswith(".py"):
                 name = os.path.basename(norm)[:-3]
-                if (not name.startswith("_") and not _has_proof(tests_dir, name, git_env)
+                proofs = [] if name.startswith("_") else _tracked_proofs(tests_dir, name, git_env)
+                note = _excluded_proof_note(norm, proofs, repo_root)
+                if (not name.startswith("_") and (not proofs or note)
                         and not _removed(repo_root, norm, git_env, worktree=worktree_commit)
                         and not _behavior_unchanged(repo_root, norm, git_env)
                         and norm in changed):
-                    if _behavior_unchanged(repo_root, norm, git_env, ignore_strings=True):
+                    if note:
+                        ADVISORIES.append(note)
+                    elif _behavior_unchanged(repo_root, norm, git_env, ignore_strings=True):
                         ADVISORIES.append("[harness commit] no proof for %s: if a changed string is a pattern "
                                           "it matches or a value it decides on, add the proof "
                                           "(rules/harness_tooling.md)." % norm)

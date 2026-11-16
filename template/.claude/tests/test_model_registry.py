@@ -289,15 +289,21 @@ def _login_dirs_case():
 
 
 def _missing_ladder_cli():
-    original = mr.role_tiers
-    mr.role_tiers = lambda *_a, **_k: (_ for _ in ()).throw(mr.RegistryError("missing ladder"))
+    # The ladder reaches for-role through ladder_slice; each plan's room is planted, since a plan the machine
+    # cannot read is dropped and a clean runner's fresh home reads none of the other plans (flash's among them).
+    original = mr.ladder_slice
+    mr.ladder_slice = lambda *_a, **_k: (_ for _ in ()).throw(mr.RegistryError("missing ladder"))
     stream = io.StringIO()
     try:
-        with contextlib.redirect_stdout(stream):
+        with _planted_capacity(mr.load()), contextlib.redirect_stdout(stream), \
+                contextlib.redirect_stderr(io.StringIO()):
             rc = mr._cmd_for_role(["executor", "--from", "codex"])
     finally:
-        mr.role_tiers = original
-    return rc == 0 and "flash" in stream.getvalue() and "ladder row(s)" not in stream.getvalue()
+        mr.ladder_slice = original
+    ok = rc == 0 and "flash" in stream.getvalue() and "ladder row(s)" not in stream.getvalue()
+    if not ok:  # red twice in a publish battery, green on every rerun: the output names the cause next time
+        sys.stderr.write("T1 for-role rc=%r printed: %r\n" % (rc, stream.getvalue()[:1500]))
+    return ok
 
 
 def _role_validation(roles, evidence="measured", reference=None):

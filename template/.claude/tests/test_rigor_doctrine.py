@@ -3,7 +3,6 @@
 retired tier and verdict words are gone. Each case id names one file, phrase or root, so a slice closes on its
 own cases (`pytest -k`)."""
 import re
-import subprocess
 import sys
 from pathlib import Path
 import pytest
@@ -42,12 +41,30 @@ RETIRED = (
 RETIRED_WORDS = (('harden', 'HARDEN'), ('blocker', 'BLOCKERS?'))
 
 
+_TEXT = ('.md', '.py', '.json', '.yaml', '.yml', '.sh', '.js', '.ps1', '.txt')
+
+
 def git_grep(*args):
-    run = subprocess.run(['git', '-C', str(REPO), 'grep', '-n', *args], capture_output=True, text=True,
-                         stdin=subprocess.DEVNULL)
-    if run.returncode not in (0, 1):
-        raise RuntimeError('git grep failed: %s' % run.stderr.strip())
-    return run.stdout.strip()
+    """`git grep -n <flags> <pattern> -- <roots>` over the working files, by a directory walk: the proof reads the
+    files themselves, so its key holds no git state. Flags: -F (fixed text), -E (regex), -w (whole word), -i."""
+    flags, rest = [], list(args)
+    while rest and rest[0].startswith('-') and rest[0] != '--':
+        flags.append(rest.pop(0))
+    pattern, roots = rest[0], rest[rest.index('--') + 1:]
+    body = re.escape(pattern) if '-F' in flags else pattern
+    if '-w' in flags:
+        body = r'(?<!\w)(?:%s)(?!\w)' % body
+    rx = re.compile(body, re.I if '-i' in flags else 0)
+    hits = []
+    for root in roots:
+        top = REPO / root
+        files = [top] if top.is_file() else sorted(p for p in top.rglob('*') if p.is_file()
+                                                    and p.suffix in _TEXT and '__pycache__' not in p.parts)
+        for path in files:
+            for number, line in enumerate(path.read_text(encoding='utf-8', errors='replace').splitlines(), 1):
+                if rx.search(line):
+                    hits.append('%s:%d:%s' % (path.relative_to(REPO).as_posix(), number, line))
+    return '\n'.join(hits)
 
 
 def layer_section():

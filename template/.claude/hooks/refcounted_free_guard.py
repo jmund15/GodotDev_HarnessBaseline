@@ -117,7 +117,7 @@ PARAM_RE = re.compile(
     r"\s+(\w+)\s*(?=[,)=])"
 )
 PATTERN_RE = re.compile(r"\b(?:is|case)\s+(?:not\s+)?([A-Za-z_][\w.]*(?:<[^<>]*>)?)\s+(\w+)")
-NODE_NARROWED_RE =re.compile(r"\bis\s+Node\b|\bas\s+Node\b")
+NODE_NARROWED_RE = re.compile(r"\bis\s+Node\b|\bas\s+Node\b")
 
 _SKIP_DIRS = {"obj", "bin", "node_modules"}
 

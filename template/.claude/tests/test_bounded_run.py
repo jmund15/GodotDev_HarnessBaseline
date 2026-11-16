@@ -76,6 +76,21 @@ class BoundedRunTests(unittest.TestCase):
         self.assertIn(5151, closed, "the process handle is closed")
         self.assertIn(4242, closed, "a job the process never joined leaks its handle")
 
+    @unittest.skipUnless(os.name == "nt", "taskkill is the Windows tree kill")
+    def test_an_exited_command_costs_no_taskkill_spawn(self):
+        from unittest import mock
+        real_run = _bounded_run.subprocess.run
+        spawned = []
+
+        def watch(cmd, *args, **kwargs):
+            spawned.append(cmd[0])
+            return real_run(cmd, *args, **kwargs)
+
+        with mock.patch.object(_bounded_run.subprocess, "run", watch):
+            result = _bounded_run.run_bounded([sys.executable, "-c", "print('done')"], timeout=30)
+        self.assertEqual(0, result.returncode)
+        self.assertEqual([], [name for name in spawned if "taskkill" in name], "a dead process has no tree to kill")
+
     def test_a_missing_program_raises(self):
         with self.assertRaises(OSError):
             _bounded_run.run_bounded([os.path.join("no", "such", "program")], timeout=5)

@@ -8,11 +8,13 @@ tests/test_sidecar_dispatch_context.py (sidecar).
 
     python3 .claude/tests/test_dispatch_checks.py
 """
+import datetime
 import importlib.util
 import json
 import os
 import sys
 import tempfile
+import time
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -355,6 +357,29 @@ def main():
         dc.five_hour_read = lambda session_id=None, budget=10.0: ({}, "planted: no read")
         got = dc.native_width("sid", root)
         case("an unreadable window is no room limit and says why", got["room"] is None and got["note"], repr(got))
+        # A busy session can write more than 8 MiB inside one live window (25.7 MB in 15 minutes measured): an
+        # agent's completion notification that far back but inside the window still marks it finished.
+        busy = tempfile.mkdtemp(prefix="dc_notify_")
+        os.makedirs(os.path.join(busy, "subagents"))
+        now = time.time()
+
+        def stamp(t):
+            return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+        agent = os.path.join(busy, "subagents", "agent-a2.jsonl")
+        with open(agent, "w", encoding="utf-8", newline=chr(10)) as fh:
+            fh.write(json.dumps({"type": "user", "timestamp": stamp(now - 120),
+                                 "message": {"role": "user", "content": [{"type": "tool_result"}]}}) + chr(10))
+        os.utime(agent, (now - 120, now - 120))
+        with open(busy + ".jsonl", "w", encoding="utf-8", newline=chr(10)) as fh:
+            fh.write(json.dumps({"type": "user", "timestamp": stamp(now - 110), "message": {"role": "user",
+                     "content": "<task-notification><task-id>a2</task-id></task-notification>"}}) + chr(10))
+            pad = "x" * 1000
+            for i in range(9 * 1024):
+                fh.write(json.dumps({"type": "assistant", "timestamp": stamp(now - 100 + i / 1000), "pad": pad}) + chr(10))
+        live, note = dc.live_jobs(busy, now=now)
+        case("a completion notification more than 8 MiB back but inside the live window still ends its agent",
+             [j["agentId"] for j in live] == [] and note is None, repr((live, note)))
     else:
         case("live_jobs and native_width cases ran", False, "missing live_jobs or native_width")
 

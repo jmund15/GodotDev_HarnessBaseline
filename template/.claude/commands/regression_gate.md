@@ -7,7 +7,7 @@ allowed-tools: Bash, Monitor
 
 Single source of truth for regression verification. Called by `/session_end`, `/commit_push`, `/review_pr`; also standalone. Rationale and non-negotiables: `change_control`. All mechanics live in `.claude/scripts/regression_gate.ps1`, whose header documents each invariant. **This file owns judgment only:** when the gate applies, failure adjudication, verdict rendering.
 
-**Phase order:** the gate holds the checkout through build and tests. After the build, a headless `--import` refreshes the cache (`IMPORT_GATE`). Sanity runs first, alone, as the GdUnit4 recompile pass; a red Sanity ends the gate `FAIL` before the pool. Logic and pending Integration batches then run in one held pool, headless; `[RequiresRenderer]` classes run windowed as `Render`, the one unit a locked desktop (`SESSION=LOCKED`) slows. §Retry policy owns retry eligibility. Every run writes its TRX under `TestResults/runs/gate-<runId>/`, printed as `TRX_DIR=<path>`; `python3 .claude/tools/test_profile.py <TRX_DIR>` lists the slowest tests.
+**Phase order:** the gate holds the checkout through build and tests. After the build, a headless `--import` refreshes the cache (`IMPORT_GATE`). Sanity runs first, alone, as the GdUnit4 recompile pass; a red Sanity ends the gate `FAIL` before the pool. Logic and pending Integration batches then run in one held pool, headless. Logic runs as units (`LOGIC units=<n>`): `regression_gate.ps1` owns the partition (`$script:LogicGroups` plus `Logic_rest` for every test no group names). The gate prints one summed `SUITE Logic` line. A unit that ran no tests or hit the silent-skip signature makes Logic `INVALID`, and the sum is tiered against the baseline, so a test no unit ran cannot `PASS`; `[RequiresRenderer]` classes run windowed as `Render`, the one unit a locked desktop (`SESSION=LOCKED`) slows. §Retry policy owns retry eligibility. Every run writes its TRX under `TestResults/runs/gate-<runId>/`, printed as `TRX_DIR=<path>`; `python3 .claude/tools/test_profile.py <TRX_DIR>` lists the slowest tests.
 
 ## When Required
 
@@ -56,7 +56,7 @@ It streams the stage lines and the finished-batch transitions with no repeat, th
 
 ## Retry policy
 
-Parsed test failures are red and never qualify for an automatic retry. Sanity retries a clean `PARTIAL` or `INVALID` result in a solo pass unless its status is `HANG`. Logic uses the same eligibility in the retry pool. Integration retries only batches left `HANG` or `SILENT_SKIP` in that pool. A clean aggregate Integration `SHORTFALL` is judged without an aggregate rerun. The code permits each eligible retry once. Its replacement result is then tiered.
+Parsed test failures are red and never qualify for an automatic retry. Sanity retries a clean `PARTIAL` or `INVALID` result in a solo pass unless its status is `HANG`. Logic uses the same eligibility in the retry pool and reruns every Logic unit (`Logic_<n>_retry`), since a short sum names no unit. Integration retries only batches left `HANG` or `SILENT_SKIP` in that pool. A clean aggregate Integration `SHORTFALL` is judged without an aggregate rerun. The code permits each eligible retry once. Its replacement result is then tiered.
 
 ## Reading the verdict
 
@@ -68,7 +68,9 @@ Preflight emits `REAP` even when it kills nothing. Suite reaper lines reach stdo
 
 [`regression_gate_reference.md`](reference/regression_gate_reference.md) §Sample output shows a passing run's stdout, line by line.
 
-**REUSE** — the ledger selects a producer with matching tree digest and mode, an eligible status (`PASS`, `FAIL`, `WARN` or `STATIC_PASS`) and a finish time within the code's age ceiling. The current engine probe must succeed because the toolchain is gitignored. The age ceiling is enforced by `regression_gate.ps1`'s REUSE scan; inspect it when judging an older artifact. The gate then exits with the producer's verdict instead of running: `REUSE from=<id> mode=<mode> age=<age> session=<session>` plus `BASELINE reused=<action>`. **Report it as `PASS (reused from <id>, digest-match)`, never as a fresh run.** `-NoReuse` forces a fresh run. This definition governs every REUSE below.
+**REUSE** — the ledger selects a producer, from any checkout of this repository, with matching tree digest and mode, the same import state (`Get-ImportStamp` in `regression_gate.ps1` owns that check), an eligible status (`PASS`, `FAIL`, `WARN` or `STATIC_PASS`) and a finish time within the code's age ceiling. The current engine probe must succeed because the toolchain is gitignored. The age ceiling is enforced by `regression_gate.ps1`'s REUSE scan; inspect it when judging an older artifact. The gate then exits with the producer's verdict instead of running: `REUSE from=<id> mode=<mode> age=<age> session=<session> checkout=<producer checkout>` plus `BASELINE reused=<action>`. **Report it as `PASS (reused from <id>, digest-match)`, never as a fresh run.** `-NoReuse` forces a fresh run. This definition governs every REUSE below.
+
+**Ledger.** Record locations and the per-stage times in each record are documented in `regression_gate.ps1`'s header; the REUSE definition above states the cross-checkout rule.
 
 Read [`regression_gate_reference.md`](reference/regression_gate_reference.md) §Status vocabulary for `TREE_CHANGED`, `STATUS=LOCKED`, `ROLLBACK_TRIGGER` and `BASELINE action=skipped`.
 

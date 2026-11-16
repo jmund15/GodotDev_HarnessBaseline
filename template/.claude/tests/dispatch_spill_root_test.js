@@ -100,6 +100,11 @@ const argsFor = (script, spillDir, jobs) => script === 'dispatch.js'
     !two.result.crash && two.prompts[0] && two.prompts[0].includes('\n' + render(true) + '\n'), two.prompts[0])
   check('dispatch.js two-job run renders the no-shell variant from the shared source',
     !two.result.crash && two.prompts[1] && two.prompts[1].includes('\n' + render(false) + '\n'), two.prompts[1])
+  // The lens engines word their own guard but copy its shell variants; a source edit reached dispatch.js's pin alone.
+  // explore_fanout.js ships a layer up, so its pin is explore_fanout_transport_test.js's.
+  const review = fs.readFileSync(path.join(__dirname, '..', 'workflows', 'review_fanout.js'), 'utf8').replace(/\\'/g, "'")
+  check('review_fanout.js carries the shared source\'s shell and no-shell variants',
+    [src.withShell, src.noShell].every(part => review.includes(part)), 'review_fanout.js')
   const one = await run('dispatch.js', { jobs: [job('solo')] })
   check('dispatch.js single job carries no guard', !one.result.crash && one.prompts[0] && !one.prompts[0].includes(src.header), one.prompts[0])
 

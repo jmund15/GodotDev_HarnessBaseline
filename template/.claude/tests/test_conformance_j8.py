@@ -130,18 +130,29 @@ class Conformance(unittest.TestCase):
             (target / "child/grand/.gitignore").write_text("modified tracked data")
             self.assertFalse(qualifies(True))
 
-    def test_v25_owner_goal_disarms(self):
+    def test_v25_only_off_or_review_disarms(self):
         for text in ("/overnight", "/overnight   ",
                      "<command-message>overnight</command-message>\n<command-name>/overnight</command-name>"):
             self.assertFalse(overnight.is_owner_prompt(text), text)
         for text in ("/overnight a new goal", "/overnight\nnew goal",
                      "<command-message>overnight</command-message>\n<command-name>/overnight</command-name>\n<command-args>new goal</command-args>"):
             self.assertTrue(overnight.is_owner_prompt(text), text)
+
+        def armed_after(text):
             with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "j8"}):
                 with contextlib.redirect_stdout(io.StringIO()):
                     overnight.arm("old goal", root)
                     overnight.owner_return({"session_id": "j8", "cwd": root, "prompt": text})
-                self.assertFalse(overnight.armed(root, "j8"))
+                return overnight.armed(root, "j8")
+        # overnight.md Owner stop: only `/overnight off` or `/overnight_review` ends the run; any other owner
+        # message, a new goal included, leaves it armed.
+        for text in ("/overnight a new goal", "/overnight\nnew goal",
+                     "<command-message>overnight</command-message>\n<command-name>/overnight</command-name>\n<command-args>new goal</command-args>"):
+            self.assertTrue(armed_after(text), text)
+        for text in ("/overnight off", "/overnight_review",
+                     "<command-message>overnight</command-message>\n<command-name>/overnight</command-name>\n<command-args>off</command-args>",
+                     "<command-name>/overnight_review</command-name>\n<command-args>notes</command-args>"):
+            self.assertFalse(armed_after(text), text)
         self.assertFalse(overnight.is_owner_prompt('<agent-message>/overnight new goal</agent-message>'))
 
     def test_rv4_default_independent(self):
@@ -149,8 +160,11 @@ class Conformance(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 overnight.arm("goal", root)
             doc = Path(root, "close-j8.md")
+            # overnight.md §Step 2: an open Q row carries the `Evidence:` line a VERIFIED check settled.
+            Path(root, "settled.txt").write_text("the check settled it", encoding="utf-8")
+            evidence = 'Evidence: {"file": "settled.txt", "quote": "the check settled it"}'
             def write(row):
-                doc.write_text("## Outcome\nNext session: USD · model\n## Decisions for you\n" + row +
+                doc.write_text("## Outcome\nNext session: USD · model\n## Decisions for you\n" + row + "\n" + evidence +
                                "\n## Left undone\n- None.\n", encoding="utf-8")
             for suffix in ("", ". Reversibility: residue"):
                 write(Q.format(suffix=suffix))

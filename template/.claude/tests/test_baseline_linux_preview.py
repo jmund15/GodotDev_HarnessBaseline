@@ -4,7 +4,9 @@ the worktree resolver. WSL itself is not started; the script text is asserted in
 
     python3 .claude/tests/test_baseline_linux_preview.py
 """
+import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -68,6 +70,17 @@ def script_of_two(blp):
 
 def main():
     cases = []
+    slot_root = tempfile.mkdtemp(prefix='preview_pool_')
+    os.environ.update(HARNESS_SLOT_DIR=slot_root, HARNESS_MACHINE_ROOT=slot_root)
+
+    def local_script(*args):
+        # Run the same lane script under this host's Bash; WSL path translation is proven separately.
+        from unittest.mock import patch
+        if os.name == 'nt':
+            with patch.object(blp, 'wsl_path', lambda p: str(p).replace('\\', '/')):
+                return blp.preview_script(*args)
+        return blp.preview_script(*args)
+
 
     jobs = blp.ci_jobs(WORKFLOW)
     steps = [step for _, job_steps in jobs for step in job_steps]
@@ -179,7 +192,7 @@ def main():
         "jobs:\n  t:\n    steps:\n      - run: echo hi\n", encoding="utf-8")
     seen = []
     real_run, real_no_wsl, real_cwd = blp._run_wsl, blp._no_wsl, os.getcwd()
-    blp._run_wsl, blp._no_wsl = (lambda script, log: seen.append(script) or 0), (lambda: False)
+    blp._run_wsl, blp._no_wsl = (lambda script, log, *rest: seen.append(script) or 0), (lambda: False)
     try:
         os.chdir(direct.parent)
         with contextlib.redirect_stdout(io.StringIO()):
@@ -208,7 +221,7 @@ def main():
         (tree / "f.txt").write_text("x\n", encoding="utf-8", newline="\n")
         env = dict(os.environ, HOME=str(home))
         env.pop("HARNESS_MACHINE_SLOTS", None)
-        out = subprocess.run([bash_exe(), "--noprofile", "--norc", "-c", blp.preview_script(posix(tree), job_list(posix(home))) ],
+        out = subprocess.run([bash_exe(), "--noprofile", "--norc", "-c", local_script(posix(tree), job_list(posix(home))) ],
                              capture_output=True, text=True, env=env, timeout=120)
         return out
 
@@ -227,9 +240,10 @@ def main():
                   out.returncode == 1 and "::pass after" in out.stdout))
     cases.append(("the fail line sits inside its own lane's log block",
                   re.search(r"::lane ok \d+s\n(?:.*\n)*?::fail boom rc=7 \d+s\n(?:.*\n)*?::lane bad \d+s", out.stdout) is not None))
-    cases.append(("each lane gets its own HOME and the shared slot dir and width",
-                  'HOME="$D/a.home"' in script_of_two(blp) and 'HARNESS_SLOT_DIR="$R/.slots"' in script_of_two(blp)
-                  and "PREVIEW_SLOTS" in dir(blp) and blp.PREVIEW_SLOTS == 4))
+    cases.append(("each lane gets its own HOME and joins the Windows machine pool through the bridge",
+                  'HOME="$D/a.home"' in script_of_two(blp) and 'export HARNESS_MACHINE_ROOT=' in script_of_two(blp)
+                  and 'HARNESS_WINDOWS_SLOT_SCRIPT' in script_of_two(blp)
+                  and 'HARNESS_SLOT_DIR="$R/.slots"' not in script_of_two(blp)))
 
     home = Path(tempfile.mkdtemp(prefix="blp_home_"))
     tree = Path(tempfile.mkdtemp(prefix="blp_tree_"))
@@ -237,7 +251,7 @@ def main():
     env = dict(os.environ, HOME=str(home))
     env.pop("HARNESS_MACHINE_SLOTS", None)
     launch = lambda job_list: subprocess.Popen(
-        [bash_exe(), "--noprofile", "--norc", "-c", blp.preview_script(posix(tree), job_list)],
+        [bash_exe(), "--noprofile", "--norc", "-c", local_script(posix(tree), job_list)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
     hold = ("touch %s/first_up\nfor i in $(seq 1 300); do [ -e %s/second_done ] && exit 0; sleep 0.1; done; exit 1"
             % (posix(home), posix(home)))
@@ -255,8 +269,119 @@ def main():
                   second.returncode == 0 and "::lane b " in second_out))
     third = launch([("c", [("quick", "true")])])
     third.communicate(timeout=60)
-    cases.append(("a run removes the trees of runs that ended, so one tree is left",
-                  len(list((home / "baseline-linux-preview").glob("run.*"))) == 1))
+    cases.append(("a green run removes its own tree and the trees of runs that ended, so none is left",
+                  len(list((home / "baseline-linux-preview").glob("preview.*"))) == 0))
+    here = Path(__file__).resolve().parent
+    red_lines = (here / "linux_preview_red.fixture.log").read_text(encoding="utf-8").splitlines()
+    green_lines = (here / "linux_preview_green.fixture.log").read_text(encoding="utf-8").splitlines()
+    lane_names = ["root", "template", "pure", "pure-coding", "pure-coding-godot"]
+
+    green = blp.summarize(green_lines, lane_names)
+    cases.append(("a real all-green preview log summarizes green with five lanes and their seconds",
+                  green["status"] == "green" and [l["lane"] for l in green["lanes"]] == lane_names
+                  and green["lanes"][1]["seconds"] == 1297 and not any(l["failed_steps"] for l in green["lanes"])))
+    red_sum = blp.summarize(red_lines, ["root", "template", "pure", "pure-coding"])
+    by_lane = {l["lane"]: l for l in red_sum["lanes"]}
+    # Read from the fixture's own FAIL line: this pure-layer proof cannot name a godot-layer file (layer closure).
+    failed_proof = posixpath.basename(next(l.split(None, 2)[2] for l in red_lines if l.startswith("FAIL ")))
+    cases.append(("a real red preview log names each red lane, its failed step and its failed proof",
+                  red_sum["status"] == "red"
+                  and by_lane["template"]["failed_steps"] == ["template harness battery"]
+                  and by_lane["template"]["failed_proofs"] == [failed_proof]
+                  and by_lane["root"]["failed_steps"] == ["baseline-repo-root proofs"]
+                  and by_lane["pure"]["status"] == "red"))
+    cases.append(("a lane the workflow declares but the log never closes is incomplete, never green",
+                  blp.summarize(green_lines, lane_names + ["ghost"])["status"] == "incomplete"
+                  and blp.summarize([], lane_names)["status"] == "incomplete"))
+
+    import contextlib
+    import io
+
+    scripts: list[str] = []
+
+    def run_main(argv, sink_lines, rc, no_wsl=False):
+        """main() against a stubbed WSL launch that replays recorded output; returns (rc, stdout)."""
+        saved = (blp._run_wsl, blp.shutil.which)
+
+        def fake_run(script, log_path, sink=None):
+            scripts.append(script)
+            for line in sink_lines:
+                if sink is not None:
+                    sink.append(line)
+            return rc
+        blp._run_wsl = fake_run
+        blp.shutil.which = (lambda *_a, **_k: None) if no_wsl else (lambda *_a, **_k: "wsl.exe")
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                code = blp.main(argv)
+        finally:
+            blp._run_wsl, blp.shutil.which = saved
+        return code, out.getvalue()
+
+    tree = Path(tempfile.mkdtemp(prefix="blp_run_")) / "wt"
+    (tree / ".github" / "workflows").mkdir(parents=True)
+    (tree / ".github" / "workflows" / "baseline.yml").write_text(
+        "jobs:\n" + "".join("  %s:\n    steps:\n      - run: true\n" % n for n in lane_names), encoding="utf-8")
+    code, text = run_main(["--worktree", str(tree)], green_lines, 0)
+    result = json.loads(next(l for l in text.splitlines() if l.startswith("::result "))[len("::result "):])
+    cases.append(("recorded green output exits 0 and prints one ::result line with status green",
+                  code == 0 and result["status"] == "green" and result["lanes"][1]["lane"] == "template"))
+    tree4 = Path(tempfile.mkdtemp(prefix="blp_run4_")) / "wt"
+    (tree4 / ".github" / "workflows").mkdir(parents=True)
+    (tree4 / ".github" / "workflows" / "baseline.yml").write_text(
+        "jobs:\n" + "".join("  %s:\n    steps:\n      - run: true\n" % n for n in lane_names[:4]),
+        encoding="utf-8")
+    code, text = run_main(["--worktree", str(tree), "--lanes", "pure,pure-coding"], green_lines, 0)
+    only_script = scripts[-1]
+    cases.append(("--lanes runs only the named lanes: no other lane is copied or run",
+                  code == 0 and 'cp -a "$D/src" "$D/pure"' in only_script and 'cp -a "$D/src" "$D/pure-coding"' in only_script
+                  and '"$D/template"' not in only_script and '"$D/root"' not in only_script))
+    code, _text = run_main(["--worktree", str(tree), "--lanes", "ghost"], green_lines, 0)
+    cases.append(("--lanes naming a lane the workflow lacks exits 3", code == 3))
+    code, text = run_main(["--worktree", str(tree4)], red_lines, 1)
+    cases.append(("recorded red output exits 1 and its ::result names the red lanes",
+                  code == 1 and '"status": "red"' in text and failed_proof in text))
+    code, _text = run_main(["--worktree", str(tree)], ["wsl: no distribution installed"], 1)
+    cases.append(("a nonzero exit with no ::fail line is a preview that could not run: exit 3, never a red verdict",
+                  code == 3))
+    code, text = run_main(["--worktree", str(tree)], [], 0, no_wsl=True)
+    cases.append(("no WSL exits 4 and ::result says unavailable with the reason",
+                  code == 4 and '"status": "unavailable"' in text and "no WSL" in text))
+
+    helped = io.StringIO()
+    with contextlib.redirect_stdout(helped), contextlib.redirect_stderr(io.StringIO()):
+        helped_rc = blp.main(["--help"])
+    cases.append(("--help prints usage and exits 0; it is never read as a journal id",
+                  helped_rc == 0 and "--worktree" in helped.getvalue() and "--setup" in helped.getvalue()))
+    unknown_err = io.StringIO()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(unknown_err):
+        unknown_rc = blp.main(["--bogus"])
+    cases.append(("an unknown flag exits 2 with usage, never read as a journal id",
+                  unknown_rc == 2 and "usage" in unknown_err.getvalue().lower()))
+
+    mine = blp.preview_script("/mnt/c/w/tree", [("a", [("s", "true")])], run="mine")
+    theirs = blp.preview_script("/mnt/c/w/tree", [("a", [("s", "true")])], run="theirs")
+    cases.append(("each run owns its WSL directory: two previews never share one",
+                  'D="$R/mine.$$"' in mine and 'D="$R/theirs.$$"' in theirs
+                  and 'rm -rf "$D"' in mine and 'rm -rf "$R"' not in mine
+                  and 'rm -rf "$HOME/baseline-linux-preview"' not in mine))
+    cases.append(("a green run removes its own directory; a red one keeps it for inspection",
+                  '[ "$fail" = 0 ] && rm -rf "$D"' in mine))
+    cases.append(("a tree whose run ended is swept while a live peer's is kept, and the shared slot dir is not",
+                  '! kill -0 "${n##*.}"' in mine and 'case "$n" in .*) continue ;; esac' in mine
+                  and mine.index("kill -0") < mine.index('rm -rf "$D" &&')))
+    guarded = blp.preview_script("/mnt/c/w/tree", [("a", [("s", "true")])], run="mine", preflight=True)
+    cases.append(("preflight names the tool a machine lacks and exits 4, before any copy",
+                  "exit 4" in guarded and "::unavailable" in guarded
+                  and guarded.index("exit 4") < guarded.index("tar -C")))
+    empty_home = Path(tempfile.mkdtemp(prefix="blp_nohome_"))
+    probe = subprocess.run([bash_exe(), "--noprofile", "--norc", "-c", guarded], capture_output=True, text=True,
+                           env=dict(os.environ, HOME=str(empty_home)), timeout=60)
+    cases.append(("run for real in a HOME with no ci-tools, preflight exits 4 and prints ::unavailable",
+                  probe.returncode == 4 and "::unavailable" in probe.stdout and "--setup" in probe.stdout))
+    cases.append(("without preflight the script carries no tool check",
+                  "::unavailable" not in mine))
 
     failed = 0
     for label, ok in cases:

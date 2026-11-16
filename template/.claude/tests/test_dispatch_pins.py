@@ -156,8 +156,15 @@ def test_author_writing_only_gitignored_paths_is_not_a_writer():
     gitignored or outside the checkout (a vault doc) cannot, and a brief with no writeSet is unknown,
     so it still waits."""
     import json
-    repo = os.path.dirname(os.path.dirname(HOOKS))
-    with tempfile.TemporaryDirectory(prefix="writer_set_") as root:
+    import subprocess
+    with tempfile.TemporaryDirectory(prefix="writer_repo_") as repo, \
+            tempfile.TemporaryDirectory(prefix="writer_set_") as root:
+        # The brief's gitignore test asks git about the project root: a repository of its own that ignores
+        # scratch the way this project does, not this checkout.
+        subprocess.run(["git", "init", "-q", repo], check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        with open(os.path.join(repo, ".gitignore"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(".claude/scratch/\n")
+
         def brief(name, write_set):
             task = {"check": ["claims"]}
             if write_set is not None:

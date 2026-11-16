@@ -63,6 +63,8 @@ import json
 import os
 import re
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
@@ -230,6 +232,9 @@ def band_satisfies(current, required):
 
 # ------------------------------------------------------------------------ discovery
 
+_THIS_FILE = Path(__file__).resolve()   # a lookup per record resolved it again: a syscall per path component
+
+
 def find_registry(start=None):
     """Explicit env override, else walk up from `start` (default: this file).
 
@@ -239,7 +244,7 @@ def find_registry(start=None):
     override = os.environ.get(ENV_OVERRIDE)
     if override:
         return Path(override)
-    here = Path(start).resolve() if start else Path(__file__).resolve()
+    here = Path(start).resolve() if start else _THIS_FILE
     if here.is_file():
         here = here.parent
     for parent in [here, *here.parents]:
@@ -1630,6 +1635,8 @@ _TIER_ALIASES = {"validation": "fanout"}
 
 _LADDER_HEADING = "## Role guidance"
 _LADDER_DEFINITIONS_HEADING = "## Role definitions"
+_LADDER_AXES_HEADING = "## Axis definitions"
+_LADDER_COMPACTION_HEADING = "## Compaction"
 LADDER_EVIDENCE_COLUMN = "evidence"
 _LADDER_COLUMNS = ("model", "strengths", LADDER_EVIDENCE_COLUMN)
 EVIDENCE_TAGS = ("pub", "bench", "use")
@@ -1830,11 +1837,24 @@ def role_tiers(path=None, start=None, data=None):
     return tiers
 
 
-def ladder_slice(tiers, path=None, data=None, only=None):
-    """The ladder a dispatcher needs to pin `tiers`: everything from `## Role definitions` on, with the Role
-    guidance rows cut to those whose registry `roles` claim a named tier, and to the ladder names in `only`
-    when given (the rows `for-role` lists on surviving plans). Raises when no row claims one or the table
-    schema drifted, so an empty slice never reads as a ladder with nothing to say."""
+def _ladder_repo_path(path):
+    """The ladder's path as the slice's pointer line names it: repo-relative when it sits under `.claude/`."""
+    posix = Path(path).as_posix()
+    return posix[posix.rindex(".claude/"):] if ".claude/" in posix else posix
+
+
+def ladder_slice(tiers, path=None, data=None, only=None, doctrine=True):
+    """The ladder a dispatcher needs to pin `tiers`: `## Role definitions` cut to the named tiers' work-shape
+    rows (the term glossary dropped), the Role guidance rows cut to those whose registry `roles` claim a named
+    tier, and to the ladder names in `only` when given (the rows `for-role` lists on surviving plans), the
+    selection bullets whole, and one line pointing at the ladder file for the term and axis glossaries and
+    `## Compaction` (neither is printed: a pick reads cells, not axis meanings, and the compaction rule applies
+    to a job whose subject outgrows a row's compaction point, which the dispatch preflight's fit line reports). Raises when no row claims one or the table
+    schema drifted, so an empty slice never reads as a ladder with nothing to say.
+
+    `doctrine=False` is the cut for a context that already holds the doctrine (`_doctrine_in_context`): the
+    paragraphs and selection bullets are the same text on every print, so they stay out and one line says
+    where they are. The tier's work-shape rows and guidance rows, which differ per tier, always print."""
     tiers = {canonical_tier(t) for t in tiers}
     if not tiers:
         raise RegistryError("for-role needs at least one tier")
@@ -1850,12 +1870,28 @@ def ladder_slice(tiers, path=None, data=None, only=None):
         keep &= set(only)
     if not cells or not keep:
         raise RegistryError(f"{path} has no Role guidance row claiming: {', '.join(sorted(tiers))}")
-    out, section = [], None
+    out, section, in_terms = [], None, False
     for raw in lines:
         if raw.startswith("## "):
             section = raw.strip()
         if section is None or (not out and section != _LADDER_DEFINITIONS_HEADING):
             continue
+        if section in (_LADDER_AXES_HEADING, _LADDER_COMPACTION_HEADING):
+            continue
+        if not doctrine and out and raw.strip() and not raw.startswith(("## ", "|", "`validation` is not a tier")):
+            continue
+        if section == _LADDER_DEFINITIONS_HEADING and out:
+            if raw.startswith("| "):
+                first = raw.strip().strip("|").split("|")[0].strip().strip("`")
+                if first in TIER_ORDER and first not in tiers:
+                    continue
+            elif raw.startswith("`validation` is not a tier"):
+                if "fanout" not in tiers:
+                    continue
+            elif raw.startswith("Terms the cells use"):
+                in_terms = True
+            if in_terms:
+                continue
         if section == _LADDER_HEADING and raw.startswith("| "):
             first = raw.strip().strip("|").split("|")[0].strip()
             if first in cells and first not in keep:
@@ -1863,6 +1899,14 @@ def ladder_slice(tiers, path=None, data=None, only=None):
         out.append(raw)
     if not out:
         raise RegistryError(f"{path} has no `{_LADDER_DEFINITIONS_HEADING}` section")
+    where = _ladder_repo_path(path)
+    if doctrine:
+        out.append(f"Term and axis definitions, and Compaction (a job whose subject outgrows a row's compaction "
+                   f"point): `{where}`.")
+    else:
+        out = [line for i, line in enumerate(out) if line.strip() or (i and out[i - 1].strip())]
+        out.append("Role definitions, how to read a cell and the selection line: printed earlier in this context. "
+                   f"Term and axis definitions, and Compaction: `{where}`.")
     return "\n".join(out) + "\n"
 
 
@@ -2467,65 +2511,77 @@ def transport_projects_root(transport, data=None):
 _TRANSCRIPT_INDEX = {}
 
 
-def _project_stamp(root):
-    """(path, mtime_ns) of each project directory under `root`: a new transcript bumps its directory's mtime."""
-    stamp = []
-    with os.scandir(root) as projects:
-        for project in projects:
-            if project.is_dir():
-                stamp.append((project.path, os.stat(project.path).st_mtime_ns))
-    return tuple(sorted(stamp))
-
-
 def _scan_transcripts(root):
-    """(stamp, {file name: [paths]}). Each directory is stamped before its files are read, so a file written
-    during the scan changes the stamp and the next miss rescans."""
-    index, stamp = {}, []
+    """{file name: [paths]} of every transcript under `<root>/*/`."""
+    index = {}
     try:
         with os.scandir(root) as projects:
             for project in projects:
                 if project.is_dir():
-                    stamp.append((project.path, os.stat(project.path).st_mtime_ns))
                     with os.scandir(project.path) as files:
                         for entry in files:
                             if entry.name.endswith('.jsonl'):
                                 index.setdefault(entry.name, []).append(Path(entry.path))
     except OSError:
         pass
-    return tuple(sorted(stamp)), index
+    return index
 
 
-def _transcript_matches(root, name):
-    """Sorted `<root>/*/<name>` files. One directory scan per root serves every lookup in the process (a
-    repricing pass looks up hundreds of sessions). A miss rescans only when a project directory changed
-    since the last scan, or when the wanted file now sits in a scanned project directory (a directory mtime
-    ticks coarsely, so a file written right after a scan can leave the stamp equal). A transcript written since
-    is found, and a run of absent sessions costs one scan."""
-    cached = _TRANSCRIPT_INDEX.get(root)
-    if cached is None:
-        cached = _TRANSCRIPT_INDEX[root] = _scan_transcripts(root)
-    for rescan in (False, True):
-        if rescan:
-            try:
-                changed = (_project_stamp(root) != cached[0]
-                           or any(os.path.isfile(os.path.join(project, name)) for project, _ in cached[0]))
-            except OSError:
-                changed = False
-            if not changed:
-                break
-            cached = _TRANSCRIPT_INDEX[root] = _scan_transcripts(root)
-        found = sorted(path for path in cached[1].get(name, ()) if path.is_file())
-        if found:
-            return found
-    return []
+def _probe_transcripts(root, name):
+    """Sorted `<root>/*/<name>` files, found by one existence probe per project directory: the question is
+    whether one file exists, so no directory is listed or stamped. The probes run on a pool, as they wait on
+    the filesystem (3,836 directories took 1.2 s in sequence, 0.3 s on 16 threads)."""
+    try:
+        with os.scandir(root) as projects:
+            candidates = [os.path.join(project.path, name) for project in projects if project.is_dir()]
+    except OSError:
+        return []
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        present = list(pool.map(os.path.isfile, candidates))
+    return sorted(Path(path) for path, there in zip(candidates, present) if there)
 
 
-def session_transcript(session_id, transport, data=None):
-    """Find one client transcript by session id on its transport's projects root."""
+def _scan_root(root):
+    """Index `root` and remember when the scan began: a transcript older than that is in it."""
+    began = time.time()
+    _TRANSCRIPT_INDEX[root] = (began, _scan_transcripts(root))
+    return _TRANSCRIPT_INDEX[root]
+
+
+def _transcript_matches(root, name, settled_by=None):
+    """Sorted `<root>/*/<name>` files. One directory scan per root serves every lookup of a file it held (a
+    repricing pass looks up hundreds of sessions). A name the index lacks is probed once per project directory,
+    so a transcript written since the scan is found, and the probe's finds join the index.
+
+    `settled_by` is a time the session had finished by (its record's mtime): its transcript was on disk then, so
+    an index scanned at or after it answers a miss for good, with no probe. An older index is rescanned once;
+    the rescan serves every later lookup settled before it began."""
+    entry = _TRANSCRIPT_INDEX.get(root)
+    scanned = entry is None
+    if scanned:
+        entry = _scan_root(root)
+    index = entry[1]
+    found = sorted(path for path in index.get(name, ()) if path.is_file())
+    if found or scanned:
+        return found
+    if settled_by is not None:
+        if entry[0] < settled_by:
+            index = _scan_root(root)[1]
+            found = sorted(path for path in index.get(name, ()) if path.is_file())
+        return found
+    found = _probe_transcripts(root, name)
+    if found:
+        index[name] = found
+    return found
+
+
+def session_transcript(session_id, transport, data=None, settled_by=None):
+    """Find one client transcript by session id on its transport's projects root. `settled_by`: see
+    `_transcript_matches`; a caller holding a finished session's record passes its mtime."""
     if not session_id or Path(str(session_id)).name != session_id:
         return None
     root = Path(transport_projects_root(transport, data=data))
-    matches = _transcript_matches(root, session_id + '.jsonl')
+    matches = _transcript_matches(root, session_id + '.jsonl', settled_by=settled_by)
     if len(matches) > 1:
         raise RegistryError(f'ambiguous transcript for session {session_id}: {matches}')
     return matches[0] if matches else None
@@ -2582,7 +2638,7 @@ def _missed_final_requests(driver_requests, remainder):
     return 0
 
 
-def record_requests(record, path, data=None, events=None):
+def record_requests(record, path, data=None, events=None, settled_by=None):
     """Final client requests plus the aggregate remainder, with explicit estimate labels.
 
     The record's four token kinds are authoritative totals. Its optional 1h cache split can
@@ -2591,7 +2647,7 @@ def record_requests(record, path, data=None, events=None):
     """
     data = data if data is not None else load()
     streams, stream_source = _stream_events(path, events)
-    transcript = session_transcript(record.get('sessionId'), record.get('transport'), data=data)
+    transcript = session_transcript(record.get('sessionId'), record.get('transport'), data=data, settled_by=settled_by)
     requests = request_usage(usage_events(transcript.read_text(encoding='utf-8'))) if transcript else []
     driver_count = len(requests)
     if transcript:
@@ -2677,9 +2733,9 @@ def tier_basis_known(basis):
 _reprice_cache = {}
 
 
-def _reprice_stamp(record, path, data):
+def _reprice_stamp(record, path, data, settled_by=None):
     """(size, mtime) of every file `record_requests` reads for this record, or None when one cannot be stat'd."""
-    transcript = session_transcript(record.get('sessionId'), record.get('transport'), data=data)
+    transcript = session_transcript(record.get('sessionId'), record.get('transport'), data=data, settled_by=settled_by)
     files = [Path(path)] + [p for p in _sibling_usage_paths(path) if p.is_file()]
     if transcript:
         files += [Path(transcript)] + sorted(Path(transcript).with_suffix('').glob('subagents/**/agent-*.jsonl'))
@@ -2689,38 +2745,48 @@ def _reprice_stamp(record, path, data):
         return None
 
 
-def reprice_record(record, path, data=None, events=None):
+def reprice_record(record, path, data=None, events=None, settled=False):
     """In-memory final-request pricing; old ledgers keep their spend/list semantics.
 
     A repeat call on an unchanged record, registry and source set reuses the parse: a rating
     collection reprices every record, and each parse re-reads the transcript and its subagents.
     Caller-held `events` have no file stamp, so they always reprice.
+
+    `settled`: the record file was written after its session finished (a benchmark cell's dispatch record), so
+    the file's mtime is the moment the transcript lookup may trust a root scanned since.
     """
     data = data if data is not None else load()
+    settled_by = None
+    if settled:
+        try:
+            settled_by = os.stat(path).st_mtime
+        except OSError:
+            pass
+    kw = {} if settled_by is None else {'settled_by': settled_by}
     if events is not None:
-        return _reprice_record(record, path, data, events)
+        return _reprice_record(record, path, data, events, **kw)
     try:
-        stamp = _reprice_stamp(record, path, data)
+        stamp = _reprice_stamp(record, path, data, settled_by)
     except (RegistryError, OSError, ValueError):
-        return _reprice_record(record, path, data, events)
+        return _reprice_record(record, path, data, events, **kw)
     if stamp is None:
-        return _reprice_record(record, path, data, events)
+        return _reprice_record(record, path, data, events, **kw)
     key = (str(path), json.dumps(record, sort_keys=True, default=str), id(data))
     hit = _reprice_cache.get(key)
     if hit and hit[0] is data and hit[1] == stamp:
         return dict(hit[2])
-    rec = _reprice_record(record, path, data, events)
+    rec = _reprice_record(record, path, data, events, **kw)
     if len(_reprice_cache) >= 8192:
         _reprice_cache.clear()
     _reprice_cache[key] = (data, stamp, rec)
     return dict(rec)
 
 
-def _reprice_record(record, path, data, events):
+def _reprice_record(record, path, data, events, settled_by=None):
     rec = dict(record)
     rec.setdefault('costTierBasis', 'untiered')
     try:
-        view = record_requests(record, path, data=data, events=events)
+        view = record_requests(record, path, data=data, events=events, settled_by=settled_by)
         requests = view.pop('requests')
         if not requests:
             return rec
@@ -2899,6 +2965,21 @@ def claimed_tiers(data=None):
     return [tier for tier in TIER_ORDER if tier in claimed]
 
 
+def _doctrine_in_context():
+    """True when this session's context window already holds the ladder doctrine: a `for-role` print the gate
+    credited, or a full Read of the ladder. Both clear on compaction, so the next print carries it again. False
+    with no session id or unreadable state, so an unknown context prints the whole doctrine."""
+    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not session_id:
+        return False
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+        import model_ladder_gate
+        return bool(model_ladder_gate.claim_loaded(session_id) or model_ladder_gate.ladder_slice_tiers(session_id))
+    except Exception:
+        return False
+
+
 def for_role_text(tiers, data=None, seat=None, pay=False):
     """Exactly the stdout `for-role <tiers>` prints: the ladder cut to those tiers, then the plan-filtered tier
     table with its `route ...` header and `plan ...: left N%` room lines. The CLI and the dispatch deny share
@@ -2923,7 +3004,7 @@ def for_role_text(tiers, data=None, seat=None, pay=False):
     listed = {row.get("ladder") for group in got["groups"] for row in group["rows"]}
     table = provider_bands.render_tier_table(got) + "\n"
     try:
-        ladder = ladder_slice(tiers, data=data,
+        ladder = ladder_slice(tiers, data=data, doctrine=not _doctrine_in_context(),
                               only=None if got["plansLow"] or got.get("payOptions") else listed)
     except RegistryError as err:
         return table, str(err)

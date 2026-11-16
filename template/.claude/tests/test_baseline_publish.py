@@ -17,11 +17,26 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _case_pool import run_cases  # noqa: E402
 from _runner_fixture import copy_runner_deps  # noqa: E402
+
+_real_sleep = time.sleep
+
+
+def _quick_slot_poll(seconds: float) -> None:
+    """Step 5 (`_validate`) queues its checks behind the battery's exclusive machine hold, and
+    `harness_tests._take_slots` re-polls every 0.25 s: each full publish spent about a second
+    asleep for slots nobody else held. Only that poll is shortened; every other sleep is real."""
+    if seconds == 0.25 and sys._getframe(1).f_code.co_name == "_take_slots":
+        seconds = 0.01
+    _real_sleep(seconds)
+
+
+time.sleep = _quick_slot_poll
 
 PUBLISH = Path(__file__).resolve().parents[1] / "tools" / "baseline_publish.py"
 SYNC = PUBLISH.parent / "baseline_sync.py"
@@ -80,12 +95,23 @@ def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     _git(path, "init", "-q", "-b", "main")
     with open(path / ".git" / "config", "a", encoding="utf-8", newline="\n") as handle:
-        handle.write("[user]\n\temail = fixture@example.invalid\n\tname = fixture\n")
+        # gc and maintenance off: every commit otherwise spawns `maintenance run --auto` (~20 ms) that never has work here.
+        handle.write("[user]\n\temail = fixture@example.invalid\n\tname = fixture\n"
+                     "[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n")
 
 
 def _commit(path: Path, message: str) -> str:
     _git(path, "add", "-A")
     _git(path, "commit", "-q", "-m", message)
+    return _branch_sha(path)
+
+
+def _branch_sha(path: Path) -> str:
+    if (path / ".git").is_dir():  # a linked worktree's `.git` is a file; it takes the spawn below
+        head = (path / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+        ref = path / ".git" / head[5:] if head.startswith("ref: ") else None
+        if ref is not None and ref.is_file():  # a loose branch ref: reading it saves a `rev-parse` spawn
+            return ref.read_text(encoding="utf-8").strip()
     return _git(path, "rev-parse", "HEAD").decode().strip()
 
 
@@ -425,14 +451,19 @@ def _install_fake_gh(path: Path) -> dict[str, str]:
 
 def _remote(path: Path) -> Path:
     remote = path / "remote.git"
-    _git(path, "init", "--bare", "-q", str(remote))
+    _git(path, "init", "--bare", "-q", "-b", "main", str(remote))
     return remote
 
 
 def _push_main(work: Path, remote: Path) -> None:
-    _git(work, "remote", "add", "origin", remote.as_uri())
-    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
-    _git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+    """Publish `work`'s one-branch history to the empty bare `remote` and name it `origin`. The
+    objects and the branch ref are copied in place of a `git push`: the result is the same repository
+    state, and the push spawn was the most expensive step of every baseline fixture."""
+    shutil.copytree(work / ".git" / "objects", remote / "objects", dirs_exist_ok=True)
+    (remote / "refs" / "heads").mkdir(parents=True, exist_ok=True)
+    (remote / "refs" / "heads" / "main").write_text(_branch_sha(work) + "\n", encoding="utf-8", newline="\n")
+    with open(work / ".git" / "config", "a", encoding="utf-8", newline="\n") as handle:
+        handle.write('[remote "origin"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n' % remote.as_uri())
 
 
 def _remote_main_sha(remote: Path) -> str:
@@ -1061,6 +1092,60 @@ def test_repeat_publish_prints_already_published() -> None:
         assert second["id"] == first["id"]
 
 
+def test_open_only_opens_the_pr_before_the_land_and_the_merge_waits_for_it() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        # The project's own origin holds history without the source commit: the land has not happened.
+        (path / "project").mkdir()
+        project = _remote(path / "project")
+        other = path / "project-work"
+        _init_repo(other)
+        _write(other / "README.md", b"project\n")
+        _commit(other, "project main")
+        _push_main(other, project)
+        _git(root, "remote", "add", "origin", project.as_uri())
+        _git(root, "fetch", "-q", "origin", "main")
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        with _patched_env(env):
+            dry = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                              [rel], [], True, True, None)
+            opened = publish.run(root, None, None, [], False, False, dry["id"], open_only=True)
+        assert opened["pr_url"], "--open-only recorded no PR"
+        assert opened["steps"][5]["status"] != "green", opened["steps"]
+        assert _remote_main_sha(remote) == baseline_commit, "--open-only merged"
+        with _patched_env(env):
+            try:
+                publish.run(root, None, None, [], False, False, dry["id"])
+            except publish.PublishError as exc:
+                assert "not on origin/main" in str(exc), str(exc)
+            else:
+                raise AssertionError("a plain resume merged before the source commit landed")
+        assert _remote_main_sha(remote) == baseline_commit, "the merge preceded the land"
+        _git(root, "push", "-q", "-f", "origin", "HEAD:refs/heads/main")
+        with _patched_env(env):
+            done = publish.run(root, None, None, [], False, False, dry["id"])
+        assert all(step["status"] == "green" for step in done["steps"]), done["steps"]
+        assert done["pr_url"] == opened["pr_url"]
+        assert _remote_main_sha(remote) != baseline_commit
+
+
+def test_open_only_is_a_resume_flag_and_excludes_dry_run() -> None:
+    publish = _load_publish()
+    for argv in (["--open-only", "--from-commit", "HEAD"], ["--resume", "x", "--open-only", "--dry-run"]):
+        errors = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(errors):
+                publish.main(argv)
+        except SystemExit as exc:
+            assert exc.code == 2, (argv, exc.code)
+            assert "unrecognized" not in errors.getvalue() and "--open-only" in errors.getvalue(), errors.getvalue()
+        else:
+            raise AssertionError(f"{argv} was accepted")
+
+
 def test_repeat_incomplete_same_baseline_refuses_naming_resume() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
@@ -1364,6 +1449,95 @@ def test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes
                                    [rel], [], False, False, None)
         assert second.get("supersedes") == first_id, second
         assert all(s["status"] == "green" for s in second["steps"]), second["steps"]
+
+
+def _move_baseline(path: Path, rel: str, content: bytes) -> str:
+    """Another consumer publishes a new copy of `rel`: the baseline's main moves past the consumer's pin."""
+    work, remote = path / "baseline-work", path / "remote.git"
+    _write(work / "template" / rel, content)
+    moved = _commit(work, "another consumer moves " + rel)
+    _git(work, "push", "-q", str(remote), "HEAD:refs/heads/main")
+    return moved
+
+
+def _publish_dry(publish, root: Path, rel: str, **keywords):
+    commit = _git(root, "rev-parse", "HEAD").decode().strip()
+    return publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit}, [rel], [], True, True, None,
+                       **keywords)
+
+
+def test_publish_reads_the_check_state_of_the_rows_it_ships() -> None:
+    """Step 1's evidence names each shipped row's check state, so a publish is never blind to the baseline."""
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        publish = _load_publish()
+        with _patched_env(_install_fake_gh(path)):
+            journal = _publish_dry(publish, root, rel)
+        evidence = _field(journal, "steps")[0]["evidence"]
+        assert "local-modified" in evidence and rel in evidence, evidence
+
+
+def test_publish_refuses_a_shipped_row_the_baseline_moved_since_its_base() -> None:
+    """A row whose upstream copy changed since its base (another consumer published it) would be overwritten: step 1
+    refuses, names the state and both ways out, and writes no decline."""
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        _move_baseline(path, rel, b"value = 'theirs'\n")
+        publish = _load_publish()
+        with _patched_env(_install_fake_gh(path)):
+            try:
+                _publish_dry(publish, root, rel)
+            except publish.PublishError as exc:
+                text = str(exc)
+            else:
+                raise AssertionError("a publish over a moved upstream row must refuse")
+        assert rel in text and "diverged" in text and "pull --merge" in text and "--over-upstream " + rel in text, text
+        journals = list((root / ".claude" / ".cache" / "baseline-publish").glob("*.json"))
+        assert json.loads(journals[0].read_text(encoding="utf-8"))["steps"][0]["status"] == "red"
+        lock = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+        assert "declined" not in lock["files"][rel], lock["files"][rel]
+
+
+def test_a_decline_is_recorded_where_a_later_publish_reads_it_and_holds_for_that_upstream_only() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        _move_baseline(path, rel, b"value = 'theirs'\n")
+        publish = _load_publish()
+        with _patched_env(_install_fake_gh(path)):
+            journal = _publish_dry(publish, root, rel, over_upstream=[rel])
+            assert _field(journal, "steps")[0]["status"] == "green", _field(journal, "steps")[0]
+            lock = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+            declined = lock["files"][rel]["declined"]
+            assert declined["upstream"] and declined["at"], declined
+            _git(root, "commit", "--allow-empty", "-q", "-m", "a new source commit, so the repeat rule stays out")
+            again = _publish_dry(publish, root, rel)
+            assert _field(again, "steps")[0]["status"] == "green", "a recorded decline must satisfy the next publish"
+            _move_baseline(path, rel, b"value = 'theirs, again'\n")
+            _git(root, "commit", "--allow-empty", "-q", "-m", "and another")
+            try:
+                _publish_dry(publish, root, rel)
+            except publish.PublishError as exc:
+                assert "diverged" in str(exc) and rel in str(exc), str(exc)
+            else:
+                raise AssertionError("a decline of one upstream copy must not cover a later one")
+
+
+def test_a_publish_that_reaches_upstream_clears_the_decline() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        _move_baseline(path, rel, b"value = 'theirs'\n")
+        publish = _load_publish()
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        with _patched_env(_install_fake_gh(path)):
+            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit}, [rel], [], False,
+                                  True, None, over_upstream=[rel])
+        assert all(step["status"] == "green" for step in _field(journal, "steps")), _field(journal, "steps")
+        lock = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
+        assert "declined" not in lock["files"][rel], lock["files"][rel]
 
 
 def test_resume_redoes_steps_after_deleted_worktree() -> None:
@@ -2020,7 +2194,7 @@ def test_scoped_validate_runs_bound_proof_and_records_evidence() -> None:
         copy_runner_deps(template / ".claude")
         _write(template / ".claude/skills/project_subsystems/adaptation.json", b"{}\n")
         proof = template / ".claude/tests/test_bound.py"
-        _write(proof, b"# fixture.md\nraise SystemExit(1)\n")
+        _write(proof, b"DOC = 'fixture.md'\nraise SystemExit(1)\n")
         row = ".claude/commands/fixture.md"
         _write(template / row, b"# fixture\n")
         _init_repo(worktree)
@@ -2032,7 +2206,7 @@ def test_scoped_validate_runs_bound_proof_and_records_evidence() -> None:
             assert "test_bound.py" in str(exc), str(exc)
         else:
             raise AssertionError("failing scoped proof passed step 5")
-        proof.write_bytes(b"# fixture.md\nraise SystemExit(0)\n")
+        proof.write_bytes(b"DOC = 'fixture.md'\nraise SystemExit(0)\n")
         evidence = publish._validate(worktree, [record], False)
         assert "scoped" in evidence and "test_bound.py" in evidence, evidence
         assert not (template / ".claude/logs/harness_tests_stamp.json").exists()
@@ -2062,20 +2236,10 @@ def _validate_fixture(path: Path, with_tests: bool = False) -> Path:
     return worktree
 
 
-def _stub_validate_seams(publish, red_labels, log=None):
+def _stub_validate_seams(publish, red_labels):
     """Stub only the subprocess seams: each python child (by label) and the count check."""
-    log = log if log is not None else []
-
-    second_call = threading.Event()
-    calls = []
 
     def fake_run(worktree, args, label, env=None):
-        log.append(label)
-        calls.append(label)
-        if len(calls) == 1:
-            log.append(f"overlap:{second_call.wait(5)}")
-        else:
-            second_call.set()
         if label in red_labels:
             raise publish.PublishError(f"{label} failed: {red_labels[label]}")
         return f"{label} ok"
@@ -2100,26 +2264,71 @@ def test_validate_reports_every_red_in_one_evidence_string() -> None:
     publish = _load_publish()
     with _fixture() as path:
         worktree = _validate_fixture(path, with_tests=True)
-        log: list[str] = []
         reds = {"gen_manifest.py --check": "manifest drift", "audit_baseline.py --strict": "audit hit AUDITHIT",
                 "tests/test_a.py": "bootstrap crash BOOTHIT", "harness_tests.py": "FAIL BATTERYHIT"}
-        _stub_validate_seams(publish, reds, log)
+        _stub_validate_seams(publish, reds)
         message = _validate_error(publish, worktree, [_hook_record()])
         for needle in ("manifest drift", "AUDITHIT", "BOOTHIT", "BATTERYHIT"):
             assert needle in message, (needle, message)
 
 
-def test_validate_runs_the_checks_and_the_battery_at_once_and_times_each_task() -> None:
+def test_validate_shares_slots_with_battery_and_times_each_task() -> None:
+    """The battery coordinates its own admitted proofs; checks share their pool, and every task is timed."""
     publish = _load_publish()
     with _fixture() as path:
         worktree = _validate_fixture(path, with_tests=True)
-        log: list[str] = []
-        _stub_validate_seams(publish, {}, log)
-        evidence = publish._validate(worktree, [_hook_record()], False)
-        assert "overlap:True" in log, ("the first call ran alone", log)
+        spans: list[tuple[str, float, float]] = []
+        lock = threading.Lock()
+        battery_up, check_up = threading.Event(), threading.Event()
+        real_guard = publish.runner._slot_guard
+        active, peak = 0, 0
+
+        @contextlib.contextmanager
+        def check_guard(*args, **kwargs):
+            assert battery_up.wait(10), "battery coordinator did not start its proof"
+            with real_guard(*args, **kwargs) as held:
+                yield held
+
+        def fake_run(worktree, args, label, env=None):
+            nonlocal active, peak
+            # This stands for the battery's child proof, not a reservation by _validate.
+            with real_guard() if label == "harness_tests.py" else contextlib.nullcontext():
+                start = time.monotonic()
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                assert env["HARNESS_MACHINE_ROOT"] == pool, env
+                if label == "harness_tests.py":
+                    battery_up.set()
+                    assert check_up.wait(10), "checks were barred behind the coordinator"
+                else:
+                    assert env["HARNESS_SLOT_BUDGET"] == "1", env
+                    check_up.set()
+                with lock:
+                    active -= 1
+                    spans.append((label, start, time.monotonic()))
+            return f"{label} ok"
+
+        publish._run_python_args = fake_run
+        publish._battery_counts_match = lambda worktree: None
+        publish.runner._slot_guard = check_guard
+        pool = str(path / "slots")
+        try:
+            with _patched_env({"HARNESS_MACHINE_SLOTS": "2", "HARNESS_SLOT_BUDGET": "",
+                               "HARNESS_SLOT_DIR": pool, "HARNESS_MACHINE_ROOT": pool}):
+                evidence = publish._validate(worktree, [_hook_record()], False)
+        finally:
+            publish.runner._slot_guard = real_guard
+        labels = [label for label, _, _ in spans]
         assert "windows=" in evidence and "checks=" in evidence and "battery=" in evidence, evidence
         for label in ("harness_tests.py", "gen_manifest.py --check", "audit_baseline.py --strict", "tests/test_a.py"):
+            assert label in labels, labels
             assert f"{label}=" in evidence, (label, evidence)
+        _, battery_start, battery_end = next(s for s in spans if s[0] == "harness_tests.py")
+        beside = [label for label, start, end in spans
+                  if label != "harness_tests.py" and start < battery_end and end > battery_start]
+        assert beside, ("checks must be able to share free capacity beside a battery proof", spans)
+        assert peak == 2, ("battery proof and checks share the two-slot cap", peak)
 
 
 def test_validate_lists_two_red_checks_and_a_red_battery_in_one_error() -> None:
@@ -2461,6 +2670,11 @@ def test_only_the_full_battery_child_asks_for_reused_passes() -> None:
         seen.clear()
         publish._validate(worktree, [{"relpath": ".claude/commands/doc.md", "kind": "lock", "op": "M"}], False)
         assert "HARNESS_REUSE_PASSES" not in seen["harness_tests.py --proofs-for"], seen
+        # Both battery children run each proof with a clean runner's environment (harness_tests.py --runner-env).
+        assert seen["harness_tests.py --proofs-for"].get("HARNESS_RUNNER_ENV") == "1", seen
+        seen.clear()
+        publish._validate(worktree, [], True)
+        assert seen["harness_tests.py"].get("HARNESS_RUNNER_ENV") == "1", seen
 
 
 def test_classify_lists_exactly_what_the_candidates_command_lists():
@@ -2478,9 +2692,19 @@ def test_classify_lists_exactly_what_the_candidates_command_lists():
         assert found == [".claude/tools/new_tool.py"], found
 
 
-def main() -> int:
+# The cases run as PARTS proof files side by side in the runner's pool: this file is part 1 and
+# `test_baseline_publish_part<K>.py` run the rest, each case in exactly one part (round-robin), so the close waits on one
+# part's time, not the whole proof's.
+PARTS = 2
+
+
+def main(part: int = 1) -> int:
+    for other in range(2, PARTS + 1):  # a deleted part file would silently drop its cases
+        assert (Path(__file__).parent / ("test_baseline_publish_part%d.py" % other)).is_file(), "missing part %d" % other
     cases = [
         test_classify_lists_exactly_what_the_candidates_command_lists,
+        test_open_only_opens_the_pr_before_the_land_and_the_merge_waits_for_it,
+        test_open_only_is_a_resume_flag_and_excludes_dry_run,
         test_only_the_full_battery_child_asks_for_reused_passes,
         test_binary_bytes_survive_the_publish_copy,
         test_publishing_a_binary_row_records_the_sha_of_its_bytes,
@@ -2491,7 +2715,7 @@ def main() -> int:
         test_scoped_validate_runs_bound_proof_and_records_evidence,
         test_battery_mode_triggers,
         test_validate_reports_every_red_in_one_evidence_string,
-        test_validate_runs_the_checks_and_the_battery_at_once_and_times_each_task,
+        test_validate_shares_slots_with_battery_and_times_each_task,
         test_validate_lists_two_red_checks_and_a_red_battery_in_one_error,
         test_a_full_mode_validate_spawns_no_linux_preview_child,
         test_battery_mode_a_workflow_row_alone_is_scoped_and_a_root_row_beside_it_is_full,
@@ -2530,6 +2754,10 @@ def main() -> int:
         test_ci_red_checks_record_the_ci_run_url,
         test_ci_checks_that_never_register_fail_step_six_after_the_wait,
         test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes,
+        test_publish_reads_the_check_state_of_the_rows_it_ships,
+        test_publish_refuses_a_shipped_row_the_baseline_moved_since_its_base,
+        test_a_decline_is_recorded_where_a_later_publish_reads_it_and_holds_for_that_upstream_only,
+        test_a_publish_that_reaches_upstream_clears_the_decline,
         test_resume_redoes_steps_after_deleted_worktree,
         test_step_keeps_the_red_attempt_when_it_reruns_green,
         test_corrupt_journal_resume_exits_nonzero,
@@ -2563,7 +2791,7 @@ def main() -> int:
     slots = tempfile.mkdtemp(prefix="publish_slots_")
     os.environ["HARNESS_SLOT_DIR"] = slots
     try:
-        return run_cases(cases)
+        return run_cases(cases[part - 1::PARTS])
     finally:
         shutil.rmtree(slots, ignore_errors=True)
 

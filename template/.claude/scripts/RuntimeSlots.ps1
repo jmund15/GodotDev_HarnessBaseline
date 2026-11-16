@@ -8,6 +8,8 @@
 .LOCK MODEL
   Every run (runtime or Logic) takes its checkout lock ($script:CheckoutLockPrefix + Get-WorktreeId),
   so runs from one checkout serialize: they share .godot\mono\temp\bin\Debug\ and TestResults\.
+  It then takes a local-work lane through tools/machine_slots.py, unless its parent loaned one.
+  Checkout-only gate coordinators (Enter-HeldCheckout) take no local-work lane.
   A runtime (Godot-spawning) run then takes runtime slots. There are $script:RuntimeSlotMax slot
   names. Slot 0 is the legacy machine-global name and slot 1 the legacy '-slot1' name, so an
   old-commit wrapper (which knows only those two) still excludes and is excluded on them.
@@ -799,6 +801,45 @@ function Test-OtherSlotBusy {
     $true
 }
 
+function Enter-MachineWorkLease {
+    param([int] $TimeoutMs = 600000)
+    if ($env:HARNESS_SLOT_BUDGET -eq '1') { return $null }
+    $tool = if ($env:HARNESS_SLOT_SCRIPT) { $env:HARNESS_SLOT_SCRIPT } else { Join-Path $PSScriptRoot '../tools/machine_slots.py' }
+    $start = [System.Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = (Get-Command python3 -ErrorAction Stop).Source
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $deadline = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + [Math]::Max(0, $TimeoutMs)) / 1000.0
+    foreach ($arg in @($tool, 'broker', '--deadline', $deadline.ToString([Globalization.CultureInfo]::InvariantCulture))) {
+        $start.ArgumentList.Add($arg)
+    }
+    $proc = [System.Diagnostics.Process]::new()
+    $proc.StartInfo = $start
+    $keep = $false
+    try {
+        [void] $proc.Start()
+        $line = $proc.StandardOutput.ReadLine()
+        if (-not $line) { throw "machine slot broker failed: $($proc.StandardError.ReadToEnd())" }
+        $ready = $line | ConvertFrom-Json -AsHashtable
+        if ($ready.ContainsKey('error')) { throw $ready.error }
+        if ($null -eq $ready.held) { return $null }
+        $keep = $true
+        return $proc
+    } finally {
+        if (-not $keep) { Exit-MachineWorkLease $proc }
+    }
+}
+
+function Exit-MachineWorkLease {
+    param($Lease)
+    if ($null -eq $Lease) { return }
+    try { $Lease.StandardInput.Close(); $Lease.WaitForExit() } catch { }
+    try { $Lease.Dispose() } catch { }
+}
+
 function Enter-RunLocks {
     param(
         [string] $Repo,
@@ -847,6 +888,7 @@ function Enter-RunLocks {
         ProcStart    = (Get-ProcStartUtc (Get-Process -Id $PID))
         Records      = @{}
         Opened       = $opened
+        MachineWork  = $null
     }
     # The compile is not a wait: WaitMs and every timeout below count only time spent on locks and their bookkeeping.
     if ((Get-HostPlatform) -eq 'linux') { Import-HarnessFileLock }
@@ -866,6 +908,8 @@ function Enter-RunLocks {
         if ($lease.HolderRecord) { Remove-CheckoutHolder -Repo $Repo -RecordDir $lease.RecordDir; $lease.HolderRecord = $false }
         for ($i = $held.Count - 1; $i -ge 0; $i--) { try { $held[$i].ReleaseMutex() } catch { } }
         foreach ($m in $opened) { try { $m.Dispose() } catch { } }
+        Exit-MachineWorkLease $lease.MachineWork
+        $lease.MachineWork = $null
         $held.Clear(); $opened.Clear()
         $lease.Records = @{}
         $lease.Blocker = $Blocker
@@ -885,6 +929,10 @@ function Enter-RunLocks {
             $lease.HolderRecord = Write-CheckoutHolder -Repo $Repo -Label $Label -RecordDir $lease.RecordDir
         }
 
+        if ($env:HARNESS_SLOT_BUDGET -ne '1') {
+            $lease.MachineWork = Enter-MachineWorkLease -TimeoutMs ($TimeoutMs - $sw.ElapsedMilliseconds)
+            if ($null -eq $lease.MachineWork) { & $fail 'machine-slots'; return $lease }
+        }
         if ($Runtime) {
             $slotHandles = @(foreach ($nm in $names) { $m = New-RunLock $nm; $opened.Add($m); $m })
             if ($SlotCount -ge 2) {
@@ -977,6 +1025,10 @@ function Exit-RunLocks {
         }
         if ($Lease.PSObject.Properties['Opened'] -and $Lease.Opened) {
             foreach ($m in @($Lease.Opened)) { try { $m.Dispose() } catch { } }
+        }
+        if ($Lease.PSObject.Properties['MachineWork']) {
+            Exit-MachineWorkLease $Lease.MachineWork
+            $Lease.MachineWork = $null
         }
         $Lease.Held = @()
     } catch { }

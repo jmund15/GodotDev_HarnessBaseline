@@ -67,7 +67,10 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            `watch_records._covered`; a payload with `stop_hook_active` true never blocks. A live bench
            roster this session started blocks the same way unless a session-wide watcher runs: it
            registers no sidecar entry, so `watch_records.session_rosters` finds it. Gated on one `ps -e`
-           over the roster pid files.
+           over the roster pid files. A running Bash background task blocks the same way: the payload's
+           `background_tasks` ids, kept to those `watch_records.session_running_shells` names (the watcher's own
+           test of live shell work), gated on a non-empty list and no live session watcher. That read parses the
+           whole transcript (0.7 s at 230 MB), so it runs only in that case.
 
 CHANNEL: `systemMessage` — "Warning message shown to the user" (hooks.md, JSON output) — and for
 `--complete` only, `decision: block` with `reason`, which reaches the model. No additionalContext.
@@ -121,6 +124,7 @@ from _win_path import native_path  # noqa: E402
 sys.path.insert(0, TOOLS)
 import model_registry  # noqa: E402
 import sidecar_argv  # noqa: E402
+import spend_ledger  # noqa: E402
 from sidecar_argv import _SHELL_VAR  # noqa: E402
 import watch_records  # noqa: E402
 from watch_records import (ENDED, _covered, _launcher_gone, _process_line_gone, epoch as _epoch,  # noqa: E402
@@ -140,6 +144,11 @@ NO_WATCHER_REASON = (
 NO_WATCHER_ROSTER_REASON = (
     "Bench roster(s) this session started are running with no live watcher (%s), so nothing wakes you when "
     "one ends or fails. Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + " "
+    "(reference/sidecar_dispatch.md §Procedure step 6), then do the next step that needs no wake; end the turn "
+    "only when none remains.")
+NO_WATCHER_SHELL_REASON = (
+    "%d background shell(s) this session started are running with no live watcher, so nothing checks on them "
+    "inside your prompt cache. Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + " "
     "(reference/sidecar_dispatch.md §Procedure step 6), then do the next step that needs no wake; end the turn "
     "only when none remains.")
 STALE_SECONDS = 24 * 3600
@@ -1445,6 +1454,7 @@ def resolve_sidecar_record(entry, session_id, pending=None):
     """
     if not entry.get("fanout_dir"):
         return entry.get("record")
+    session_id = owner_of(entry, session_id)
     record = entry.get("record")
     if record and watch_records.ended_code(record) is None:
         return record
@@ -1618,6 +1628,63 @@ def expand_deferred(session_id, now=None, live=None):
         _hook_state.update_json_locked(_hook_state.state_path(session_id), updater)
 
 
+ADOPTED_KEY = "adopted_from"  # on an adopted entry: the session whose call launched it
+
+
+def owner_of(entry, session_id):
+    """The session whose call launched `entry`. An adopted entry sits in the picking-up session's table, but its
+    inventories and ledger rows carry the launching session's id, so every lookup by session reads this."""
+    return entry.get(ADOPTED_KEY) or session_id
+
+
+def _host_gone(session_id):
+    """True only when `reap.session_live` proves no live host serves the session, the test the shell census
+    prints as `session <sid8> has no live host`. A host it cannot read, or a failed lookup, is no proof."""
+    try:
+        import reap
+        with reap.invocation():
+            return reap.session_live(reap.process_table(), session_id) is False
+    except Exception:
+        return False
+
+
+def adopt_sidecars(from_session, to_session, host_gone=None):
+    """Move `from_session`'s running sidecar entries into `to_session`'s table, so the watcher the picking-up
+    session arms wakes on each end. Returns the entries moved.
+
+    Only a session with no live host is taken from: a live one still receives its own wakes. Only a job whose
+    record is still running moves; an ended one has nothing left to wake for, and its result is the digest's to
+    report. Each moved entry names its launcher in `adopted_from`. The entry lands in the new state before it
+    leaves the old, so a crash between the two writes duplicates a job and never loses one. `host_gone(sid)`
+    replaces the process-table test for a proof."""
+    if not from_session or not to_session or from_session == to_session:
+        return []
+    if not (host_gone or _host_gone)(from_session):
+        return []
+    old_path = _hook_state.state_path(from_session)
+    held = [e for e in _hook_state.read_json_salvage(old_path).get(STATE_KEY) or []
+            if isinstance(e, dict) and e.get("kind") == "sidecar" and not e.get("deferred")]
+    moving = []
+    for entry in held:
+        record = resolve_sidecar_record(entry, from_session, held)
+        if record and watch_records.record_state(record, entry.get("inventory"))[0] == "WATCH":
+            moving.append(dict(entry, **{ADOPTED_KEY: owner_of(entry, from_session)}))
+    if not moving:
+        return []
+    ids = {e.get("id") for e in moving}
+
+    def take(state):
+        have = {e.get("id") for e in state.get(STATE_KEY) or [] if isinstance(e, dict)}
+        state[STATE_KEY] = ((state.get(STATE_KEY) or []) + [e for e in moving if e.get("id") not in have])[-MAX_PENDING:]
+
+    def leave(state):
+        state[STATE_KEY] = [e for e in state.get(STATE_KEY) or [] if not (isinstance(e, dict) and e.get("id") in ids)]
+
+    _hook_state.update_json_locked(_hook_state.state_path(to_session), take, raising=True)
+    _hook_state.update_json_locked(old_path, leave, raising=True)
+    return moving
+
+
 def read_table(session_id, live=None):
     """This session's hook state with every deferred fan-out entry expanded or dropped: the one way to
     read the pending table, so no reader sees a deferred entry that can never resolve. `live` is
@@ -1651,12 +1718,20 @@ def _inventories(fanout_dir):
 
 
 def _read_json(path):
-    """The JSON object at `path`, or {} when it is absent, unreadable or not an object."""
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError, TypeError):
-        return {}
+    """The JSON object at `path`, or {} when it is absent, unreadable or not an object. A fan-out saves its
+    inventory by renaming a temp file over it, and Windows refuses a read in that instant: a refused read is
+    tried three times, like `watch_records.inventory_written`, before the file counts as unreadable."""
+    data = None
+    for attempt in range(3):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            break
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError, TypeError):
+            if attempt < 2:
+                time.sleep(0.005)
     return data if isinstance(data, dict) else {}
 
 
@@ -1896,17 +1971,16 @@ def _ledger_row(session_id, label, since=None):
     a reused label must not answer for a new launch with the previous run's row."""
     if not session_id or not label:
         return None
-    path = ledger_path()
     found = None
     try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if row.get("parentSessionId") == session_id and row.get("label") == label                         and (since is None or _epoch(row.get("timestamp")) >= float(since)):
-                    found = row
+        for line in spend_ledger.iter_lines(ledger_path(), since=since, needle=json.dumps(session_id)):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if (isinstance(row, dict) and row.get("parentSessionId") == session_id and row.get("label") == label
+                    and (since is None or _epoch(row.get("timestamp")) >= float(since))):
+                found = row
     except OSError:
         return None
     return found
@@ -1996,6 +2070,37 @@ def _unwatched_rosters_reason(payload):
     return (NO_WATCHER_ROSTER_REASON % ", ".join(live) if live else None), None
 
 
+def _unwatched_shells_reason(payload):
+    """(block reason, note). The reason is set when a Bash background task of this session runs and no session-wide
+    watcher is armed. The watcher counts such a task as live work and checks in on it inside the prompt cache; its end
+    is the client's own notification, which the watcher never repeats, so only the arm is missing. A payload with no
+    background task list names nothing to check, and a failed read never blocks the stop: it returns no reason and a
+    note naming the lost check."""
+    session_id = payload.get("session_id")
+    if payload.get("stop_hook_active") or not session_id:
+        return None, None
+    live = {str(t.get("id")) for t in payload.get("background_tasks") or [] if isinstance(t, dict) and t.get("id")}
+    if not live:
+        return None, None
+    try:
+        state = _hook_state.read_json_salvage(_hook_state.state_path(session_id)) or {}
+        if watch_records.session_watcher_live(state):
+            return None, None
+        running = watch_records.session_running_shells(session_id, payload.get("transcript_path"), live)
+    except Exception as exc:
+        return None, ("⚠ the background shell check did not run (%s: %s); a running shell would go unwatched. "
+                      "If one runs, arm `%s` %s." % (type(exc).__name__, exc, watch_records.ARM_COMMAND, watch_records.ARM_CALL))
+    return (NO_WATCHER_SHELL_REASON % len(running) if running else None), None
+
+
+def _unwatched_reason(payload):
+    """(block reason, note) for every kind of live work the Stop hook holds the turn for with no watcher armed that
+    the dispatch table does not list: bench rosters and background shells."""
+    parts = [check(payload) for check in (_unwatched_rosters_reason, _unwatched_shells_reason)]
+    return ("\n\n".join(reason for reason, _ in parts if reason) or None,
+            "\n\n".join(note for _, note in parts if note) or None)
+
+
 FAILED_END_REASON = ("A dispatched job ended without a result, and the dispatch table dropped it. The user's Stop "
                      "message shows these lines; you do not see it:\n%s")
 
@@ -2007,8 +2112,8 @@ def complete(payload):
     lines = list(_take_gone(path)) if state.get(GONE_KEY) else []
     pending = state.get(STATE_KEY) or []
     if not pending:
-        roster_reason, roster_note = _unwatched_rosters_reason(payload)
-        return "\n\n".join(lines + [roster_note] if roster_note else lines) or None, roster_reason
+        unwatched_reason, unwatched_note = _unwatched_reason(payload)
+        return "\n\n".join(lines + [unwatched_note] if unwatched_note else lines) or None, unwatched_reason
     payload = dict(payload, _pending_sidecars=pending, _audit_deadline=_stop_deadline())
     session = _session_dir(payload)
     now = time.time()
@@ -2047,7 +2152,7 @@ def complete(payload):
             found = _contradictions(entry, session, payload, failed=failed)
             if len(failed) > failed_before and key[0] == "sidecar":
                 if ledger_rows is None:
-                    ledger_rows = watch_records.finish_rows(payload.get("session_id"))
+                    ledger_rows = watch_records.finish_rows(payload.get("session_id"), pending)
                 row = watch_records.finish_row(entry, ledger_rows)
                 if row and watch_records.failed_finish(row):
                     delivered.append(watch_records.ended_identity(watch_records._entry_label(entry), row))
@@ -2097,10 +2202,10 @@ def complete(payload):
             uncovered = _uncovered_sidecars(running, payload.get("session_id"))
             if uncovered:
                 reason = "\n\n".join(filter(None, (reason, NO_WATCHER_REASON % len(uncovered))))
-    roster_reason, roster_note = _unwatched_rosters_reason(payload)
-    if roster_note:
-        lines.append(roster_note)
-    reason = "\n\n".join(filter(None, (reason, roster_reason))) or None
+    unwatched_reason, unwatched_note = _unwatched_reason(payload)
+    if unwatched_note:
+        lines.append(unwatched_note)
+    reason = "\n\n".join(filter(None, (reason, unwatched_reason))) or None
     return "\n\n".join(lines) or None, reason  # each entry is a table or a ⚠ line; blank line between
 
 

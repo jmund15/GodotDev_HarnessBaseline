@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 Read at an `add` or `user-add` invocation, including one the CLAUDE.md auto-detect chain routes here. Entry formats and call shorthands: `worklog_formats.md`. Mirror-patch format: `worklog_mirror.md`.
 
-Run an ADD's write steps with `python3 .claude/tools/worklog.py add`, which performs steps 1–9 for every ADD route and leaves the propose-and-confirm rules below as the decision on whether to add.
+Run an ADD's write steps with `python3 .claude/tools/worklog.py add`, which performs steps 1 and 5–9 (de-dup, placement, Linked Docs, last_updated, mirror) for the Active, Ledger and Future Scope routes; fields, the inferred-values confirmation (step 4) and USER-ADD stay with the steps below.
 
 ## Cross-cutting rules for both adds
 

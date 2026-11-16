@@ -61,10 +61,31 @@ def drift():
     print(json.dumps(dict(head=rev, fixtureRev=(fixture / 'REV.txt').read_text().strip(), rounds=totals), indent=2))
 
 
+import atexit
+import shutil
+import test_dispatch_table
 from test_dispatch_table import Env, SID, workflow_payload, stop_payload, bash_payload
 from _must_allow_cases import must_allow_cases
 from unittest.mock import patch
 import time
+
+
+def _planted_project():
+    """The session's project folder as every payload here names it (`cwd`): a repository planted in temp, so the
+    audit's git commands (check-ignore, ls-files, grep, worktree list) read it, never this checkout."""
+    root = tempfile.mkdtemp(prefix='dispatch_verify_project_')
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    for args in (['init', '-q'], ['config', 'user.email', 't@t'], ['config', 'user.name', 't'],
+                 ['config', 'commit.gpgsign', 'false']):
+        subprocess.run(['git', '-C', root, *args], check=True)
+    Path(root, 'README.md').write_text('seed\n', encoding='utf-8')
+    subprocess.run(['git', '-C', root, 'add', 'README.md'], check=True)
+    subprocess.run(['git', '-C', root, 'commit', '-qm', 'seed'], check=True)
+    return root
+
+
+test_dispatch_table.PROJECT = _planted_project()
+os.chdir(test_dispatch_table.PROJECT)  # the tools a hook imports resolve their repository from the process cwd
 
 
 def plant(verification=None, *, quote='a real quote', applied='VERIFIED', name='explore_fanout', extra=None):

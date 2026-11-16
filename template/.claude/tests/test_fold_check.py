@@ -334,6 +334,16 @@ class FoldCheckTests(unittest.TestCase):
         verdicts, _path = fold_check.independent_verdicts(rows, [subject], str(self.out))
         self.assertEqual(verdicts, {"F1": "VERIFIED", "F2": "VERIFIED"})
 
+    def test_a_row_outside_every_subject_is_verified_in_the_review_root_not_the_tools_checkout(self):
+        (self.root / "a.md").write_text("alpha body\n", encoding="utf-8")
+        (self.root / "outside.md").write_text("beta body\n", encoding="utf-8")
+        manifest = self.root / "root_snapshot.json"
+        manifest.write_text(json.dumps(fold_check.snapshot_blobs(self.root, ["a.md"])), encoding="utf-8")
+        subject = fold_check.load_subject(self.root, manifest, ["a.md"])
+        rows = [{"id": "F1", "file": "outside.md:1", "evidence": [{"file": "outside.md", "quote": "beta body"}]}]
+        verdicts, _path = fold_check.independent_verdicts(rows, [subject], str(self.out), root=self.root)
+        self.assertEqual(verdicts, {"F1": "VERIFIED"})
+
     def test_independent_verdicts_read_non_file_evidence_items(self):
         (self.root / "a.md").write_text("alpha body\n", encoding="utf-8")
         manifest = self.root / "one_snapshot.json"

@@ -16,7 +16,11 @@ def fork_marker():
             "if (Get-Command Get-GdUnitForkMarker -ErrorAction SilentlyContinue) { Get-GdUnitForkMarker }")
     result = subprocess.run(['pwsh', '-NoProfile', '-Command', code], capture_output=True, text=True,
                             encoding='utf-8', timeout=60)
-    return result.stdout.strip() if result.returncode == 0 else ''
+    if result.returncode != 0:
+        print('FAIL standalone recompile proof: dot-sourcing RuntimeSlots.ps1 failed: ' + (result.stderr or result.stdout).strip()[-300:])
+        print('1 failure(s)')
+        sys.exit(1)
+    return result.stdout.strip()
 
 
 FORK = fork_marker()

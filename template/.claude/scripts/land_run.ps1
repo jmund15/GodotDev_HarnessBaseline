@@ -47,10 +47,12 @@ $scratch = Join-Path $repo '.claude/scratch'
 New-Item -ItemType Directory -Force -Path $scratch | Out-Null
 
 # A dropped connection to the remote is transient, so each git call that reaches it gets three tries.
+# A push the remote rejects (a moved main, a lost lease) exits 1 and fails the same way again, so it returns at once;
+# a dropped connection exits 128.
 function Invoke-RemoteGit {
     for ($try = 1; $try -le 3; $try++) {
         & git @args
-        if ($LASTEXITCODE -eq 0 -or $try -eq 3) { return }
+        if ($LASTEXITCODE -eq 0 -or $try -eq 3 -or ($args[0] -eq 'push' -and $LASTEXITCODE -eq 1)) { return }
         Write-Host "LAND retry git $($args[0]) (try $($try + 1) of 3)"
         Start-Sleep -Seconds 5
     }
@@ -128,12 +130,17 @@ for ($round = 1; $round -le 2; $round++) {
     # land.yml's 240-minute job cap kills it with none. 210 minutes from the start of the close leave 30 for the gate
     # and the push.
     $env:HARNESS_DEADLINE = [string]([DateTimeOffset]::UtcNow.ToUnixTimeSeconds() + 210 * 60)
+    # Each proof runs with a clean runner's environment (harness_tests.py `_RUNNER_ENV`), so a proof that reads the
+    # ambient home, git config or a CLAUDE_* name goes red the same way on a local `--runner-env` run.
+    $env:HARNESS_RUNNER_ENV = '1'
     $closeLog = Join-Path $scratch 'land_close.log'
     # A close left incomplete with no new red (machine load slowed its proofs past the deadline or a proof's wait) is
     # run once more: recorded passes are reused, so the rerun repeats only what did not finish.
     for ($attempt = 1; $attempt -le 2; $attempt++) {
         Write-Output "LAND stage=close base=$($base.Substring(0, 12)) sha=$($tip.Substring(0, 12))"
-        & python3 .claude/scripts/harness_tests.py --close --base $base *>&1 | Tee-Object -FilePath $closeLog | ForEach-Object {
+        # The log's first line names the run, so `land_watch.py watch` prints this run's close lines live and never the
+        # previous run's, which this log still holds while the run queues.
+        & { "LAND_CLOSE sha=$Sha branch=$Branch"; & python3 .claude/scripts/harness_tests.py --close --base $base } *>&1 | Tee-Object -FilePath $closeLog | ForEach-Object {
             # Every line the close prints about itself passes, its progress included: only per-proof passes are dropped (a FLAKY line names a proof that failed in the pool).
             if ($_ -match '^(FAIL|FIRST RED|FLAKY|NEEDS|harness_tests: )') { Write-Output "  $_" }
         }
@@ -141,6 +148,7 @@ for ($round = 1; $round -le 2; $round++) {
         if ($closeText -notmatch 'harness_tests: close incomplete: .* 0 new red,') { break }
     }
     Remove-Item Env:HARNESS_DEADLINE
+    Remove-Item Env:HARNESS_RUNNER_ENV -ErrorAction SilentlyContinue
     # One line per pre-existing red names its proof; a proof pre-existing at both the default branch and the base
     # prints twice, so keep the first of each. The line's shape is `harness_tests: pre-existing red ...: <proof> (<note>)`.
     $pre = [System.Collections.Generic.List[string]]::new()

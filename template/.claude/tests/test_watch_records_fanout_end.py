@@ -60,6 +60,17 @@ class Session:
         with open(os.path.join(project, SID + ".jsonl"), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps({"timestamp": stamp(time.time() - 3600)}) + "\n")
         self.now = time.time()
+        # wake_digest waits DELIVERABLE_GRACE_SEC (3 s) for a fan-out deliverable before it reads none, and every
+        # DONE line of a case that plants none paid it: the proof ran 140 s against a 16.8 s record. Each watcher
+        # starts with the grace at 0.2 s, as `test_watch_records.py` plants it (a sitecustomize behind the read recorder).
+        self.plant = os.path.join(self.root, "plant")
+        os.makedirs(self.plant)
+        with open(os.path.join(self.plant, "sitecustomize.py"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("import sys\nsys.path.append(%r)\ntry:\n    import wake_digest\n    wake_digest.DELIVERABLE_GRACE_SEC = 0.2\n"
+                     "except Exception:\n    pass\n" % os.path.abspath(TOOLS))
+        recorder = os.environ.get("HARNESS_READ_RECORDER") if os.environ.get("HARNESS_READ_LOG") else None
+        rest = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and p != recorder]
+        self.pythonpath = os.pathsep.join(([recorder] if recorder else []) + [self.plant] + rest)
 
     def record(self, label):
         return os.path.join(self.dir, label + ".record.json")
@@ -121,10 +132,11 @@ class Session:
         return {"timestamp": stamp(at), "parentSessionId": session, "label": label, "transport": "anthropic",
                 "exitCode": code, "outcome": outcome, "reason": ENDED_REASON, "costUSD": 0}
 
-    def watch(self):
+    def watch(self, extra_env=None):
         env = dict(os.environ, CLAUDE_CODE_SESSION_ID=SID, CLAUDE_CONFIG_DIR=self.config, HARNESS_HOOK_STATE_DIR=self.state,
                    SIDECAR_LEDGER_PATH=self.ledger_path, WATCH_RECORDS_POLL_SEC="0.1", PYTHONIOENCODING="utf-8",
-                   WATCH_RECORDS_POLL_MARK=os.path.join(self.root, "polls.log"))
+                   WATCH_RECORDS_POLL_MARK=os.path.join(self.root, "polls.log"), PYTHONPATH=self.pythonpath,
+                   **(extra_env or {}))
         open(os.path.join(self.root, "polls.log"), "w").close()
         proc = subprocess.Popen([sys.executable, os.path.join(TOOLS, "watch_records.py"), "--session", "--wake"],
                                 env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
@@ -378,8 +390,56 @@ class WakeUnit(unittest.TestCase):
         self.finish("b")
         text, exited = outcome(proc)
         self.assertTrue(exited, "the group's last end wakes; printed: %r" % text)
+        self.assertEqual(text.count("DONE a exit=0"), 1, "the first member's end prints once; printed: %r" % text)
+        self.assertEqual(text.count("DONE b exit=0"), 1, "the last member's end prints once; printed: %r" % text)
+
+    def test_a_group_member_that_ended_before_the_first_poll_prints_once_when_the_last_ends(self):
+        """`first` prints a held line at poll one, and the group's last end turns the same line into a waking one."""
+        self.fanout({"a": "seats", "b": "seats"})
+        self.finish("a")
+        proc = self.s.watch()
+        self.assertAsleep(proc, "member b still runs")
+        self.finish("b")
+        text, exited = outcome(proc)
+        self.assertTrue(exited, "the group's last end wakes; printed: %r" % text)
+        self.assertEqual(text.count("DONE a exit=0"), 1, "printed: %r" % text)
+        self.assertEqual(text.count("DONE b exit=0"), 1, "printed: %r" % text)
+
+    def test_jobs_that_say_alone_each_wake_on_their_own_end_beside_the_calls_group(self):
+        """`alone` is not a shared group: two jobs that both say it hold nobody, and the call's group still waits."""
+        self.fanout({"a": "alone", "b": "alone", "c": "call", "d": "call"})
+        proc = self.s.watch()
+        self.assertAsleep(proc, "running jobs keep the watcher alive")
+        self.finish("a")
+        text, exited = outcome(proc)
+        self.assertTrue(exited, "a job that says alone wakes while another that says alone runs; printed: %r" % text)
         self.assertIn("DONE a exit=0", text)
-        self.assertIn("DONE b exit=0", text)
+        self.assertNotIn("DONE b", text)
+
+    def test_a_held_group_end_reaches_the_session_at_the_check_in(self):
+        """The default group holds a clean end until the last one, so the check-in is what bounds the wait."""
+        self.fanout({"a": "call", "b": "call"})
+        self.finish("a")
+        proc = self.s.watch({"WATCH_RECORDS_CHECKIN_SEC": "1"})
+        text, exited = outcome(proc)
+        self.assertTrue(exited, "the check-in wakes the session; printed: %r" % text)
+        self.assertEqual(text.count("DONE a exit=0"), 1, text)
+        self.assertIn("CHECKIN", text)
+        self.assertIn("RUNNING b", text)
+
+    def test_the_calls_group_wakes_once_on_its_last_end(self):
+        self.fanout({"a": "call", "b": "call", "c": "call"})
+        proc = self.s.watch()
+        self.assertAsleep(proc, "running group keeps the watcher alive")
+        self.finish("a")
+        self.assertAsleep(proc, "a clean end must not wake while members of its call run")
+        self.finish("b")
+        self.assertAsleep(proc, "two of three ended: still asleep")
+        self.finish("c")
+        text, exited = outcome(proc)
+        self.assertTrue(exited, "the last end wakes; printed: %r" % text)
+        for label in "abc":
+            self.assertEqual(text.count("DONE %s exit=0" % label), 1, text)
 
     def test_a_failure_inside_a_group_wakes_at_once(self):
         self.fanout({"a": "seats", "b": "seats"})

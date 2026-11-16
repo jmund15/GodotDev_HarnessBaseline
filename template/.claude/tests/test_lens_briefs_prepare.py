@@ -23,6 +23,9 @@ TOOLS = REPO / ".claude" / "tools"
 EXTERNAL = json.loads((REPO / ".claude" / "reference" / "external_models.json").read_text(encoding="utf-8"))
 sys.path[:0] = [str(TOOLS), str(REPO / ".claude" / "hooks"), str(HERE)]
 import _mcp_plant  # noqa: E402
+from _planted_checkout import enter_planted_checkout  # noqa: E402
+
+enter_planted_checkout()  # the rigor reader asks git about the working directory
 
 # The provider hook resolves each kind's MCP servers from the machine's and the project's registrations;
 # the proof plants them, so it reads neither this machine's config nor this project's.

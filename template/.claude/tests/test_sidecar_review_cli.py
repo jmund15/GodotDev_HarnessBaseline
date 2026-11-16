@@ -187,7 +187,7 @@ class SidecarReviewCliTests(unittest.TestCase):
              patch.dict(os.environ, HARNESS_HOOK_STATE_DIR=str(self.out / "state")):
             try:
                 code = fanout.main([str(self.jobs), "--out-dir", str(self.out), "--refold",
-                                    "--fold-alias", "sonnet", "--fold-effort", "medium",
+                                    "--fold-alias", "sonnet", "--fold-effort", "medium", "--root", str(self.out),
                                     "--fold-subject", ".::snap.json::a.md"])
             except SystemExit as exc:
                 code = exc.code
@@ -263,6 +263,11 @@ class SidecarReviewCliTests(unittest.TestCase):
     def test_a_clean_review_with_no_findings_still_closes_with_a_post_check(self):
         jobs = [{"label": "one", "kind": "reviewer", "mandates": ["plc-instruction-quality"],
                  "contextFiles": [str(ROOT / ".claude/CLAUDE.md")], "mustRead": [CLAUDE_MD]}]
+        root = self.out / "review_root"  # the review's checkout: a planted repo holding the seats' mustRead file
+        (root / ".claude").mkdir(parents=True)
+        (root / ".claude" / "CLAUDE.md").write_text((ROOT / ".claude/CLAUDE.md").read_text(encoding="utf-8"),
+                                                    encoding="utf-8")
+        subprocess.run(["git", "init", "-q", str(root)], check=True, cwd=self.out)
 
         def execute(planned, _parallel, _out, after_seats=False, wake_groups=None):
             results = {}
@@ -282,7 +287,7 @@ class SidecarReviewCliTests(unittest.TestCase):
              patch.object(fanout, "run_jobs", side_effect=execute), \
              patch.object(fanout, "summarize", return_value=("stub summary", 0)), \
              contextlib.redirect_stdout(io.StringIO()):
-            code = fanout.main([str(self.jobs), "--out-dir", str(self.out), "--review"])
+            code = fanout.main([str(self.jobs), "--out-dir", str(self.out), "--review", "--root", str(root)])
         report = json.loads((self.out / "post_check.json").read_text(encoding="utf-8"))
         self.assertEqual((code, report["status"], report["counts"]["VERIFIED"]), (0, "pass", 0))
 
@@ -444,7 +449,7 @@ class SidecarFoldCliTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
-        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True, cwd=self.tmp.name)
         self.art = self.root.parent / (self.root.name + "_art")
         self.art.mkdir()
         self.addCleanup(lambda: __import__("shutil").rmtree(self.art, ignore_errors=True))
@@ -454,6 +459,12 @@ class SidecarFoldCliTests(unittest.TestCase):
         self.jobs.write_text("[]", encoding="utf-8")
         self.template = self.art / "fold_template.md"
         self.template.write_text("Fold the findings.\n", encoding="utf-8")
+        # The review root the folds run in: the seats' mustRead file lives in it, so nothing reads the live checkout.
+        (self.root / ".claude").mkdir()
+        (self.root / ".claude" / "CLAUDE.md").write_text((ROOT / ".claude/CLAUDE.md").read_text(encoding="utf-8"),
+                                                         encoding="utf-8")
+        with open(self.root / ".git" / "info" / "exclude", "a", encoding="utf-8") as exclude:
+            exclude.write(".claude/\n")  # an ignored plant, so no fold sees it as a change outside its subject
         self.plans, self.manifests = [], []
         for name in ("a.md", "b.md"):
             plan = self.root / name
@@ -531,7 +542,7 @@ class SidecarFoldCliTests(unittest.TestCase):
             return results
 
         args = [str(self.jobs), "--out-dir", str(self.out), "--review", "--fold", str(self.template),
-                "--fold-alias", "any", "--fold-effort", "medium", *self.subject_args(subjects)]
+                "--fold-alias", "any", "--fold-effort", "medium", "--root", str(self.root), *self.subject_args(subjects)]
         err = io.StringIO()
         with patch.object(fanout, "load_jobs", return_value=(jobs, None, None)), \
              patch.object(fanout.model_registry, "load", return_value={"transports": {}, "models": []}), \
@@ -786,6 +797,18 @@ class SidecarFoldCliTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(self.post_check()['verdicts']['F1']['verdict'], 'VERIFIED')
         self.assertEqual(digest['status'], 'pass')
+
+    def test_the_fold_reads_the_task_rigor_in_the_review_root_not_the_tools_checkout(self):
+        seen = []
+        real = fanout.finding_bar.run_rigor
+
+        def record(task, root, *rest, **kwargs):
+            seen.append(Path(root).resolve())
+            return real(task, root, *rest, **kwargs)
+
+        with patch.object(fanout.finding_bar, "run_rigor", side_effect=record):
+            code, _digest, err = self.run_fold({"one": [plan_finding(self.plans[0])]}, 1)
+        self.assertTrue(seen and all(root == self.root for root in seen), (seen, code, err))
 
     def test_one_subject_fold_passes_the_shared_check_and_writes_post_check_json(self):
         code, digest, err = self.run_fold({"one": [plan_finding(self.plans[0])]}, 1)

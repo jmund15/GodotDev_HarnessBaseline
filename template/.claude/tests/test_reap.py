@@ -626,11 +626,32 @@ def main():
        planted == {7: {"pid": 7}} and not spawned, f"got {planted!r}, spawned {spawned!r}")
     reap.subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": raw, "stderr": ""})()
     reap._on_windows = lambda: True
+    real_win32 = reap._win32_table
+    reap._win32_table = lambda: {}
     try:
         planted = REAL_PROCESS_TABLE()
     finally:
-        reap.subprocess.run, reap._on_windows = real_run, real_on_windows
-    ck("on Windows the process table reads CIM", len(planted) == 2, f"got {planted!r}")
+        reap.subprocess.run, reap._on_windows, reap._win32_table = real_run, real_on_windows, real_win32
+    ck("on Windows the process table falls back to CIM when the Win32 snapshot reads empty",
+       len(planted) == 2, f"got {planted!r}")
+
+    # 13c. the Windows table reads the Win32 snapshot first: a PowerShell CIM call costs 1 s or more, and every
+    #      launch and kill check reads the table. The live table must hold this very process, with its parent and
+    #      its command line, and spawn no CIM call.
+    if sys.platform == "win32":
+        spawned = []
+        reap.subprocess.run = lambda *a, **k: spawned.append(a) or real_run(*a, **k)
+        try:
+            live = REAL_PROCESS_TABLE()
+        finally:
+            reap.subprocess.run = real_run
+        me = live.get(os.getpid(), {})
+        ck("on Windows the process table reads the Win32 snapshot: this process, its parent and its command line",
+           not spawned and me.get("ppid") == os.getppid() and os.path.basename(sys.argv[0]) in me.get("cmd", "")
+           and me.get("start") and me.get("cpu") is not None,
+           f"spawned {spawned!r}, row {me!r}")
+        ck("the Win32 snapshot lists as many processes as CIM, give or take those that started or ended meanwhile",
+           abs(len(live) - len(reap._cim_table())) <= 25, f"win32 {len(live)} rows")
 
     # 14. a native Windows process (Godot, python, dotnet) is invisible to MSYS /proc, so an orphan whose
     #     launcher died was unprovable and unreapable. Its environment block is read from its own PEB. This
@@ -904,11 +925,15 @@ def main():
                           environ=planted18, sessions={910: "22222222-3333-4444-5555-666666666666"})
     ck("... and a session a live host's registry row names is live, so its seat is refused",
        rc == 2 and killed == [], out[-400:])
+    ck("... and the refusal names the live host that serves the owner session",
+       "22222222" in out and "live session host serves it" in out and "pid 910" in out, out[-400:])
     envs18[660] = env18(S2, parent=DEAD)
     rc, killed, out = run(["660", "--reason", "orphan", "--why", "x"], table([leftover, live_host, host_mcp]),
                           environ=planted18)
     ck("... and a live host whose session cannot be read makes every session unknown: refused",
        rc == 2 and killed == [], out[-400:])
+    ck("... and the refusal names the unreadable host and the owner session it could not rule out",
+       "cannot be read" in out and "pid 910" in out and DEAD[:8] in out, out[-400:])
     rc, killed, out = run(["660", "--reason", "orphan", "--why", "x"], table([leftover, live_host, host_mcp]),
                           environ=planted18, sessions={910: "33333333-0000-0000-0000-000000000000"})
     ck("... while a host mapped to another session leaves the dead one provably dead",
@@ -918,6 +943,8 @@ def main():
     rc, killed, out = run(["660", "--reason", "orphan", "--why", "x"], table([leftover, other_launcher]),
                           environ=planted18)
     ck("... and a dead session's seat whose launcher lives is refused", rc == 2 and killed == [], out[-400:])
+    ck("... and the refusal names the live launcher of the launch",
+       "launcher 663" in out and "is alive" in out, out[-400:])
     # A dead session's plain child (no launch id): a test runner whose parent died with the session.
     runner_cmd = (r'"C:\x\Godot_v4.7.1-stable_mono_win64.exe" --path . -s '
                   r"res://gdunit4_testadapter_v5/GdUnit4TestRunnerScene.cs --pipe-name gdunit4-x")
@@ -1313,14 +1340,32 @@ def main():
            statuses.get(511) == "live" and statuses.get(521) == "other-project" and statuses.get(503) == "infra",
            str(statuses))
 
+    # 19b. one process, two tags naming different sessions: its parent (dead D) launched it, and its
+    #      own shell tag names a live session L. Every dead-session path must read the same owner, so
+    #      the explicit-pid check, the dead-leftover proof and the classification all call it dead.
+    mixed_env = {512: env18(session=L, parent=D)}
+    mixed_table = table([row(512, SESSION_PID, "bash.exe", PANE), live_host])
+    with reap.invocation(SID, "C--x-{{PROJECT_NAME}}"):
+        reap.environ_of = lambda pid: mixed_env.get(pid, b"")
+        reap.launch_environ = reap.environ_of
+        reap.msys_environ = lambda pid: b""
+        reap.session_registry_dirs = lambda: [plant_registry(sess)]
+        reap.PROJECTS_ROOT = plant_transcript([owner_row("carry on")])
+        (reap.PROJECTS_ROOT / "C--x-{{PROJECT_NAME}}").mkdir(exist_ok=True)
+        (reap.PROJECTS_ROOT / "C--x-{{PROJECT_NAME}}" / (D + ".jsonl")).write_text("{}\n", encoding="utf-8")
+        explicit = reap.leftover_check(mixed_table, 512, SID)[0]
+        listed = reap.dead_leftover_proof(mixed_table, 512, SID, "C--x-{{PROJECT_NAME}}")
+        classed = {f["pid"]: f["status"] for f in
+                   reap.leftover_findings(mixed_table, sid=SID, project_key="C--x-{{PROJECT_NAME}}")}.get(512)
+    ck("one owner: a process tagged with a dead parent and a live shell is a dead session's leftover on every path",
+       bool(explicit) and bool(listed) and classed == "dead",
+       f"explicit={explicit!r} listed={listed!r} classed={classed!r}")
+
     # 20. `leftovers` stops nothing. A dead session's live launcher and its seat are NOT targeted
     #     here, and nothing can prove the pane shell's job is unwanted: the launch is built to
     #     outlive its session. The case starts its own two children (they expire on their own),
     #     runs the real listing, and asks the OS afterwards whether both still run.
     ck_win("leftovers lists a dead session's launcher and its seat and stops neither", *leftovers_stops_nothing())
-
-    helped = subprocess.run([sys.executable, str(HERE.parent / "tools" / "reap.py"), "--help"],
-                            capture_output=True, text=True)
 
     helped = subprocess.run([sys.executable, str(HERE.parent / "tools" / "reap.py"), "--help"],
                             capture_output=True, text=True)

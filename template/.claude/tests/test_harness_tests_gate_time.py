@@ -2,8 +2,9 @@
 
 - A run's alone work (SERIAL proofs and alone retries) takes the machine once: each separate take waits for
   every running proof on the machine to end, and no run there starts a proof meanwhile.
-- Assertion failures retry before timeouts, and once one fails alone the run cannot pass, so its timeout
-  retries do not run. A close counts only a red that is not pre-existing at its base.
+- Assertion failures retry before timeouts, shortest first, and once one fails alone the run cannot pass, so
+  no later retry runs. A close counts only a red that is not pre-existing at its base, and reruns its reds at
+  that base side by side.
 - A proof runs on the PATH the land runner gives it: the folders Git Bash prepends are not on it.
 - A proof that checks every tracked row is bound to every file under `.claude/`.
 
@@ -58,10 +59,10 @@ def run_stubbed(repo, paths, outcomes, options=None, serial=()):
     def stub(proof, timeout=None, root=None):
         return outcomes[os.path.basename(proof)].pop(0)
 
-    def take(exclusive):
+    def take(exclusive, count=1):
         if exclusive:
             takes.append(exclusive)
-        return real_take(exclusive)
+        return real_take(exclusive, count)
 
     def launch(path, timeout=None, exclusive=False, *args, **kwargs):
         launches.append((os.path.basename(path), exclusive))
@@ -151,6 +152,67 @@ def case_a_close_judges_only_new_reds():
           "new=%s again=%s calls=%s" % (new, again, calls))
 
 
+def case_a_red_alone_skips_the_other_assertion_retries():
+    durations = {"test_along.py": 9.0, "test_zshort.py": 1.0}
+    repo = make_repo(durations)
+    paths = [write_proof(repo, name) for name in sorted(durations)]
+    red = ("fail", 1.0, "FAIL: the claim\nAssertionError: real")
+    statuses, details, launches, _, out = run_stubbed(
+        repo, paths, {"test_along.py": [red, red], "test_zshort.py": [red, red]})
+    retries = [name for name, exclusive in launches if exclusive]
+    check("the shortest assertion failure retries alone first, and once it fails alone the rest stay red unretried",
+          retries == ["test_zshort.py"] and statuses == {"test_along.py": "fail", "test_zshort.py": "fail"}
+          and "not retried alone" in details.get("test_along.py", "") and "test_zshort.py" in details.get("test_along.py", "")
+          and "1 assertion retry not run: the run is already red (test_zshort.py failed alone)" in out,
+          "retries=%s statuses=%s detail=%r" % (retries, statuses, details.get("test_along.py")))
+
+
+def case_reds_rerun_at_base_side_by_side():
+    import contextlib as _cl
+    import threading
+    import time as _time
+    root = tempfile.mkdtemp(prefix="harness_gate_time_base_")
+    failing = []
+    for name in ("test_a.py", "test_b.py", "test_c.py"):
+        path = os.path.join(root, ".claude", "tests", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "w").close()
+        failing.append(path)
+    live, peak, lock = [0], [0], threading.Lock()
+
+    @_cl.contextmanager
+    def checkout(repo_root, rev, proofs=()):
+        yield root
+
+    def launch(path, timeout=None, exclusive=False, root=None, *args, **kwargs):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        _time.sleep(0.3)
+        with lock:
+            live[0] -= 1
+        return ("fail", 0.3, "FAIL: " + os.path.basename(path))
+    real = harness_tests._revision_checkout, harness_tests._launch
+    saved = dict(os.environ)
+    os.environ["HARNESS_SLOT_DIR"] = os.path.join(root, "slots")
+    os.environ["HARNESS_MACHINE_SLOTS"] = "3"
+    os.environ["HARNESS_TEST_JOBS"] = "3"
+    os.environ.pop("HARNESS_SLOT_BUDGET", None)  # a runner inside an inherited lane runs serially by design
+    harness_tests._revision_checkout, harness_tests._launch = checkout, launch
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(buf), contextlib.redirect_stdout(buf):
+            reds = harness_tests._reds_at(root, "base", failing)
+    finally:
+        harness_tests._revision_checkout, harness_tests._launch = real
+        os.environ.clear()
+        os.environ.update(saved)
+    check("a red's rerun at base runs beside the others, each start printed",
+          peak[0] > 1 and sorted(os.path.basename(p) for p in reds) == ["test_a.py", "test_b.py", "test_c.py"]
+          and buf.getvalue().count("classifying red") == 3,
+          "peak=%d reds=%s out=%r" % (peak[0], sorted(reds), buf.getvalue()))
+
+
 def case_a_proof_runs_on_the_land_path():
     if os.name != "nt":
         print("ok   (the Git Bash PATH is a Windows condition; nothing to strip here)")
@@ -187,7 +249,8 @@ def case_a_whole_tree_closure_proof_binds_every_claude_file():
 
 def main():
     for case in (case_alone_work_takes_the_machine_once, case_a_red_alone_skips_the_timeout_retries,
-                 case_a_close_judges_only_new_reds, case_a_proof_runs_on_the_land_path,
+                 case_a_close_judges_only_new_reds, case_a_red_alone_skips_the_other_assertion_retries,
+                 case_reds_rerun_at_base_side_by_side, case_a_proof_runs_on_the_land_path,
                  case_a_whole_tree_closure_proof_binds_every_claude_file):
         try:
             case()

@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'tools'))
@@ -18,6 +19,9 @@ import land_watch
 real_catch_up = land_watch.catch_up
 catch_calls = []
 land_watch.catch_up = lambda *a: (catch_calls.append(a), 'CATCH-UP planted')[1]
+# watch tails the runner's close log; the cases plant it (a falsy path is no log) so none reads this machine's.
+real_close_log_path = getattr(land_watch, 'close_log_path', None)
+land_watch.close_log_path = lambda path=None: ''
 
 LOST =[{"conclusion": "failure", "name": "land", "steps": []}]
 CHECKOUT_FAILED = [{"conclusion": "failure", "name": "land", "steps": [
@@ -120,18 +124,42 @@ def watch_log(log, conclusion='success'):
     return rc, [l for l in buf.getvalue().splitlines() if l.startswith(('LANDED', 'RED'))]
 
 
+# The excerpt with its wall line as `harness_tests._budget_line` prints it for the real close row of 617e38aa8
+# (the main checkout's harness_runs.json, which predates the recorded width: 12 slots).
+FLOOR_LINE = ('harness_tests: close wall: 2589.1s, floor 243s from fastest recorded passes (2915.0s summed over 12 '
+              'slots, longest test_bench_printed_commands.py 193.5s; 0 of 175 run proofs with no recorded pass); '
+              'proofs over 10s: test_opencode_run_sidecar.py 775.2s, test_bench_walk_succession.py 532.3s, '
+              'test_bench_printed_commands.py 457.9s, test_bench_walk_probes.py 429.2s, test_bench_walk_recovery.py '
+              '380.9s; queue wait 1392.0s')
+FLOOR_LOG = re.sub(r'harness_tests: close budget: [^\n]*', FLOOR_LINE, FIXTURE_LOG)
+check('the floor excerpt replaces the captured budget line', FLOOR_LOG.count('close wall: ') == 1
+      and 'close budget' not in FLOOR_LOG)
+rc, lines = watch_log(FLOOR_LOG)
+check('a land log whose close states its floor adds the close seconds and that floor to LANDED',
+      rc == 0 and lines == ['LANDED %s (close 2589.1s, floor 243s)' % PUSHED])
 rc, lines = watch_log(FIXTURE_LOG)
-check('a real land log with only the budget line adds the close seconds and budget to LANDED',
-      rc == 0 and lines == ['LANDED %s (close 3371.0s of 300s budget)' % PUSHED])
+check('a land log from a runner that printed a fixed budget adds the close seconds alone, never that budget',
+      rc == 0 and lines == ['LANDED %s (close 3371.0s)' % PUSHED])
 rc, lines = watch_log(FIXTURE_LOG.replace('LAND_RESULT', TIME_LINE + 'LAND_RESULT', 1))
 check('a log with the time line adds pool, alone retries and load to LANDED',
-      rc == 0 and lines == ['LANDED %s (close 3371.0s of 300s budget; pool 2156.0s; alone retries 6, 1172.4s; '
+      rc == 0 and lines == ['LANDED %s (close 3371.0s; pool 2156.0s; alone retries 6, 1172.4s; '
                             'load x3.7 (18118.0s over 4910.0s fastest, 529 of 529 proofs with history))' % PUSHED])
 rc, lines = watch_log('LAND_RESULT=red stage=close sha=%s branch=land/t1 :: new red\n' % PUSHED
-                      + FIXTURE_LOG.split('LAND_RESULT')[0], conclusion='failure')
+                      + FLOOR_LOG.split('LAND_RESULT')[0], conclusion='failure')
 check('a red whose close finished carries the close facts too',
       rc == 1 and len(lines) == 1 and lines[0].startswith('RED red stage=close')
-      and lines[0].endswith('(close 3371.0s of 300s budget)'))
+      and lines[0].endswith('(close 2589.1s, floor 243s)'))
+GROWTH_LINE = ('land	Prove and land	2026-11-11T18:40:01.0000000Z   harness_tests: close growth: '
+               'test_a.py 187.3s vs at most 93.6s before (3 closes); test_b.py 46.0s vs at most 6.6s before '
+               '(49 closes) (load-normalized)\n')
+rc, lines = watch_log(FIXTURE_LOG.replace('LAND_RESULT', GROWTH_LINE + 'LAND_RESULT', 1))
+check('a log with grown proofs adds their count and the largest to LANDED',
+      rc == 0 and lines == ['LANDED %s (close 3371.0s; growth: 2 proofs above their recorded range, '
+                            'largest test_a.py 187.3s vs at most 93.6s before (3 closes))' % PUSHED])
+NO_GROWTH = GROWTH_LINE.split('close growth: ')[0] + 'close growth: none above its recorded range (load-normalized)\n'
+rc, lines = watch_log(FIXTURE_LOG.replace('LAND_RESULT', NO_GROWTH + 'LAND_RESULT', 1))
+check('a log whose close grew nothing adds no growth clause',
+      rc == 0 and lines == ['LANDED %s (close 3371.0s)' % PUSHED])
 rc, lines = watch_log('LAND_RESULT=green sha=%s branch=land/t1\n' % PUSHED)
 check('a log with no close facts prints LANDED unchanged', rc == 0 and lines == ['LANDED ' + PUSHED])
 
@@ -302,6 +330,105 @@ run_watch('superseded sha=%s branch=land/t1 by=land/t2' % PUSHED)
 run_watch('', conclusion='cancelled')
 check('SUPERSEDED and CANCELLED never run the catch-up: the commits are not upstream yet', not catch_calls)
 
+# --- live close lines: the runner tees `land_close.log` as it goes; the watcher prints its first red while the run runs --
+import tempfile as _tempfile
+
+LIVE_DIR = _tempfile.mkdtemp(prefix='land_watch_live_')
+MARKER = 'LAND_CLOSE sha=%s branch=land/t1' % PUSHED
+# The shapes harness_tests prints (`FAIL %.1fs %s`, `FIRST RED %s at %s %s; next: ...`, `_progress(...)` lines).
+PROGRESS = 'harness_tests: 24 of 436 proofs done (0 reused), 61s; ~633s left at recorded times, pace x1.0'
+RETRY = 'harness_tests: alone retry 1 of 3: test_layer_closure.py; first failure: AssertionError: unrowed read'
+SKIP = 'harness_tests: 2 timeout retries not run: the run is already red (test_layer_closure.py failed alone)'
+FAILED = 'FAIL 84.2s C:/r/.claude/tests/test_layer_closure.py'
+FIRST = 'FIRST RED test_layer_closure.py at f3b2d7bd3 fix(close): retry order; next: fix this commit, or hand it to its owner\'s fix job'
+
+
+def run_watch_live(log_path, growth, polls=3):
+    """watch over a run that reads in_progress for `polls` list calls, then completes green, on a fake clock. Each
+    5 s sleep slice number in `growth` appends its text to the planted close log, as the runner's tee does.
+    Returns (rc, output, output at each list call)."""
+    import types
+    now = [1000.0]
+    slices = [0]
+    snaps = []
+    buf = io.StringIO()
+
+    def sleep(s):
+        now[0] += s
+        slices[0] += 1
+        if slices[0] in growth:
+            with open(log_path, 'a', encoding='utf-8', newline='') as f:
+                f.write(growth[slices[0]])
+
+    def fake_gh(*a):
+        if a[:2] == ('run', 'list'):
+            snaps.append(buf.getvalue())
+            status, conclusion = ('in_progress', None) if len(snaps) <= polls else ('completed', 'success')
+            return 0, json.dumps([{'databaseId': 7, 'headSha': PUSHED, 'status': status,
+                                   'conclusion': conclusion, 'attempt': 1}]), ''
+        return 0, 'LAND_RESULT=green sha=%s branch=land/t1\n' % PUSHED, ''
+    saved = land_watch.time, land_watch.catch_up
+    land_watch.gh, land_watch.time = fake_gh, types.SimpleNamespace(time=lambda: now[0], sleep=sleep)
+    land_watch.catch_up = lambda path=None: 'CATCH-UP planted'
+    land_watch.close_log_path = lambda path=None: log_path
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = land_watch.watch('land/t1', PUSHED, 60)
+    finally:
+        land_watch.time, land_watch.catch_up = saved
+    return rc, buf.getvalue(), snaps
+
+
+def plant_log(name, text=None):
+    path = os.path.join(LIVE_DIR, name)
+    if text is not None:
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            f.write(text)
+    return path
+
+
+# The runner has run the close for a while: progress and one proof's first failure are already in the log.
+live_path = plant_log('grow.log', MARKER + '\n' + PROGRESS + '\n')
+rc, out, snaps = run_watch_live(live_path, {
+    2: RETRY + '\n' + SKIP + '\n', 3: PROGRESS + '\n', 30: FAILED + '\n' + FIRST + '\n'})
+check('a close line the runner tees while the run runs prints at once, before the run completes',
+      'LIVE ' + RETRY in snaps[1] and 'LIVE ' + SKIP in snaps[1] and 'completed' not in snaps[1])
+check('... and the final verdict lines stay as they were: LANDED, then the catch-up line',
+      rc == 0 and out.splitlines()[-2:] == ['LANDED ' + PUSHED, 'CATCH-UP planted'])
+check('... and a progress line is not printed live', 'LIVE harness_tests: 24 of' not in out)
+check('FAIL and FIRST RED lines print live as they appear',
+      'LIVE ' + FAILED in out and 'LIVE ' + FIRST in out)
+
+# The log from the run before this one is still in place while this run waits in the runner's queue.
+stale = plant_log('stale.log', 'LAND_CLOSE sha=%s branch=land/t0\n%s\n%s\n' % ('b' * 40, FAILED, FIRST))
+rc, out, _ = run_watch_live(stale, {})
+check('a close log that names another run\'s sha prints nothing', 'LIVE' not in out and rc == 0)
+
+# Attempt 2 of a close rewrites the log from its first line: lines already printed are not printed again.
+again = plant_log('again.log', MARKER + '\n' + FAILED + '\n')
+rc, out, _ = run_watch_live(again, {})
+check('a line printed once is never printed again when the log is rewritten',
+      out.count('LIVE ' + FAILED) == 1)
+
+# A line the tee has half written is read once it is whole.
+half = plant_log('half.log', MARKER + '\n' + FAILED[:20])
+rc, out, snaps = run_watch_live(half, {2: FAILED[20:] + '\n'})
+check('a half-written line prints once it is whole, never in pieces',
+      out.count('LIVE ' + FAILED) == 1 and 'LIVE ' + FAILED[:20] + '\n' not in out)
+
+# The runner's log is absent where the watch runs (another machine, or no land has run here).
+rc, out, _ = run_watch_live(os.path.join(LIVE_DIR, 'absent.log'), {})
+check('no close log is no live line and no failure: the verdict prints as before',
+      rc == 0 and 'LIVE' not in out and out.splitlines()[-2] == 'LANDED ' + PUSHED)
+
+# The log's home: the land-runner worktree beside the primary checkout, whichever worktree runs the watch.
+import subprocess as _sp
+LIVE_REPO = os.path.join(LIVE_DIR, 'primary')
+_sp.run(['git', 'init', '-q', LIVE_REPO], check=True)
+check('the close log is the land-runner worktree\'s scratch/land_close.log under the primary checkout',
+      real_close_log_path is not None and os.path.normpath(real_close_log_path(LIVE_REPO)) == os.path.normpath(
+          os.path.join(LIVE_REPO, '.claude', 'worktrees', 'land-runner', '.claude', 'scratch', 'land_close.log')))
+
 # --- catch-up: real git, a bare origin, a clone as the shared checkout `s`, a peer clone `p` that pushes ----------
 # The fixtures are built once and copied per case; the cases run on threads, since each is git spawns.
 import itertools
@@ -310,7 +437,7 @@ import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
-from _case_pool import _jobs as _case_jobs
+from _case_pool import _jobs as _case_jobs, _budget as _case_budget
 
 TMP = tempfile.mkdtemp(prefix='land_watch_')
 os.environ['GIT_SEQUENCE_EDITOR'] = 'true'
@@ -555,7 +682,7 @@ def run_case(case):
         return False
 
 
-with ThreadPoolExecutor(max_workers=_case_jobs(None)) as pool:  # _case_pool owns the width (HARNESS_CASE_JOBS)
+with _case_budget(_case_jobs(None)) as width, ThreadPoolExecutor(max_workers=width) as pool:
     for case, ok in zip(CASES, pool.map(run_case, CASES)):
         check(case[0], ok)
 

@@ -458,6 +458,29 @@ check("the fan-out inventory writer lands on a held target",
       _inventory_err is None and json.load(io.open(inventory, encoding="utf-8"))["schemaVersion"] == 1,
       repr(_inventory_err))
 
+# --- importing the library reads no local settings listing --------------------
+# The proof runner keys a pass on every directory a proof lists. A listing of `.claude` at import time put
+# each ignored local file into the key of every proof that imports this module (or the pre-edit guard that
+# reads the overlay list), so a session's pass never matched the close checkout's.
+import subprocess  # noqa: E402
+
+_hooks = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks")
+_claude = os.path.normcase(os.path.abspath(os.path.join(_hooks, "..")))
+_probe = (
+    "import os, sys\n"
+    "seen = []\n"
+    "def hook(event, args):\n"
+    "    if event in ('os.listdir', 'os.scandir') and args and args[0] is not None:\n"
+    "        seen.append(os.path.normcase(os.path.abspath(os.fsdecode(args[0]))))\n"
+    "sys.addaudithook(hook)\n"
+    "sys.path.insert(0, %r)\n"
+    "import _hook_state, composed_output_guard\n"
+    "print(repr(seen))\n" % os.path.abspath(_hooks)
+)
+_run = subprocess.run([sys.executable, "-c", _probe], capture_output=True, text=True)
+check("importing _hook_state and composed_output_guard lists no `.claude` directory",
+      _run.returncode == 0 and _claude not in eval(_run.stdout or "[None]"), (_run.stdout + _run.stderr)[-300:])
+
 print("\n%d/%d checks pass" % (ran - len(failures), ran))
 for f in failures:
     print("  FAIL " + f)

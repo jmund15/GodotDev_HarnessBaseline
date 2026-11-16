@@ -13,6 +13,8 @@ blocked (a glob, an unresolved variable, `..` escape, scratch itself, a worktree
 scratch, an entry holding a git repository, another session's id folder, a symlink escape), plus the
 hook's real stdin channel, where an exit outside {0, 2} or a traceback is a CRASH, never an allow.
 """
+import atexit
+import functools
 import json
 import os
 import shutil
@@ -26,6 +28,12 @@ HOOKS = os.path.join(ROOT, "hooks")
 sys.path.insert(0, HOOKS)
 
 import dangerous_shell_guard as dsg  # noqa: E402
+from _regenerable_clone import PROOF_PLANT_PREFIX, is_proof_plant  # noqa: E402
+
+# The registered-worktree list is one git process that stats every registered worktree, and the cases below ask the
+# guard for it dozens of times while it holds still. The real function runs once per list state; the proof clears
+# the memo wherever it changes the list (`_registered_worktrees.cache_clear()`).
+dsg._registered_worktrees = functools.cache(dsg._registered_worktrees)
 
 # Planted INSIDE the repo's gitignored `.claude/tmp`, uniquely named per run. A root under this checkout's
 # `.claude/scratch` makes every target a delete inside the scratch of a linked worktree (the land runner's
@@ -35,9 +43,26 @@ import dangerous_shell_guard as dsg  # noqa: E402
 # `tempfile`) pointed at an empty dir outside the planted root, wherever this checkout lives.
 SCRATCH_HOME = os.path.join(ROOT, "tmp")
 os.makedirs(SCRATCH_HOME, exist_ok=True)
-TMP = tempfile.mkdtemp(prefix="pe_absent_delete_", dir=SCRATCH_HOME)
-OUTSIDE = tempfile.mkdtemp(prefix="pe_absent_outside_", dir=SCRATCH_HOME)
-GUARD_TEMP = tempfile.mkdtemp(prefix="pe_absent_guardtemp_", dir=SCRATCH_HOME)
+# Named from the prefix the guard allows deleting, so a crash's leftovers are removable (`is_proof_plant`).
+TMP = tempfile.mkdtemp(prefix=PROOF_PLANT_PREFIX + "delete_", dir=SCRATCH_HOME)
+OUTSIDE = tempfile.mkdtemp(prefix=PROOF_PLANT_PREFIX + "outside_", dir=SCRATCH_HOME)
+GUARD_TEMP = tempfile.mkdtemp(prefix=PROOF_PLANT_PREFIX + "guardtemp_", dir=SCRATCH_HOME)
+assert all(is_proof_plant(os.path.basename(p)) for p in (TMP, OUTSIDE, GUARD_TEMP))
+
+
+def _force_remove(func, path, _exc):
+    os.chmod(path, 0o700)
+    func(path)
+
+
+@atexit.register
+def _remove_planted():
+    # The plant sits in the checkout and holds a session-id-named folder, which blocks retiring the checkout's
+    # worktree, so it goes on every exit, a crash included.
+    for _dir in (TMP, OUTSIDE, GUARD_TEMP):
+        shutil.rmtree(_dir, onerror=_force_remove)
+
+
 for _var in ("TEMP", "TMP", "TMPDIR"):
     os.environ[_var] = GUARD_TEMP
 tempfile.tempdir = GUARD_TEMP
@@ -50,6 +75,10 @@ with open(os.path.join(EVIDENCE, "run.json"), "w", encoding="utf-8", newline="\n
 CLONE = os.path.join(PROJECT_SCRATCH, "probe")
 os.makedirs(CLONE, exist_ok=True)
 subprocess.run(["git", "init", "-q", CLONE], capture_output=True)
+# A repository with no commit loses nothing (CLAUDE.core.md §Shell Discipline: "a guard denies only a loss it
+# observes"); the clone holds a commit on no remote, which is what keeps the delete denied.
+subprocess.run(["git", "-C", CLONE, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q",
+                "--allow-empty", "-m", "unpushed"], capture_output=True)
 PEER = os.path.join(PROJECT_SCRATCH, "0f0e0d0c-1b1a-2918-1716-151413121110", "out")
 os.makedirs(PEER, exist_ok=True)
 with open(os.path.join(PEER, "job.log"), "w", encoding="utf-8", newline="\n") as fh:
@@ -189,6 +218,7 @@ _git("add", "-A", cwd=MAIN)
 _git("commit", "-q", "-m", "init", cwd=MAIN)
 LINKED = os.path.join(TMP, "linked_wt")
 _git("worktree", "add", "-q", "--detach", LINKED, cwd=MAIN)
+dsg._registered_worktrees.cache_clear()
 STRAY = os.path.join(TMP, "stray_checkout")
 os.makedirs(STRAY)
 _git("init", "-q", "-b", "main", cwd=STRAY)
@@ -218,14 +248,40 @@ for label, cwd, cmd, want_block in WORKTREE_CASES:
         print(f"  ok   {'block' if want_block else 'allow'}: {label}")
 os.environ["CLAUDE_PROJECT_DIR"] = TMP
 
-total = len(ALLOWED) + len(BLOCKED) + len(CHANNEL) + len(WORKTREE_CASES)
+# The registered-worktree list is a git process that stats every registered worktree, and the close's checkout is a
+# linked worktree whose own root is the project: every delete judged there read the list, scratch target or not, and
+# a proof that judges dozens of deletes ran it dozens of times. Only a scratch target needs it; a delete from another
+# linked worktree still reads it (cases above).
+LIST_CASES = [
+    ("a tracked file outside scratch, from the project's own linked worktree", "rm -rf README.md", True, 0),
+    ("a cache folder, from the project's own linked worktree", "rm -rf .claude/.search-index", False, 0),
+    ("a scratch file, from the project's own linked worktree", "rm -rf .claude/scratch/fan_dbg.json", False, 1),
+]
+real_registered = dsg._registered_worktrees
+list_reads = []
+
+
+def counted_registered():
+    list_reads.append(1)
+    return real_registered()
+
+
+dsg._registered_worktrees = counted_registered
+os.environ["CLAUDE_PROJECT_DIR"] = LINKED
+for label, cmd, want_block, want_reads in LIST_CASES:
+    del list_reads[:]
+    got = dsg.check_bash_command(cmd, LINKED)[0]
+    reads = len(list_reads)
+    if bool(got) != want_block or ((reads < 1) if want_reads else (reads != 0)):
+        print(f"  FAIL {label}: expected {'block' if want_block else 'allow'} with "
+              f"{'at least one' if want_reads else 'no'} list read, got {'block' if got else 'allow'} with {reads}")
+        fails += 1
+    else:
+        print(f"  ok   {'block' if want_block else 'allow'}, {reads} list read(s): {label}")
+dsg._registered_worktrees = real_registered
+os.environ["CLAUDE_PROJECT_DIR"] = TMP
+
+total = len(ALLOWED) + len(BLOCKED) + len(CHANNEL) + len(WORKTREE_CASES) + len(LIST_CASES)
 print()
 print(f"{total - fails}/{total} cases pass" if fails else f"ALL PASS ({total} cases)")
-def _force_remove(func, path, _exc):
-    os.chmod(path, 0o700)
-    func(path)
-
-
-for _dir in (TMP, OUTSIDE, GUARD_TEMP):
-    shutil.rmtree(_dir, onerror=_force_remove)
 sys.exit(1 if fails else 0)

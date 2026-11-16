@@ -3,6 +3,8 @@
 import contextlib
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +25,11 @@ class HealthTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)  # a killed check's shell releases the dir a moment late
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+        # A delegate's launcher exports CLAUDE_CODE_SIDECAR, which silences the owner-facing banners these cases read.
+        env = patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("CLAUDE_CODE_SIDECAR", None)
 
     def test_roster_health_never_reports_ok_without_a_logs_tree(self):
         # No benchmark_campaign under the root: no battery, so no roster status; a battery whose
@@ -141,11 +148,11 @@ class HealthTests(unittest.TestCase):
                           "print('probing', flush=True)\ntime.sleep(60)\n", encoding="utf-8")
         script.write_text('"%s" "%s"\n' % (Path(sys.executable).as_posix(), holder.as_posix()), encoding="utf-8")
         started = time.monotonic()
-        with patch.object(scl, "CHECK_SECONDS", 3):
+        with patch.object(scl, "CHECK_SECONDS", 1):
             result = scl.verify_sidecar(self.root, "hung_sidecar.sh")
         elapsed = time.monotonic() - started
         self.assertEqual("UNKNOWN (--check timed out)", result)
-        self.assertLess(elapsed, 20, "the check outlived its 3 s deadline by %.1f s" % (elapsed - 3))
+        self.assertLess(elapsed, 20, "the check outlived its 1 s deadline by %.1f s" % (elapsed - 1))
 
     def test_sidecar_health_checks_every_launcher_at_once(self):
         # Every check waits at a barrier that opens only when all four are in flight, so a serial
@@ -308,7 +315,9 @@ class HealthTests(unittest.TestCase):
             row = {"type": "attachment", "attachment": {"type": "skill_listing", "names": ["dataviz"]}}
             (folder / "old.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
             payload = {"transcript_path": str(folder / "current.jsonl")}
-            self.assertIn("dataviz", scl.skill_listing_banner(root, payload))
+            # the planted root holds no tools folder: the real tool reads the planted listing
+            with patch.object(sys, "path", [str(Path(__file__).resolve().parents[1] / "tools")] + sys.path):
+                self.assertIn("dataviz", scl.skill_listing_banner(root, payload))
             self.assertEqual("", scl.skill_listing_banner(root, {}))
 
     def test_owner_banners_are_silent_in_a_sidecar_delegate(self):
@@ -334,29 +343,54 @@ class RealSubmoduleTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self.directory.cleanup)
         base = Path(self.directory.name)
+        template = self.template()
         self.upstream = base / "upstream"
         self.parent = base / "parent"
-        self.upstream.mkdir()
-        self.parent.mkdir()
-        self.git(self.upstream, "init", "-q", "-b", "master")
-        self.commits = [self.commit(self.upstream, "f.txt", str(n)) for n in range(3)]
-        self.git(self.parent, "init", "-q", "-b", "main")
-        self.git(self.parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(self.upstream), "Jmodot")
-        self.git(self.parent, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
-                 "commit", "-q", "-m", "pin")
+        shutil.copytree(template / "upstream", self.upstream)
+        shutil.copytree(template / "parent", self.parent)
+        self.commits = (template / "commits").read_text(encoding="utf-8").split()
         self.sub = self.parent / "Jmodot"
+
+    @classmethod
+    def template(cls):
+        """The fixture every case starts from, built once per temp root and copied per case: `git submodule add`
+        alone costs most of a second, and cases run in separate processes, so each would build it again. Its name
+        carries this file's stamp, so an edit to the builder never reuses an older fixture."""
+        stat = Path(__file__).stat()
+        ready = Path(tempfile.gettempdir()) / ("scl_health_submodule_%d_%d" % (stat.st_mtime_ns, stat.st_size))
+        if ready.exists():
+            return ready
+        build = Path(tempfile.mkdtemp(prefix="scl_health_build_"))
+        (build / "upstream").mkdir()
+        (build / "parent").mkdir()
+        cls.git(build / "upstream", "init", "-q", "-b", "master")
+        commits = [cls.commit(build / "upstream", "f.txt", str(n)) for n in range(3)]
+        cls.git(build / "parent", "init", "-q", "-b", "main")
+        cls.git(build / "parent", "-c", "protocol.file.allow=always", "submodule", "add", "-q",
+                str(build / "upstream"), "Jmodot")
+        cls.git(build / "parent", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                "commit", "-q", "-m", "pin")
+        (build / "commits").write_text("\n".join(commits), encoding="utf-8")
+        try:
+            os.rename(build, ready)  # bare-rename: a name no process holds; the case that loses the race drops its build
+        except OSError:
+            if not ready.exists():  # a scanner held the folder: this case keeps its own build
+                return build
+            shutil.rmtree(build, ignore_errors=True)
+        return ready
 
     @staticmethod
     def git(cwd, *args):
         result = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True)
         return result.stdout.strip()
 
-    def commit(self, cwd, name, text):
+    @classmethod
+    def commit(cls, cwd, name, text):
         (Path(cwd) / name).write_text(text, encoding="utf-8")
-        self.git(cwd, "add", name)
-        self.git(cwd, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
-                 "commit", "-q", "-m", text)
-        return self.git(cwd, "rev-parse", "HEAD")
+        cls.git(cwd, "add", name)
+        cls.git(cwd, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+                "commit", "-q", "-m", text)
+        return cls.git(cwd, "rev-parse", "HEAD")
 
     def head(self):
         return self.git(self.sub, "rev-parse", "HEAD")
@@ -397,64 +431,28 @@ class RealSubmoduleTests(unittest.TestCase):
         self.assertEqual(self.commits[0], self.head())
 
 
-class HarnessFactLineTests(unittest.TestCase):
-    """The session block prints how much of the last week's fix work was harness-only, from origin/main."""
+class _Group:
+    """Methods each cheaper than the process a pool case starts (0.3 s), run in order in one process."""
 
-    def setUp(self):
-        if not hasattr(scl, "harness_fact_line"):  # this project's addition to a keep-local hook
-            self.skipTest("this checkout's session hook prints no harness fact line")
-        self.directory = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
-        self.addCleanup(self.directory.cleanup)
-        self.root = Path(self.directory.name)
-        self.git("init", "-q", "-b", "main")
+    def __init__(self, name, methods):
+        self.__name__, self.methods = name, methods
 
-    def git(self, *args, when=None):
-        env = dict(__import__("os").environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t",
-                   GIT_COMMITTER_EMAIL="t@t")
-        if when:
-            env["GIT_COMMITTER_DATE"] = env["GIT_AUTHOR_DATE"] = when
-        done = subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True, env=env,
-                              stdin=subprocess.DEVNULL)
-        self.assertEqual(done.returncode, 0, done.stderr)
-
-    def commit(self, subject, files, days_ago):
-        for rel in files:
-            path = self.root / rel
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(subject + rel, encoding="utf-8")
-        self.git("add", "-A")
-        when = (__import__("datetime").datetime.now().astimezone() - __import__("datetime").timedelta(days=days_ago, hours=1)).isoformat()
-        self.git("commit", "-q", "-m", subject, when=when)
-
-    def publish(self):
-        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
-
-    def test_line_counts_the_last_seven_days_of_origin_main(self):
-        self.commit("chore: seed", ["README.md"], 30)
-        self.commit("fix(tools): old harness fix", [".claude/tools/a.py"], 20)
-        self.commit("fix(tools): harness fix one", [".claude/tools/a.py"], 1)
-        self.commit("fix: harness fix two", [".claude/tests/test_a.py"], 2)
-        self.commit("chore(tools): harness chore", [".claude/tools/b.py"], 3)
-        self.commit("fix(combat): mixed fix", [".claude/tools/c.py", "Combat/a.cs"], 4)
-        self.commit("feat(spell): game feature", ["Spells/a.cs"], 5)
-        self.publish()
-        self.assertEqual(
-            "harness: 2 harness-only fix commits in the last 7 committer days, 60% harness-only "
-            "(Sep–Oct baseline 237/wk, 78%)", scl.harness_fact_line(self.root))
-
-    def test_line_is_cached_for_the_calendar_day(self):
-        self.commit("fix(tools): harness fix", [".claude/tools/a.py"], 1)
-        self.publish()
-        first = scl.harness_fact_line(self.root)
-        self.assertTrue(first.startswith("harness: 1 harness-only fix commits"), first)
-        self.commit("fix(tools): another", [".claude/tools/a.py"], 0)
-        self.publish()
-        self.assertEqual(first, scl.harness_fact_line(self.root))
-
-    def test_line_is_silent_when_origin_main_is_unreadable(self):
-        self.commit("fix(tools): harness fix", [".claude/tools/a.py"], 1)
-        self.assertEqual("", scl.harness_fact_line(self.root))
+    def __call__(self):
+        failed = []
+        for method in self.methods:
+            try:
+                method()
+            except AssertionError as exc:
+                failed.append("%s: %s" % (method.__name__, exc))
+        if failed:
+            raise AssertionError("; ".join(failed))
 
 
 if __name__ == "__main__":
-    unittest.main()
+    # The methods that spend seconds in git or a deadline are pool cases beside each other; the rest share one case each per class.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _case_pool import run_cases, unittest_cases
+    slow = [case for case in unittest_cases(HealthTests, RealSubmoduleTests)
+            if "RealSubmoduleTests" in case.__name__ or "hung_launcher" in case.__name__]
+    cheap = [case for case in unittest_cases(HealthTests) if case not in slow]
+    sys.exit(run_cases([_Group("HealthTests.cheap", cheap)] + slow))

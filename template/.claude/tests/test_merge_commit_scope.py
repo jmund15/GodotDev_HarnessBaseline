@@ -260,6 +260,16 @@ def main():
         "M3 the scoped stamp covers exactly the staged harness path",
         (ALLOW if list(stamp.get("files") or {}) == [".claude/hooks/h.py"] else DENY, json.dumps(stamp)[:300]),
         ALLOW))
+    runs = {}
+    try:
+        with open(os.path.join(repo, "harness_runs.json"), encoding="utf-8") as fh:
+            runs = json.load(fh)
+    except (OSError, ValueError):
+        pass
+    recorded = [row.get("head") for row in runs.get("runs", []) if isinstance(row, dict)]
+    failures.append(case(
+        "M3 the scoped run records the HEAD of the checkout it tested, never the runner's own",
+        (ALLOW if recorded == [head(repo)] else DENY, "recorded %s, planted %s" % (recorded, head(repo))), ALLOW))
     failures.append(case(
         "M3 the same commit after the scoped run -> allow",
         run_hook("git commit -F msg", repo), ALLOW))

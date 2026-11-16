@@ -28,7 +28,8 @@ a caller should use depends on whether a backgrounded job wakes it:
    leaves the command as it was. A subagent's timeout is clamped to
    SUBAGENT_WAIT_MS (under its 5-minute prompt cache), and so is a print-mode child's: the sidecar
    launchers set its cache to 5 minutes. Neither is backgrounded: guards/common.md owns its bounded foreground wait.
-2. A never-woken caller's `run_in_background` call draws an advisory naming the missing wake.
+2. A never-woken caller's `run_in_background` call that holds no wait loop draws an advisory naming the missing wake
+   (one that holds a wait loop is item 11's deny).
 3. Repeated status poll. A status-only command (every segment a read: date, tail, wc, ls, grep,
    Get-CimInstance, Start-Sleep …, no `>` write) whose shape (only count and delay arguments normalized) matches the caller's
    previous POLL_LIMIT - 1 consecutive Bash calls is denied: each call is a full model turn that
@@ -73,6 +74,14 @@ a caller should use depends on whether a backgrounded job wakes it:
    runs `watch_records.py --session` while the session's hook state (key `sidecar_watchers`) lists a live
    session-wide watcher is denied (`COVERED_REASON`): the redundant arm would only wait to take over. A gone watcher
    or a record watcher passes. Rule home: reference/sidecar_dispatch.md step 6. Class: process guard.
+11. Wait loop nobody watches (denies). A Bash call whose wait loop closes with `done`, optional redirections or `)`,
+   then a single `&` (quotes blanked, except a shell's `-c` body) is denied (`DETACHED_LOOP_REASON`): the loop runs
+   detached whatever `run_in_background` says, so no foreground call or task notification waits on it. A `wait`
+   later in the same call blocks the call until the loop ends, so that call passes. The deny names
+   the caller's own wait: `run_in_background` and its wake for a woken caller, the foreground recipe for a never-woken
+   one. A never-woken caller's `run_in_background` call that holds a wait loop is denied too
+   (`BACKGROUND_LOOP_REASON`): no wake reaches it. The interactive orchestrator's own `run_in_background` loop is item 1's
+   bounded check-in, which its wake watches. Class: process guard.
 
 Matches the ACTION, never the noun: a command that only names `sleep` passes, and a Monitor (except item 7) or a
 backgrounded call is never counted. Class: process guard. State: the shared per-session file
@@ -134,6 +143,12 @@ _STATUS_VERBS = frozenset((
     "test-path", "select-string", "select-object", "where-object", "measure-object", "format-list",
     "out-string", "write-host", "write-output", "set-location",
 ))
+# A loop's closing `done` (starting a command, never the word inside `echo done`), then only redirections or a
+# closing `)`, then a single `&` that backgrounds the loop.
+_LOOP_DETACHED = re.compile(
+    r"(?:^|[;&|(\n])[ \t]*done\b(?:[ \t]*\)|[ \t]*\d*[<>]{1,2}[ \t]*&?[^\s;&|)]+)*[ \t]*(?<![&>|<])&(?!&)")
+# A `wait` builtin later in the same call: the call blocks until its detached loop ends, so the loop is watched.
+_WAITS_LATER = re.compile(r"(?:^|[;&|(\n])[ \t]*wait\b")
 _HARMLESS_REDIRECT = re.compile(r"\d?>\s*(?:/dev/null|\$null|nul)\b|\d?>&\d", re.IGNORECASE)
 _DETACHED_LINE = re.compile(r"(?<![&>|<])&[ \t]*(?=\r?\n|\Z)")
 
@@ -160,6 +175,16 @@ POLL_REASON_AGENT = (
     "BLOCKED repeated status poll: this is the %%d%%s consecutive run of the same status check, and each "
     "run is a full turn that re-reads your whole context. No completion notification reaches this "
     "session, so a backgrounded job never wakes you: %s." % _WAIT_RECIPE
+)
+DETACHED_LOOP_REASON = (
+    "[wait] DENIED: this wait loop ends in a single `&`, so it runs detached: no foreground call and no task "
+    "notification watches it, and the turn can end while it waits (CLAUDE.core.md §Shell Discipline). Re-issue it "
+    "without the `&`%s"
+)
+_DETACHED_LOOP_WOKEN = ", with run_in_background: true: its end wakes you."
+BACKGROUND_LOOP_REASON = (
+    "[wait] DENIED: no completion notification reaches this session, so a wait loop in a background call waits on "
+    "nothing you watch, and the turn can end before it does (guards/common.md). Instead, %s"
 )
 NO_WAKE_ADVICE = (
     "[wait] No completion notification reaches this session for a backgrounded job. To wait for this "
@@ -240,6 +265,17 @@ def shell_code(command):
             return m.group(0)
         return m.group("head") + '""'
     return _INLINE_PROGRAM.sub(blank_inline, _HEREDOC.sub(blank, str(command or "")))
+
+
+_QUOTED = re.compile(r"\"(?:\\.|[^\"\\])*\"|'[^']*'")
+
+
+def _unquoted(code):
+    """`shell_code` output with each quoted string blanked unless a shell runs it (`bash -c '…'`): a loop that
+    only appears inside an `echo` or a grep pattern is data."""
+    keep = {m.start("body") for m in _INLINE_PROGRAM.finditer(code)
+            if m.group("prog").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe") in _SHELL_WORDS}
+    return _QUOTED.sub(lambda m: m.group(0) if m.start() in keep else '""', code)
 
 
 # Only a display count or a delay varies between polls of one target; file names and process ids keep their digits.
@@ -930,6 +966,13 @@ def main():
     unwoken = never_woken(payload)
     if unwoken and (tool_input.get("run_in_background") or not _LOOP_SLEEP.search(shell_code(command))):
         _wait_total_ms(payload, 0)
+    code = shell_code(command)
+    bare = _unquoted(code)
+    detached = _LOOP_DETACHED.search(bare) if payload.get("tool_name") == "Bash" else None
+    if detached and _LOOP_SLEEP.search(bare) and not _WAITS_LATER.search(bare, detached.end()):
+        return _deny(DETACHED_LOOP_REASON % (" and " + _WAIT_RECIPE if unwoken else _DETACHED_LOOP_WOKEN))
+    if unwoken and tool_input.get("run_in_background") and _LOOP_SLEEP.search(code):
+        return _deny(BACKGROUND_LOOP_REASON % _WAIT_RECIPE)
     if tool_input.get("run_in_background"):
         blind = blind_pipe(command)
         note = None

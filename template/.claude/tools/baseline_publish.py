@@ -2,8 +2,8 @@
 """Run the baseline publication transaction's eight steps (§6 of the sync-baseline-v2 design).
 
     python3 .claude/tools/baseline_sync.py publish (--from-commit SHA | --from-worktree PATH)
-        [--rows FILE] [--accept-hit ID]... [--dry-run] [--no-ci]
-    python3 .claude/tools/baseline_sync.py publish --resume ID [--accept-hit ID]...
+        [--rows FILE] [--accept-hit ID]... [--over-upstream RELPATH]... [--dry-run] [--no-ci]
+    python3 .claude/tools/baseline_sync.py publish --resume ID [--accept-hit ID]... [--open-only]
 
 One journal (`.claude/.cache/baseline-publish/<id>.json`) records every step's result,
 written atomically before the next step starts, so a crash anywhere is recoverable with
@@ -32,9 +32,14 @@ from pathlib import Path
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
+SCRIPT_DIR = TOOLS_DIR.parent / "scripts"
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 import baseline_sync as sync  # noqa: E402
 import baseline_identity  # noqa: E402
 import autolearn_outcomes  # noqa: E402
+import harness_tests as runner  # noqa: E402
+import machine_slots  # noqa: E402
 
 STEP_NAMES = (
     "collect", "classify", "materialize", "scrub",
@@ -292,6 +297,57 @@ def _collect(root: Path, source: dict, requested: list[str] | None, lock: dict,
     return _collect_commit(root, source, requested, lock)
 
 
+MOVED_STATES = ("diverged", "upstream-updated")
+
+
+def _read_check_states(root: Path, lock: dict, source: dict, records: list[dict], baseline_cache: Path,
+                       baseline_sha: str, over_upstream: list[str]) -> str:
+    """Step 1 reads `check`'s state of each row a commit source ships, against the freshly pinned baseline, and
+    returns the counts as evidence. A row whose baseline copy changed since its base (`diverged`,
+    `upstream-updated`) would have that change overwritten, so it refuses unless the owner declined that exact
+    upstream copy: `--over-upstream <relpath>` records the decline on the lock row (`declined.upstream` is the
+    baseline copy's sha), and a later publish reads it there until the baseline moves again. A worktree source
+    authors upstream first, so its rows have no consumer state to read."""
+    if source["kind"] != "commit":
+        return ""
+    files, subs = lock.get("files", {}), lock.get("substitutions", {})
+    reader = sync.BaselineSource(baseline_cache, baseline_sha, sync._BatchReader(baseline_cache, baseline_sha))
+    counts: dict[str, int] = {}
+    refused: list[str] = []
+    declare: dict[str, str] = {}
+    try:
+        for record in records:
+            entry = files.get(record["relpath"])
+            if record["kind"] != "lock" or record["op"] != "A" or entry is None:
+                continue
+            state = sync._v2_state(root, reader, lock, record["relpath"], entry)
+            counts[state] = counts.get(state, 0) + 1
+            if state not in MOVED_STATES:
+                continue
+            upstream = sync._upstream_sha(reader, record["relpath"], subs)
+            if upstream is not None and (entry.get("declined") or {}).get("upstream") == upstream:
+                continue
+            if record["relpath"] in over_upstream and upstream is not None:
+                declare[record["relpath"]] = upstream
+                continue
+            refused.append(f"  {record['relpath']}: {state}; the baseline's copy changed since this row's base, so "
+                           f"publishing overwrites that change; run `pull --merge {record['relpath']}` first, or "
+                           f"publish over it with `--over-upstream {record['relpath']}`")
+    finally:
+        reader.close()
+    if refused:
+        raise PublishError("publish would overwrite upstream changes:\n" + "\n".join(refused))
+    if declare:
+        def apply(current: dict):
+            for relpath, upstream in declare.items():
+                current["files"][relpath]["declined"] = {"upstream": upstream, "at": _now()}
+            return sorted(declare)
+        sync.mutate_lock(root, apply)
+    text = ", ".join(f"{state} {count}" for state, count in sorted(counts.items()))
+    return ("; check states: " + text if text else "") + (
+        "; over upstream (declined): " + ", ".join(sorted(declare)) if declare else "")
+
+
 # ---------------------------------------------------------------------------
 # Step 2: classify
 # ---------------------------------------------------------------------------
@@ -523,7 +579,9 @@ def _battery_mode(records: list[dict], full_battery: bool) -> tuple[str, str]:
 
 def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
     """Run every check without stopping at a red: manifest, audit, baseline tests and the battery.
-    All reds go into one PublishError. The Linux check is CI's lanes on the PR."""
+    All reds go into one PublishError. Each check takes a machine lane; the battery
+    is a coordinator whose proofs take their own lanes in the same pool. No private
+    battery pool or all-machine reservation hides its nested load."""
     mode, reason = _battery_mode(records, full_battery)
     reds: list[str] = []
     outputs: list[str] = []
@@ -531,7 +589,8 @@ def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
     has_battery = harness_script.is_file()
 
     def run_check(args: list[str], label: str) -> str:
-        return _run_python_args(worktree, args, label)
+        env = machine_slots.proof_environment(dict(os.environ, HARNESS_SLOT_BUDGET="1"))
+        return _run_python_args(worktree, args, label, env)
 
     def counts_check() -> str:
         _battery_counts_match(worktree)
@@ -557,8 +616,13 @@ def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
             rows = [r["relpath"] for r in records if r["kind"] == "lock" and r["op"] != "D"]
             args = [".claude/scripts/harness_tests.py", "--proofs-for", *rows]
             battery_label, battery_cwd = "harness_tests.py --proofs-for", worktree / "template"
+        battery_env = machine_slots.proof_environment(os.environ)
+        # HARNESS_RUNNER_ENV: the battery runs each proof with a clean runner's environment (harness_tests.py
+        # `_RUNNER_ENV`), not the publishing session's home, git config and CLAUDE_* names.
+        battery_env["HARNESS_RUNNER_ENV"] = "1"
         # Only the full battery reuses recorded passes: the scoped child already builds its own cache.
-        battery_env = {"HARNESS_REUSE_PASSES": "1"} if mode == "full" else None
+        if mode == "full":
+            battery_env["HARNESS_REUSE_PASSES"] = "1"
         tasks.append((battery_label, lambda: _run_python_args(battery_cwd, args, battery_label, battery_env), True))
 
     # Longest known first, so the pool's start order puts the long tasks ahead of the short ones.
@@ -570,13 +634,17 @@ def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
     def run_task(index: int) -> None:
         start = time.monotonic()
         try:
-            results[index] = (tasks[index][1](), "")
+            with runner.nullcontext() if tasks[index][2] else runner._slot_guard():
+                results[index] = (tasks[index][1](), "")
+        except runner.SlotStoreError as exc:
+            results[index] = ("", "machine slots unavailable: %s" % exc)
         except Exception as exc:
             results[index] = ("", str(exc))
         spans[index] = (start, time.monotonic())
 
     windows_start = time.monotonic()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(tasks))) as pool:
+    workers = 1 if machine_slots.inherited() else max(1, runner._machine_slots() + 1)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         for future in [pool.submit(run_task, i) for i in submit_order]:
             future.result()
     windows_elapsed = time.monotonic() - windows_start
@@ -880,8 +948,9 @@ def _consumer_label_for(root: Path) -> str:
     return baseline_identity._consumer_label(lock.get("baseline_repo") or "", root.name)
 
 
-def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
-             no_ci: bool, branch: str, journal_id: str, profile: dict) -> str:
+def _open_pr(worktree: Path, journal: dict, journal_path: Path, root: Path,
+             branch: str, journal_id: str, profile: dict) -> str:
+    """Commit the publication, push `branch` and open its PR (or find the one already open); records `pr_url`."""
     if not journal["worktree"].get("committed"):
         _git(worktree, ["add", "-A"])
         status = _git(worktree, ["status", "--porcelain"])
@@ -930,6 +999,31 @@ def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
                 raise PublishError("gh pr create did not return a PR URL")
         journal["pr_url"] = pr_url
         _write_json_atomic(journal_path, journal)
+    return pr_url
+
+
+def _landing_refusal(source: dict) -> str | None:
+    """Why the source commit is not on the project's `origin/main`, or None when it is. A worktree source is a
+    baseline author's own tree and a repository with no `origin` has nothing to land onto: neither is checked."""
+    if source["kind"] != "commit":
+        return None
+    repo = Path(source["repo"])
+    if _git(repo, ["remote", "get-url", "origin"], check=False).returncode != 0:
+        return None
+    if _git(repo, ["fetch", "-q", "origin", "main"], check=False).returncode != 0:
+        return "origin/main could not be fetched, so the landing is unknown"
+    landed = _git(repo, ["merge-base", "--is-ancestor", source["commit"], "origin/main"], check=False)
+    return None if landed.returncode == 0 else f"source commit {source['commit'][:12]} is not on origin/main yet"
+
+
+def _publish(worktree: Path, journal: dict, journal_path: Path, root: Path,
+             no_ci: bool, branch: str, journal_id: str, profile: dict) -> str:
+    pr_url = _open_pr(worktree, journal, journal_path, root, branch, journal_id, profile)
+    head = journal["worktree"]["head"]
+    refusal = _landing_refusal(journal["source"])
+    if refusal:
+        raise PublishError(f"{refusal}; the PR is open at {pr_url}. Land the source commit, then "
+                           f"`publish --resume {journal_id}` waits for CI and merges")
 
     view = _gh_text(worktree, ["pr", "view", pr_url, "--json", "state,mergeCommit"])
     info = json.loads(view) if view else {}
@@ -1030,6 +1124,7 @@ def _apply_published_rows(root: Path, lock: dict, records: list[dict], baseline_
         if sync._entry_status(entry) in ("forked", "local"):
             entry["status"] = "tracked"
         entry.pop("judged", None)
+        entry.pop("declined", None)
         taken.add(relpath)
         updated += 1
     sync.move_pin(lock, baseline_repo, baseline_sha_after, taken)
@@ -1192,7 +1287,8 @@ def _current_source_commit(source: dict) -> str:
 def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
                        source: dict, records: list[dict], worktree: Path, branch: str,
                        baseline_cache: Path, baseline_before: str, accept_hits: list[str],
-                       no_ci: bool, full_battery: bool, dry_run: bool, start: int) -> None:
+                       no_ci: bool, full_battery: bool, dry_run: bool, start: int,
+                       open_only: bool = False) -> None:
     # One profile for both the published diff and the commit message: the same identity facts
     # govern what a consumer pulls and what its history records.
     profile = baseline_identity.build_profile_for_repo(root, baseline_dir=str(baseline_cache))
@@ -1213,6 +1309,13 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
     if dry_run:
         return
 
+    if open_only:
+        # Step 5 stays pending: a plain resume checks the landing, waits for CI and merges.
+        pr_url = _open_pr(worktree, journal, journal_path, root, branch, journal["id"], profile)
+        journal["steps"][5]["evidence"] = f"pr opened, not merged: {pr_url}"
+        _write_json_atomic(journal_path, journal)
+        return
+
     _step(journal, journal_path, 5, lambda: _publish(
         worktree, journal, journal_path, root, no_ci, branch, journal["id"], profile
     ))
@@ -1226,7 +1329,7 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
 
 
 def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = False,
-            full_battery: bool = False) -> dict:
+            full_battery: bool = False, open_only: bool = False) -> dict:
     try:
         sync.require_v2_lock(sync.load_lock(root))
     except sync.BaselineError as exc:
@@ -1323,7 +1426,7 @@ def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = 
     _steps_from_index(journal, journal_path, root, lock, source, records, worktree, branch,
                        baseline_cache, baseline_before, accept_hits,
                        bool(journal.get("no_ci")), bool(journal.get("full_battery")),
-                       bool(dry_run), start)
+                       bool(dry_run), start, open_only)
     return journal
 
 
@@ -1372,7 +1475,7 @@ def _delete_journal(journal_path: Path) -> None:
 
 
 def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str],
-        dry_run, no_ci, resume_id, full_battery=False):
+        dry_run, no_ci, resume_id, full_battery=False, open_only=False, over_upstream=None):
     root = Path(root).resolve()
     try:
         sync.require_v2_lock(sync.load_lock(root))
@@ -1386,7 +1489,7 @@ def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str
     except sync.BaselineError as exc:
         raise PublishError(str(exc)) from exc
     if resume_id:
-        return _resume(root, resume_id, accept_hits, bool(dry_run), bool(full_battery))
+        return _resume(root, resume_id, accept_hits, bool(dry_run), bool(full_battery), bool(open_only))
     if source is None:
         raise PublishError("a source commit or worktree is required")
     source = _resolve_source(root, source)
@@ -1423,8 +1526,10 @@ def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str
 
     def _do_collect() -> str:
         found = _collect(root, source, requested, lock, worktree_source, baseline_before)
+        states = _read_check_states(root, lock, source, found, baseline_cache, baseline_before,
+                                    list(over_upstream or []))
         box.append(found)
-        return f"{len(found)} row(s): " + ", ".join(r["relpath"] for r in found)
+        return f"{len(found)} row(s): " + ", ".join(r["relpath"] for r in found) + states
 
     _step(journal, journal_path, 0, _do_collect)
     records = box[0]
@@ -1481,11 +1586,18 @@ def main(argv=None) -> int:
     parser.add_argument("--no-ci", action="store_true")
     parser.add_argument("--full-battery", action="store_true")
     parser.add_argument("--resume")
+    parser.add_argument("--open-only", action="store_true")
+    parser.add_argument("--over-upstream", action="append", default=[], metavar="RELPATH",
+                        help="publish this row over the baseline copy that changed since its base; recorded on the row")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
     if args.resume:
-        if args.from_commit or args.from_worktree or args.rows or args.no_ci:
-            parser.error("--resume takes its source, rows and --no-ci from the journal")
+        if args.from_commit or args.from_worktree or args.rows or args.no_ci or args.over_upstream:
+            parser.error("--resume takes its source, rows, --no-ci and --over-upstream from the journal and the lock")
+        if args.open_only and args.dry_run:
+            parser.error("--open-only and --dry-run are mutually exclusive")
+    elif args.open_only:
+        parser.error("--open-only needs --resume")
     elif bool(args.from_commit) == bool(args.from_worktree):
         parser.error("exactly one of --from-commit and --from-worktree is required")
     source = None
@@ -1507,7 +1619,7 @@ def main(argv=None) -> int:
             parser.error("rows file must be a JSON list of unique relpath strings")
     try:
         journal = run(root, source, selected, args.accept_hit, args.dry_run, args.no_ci,
-                      args.resume, args.full_battery)
+                      args.resume, args.full_battery, args.open_only, args.over_upstream)
     except PublishError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

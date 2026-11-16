@@ -11,29 +11,57 @@ not depend on each other's order or leftovers, and must not assert wall-clock de
 `run_sections` is the same for a proof whose cases share one script's setup: the proof re-runs itself once
 per section (`--section K`), each child ends with `emit_section(cases)`, and the parent merges the results.
 
-`HARNESS_CASE_JOBS` overrides the width (default 4; the harness runner sets 2 for its proofs)."""
+`HARNESS_CASE_JOBS` requests a width (default 4; the runner requests 2). The pool
+uses its parent's lane and borrows free machine slots, or takes a base lane when run directly.
+
+Under the harness runner's read recorder, each `run_cases` case logs its reads to its own folder (`case_log_dir`),
+so the runner records a pass per case and later skips a case whose recorded pass still holds
+(`HARNESS_CASES_REUSED`)."""
 import json
 import os
 import subprocess
 import sys
 import traceback
 import unittest
+import urllib.parse
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
+
+
+def _budget(jobs):
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
+    from machine_slots import parallel_budget
+    return parallel_budget(jobs)
 
 
 def _run_one(case):
     try:
         case()
         return None
-    except BaseException:  # noqa: BLE001 -- every case failure is reported, never raised into the pool
-        return traceback.format_exc(limit=3).strip().splitlines()[-1]
+    except BaseException as exc:  # noqa: BLE001 -- every case failure is reported, never raised into the pool
+        # A message's first line is its reason; a case that appends a log to it ends on the log's tail.
+        return traceback.format_exception_only(type(exc), exc)[0].strip().splitlines()[0]
+
+
+def case_log_dir(base, name):
+    """The folder a case's reads go to under the proof's read log; the runner reads it back by this name."""
+    return os.path.join(base, "cases", urllib.parse.quote(name, safe=""))
+
+
+def _case_reads(name):
+    """In the case's worker, before the case runs: its reads, and its children's, go to its own folder."""
+    base = os.environ.get("HARNESS_READ_LOG")
+    if base:
+        import sitecustomize
+        retarget = getattr(sitecustomize, "retarget", None)
+        if retarget:
+            retarget(case_log_dir(base, name))
 
 
 def _isolated(case):
     """The case's error text, or None. A fresh one-process executor per case, so a crash breaks
     only this case's pool."""
-    with ProcessPoolExecutor(max_workers=1) as pool:
+    with ProcessPoolExecutor(max_workers=1, initializer=_case_reads, initargs=(case.__name__,)) as pool:
         try:
             return pool.submit(_run_one, case).result()
         except BrokenProcessPool as exc:
@@ -54,17 +82,51 @@ def _jobs(jobs):
     return value if value > 0 else 4
 
 
+def _reused():
+    """The case names whose recorded passes the harness runner reuses (`HARNESS_CASES_REUSED`, a JSON list)."""
+    try:
+        names = json.loads(os.environ.get("HARNESS_CASES_REUSED") or "[]")
+    except ValueError:
+        return set()
+    return {n for n in names if isinstance(n, str)} if isinstance(names, list) else set()
+
+
+def _only(cases):
+    """The cases `HARNESS_CASES_ONLY` names (comma-separated name parts), or None for every case. The harness runner
+    sets `HARNESS_SLOT_DIR` for each proof it runs, and there the filter is ignored: its pass covers every case."""
+    parts = [p.strip() for p in os.environ.get("HARNESS_CASES_ONLY", "").split(",") if p.strip()]
+    if not parts or os.environ.get("HARNESS_SLOT_DIR"):
+        return None
+    return [case for case in cases if any(part in case.__name__ for part in parts)]
+
+
 def run_cases(cases, jobs=None):
-    """0 when every case passes, else 1. Prints `ok <case>` / `FAIL <case>: <error>` and a count."""
-    failures = []
-    with ThreadPoolExecutor(max_workers=_jobs(jobs)) as pool:
-        for case, error in zip(cases, pool.map(_isolated, cases)):
+    """0 when every case passes, else 1. Prints `ok <case>` / `FAIL <case>: <error>` / `reused <case>` and a
+    count. A case the runner reuses (`_reused`) does not run: its recorded pass still holds.
+    `HARNESS_CASES_ONLY=<name part>[,<name part>]` runs the matching cases alone, for a fix loop on one case."""
+    only = _only(cases)
+    if only is not None:
+        if not only:
+            print("HARNESS_CASES_ONLY names no case of: " + ", ".join(case.__name__ for case in cases))
+            return 1
+        total, cases = len(cases), only
+        print("partial: %d of %d cases (HARNESS_CASES_ONLY); not a pass of this proof" % (len(cases), total), flush=True)
+    failures, reused = [], _reused()
+    # The list names this proof's cases; a proof a case starts has its own.
+    os.environ.pop("HARNESS_CASES_REUSED", None)
+    running = [case for case in cases if case.__name__ not in reused]
+    for case in cases:
+        if case.__name__ in reused:
+            print("reused " + case.__name__, flush=True)
+    with _budget(_jobs(jobs)) as width, ThreadPoolExecutor(max_workers=width) as pool:
+        for case, error in zip(running, pool.map(_isolated, running)):
             if error is None:
                 print("ok " + case.__name__, flush=True)
             else:
                 failures.append(case.__name__)
                 print("FAIL %s: %s" % (case.__name__, error), flush=True)
-    print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
+    print("%d/%d cases pass%s" % (len(cases) - len(failures), len(cases),
+                                  " (%d reused)" % (len(cases) - len(running)) if len(running) < len(cases) else ""))
     return 1 if failures else 0
 
 
@@ -91,7 +153,7 @@ def run_sections(script, flag, count, names=None, jobs=None):
         text = "".join(ln + "\n" for ln in lines if not ln.startswith(_SECTION_MARK))
         return text, [tuple(c) for c in json.loads(marked[-1][len(_SECTION_MARK):])]
 
-    with ThreadPoolExecutor(max_workers=_jobs(jobs)) as pool:
+    with _budget(_jobs(jobs)) as width, ThreadPoolExecutor(max_workers=width) as pool:
         return list(pool.map(run, range(count)))
 
 
@@ -152,7 +214,7 @@ def run_sharded(path):
         return code, text
 
     code = 0
-    with ThreadPoolExecutor(max_workers=len(shards)) as pool:
+    with _budget(len(shards)) as width, ThreadPoolExecutor(max_workers=width) as pool:
         for rc, text in pool.map(run, shards):
             sys.stdout.write(text)
             code = code or rc

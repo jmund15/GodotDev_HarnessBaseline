@@ -219,6 +219,34 @@ def a_queued_job_names_the_transport_cap_that_held_it():
     return outcome["c"] == "queued" and "[fanout] c: queued" in text and "capped-t cap of 2" in text and "--max-parallel" not in text
 
 
+def a_recorded_winpid_answers_liveness_without_spawning_a_shell():
+    """The launcher writes `winpid=` on the `.pid` line so a Windows reader needs no Git Bash; the admission wait
+    and each running job's driver poll probe every job, and a bash spawn per probe is what held a launch."""
+    import subprocess
+    import reap  # noqa: F401 -- its import is not what is under test
+    out = fresh()
+    rec = os.path.join(out, "w.record.json")
+
+    shells = []  # the shell choice is the first step of the spawn path; a leftover driver thread may spawn on its own
+
+    def asked(winpid):
+        open(rec + ".pid", "w").write("2026-10-26T20:00:00Z winpid=%s pid=4242\n" % winpid)
+        with mock.patch.object(sf.sidecar_launch, "git_bash", side_effect=lambda: shells.append(1)):
+            return sf._record_pid_alive(rec, 4242)
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    return asked(os.getpid()) is True and asked(gone.pid) is False and not shells
+
+
+def one_spare_plan_read_serves_every_job_of_a_shape():
+    seen = []
+    checks = sf._dispatch_checks_module()
+    jobs = [{"label": l, "alias": "haiku", "kind": "lens", "promptFile": "p.md"} for l in ("a", "b", "c")]
+    with mock.patch.object(checks, "spare_plan_fact", side_effect=lambda *a, **k: seen.append(a[:2]) or "fact"):
+        lines = sf.spare_facts(jobs, sf.model_registry.load())
+    return len(lines) == 3 and len(seen) == 1 and all("fact" in line for line in lines)
+
+
 CASES = []
 
 
@@ -365,6 +393,9 @@ case("an explicit --max-parallel 2 still bounds the total", an_explicit_max_para
 case("the real registry caps codex at 4 and no other transport", the_real_registry_caps_only_codex)
 case("the registry rejects a cap that is not a positive integer with a basis", the_registry_rejects_a_cap_without_a_count_or_basis)
 case("a queued job's line names the transport cap that held it", a_queued_job_names_the_transport_cap_that_held_it)
+
+case("a recorded winpid answers a job's liveness without spawning a shell", a_recorded_winpid_answers_liveness_without_spawning_a_shell)
+case("one spare-plan read serves every job of the same tier and transport", one_spare_plan_read_serves_every_job_of_a_shape)
 
 failed = []
 for name, fn in CASES:

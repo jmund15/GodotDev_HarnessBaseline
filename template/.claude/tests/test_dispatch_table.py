@@ -1809,6 +1809,98 @@ def test_stop_blocks_once_per_call_for_every_uncovered_sidecar():
     assert e.body.get("decision") == "block" and "1 sidecar(s)" in e.body["reason"], e.body
 
 
+# ---------------------------------------------------------------- a background shell ends the turn unwatched
+# The watcher counts a running Bash background task as live work (a check-in inside the prompt cache), so the Stop
+# hook blocks on one with the same definition: `wake_digest.running_shells` over the transcript, kept to the ids the
+# Stop payload lists as running now. The shell's own end is the client's notification, which no watcher repeats.
+
+def _plant_shell(e, task, command="npm run build", launched_ago=60, ended=False):
+    use = "toolu_" + task
+    rows = [{"type": "assistant", "isSidechain": False, "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": use, "name": "Bash", "input": {"command": command, "run_in_background": True}}]}},
+            {"type": "user", "isSidechain": False, "timestamp": _iso(time.time() - launched_ago),
+             "message": {"role": "user", "content": [{"tool_use_id": use, "type": "tool_result",
+                                                      "content": "Command running in background with ID: " + task,
+                                                      "is_error": False}]},
+             "toolUseResult": {"stdout": "", "stderr": "", "backgroundTaskId": task}}]
+    if ended:
+        rows.append({"type": "queue-operation", "operation": "enqueue", "content": (
+            "<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>%s</tool-use-id>\n<output-file>x</output-file>\n"
+            "<status>completed</status>\n<summary>Background command \"x\" completed (exit code 0)</summary>\n"
+            "</task-notification>" % (task, use))})
+    with open(e.transcript, "a", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
+
+
+def _shell_stop(e, task="bsh1", **kwargs):
+    return e.run(stop_payload(background=[{"id": task, "type": "shell"}], **kwargs), "--complete")
+
+
+def test_stop_blocks_a_running_background_shell_with_no_live_watcher():
+    e = Env()
+    _plant_shell(e, "bsh1")
+    _shell_stop(e)
+    assert e.body.get("decision") == "block", e.body
+    assert WATCH_COMMAND in e.body["reason"] and "1 background shell(s)" in e.body["reason"], e.body
+    assert "end the turn only when none remains" in e.body["reason"], e.body
+
+
+def test_stop_does_not_block_a_background_shell_a_live_session_watcher_covers():
+    e = Env()
+    _plant_shell(e, "bsh2")
+    e.watch()
+    _shell_stop(e, "bsh2")
+    assert "decision" not in e.body, e.body
+
+
+def test_stop_hook_active_never_blocks_on_a_background_shell():
+    e = Env()
+    _plant_shell(e, "bsh3")
+    _shell_stop(e, "bsh3", stop_hook_active=True)
+    assert "decision" not in e.body, e.body
+
+
+def test_a_shell_that_ran_the_watcher_is_not_work_the_stop_waits_on():
+    e = Env()
+    _plant_shell(e, "bsh4", command=WATCH_COMMAND)
+    _plant_shell(e, "bsh5", command="python3 .claude/tools/watch_records.py --pane")
+    e.run(stop_payload(background=[{"id": "bsh4", "type": "shell"}, {"id": "bsh5", "type": "shell"}]), "--complete")
+    assert "decision" not in e.body, e.body
+
+
+def test_a_shell_the_transcript_shows_ended_or_never_launched_here_or_stale_does_not_block():
+    e = Env()
+    _plant_shell(e, "bsh6", ended=True)
+    _plant_shell(e, "bsh7", launched_ago=5 * 3600)
+    e.run(stop_payload(background=[{"id": "bsh6", "type": "shell"}, {"id": "bsh7", "type": "shell"},
+                                   {"id": "from-a-subagent", "type": "shell"}]), "--complete")
+    assert "decision" not in e.body, e.body
+
+
+def test_no_background_task_in_the_payload_never_blocks_on_a_shell():
+    e = Env()
+    _plant_shell(e, "bsh8")
+    e.run(stop_payload(), "--complete")
+    assert "decision" not in e.body, e.body
+    e.run({"hook_event_name": "Stop", "stop_hook_active": False}, "--complete")
+    assert "decision" not in e.body, e.body
+
+
+def test_the_watcher_and_the_stop_hook_name_the_same_running_shells():
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "tools"))
+    import watch_records
+    e = Env()
+    _plant_shell(e, "bsh9")
+    _plant_shell(e, "bsh10", command=WATCH_COMMAND)
+    _plant_shell(e, "bsh11", ended=True)
+    shells = watch_records.ShellEnds(SID, None)
+    shells.path = e.transcript
+    live = {"bsh9", "bsh10", "bsh11"}
+    assert shells.running() == {"bsh9"}, shells.running()
+    assert watch_records.session_running_shells(SID, e.transcript, live) == shells.running()
+
+
 # ---------------------------------------------------------------- fan-out identity by fact (2026-09-28)
 # Session 1f652996: a foreground fan-out hit its 300 s tool timeout, so PostToolUse stamped
 # `launched_at` 301 s after the fan-out wrote its inventory. Matching the inventory by that stamp
@@ -1965,6 +2057,29 @@ def test_an_ended_attempt_resolves_to_its_calls_later_relaunch():
                  inventory=os.path.join(os.path.dirname(first), "fanout-first.inventory.json"))
     assert dispatch_table.resolve_sidecar_record(entry, SID, [entry]) == second, entry
     assert entry["inventory"].endswith("fanout-relaunch.inventory.json"), entry
+
+
+def test_an_inventory_read_refused_mid_rename_is_retried_not_skipped_for_a_poll():
+    """The fan-out saves its inventory by renaming a temp file over it, and Windows refuses a read in that
+    instant. One refused read must not hide the relaunch's inventory from this poll."""
+    from unittest.mock import patch
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "hooks"))
+    import dispatch_table
+    e = Env()
+    first, second = _refused_then_relaunched(e)
+    entry = dict(e.pending()[0], record=first,
+                 inventory=os.path.join(os.path.dirname(first), "fanout-first.inventory.json"))
+    real_open, refused = open, []
+
+    def refuse_once(path, *args, **kwargs):
+        if str(path).endswith("fanout-relaunch.inventory.json") and not refused:
+            refused.append(path)
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, *args, **kwargs)
+
+    with patch("builtins.open", refuse_once):
+        found = dispatch_table.resolve_sidecar_record(entry, SID, [entry])
+    assert refused and found == second, (refused, found, entry)
 
 
 def test_a_running_attempt_keeps_its_record_beside_a_later_inventory():
@@ -2603,6 +2718,15 @@ def test_an_unrelated_workflow_launch_leaves_the_handoff_pending():
     assert "handoff" in [p["kind"] for p in e.pending()], e.pending()
 
 
+def test_never_started_line_ignores_a_refusal_file_older_than_the_call():
+    e = Env()
+    _refused_fanout(e, "older-refusal", 700)
+    _launch_refused_txt(e, -100)
+    e.watch()
+    msg = e.run(stop_payload(), "--complete")
+    assert "older-refusal: never started" in msg and "output names the refusal" in msg and "launch-refused.txt" not in msg, msg
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
@@ -2614,12 +2738,3 @@ if __name__ == "__main__":
                 fails += 1
                 print("FAIL", name, "-", str(exc)[:300])
     sys.exit(1 if fails else 0)
-
-
-def test_never_started_line_ignores_a_refusal_file_older_than_the_call():
-    e = Env()
-    _refused_fanout(e, "older-refusal", 700)
-    _launch_refused_txt(e, -100)
-    e.watch()
-    msg = e.run(stop_payload(), "--complete")
-    assert "older-refusal: never started" in msg and "output names the refusal" in msg and "launch-refused.txt" not in msg, msg

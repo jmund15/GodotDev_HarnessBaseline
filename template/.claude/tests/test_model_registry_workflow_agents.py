@@ -7,9 +7,11 @@ already include the judges; the transcript of the driver alone covers 3 of the 7
 """
 import copy
 import json
+import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -93,6 +95,94 @@ class WorkflowAgentPricingTests(unittest.TestCase):
             for n in range(5):
                 self.assertIsNone(mr.session_transcript('absent-%d' % n, 'anthropic-secondary', data=self.data))
         self.assertEqual(len(files_scanned), 1)
+
+    def test_a_miss_probes_each_project_directory_once(self):
+        """Proving a session absent costs one probe per project directory: with 3,836 directories, a stat of each
+        and then a probe of each was 3-4 s per miss, and bench doctor asks for hundreds."""
+        projects = self.root / 'login/projects'
+        for n in range(40):
+            (projects / ('extra-%d' % n)).mkdir()
+        self.assertEqual(mr.session_transcript(SID, 'anthropic-secondary', data=self.data).name, SID + '.jsonl')
+        probes = []
+        real_stat, real_isfile = mr.os.stat, mr.os.path.isfile
+
+        def stat(path, *args, **kwargs):
+            if str(projects) in str(path):
+                probes.append(('stat', str(path)))
+            return real_stat(path, *args, **kwargs)
+
+        def isfile(path):
+            if str(projects) in str(path):
+                probes.append(('isfile', str(path)))
+            return real_isfile(path)
+
+        with patch.object(mr.os, 'stat', stat), patch.object(mr.os.path, 'isfile', isfile):
+            self.assertIsNone(mr.session_transcript('absent-probe', 'anthropic-secondary', data=self.data))
+        self.assertLessEqual(len(probes), 41, probes[:3])
+
+    def test_a_finished_sessions_miss_costs_no_probe_once_the_root_was_scanned_after_it_finished(self):
+        """bench doctor made about 2,000 lookups for 343 benchmark sessions: a record's session had finished before
+        its record was written, so a root scanned after that moment holds its transcript or never will."""
+        projects = self.root / 'login/projects'
+        for n in range(40):
+            (projects / ('extra-%d' % n)).mkdir()
+        self.assertEqual(mr.session_transcript(SID, 'anthropic-secondary', data=self.data).name, SID + '.jsonl')
+        probes = []
+        real_stat, real_isfile = mr.os.stat, mr.os.path.isfile
+
+        def stat(path, *args, **kwargs):
+            if str(projects) in str(path):
+                probes.append(('stat', str(path)))
+            return real_stat(path, *args, **kwargs)
+
+        def isfile(path):
+            if str(projects) in str(path):
+                probes.append(('isfile', str(path)))
+            return real_isfile(path)
+
+        finished = time.time() - 60
+        with patch.object(mr.os, 'stat', stat), patch.object(mr.os.path, 'isfile', isfile):
+            for n in range(30):
+                self.assertIsNone(mr.session_transcript('absent-%d' % n, 'anthropic-secondary', data=self.data,
+                                                        settled_by=finished))
+        self.assertEqual(probes, [])
+        self.assertEqual(mr.session_transcript(SID, 'anthropic-secondary', data=self.data,
+                                               settled_by=finished).name, SID + '.jsonl')
+
+    def test_a_transcript_written_after_the_scan_and_before_the_session_finished_is_found(self):
+        later = 'finished-after-the-scan'
+        self.assertEqual(mr.session_transcript(SID, 'anthropic-secondary', data=self.data).name, SID + '.jsonl')
+        (self.root / 'login/projects/project' / (later + '.jsonl')).write_text('{}')
+        found = mr.session_transcript(later, 'anthropic-secondary', data=self.data, settled_by=time.time())
+        self.assertEqual(found.name, later + '.jsonl')
+        self.assertIsNone(mr.session_transcript('never-written', 'anthropic-secondary', data=self.data,
+                                                settled_by=time.time()))
+
+    def test_a_settled_reprice_takes_the_record_files_mtime_as_the_moment_its_session_finished(self):
+        self.assertEqual(mr.session_transcript(SID, 'anthropic-secondary', data=self.data).name, SID + '.jsonl')
+        old = time.time() - 60
+        os.utime(self.path, (old, old))
+        record = dict(self.record, sessionId='absent-session')
+        seen = []
+        real = mr.session_transcript
+
+        def watching(session_id, transport, data=None, settled_by=None):
+            seen.append(settled_by)
+            return real(session_id, transport, data=data, settled_by=settled_by)
+
+        with patch.object(mr, 'session_transcript', watching):
+            mr.reprice_record(record, self.path, data=self.data, settled=True)
+            mr.reprice_record(dict(record, sessionId='absent-two'), self.path, data=self.data)
+        self.assertTrue(seen[:2] == [seen[0]] * 2 and abs(seen[0] - old) < 1, seen)
+        self.assertEqual(seen[-1], None, 'an unsettled reprice keeps probing')
+
+    def test_a_directory_created_after_a_miss_is_searched(self):
+        later = 'later-in-a-new-directory'
+        self.assertIsNone(mr.session_transcript(later, 'anthropic-secondary', data=self.data))
+        fresh = self.root / 'login/projects/fresh-project'
+        fresh.mkdir()
+        (fresh / (later + '.jsonl')).write_text('{}')
+        self.assertEqual(mr.session_transcript(later, 'anthropic-secondary', data=self.data).name, later + '.jsonl')
 
     def test_a_second_pass_over_more_records_than_a_pass_holds_reuses_every_parse(self):
         """The gate prices ~600 records per task; a 256-entry cache cleared whole on overflow hit about 30%."""

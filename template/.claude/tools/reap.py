@@ -280,9 +280,99 @@ def _on_windows():
 
 
 def process_table(timeout=60):
-    """{pid: {pid, ppid, name, cmd, start, cpu}} for every process: CIM on Windows, /proc elsewhere.
-    `cpu` is the cumulative user+kernel seconds the OS reports, or None. Empty dict when unreadable."""
-    return _cim_table(timeout) if _on_windows() else _proc_table()
+    """{pid: {pid, ppid, name, cmd, start, cpu}} for every process: the Win32 snapshot on Windows (CIM when it
+    cannot be read), /proc elsewhere. `cpu` is the cumulative user+kernel seconds the OS reports, or None.
+    Empty dict when unreadable."""
+    if not _on_windows():
+        return _proc_table()
+    return _win32_table() or _cim_table(timeout)
+
+
+def _win32_table():
+    """process_table's Windows reader: a Toolhelp snapshot for pid, parent and image, then each process's own
+    times and command line (its PEB). About 0.06 s for the whole table, where Get-CimInstance spawns a
+    PowerShell and takes 1 s or more, and every launch and kill check reads the table. A process this user
+    cannot open (system, protected) keeps an empty `cmd`, `start` and None `cpu`; no launcher, seat or
+    harness-owned process is one. {} when unreadable, so the caller falls back to CIM."""
+    if ctypes is None or ctypes.sizeof(ctypes.c_void_p) != 8:
+        return {}
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    ntdll = ctypes.WinDLL("ntdll")
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("pid", wintypes.DWORD),
+                    ("heap", ctypes.c_void_p), ("module", wintypes.DWORD), ("threads", wintypes.DWORD),
+                    ("ppid", wintypes.DWORD), ("pri", wintypes.LONG), ("flags", wintypes.DWORD),
+                    ("exe", ctypes.c_wchar * 260)]
+
+    class Basic(ctypes.Structure):
+        _fields_ = [("ExitStatus", ctypes.c_void_p), ("Peb", ctypes.c_void_p), ("Affinity", ctypes.c_void_p),
+                    ("Base", ctypes.c_void_p), ("Pid", ctypes.c_void_p), ("Parent", ctypes.c_void_p)]
+
+    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    k32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    k32.Process32FirstW.argtypes = k32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(Entry))
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k32.ReadProcessMemory.argtypes = (wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+                                      ctypes.POINTER(ctypes.c_size_t))
+    k32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    ntdll.NtQueryInformationProcess.argtypes = (wintypes.HANDLE, ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong,
+                                                ctypes.POINTER(ctypes.c_ulong))
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snap or snap == ctypes.c_void_p(-1).value:
+        return {}
+    listed = []
+    try:
+        entry = Entry()
+        entry.dwSize = ctypes.sizeof(Entry)
+        more = k32.Process32FirstW(snap, ctypes.byref(entry))
+        while more:
+            listed.append((entry.pid, entry.ppid, entry.exe))
+            more = k32.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k32.CloseHandle(snap)
+
+    def ticks(ft):
+        return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+
+    out = {}
+    for pid, ppid, name in listed:
+        cmd, start, cpu = "", "", None
+        # QUERY_LIMITED_INFORMATION alone still yields the times; QUERY_INFORMATION | VM_READ adds the PEB.
+        handle = k32.OpenProcess(0x1000 | 0x0400 | 0x0010, False, pid) or k32.OpenProcess(0x1000, False, pid)
+        if handle:
+            try:
+                created, _exit, kernel, user = (wintypes.FILETIME() for _ in range(4))
+                if k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in (created, _exit, kernel, user))):
+                    start = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ticks(created) / 1e7 - 11644473600))
+                    cpu = int((ticks(kernel) + ticks(user)) / 10000000)
+                cmd = _peb_command_line(k32, ntdll, handle, Basic)
+            finally:
+                k32.CloseHandle(handle)
+        out[pid] = {"pid": pid, "ppid": ppid, "name": name, "cmd": cmd, "start": start, "cpu": cpu}
+    return out
+
+
+def _peb_command_line(k32, ntdll, handle, basic):
+    """The command line in an opened process's PEB (RTL_USER_PROCESS_PARAMETERS.CommandLine, offset 0x70), or ''."""
+    def read(addr, size):
+        buf = ctypes.create_string_buffer(size)
+        got = ctypes.c_size_t()
+        if not addr or not k32.ReadProcessMemory(handle, ctypes.c_void_p(addr), buf, size, ctypes.byref(got)):
+            return b""
+        return buf.raw[:got.value]
+
+    info = basic()
+    if ntdll.NtQueryInformationProcess(handle, 0, ctypes.byref(info), ctypes.sizeof(info), None) != 0:
+        return ""
+    peb = read(info.Peb, 0x28)
+    params = read(int.from_bytes(peb[0x20:0x28], "little"), 0x80) if len(peb) == 0x28 else b""
+    if len(params) < 0x80:
+        return ""
+    length = int.from_bytes(params[0x70:0x72], "little")
+    return read(int.from_bytes(params[0x78:0x80], "little"), length).decode("utf-16-le", "replace")
 
 
 def _cim_table(timeout=60):
@@ -679,8 +769,14 @@ def registered_sessions(table):
 
 
 def session_live(table, session, exclude=frozenset()):
-    """True when a live host serves `session`, False when none does, None when a live Claude Code host's
-    session cannot be read (module docstring, `dead session`). `exclude` holds the targets' own trees.
+    """The verdict of `session_host`: True, False or None."""
+    return session_host(table, session, exclude)[0]
+
+
+def session_host(table, session, exclude=frozenset()):
+    """(verdict, host pid): True when a live host serves `session`, False when none does, None when a live
+    Claude Code host's session cannot be read (module docstring, `dead session`). The pid is the host that
+    decided a True or None verdict, else None. `exclude` holds the targets' own trees.
 
     Only a HOST proves a session live: its registry row, or a host in its command line. A live tool
     shell, MCP server or console host that merely carries the id is a DEPENDENT, not a host -- it
@@ -691,7 +787,8 @@ def session_live(table, session, exclude=frozenset()):
     if key in cache:
         return cache[key]
     registry = registered_sessions(table)
-    verdict = False if not any(session in found for found in registry.values()) else True
+    served = [pid for pid, found in registry.items() if session in found]
+    verdict, decider = (False, None) if not served else (True, served[0])
     if verdict is False:
         # Only a host can prove a session live (the docstring above), so the walk visits hosts,
         # not the whole table: a dead session's loops then cost O(hosts), not O(processes).
@@ -709,43 +806,58 @@ def session_live(table, session, exclude=frozenset()):
             named = HOST_SESSION.search(cmd)
             if named:
                 if named.group(1) == session:
-                    verdict = True
+                    verdict, decider = True, pid
                     break
                 continue
             if pid not in registry and any(_env_value(launch_block(k), SID_ENV) for k in children.get(pid, ())):
-                verdict = None
-    cache[key] = verdict
-    return verdict
+                verdict, decider = None, pid
+    cache[key] = (verdict, decider)
+    return verdict, decider
 
 
 def leftover_proof(table, pid, sid, exclude=frozenset()):
     """The ownership proof for a dead session's leftover (module docstring, `dead session`), else None.
     The caller has already proven the orphan reason, so a target with no launch id has no live parent."""
+    return leftover_check(table, pid, sid, exclude)[0]
+
+
+def leftover_check(table, pid, sid, exclude=frozenset()):
+    """(proof, blocker): `leftover_proof`'s proof, or None and the observed fact that withheld it."""
     if is_launcher(table[pid]):
-        return None
+        return None, "the target is a launcher, which is stopped as its own launch's orphan, never as a leftover"
     launch = launch_of(pid)
-    block = launch_block(pid)
-    owner = _env_value(block, PARENT_ENV) or _env_value(block, SID_ENV)
-    if not owner or owner == sid or session_live(table, owner, exclude) is not False:
-        return None
+    owner, _source = owner_of(table, pid)
+    if not owner:
+        return None, "its environment names no owner session"
+    if owner == sid:
+        return None, "its owner session %s is this session" % owner[:8]
+    verdict, host = session_host(table, owner, exclude)
+    if verdict is True:
+        return None, "its owner session %s is live: a live session host serves it (pid %s)" % (owner[:8], host)
+    if verdict is None:
+        return None, ("its owner session %s cannot be ruled live: host pid %s runs with a session that cannot be read, "
+                      "so no session is proven dead while it runs" % (owner[:8], host))
     mine = (_RUN or {}).get("project_key") if _RUN is not None else None
     owner_key = project_key_of_session(owner)
     if owner_key and mine and not same_project(owner_key, mine):
-        return None
+        return None, "its owner session %s belongs to another project (%s)" % (owner[:8], owner_key)
     if not launch:
-        return "leftover of dead session %s: no live session host serves it" % owner[:8]
-    if launchers_of(table, launch, pid):
-        return None
+        return "leftover of dead session %s: no live session host serves it" % owner[:8], None
+    alive = launchers_of(table, launch, pid)
+    if alive:
+        return None, "launch %s has a live launcher (pid %s)" % (launch, alive[0])
     return ("leftover of dead session %s: no live session host serves it, and launch %s has no live launcher"
-            % (owner[:8], launch))
+            % (owner[:8], launch)), None
 
 
-def owner_of(table, pid):
+def owner_of(table, pid, parent_first=True):
     """(session id, tag source) the session whose process this is, or (None, None).
 
-    CLAUDE_CODE_SESSION_ID first: it names the session whose shell or seat this process is.
-    SIDECAR_PARENT_SESSION_ID is inherited by everything under a seat and is the only tag left
-    after a launcher scrubs CLAUDE_* from a detached child, so it is the fallback, not the proof.
+    SIDECAR_PARENT_SESSION_ID first (the default): it names the session that launched the process,
+    which is the question every dead-session path asks (`leftover_check`, `dead_leftover_proof`,
+    `leftover_findings`), so they all resolve one owner. CLAUDE_CODE_SESSION_ID is the fallback: it
+    names the session whose shell or seat the process is. `parent_first=False` is the shell-first
+    order; no reap.py path uses it.
 
     An MSYS snapshot re-exec has a bare PEB (MSYS keeps the inherited tag in its own block), so
     when neither tag is in the process's own block the nearest ANCESTOR that carries one names its
@@ -757,13 +869,11 @@ def owner_of(table, pid):
             break
         seen.add(cur)
         block = launch_block(cur)
-        own = _env_value(block, SID_ENV)
-        if own:
-            return own, "CLAUDE_CODE_SESSION_ID" if cur == pid else "an ancestor's CLAUDE_CODE_SESSION_ID"
-        tag = _env_value(block, PARENT_ENV)
-        if tag:
-            return tag, ("SIDECAR_PARENT_SESSION_ID" if cur == pid
-                         else "an ancestor's SIDECAR_PARENT_SESSION_ID")
+        for env_name in ((PARENT_ENV, SID_ENV) if parent_first else (SID_ENV, PARENT_ENV)):
+            value = _env_value(block, env_name)
+            if value:
+                name = env_name.decode().rstrip("=") if isinstance(env_name, bytes) else env_name
+                return value, name if cur == pid else "an ancestor's " + name
         parent = (table.get(cur) or {}).get("ppid")
         if parent not in table or _starts_after(table[parent], table[cur]):
             break
@@ -1308,13 +1418,14 @@ def live_launches(table, prompt=None, resume=None, self_pid=None, launch=None, f
         row = table[pid]
         if pid in mine:
             continue
-        block = launch_block(pid)
         cmd = row.get("cmd") or ""
         if is_launcher(row):
+            block = launch_block(pid)
             flags = sidecar_argv.sidecar_flags(launcher_args(cmd))
             path, session = flags.get("f"), flags.get("r")
             theirs, their_record = flags.get("l"), flags.get("R")
         elif (row.get("name") or "").lower().startswith("claude") and re.search(r"\s-p(?:\s|$)", cmd):
+            block = launch_block(pid)  # the PEB read only for a candidate, never for every process
             path = _env_value(block, PROMPT_ENV)
             found = SEAT_RESUME.search(cmd)
             session = found.group(1) if found else None
@@ -1852,11 +1963,14 @@ def _main(argv=None, env=None):
             entry["result"] = "refused-never"; record(entry); refused += 1
             continue
         # A dead session's leftover: no session can consume its result, so any session may stop it.
+        leftover_blocker = None
         if args.reason == "orphan" and ok and not proof:
-            leftover = leftover_proof(table, pid, sid, exclude=target_trees)
+            leftover, leftover_blocker = leftover_check(table, pid, sid, exclude=target_trees)
             if leftover:
                 proof, foreign = leftover, None
                 entry["proof"] = proof
+        elif args.reason == "orphan" and not ok and not proof:
+            leftover_blocker = "the orphan check failed: %s" % evidence
         # No session claims it (an app the owner launched): the facts above already cleared it. Whether the
         # owner ordered the stop is the classifier's to judge on the call, not this tool's.
         if not proof and not foreign and not _environ(pid):
@@ -1865,8 +1979,9 @@ def _main(argv=None, env=None):
             proof = "unclaimed: its environment names no session and no session host sits above it"
             entry["proof"] = proof
         if not proof:
-            refuse("REFUSED %s\n   %s\n   Another session's process is stopped only by --reason orphan, on the "
-                   "leftover of a dead session; otherwise it is that session's to stop." % (head, foreign))
+            read = "\n   not a dead session's leftover: %s" % leftover_blocker if leftover_blocker else ""
+            refuse("REFUSED %s\n   %s%s\n   Another session's process is stopped only by --reason orphan, on the "
+                   "leftover of a dead session; otherwise it is that session's to stop." % (head, foreign, read))
             entry["result"] = "refused-foreign" if foreign else "refused-not-owned"
             record(entry); refused += 1
             continue

@@ -37,6 +37,7 @@ import _regenerable_clone as rc  # noqa: E402
 PREFIX = os.path.join(CLAUDE, "scratch", "_rc_fix_")
 FIX = PREFIX + str(os.getpid())
 STALE_AFTER_S = 1800  # a live run takes well under a minute
+PEER_SID = "5eed5eed-aaaa-4bbb-8ccc-0000000000ff"  # a session id names that session's own output folder
 # The fixture sits under this checkout's scratch, so a deeply nested checkout (a publish worktree)
 # pushes its submodule objects past Windows MAX_PATH. Every git this proof starts, the hook's
 # included, runs with long paths on.
@@ -61,6 +62,7 @@ def git(*args, cwd=None):
 
 
 def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
 
@@ -108,6 +110,20 @@ def expect(label, token, want, cwd=PROJECT):
         print(f"  FAIL {label}: expected {want}, got {got} ({token})")
     else:
         print(f"  ok   {label}: {'pass' if want else 'block'}")
+
+
+def expect_clone(label, token, want, project, reason=None):
+    """`is_regenerable_clone` against a fixture project; a blocked verdict must name `reason`."""
+    global fails, total
+    total += 1
+    why = []
+    got = rc.is_regenerable_clone(token, project, project, why)
+    ok = got == want and (want or (bool(why) and (reason is None or any(reason in r for r in why))))
+    if not ok:
+        fails += 1
+        print(f"  FAIL clone {label}: expected {want}, got {got} {why}")
+    else:
+        print(f"  ok   clone {label}: {'pass' if want else 'block'}")
 
 
 def expect_channel(label, cmd, want):
@@ -296,9 +312,287 @@ def expect_wt_deny_names(label, cmd, needle, project, transcript=None, env=None)
         print(f"  ok   worktree {label}")
 
 
-def retired_worktree_cases():
-    """A linked worktree under a fixture project's `.claude/worktrees/`, with a submodule, since
-    `git worktree remove` refuses every worktree that carries one."""
+def landed_worktree_cases(proj_remote):
+    """A finished job worktree: its commits sit on the project's local default branch (cherry-picked or
+    squashed, never pushed), its scratch holds only the job's own output, and a tracked file may be missing
+    from its checkout. Each is no loss; a peer session's folder, a commit no default branch holds, a staged edit
+    and a nested repository still block. Own clone, so the project's other cases keep their pushed main."""
+    lp = fresh_clone("lproj", proj_remote)
+    home = os.path.join(lp, ".claude", "worktrees")
+    os.makedirs(home)
+
+    def job(name, *edits):
+        """A worktree on `scratch/<name>` with one commit per `(file, text)` edit."""
+        path = os.path.join(home, name)
+        git("worktree", "add", "-q", "-b", "scratch/" + name, path, cwd=lp)
+        for i, (fname, text) in enumerate(edits):
+            write(os.path.join(path, fname), text)
+            git("add", fname, cwd=path)
+            git("commit", "-q", "-m", "%s %d" % (name, i), cwd=path)
+        return path
+
+    def sha(cwd):
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, env=ENV, capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    picked = job("picked", ("p.txt", "picked\n"))
+    git("cherry-pick", sha(picked), cwd=lp)
+    expect_wt("commit cherry-picked onto the local default branch, never pushed", picked, True, lp)
+
+    squashed = job("squashed", ("q1.txt", "one\n"), ("q2.txt", "two\n"))
+    git("merge", "--squash", "scratch/squashed", cwd=lp)
+    git("commit", "-q", "-m", "squash of scratch/squashed", cwd=lp)
+    expect_wt("commits squashed onto the local default branch, never pushed", squashed, True, lp)
+
+    ahead = job("ahead", ("z.txt", "only here\n"))
+    expect_wt("commit no default branch holds", ahead, False, lp)
+
+    drifted = job("drifted", ("a.txt", "branch edit\n"))
+    git("cherry-pick", sha(drifted), cwd=lp)
+    write(os.path.join(lp, "a.txt"), "main edited it again\n")
+    git("commit", "-q", "-a", "-m", "main moves on", cwd=lp)
+    expect_wt("cherry-picked commit still held by patch after main edits the same file", drifted, True, lp)
+    sq2 = job("sq2", ("w.txt", "1\n"), ("w.txt", "2\n"))
+    git("merge", "--squash", "scratch/sq2", cwd=lp)
+    git("commit", "-q", "-m", "squash of scratch/sq2", cwd=lp)
+    write(os.path.join(lp, "w.txt"), "3\n")
+    git("commit", "-q", "-a", "-m", "main rewrites w.txt", cwd=lp)
+    expect_wt("squashed commits whose file main has since rewritten: the content stays in main's history",
+              sq2, True, lp)
+
+    # The default branch can hold a branch's work in a form `git cherry`, a patch-id and a tip diff all
+    # miss: a commit re-applied onto a moved line (the same edit, a different base), a squash main later
+    # built on, and a cherry-pick a later main commit extended. Each is no loss, and a near miss still blocks.
+    write(os.path.join(lp, "ctx.txt"), "one\n")
+    git("add", "ctx.txt", cwd=lp)
+    git("commit", "-q", "-m", "ctx base", cwd=lp)
+    reapply = os.path.join(home, "reapply")
+    git("worktree", "add", "-q", "-b", "scratch/reapply", reapply, cwd=lp)
+    write(os.path.join(lp, "ctx.txt"), "one\nmain\n")
+    git("commit", "-q", "-a", "-m", "main owns the next line", cwd=lp)
+    write(os.path.join(reapply, "ctx.txt"), "one\nshared fix\n")
+    git("commit", "-q", "-a", "-m", "branch adds the fix", cwd=reapply)
+    write(os.path.join(lp, "ctx.txt"), "one\nmain\nshared fix\n")
+    git("commit", "-q", "-a", "-m", "main adds the same fix on its line", cwd=lp)
+    expect_wt("commit re-applied onto a moved line (patch id differs, the edit is the same)", reapply, True, lp)
+    partial = os.path.join(home, "reapply_partial")
+    git("worktree", "add", "-q", "-b", "scratch/reapply_partial", partial, cwd=lp)
+    write(os.path.join(partial, "ctx.txt"), "one\nmain\nshared fix\nan extra line\n")
+    git("commit", "-q", "-a", "-m", "branch adds an extra line", cwd=partial)
+    expect_wt("commit whose edit main made only in part", partial, False, lp)
+
+    held = os.path.join(home, "held_content")
+    git("worktree", "add", "-q", "-b", "scratch/held_content", held, cwd=lp)
+    write(os.path.join(held, "a.txt"), "v2\n")
+    git("commit", "-q", "-a", "-m", "branch a v2", cwd=held)
+    write(os.path.join(held, "z.txt"), "z\n")
+    git("add", "z.txt", cwd=held)
+    git("commit", "-q", "-m", "branch z", cwd=held)
+    write(os.path.join(lp, "a.txt"), "v2\n")
+    write(os.path.join(lp, "z.txt"), "z\n")
+    git("add", "a.txt", "z.txt", cwd=lp)
+    git("commit", "-q", "-m", "land a and z in one commit", cwd=lp)
+    write(os.path.join(lp, "a.txt"), "v3\n")
+    git("commit", "-q", "-a", "-m", "main moves a past it", cwd=lp)
+    expect_wt("branch content landed in one commit the default branch then moved past", held, True, lp)
+
+    write(os.path.join(lp, "lock.txt"), "A\nB\nC\nD\nE\n")
+    git("add", "lock.txt", cwd=lp)
+    git("commit", "-q", "-m", "lock base", cwd=lp)
+    merged_elsewhere = os.path.join(home, "merged_elsewhere")
+    git("worktree", "add", "-q", "-b", "scratch/merged_elsewhere", merged_elsewhere, cwd=lp)
+    write(os.path.join(merged_elsewhere, "lock.txt"), "A\nB\nROW\nC\nD\nE\n")
+    git("commit", "-q", "-a", "-m", "branch adds a row", cwd=merged_elsewhere)
+    write(os.path.join(lp, "lock.txt"), "A\nB\nROW\nC\nD\nE2\n")
+    git("commit", "-q", "-a", "-m", "main adds the row and edits E", cwd=lp)
+    expect_wt("branch whose row main holds beside its own edit (merging the branch adds nothing)",
+              merged_elsewhere, True, lp)
+
+    side = job("side", ("s.txt", "side\n"))
+    git("branch", "elsewhere", sha(side), cwd=lp)
+    expect_wt("commit held only by another local branch", side, False, lp)
+
+    gone = job("gone")
+    os.remove(os.path.join(gone, "a.txt"))
+    expect_wt("tracked file missing from the checkout, nothing added", gone, True, lp)
+    gone_staged = job("gone_staged")
+    write(os.path.join(gone_staged, "a.txt"), "staged edit\n")
+    git("add", "a.txt", cwd=gone_staged)
+    os.remove(os.path.join(gone_staged, "a.txt"))
+    expect_wt("staged edit of a file since deleted from the checkout", gone_staged, False, lp)
+    gone_new = job("gone_new")
+    write(os.path.join(gone_new, "extra.txt"), "x\n")
+    os.remove(os.path.join(gone_new, "a.txt"))
+    expect_wt("tracked file missing and an untracked file added", gone_new, False, lp)
+
+    scratch = job("scratch")
+    os.makedirs(os.path.join(scratch, ".claude", "scratch", "job_x", "run"))
+    write(os.path.join(scratch, ".claude", "scratch", "job_x", "run", "args.json"), "{}\n")
+    write(os.path.join(scratch, ".claude", "scratch", "notes.md"), "launcher notes\n")
+    expect_wt("ignored scratch holding only the job's own output", scratch, True, lp)
+    peer = job("peer")
+    os.makedirs(os.path.join(peer, ".claude", "scratch", PEER_SID))
+    write(os.path.join(peer, ".claude", "scratch", PEER_SID, "out.txt"), "peer\n")
+    expect_wt("ignored scratch holding another session's output folder", peer, False, lp)
+    # A file a session id merely names (a guard's per-session state, a copied fixture) is no output folder.
+    peer_file = job("peer_file")
+    os.makedirs(os.path.join(peer_file, ".claude", "scratch", "gate_positions"))
+    write(os.path.join(peer_file, ".claude", "scratch", "gate_positions", PEER_SID + ".json"), "{}\n")
+    expect_wt("ignored scratch holding a file named by a session id", peer_file, True, lp)
+    # `.claude/tmp` is where a proof plants a fixture under a name unique to the run: judged like scratch.
+    tmp_log = job("tmp_log")
+    os.makedirs(os.path.join(tmp_log, ".claude", "tmp", "run_x"))
+    write(os.path.join(tmp_log, ".claude", "tmp", "run_x", "out.log"), "log\n")
+    expect_wt("ignored .claude/tmp holding only a log", tmp_log, True, lp)
+    tmp_unborn = job("tmp_unborn")
+    unborn = os.path.join(tmp_unborn, ".claude", "tmp", "run_x", "probe")
+    os.makedirs(unborn)
+    git("init", "-q", cwd=unborn)
+    expect_wt("ignored .claude/tmp holding a repository with no commit and no file", tmp_unborn, True, lp)
+    tmp_work = job("tmp_work")
+    probe = os.path.join(tmp_work, ".claude", "tmp", "run_x", "probe")
+    os.makedirs(probe)
+    git("init", "-q", cwd=probe)
+    git("commit", "-q", "--allow-empty", "-m", "only here", cwd=probe)
+    expect_wt("ignored .claude/tmp holding a repository with an unpushed commit", tmp_work, False, lp)
+    tmp_file = job("tmp_file")
+    unborn_file = os.path.join(tmp_file, ".claude", "tmp", "run_x", "probe")
+    os.makedirs(unborn_file)
+    git("init", "-q", cwd=unborn_file)
+    write(os.path.join(unborn_file, "notes.txt"), "never committed\n")
+    expect_wt("ignored .claude/tmp holding a repository with no commit and an untracked file", tmp_file, False, lp)
+    # A folder a proof planted (`is_proof_plant`) holds that proof's own fixtures: a session-id folder loses
+    # nothing. One holding a git repository at any depth is judged like any other `.claude/tmp` folder.
+    plant_work = job("plant_work")
+    plant_dir = os.path.join(plant_work, ".claude", "tmp", "pe_absent_delete_dxf68feq")
+    os.makedirs(os.path.join(plant_dir, ".claude", "scratch", PEER_SID))
+    write(os.path.join(plant_dir, ".claude", "scratch", PEER_SID, "o.txt"), "x\n")
+    expect_wt("ignored .claude/tmp holding a proof's planted session-id folder", plant_work, True, lp)
+    plant_repo = job("plant_repo")
+    plant_repo_probe = os.path.join(plant_repo, ".claude", "tmp", "pe_absent_delete_dxf68feq", "repo")
+    os.makedirs(plant_repo_probe)
+    git("init", "-q", cwd=plant_repo_probe)
+    git("commit", "-q", "--allow-empty", "-m", "only here", cwd=plant_repo_probe)
+    expect_wt("ignored .claude/tmp holding a proof's planted folder with a repository with an unpushed commit",
+              plant_repo, False, lp)
+    plant_beside = job("plant_beside")
+    shutil.copytree(plant_dir, os.path.join(plant_beside, ".claude", "tmp", "pe_absent_delete_dxf68feq"))
+    real_probe = os.path.join(plant_beside, ".claude", "tmp", "notes", "probe")
+    os.makedirs(real_probe)
+    git("init", "-q", cwd=real_probe)
+    git("commit", "-q", "--allow-empty", "-m", "only here", cwd=real_probe)
+    expect_wt("ignored .claude/tmp holding a planted folder beside a repository with an unpushed commit",
+              plant_beside, False, lp)
+    plant_like = job("plant_like")
+    like_probe = os.path.join(plant_like, ".claude", "tmp", "pe_absent_delete_dxf68feq0", "probe")
+    os.makedirs(like_probe)
+    git("init", "-q", cwd=like_probe)
+    git("commit", "-q", "--allow-empty", "-m", "only here", cwd=like_probe)
+    expect_wt("ignored .claude/tmp holding a look-alike name with an unpushed commit", plant_like, False, lp)
+    nested = job("nested")
+    os.makedirs(os.path.join(nested, ".claude", "scratch", "clone"))
+    git("init", "-q", cwd=os.path.join(nested, ".claude", "scratch", "clone"))
+    write(os.path.join(nested, ".claude", "scratch", "clone", "w.txt"), "unpushed work\n")
+    expect_wt("ignored scratch holding a git repository", nested, False, lp)
+    # What a removal that failed on read-only object files leaves: git cannot open it and nothing names a commit.
+    stripped = job("stripped")
+    stripped_git = os.path.join(stripped, ".claude", "scratch", "recon_fixture_x", "repo", ".git")
+    os.makedirs(os.path.join(stripped_git, "objects", "ab"))
+    write(os.path.join(stripped_git, "objects", "ab", "cdef"), "blob\n")
+    expect_wt("ignored scratch holding a .git directory with objects only, no HEAD and no ref", stripped, True, lp)
+    stripped_ref = job("stripped_ref")
+    named = os.path.join(stripped_ref, ".claude", "scratch", "x", "repo", ".git", "refs", "heads")
+    os.makedirs(named)
+    write(os.path.join(named, "work"), "0" * 40 + "\n")
+    expect_wt("ignored scratch holding a .git directory with no HEAD that still names a branch", stripped_ref, False, lp)
+
+    # A job's scratch may hold a standalone clone a publish job made. The same clean-pushed rule decides it
+    # as in the main checkout's scratch: a clean clone loses nothing, one holding unpushed work stays.
+    inner_seed = os.path.join(FIX, "inner_seed")
+    os.makedirs(inner_seed)
+    git("init", "-q", "-b", "main", cwd=inner_seed)
+    write(os.path.join(inner_seed, "i.txt"), "i\n")
+    git("add", "i.txt", cwd=inner_seed)
+    git("commit", "-q", "-m", "i", cwd=inner_seed)
+    inner_remote = os.path.join(FIX, "inner_remote.git")
+    git("clone", "-q", "--bare", inner_seed, inner_remote)
+    nested_ok = job("nested_ok")
+    ok_clone = os.path.join(nested_ok, ".claude", "scratch", "pubcopy")
+    git("clone", "-q", inner_remote, ok_clone)
+    nested_bad = job("nested_bad")
+    bad_clone = os.path.join(nested_bad, ".claude", "scratch", "pubcopy")
+    git("clone", "-q", inner_remote, bad_clone)
+    write(os.path.join(bad_clone, "i.txt"), "unpushed\n")
+    git("commit", "-q", "-a", "-m", "only here", cwd=bad_clone)
+    nested_link = job("nested_link")
+    link_clone = os.path.join(nested_link, ".claude", "scratch", "tpl")
+    git("worktree", "add", "-q", "--detach", link_clone, cwd=lp)
+    expect_clone("a clean clone under a job's scratch", ok_clone, True, lp)
+    expect_clone("a clone under a job's scratch with an unpushed commit", bad_clone, False, lp, "no remote branch")
+    expect_clone("a linked worktree under a job's scratch", link_clone, False, lp, "not a standalone clone")
+    expect_wt("job scratch holding a clean pushed clone", nested_ok, True, lp)
+    expect_wt("job scratch holding a clone with an unpushed commit", nested_bad, False, lp)
+    expect_wt("job scratch holding a linked worktree", nested_link, False, lp)
+    other_ignored = job("other_ignored")
+    write(os.path.join(other_ignored, ".env.local"), "TOKEN=1\n")
+    expect_wt("ignored local config outside scratch", other_ignored, False, lp)
+    with open(os.path.join(lp, ".git", "info", "exclude"), "a", encoding="utf-8", newline="\n") as fh:
+        fh.write("*.tmp\n*.TMP\nstray.tmp.keep\n")
+    import_tmp = job("import_tmp")
+    os.makedirs(os.path.join(import_tmp, "Visual"))
+    write(os.path.join(import_tmp, "Visual", "icon.png.import119908465.tmp"), "t\n")
+    write(os.path.join(import_tmp, "Visual", "icon.png.import~RF2c3d449d.TMP"), "t\n")
+    expect_wt("ignored Godot import temp files", import_tmp, True, lp)
+    spaced_tmp = job("spaced_tmp")
+    os.makedirs(os.path.join(spaced_tmp, "Visual", "Prompts Export 256"))
+    write(os.path.join(spaced_tmp, "Visual", "Prompts Export 256", "icon.png.import119908465.tmp"), "t\n")
+    expect_wt("ignored Godot import temp file under a folder with a space (git quotes the path)", spaced_tmp, True, lp)
+    other_tmp = job("other_tmp")
+    write(os.path.join(other_tmp, "draft.tmp"), "an author's draft\n")
+    expect_wt("ignored temp file Godot did not write", other_tmp, False, lp)
+    from pathlib import Path
+    # A planted project: the live project's own list is its data, and a consumer of this proof holds another one.
+    planted = os.path.join(FIX, "patterns_project")
+    write(os.path.join(planted, ".claude", "skills", "project_subsystems", "adaptation.json"),
+          json.dumps({"regenerable_ignored": [".runsettings", "logs", "addons/*/libs/~*"]}))
+    listed = rc._project_patterns(Path(planted))
+    for name in (".runsettings", "logs/run.log", "addons/debug_draw_3d/libs/~libdd3d.windows.editor.x86_64.dll"):
+        global total, fails
+        total += 1
+        if not rc._listed(name, listed):
+            fails += 1
+            print(f"  FAIL the project lists the output a test run writes: {name}")
+        else:
+            print(f"  ok   the project lists the output a test run writes: {name}")
+
+    for label, cmd, want in (
+        ("cherry-picked job worktree", "rm -rf .claude/worktrees/picked", "allow"),
+        ("squashed job worktree", "rm -rf .claude/worktrees/squashed", "allow"),
+        ("job worktree with its own scratch", "rm -rf .claude/worktrees/scratch", "allow"),
+        ("job worktree missing a tracked file", "rm -rf .claude/worktrees/gone", "allow"),
+        ("job worktree holding a commit no default branch holds", "rm -rf .claude/worktrees/ahead", "deny"),
+        ("job worktree holding a peer's scratch folder", "rm -rf .claude/worktrees/peer", "deny"),
+        ("job worktree holding a nested repository", "rm -rf .claude/worktrees/nested", "deny"),
+        ("job scratch holding a clean pushed clone", "rm -rf .claude/worktrees/nested_ok", "allow"),
+        ("job scratch holding a clone with an unpushed commit", "rm -rf .claude/worktrees/nested_bad", "deny"),
+        ("job scratch holding a linked worktree", "rm -rf .claude/worktrees/nested_link", "deny"),
+        ("a clean clone under a job's scratch, deleted alone",
+         "rm -rf .claude/worktrees/nested_ok/.claude/scratch/pubcopy", "allow"),
+        ("a clone with an unpushed commit under a job's scratch, deleted alone",
+         "rm -rf .claude/worktrees/nested_bad/.claude/scratch/pubcopy", "deny"),
+    ):
+        expect_wt_channel(label + ", worktree this session did not create", cmd, want, lp)
+    expect_wt_deny_names("a clone under a job's scratch with unpushed work names the loss",
+                         "rm -rf .claude/worktrees/nested_bad", "holds a git repository that loses work", lp)
+    expect_wt_channel("peer session working in a landed job worktree", "rm -rf .claude/worktrees/picked", "deny", lp,
+                      env=peer_login("landed", ("peer-landed", "5eed5eed-aaaa-4bbb-8ccc-000000000006", picked)))
+    expect_wt_channel("the inner scratch delete stays refused", "rm -rf .claude/worktrees/scratch/.claude/scratch",
+                      "deny", lp)
+
+
+def project_remote():
+    """A bare remote of a fixture project that carries a submodule, since `git worktree remove` refuses every
+    worktree that carries one. Each part of the proof builds its own."""
     sub_seed = os.path.join(FIX, "sub_seed")
     os.makedirs(sub_seed)
     git("init", "-q", "-b", "main", cwd=sub_seed)
@@ -313,12 +607,18 @@ def retired_worktree_cases():
     git("init", "-q", "-b", "main", cwd=proj_seed)
     write(os.path.join(proj_seed, "a.txt"), "a\n")
     write(os.path.join(proj_seed, ".gitignore"),
-          ".claude/worktrees/\n.claude/scratch/\n.godot/\n.devdb/\n.env.local\ndist-preview/\nlogs/\ntest-results/\n")
+          ".claude/worktrees/\n.claude/scratch/\n.claude/tmp/\n.godot/\n.devdb/\n.env.local\ndist-preview/\nlogs/\ntest-results/\n")
     git("-c", "protocol.file.allow=always", "submodule", "add", "-q", sub_remote, "Sub", cwd=proj_seed)
     git("add", ".", cwd=proj_seed)
     git("commit", "-q", "-m", "a", cwd=proj_seed)
     proj_remote = os.path.join(FIX, "proj_remote.git")
     git("clone", "-q", "--bare", proj_seed, proj_remote)
+    return proj_remote
+
+
+def retired_worktree_cases():
+    """A linked worktree under a fixture project's `.claude/worktrees/`, with a submodule."""
+    proj_remote = project_remote()
     proj = os.path.join(FIX, "proj")
     git("clone", "-q", proj_remote, proj)
     home = os.path.join(proj, ".claude", "worktrees")
@@ -350,9 +650,9 @@ def retired_worktree_cases():
     expect_wt("ignored regenerable .godot cache", cache, True, proj)
 
     evidence = add_wt("evidence")
-    os.makedirs(os.path.join(evidence, ".claude", "scratch"))
-    write(os.path.join(evidence, ".claude", "scratch", "gate.out"), "VERDICT=PASS\n")
-    expect_wt("ignored .claude/scratch evidence", evidence, False, proj)
+    os.makedirs(os.path.join(evidence, ".claude", "scratch", PEER_SID))
+    write(os.path.join(evidence, ".claude", "scratch", PEER_SID, "gate.out"), "VERDICT=PASS\n")
+    expect_wt("ignored .claude/scratch holding another session's output folder", evidence, False, proj)
 
     emptied = add_wt("emptied")
     os.makedirs(os.path.join(emptied, ".claude", "scratch", "moved_out"))
@@ -431,12 +731,15 @@ def retired_worktree_cases():
         ('status unavailable', {'status': None}, 'cannot read worktree status'),
         ('dirty status', {'status': ' M a.txt\n'}, 'worktree has local files or changes:  M a.txt'),
         ('HEAD query unavailable', {'rev-list': None}, 'cannot verify HEAD reachability'),
-        ('unpushed HEAD', {'rev-list': 'abc\n'}, 'HEAD abc is on no remote branch'),
+        ('unpushed HEAD', {'rev-list': 'abc\n'},
+         'HEAD abc is on no remote branch (save a bundle of its refs under .claude/scratch named for the '
+         'worktree, then retry)'),
         ('submodule list unavailable', {'submodule': None}, 'cannot read submodule status'),
         ('malformed submodule row', {'submodule': ' bad\n'}, 'cannot parse submodule status'),
         ('submodule status unavailable', {'sub_status': None}, 'submodule Sub: cannot read status'),
         ('submodule HEAD unavailable', {'sub_pushed': None}, 'submodule Sub: cannot verify HEAD reachability'),
-        ('submodule unpushed', {'sub_pushed': 'abc\n'}, 'submodule Sub: HEAD abc is on no remote branch'),
+        ('submodule unpushed', {'sub_pushed': 'abc\n'},
+         'submodule Sub: HEAD abc is on no remote branch (push it to a remote, then retry)'),
         ('submodule dirty', {'sub_status': '?? local.txt\n'}, 'submodule Sub has local files or changes: ?? local.txt'),
     ):
         def planted(args, repo):
@@ -547,8 +850,8 @@ def retired_worktree_cases():
                                                   write(os.path.join(p, ".godot", "imported", "c.ctex"), "c\n"),
                                                   os.makedirs(os.path.join(p, "empty_ignored_dir"))))
     expect_wt("orphan, ignored .godot cache, ignored files not allowed", o_godot, True, proj)
-    o_json = orphan("o_json", edit=lambda p: (os.makedirs(os.path.join(p, ".claude", "scratch")),
-                                                write(os.path.join(p, ".claude", "scratch", "x.json"), "{}\n")))
+    o_json = orphan("o_json", edit=lambda p: (os.makedirs(os.path.join(p, ".claude", "scratch", PEER_SID)),
+                                                write(os.path.join(p, ".claude", "scratch", PEER_SID, "x.json"), "{}\n")))
     expect_wt("orphan, ignored non-regenerable file, ignored files not allowed", o_json, False, proj)
     named = []
     rc.is_retired_worktree(o_json, proj, proj, reasons=named)
@@ -597,8 +900,8 @@ def retired_worktree_cases():
     expect_wt("sibling orphan, ignored .godot cache", s_godot, True, proj)
     s_new = sibling("s_new", edit=lambda p: write(os.path.join(p, "notes.md"), "unsaved notes\n"))
     expect_wt("sibling orphan, authored file git never saw", s_new, False, proj)
-    s_json = sibling("s_json", edit=lambda p: (os.makedirs(os.path.join(p, ".claude", "scratch")),
-                                                 write(os.path.join(p, ".claude", "scratch", "n.json"), "{}\n")))
+    s_json = sibling("s_json", edit=lambda p: (os.makedirs(os.path.join(p, ".claude", "scratch", PEER_SID)),
+                                                 write(os.path.join(p, ".claude", "scratch", PEER_SID, "n.json"), "{}\n")))
     expect_wt("sibling orphan, ignored non-regenerable file", s_json, False, proj)
     other = fresh_clone("other", proj_remote)
     s_other = sibling("s_other", repo=other)
@@ -632,6 +935,8 @@ def retired_worktree_cases():
                                                            write(os.path.join(p, ".devdb", "tmp", "an.py"), "x\n")))
     s_out_nested = sibling("s_out_nested", edit=lambda p: (os.makedirs(os.path.join(p, "src", ".devdb", "local")),
                                                              write(os.path.join(p, "src", ".devdb", "local", "x.db"), "x\n")))
+    s_out_logs = sibling("s_out_logs", edit=lambda p: (os.makedirs(os.path.join(p, "src", "logs")),
+                                                        write(os.path.join(p, "src", "logs", "unique.txt"), "only copy\n")))
     s_out_other = sibling("s_out_other", repo=other, edit=outputs)
     live_out = add_wt("live_out")
     outputs(live_out)
@@ -650,6 +955,7 @@ def retired_worktree_cases():
     expect_wt("sibling orphan, listed outputs and an unsaved tracked edit", s_out_dirty, False, proj)
     expect_wt("sibling orphan, listed outputs and an unlisted ignored file", s_out_extra, False, proj)
     expect_wt("sibling orphan, a listed name nested below the root", s_out_nested, False, proj)
+    expect_wt("sibling orphan, an ignored `logs` folder below the root is not the project's listed `logs`", s_out_logs, False, proj)
     expect_wt("sibling orphan of another repository, listed outputs", s_out_other, False, proj)
     expect_wt("registered worktree with listed build outputs", live_out, True, proj)
     expect_wt("registered worktree, listed outputs and an unlisted ignored file", live_extra, False, proj)
@@ -827,14 +1133,96 @@ def retired_worktree_cases():
                       "deny", proj)
     expect_wt_channel("glob over a folder holding no session folder", "rm -rf .claude/scratch/no_ids/*", "allow", proj)
 
+    # A saved copy under the project's `.claude/scratch` that the guard verifies makes the same work
+    # regenerable: a bundle for an unpushed HEAD, a tar or patch for a nested copy's files.
+    saved = os.path.join(scratch, "saved")
+    os.makedirs(saved)
 
-print("_regenerable_clone — regenerable scratch clone discriminator")
-for stale in glob.glob(PREFIX + "*"):
-    if stale != FIX and time.time() - os.path.getmtime(stale) > STALE_AFTER_S:
-        force_rmtree(stale)
-os.makedirs(FIX)
-outside = tempfile.mkdtemp(prefix="regen_clone_outside_")
-try:
+    bundled = add_wt("bundled")
+    write(os.path.join(bundled, "only.txt"), "bundled work\n")
+    git("add", "only.txt", cwd=bundled)
+    git("commit", "-q", "-m", "unpushed lane commit", cwd=bundled)
+    expect_wt("unpushed HEAD with no saved copy", bundled, False, proj)
+    git("bundle", "create", "-q", os.path.join(saved, "bundled.bundle"), "--all", cwd=bundled)
+    expect_wt("unpushed HEAD held by a bundle named for the worktree", bundled, True, proj)
+    expect_retire_check("saved-copy worktree retires", [bundled], 0, [bundled + ": retired"], proj)
+
+    stale = add_wt("stale")
+    write(os.path.join(stale, "s1.txt"), "s1\n")
+    git("add", "s1.txt", cwd=stale)
+    git("commit", "-q", "-m", "covered", cwd=stale)
+    git("bundle", "create", "-q", os.path.join(saved, "stale.bundle"), "--all", cwd=stale)
+    write(os.path.join(stale, "s2.txt"), "s2\n")
+    git("add", "s2.txt", cwd=stale)
+    git("commit", "-q", "-m", "not covered", cwd=stale)
+    expect_wt("a bundle whose tip is not HEAD", stale, False, proj)
+
+    def nested_repo(wt_name, repo_name, commit=False, untracked=True):
+        path = add_wt(wt_name)
+        repo = os.path.join(path, ".claude", "scratch", repo_name)
+        os.makedirs(repo)
+        git("init", "-q", "-b", "main", cwd=repo)
+        write(os.path.join(repo, "kept.txt"), "kept work\n")
+        if untracked:
+            write(os.path.join(repo, "side.txt"), "side work\n")
+        git("add", "kept.txt", cwd=repo)
+        if commit:
+            git("commit", "-q", "-m", "nested", cwd=repo)
+        return path, repo
+
+    def save_tar(repo, name):
+        import tarfile
+        target = os.path.join(saved, name + ".tgz")
+        with tarfile.open(target, "w:gz") as archive:
+            archive.add(repo, arcname=os.path.basename(repo))
+        return target
+
+    tar_wt, tar_repo = nested_repo("tarred", "copy")
+    expect_wt("staged-only nested copy with no saved copy", tar_wt, False, proj)
+    save_tar(tar_repo, "tarred_copy")
+    expect_wt("staged-only nested copy held by a tar named for it", tar_wt, True, proj)
+    write(os.path.join(tar_repo, "extra.txt"), "extra work\n")
+    expect_wt("a tar missing a file the copy holds", tar_wt, False, proj)
+    save_tar(tar_repo, "tarred_copy")
+    expect_wt("the retaken tar covers the added file", tar_wt, True, proj)
+
+    patch_wt, patch_repo = nested_repo("patched", "tplmap", commit=True, untracked=False)
+    nested_remote = os.path.join(FIX, "tplmap_remote.git")
+    git("clone", "-q", "--bare", patch_repo, nested_remote)
+    git("remote", "add", "origin", nested_remote, cwd=patch_repo)
+    git("fetch", "-q", "origin", cwd=patch_repo)
+    git("push", "-q", "origin", "main", cwd=patch_repo)
+    write(os.path.join(patch_repo, "kept.txt"), "changed work\n")
+    write(os.path.join(patch_repo, "added.txt"), "added work\n")
+    git("add", "added.txt", cwd=patch_repo)
+    diff = subprocess.run(["git", "diff", "HEAD"], cwd=patch_repo, env=ENV,
+                          capture_output=True, text=True).stdout
+    expect_wt("nested copy changed with no saved copy", patch_wt, False, proj)
+    write(os.path.join(saved, "patched_tplmap.patch"), diff)
+    expect_wt("nested copy held by a patch named for it", patch_wt, True, proj)
+    write(os.path.join(patch_repo, "kept.txt"), "changed again\n")
+    expect_wt("a patch taken before a later edit", patch_wt, False, proj)
+
+    ahead_wt, ahead_repo = nested_repo("ahead_nested", "aheadcopy", commit=True)
+    save_tar(ahead_repo, "ahead_nested_aheadcopy")
+    expect_wt("nested copy whose commit is on no remote, even with a tar", ahead_wt, False, proj)
+    git("bundle", "create", "-q", os.path.join(saved, "ahead_nested_aheadcopy.bundle"), "--all", cwd=ahead_repo)
+    expect_wt("nested copy whose commit a bundle names", ahead_wt, True, proj)
+
+    link_wt = add_wt("link_saved")
+    os.makedirs(os.path.join(link_wt, ".claude", "scratch"))
+    link_repo = os.path.join(link_wt, ".claude", "scratch", "copied_wt")
+    git("worktree", "add", "-q", "--detach", link_repo, cwd=proj)
+    write(os.path.join(link_repo, "a.txt"), "edited\n")
+    expect_wt("a nested linked worktree with no saved copy", link_wt, False, proj)
+    diff = subprocess.run(["git", "diff", "HEAD"], cwd=link_repo, env=ENV,
+                          capture_output=True, text=True).stdout
+    write(os.path.join(saved, "link_saved_copied_wt.patch"), diff)
+    expect_wt("a nested linked worktree held by a patch named for it", link_wt, True, proj)
+
+
+def scratch_clone_cases(outside):
+    global fails, total
     seed = os.path.join(FIX, "seed")
     os.makedirs(seed)
     git("init", "-q", "-b", "main", cwd=seed)
@@ -965,53 +1353,85 @@ try:
     expect_channel("rm -r empty directory outside scratch", "rm -r " + rel(empty_outside), "deny")
     force_rmtree(empty_outside)
 
-    print("_regenerable_clone — retired worktree discriminator")
-    if os.name == "nt" and len(FIX) > 150:
-        print("  skip retired worktree cases: the fixture path is too long for git's receiving side on Windows")
+
+def unstored_loss_cases():
+    """The owner's removal pick: a dirty path whose working file is missing loses work unless git's status says it
+    was deleted. A quoted porcelain path (octal escapes) does not decode to a file, so it must fail closed."""
+    global fails, total
+    import pathlib
+
+    print("_regenerable_clone — unstored loss of a missing working file")
+    with tempfile.TemporaryDirectory() as empty_root:
+        for label, status, want in [
+            ("deleted working file loses nothing", " D gone.txt\n", None),
+            ("modified path missing from disk is a loss", " M missing.txt\n", " M missing.txt"),
+            ("quoted octal path missing from disk is a loss", ' M "caf\\303\\251.txt"\n', ' M "caf\\303\\251.txt"'),
+        ]:
+            total += 1
+            got = rc._first_unstored_loss(status, pathlib.Path(empty_root))
+            if got != want:
+                fails += 1
+                print(f"  FAIL {label}: got {got!r}, want {want!r}")
+            else:
+                print(f"  ok   {label}")
+
+    # A non-integer timeout variable must not stop the module loading: pattern_enforcer imports it, and a crash exits 1, which never blocks.
+    total += 1
+    bad_env = dict(os.environ, REGENERABLE_CLONE_GIT_TIMEOUT_S="ten")
+    load = subprocess.run([sys.executable, "-c", "import _regenerable_clone as m; print(m._GIT_TIMEOUT_S)"],
+                          cwd=os.path.join(CLAUDE, "hooks"), env=bad_env, capture_output=True, text=True)
+    if load.returncode != 0 or load.stdout.strip() != "10":
+        fails += 1
+        print(f"  FAIL non-integer timeout variable falls back to 10: rc={load.returncode} {(load.stdout + load.stderr)[-200:]!r}")
     else:
-        retired_worktree_cases()
-        backgrounded_worktree_cases()
-finally:
-    force_rmtree(FIX)
-    force_rmtree(outside)
+        print("  ok   non-integer timeout variable falls back to 10")
 
-total += 1
-if os.path.exists(FIX) or os.path.exists(outside):
-    fails += 1
-    print(f"  FAIL teardown left a fixture directory: {FIX if os.path.exists(FIX) else outside}")
-else:
-    print("  ok   teardown removed this run's fixture directories")
 
-# The owner's removal pick: a dirty path whose working file is missing loses work unless git's status says it was deleted.
-# A quoted porcelain path (octal escapes) does not decode to a file, so it must fail closed, not read as a gone file.
-import pathlib  # noqa: E402
+PARTS = 3
+# Part 1 runs the scratch-clone cases, part 2 the retired-worktree cases, part 3 the landed and backgrounded ones;
+# each builds its own fixture under its own FIX, so the three run beside each other.
+WORKTREE_PARTS = {2: ("retired worktree discriminator", lambda: retired_worktree_cases()),
+                  3: ("landed and backgrounded worktree discriminator",
+                      lambda: (backgrounded_worktree_cases(), landed_worktree_cases(project_remote())))}
 
-print("_regenerable_clone — unstored loss of a missing working file")
-with tempfile.TemporaryDirectory() as empty_root:
-    for label, status, want in [
-        ("deleted working file loses nothing", " D gone.txt\n", None),
-        ("modified path missing from disk is a loss", " M missing.txt\n", " M missing.txt"),
-        ("quoted octal path missing from disk is a loss", ' M "caf\\303\\251.txt"\n', ' M "caf\\303\\251.txt"'),
-    ]:
-        total += 1
-        got = rc._first_unstored_loss(status, pathlib.Path(empty_root))
-        if got != want:
-            fails += 1
-            print(f"  FAIL {label}: got {got!r}, want {want!r}")
+
+def main(part: int = 1) -> int:
+    global fails, total
+    for other in range(2, PARTS + 1):  # a deleted part file would silently drop its cases
+        assert os.path.isfile(os.path.join(HERE, "test_regenerable_clone_part%d.py" % other)), "missing part %d" % other
+    for stale in glob.glob(PREFIX + "*"):
+        if stale != FIX and time.time() - os.path.getmtime(stale) > STALE_AFTER_S:
+            force_rmtree(stale)
+    os.makedirs(FIX)
+    outside = tempfile.mkdtemp(prefix="regen_clone_outside_")
+    try:
+        if part == 1:
+            print("_regenerable_clone — regenerable scratch clone discriminator")
+            scratch_clone_cases(outside)
         else:
-            print(f"  ok   {label}")
+            title, run = WORKTREE_PARTS[part]
+            print("_regenerable_clone — " + title)
+            if os.name == "nt" and len(FIX) > 150:
+                print("  skip worktree cases: the fixture path is too long for git's receiving side on Windows")
+            else:
+                run()
+    finally:
+        force_rmtree(FIX)
+        force_rmtree(outside)
 
-# A non-integer timeout variable must not stop the module loading: pattern_enforcer imports it, and a crash exits 1, which never blocks.
-total += 1
-bad_env = dict(os.environ, REGENERABLE_CLONE_GIT_TIMEOUT_S="ten")
-load = subprocess.run([sys.executable, "-c", "import _regenerable_clone as m; print(m._GIT_TIMEOUT_S)"],
-                      cwd=os.path.join(CLAUDE, "hooks"), env=bad_env, capture_output=True, text=True)
-if load.returncode != 0 or load.stdout.strip() != "10":
-    fails += 1
-    print(f"  FAIL non-integer timeout variable falls back to 10: rc={load.returncode} {(load.stdout + load.stderr)[-200:]!r}")
-else:
-    print("  ok   non-integer timeout variable falls back to 10")
+    total += 1
+    if os.path.exists(FIX) or os.path.exists(outside):
+        fails += 1
+        print(f"  FAIL teardown left a fixture directory: {FIX if os.path.exists(FIX) else outside}")
+    else:
+        print("  ok   teardown removed this run's fixture directories")
+    if part == 1:
+        unstored_loss_cases()
 
-print()
-print(f"{total - fails}/{total} cases pass" if fails else f"ALL PASS ({total} cases)")
-sys.exit(1 if fails else 0)
+    print()
+    print(f"{total - fails}/{total} cases pass" if fails else f"ALL PASS ({total} cases)")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

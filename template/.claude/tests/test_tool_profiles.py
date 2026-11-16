@@ -765,17 +765,34 @@ for _o in _overlays:
     if not _first or _first not in _rails:
         _missing.append(os.path.basename(_o))
 check("author/detailed rails carry the first detailed line of every common overlay file present", [], _missing)
-_surf = [json.dumps({"kind": "path", "surface": ".claude/guards/%s" % o, "change": "rename", "to": ".claude/guards/%s" % n})
-         for o, n in (("any.md", "common.md"), ("any.godot.md", "common.godot.md"))]
-_out = subprocess.run([sys.executable, os.path.join(ROOT, ".claude", "tools", "citers.py"), "--json", "--repo", ROOT] + _surf,
-                      capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
-_history = (".claude/auto-memory/archive/", ".claude/tests/fixtures/", ".claude/scripts/rail_battery/reports/",
-            ".claude/plans/", ".claude/scratch/", ".claude/autolearn_outcomes.jsonl", ".claude/orchestration_verdicts.json",
-            ".claude/orchestration_metrics.jsonl", ".claude/self_evaluate_archive.json",
-            ".claude/baseline.lock.json", ".claude/tests/test_tool_profiles.py")
-_stale = sorted({"%s:%s" % (c["path"], c["line"]) for c in json.loads(_out.stdout or '{"citers": []}')["citers"]
-                 if c["path"].startswith(".claude/") and not c["path"].startswith(_history)})
-check("the citer sweep reports no live reference to guards/any*.md", [], _stale)
+# The sweep over the live tree is `test_tool_profiles_live_citers.py`; here `citers.py` runs on a planted repository:
+# a live file that still cites a retired guard is reported, a plan that cites it is history, a renamed citer is not.
+with tempfile.TemporaryDirectory(prefix="tool_profiles_citers_") as _citer_repo:
+    def _plant_citers(rel, text):
+        os.makedirs(os.path.dirname(os.path.join(_citer_repo, rel)), exist_ok=True)
+        with open(os.path.join(_citer_repo, rel), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+
+    def _citer_git(*args):
+        subprocess.run(["git", "-C", _citer_repo, *args], check=True, capture_output=True)
+    for _args in (("init", "-q"), ("config", "user.email", "t@t"), ("config", "user.name", "t"),
+                  ("config", "commit.gpgsign", "false")):
+        _citer_git(*_args)
+    _plant_citers(".claude/guards/any.md", "# guard\n")
+    _plant_citers(".claude/reference/live.md", "read the rails in .claude/guards/any.md first\n")
+    _plant_citers(".claude/plans/old.md", "history: .claude/guards/any.md\n")
+    _plant_citers(".claude/reference/clean.md", "read the rails in .claude/guards/common.md first\n")
+    _citer_git("add", "-A")
+    _citer_git("commit", "-qm", "seed")
+    _surf = [json.dumps({"kind": "path", "surface": ".claude/guards/any.md", "change": "rename",
+                         "to": ".claude/guards/common.md"})]
+    _out = subprocess.run([sys.executable, os.path.join(ROOT, ".claude", "tools", "citers.py"), "--json",
+                           "--repo", _citer_repo] + _surf, capture_output=True, text=True, encoding="utf-8", cwd=_citer_repo)
+    _found = sorted({c["path"] for c in json.loads(_out.stdout or '{"citers": []}')["citers"]
+                     if c["path"].startswith(".claude/")})  # the sweep also reads the vault roots, outside the repo
+    check("the citer sweep names a live file that cites the retired guard, and the plan that records it",
+          [".claude/plans/old.md", ".claude/reference/live.md"], _found)
+    check("...and not a file that cites the replacement", False, ".claude/reference/clean.md" in _found)
 
 import re  # noqa: E402
 

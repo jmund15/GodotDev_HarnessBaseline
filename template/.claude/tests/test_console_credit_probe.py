@@ -119,7 +119,8 @@ def plant(home, *, cycle=(-2, 8), grant=200, ledger=None, anchor=None, marker=No
     env = dict(os.environ, HOME=str(home), HARNESS_MODEL_REGISTRY=str(registry),
                PROVIDER_CAPACITY_TRANSPORT=plan)
     env.pop("SIDECAR_LEDGER_PATH", None)      # D5: the route's ledger is the default one, always
-    env.pop("PROVIDER_CAPACITY_CACHE", None)
+    # The probe forgets a re-anchored plan's cached reading: a case must never touch the live cache.
+    env["PROVIDER_CAPACITY_CACHE"] = str(Path(home) / ".claude" / "provider_capacity.json")
     return env
 
 

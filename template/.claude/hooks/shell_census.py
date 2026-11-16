@@ -33,8 +33,7 @@ row's pid, session and launch, plus the unknown-owner pids) is stored per sessio
 (`transcript_backup.py` calls `_hook_state.clear_compaction_keys`), since a compacted session lost
 the earlier delivery from its context.
 
-Rule home: CLAUDE.core.md §Shell Discipline ("Watch background jobs through their completion/monitor
-contract"); a sidecar silent for `SIDECAR_STALL_SEC` appends a `stalled` journal row from
+Rule home: CLAUDE.core.md §Shell Discipline (**Watching jobs**); a sidecar silent for `SIDECAR_STALL_SEC` appends a `stalled` journal row from
 lib/sidecar_common.sh `sc_run_watched` and keeps running, so a stall is a `STALLED` wake from the
 session watcher, never a kill.
 
@@ -49,10 +48,8 @@ therefore the render) is per session and a shared rendered cache would show one 
 session's "own" label. Another hook process took a cached list, so this process's own pid is not in
 it: `resolve_own_root` stores the session root per session from a fresh snapshot and reuses it only
 while the cached table still lists that pid under a session-process name; otherwise the hook takes
-a fresh snapshot. Measured 2026-11-10, medians of 5 cold / 10 warm runs on this machine's table:
-warm 0.084 s at fb0887ad7, 0.088 s at bf52ffb70, 0.147 s once the census proves displayed rows
-(a reap import plus one environment read and one liveness answer per unknown row); cold 1.28 s,
-1.31 s, 1.33 s.
+a fresh snapshot. Proving displayed rows adds a reap import plus one environment read and one
+liveness answer per unknown row.
 """
 import json
 import os
@@ -317,9 +314,9 @@ def prove_rows(rows, procs, session_id):
                 table[pid] = {"pid": pid, "ppid": p.get("ppid"), "name": p.get("name") or "",
                               "cmd": p.get("cmd"), "start": p.get("start")}
         live = {}
-        with reap.invocation(session_id):
+        with reap.invocation(session_id, reap.project_key_of_session(session_id)):
             for r in unknown:
-                owner, _source = reap.owner_of(table, r["pid"])
+                owner, _source = reap.owner_of(table, r["pid"], parent_first=True)
                 if not owner:
                     continue
                 if owner == session_id:
@@ -330,6 +327,10 @@ def prove_rows(rows, procs, session_id):
                 if live[owner] is True:
                     r["owner"] = "other"
                 elif live[owner] is False:
+                    mine, theirs = reap._RUN.get("project_key"), reap.project_key_of_session(owner)
+                    if mine and theirs and not reap.same_project(theirs, mine):
+                        r["owner"] = "other"  # the reaper refuses another project's leftover
+                        continue
                     r["owner"] = "dead"
                     r["dead_session"] = owner[:8]
                     r["launch"] = reap.launch_of(r["pid"])

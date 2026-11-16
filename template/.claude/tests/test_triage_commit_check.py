@@ -43,8 +43,8 @@ git("add", "--", "notes.md")
 
 rc, out, err = run('git commit -q -m "proof note"')
 output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
-check("a commit with no trailer gets a derived Triage-Derived trailer",
-      rc == 0 and "Triage-Derived:" in output.get("updatedInput", {}).get("command", ""), out + err)
+check("a commit with no trailer and no record is left as written: nothing reads a derived trailer, and a rewrite costs a turn in auto mode",
+      rc == 0 and "updatedInput" not in output and "Triage-Derived" not in out, out + err)
 
 rc, out, err = run('git commit -q -m "proof note" -m "Triage: reach=bogus"')
 output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
@@ -78,8 +78,8 @@ def _advice(message, reach=None):
 
 
 advice, trailer = _advice("proof note")
-check("a diff with no trailer and local reach derives a trailer and no advice",
-      advice is None and trailer == "Triage-Derived: reach=local oracle=none", (advice, trailer))
+check("a diff with no trailer and local reach gets no advice and no trailer",
+      advice is None and trailer is None, (advice, trailer))
 advice, trailer = _advice("proof note\n\nTriage: reach=bogus")
 check("a diff with an unreadable trailer is advised as unreadable",
       advice is not None and "trailer unreadable" in advice and trailer is None, (advice, trailer))

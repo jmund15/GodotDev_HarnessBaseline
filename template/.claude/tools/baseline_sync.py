@@ -37,6 +37,11 @@ for _d in (_TOOLS_DIR, _HOOKS_DIR):
     if str(_d) not in sys.path:
         sys.path.insert(0, str(_d))
 try:
+    import _pull_proof  # noqa: E402
+except ImportError:
+    # The same temp checkout lacks the pull proof record: a pull there runs its proof with no record.
+    _pull_proof = None
+try:
     from _hook_state import replace_path  # noqa: E402
 except ImportError:
     # A pull proof's temp checkout carries `tools/` without `hooks/`: the engine still runs there, and
@@ -1723,6 +1728,12 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
     findings += [(line, "layer-closure") for line in closure]
     unproven = unproven_tools(root, lock.get("files", {}), list(results)) if strict or not as_json else []
     findings += [(rel, "unproven") for rel in unproven]
+    try:
+        unresolved_pull = _pull_proof.open_paths(root) if _pull_proof else []
+    except _pull_proof.Unreadable:
+        # Unknown rows stay named: the record itself is the open row.
+        unresolved_pull = [_pull_proof.RECORD]
+    findings += [(rel, "unresolved-pull") for rel in unresolved_pull]
     if as_json:
         payload = {
             "baseline_commit": baseline_commit(source),
@@ -1736,6 +1747,8 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
             payload["layer_closure"] = closure
         if unproven:
             payload["unproven"] = unproven
+        if unresolved_pull:
+            payload["unresolved_pull"] = unresolved_pull
         if drift:
             payload["layer_drift"] = [{"path": rel, "lock": was, "manifest": now} for rel, was, now in drift]
         print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -1766,6 +1779,11 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
                 print("  " + line)
         for relpath in unproven:
             print("unproven: " + relpath)
+        if unresolved_pull:
+            print("unresolved-pull (an earlier pull wrote these paths; their proof is red or pending and they are uncommitted):")
+            for relpath in unresolved_pull:
+                print("  " + relpath)
+            print("  rerun: python3 .claude/scripts/harness_tests.py --for " + " ".join(unresolved_pull))
         for relpath, was, now in drift:
             print(f"layer-drift: {relpath} (lock {was}, manifest {now})")
         for relpath, state in findings:
@@ -2061,6 +2079,325 @@ def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None,
         raise BaselineError(f"{relpath} depends on rows consumers would not receive:\n" + "\n".join(lines))
 
 
+def _refuse_push_over_newer_upstream(root: Path, relpath: str, entry: dict, lock: dict,
+                                     source: BaselineSource | None) -> None:
+    """A push publishes the local copy over the baseline's: when the baseline's copy changed since the
+    row's base (`diverged`, or `upstream-updated` where local is the older bytes), the push silently
+    drops that change. A forked row is a deliberate departure and stays out."""
+    if source is None:
+        return
+    state = _v2_state(root, source, lock, relpath, entry)
+    if state in ("diverged", "upstream-updated"):
+        raise BaselineError(
+            f"{relpath}: upstream changed it since this row's base ({state}), so a push would overwrite that "
+            f"change; run `pull --merge {relpath}` (or `pull --force {relpath}`), then judge again")
+
+
+_SCANNED_SUFFIXES = (".py", ".md", ".sh", ".js", ".ps1")
+_DEPENDENT_LIMIT = 12
+
+
+def _api_surface(text: str) -> dict[str, str] | None:
+    """The top-level names a module defines, each with the shape a citer binds to: a function's parameters, a class,
+    a value. None when the text does not parse."""
+    try:
+        module = ast.parse(text)
+    except SyntaxError:
+        return None
+    surface: dict[str, str] = {}
+    for stmt in module.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            surface[stmt.name] = "def(" + ast.unparse(stmt.args) + ")"
+        elif isinstance(stmt, ast.ClassDef):
+            surface[stmt.name] = "class"
+        else:
+            targets = stmt.targets if isinstance(stmt, ast.Assign) else [getattr(stmt, "target", None)]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    surface[target.id] = "value"
+    return surface
+
+
+def _cites_name(relpath: str, text: str, names: set[str]) -> bool:
+    """Whether a row's text uses one of `names`: a python row by its identifiers, attributes, imports and string
+    constants, any other row by a whole word."""
+    if relpath.endswith(".py"):
+        try:
+            module = ast.parse(text)
+        except SyntaxError:
+            module = None
+        if module is not None:
+            for node in ast.walk(module):
+                used = (node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute)
+                        else node.name if isinstance(node, ast.alias)
+                        else node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None)
+                if used in names:
+                    return True
+            return False
+    return any(re.search(rf"(?<![\w]){re.escape(name)}(?![\w])", text) for name in names)
+
+
+def _changed_surface(relpath: str, old_text: str, new_text: str) -> list[str]:
+    """The names a python row's push removes or reshapes (a function's parameters changed); empty for any other row."""
+    if not relpath.endswith(".py"):
+        return []
+    old, new = _api_surface(old_text), _api_surface(new_text)
+    if old is None or new is None:
+        return []
+    return sorted(name for name, shape in old.items() if new.get(name) != shape and not name.startswith("__"))
+
+
+def _dependent_notes(root: Path, pushed: dict[str, bytes | None], lock: dict,
+                     source: BaselineSource | None) -> list[str]:
+    """The reverse edge of the dependency check: for each pushed row ({relpath: its pushed bytes, None for a
+    deletion}) that removes or reshapes a top-level name of a python row, or deletes a file, the shipped rows that
+    still depend on it. A shipped row is read as the baseline will hold it after this push: the pushed bytes for a
+    row in this push, the baseline's copy for every other, so a row only another consumer published counts. Advisory:
+    a name a citer shares by accident is a false line, and a refusal over it would block justified work."""
+    if source is None:
+        return []
+    subs = lock.get("substitutions", {})
+    wanted: dict[str, list[str] | None] = {}
+    for relpath, data in pushed.items():
+        old = _read_upstream_bytes(source, relpath)
+        if old is None:
+            continue
+        if data is None:
+            wanted[relpath] = None
+            continue
+        names = _changed_surface(relpath, rendered_upstream(relpath, old, subs), str(row_text(relpath, data)))
+        if names:
+            wanted[relpath] = names
+    if not wanted:
+        return []
+    shipped = _manifest_items_v2(source)
+    layers = layer_closure.consumer_layers(lock, {"files": list(shipped.values())})
+    texts: dict[str, str] = {}
+    for path in sorted((set(shipped) | set(pushed)) & set(layers)):
+        if not path.endswith(_SCANNED_SUFFIXES) or (path in pushed and pushed[path] is None):
+            continue
+        blob = pushed[path] if path in pushed else _read_upstream_bytes(source, path)
+        if blob is None or is_binary(blob):
+            continue
+        texts[path] = str(row_text(path, blob) if path in pushed else rendered_upstream(path, blob, subs))
+    found = layer_closure.dependents(root, layers, texts, set(wanted))
+    lines = []
+    for relpath, names in sorted(wanted.items()):
+        citers = [path for path in found[relpath] if names is None or _cites_name(path, texts[path], set(names))]
+        if not citers:
+            continue
+        shown = ", ".join(citers[:_DEPENDENT_LIMIT]) + (f" (+{len(citers) - _DEPENDENT_LIMIT} more)"
+                                                        if len(citers) > _DEPENDENT_LIMIT else "")
+        what = "is deleted" if names is None else "changes " + ", ".join(names)
+        lines.append(f"dependents: {relpath} {what}; shipped rows that cite it: {shown}")
+    return lines
+
+
+def _print_dependent_notes(root: Path, pushed: dict[str, bytes | None], lock: dict | None,
+                           source: BaselineSource | None) -> None:
+    """Print `_dependent_notes`; a scan that fails says so, because a silent miss reads as no dependents."""
+    if lock is None or not pushed:
+        return
+    try:
+        for line in _dependent_notes(root, pushed, lock, source):
+            print(line)
+    except Exception as exc:  # noqa: BLE001 -- advisory output never fails the verdict it follows
+        print(f"dependents: not checked ({type(exc).__name__}: {exc})")
+
+
+_PROOF_RELPATH = re.compile(r"\.claude/tests/(test_[^/]+\.py|[^/]+_test\.(js|mjs))$")
+_PROOF_RUNNERS = {".py": [sys.executable], ".js": ["node"], ".mjs": ["node"]}
+
+
+def _proof_timeout(relpath: str) -> float:
+    """The runner's own time for this proof (`harness_tests._timeout_for`: its `proof_timeouts` cap, else its
+    recorded pass times the load factor, never under the default), so a slow proof the runner passes is not refused here."""
+    ht = _harness_tests()
+    path = ht.durations_path()
+    return ht._timeout_for(relpath, ht.read_json_salvage(path) if os.path.exists(path) else {})
+
+
+# One judge call's row bytes, read once: every proof row builds its own shipped set over the same pushed rows.
+_ROW_BYTES: dict[tuple, dict[str, bytes | None]] = {}
+
+
+def _row_bytes(root: Path, commit: str | None, relpaths) -> dict[str, bytes | None]:
+    """Each row's bytes as `_shipped_tree` overlays them (the commit's blob, else `_content_bytes`), in one batch
+    per judge call. Per row per proof row, a 226-row judge spawned git tens of thousands of times."""
+    key = (str(root), commit, tuple(sorted(relpaths)))
+    if key not in _ROW_BYTES:
+        if commit:
+            blobs = _cat_file_many(root, [f"{commit}:{rel}" for rel in key[2]]) or [None] * len(key[2])
+            _ROW_BYTES[key] = dict(zip(key[2], blobs))
+        else:
+            _ROW_BYTES[key] = _content_bytes_many(root, list(key[2])) if key[2] else {}
+    return _ROW_BYTES[key]
+
+
+def _shipped_tree(root: Path, relpath: str, data: bytes | None, lock: dict, source: BaselineSource,
+                  pushing: dict[str, str], commit: str | None, into: Path) -> None:
+    """What a consumer holds once this push publishes: the baseline's files at or below the row's layer,
+    rendered as a pull renders them, overlaid by every row being judged push and every row already
+    judged push at its current sha. A local-only file is absent, which is the point."""
+    files = lock.get("files", {})
+    subs = lock.get("substitutions", {})
+    layer = (files.get(relpath) or {}).get("layer")
+    allowed = FULL_LAYERS[:FULL_LAYERS.index(layer) + 1] if layer in FULL_LAYERS else FULL_LAYERS
+    for item_path, item in _manifest_items_v2(source).items():
+        if item.get("layer") and item["layer"] not in allowed:
+            continue
+        raw = _read_upstream_bytes(source, item_path)
+        if raw is None:
+            continue
+        text = rendered_upstream(item_path, raw, subs)
+        target = into / item_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw if isinstance(text, BinaryText) else text.encode("utf-8"))
+    overlay = dict(_row_bytes(root, commit, pushing))
+    overlay[relpath] = data
+    judged_rows = [rel for rel, row in files.items() if rel not in overlay
+                   and (row.get("judged") or {}).get("verdict") == "push"]
+    current = (_commit_shas(root, commit, judged_rows) if commit else _content_shas(root, judged_rows)) if judged_rows else {}
+    shipped = [rel for rel in judged_rows if (files[rel].get("judged") or {}).get("sha") == current.get(rel)]
+    overlay.update(_row_bytes(root, commit, shipped))
+    for rel, blob in overlay.items():
+        if blob is not None:
+            target = into / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(blob)
+
+
+def _shipped_root() -> Path:
+    """Where shipped-set trees are built: outside the system temp folder, since a consumer's checkout is not there and
+    the shell guard allows a recursive delete anywhere below temp, so a delete-refusal proof read allow in a temp
+    tree that every consumer's copy denies."""
+    base = Path.home() / ".claude" / "shipped_sets"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _consumer_checkout(tree: Path) -> None:
+    """Commit the shipped tree as a git checkout: a consumer holds these files in one, and a git-aware proof or
+    guard (what git has, what is scratch) reads a bare folder as no repository at all. Only the repository-location
+    names are dropped: the caller's git config (a clean runner's GIT_CONFIG_NOSYSTEM) is the one the proofs read the
+    tree with, and a commit under another config's autocrlf leaves every file modified."""
+    local = _harness_tests().GIT_REPO_ENV
+    env = {key: value for key, value in os.environ.items() if key not in local}
+    for argv in (["init", "-q"], ["add", "-A", "-f"],
+                 ["-c", "user.email=shipped@set", "-c", "user.name=shipped set", "commit", "-q", "--no-verify", "--allow-empty",
+                  "-m", "shipped set"]):
+        subprocess.run(["git", "-C", str(tree), *argv], env=env, capture_output=True, check=True)
+
+
+def _run_in_tree(relpath: str, tree: Path) -> list[str] | None:
+    """The proof's last failing lines when it is red run in `tree` (CLAUDE_PROJECT_DIR and cwd), else None."""
+    runner = _PROOF_RUNNERS[os.path.splitext(relpath)[1]]
+    env = {key: value for key, value in os.environ.items() if key != "CLAUDE_PROJECT_DIR"}
+    env["CLAUDE_PROJECT_DIR"] = str(tree)
+    timeout = _proof_timeout(str(tree / relpath))
+    # Output to files and the whole process tree ended at return: a piped run waits for any child the proof leaves
+    # holding its pipe (a case pool's workers), past every timeout.
+    sys.path.insert(0, str(_HOOKS_DIR))
+    try:
+        from _bounded_run import run_bounded
+    finally:
+        sys.path.remove(str(_HOOKS_DIR))
+    try:
+        run = run_bounded([*runner, str(tree / relpath)], timeout, cwd=tree, env=env)
+    except OSError as exc:
+        return [f"could not run: {exc}"]
+    if run.returncode is None:
+        return [f"timed out after {timeout:g}s"]
+    return None if run.returncode == 0 else (run.stdout + run.stderr).strip().splitlines()[-6:]
+
+
+def _is_shipped_proof(relpath: str) -> bool:
+    return os.path.splitext(relpath)[1] in _PROOF_RUNNERS and bool(_PROOF_RELPATH.search(relpath))
+
+
+# One judge call's shipped-set proof results run side by side: {relpath: red lines or None}.
+_SHIPPED_RUNS: dict[str, list[str] | None] = {}
+
+
+def _prerun_shipped_proofs(root: Path, relpaths: list[str], lock: dict, source: BaselineSource | None,
+                           pushing: dict[str, str], commit: str | None) -> None:
+    """Run every proof row of this judge call in its shipped set at once, a line printed as each starts. Rows of
+    one layer share one tree, since the tree depends on the row only through its layer; each proof writes only
+    under its own temp root, as in the runner's pool. A proof red here reruns alone before any refusal
+    (`_refuse_proof_red_in_shipped_set`): a red under load is no verdict. One proof after another, each in its own
+    fresh tree, ran 115 proof rows for over an hour with no line printed."""
+    _SHIPPED_RUNS.clear()
+    proofs = [rel for rel in relpaths if _is_shipped_proof(rel)]
+    if source is None or not proofs:
+        return
+    data = _row_bytes(root, commit, pushing)
+    files = lock.get("files", {})
+    groups: dict[str | None, list[str]] = {}
+    for rel in proofs:
+        if data.get(rel) is not None:
+            layer = (files.get(rel) or {}).get("layer")
+            groups.setdefault(layer if layer in FULL_LAYERS else None, []).append(rel)
+    jobs = [rel for rels in groups.values() for rel in rels]
+    if not jobs:
+        return
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from machine_slots import parallel_budget
+    from concurrent.futures import ThreadPoolExecutor
+    started = [0]
+    with contextlib.ExitStack() as stack:
+        trees = {}
+        for layer, rels in groups.items():
+            tree = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="shipped_set_", dir=_shipped_root(),
+                                                                           ignore_cleanup_errors=True)))
+            _shipped_tree(root, rels[0], data[rels[0]], lock, source, pushing, commit, tree)
+            _consumer_checkout(tree)
+            trees.update((rel, tree) for rel in rels)
+
+        def run(rel: str) -> tuple[str, list[str] | None]:
+            started[0] += 1
+            print(f"judge: shipped-set proof {started[0]} of {len(jobs)}: {rel}", file=sys.stderr, flush=True)
+            return rel, _run_in_tree(rel, trees[rel])
+        with parallel_budget(len(jobs)) as width, ThreadPoolExecutor(max_workers=width) as pool:
+            _SHIPPED_RUNS.update(pool.map(run, jobs))
+    red = sorted(rel for rel, lines in _SHIPPED_RUNS.items() if lines is not None)
+    print(f"judge: shipped-set proofs: {len(jobs) - len(red)} green, {len(red)} red side by side"
+          + (f"; each red reruns alone: {', '.join(red)}" if red else ""), file=sys.stderr, flush=True)
+
+
+def _refuse_proof_red_in_shipped_set(root: Path, relpath: str, data: bytes | None, lock: dict,
+                                     source: BaselineSource | None, pushing: dict[str, str],
+                                     commit: str | None) -> None:
+    """A proof that passes here may reach a file at run time (a built path, a `require`, a `sys.path`
+    import) that consumers lack; no static scan sees it. Run the proof in the shipped set and refuse on red,
+    naming its last failing lines: green side by side (`_prerun_shipped_proofs`) stands, and a proof red there or
+    not yet run runs alone. Python and Node proofs run; any other proof is not run."""
+    if source is None or not _is_shipped_proof(relpath) or data is None:
+        return
+    if relpath in _SHIPPED_RUNS and _SHIPPED_RUNS[relpath] is None:
+        return
+    if relpath in _SHIPPED_RUNS:
+        print(f"judge: shipped-set proof red side by side, rerun alone: {relpath}", file=sys.stderr, flush=True)
+    # Windows refuses to remove a tree a scanner or a lingering child still holds; it is regenerable scratch.
+    with tempfile.TemporaryDirectory(prefix="shipped_set_", dir=_shipped_root(), ignore_cleanup_errors=True) as tmp:
+        tree = Path(tmp)
+        _shipped_tree(root, relpath, data, lock, source, pushing, commit, tree)
+        _consumer_checkout(tree)
+        # Alone means the whole machine, as the runner's alone retries: beside other work, two proofs that pass in
+        # 30 s timed out at 120 s here and were refused.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from machine_slots import release_all, take
+        held = take(exclusive=True, notice=True)
+        try:
+            red = _run_in_tree(relpath, tree)
+        finally:
+            release_all(held or [])
+    if red is not None:
+        raise BaselineError(
+            f"{relpath} is red in the shipped set (the baseline's files plus the rows judged push, which is "
+            f"what a consumer holds); it reaches a file consumers lack, or the pushed rows break it:\n"
+            + "\n".join(f"    {line}" for line in red))
+
+
 def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, profile: dict,
                     subs: dict, source: BaselineSource | None, source_error: str | None,
                     accept_hits: list[str] | None, lock: dict, pushing: dict[str, str],
@@ -2088,9 +2425,11 @@ def _push_preflight(root: Path, relpath: str, entry: dict, data: bytes | None, p
             raise BaselineError(
                 f"new row has no layer and publish refuses it; record one first: "
                 f"classify {relpath} --status tracked --layer pure|coding|godot")
+    _refuse_push_over_newer_upstream(root, relpath, entry, lock, source)
     _refuse_unshipped_dependencies(root, relpath, data, lock, source, pushing, commit)
     if _TOOL_RELPATH.search(relpath) and source is not None and _upstream_sha(source, relpath, subs) is None:
         _refuse_unproven_new_tool(root, lock.get("files", {}), relpath, {}, pushing, commit)
+    _refuse_proof_red_in_shipped_set(root, relpath, data, lock, source, pushing, commit)
     return sorted({hit.id for hit in hits})
 
 
@@ -2143,6 +2482,7 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
     source, source_error = _try_source(root, baseline_dir)
     snapshots: dict[str, dict] = {}
     report: list[str] = []
+    finals: dict[str, bytes | None] = {}
 
     def apply(lock: dict):
         snapshots["before"] = copy.deepcopy(lock)
@@ -2196,6 +2536,8 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
         if refusals:
             raise BaselineError("\n".join(refusals))
         snapshots["after"] = copy.deepcopy(lock)
+        finals.clear()
+        finals.update({relpath: walks[relpath][2] for relpath in carried})
         return carried or NO_CHANGE
 
     try:
@@ -2203,6 +2545,7 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
         for line in report:
             print(line)
         _print_closure_delta(root, snapshots.get("before"), snapshots.get("after"), source, source_error)
+        _print_dependent_notes(root, finals, snapshots.get("after"), source)
     finally:
         if source is not None:
             source.close()
@@ -2225,6 +2568,8 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
         raise UsageError("--verdict must be push, keep-local or fork")
     if borderline and confirm:
         raise UsageError("--borderline and --confirm are mutually exclusive")
+    _ROW_BYTES.clear()  # a row's bytes hold for one call; the next call reads the tree it then finds
+    _SHIPPED_RUNS.clear()
     _validate_relpaths(relpaths)
     source, source_error = _try_source(root, baseline_dir)
     snapshots: dict[str, dict] = {}
@@ -2250,6 +2595,9 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
                 raise BaselineError(f"different verdict for the same content; use --force: {relpath}")
         subs = lock.get("substitutions", {})
         pushing = {rel: current[rel] for rel in relpaths} if verdict == "push" else {}
+        if verdict == "push":
+            _prerun_shipped_proofs(root, [rel for rel in decisions if (files[rel].get("judged") or {}).get("sha")
+                                          != decisions[rel] or accept_hits], lock, source, pushing, commit)
         profile = None  # built on the first pushed row: it reads the pinned template tree
         changed = []
         refusals = []
@@ -2316,6 +2664,16 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
             for relpath in result:
                 print(f"judged: {relpath}")
             _print_closure_delta(root, snapshots.get("before"), snapshots.get("after"), source, source_error)
+            after = snapshots.get("after") or {}
+            pushed: dict[str, bytes | None] = {}
+            for relpath in result if verdict == "push" else ():
+                if (after.get("files", {}).get(relpath, {}).get("judged") or {}).get("deleted"):
+                    pushed[relpath] = None
+                else:
+                    blob = _commit_blob(root, commit, relpath) if commit else _content_bytes(root, relpath)
+                    if blob is not None:
+                        pushed[relpath] = blob
+            _print_dependent_notes(root, pushed, after or None, source)
     finally:
         if source is not None:
             source.close()
@@ -2516,7 +2874,7 @@ def v2_track(root: Path, relpaths: list[str], source: BaselineSource) -> int:
 
 def _merge3(local: str, base: str, upstream: str) -> tuple[str, int]:
     """`git merge-file` of local and upstream over base: the merged text and its conflict count."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(prefix="merge3_", ignore_cleanup_errors=True) as tmp:
         paths = []
         for name, text in (("local", local), ("base", base), ("upstream", upstream)):
             path = Path(tmp) / name
@@ -2772,21 +3130,68 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
     written = [] if result is NO_CHANGE else [
         relpath for relpath in result
         if relpath not in retired and relpath not in kept_local and relpath not in kept_seeds]
-    proved = _prove_pulled(root, written)
+    # A path whose proof is still pending or red is proved again, so a rerun of this pull releases its commit.
+    unresolved, earlier = [], []
+    if _pull_proof:
+        try:
+            unresolved = _pull_proof.unresolved(root)
+        except _pull_proof.Unreadable as exc:
+            # The lost rows held only paths a pull wrote, and a path committed since left the journal anyway,
+            # so every lock row still uncommitted is proved again: none commits unproven.
+            aside = _pull_proof.quarantine(root)
+            unresolved = _uncommitted_lock_paths(root)
+            print(f"journal: unreadable, {exc}; kept as {aside}; proving {len(unresolved)} uncommitted lock path(s)")
+        earlier = [relpath for relpath in _pull_proof.open_paths(root) if relpath not in written]
+    if earlier:
+        print(f"journal: an earlier pull left {len(earlier)} path(s) uncommitted with a red or pending proof, "
+              f"proved again now: {', '.join(earlier)}")
+    proved = _prove_pulled(root, written + [relpath for relpath in unresolved if relpath not in written], source.sha)
     hits = local_attr_hits(root, written)
     _report_local_attr_hits(hits)
     return 1 if conflicts or proved or hits else 0
 
 
-def _prove_pulled(root: Path, written: list[str]) -> int:
+def _uncommitted_lock_paths(root: Path) -> list[str]:
+    """Lock-row paths git reports changed or untracked: every path a pull could have written and not yet
+    committed. When git cannot answer, every lock row present on disk."""
+    rows = sorted(load_lock(root).get("files") or {})
+    try:
+        out = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "-z", "--untracked-files=all"],
+                             capture_output=True, text=True, encoding="utf-8", timeout=60, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return [relpath for relpath in rows if (root / relpath).exists()]
+    dirty = {entry[3:] for entry in out.split("\0") if len(entry) > 3}
+    return [relpath for relpath in rows if relpath in dirty]
+
+
+def _proof_results(paths: list[str], returncode: int, output: str) -> dict[str, str]:
+    """Each pulled path's result from the runner's own output: green when the run passed, unbound when no
+    proof binds any of them, else red for each path the runner names as blocked (`unstamped <path>: blocked
+    by ...`). A red run that names no path marks every path red, since the cause is unknown."""
+    if returncode == 0:
+        return {relpath: "green" for relpath in paths}
+    if "no proof is bound to" in output:
+        return {relpath: "unbound" for relpath in paths}
+    named = set(re.findall(r"unstamped (\S+): blocked by", output))
+    if not named:
+        return {relpath: "red" for relpath in paths}
+    return {relpath: "red" if relpath in named else "green" for relpath in paths}
+
+
+def _prove_pulled(root: Path, written: list[str], pin: str | None = None) -> int:
     """Run the proofs bound to the files a pull wrote; name each red one and the command that reruns it.
-    The pulled files stay written. Returns 1 on any red, else 0."""
+    The pulled files stay written, and the proof record (`hooks/_pull_proof.py`) keeps each path's result and
+    the baseline `pin` it came from, which `check` and the session close read. Returns 1 on any red, else 0."""
     runner = root / ".claude" / "scripts" / "harness_tests.py"
     paths = [relpath for relpath in written if (root / relpath).exists()]
     if not paths or not runner.is_file():
         return 0
+    if _pull_proof:
+        _pull_proof.write(root, {relpath: "pending" for relpath in paths}, pin)
     result = subprocess.run([sys.executable, str(runner), "--for", *paths], cwd=root,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    if _pull_proof:
+        _pull_proof.write(root, _proof_results(paths, result.returncode, result.stdout), pin)
     if result.returncode == 0:
         print(f"proofs: green for {len(paths)} pulled path(s)")
         return 0

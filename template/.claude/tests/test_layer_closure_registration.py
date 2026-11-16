@@ -104,6 +104,30 @@ def main():
     out = planted({H + "a.py": HOOK, doc: "the hooks/a.py guard"}, {H + "a.py": "pure", doc: "pure"})
     check("hook named only in a non-script file is a finding", len(out) == 1, out)
 
+    # A commit-time check names a few rows: registration reads no hook source it need not.
+    reads = []
+    real_deps = lc._python_deps
+    lc._python_deps = lambda text: (reads.append(1), real_deps(text))[1]
+    try:
+        files = {H + "a.py": HOOK + "import helper_hook\n", H + "helper_hook.py": HOOK, H + "lonely.py": HOOK,
+                 base: settings("a")}
+        layers = {rel: "pure" for rel in files}
+        with tempfile.TemporaryDirectory() as root:
+            for rel, text in files.items():
+                Path(root, rel).parent.mkdir(parents=True, exist_ok=True)
+                Path(root, rel).write_text(text, encoding="utf-8")
+            tree = lc.Tree(Path(root), layers)
+            del reads[:]
+            out = [f.render() for f in lc.registration_findings(tree, {".claude/tools/t.py"})]
+            check("a check set holding no hook row reads no hook source and finds nothing", not reads and out == [], (reads, out))
+            out = [f.render() for f in lc.registration_findings(tree, {H + "a.py"})]
+            check("a check set whose hooks settings register directly reads no hook source", not reads and out == [], (reads, out))
+            out = [f.render() for f in lc.registration_findings(tree, {H + "helper_hook.py", H + "lonely.py"})]
+            check("a check set holding a hook only an import reaches, and an unregistered one, still resolves both",
+                  len(out) == 1 and out[0].startswith(H + "lonely.py: unregistered") and reads, (reads, out))
+    finally:
+        lc._python_deps = real_deps
+
     if FAILURES:
         print("\nFAILED:\n  " + "\n  ".join(FAILURES))
         return 1

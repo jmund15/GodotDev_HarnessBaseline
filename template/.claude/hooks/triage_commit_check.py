@@ -8,8 +8,9 @@ triage is the commit's `Triage:` trailer, else the session's task record (`task_
 the diff raises above it is printed with the tag and its probe. Standing reach names its computed
 harness-quality-seat admission, not a declaration. A commit with no trailer under a session record gets
 `--trailer "Triage: <recorded fields>"` through `updatedInput`, so `review_ledger.py owed` and the escape log
-read the triage this check used; one with neither gets `--trailer "Triage-Derived: reach=<r> oracle=<o>"`,
-and it speaks only above local reach.
+read the triage this check used. A commit with neither is not rewritten: no reader parses a derived trailer
+(`triage.py rederive` and `escape_log.py` recompute from the diff), and a rewritten call costs a turn under auto
+mode, whose classifier gives no verdict on a call a hook changed. It speaks only above local reach.
 Derived fields are not a judged triage. This hook never denies. An exception, a read error or an
 import failure exits non-zero; the dispatcher reports the unavailable check on stderr and in context.
 
@@ -232,12 +233,9 @@ def _verdict(result, fields, error, message, sub, standing_state):
     if error:
         return ("[triage] Triage: trailer unreadable (%s); grammar: triage.py --help." % error), None
     if fields is None:
-        trailer = "Triage-Derived: reach=%s oracle=%s" % (result.reach, triage._format_oracle(result.oracle))
-        if message and re.search(r"^Triage-Derived:", message, re.MULTILINE):
-            return None, None
         context = ("[triage] derived reach=%s oracle=%s; judged fields: execution_depth.md §Fields."
                    % (result.reach, triage._format_oracle(result.oracle))) if result.reach != "local" else None
-        return context, trailer if sub == "commit" else None
+        return context, None
     found = triage.raises(fields, result)
     if not found:
         return None, None

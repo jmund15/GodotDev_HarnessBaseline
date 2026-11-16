@@ -108,11 +108,15 @@ CASES = [
 
 def _stamp_records():
     import json
+    import subprocess
     dest = os.path.join(TMP, "stamp.json")
+    # The stamp reads the repository's HEAD and tracked names: a repository of its own, not this checkout.
+    repo = os.path.join(TMP, "stamp_repo")
+    subprocess.run(["git", "init", "-q", repo], check=True, capture_output=True, stdin=subprocess.DEVNULL)
     prev = ht.STAMP_PATH
     ht.STAMP_PATH = dest
     try:
-        ht._write_stamp(ht.REPO_ROOT, 3, 2, [], [os.path.join(TMP, "test_cannot.py")])
+        ht._write_stamp(repo, 3, 2, [], [os.path.join(TMP, "test_cannot.py")])
     finally:
         ht.STAMP_PATH = prev
     with open(dest, encoding="utf-8") as fh:

@@ -69,9 +69,16 @@ not a per-guard copy. A tooling contract lists its must-allow fixtures before co
 that still holds a file upstream deleted.
 
 `harness_tests.py` runs proofs in parallel, so a proof writes only under its own temp root (`TMP`),
-never a fixed shared path. A proof that builds a child's own `PYTHONPATH` puts `HARNESS_READ_RECORDER`, when set, first on it: a child that drops the read recorder costs the proof its observed pass-cache key, and every edit to a file in its static reach reruns it. A proof that must own the machine (a wall-clock deadline, a live
+never a fixed shared path. A proof also plants every ambient input it reads (home, the global git config, a
+`CLAUDE_*` name, a tool found through `PATH`, a store under `~/.claude`): the land runner and the publish battery
+run each proof with `--runner-env` (`HARNESS_RUNNER_ENV=1`), which gives it a home and git config under its temp
+root and no `CLAUDE_*` name but `CLAUDE_PROJECT_DIR`, and the mode keys the pass. A red under it is an undeclared
+read, fixed in the proof (a proof whose subject is the machine's live state reads the caller's home as
+`HARNESS_CALLER_HOME`); run `harness_tests.py --runner-env --for <paths>` before a land to see it locally. A proof that builds a child's own `PYTHONPATH` puts `HARNESS_READ_RECORDER`, when set, first on it: a child that drops the read recorder costs the proof its observed pass-cache key, and every edit to a file in its static reach reruns it. A proof that must own the machine (a wall-clock deadline, a live
 singleton) goes in `adaptation.json` `proof_serial`, and independent cases inside one slow proof
 use `tests/_case_pool.py`.
+
+A close ends with a `close growth:` line naming each proof that stays above its own earlier recorded time range, load divided out (one slow run is load or chance, and names nothing), and a `close reuse:` line counting its reruns by cause; the `LANDED` line repeats the growth. A grown proof the landed work changed, or whose inputs it changed, is that work's defect: bring it back into its range before the line of work closes. Every other open entry (`python3 .claude/tools/gate_growth.py` lists them) is surfaced work under the worklog's do-now gate.
 
 A gate phase that runs units one at a time (a retry, a rerun, a bisect step) prints a line as each starts, and a wrapper that filters a gate's output passes those lines: a silent phase reads as a hang, and its time reaches nobody.
 
@@ -95,7 +102,7 @@ peer's dirty working tree; selected proofs absent at that revision and never com
 A missing or stale result, a new tracked red or unavailable coverage blocks push, not local commits.
 
 A failure whose marked lines also appear at the upstream base, or at the default branch's merge-base when a sync merged in commits that base lacks, is pre-existing: printed and logged
-to `harness_known_red.jsonl`, not new. The line names when that proof was first recorded red there and how many closes recorded it, or says it has no earlier row. An untracked, never-committed proof runs its working copy
+to `harness_known_red.jsonl`, not new. An untracked, never-committed proof runs its working copy
 against the base's inputs. Its red prints `UNCOMMITTED PROOF RED <proof> (not in this push)` and blocks neither push nor stamp: its own commit's close gates it. A red that passes in the shared checkout is rerun at committed HEAD with its dirty, untracked or ignored inputs planted. If planting makes it pass, the close names those inputs and still blocks push: commit an input that belongs to the change, and make the proof plant any input it reads from scratch or another session's work. `/session_end` §7b
 leaves another session's in-progress red to its owner. A timeout or output without a
 failure-marked line never excuses a red. A close started while this session's author or fold dispatch writes in its checkout waits for it and names it. An author whose `writeSet` is wholly gitignored cannot change the commits close proves, so close never waits for it. Close then proves the committed HEAD of that moment once: a later commit never restarts it, and a newer `--close` supersedes it at once, waiting or running, so a commit never needs the close stopped. Before dispatching a fix for reds, run `--close --now`, which skips that wait, so each red arrives classified (pre-existing, or its FIRST RED commit and owner); map the new ones to fix jobs by cause and write set (`orchestration` §2).
@@ -103,13 +110,13 @@ failure-marked line never excuses a red. A close started while this session's au
 `--for <paths>` and `--proofs-for <paths>` run those paths' bound proofs on demand; they do not
 satisfy push. `--for` excuses a red that also fails at HEAD while a given path or its proof differs from HEAD;
 after the change is committed (a worktree branch, a delegate's slice), pass `--base <the revision
-before the change>`, or no red is excused. Use the edited unit's proof file directly for RED-first work, not the bound suite.
+before the change>`, or no red is excused. Use the edited unit's proof file directly for RED-first work, not the bound suite. While fixing one case of a `run_cases` proof, run that case alone (`HARNESS_CASES_ONLY=<name part> python3 .claude/tests/<proof>`), then the whole file before the commit.
 Passes are reused while reached inputs are unchanged, whichever checkout of the repository recorded them. `--all` runs every proof on demand;
 `/sync_baseline` publish sets `HARNESS_REUSE_PASSES=1` for its full battery, so it reuses recorded passes.
 
 `git_guardrails.py` keeps quick checks (skill load, density, git/index scope and tracked-proof
 presence) and makes the advisory proof run above. An authored `hooks/` or `tools/` `.py` needs a git-TRACKED `tests/test_<name>*.py` or
-`tests/<name>_test.*`; underscore helpers, deletions and edits `_behavior_unchanged` proves comment/docstring-only are exempt. Staged-blob peer-revert checks stay;
+`tests/<name>_test.*`; underscore helpers, deletions and edits `_behavior_unchanged` proves comment/docstring-only are exempt. An edit to a tool whose every tracked proof `adaptation.json` `proof_excluded` lists commits with an advisory naming each excluded proof and its reason, since the close never runs it. A commit touching tracked `baseline.lock.json` rows runs `layer_closure.scan` over those rows from the local cache clone and advises each finding. Staged-blob peer-revert checks stay;
 proof-byte freshness moves to committed HEAD at close. The inline prefix
 `HARNESS_ALLOW_UNSTAMPED_HARNESS=1` is only for repairing the guard or runner, never a hurry.
 
@@ -117,6 +124,20 @@ proof-byte freshness moves to committed HEAD at close. The inline prefix
 bypass shapes it closes). A `"git commit" in cmd` check re-opens every one of them. Whether an invocation
 commits (`merge`/`cherry-pick`/`revert --continue` included) and which paths a merge authors are
 `hooks/_commit_scope.py`'s `publishes_index` and `authored_paths`; a guard never tests `sub == "commit"` itself.
+
+## Machine work slots
+
+Local heavy lanes share `tools/machine_slots.py` admission: close proofs, publish checks, preview lanes,
+delegate proofs and C# test lanes. Coordinators and remote model work hold no slot. Direct proof commands
+use `python3 .claude/tools/machine_slots.py run -- <proof command>`; fan-out sidecar shells inherit admission.
+A full pool queues work first come, first served, before its proof timeout starts; a direct proof that waits
+prints a `machine slots: queued` line to stderr, so a queue never reads as a hang. Nested runners spend the parent's lane serially;
+case pools borrow extra lanes only when free. A serial proof drains the pool before running.
+
+The Windows pool is `%USERPROFILE%/.claude/.harness_slots`, independent of checkout and proof HOME.
+WSL holds Windows handles through a Windows Python broker in that same pool; no separate preview pool.
+The recorded width is shared; `HARNESS_MACHINE_SLOTS` requests a width change, which takes effect when no lane is held.
+`HARNESS_SLOT_DIR` is for planted proof pools, not a way to add machine capacity.
 
 ## A spawn on Windows keeps a console its children share
 

@@ -1,5 +1,5 @@
 """Re-runnable proof for harness_tests.py's latency record: queue wait, reuse, the run log, the close
-budget line, the locked flaky log and the `--tiers` coverage table.
+wall line and its floor, the locked flaky log and the `--tiers` coverage table.
 
     python3 .claude/tests/test_harness_tests_latency.py
 """
@@ -41,6 +41,8 @@ class Planted(unittest.TestCase):
         self.repo = self.tmp.name
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, {"HARNESS_SLOT_DIR": os.path.join(self.repo, "slots"),
+                                "HARNESS_MACHINE_ROOT": os.path.join(self.repo, "slots"),
+                                "HARNESS_SLOT_BUDGET": "",
                                 "HARNESS_MACHINE_SLOTS": "1"}).start()
         for key, value in [("STAMP_PATH", os.path.join(self.repo, "stamp.json")), ("EXCLUDED", {}),
                            ("HEAVY", {}), ("SERIAL", {}), ("DURATIONS_PATH", None), ("PASSES_PATH", None),
@@ -65,6 +67,23 @@ class LogPaths(Planted):
 
 class QueueRecord(Planted):
     def test_queue_wait_recorded(self):
+        self.queued_run()
+
+    def test_queue_wait_holds_when_the_work_before_the_ask_is_slow(self):
+        # A loaded machine spent 2.7 s on the runner's pre-launch git work and a fixed 4 s release left 1.3 s of
+        # wait: the slots are held for a span counted from the runner's ask, never from the run's start.
+        real_plan = runner._behavior_plan
+
+        slow = threading.Event()
+
+        def slow_plan(*args, **kwargs):
+            if not slow.is_set():
+                slow.set()
+                time.sleep(4.5)
+            return real_plan(*args, **kwargs)
+        self.queued_run(slow_plan)
+
+    def queued_run(self, slow_plan=None):
         git(self.repo, "init", "-q")
         git(self.repo, "config", "user.email", "t@t")
         git(self.repo, "config", "user.name", "t")
@@ -79,14 +98,27 @@ class QueueRecord(Planted):
         write(self.repo, ".claude/tests/test_queued.py", "import sys\n# edited\nsys.exit(0)\n")
         held = runner._take_slots(True)
         self.assertTrue(held)
-        timer = threading.Timer(4.0, lambda: [runner._file_lock.release(h) for h in held])
-        timer.start()
-        self.addCleanup(timer.cancel)
+        asked, real_launch = threading.Event(), runner._launch
+
+        def launch(*args, **kwargs):
+            asked.set()
+            return real_launch(*args, **kwargs)
+
+        def release_after_the_ask():
+            if asked.wait(60):
+                time.sleep(2.0)
+            for handle in held:
+                runner._file_lock.release(handle)
+        releaser = threading.Thread(target=release_after_the_ask, daemon=True)
+        releaser.start()
+        self.addCleanup(releaser.join)
+        self.addCleanup(asked.set)
         row = {}
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), patch.object(runner, "_launch", launch), \
+                patch.object(runner, "_behavior_plan", slow_plan or runner._behavior_plan):
             runner._run_selected(selected, False, {}, {},
                                  runner.RunOptions(runner._pass_cache(self.repo, selected), mode="for", row=row))
-        timer.join()
+        releaser.join()
         by_proof = {p["proof"]: p for p in row["proofs"]}
         self.assertGreaterEqual(by_proof["test_queued.py"]["wait_s"], 1.5, row)
         self.assertFalse(by_proof["test_queued.py"]["reused"], row)
@@ -94,6 +126,7 @@ class QueueRecord(Planted):
         self.assertEqual(by_proof["test_quick.py"]["wait_s"], 0, row)
         self.assertEqual((row["mode"], row["selected"], row["reused"]), ("for", 2, 1), row)
         self.assertGreaterEqual(row["queue_s"], 1.5, row)
+        self.assertTrue(isinstance(row.get("width"), int) and row["width"] > 0, row)
         self.assertEqual(self.rows()[-1]["mode"], "for")
         self.assertEqual(self.rows()[-1]["proofs"][0].keys(),
                          {"proof", "status", "run_s", "wait_s", "reused"})
@@ -115,22 +148,87 @@ class QueueRecord(Planted):
         self.assertEqual(len(rows), 200)
         self.assertEqual((rows[0]["ts"], rows[-1]["ts"]), (1, 200))
 
+    def test_evicted_rows_fold_into_a_per_day_history(self):
+        """Rows past the 200 kept leave a per-day total (runs, proofs selected and reused, wall and queue seconds,
+        runs per mode), so a close-cost audit months later still has the days the rows no longer cover."""
+        day = 86400
+        start = 1_700_000_000 - 1_700_000_000 % day
+        for n in range(207):
+            runner._record_run({"ts": start + n * 7200, "mode": "close" if n % 2 else "for", "selected": 3,
+                                "reused": 1, "wall_s": 10.0, "queue_s": 4.0, "pool_s": 6.0, "proofs": []})
+        state = json.loads(open(runner.runs_path(), encoding="utf-8").read())
+        folded = state.get("folded", [])
+        self.assertEqual(len(state["runs"]), 200)
+        self.assertEqual(sum(d["runs"] for d in folded), 7, folded)
+        self.assertEqual(sum(d["wall_s"] for d in folded), 70.0)
+        self.assertEqual(sum(d["selected"] for d in folded), 21)
+        self.assertEqual(sum(d["reused"] for d in folded), 7)
+        self.assertEqual(sum(d["modes"].get("close", 0) + d["modes"].get("for", 0) for d in folded), 7)
+        self.assertEqual([d["day"] for d in folded], sorted(d["day"] for d in folded))
+        self.assertEqual(len({d["day"] for d in folded}), len(folded))
+
+    def test_the_folded_history_is_bounded(self):
+        runner._record_run({"ts": 1, "mode": "for", "proofs": []})
+        with open(runner.runs_path(), encoding="utf-8") as fh:
+            state = json.load(fh)
+        state["folded"] = [{"day": "2000-01-%02d" % (n % 28 + 1) + "-%d" % n, "runs": 1, "wall_s": 1.0, "queue_s": 0.0,
+                            "pool_s": 0.0, "selected": 0, "reused": 0, "modes": {}} for n in range(runner._FOLDED_KEPT + 50)]
+        with open(runner.runs_path(), "w", encoding="utf-8") as fh:
+            json.dump(state, fh)
+        for n in range(202):
+            runner._record_run({"ts": 100 + n, "mode": "for", "proofs": []})
+        self.assertLessEqual(len(json.load(open(runner.runs_path(), encoding="utf-8"))["folded"]), runner._FOLDED_KEPT)
+
+
+def _ran(proof, run_s, status="pass", reused=False):
+    return {"proof": proof, "status": status, "run_s": run_s, "reused": reused}
+
 
 class BudgetLine(Planted):
+    # Two earlier closes: test_a's fastest pass is 80s, test_b's 30s, test_c's 10s; a failed or reused row never
+    # counts as a pass time.
+    HISTORY = [{"ts": 1, "proofs": [_ran("test_a.py", 100.0), _ran("test_b.py", 30.0), _ran("test_c.py", 10.0),
+                                    _ran("test_d.py", 1.0, status="fail")]},
+               {"ts": 2, "proofs": [_ran("test_a.py", 80.0), _ran("test_b.py", 0.0, reused=True)]}]
+
     def test_budget_line_names_a_slow_proof_and_queue_wait(self):
         row = {"wall_s": 42.0, "queue_s": 3.5,
                "proofs": [{"proof": "test_slow.py", "run_s": 12.0},
                           {"proof": "test_fast.py", "run_s": 0.4}]}
-        line = runner._budget_line(row)
+        line = runner._budget_line(row, [])
         self.assertIn("test_slow.py 12.0s", line)
         self.assertNotIn("test_fast.py", line)
-        self.assertIn("300s", line)
+        self.assertNotIn("300s", line)
         self.assertIn("queue wait 3.5s", line)
+
+    def test_the_floor_is_the_longest_fastest_pass_when_it_outlasts_the_pool_share(self):
+        # Run: test_a, test_b and test_d (no pass recorded); test_c reused. Fastest passes 80 + 30 = 110s over
+        # 2 slots is 55s, under test_a's 80s, so even an unloaded close cannot finish before 80s.
+        row = {"ts": 3, "wall_s": 200.0, "queue_s": 0.0, "width": 2,
+               "proofs": [_ran("test_a.py", 120.0), _ran("test_b.py", 40.0), _ran("test_c.py", 0.0, reused=True),
+                          _ran("test_d.py", 5.0)]}
+        line = runner._budget_line(row, self.HISTORY + [row])
+        self.assertTrue(line.startswith("harness_tests: close wall: 200.0s, floor 80s from fastest recorded passes "
+                                        "(110.0s summed over 2 slots, longest test_a.py 80.0s; "
+                                        "1 of 3 run proofs with no recorded pass); "), line)
+
+    def test_the_floor_is_the_pool_share_when_it_outlasts_the_longest_proof(self):
+        row = {"ts": 3, "wall_s": 90.0, "queue_s": 0.0, "width": 1,
+               "proofs": [_ran("test_a.py", 90.0), _ran("test_b.py", 31.0), _ran("test_c.py", 11.0)]}
+        line = runner._budget_line(row, self.HISTORY)
+        self.assertIn("close wall: 90.0s, floor 120s from fastest recorded passes (120.0s summed over 1 slot, "
+                      "longest test_a.py 80.0s; 0 of 3 run proofs with no recorded pass)", line)
+
+    def test_no_floor_without_a_width_or_a_recorded_pass(self):
+        row = {"ts": 3, "wall_s": 9.0, "queue_s": 0.0, "proofs": [_ran("test_a.py", 9.0)]}
+        self.assertIn("close wall: 9.0s, floor unknown (no pool width recorded)", runner._budget_line(row, self.HISTORY))
+        row["width"] = 4
+        self.assertIn("close wall: 9.0s, floor unknown (no run proof has a recorded pass)", runner._budget_line(row, []))
 
     def test_budget_line_lists_at_most_five_slowest(self):
         row = {"wall_s": 1.0, "queue_s": 0.0,
                "proofs": [{"proof": "test_p%d.py" % n, "run_s": 11.0 + n} for n in range(8)]}
-        line = runner._budget_line(row)
+        line = runner._budget_line(row, [])
         self.assertEqual(sum(1 for n in range(8) if "test_p%d.py" % n in line), 5)
         self.assertIn("test_p7.py", line)
         self.assertNotIn("test_p0.py", line)
@@ -143,7 +241,8 @@ class CloseRecord(RepoCase):
         patch.object(runner, "RUNS_PATH", None, create=True).start()
         rc, out = self.close()
         self.assertEqual(rc, 0, out)
-        self.assertIn("close budget", out)
+        self.assertIn("harness_tests: close wall: ", out)
+        self.assertNotIn("close budget", out)
         rows = json.loads((self.repo / "harness_runs.json").read_text())["runs"]
         self.assertEqual(rows[-1]["mode"], "close")
         self.assertTrue(rows[-1]["proofs"])
@@ -211,6 +310,20 @@ class CorpusBinding(Planted):
 
 
 class FlakyLog(Planted):
+    def test_a_trim_keeps_every_row_the_flaky_count_reads(self):
+        # 450 rows inside the reader's window and 50 older: the trim drops only the older ones.
+        log = os.path.join(self.repo, "harness_flaky.jsonl")
+        now = time.time()
+        with open(log, "w", encoding="utf-8", newline="\n") as fh:
+            for n in range(50):
+                fh.write(json.dumps({"ts": now - 40 * 86400 - n, "proof": "test_old.py"}) + "\n")
+            for n in range(450):
+                fh.write(json.dumps({"ts": now - n * 3000, "proof": "test_recent.py"}) + "\n")
+        runner._record_flaky("test_recent.py", "FAIL x", 1.0)
+        self.assertEqual(runner._flaky_history(), {"test_recent.py": 451})
+        with open(log, encoding="utf-8") as fh:
+            self.assertEqual(len(fh.read().splitlines()), 451)
+
     def test_two_writers_both_survive_the_cap(self):
         log = os.path.join(self.repo, "harness_flaky.jsonl")
         with open(log, "w", encoding="utf-8", newline="\n") as fh:

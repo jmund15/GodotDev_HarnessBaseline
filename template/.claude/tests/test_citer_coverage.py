@@ -24,11 +24,12 @@ def check(label, ok, detail=""):
 
 
 with tempfile.TemporaryDirectory(prefix="citer_coverage_") as root:
+    # The sweep hashes run in the planted root, not in this checkout (every path the cases name is absolute).
     for label, job, bad in cases(root):
-        reason = citer_coverage.coverage_reason(job)
+        reason = citer_coverage.coverage_reason(job, root=Path(root))
         check(label, bool(reason) == bad and (not bad or "Phase 2" in reason and "lens_briefs.py" in reason))
     for label, job, stage, bad in stage_cases(root):
-        check(label, bool(citer_coverage.coverage_reason(job, stage=stage)) == bad)
+        check(label, bool(citer_coverage.coverage_reason(job, stage=stage, root=Path(root))) == bad)
 text_args = {"tool_name": "Workflow", "tool_input": {"name": "worklog-relevance", "args": "Combat feel drive: C13"}}
 try:
     ok = citer_coverage.workflow_reason(text_args) is None
@@ -70,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix="citer_declared_") as root:
     declared.write_text("x\n", encoding="utf-8")
     import subprocess
     def hash_of(path):
-        return subprocess.check_output(["git", "hash-object", str(path)], text=True).strip()
+        return subprocess.check_output(["git", "hash-object", str(path)], text=True, cwd=str(root)).strip()
     sweep = root / "declared_citers.json"
     sweep.write_text(__import__("json").dumps(
         {"subjects": [{"path": str(declared), "hash": hash_of(declared), "head": "old"}]}), encoding="utf-8")
@@ -82,12 +83,12 @@ with tempfile.TemporaryDirectory(prefix="citer_declared_") as root:
     # A meta plan in must-read is not a subject unless the sweep declares it.
     job = {"label": "seat", "kind": "reviewer", "promptPath": str(bare),
            "mustRead": [{"path": str(meta), "lines": 1}]}
-    check("must-read contents alone never declare a subject", citer_coverage.coverage_reason(job) is None)
+    check("must-read contents alone never declare a subject", citer_coverage.coverage_reason(job, root=root) is None)
     # A declared sweep verifies its own subject, even beside an unswept meta must-read.
     job = {"label": "seat", "kind": "reviewer", "promptPath": str(brief),
            "mustRead": [{"path": str(meta), "lines": 1}, {"path": str(declared), "lines": 1}]}
     check("a current declared sweep covers regardless of other must-read files",
-          citer_coverage.coverage_reason(job) is None)
+          citer_coverage.coverage_reason(job, root=root) is None)
     stale = root / "declared_citers_stale.json"
     stale.write_text(sweep.read_text(encoding="utf-8").replace(hash_of(declared), "0" * 40), encoding="utf-8")
     stale_brief = root / "stale.md"
@@ -95,11 +96,11 @@ with tempfile.TemporaryDirectory(prefix="citer_declared_") as root:
                            + "`. Grep that file for the surfaces you judge.\n", encoding="utf-8")
     job = {"label": "seat", "kind": "reviewer", "promptPath": str(stale_brief),
            "mustRead": [{"path": str(declared), "lines": 1}]}
-    check("a declared subject whose recorded hash is stale is refused", bool(citer_coverage.coverage_reason(job)))
+    check("a declared subject whose recorded hash is stale is refused", bool(citer_coverage.coverage_reason(job, root=root)))
     # A citer lens seat declares a sweep by its lens: with nothing declared a code-only subject owes none.
     job = {"label": "seat", "key": "plc-doctrine-consistency", "kind": "author", "promptPath": str(bare),
            "mustRead": [{"path": str(declared), "lines": 1}]}
     check("a citer lens seat with no declared sweep is not checked",
-          citer_coverage.coverage_reason(job, stage="plan-check") is None)
+          citer_coverage.coverage_reason(job, stage="plan-check", root=root) is None)
 print("all ok" if not failures else f"{failures} failure(s)")
 sys.exit(int(bool(failures)))

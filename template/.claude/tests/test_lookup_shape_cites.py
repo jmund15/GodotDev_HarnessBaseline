@@ -9,8 +9,8 @@ Cases assert cites and anchors, never prose, so the owner text can be reworded f
   and no longer cite `CLAUDE.godot.md` for that rule;
 - every cited anchor resolves to a heading in its file.
 """
+import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -35,12 +35,17 @@ def text(rel):
 
 
 def doctrine_files():
-    # A scratch install leaves some doctrine files unstaged, so the listing takes untracked, unignored files too.
-    out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--cached", "--others", "--exclude-standard", "--",
-                          ".claude/*.md", ".claude/**/*.md"],
-                         capture_output=True, text=True, check=True).stdout.split()
+    # A directory walk, not `git ls-files`: a scratch install leaves doctrine files unstaged, the walk takes them
+    # as it takes tracked ones, and the proof's key holds no git state. It skips the generated and nested-checkout
+    # folders the project gitignores, and the folders that hold no doctrine.
     skip = (".claude/plans/", ".claude/scratch/", ".claude/auto-memory/archive/", ".claude/tests/")
-    return [p for p in out if not p.startswith(skip)]
+    generated = {"worktrees", "cache", ".cache", "logs", "tmp", "__pycache__", "node_modules"}
+    found = []
+    for folder, dirs, names in os.walk(CLAUDE):
+        prefix = Path(folder).relative_to(ROOT).as_posix() + "/"
+        dirs[:] = [d for d in dirs if prefix + d + "/" not in skip and d not in generated]
+        found += [prefix + n for n in names if n.endswith(".md")]
+    return sorted(found)
 
 
 def section(md, tier):

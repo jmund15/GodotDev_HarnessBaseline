@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import atexit
 import contextlib
 import hashlib
 import importlib.util
@@ -21,6 +22,11 @@ from pathlib import Path
 
 ENGINE = Path(__file__).resolve().parents[1] / "tools" / "baseline_sync.py"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+# The runner stores the engine and its children read (recorded durations, passes, growth) are this proof's own: the
+# live ones sit under the repository's git dir, and a read there keys every pass on the whole repository state.
+_STAMP_DIR = tempfile.mkdtemp(prefix="baseline_sync_stamp_")
+atexit.register(shutil.rmtree, _STAMP_DIR, True)
+os.environ["HARNESS_TEST_STAMP"] = os.path.join(_STAMP_DIR, "harness_tests_stamp.json")
 from harness_tests import GIT_REPO_ENV  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _case_pool import run_cases  # noqa: E402
@@ -83,25 +89,41 @@ def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     _git(path, "init", "-q", "-b", "main")
     with open(path / ".git" / "config", "a", encoding="utf-8", newline="\n") as handle:
-        handle.write("[user]\n\temail = fixture@example.invalid\n\tname = fixture\n")
+        # gc and maintenance off: every commit otherwise spawns `maintenance run --auto` (~20 ms) that never has work here.
+        handle.write("[user]\n\temail = fixture@example.invalid\n\tname = fixture\n"
+                     "[gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n")
 
 
 def _commit(path: Path, message: str) -> str:
     _git(path, "add", "-A")
     _git(path, "commit", "-q", "-m", message)
+    return _branch_sha(path)
+
+
+def _branch_sha(path: Path) -> str:
+    if (path / ".git").is_dir():  # a linked worktree's `.git` is a file; it takes the spawn below
+        head = (path / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+        ref = path / ".git" / head[5:] if head.startswith("ref: ") else None
+        if ref is not None and ref.is_file():  # a loose branch ref: reading it saves a `rev-parse` spawn
+            return ref.read_text(encoding="utf-8").strip()
     return _git(path, "rev-parse", "HEAD").decode().strip()
 
 
 def _remote(path: Path) -> Path:
     remote = path / "remote.git"
-    _git(path, "init", "--bare", "-q", str(remote))
+    _git(path, "init", "--bare", "-q", "-b", "main", str(remote))
     return remote
 
 
 def _push(work: Path, remote: Path) -> None:
-    _git(work, "remote", "add", "origin", remote.as_uri())
-    _git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
-    _git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+    """Publish `work`'s one-branch history to the empty bare `remote` and name it `origin`. The
+    objects and the branch ref are copied in place of a `git push`: the result is the same repository
+    state, and the push spawn was the most expensive step of every baseline fixture."""
+    shutil.copytree(work / ".git" / "objects", remote / "objects", dirs_exist_ok=True)
+    (remote / "refs" / "heads").mkdir(parents=True, exist_ok=True)
+    (remote / "refs" / "heads" / "main").write_text(_branch_sha(work) + "\n", encoding="utf-8", newline="\n")
+    with open(work / ".git" / "config", "a", encoding="utf-8", newline="\n") as handle:
+        handle.write('[remote "origin"]\n\turl = %s\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n' % remote.as_uri())
 
 
 def _baseline_one(path: Path, rel: str, content: bytes) -> tuple[Path, str, Path]:
@@ -858,6 +880,69 @@ def test_judge_push_records_a_committed_deletion_of_a_file_upstream_carries() ->
         assert rel in json.loads(listed.stdout.decode()), listed.stdout.decode(errors="replace")
         local_only = _run(root, "judge", other, "--verdict", "push")
         assert local_only.returncode == 1, local_only.stdout.decode(errors="replace")
+
+
+_REV_HELPER, _REV_USER, _REV_OTHER = ".claude/tools/rev_helper.py", ".claude/tools/rev_user.py", ".claude/tools/rev_other.py"
+_REV_V1 = b"def keep(a):\n    return a\n\n\ndef gone():\n    return 1\n"
+
+
+def _rev_judge(local: bytes | None, extra: dict | None = None):
+    """Judge-push `_REV_HELPER` (baseline copy `_REV_V1`, local copy `local`) beside two baseline rows that cite it:
+    one through `gone`, one through `keep`. Returns (result, lock row of the helper)."""
+    rows = {
+        _REV_HELPER: {"upstream": _REV_V1, "local": _REV_V1 if local is None else local},
+        _REV_USER: {"upstream": b"import rev_helper\nrev_helper.gone()\n"},
+        _REV_OTHER: {"upstream": b"from rev_helper import keep\nkeep(1)\n"},
+        **(extra or {}),
+    }
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, rows)
+        if local is None:
+            _git(root, "rm", "-q", "--", _REV_HELPER)
+            _commit(root, "retire the helper")
+        result = _run_baseline(root, baseline, "judge", _REV_HELPER, "--verdict", "push")
+        return result, _load_lock(root)["files"][_REV_HELPER]
+
+
+def test_judge_push_names_the_shipped_rows_that_cite_a_name_the_push_removes() -> None:
+    """The reverse edge: a push that drops `gone` names the baseline row that calls it, never the one that only
+    uses `keep`, and stays advisory (the verdict is recorded)."""
+    result, row = _rev_judge(b"def keep(a):\n    return a\n")
+    out = _out(result)
+    assert result.returncode == 0 and row["judged"]["verdict"] == "push", out
+    assert "gone" in out and _REV_USER in out and "cite" in out, out
+    assert _REV_OTHER not in out, out
+
+
+def test_judge_push_names_the_citers_of_a_function_whose_signature_changes() -> None:
+    result, _row = _rev_judge(b"def keep(a, b):\n    return a\n\n\ndef gone():\n    return 1\n")
+    out = _out(result)
+    assert result.returncode == 0, out
+    assert "keep" in out and _REV_OTHER in out, out
+    assert _REV_USER not in out, out
+
+
+def test_judge_push_names_a_citer_only_the_baseline_holds() -> None:
+    """An upstream row this project never pulled still asserts the API: the scan reads the baseline's tree."""
+    newcomer = ".claude/tools/rev_newcomer.py"
+    result, _row = _rev_judge(b"def keep(a):\n    return a\n",
+                              {newcomer: {"upstream": b"import rev_helper\nrev_helper.gone()\n",
+                                          "row": False, "local": None}})
+    out = _out(result)
+    assert result.returncode == 0 and newcomer in out and _REV_USER in out, out
+
+
+def test_judge_push_of_a_deletion_names_every_row_that_depends_on_the_file() -> None:
+    result, row = _rev_judge(None)
+    out = _out(result)
+    assert result.returncode == 0 and row["judged"]["verdict"] == "push", out
+    assert _REV_USER in out and _REV_OTHER in out and "deleted" in out, out
+
+
+def test_judge_push_that_only_adds_names_no_dependents() -> None:
+    result, _row = _rev_judge(_REV_V1 + b"\n\ndef extra():\n    return 2\n")
+    out = _out(result)
+    assert result.returncode == 0 and _REV_USER not in out and _REV_OTHER not in out, out
 
 
 def test_candidates_lists_an_unjudged_path_and_skips_a_never_ship_path() -> None:
@@ -2089,6 +2174,99 @@ def test_pull_runs_for_on_what_it_wrote_and_fails_on_red() -> None:
         assert (root / red).read_bytes() == b"x = 1\n"
 
 
+def _pull_proof_guard():
+    spec = importlib.util.spec_from_file_location("pull_proof_under_test", ENGINE.parents[1] / "hooks" / "_pull_proof.py")
+    assert spec and spec.loader, "hooks/_pull_proof.py could not be loaded"
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_STUB_PASS = "import sys\nsys.exit(0)\n"
+
+
+def test_pull_records_each_proof_result_and_the_commit_guard_holds_a_red_one() -> None:
+    red, green = ".claude/tools/red.py", ".claude/tools/green.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            red: {"row": False, "local": None, "upstream": b"x = 1\n"},
+            green: {"row": False, "local": None, "upstream": b"y = 1\n"},
+        })
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_HARNESS.encode())
+        ok = _run_baseline(root, baseline, "pull", green)
+        assert ok.returncode == 0, _out(ok)
+        bad = _run_baseline(root, baseline, "pull", red)
+        assert bad.returncode == 1, _out(bad)
+        record = root / ".claude" / "logs" / "baseline_pull_proof.json"
+        assert record.is_file(), "the pull wrote no proof record for the commit guard"
+        results = {p: e["result"] for p, e in json.loads(record.read_text(encoding="utf-8"))["paths"].items()}
+        assert results == {green: "green", red: "red"}, results
+        guard = _pull_proof_guard()
+        assert guard.blocked(str(root), [red, green]) == [red], "a red pulled path must block its commit"
+        # The runner now passes, so a bare pull reruns the unresolved proof and the guard releases it.
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_PASS.encode())
+        rerun = _run_baseline(root, baseline, "pull")
+        assert rerun.returncode == 0, _out(rerun)
+        assert guard.blocked(str(root), [red, green]) == [], "a green rerun must release the commit"
+
+
+def test_a_red_pull_stays_in_the_journal_that_check_and_the_next_pull_read() -> None:
+    """The proof record is the pull's journal: it names the pin each path came from, `check --strict` lists a path
+    still red or pending and uncommitted, and the next pull names it before it reruns the proof. A commit or a
+    green rerun leaves the journal."""
+    red, green = ".claude/tools/red.py", ".claude/tools/green.py"
+    with _fixture() as path:
+        root, baseline, _r, pin = _v2_fixture(path, {
+            red: {"row": False, "local": None, "upstream": b"x = 1\n"},
+            green: {"row": False, "local": None, "upstream": b"y = 1\n"},
+        })
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_HARNESS.encode())
+        _commit(root, "stub runner")
+        bad = _run_baseline(root, baseline, "pull", red, green)
+        assert bad.returncode == 1, _out(bad)
+        record = json.loads((root / ".claude" / "logs" / "baseline_pull_proof.json").read_text(encoding="utf-8"))
+        entry = record["paths"][red]
+        assert entry["result"] == "red" and entry["pin"] == pin and entry["at"], entry
+        strict = _run_baseline(root, baseline, "check", "--strict")
+        out = _out(strict)
+        assert strict.returncode == 1 and "unresolved-pull" in out and red in out, out
+        assert "harness_tests.py --for " + red in out, out
+        assert green not in out.split("unresolved-pull", 1)[1], out
+        again = _run_baseline(root, baseline, "pull")
+        assert "earlier pull" in _out(again) and red in _out(again).split("earlier pull", 1)[1], _out(again)
+        _commit(root, "adopt the pulled rows")
+        committed = _run_baseline(root, baseline, "check", "--strict")
+        assert "unresolved-pull" not in _out(committed), _out(committed)
+        _write(root / red, b"x = 2\n")
+        edited = _run_baseline(root, baseline, "check")
+        assert "unresolved-pull" not in _out(edited), "an edit after the pull is not the pulled tree: " + _out(edited)
+
+
+def test_unreadable_record_recovery_proves_every_uncommitted_pulled_path() -> None:
+    """The deny's next step (`pull`) over an unreadable record keeps the record aside and proves every uncommitted
+    lock path again, so a path an earlier pull wrote and this pull does not write stays blocked while red."""
+    red, green = ".claude/tools/red.py", ".claude/tools/green.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            red: {"row": False, "local": None, "upstream": b"x = 1\n"},
+            green: {"row": False, "local": None, "upstream": b"y = 1\n"},
+        })
+        _write(root / ".claude" / "scripts" / "harness_tests.py", _STUB_HARNESS.encode())
+        _commit(root, "stub runner")
+        assert _run_baseline(root, baseline, "pull", red, green).returncode == 1
+        record = root / ".claude" / "logs" / "baseline_pull_proof.json"
+        record.write_text("{not json", encoding="utf-8")
+        recovery = _run_baseline(root, baseline, "pull")
+        out = _out(recovery)
+        assert "unreadable" in out, out
+        kept = [p for p in record.parent.glob("baseline_pull_proof.json.unreadable-*")]
+        assert len(kept) == 1 and kept[0].read_text(encoding="utf-8") == "{not json", kept
+        guard = _pull_proof_guard()
+        assert guard.blocked(str(root), [red, green]) == [red], "the red path must stay blocked after recovery"
+        results = {p: e["result"] for p, e in json.loads(record.read_text(encoding="utf-8"))["paths"].items()}
+        assert results.get(green) == "green" and results.get(red) == "red", results
+
+
 def test_pull_that_wrote_nothing_runs_no_proof() -> None:
     rel = ".claude/tools/same.py"
     with _fixture() as path:
@@ -3058,6 +3236,21 @@ def test_carry_walks_the_range_and_leaves_a_peer_row_alone() -> None:
         assert "carried_from" not in files[b]["judged"]
 
 
+def test_carry_names_the_shipped_rows_that_cite_a_name_the_range_removes() -> None:
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            _REV_HELPER: {"upstream": _REV_V1, "local": _REV_V1, "judged": _judged_push(_REV_V1)},
+            _REV_USER: {"upstream": b"import rev_helper\nrev_helper.gone()\n"},
+        })
+        base = _head(root)
+        _write(root / _REV_HELPER, b"def keep(a):\n    return a\n")
+        _commit(root, "drop gone")
+        result = _run_baseline(root, baseline, "judge", _REV_HELPER, "--carry", f"{base}..{_head(root)}")
+        out = _out(result)
+        assert result.returncode == 0 and "carried: " + _REV_HELPER in out, out
+        assert "gone" in out and _REV_USER in out, out
+
+
 def test_carry_lists_a_row_the_range_adds_deletes_or_leaves_alone() -> None:
     added, gone, still = ".claude/tools/c_added.py", ".claude/tools/c_gone.py", ".claude/tools/c_still.py"
     with _fixture() as path:
@@ -3252,6 +3445,360 @@ def test_judge_push_allows_a_citer_whose_dependency_ships_or_is_judged_push() ->
             result = _run_baseline(root, baseline, "judge", _DEP_CITER, "--verdict", "push")
             assert result.returncode == 0, (state, _out(result))
             assert _load_lock(root)["files"][_DEP_CITER]["judged"]["verdict"] == "push", state
+
+
+def test_judge_push_refuses_a_row_whose_upstream_copy_changed_since_its_base() -> None:
+    """A push over a newer upstream copy silently overwrites it: refuse, name `pull --merge`; a pull clears it."""
+    rel = ".claude/tools/over_newer.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\nthree\n"}})
+        _write(root / rel, b"ONE\ntwo\nthree\n")
+        _commit(root, "local edit")
+        _write(baseline / "template" / rel, b"one\ntwo\nTHREE\n")
+        _commit(baseline, "upstream edit")
+        result = _run_baseline(root, baseline, "judge", rel, "--verdict", "push")
+        out = _out(result)
+        assert result.returncode == 1, out
+        assert rel in out and "upstream changed" in out and "pull --merge" in out, out
+        assert "judged" not in _load_lock(root)["files"][rel], out
+        merged = _run_baseline(root, baseline, "pull", "--merge", rel)
+        assert merged.returncode == 0, _out(merged)
+        again = _run_baseline(root, baseline, "judge", rel, "--verdict", "push")
+        assert again.returncode == 0, _out(again)
+        assert _load_lock(root)["files"][rel]["judged"]["verdict"] == "push"
+
+
+def test_judge_push_allows_a_row_upstream_left_alone_since_its_base() -> None:
+    rel = ".claude/tools/upstream_quiet.py"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\n"}})
+        _write(root / rel, b"two\n")
+        _commit(root, "local edit")
+        result = _run_baseline(root, baseline, "judge", rel, "--verdict", "push")
+        assert result.returncode == 0, _out(result)
+
+
+_RUN_PROOF = ".claude/tests/test_runtime_read.py"
+_RUN_PROOF_JS = ".claude/tests/runtime_read_test.js"
+_RUN_SIBLING = ".claude/tests/runtime_sibling.txt"
+_RUN_FIXTURE = ".claude/tests/fixtures/runtime_data.txt"
+_RUN_PY = (b"import os, sys\nHERE = os.path.dirname(os.path.abspath(__file__))\n"
+           b"sys.exit(0 if os.path.exists(os.path.join(HERE, %s)) else 1)\n")
+_RUN_JS = (b"const fs = require('fs'), path = require('path');\n"
+           b"fs.readFileSync(path.join(__dirname, %s));\n")
+
+
+def _runtime_proof_fixture(path: Path, proof: str, body: bytes, extra: dict[str, dict]):
+    """A new proof row (no baseline copy) that reaches its dependency through a built path no static scan reads."""
+    rows = {proof: {"manifest": False, "hash": None, "local": body, **extra.get(proof, {})}}
+    rows.update({rel: row for rel, row in extra.items() if rel != proof})
+    return _v2_fixture(path, rows)
+
+
+def test_judge_push_refuses_a_proof_that_is_red_in_the_shipped_set() -> None:
+    """A proof reading a never_ship fixture through a built path passes here and fails for a consumer."""
+    cases = (
+        (_RUN_PROOF, _RUN_PY % b'"fix" + "tures", "runtime_data.txt"'),
+        (_RUN_PROOF_JS, _RUN_JS % b'"fix" + "tures", "runtime_data.txt"'),
+    )
+    for proof, body in cases:
+        with _fixture() as path:
+            root, baseline, _r, _c = _runtime_proof_fixture(path, proof, body, {})
+            _write(root / _RUN_FIXTURE, b"data\n")
+            _commit(root, "fixture")
+            result = _run_baseline(root, baseline, "judge", proof, "--verdict", "push")
+            out = _out(result)
+            assert result.returncode == 1, (proof, out)
+            assert proof in out and "shipped set" in out, (proof, out)
+            assert "judged" not in _load_lock(root)["files"][proof], proof
+
+
+def test_the_shipped_set_run_takes_its_timeout_from_the_runners_rule() -> None:
+    """A slow proof the runner gives a `proof_timeouts` cap or a recorded-pass allowance gets the same time here,
+    never a second constant that refuses a correct slow proof as red."""
+    engine = _load_engine()
+    ht = engine._harness_tests()
+    proof = ".claude/tests/test_slow_proof.py"
+    saved = dict(ht._PROOF_TIMEOUTS)
+    durations = ht.durations_path
+    with tempfile.TemporaryDirectory() as tmp:
+        recorded = Path(tmp) / "durations.json"
+        recorded.write_text(json.dumps({"test_slow_proof.py": 100}), encoding="utf-8")
+        try:
+            ht._PROOF_TIMEOUTS["test_slow_proof.py"] = 777
+            assert engine._proof_timeout(proof) == 777
+            ht._PROOF_TIMEOUTS.pop("test_slow_proof.py")
+            ht.durations_path = lambda: str(recorded)
+            assert engine._proof_timeout(proof) == ht._LOAD_FACTOR * 100
+            assert engine._proof_timeout(".claude/tests/test_unrecorded.py") == ht._TIMEOUT_SEC
+        finally:
+            ht.durations_path = durations
+            ht._PROOF_TIMEOUTS.clear()
+            ht._PROOF_TIMEOUTS.update(saved)
+
+
+def test_judge_push_allows_a_proof_green_in_the_shipped_set() -> None:
+    """The same proof reading a file that ships (here a baseline row) passes."""
+    cases = (
+        (_RUN_PROOF, _RUN_PY % b'"runtime_sibling.txt"'),
+        (_RUN_PROOF_JS, _RUN_JS % b'"runtime_sibling.txt"'),
+    )
+    for proof, body in cases:
+        with _fixture() as path:
+            root, baseline, _r, _c = _runtime_proof_fixture(
+                path, proof, body, {_RUN_SIBLING: {"upstream": b"sibling\n"}})
+            result = _run_baseline(root, baseline, "judge", proof, "--verdict", "push")
+            assert result.returncode == 0, (proof, _out(result))
+            assert _load_lock(root)["files"][proof]["judged"]["verdict"] == "push", proof
+
+
+def test_judge_push_records_its_verdict_when_the_shipped_set_tree_is_still_held() -> None:
+    """Windows refuses to remove a directory a scanner or a lingering child still holds (WinError 32). The
+    shipped-set run's temporary tree is regenerable, so a held tree must not abort the judge: one held tree once
+    stopped a 197-row judge before it wrote any verdict. The hold is planted as the rmdir Windows refused."""
+    engine = _load_engine()
+    with _fixture() as path:
+        root, baseline, _r, _c = _runtime_proof_fixture(
+            path, _RUN_PROOF, _RUN_PY % b'"runtime_sibling.txt"', {_RUN_SIBLING: {"upstream": b"sibling\n"}})
+        real_rmdir = os.rmdir
+
+        def held(target, *args, **kwargs):
+            if os.path.basename(os.fspath(target)).startswith("shipped_set_"):
+                raise PermissionError(32, "The process cannot access the file because it is being used by "
+                                          "another process", os.fspath(target))
+            return real_rmdir(target, *args, **kwargs)
+
+        saved_env, saved_cwd, env = dict(os.environ), os.getcwd(), _env(root)
+        try:
+            os.environ.clear()
+            os.environ.update(env)
+            where = engine._shipped_root()
+            before = set(where.glob("shipped_set_*"))
+            os.chdir(root)
+            os.rmdir = held
+            try:
+                code = engine.main(["judge", _RUN_PROOF, "--verdict", "push", "--baseline-dir", str(baseline)])
+            except SystemExit as exc:
+                code = exc.code
+        finally:
+            os.rmdir = real_rmdir
+            os.chdir(saved_cwd)
+            os.environ.clear()
+            os.environ.update(saved_env)
+            for left in set(where.glob("shipped_set_*")) - before:
+                shutil.rmtree(left, ignore_errors=True)
+        assert code in (0, None), code
+        assert _load_lock(root)["files"][_RUN_PROOF]["judged"]["verdict"] == "push"
+
+
+def test_merge3_returns_its_merge_when_its_temporary_tree_is_still_held() -> None:
+    """The three-way merge's scratch tree is regenerable too; a held tree must not abort the pull that merges."""
+    engine = _load_engine()
+    real_rmdir = os.rmdir
+
+    def held(target, *args, **kwargs):
+        if os.path.basename(os.fspath(target)).startswith("merge3_"):
+            raise PermissionError(32, "The process cannot access the file because it is being used by another "
+                                      "process", os.fspath(target))
+        return real_rmdir(target, *args, **kwargs)
+
+    before = set(Path(tempfile.gettempdir()).glob("merge3_*"))
+    os.rmdir = held
+    try:
+        merged, conflicts = engine._merge3("a\nb\nc\n", "a\nb\nc\n", "a\nb\nC\n")
+    finally:
+        os.rmdir = real_rmdir
+        for left in set(Path(tempfile.gettempdir()).glob("merge3_*")) - before:
+            shutil.rmtree(left, ignore_errors=True)
+    assert (merged, conflicts) == ("a\nb\nC\n", 0), (merged, conflicts)
+
+
+def test_the_shipped_set_reads_the_pushed_rows_once_per_judge_call() -> None:
+    """Each proof row builds its own shipped set, but the rows being pushed are the same for all of them: one git
+    read per pushed row per proof row made a 226-row judge spawn git tens of thousands of times before any proof ran."""
+    engine = _load_engine()
+    rows = [".claude/tests/r%d.txt" % n for n in range(5)]
+    reads = []
+    real_contents, real_items = engine._git_contents, engine._manifest_items_v2
+    engine._git_contents = lambda _root, rels: reads.append(list(rels)) or {rel: b"x\n" for rel in rels}
+    engine._manifest_items_v2 = lambda _source: {}
+    try:
+        with _fixture() as path:
+            for relpath in rows[:2]:
+                with tempfile.TemporaryDirectory() as tree:
+                    engine._shipped_tree(Path(path), relpath, b"x\n", {"files": {}}, None,
+                                         {rel: "sha" for rel in rows}, None, Path(tree))
+                    assert all((Path(tree) / rel).is_file() for rel in rows)
+    finally:
+        engine._git_contents, engine._manifest_items_v2 = real_contents, real_items
+    assert len(reads) == 1 and sorted(reads[0]) == rows, reads
+
+
+def test_the_shipped_set_proofs_run_side_by_side_and_only_a_red_reruns_alone() -> None:
+    """A judge call's proof rows run at once, one tree per layer and a line per start; a green there stands, and a
+    red reruns alone before it refuses."""
+    import threading
+    import time
+    engine = _load_engine()
+    proofs = [".claude/tests/test_a.py", ".claude/tests/test_b.py", ".claude/tests/test_c.py"]
+    lock = {"files": {rel: {"layer": "pure"} for rel in proofs}}
+    trees, live, peak, guard, ran_alone = [], [0], [0], threading.Lock(), []
+
+    def run_in_tree(rel, _tree):
+        with guard:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        time.sleep(0.3)
+        with guard:
+            live[0] -= 1
+        return ["FAIL b"] if rel.endswith("test_b.py") else None
+    saved = (engine._shipped_tree, engine._run_in_tree, engine._row_bytes)
+    engine._shipped_tree = lambda *a: trees.append(a[1])
+    engine._row_bytes = lambda _root, _commit, rels: {rel: b"x\n" for rel in rels}
+    engine._run_in_tree = run_in_tree
+    slots = tempfile.mkdtemp(prefix="bs_slots_")
+    # Extra lanes come from HARNESS_MACHINE_ROOT, which a slot-run proof inherits: unplanted, a busy machine runs
+    # the three proofs one at a time.
+    env = {"HARNESS_SLOT_DIR": slots, "HARNESS_MACHINE_ROOT": slots, "HARNESS_MACHINE_SLOTS": "3"}
+    old_env = {k: os.environ.get(k) for k in (*env, "HARNESS_SLOT_BUDGET")}
+    os.environ.update(env)
+    os.environ.pop("HARNESS_SLOT_BUDGET", None)
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            engine._prerun_shipped_proofs(Path("."), proofs, lock, object(), {rel: "sha" for rel in proofs}, None)
+            engine._run_in_tree = lambda rel, _tree: ran_alone.append(rel) or ["FAIL b alone"]
+            engine._shipped_tree = lambda *a: None
+            engine._refuse_proof_red_in_shipped_set(Path("."), proofs[0], b"x\n", lock, object(), {}, None)
+            try:
+                engine._refuse_proof_red_in_shipped_set(Path("."), proofs[1], b"x\n", lock, object(), {}, None)
+                refused = False
+            except engine.BaselineError:
+                refused = True
+    finally:
+        engine._shipped_tree, engine._run_in_tree, engine._row_bytes = saved
+        engine._SHIPPED_RUNS.clear()
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    out = err.getvalue()
+    assert len(trees) == 1, trees
+    assert peak[0] > 1, peak
+    assert out.count("judge: shipped-set proof ") >= 3, out
+    assert ran_alone == [proofs[1]] and refused, (ran_alone, refused)
+
+
+def test_a_shipped_set_red_reruns_with_the_machine_to_itself() -> None:
+    """A red side by side reruns alone to tell load from a defect, so the rerun holds every machine slot, as the
+    runner's alone retries do: beside other work, two proofs that pass in 30 s timed out at 120 s and were refused."""
+    engine = _load_engine()
+    rel = ".claude/tests/test_b.py"
+    slots = tempfile.mkdtemp(prefix="bs_slots_")
+    env = {"HARNESS_SLOT_DIR": slots, "HARNESS_MACHINE_ROOT": slots, "HARNESS_MACHINE_SLOTS": "3"}
+    old_env = {k: os.environ.get(k) for k in (*env, "HARNESS_SLOT_BUDGET")}
+    probe = ("import sys, time; sys.path.insert(0, sys.argv[1]); import machine_slots as m; "
+             "held = m.take(folder=sys.argv[2], deadline=time.time(), inherit=False); "
+             "print('free' if held else 'held'); m.release_all(held or [])")
+    seen = []
+
+    def run_in_tree(_rel, _tree):
+        out = subprocess.run([sys.executable, "-c", probe, str(ENGINE.parent), slots], capture_output=True,
+                             text=True, env=dict(os.environ), timeout=60)
+        seen.append(out.stdout.strip() or out.stderr.strip()[-300:])
+        return None
+    saved = (engine._shipped_tree, engine._consumer_checkout, engine._run_in_tree)
+    engine._shipped_tree = lambda *a: None
+    engine._consumer_checkout = lambda _tree: None
+    engine._run_in_tree = run_in_tree
+    engine._SHIPPED_RUNS[rel] = ["FAIL b"]
+    os.environ.update(env)
+    os.environ.pop("HARNESS_SLOT_BUDGET", None)
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            engine._refuse_proof_red_in_shipped_set(Path("."), rel, b"x\n", {"files": {}}, object(), {}, None)
+    finally:
+        engine._shipped_tree, engine._consumer_checkout, engine._run_in_tree = saved
+        engine._SHIPPED_RUNS.clear()
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    assert seen == ["held"], seen
+
+
+def test_the_shipped_set_is_built_outside_the_system_temp_folder() -> None:
+    """The shell guard allows a recursive delete anywhere below the system temp folder; a consumer's checkout is not
+    there, so a tree built in temp reads allow where every consumer's copy denies. Temp and home are planted apart:
+    a clean runner's home sits inside its temp root."""
+    engine = _load_engine()
+    base = Path(tempfile.mkdtemp(prefix="bs_shipped_root_"))
+    planted_temp, planted_home = base / "temp", base / "home"
+    planted_temp.mkdir()
+    planted_home.mkdir()
+    saved_env = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
+    saved_tempdir = tempfile.tempdir
+    os.environ.update({"HOME": str(planted_home), "USERPROFILE": str(planted_home)})
+    tempfile.tempdir = str(planted_temp)
+    try:
+        root = os.path.normcase(os.path.realpath(engine._shipped_root()))
+        temp = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
+    finally:
+        tempfile.tempdir = saved_tempdir
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    assert not (root + os.sep).startswith(temp + os.sep), (root, temp)
+
+
+def test_a_shipped_set_proof_that_outlives_its_timeout_ends_with_every_process_it_started() -> None:
+    """A proof the judge times out can leave a child holding its output pipe (a case pool's workers): a piped run
+    then waits for that child, and a 226-row judge hung 40 minutes on three such workers."""
+    import time
+    engine = _load_engine()
+    with tempfile.TemporaryDirectory() as tree:
+        proof = Path(tree) / ".claude" / "tests" / "test_holds.py"
+        proof.parent.mkdir(parents=True)
+        proof.write_text("import subprocess, sys, time\n"
+                         "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                         "time.sleep(60)\n", encoding="utf-8")
+        real = engine._proof_timeout
+        engine._proof_timeout = lambda _path: 3
+        try:
+            started = time.monotonic()
+            red = engine._run_in_tree(".claude/tests/test_holds.py", Path(tree))
+            took = time.monotonic() - started
+        finally:
+            engine._proof_timeout = real
+    assert red and "timed out" in red[0], red
+    assert took < 30, took
+
+
+def test_the_shipped_set_is_a_committed_checkout_like_a_consumers() -> None:
+    """A consumer holds the shipped files in a git checkout; a git-aware guard read the bare tree as no repository and
+    allowed a delete a consumer's copy denies."""
+    engine = _load_engine()
+    with tempfile.TemporaryDirectory() as tree:
+        (Path(tree) / ".claude").mkdir()
+        (Path(tree) / ".claude" / "a.txt").write_text("a\n", encoding="utf-8")
+        engine._consumer_checkout(Path(tree))
+        listed = subprocess.run(["git", "-C", tree, "ls-files"], capture_output=True, text=True).stdout.split()
+        dirty = subprocess.run(["git", "-C", tree, "status", "--porcelain"], capture_output=True, text=True).stdout
+    assert listed == [".claude/a.txt"] and dirty == "", (listed, dirty)
+
+
+def test_judge_push_counts_a_sibling_judged_push_in_the_same_call_as_shipped() -> None:
+    sibling = ".claude/tests/runtime_new_sibling.txt"
+    with _fixture() as path:
+        root, baseline, _r, _c = _runtime_proof_fixture(
+            path, _RUN_PROOF, _RUN_PY % b'"runtime_new_sibling.txt"',
+            {sibling: {"manifest": False, "hash": None, "local": b"new\n"}})
+        result = _run_baseline(root, baseline, "judge", _RUN_PROOF, sibling, "--verdict", "push")
+        assert result.returncode == 0, _out(result)
 
 
 def _shipped_citer_rows(helper: dict, *, baseline_cites: bool) -> dict[str, dict]:
@@ -4199,10 +4746,15 @@ def test_foreign_publish_is_not_overwritten_and_move_pin_records_base() -> None:
         else:
             raise AssertionError("a stale judged.sha was published")
 
-        env = publish_proofs._install_fake_gh(path)
+        # The validate step holds machine slots, and peers holding the shared ones starved this case for minutes
+        # (test_baseline_publish plants its own store for the same reason). A lane this proof inherits from its
+        # runner would be spent instead and the store never touched, so the publish takes its own.
+        slots = path / "slots"
+        env = {**publish_proofs._install_fake_gh(path), "HARNESS_SLOT_DIR": str(slots), "HARNESS_SLOT_BUDGET": ""}
         with publish_proofs._patched_env(env):
             journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": source_commit},
                                   [rel], [], False, True, None)
+        assert slots.is_dir() and any(slots.iterdir()), "the publish did not admit through the planted slot store"
         assert all(step["status"] == "green" for step in journal["steps"]), journal["steps"]
         assert publish_proofs._git(remote, "show", "main:template/" + other) == foreign_other, (
             "publish overwrote the foreign change")
@@ -4233,7 +4785,24 @@ def test_foreign_publish_is_not_overwritten_and_move_pin_records_base() -> None:
             source.close()
 
 
-def main() -> int:
+# The cases run as PARTS proof files side by side in the runner's pool: this file is part 1 and
+# `test_baseline_sync_part<K>.py` run the rest, each case in exactly one part (round-robin), so the close waits on one
+# part's time, not the whole proof's.
+PARTS = 3
+
+
+def test_the_runner_stores_the_engine_reads_are_planted() -> None:
+    """The engine times a shipped-set proof by the runner's recorded durations. Read from the live store under the
+    repository's git dir, they key every pass of this proof on the whole repository state; this proof plants its own."""
+    ht = _load_engine()._harness_tests()
+    temp = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
+    for path in (ht.durations_path(), ht.passes_path(), ht.growth_path()):
+        assert os.path.normcase(os.path.realpath(path)).startswith(temp + os.sep), path
+
+
+def main(part: int = 1) -> int:
+    for other in range(2, PARTS + 1):  # a deleted part file would silently drop its cases
+        assert (Path(__file__).parent / ("test_baseline_sync_part%d.py" % other)).is_file(), "missing part %d" % other
     cases = [
         test_pull_settles_a_tracked_row_at_the_copy_it_writes,
         test_pull_merge_refuses_a_diverged_binary_row_and_leaves_it_untouched,
@@ -4299,6 +4868,12 @@ def main() -> int:
         test_v2_judge_success_refusal_and_repeat,
         test_v2_judge_commit_reads_that_commit_not_the_shared_index,
         test_judge_push_records_a_committed_deletion_of_a_file_upstream_carries,
+        test_judge_push_names_the_shipped_rows_that_cite_a_name_the_push_removes,
+        test_judge_push_names_the_citers_of_a_function_whose_signature_changes,
+        test_judge_push_names_a_citer_only_the_baseline_holds,
+        test_judge_push_of_a_deletion_names_every_row_that_depends_on_the_file,
+        test_judge_push_that_only_adds_names_no_dependents,
+        test_carry_names_the_shipped_rows_that_cite_a_name_the_range_removes,
         test_v2_triage_json_fields_and_truncation,
         test_v2_forget_success_refusal_and_repeat,
         test_v2_gc_success_refusal_and_repeat,
@@ -4361,6 +4936,20 @@ def main() -> int:
         test_judge_push_counts_a_proof_judged_push_at_its_current_sha,
         test_judge_push_refuses_a_citer_whose_dependency_does_not_ship,
         test_judge_push_refuses_a_citer_whose_dependency_has_no_row,
+        test_judge_push_refuses_a_row_whose_upstream_copy_changed_since_its_base,
+        test_judge_push_allows_a_row_upstream_left_alone_since_its_base,
+        test_judge_push_refuses_a_proof_that_is_red_in_the_shipped_set,
+        test_the_shipped_set_run_takes_its_timeout_from_the_runners_rule,
+        test_judge_push_allows_a_proof_green_in_the_shipped_set,
+        test_judge_push_records_its_verdict_when_the_shipped_set_tree_is_still_held,
+        test_merge3_returns_its_merge_when_its_temporary_tree_is_still_held,
+        test_judge_push_counts_a_sibling_judged_push_in_the_same_call_as_shipped,
+        test_the_shipped_set_reads_the_pushed_rows_once_per_judge_call,
+        test_the_shipped_set_proofs_run_side_by_side_and_only_a_red_reruns_alone,
+        test_a_shipped_set_red_reruns_with_the_machine_to_itself,
+        test_the_shipped_set_is_a_committed_checkout_like_a_consumers,
+        test_the_shipped_set_is_built_outside_the_system_temp_folder,
+        test_a_shipped_set_proof_that_outlives_its_timeout_ends_with_every_process_it_started,
         test_judge_push_allows_a_citer_whose_dependency_ships_or_is_judged_push,
         test_judge_push_allows_a_citer_and_its_local_dependency_in_one_call,
         test_judge_push_passes_when_the_baseline_copy_already_cites_the_modified_dependency,
@@ -4396,9 +4985,13 @@ def main() -> int:
         test_migration_drops_a_settled_push_verdict_and_keeps_an_open_one,
         test_foreign_publish_is_not_overwritten_and_move_pin_records_base,
         test_pull_runs_for_on_what_it_wrote_and_fails_on_red,
+        test_pull_records_each_proof_result_and_the_commit_guard_holds_a_red_one,
+        test_unreadable_record_recovery_proves_every_uncommitted_pulled_path,
         test_pull_that_wrote_nothing_runs_no_proof,
+        test_a_red_pull_stays_in_the_journal_that_check_and_the_next_pull_read,
+        test_the_runner_stores_the_engine_reads_are_planted,
     ]
-    return run_cases(cases)
+    return run_cases(cases[part - 1::PARTS])
 
 
 if __name__ == "__main__":

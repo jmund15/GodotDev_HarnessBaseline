@@ -1,13 +1,40 @@
 """Quote verification covers complete findings containers without silent zeroes."""
+import atexit
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[2]
+def _planted_checkout():
+    """A checkout planted in temp that holds a copy of the tool: the tool takes its repository from where its script
+    sits, so every git it runs (check-ignore, worktree list, rev-parse) reads this repository, never the live one."""
+    root = Path(tempfile.mkdtemp(prefix="verify_findings_repo_"))
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    (root / ".claude/tools").mkdir(parents=True)
+    shutil.copy(Path(__file__).resolve().parents[1] / "tools/verify_claims.py", root / ".claude/tools/verify_claims.py")
+    (root / ".claude/CLAUDE.md").write_text("@CLAUDE.core.md\n", encoding="utf-8", newline="\n")
+    for args in (["init", "-q"], ["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "seed"]):
+        subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+    return root
+
+
+ROOT = _planted_checkout()
+os.chdir(ROOT)  # git a case starts without its own `-C` runs here, never in the checkout holding the proof
 TOOL = ROOT / ".claude/tools/verify_claims.py"
+_LIVE_CLAUDE = Path(__file__).resolve().parents[1]
+
+
+def _tool_env():
+    """The tool's environment: the one journal case imports `session_digest` and its modules, which are read from this
+    checkout's tools and hooks (they run no git), behind the planted copy's own folder. The read recorder, when set,
+    stays first on the path."""
+    recorder = [os.environ["HARNESS_READ_RECORDER"]] if os.environ.get("HARNESS_READ_LOG") and os.environ.get("HARNESS_READ_RECORDER") else []
+    rest = [os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else []
+    return dict(os.environ, PYTHONPATH=os.pathsep.join(recorder + [str(_LIVE_CLAUDE / "tools"), str(_LIVE_CLAUDE / "hooks")] + rest))
 
 
 class FindingsTests(unittest.TestCase):
@@ -40,7 +67,7 @@ class FindingsTests(unittest.TestCase):
         args = [sys.executable, str(TOOL), "--findings", str(source), "--out", str(out)]
         if root is not None:
             args += ["--root", str(root)]
-        proc = subprocess.run(args, capture_output=True, text=True, cwd=cwd, timeout=30)
+        proc = subprocess.run(args, capture_output=True, text=True, cwd=cwd, timeout=30, env=_tool_env())
         self.assertNotIn("Traceback", proc.stderr)
         return proc, json.loads(out.read_text(encoding="utf-8")) if out.exists() else None
 

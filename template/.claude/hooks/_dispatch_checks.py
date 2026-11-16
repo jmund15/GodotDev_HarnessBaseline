@@ -54,13 +54,16 @@ try:
 except Exception:  # no registry reader: tier fit cannot be judged, currency says nothing
     model_registry = provider_bands = provider_capacity = None
 
-# A started agent whose transcript has not changed for this long is not counted as live.
+# A started agent whose transcript has not changed for this long is not counted as live. A live agent
+# writes its transcript as each tool call ends, and one foreground call is capped at 10 minutes.
 LIVE_SECONDS = 15 * 60
-# Bytes read from the end of a standalone agent transcript to find its last record.
+# Bytes read from the end of a standalone agent transcript to find its last record: 3.7x the largest last
+# record measured (70.6 KB over 1,374 agent transcripts, 2026-11-16).
 TAIL_BYTES = 256 * 1024
-# Bytes read from the end of the session transcript to find subagent completion notifications, and how
-# far before an agent's last write a notification may be stamped and still mean that write was its last.
-NOTIFY_TAIL_BYTES = 8 * 1024 * 1024
+# The session transcript is read back in blocks of this size until its records predate the live window.
+NOTIFY_BLOCK_BYTES = 1024 * 1024
+# How far before an agent's last write its notification may be stamped and still mean that write was its
+# last: the largest gap measured was 0.08 s over 54 notified agents (2026-11-16).
 NOTIFY_SLACK_SECONDS = 5.0
 
 _TERMINAL = ("result", "failed", "error")
@@ -117,30 +120,47 @@ def _ended(transcript):
     return False
 
 
-def _notifications(transcript):
-    """{agent id: epoch of its latest completion notification} from the session transcript's tail, or {}.
+def _stamp(line):
+    match = STAMP_RE.search(line)
+    try:
+        return datetime.datetime.fromisoformat(match.group(1).replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def _notifications(transcript, since=0.0):
+    """{agent id: epoch of its latest completion notification} from the session transcript, or {}.
 
     A background agent's completion reaches the session as a `<task-notification>` naming its
     `<task-id>`; a resumed agent keeps writing after its old notification, so the caller compares times.
+    The read runs back from the end, a block at a time, until it passes a record stamped before `since`
+    (the oldest notification the caller can use), so a busy session's live window is read whole.
     """
+    out = {}
     try:
         with open(transcript, "rb") as fh:
             fh.seek(0, os.SEEK_END)
-            fh.seek(max(0, fh.tell() - NOTIFY_TAIL_BYTES))
-            text = fh.read().decode("utf-8", errors="replace")
+            pos, carry = fh.tell(), b""
+            while pos > 0:
+                step = min(NOTIFY_BLOCK_BYTES, pos)
+                pos -= step
+                fh.seek(pos)
+                lines = (fh.read(step) + carry).split(b"\n")
+                carry = lines.pop(0) if pos > 0 else b""
+                oldest = None
+                for raw in lines:
+                    line = raw.decode("utf-8", errors="replace")
+                    when = _stamp(line)
+                    if when is None:
+                        continue
+                    oldest = when if oldest is None else min(oldest, when)
+                    if "<task-notification>" in line:
+                        for aid in _NOTIFY_ID.findall(line):
+                            out[aid] = max(out.get(aid, 0.0), when)
+                if oldest is not None and oldest < since:
+                    break
     except OSError:
         return {}
-    out = {}
-    for line in text.splitlines():
-        if "<task-notification>" not in line:
-            continue
-        stamp = STAMP_RE.search(line)
-        try:
-            when = datetime.datetime.fromisoformat(stamp.group(1).replace("Z", "+00:00")).timestamp()
-        except (AttributeError, ValueError):
-            continue
-        for aid in _NOTIFY_ID.findall(line):
-            out[aid] = max(out.get(aid, 0.0), when)
     return out
 
 
@@ -190,7 +210,7 @@ def live_jobs(session, now=None, deadline=None):
             if mtime < cutoff or _ended(e.path):
                 continue
             if notified is None:
-                notified = _notifications(session + ".jsonl")
+                notified = _notifications(session + ".jsonl", cutoff - NOTIFY_SLACK_SECONDS)
             if notified.get(aid, 0.0) >= mtime - NOTIFY_SLACK_SECONDS:
                 continue
             live.append({"run": "agent-" + aid, "agentId": aid,

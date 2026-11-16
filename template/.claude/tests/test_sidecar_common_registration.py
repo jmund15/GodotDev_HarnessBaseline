@@ -18,8 +18,12 @@ import uuid
 CLAUDE = Path(__file__).resolve().parents[1]
 ROOT = CLAUDE.parent
 sys.path[:0] = [str(CLAUDE / 'hooks'), str(CLAUDE / 'tools'), str(CLAUDE / 'tests')]
+import _mcp_plant
 import _transport_fixture
 import sidecar_launch
+
+# The launcher validates its tool profile against the MCP servers the caller's config registers; a runner has none.
+_mcp_plant.plant()
 
 BASH = sidecar_launch.git_bash()
 LAUNCHER = CLAUDE / 'scripts/codex_proxy_sidecar.sh'
@@ -260,12 +264,15 @@ urllib.request.urlopen = urlopen
 
     def test_fanout_one_entry_per_job(self):
         jobs = self.work / 'jobs.json'
+        cell = self.work / 'cell'  # the jobs' workdir: a planted repo, so fanout's fingerprint reads no live checkout
+        cell.mkdir()
+        subprocess.run(['git', 'init', '-q', str(cell)], check=True, capture_output=True, cwd=self.work)
         briefs = []
         for label in ('one', 'two'):
             brief = self.work / (label + '.md')
             brief.write_text('Reply READY.\n', encoding='utf-8')
             briefs.append(dict(label=label, alias='fixture-sol', promptFile=str(brief), kind='scout',
-                               workdir=str(ROOT)))
+                               workdir=str(cell)))
         jobs.write_text(json.dumps(briefs), encoding='utf-8')
         out = self.work / 'fanout'
         command = shlex.join(['python3', str(CLAUDE / 'tools/sidecar_fanout.py').replace('\\', '/'),

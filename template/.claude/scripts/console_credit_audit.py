@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # The ledger, the home rule and the timestamp parse are the probe's: one reader of the one file the
 # Console launchers write (D5), so the audit cannot drift from the number the plan routes on.
 import console_credit_probe as probe  # noqa: E402
+import spend_ledger  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 PLAN = "anthropic-console-secondary"
@@ -164,13 +165,11 @@ def report_by_day(payload, window):
 
 def ledger_by_day(path, transport, window):
     """({day: usd}, error): `transport`'s priced rows whose timestamp falls on a day in `window`."""
-    try:
-        handle = open(path, encoding="utf-8", errors="replace")
-    except OSError:
-        return {}, None
     totals = {}
-    with handle:
-        for line in handle:
+    starts = [probe._epoch(day + "T00:00:00Z") for day in window]
+    first = None if None in starts else min(starts, default=None)
+    try:
+        for line in spend_ledger.iter_lines(path, since=first, needle=json.dumps(transport)):
             if not line.strip():
                 continue
             try:
@@ -189,6 +188,8 @@ def ledger_by_day(path, transport, window):
             if not probe._finite(cost, 0):
                 return {}, "a %s ledger row of %s carries no priced costUSD" % (transport, day)
             totals[day] = totals.get(day, 0.0) + float(cost)
+    except OSError:
+        return {}, None
     return totals, None
 
 

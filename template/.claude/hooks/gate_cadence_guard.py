@@ -4,7 +4,9 @@ Hook: PreToolUse on Bash|PowerShell — gate-cadence advice and session-owned po
 
 `change_control` §Gate cadence owns the rule. A full gate after this session's recent FAIL/WARN
 is denied until this session has invoked narrower verification, or completed suite records from
-linked checkouts prove a post-red run on the current content covering every listed failed test.
+linked checkouts prove a post-red run on the current content covering every listed failed test. Content that
+equals the red's tree digest is a repair only when a file under `.claude/scripts`, which the gate runs and the
+digest excludes, was written after the red (`gate_inputs_changed_since`).
 A peer's red or an old-format artifact advises; it never inherits the peer's verification debt.
 `-RetryOnly` is checked like a full gate: a gate-length rerun repairs nothing. The one exception is a red whose
 every failed test shows a timeout message: it admits a single `-RetryOnly`, and a retry that fails again denies.
@@ -27,7 +29,6 @@ import hashlib
 import subprocess
 from datetime import datetime
 from pathlib import Path
-import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _hook_state import read_json_salvage, update_json_locked
@@ -213,15 +214,40 @@ def open_red_at(repo):
 
 UNCOVERED, UNREPAIRED, COVERED = 'uncovered', 'unrepaired', 'covered'
 
+# What the gate runs that the tree digest leaves out (`TreeDigest.ps1` excludes `.claude/` whole): the scripts it
+# dot-sources and invokes. A cache the interpreter regenerates beside them is not an input.
+GATE_INPUT_DIRS = ('.claude/scripts',)
+_REGENERATED = ('__pycache__',)
+
+
+def gate_inputs_changed_since(repo, since):
+    """True when a file the gate runs outside the tree digest was written after `since` (epoch seconds).
+
+    The digest cannot see such a file, so an unchanged digest does not show an unchanged gate: a repair in
+    `.claude/scripts` leaves it equal. The test is a write time, because the red records no content hash of these
+    files; an unreadable directory counts as unchanged, which keeps the flake deny.
+    """
+    for rel in GATE_INPUT_DIRS:
+        for folder, dirs, files in os.walk(os.path.join(repo, rel)):
+            dirs[:] = [d for d in dirs if d not in _REGENERATED]
+            for name in files:
+                try:
+                    if os.path.getmtime(os.path.join(folder, name)) > since:
+                        return True
+                except OSError:
+                    continue
+    return False
+
 
 def completed_narrow_covers_red(repo, red_at, red_tree=None, content_repo=None):
     """Read runner-owned .green records from linked checkouts; bind coverage to content and TRX bytes.
 
     `repo` is the checkout holding the red; `content_repo` (default `repo`) is the checkout the fix is edited in.
     COVERED needs every failed test passing in a completed run on `content_repo`'s current content. When
-    `red_tree` is known, that content must also differ from the red's: a pass on the same content shows a flake,
-    not a repair.
+    `red_tree` is known, that content must also differ from the red's, or a file the gate runs outside the digest
+    (`GATE_INPUT_DIRS`) must have been written since the red: a pass on the same inputs shows a flake, not a repair.
     """
+    import xml.etree.ElementTree as ET  # Only an owned open red reaches here; every other call skips the import.
     try:
         failures = red_failures(repo)
         if failures is None:
@@ -265,7 +291,9 @@ def completed_narrow_covers_red(repo, red_at, red_tree=None, content_repo=None):
         covered = set().union(*(names for tree, names in candidates if tree == digest and digest))
         if not failures <= covered:
             return UNCOVERED
-        return UNREPAIRED if red_tree and digest.lower() == red_tree else COVERED
+        if red_tree and digest.lower() == red_tree and not gate_inputs_changed_since(str(content_repo or repo), red_at):
+            return UNREPAIRED
+        return COVERED
     except (OSError, ValueError, subprocess.SubprocessError):
         return UNCOVERED
 
@@ -305,7 +333,7 @@ Canon: change_control §Post-failure re-verification."""
 
 UNREPAIRED_FAIL = """The last gate's failed tests pass again alone, but the content is unchanged since the red.
 
-A pass on unchanged content shows a flake with a cause (a wall-clock wait, shared state), not a repair.
+A pass on unchanged content (the tree digest, and no write under `.claude/scripts` since the red) shows a flake with a cause (a wall-clock wait, shared state), not a repair.
 Find the cause and change the code or test, then gate once. If it cannot be repaired, stop and ask the
 owner to accept it as a named known failure: the commit then says `Verified (with known failures: ...)`
 and needs no further gate.

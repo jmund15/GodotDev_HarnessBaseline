@@ -39,10 +39,11 @@ def _case(label, body, row, code, needle=None):
 
 
 def main():
-    _case("failing proof", "# fail.md\nraise SystemExit(1)\n", ".claude/commands/fail.md", 1, "test_bound.py")
-    _case("cannot-run proof", "# missing.md\nraise SystemExit(2)\n", ".claude/commands/missing.md", 2, "test_bound.py")
+    _case("failing proof", "DOC = 'fail.md'\nraise SystemExit(1)\n", ".claude/commands/fail.md", 1, "test_bound.py")
+    _case("cannot-run proof", "DOC = 'missing.md'\nraise SystemExit(2)\n", ".claude/commands/missing.md", 2,
+          "test_bound.py")
     _case("empty selection", "raise SystemExit(0)\n", ".claude/commands/unbound.md", 1, "no proof selected for")
-    _case("mentioned proof", "# .claude/commands/mentioned.md\nraise SystemExit(0)\n",
+    _case("mentioned proof", "DOC = '.claude/commands/mentioned.md'\nraise SystemExit(0)\n",
           ".claude/commands/mentioned.md", 0, "scoped")
     print("4/4 cases pass")
 

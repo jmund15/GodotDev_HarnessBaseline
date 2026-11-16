@@ -1,0 +1,31 @@
+TREE head=b45d20aef5 digest=bc2cc2d21e
+SUITE Sanity passed=55 failed=0 tier=PASS delta=+0 status=GREEN dur=36.6s
+SUITE Logic passed=11870 failed=0 tier=PASS delta=+0 status=GREEN dur=345.7s
+BATCH 1/26 label=Integration_B1 status=GREEN passed=192 failed=0 elapsed=320s expected=293.6s
+BATCH 2/26 label=Integration_B2 status=GREEN passed=167 failed=0 elapsed=225.4s expected=195.9s
+BATCH 3/26 label=Integration_B3 status=GREEN passed=40 failed=0 elapsed=190s expected=151.3s
+BATCH 4/26 label=Integration_B4 status=GREEN passed=17 failed=0 elapsed=175.8s expected=141.8s
+BATCH 5/26 label=Integration_B5 status=GREEN passed=15 failed=0 elapsed=170.6s expected=136.8s
+BATCH 6/26 label=Integration_B6 status=GREEN passed=163 failed=0 elapsed=124.8s expected=117.6s
+BATCH 7/26 label=Integration_B7 status=GREEN passed=255 failed=0 elapsed=137.8s expected=113.5s
+BATCH 8/26 label=Integration_B8 status=GREEN passed=13 failed=0 elapsed=125.7s expected=105.5s
+BATCH 9/26 label=Integration_B9 status=GREEN passed=12 failed=0 elapsed=118.4s expected=96.2s
+BATCH 10/26 label=Integration_B10 status=GREEN passed=268 failed=0 elapsed=99.2s expected=84.5s
+BATCH 11/26 label=Integration_B11 status=GREEN passed=39 failed=0 elapsed=129.8s expected=81.1s
+BATCH 12/26 label=Integration_B12 status=GREEN passed=438 failed=0 elapsed=96.1s expected=78.6s
+BATCH 13/26 label=Integration_B13 status=GREEN passed=76 failed=0 elapsed=86.1s expected=60.8s
+BATCH 14/26 label=Integration_B14 status=GREEN passed=208 failed=0 elapsed=78.9s expected=57.5s
+BATCH 15/26 label=Integration_B15 status=GREEN passed=135 failed=0 elapsed=72.1s expected=60s
+BATCH 16/26 label=Integration_B16 status=GREEN passed=342 failed=0 elapsed=81.1s expected=60s
+BATCH 17/26 label=Integration_B17 status=GREEN passed=53 failed=0 elapsed=81.5s expected=60s
+BATCH 18/26 label=Integration_B18 status=GREEN passed=189 failed=0 elapsed=61.1s expected=38.8s
+BATCH 19/26 label=Integration_B19 status=GREEN passed=35 failed=0 elapsed=81.4s expected=60s
+BATCH 20/26 label=Integration_B20 status=GREEN passed=119 failed=0 elapsed=79.3s expected=59.9s
+BATCH 21/26 label=Integration_B21 status=GREEN passed=302 failed=0 elapsed=74.5s expected=59.9s
+BATCH 22/26 label=Integration_B22 status=GREEN passed=368 failed=0 elapsed=81.2s expected=59.9s
+BATCH 23/26 label=Integration_B23 status=GREEN passed=272 failed=0 elapsed=80.7s expected=59.9s
+BATCH 24/26 label=Integration_B24 status=GREEN passed=379 failed=0 elapsed=48.5s expected=26.2s
+BATCH 25/26 label=Integration_B25 status=GREEN passed=368 failed=0 elapsed=31.5s expected=8.9s
+BATCH 26/26 label=Render status=GREEN passed=186 failed=0 elapsed=48.1s expected=33.9s
+SUITE Integration passed=4651 failed=0 tier=PASS delta=+1 completeness=OK exit=0
+VERDICT=PASS

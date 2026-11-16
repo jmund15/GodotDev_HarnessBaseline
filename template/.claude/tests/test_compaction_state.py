@@ -297,6 +297,26 @@ class FreshnessTest(unittest.TestCase):
                                                       root=self.ROOT))
 
 
+    # The fallback root is `CLAUDE_PROJECT_DIR`, which a Git Bash child spells `/c/Users/...`; Windows Python
+    # cannot open that. An unreadable root must never read as a current copy.
+    def test_an_msys_spelled_project_dir_still_finds_the_skill(self):
+        if os.name != "nt":
+            self.skipTest("the `/c/...` spelling is a Windows one")
+        drive = self.ROOT.replace("\\", "/")
+        msys = "/" + drive[0].lower() + drive[2:]
+        path = self.planted("fresh005", row("invoked_skills_stale"))
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": msys}):
+            self.assertFalse(_hook_state.skill_in_context("fresh005", "orchestration", transcript_path=path))
+        path = self.planted("fresh006", current_attachment("orchestration"))
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": msys}):
+            self.assertTrue(_hook_state.skill_in_context("fresh006", "orchestration", transcript_path=path))
+
+    def test_a_root_that_is_no_directory_credits_no_copy(self):
+        path = self.planted("fresh007", current_attachment("orchestration"))
+        gone = os.path.join(tempfile.gettempdir(), "no_such_project_root_fresh007")
+        self.assertFalse(_hook_state.skill_in_context("fresh007", "orchestration", transcript_path=path, root=gone))
+
+
 class ReattachTest(unittest.TestCase):
     """A session whose compaction cleared every marker; the client re-attached `orchestration` whole after the
     clear when `whole`, else not at all. The ladder read is armed so only the skill decides."""

@@ -15,6 +15,11 @@ So PreCompact asks the summary for every result with its exact source text, and 
 for a Read before citing anything the summary holds only from memory. `_compaction_rail.selected_rail` names this
 behaviour on the record (`compactionRail`); the rail texts live in `_compaction_rail.py`, shared with
 `subagent_compaction_rail.py`, which serves a native Workflow subagent.
+
+A read-only child (a launcher kind whose built-ins hold none of WRITE_TOOLS) cannot save findings before it compacts,
+so the launcher passes `--spill <record>.compaction.md` and registers this hook on PostToolUse and Stop as well. Each
+run copies the continuation summaries from the child's transcript into that file (`_spill`), which the parent's
+recovery reads when the job ends without its answer.
 """
 import argparse
 import json
@@ -27,7 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from cli_usage import usage
 
 from _compaction_rail import DEFAULT_RAIL, RAIL_3, RAIL_4, RAILS, SAVE_NOW, rail_text, selected_rail  # noqa: F401  (re-exported)
-from _hook_state import _pending_tokens, update_json_locked
+import _transcript_scan
+from _hook_state import _pending_tokens, replace_path, update_json_locked
 
 MAX_BYTES = 160_000  # a brief past this is re-injected head-first with a pointer to the rest
 # A hold must leave the held turns room below the model's real window: one more tool result at the Read tool's
@@ -37,6 +43,53 @@ HOLD_ROOM = 58_000
 # One nudge the child can act on, and a second in case a parallel tool batch carried the first.
 MAX_NUDGES = 2
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+
+
+def _summary_feed(state, index, line):
+    if "isCompactSummary" not in line:
+        return
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(row, dict) or not row.get("isCompactSummary"):
+        return
+    content = (row.get("message") or {}).get("content")
+    if isinstance(content, list):
+        content = "\n".join(b.get("text", "") for b in content if isinstance(b, dict))
+    if isinstance(content, str) and content:
+        state["summaries"].append(content)
+
+
+SUMMARY_SCAN = _transcript_scan.Scanner("sidecar_spill_summaries", lambda: {"summaries": []}, _summary_feed,
+                                        sources=[__file__])
+
+
+def _spill(payload, path):
+    """Copy every continuation summary in the child's transcript to `path`, for a read-only child.
+
+    A read-only child cannot save its findings before it compacts (the hold above is wired only for a child that
+    can write), but the client writes each summary into the transcript, and this hook, not the child, writes the
+    file. The first line counts the summaries held, so a call with nothing new leaves the file alone. A child
+    cannot act on a failed spill, so an unreadable transcript or an unwritable path writes nothing and stays silent."""
+    try:
+        summaries = _transcript_scan.scan(payload.get("transcript_path"), SUMMARY_SCAN)["summaries"]
+        if not summaries:
+            return
+        head = "<!-- compaction summaries: %d -->" % len(summaries)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                if f.readline().strip() == head:
+                    return
+        except OSError:
+            pass
+        body = "\n\n".join("## Compaction %d summary\n\n%s" % (i, text) for i, text in enumerate(summaries, 1))
+        fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".md", dir=os.path.dirname(os.path.abspath(path)))
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(head + "\n\n" + body + "\n")
+        replace_path(tmp, path)
+    except Exception:
+        return
 
 
 def _state_path(session_id):
@@ -83,6 +136,9 @@ def main() -> int:
     parser.add_argument("--prompt-file")
     parser.add_argument("--hard-window", type=int, default=0,
                         help="the model's real context window; with it, the first auto-compaction is held for a save")
+    parser.add_argument("--spill",
+                        help="a read-only child's file for its compaction summaries; the launcher passes it only "
+                             "when the child's resolved tools include none of WRITE_TOOLS")
     args = parser.parse_args()
     path = (args.prompt_file or os.environ.get("CLAUDE_CODE_SIDECAR_PROMPT_FILE", "")).strip()
     if not path:
@@ -92,6 +148,10 @@ def main() -> int:
     except Exception:
         payload = {}
     event = payload.get("hook_event_name")
+    if args.spill:
+        _spill(payload, args.spill)
+    if event == "Stop":
+        return 0
     if event == "PreCompact":
         if _hold(payload, args.hard_window):
             print(json.dumps({"decision": "block", "reason": "held for the child to save its findings first"}))

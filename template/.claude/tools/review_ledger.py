@@ -231,7 +231,7 @@ def _git_text(repo: Path, args: list[str]) -> str:
     result = _git(repo, args)
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
-        raise ToolError(f"git {' '.join(args)} failed" + ((": " + detail) if detail else ""))
+        raise ToolError(f"git {' '.join(args)} failed (exit {result.returncode})" + ((": " + detail) if detail else ""))
     return result.stdout.decode("utf-8", errors="replace")
 
 

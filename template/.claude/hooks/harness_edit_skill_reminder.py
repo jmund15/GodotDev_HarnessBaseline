@@ -13,7 +13,7 @@ What it does:
   shows a 2,000-character preview, and the skill is larger. Only the Skill tool delivers it whole.
 - The deny embeds the full text of the one `reference/` file the path's class matches (`REFERENCE_FILES`,
   `reference_for`): SKILL.md carries only a pointer per section, and a Skill call delivers no reference.
-  An unmapped class names all four. The agent no longer Reads them separately.
+  An unmapped class names all four.
 - `advance_notice` is the earlier surface (instruction_quality §3): `post_read_dispatch` emits one line at the
   first Read of a governed file in a window where the skill is absent, so the deny rarely fires.
 - Once loaded: emits the gates-summary reminder as `hookSpecificOutput.additionalContext`, once per compaction.

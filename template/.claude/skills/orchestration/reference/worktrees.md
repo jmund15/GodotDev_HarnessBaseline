@@ -4,6 +4,8 @@ Read before running runtime-test lanes concurrently, before a job runs in anothe
 
 ## Runtime-slot rule
 
+Local work admission across these lanes follows `rules/harness_tooling.md` §Machine work slots.
+
 Concurrent runtime-test lanes never exceed the runtime slot count their test harness reports. Read that harness's reported count or configured default before dispatch, not another checkout's capacity. Serialize excess lanes, or bar runtime tests for the chain dispatch through `sharedSingleFlight`; queued lanes spend wall time without running tests.
 
 ## Worktree caveat
@@ -14,4 +16,4 @@ A job reads its harness rules (`.claude/`) from the checkout it runs in, so cut 
 
 A lane branch merges back through a commit that builds: `githooks/pre-merge-commit` (and `pre-commit` while `MERGE_HEAD` exists) builds a merge that changes C# or moves the Jmodot pointer and refuses its commit on a compile error, since branches that each compile can merge into a tree that does not. A checkout with a live editor or playtest, or a Jmodot checkout behind the moved pointer, is refused with its repair instead of built; `--no-verify` bypasses.
 
-Follow `CLAUDE.core.md` §Shell Discipline for worktree ownership, removal and branch-deletion authority. Verify the resolved full path with the session's worktree-ownership helper (`session_created_worktree`). Preserve commits and files later steps need outside the target. For recursive retirement, fetch submodules, run `rm -rf .claude/worktrees/<name>` alone, then `git worktree prune`. `/worktree_prune` classifies other sessions' worktrees and removes none. Name throwaway branches `scratch/<name>`. Delete them with `git branch -D` when their use ends.
+Follow `CLAUDE.core.md` §Shell Discipline for worktree ownership, removal and branch-deletion authority. Verify the resolved full path with the session's worktree-ownership helper (`session_created_worktree`). Preserve commits and files later steps need outside the target: a `.bundle` of the unpushed refs, or a tar or patch of a nested repository's files, saved under the project's `.claude/scratch` with the target's directory name in its file name, counts as preserved once the guard verifies its content (`_regenerable_clone._saved_copy_holds`). For recursive retirement, fetch submodules, run `rm -rf .claude/worktrees/<name>` alone, then `git worktree prune`; `python3 .claude/hooks/_regenerable_clone.py --retire-check .claude/worktrees/<name>` prints the guard's verdict and every reason first. `/worktree_prune` classifies other sessions' worktrees and removes none. Name throwaway branches `scratch/<name>`. Delete them with `git branch -D` when their use ends.

@@ -822,6 +822,21 @@ class PreflightTests(Plant):
         self.assertTrue(any("job codify-derive: Write on kind 'lens': a job that writes is an author: "
                             "use kind author" in line for line in lines), lines)
 
+    def test_a_brief_that_orders_a_wider_run_is_named_and_one_that_runs_its_own_proof_is_not(self):
+        for order in ("`python3 .claude/scripts/harness_tests.py --proofs-for <changed paths>` is green",
+                      "run python3 .claude/scripts/harness_tests.py --for a.py --base HEAD~1",
+                      "pwsh -File .claude/scripts/regression_gate.ps1 -Detach"):
+            lines = self.lines([self.workflow_job("Fix it.\n" + order + "\n")])
+            hit = [line for line in lines if "orders a wider run" in line]
+            self.assertEqual(len(hit), 1, (order, lines))
+            self.assertIn("job j1", hit[0])
+            self.assertIn("brief_checks.md", hit[0])
+        for fine in ("Run `python3 .claude/tests/test_thing.py` until green.",
+                     "Limits: no `--close`, no `--all`, no push.",
+                     "The runner is `.claude/scripts/harness_tests.py`; read `run_proof`."):
+            lines = self.lines([self.workflow_job("Fix it.\n" + fine + "\n")])
+            self.assertFalse(any("orders a wider run" in line for line in lines), (fine, lines))
+
     def test_a_pinned_tier_without_a_ladder_slice_is_named_with_its_load_step(self):
         lines = self.lines([self.workflow_job("Do the work.")])
         tier = [line for line in lines if "tier `executor`" in line]
@@ -845,6 +860,31 @@ class PreflightTests(Plant):
         _hook_state.mark_skill_in_context(self.sid, "orchestration")
         self.assertEqual(self.lines([self.workflow_job("Do the work.")]),
                          ["preflight: clean: every launch precondition is met"])
+
+    def test_a_job_reading_past_its_window_is_unmet_and_never_clean(self):
+        """2026-11-10: a job measured 523,580 tokens over a 467,000-token window and the preflight still printed
+        `clean`, the launch's go. The launch refuses it, so the preflight says so."""
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        job = self.workflow_job("Do the work.")
+        point = dispatch_size.dispatch_size([job], self.root)["perJob"][0]["usable"]  # the point depends on the login
+        job["promptPath"] = self.file("big.md", math.ceil(point * dispatch_size.CHARS_PER_TOKEN / KB) + 40)
+        lines = self.lines([job])
+        hit = [line for line in lines if line.startswith("preflight: unmet:") and "past its usable window" in line]
+        self.assertEqual(len(hit), 1, lines)
+        self.assertIn("`j1`", hit[0])
+        self.assertIn("usable window of %d tokens" % point, hit[0])
+        self.assertRegex(hit[0], r"reading \d+ tokens")
+        self.assertFalse(any(line.startswith("preflight: clean") for line in lines), lines)
+
+    def test_a_job_that_fits_its_window_stays_clean(self):
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        job = self.workflow_job("Do the work.")
+        job["promptPath"] = self.file("fits.md", 40)
+        self.assertEqual(self.lines([job]), ["preflight: clean: every launch precondition is met"])
 
     def test_without_a_session_id_the_credit_checks_are_not_checked_never_clean(self):
         saved = os.environ.pop("CLAUDE_CODE_SESSION_ID", None)

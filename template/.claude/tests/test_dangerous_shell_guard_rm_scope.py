@@ -9,14 +9,14 @@ deletes on those lines were absent.
 Arms: the six recorded false positives must PASS, and a battery of genuine recursive deletes
 must still be BLOCKED. Without the second arm a matcher that never fires also passes.
 """
+import functools
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
-
-PLAIN_TEMP = tempfile.TemporaryDirectory(prefix='pe_plain_temp_')
+from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -24,7 +24,30 @@ HOOKS = os.path.join(ROOT, "hooks")
 HOOK = os.path.join(HOOKS, "dangerous_shell_guard.py")
 sys.path.insert(0, HOOKS)
 
+# The guard judges a delete against its project root and asks git about that root's worktrees, so the proof
+# plants a repository for it and runs from there: no git it starts reads this checkout. The guard's temp dir is a
+# sibling folder, so the planted root is not a "plain temp path" and `.claude/scratch/...` targets stay judged.
+OUTER = tempfile.mkdtemp(prefix="pe_rm_scope_")
+GUARD_TEMP = os.path.join(OUTER, "guard_temp")
+PROJECT = os.path.join(OUTER, "project")
+os.makedirs(GUARD_TEMP)
+os.makedirs(os.path.join(PROJECT, ".claude", "scratch"))
+subprocess.run(["git", "init", "-q", PROJECT], capture_output=True, check=True)
+tempfile.tempdir = GUARD_TEMP
+os.environ["CLAUDE_PROJECT_DIR"] = PROJECT
+os.chdir(PROJECT)
+PLAIN_TEMP = tempfile.TemporaryDirectory(prefix='pe_plain_temp_')
+
 import dangerous_shell_guard as dsg  # noqa: E402
+import _regenerable_clone  # noqa: E402
+
+# Each delete check asks git the same three questions (the worktree list, the cwd's toplevel, the common git dir), and
+# a hook process asks once. This proof runs ~50 checks in one process over a repository that does not change, so it
+# takes each answer from the real function once: 32 git spawns become 3. The per-check memo and every other answer
+# stay the guard's own (`test_dangerous_shell_guard_cache_cleanup.py` owns the memo's lifetime).
+for _owner, _name in ((dsg, "_list_registered_worktrees"), (dsg, "_git_toplevel"),
+                      (_regenerable_clone, "_common_git_dir")):
+    setattr(_owner, _name, functools.lru_cache(maxsize=None)(getattr(_owner, _name)))
 
 
 def blocked(cmd):
@@ -186,11 +209,19 @@ DANGEROUS_COMMANDS = [
     ("rm -rf /important", True),
     ("rm --recursive /important", True),
 ]
-for command, has_cache_hint in DANGEROUS_COMMANDS:
-    result = subprocess.run([sys.executable, HOOK],
-                            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
-                            capture_output=True, text=True, timeout=60)
-    ok = (result.returncode == 2 and not result.stdout.strip()
+
+
+def run_hook(command):
+    return subprocess.run([sys.executable, HOOK],
+                          input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
+                          capture_output=True, text=True, timeout=60)
+
+
+# Each command runs in its own hook process, so they start together; the verdicts print in list order.
+with ThreadPoolExecutor(max_workers=len(DANGEROUS_COMMANDS)) as pool:
+    hook_results = list(pool.map(run_hook, [command for command, _ in DANGEROUS_COMMANDS]))
+for (command, has_cache_hint), result in zip(DANGEROUS_COMMANDS, hook_results):
+    ok =(result.returncode == 2 and not result.stdout.strip()
           and "CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first" in result.stderr
           and (not has_cache_hint or ("Allowed: caches, temp dirs" in result.stderr
                                        and "Never in $(...)" not in result.stderr)))
