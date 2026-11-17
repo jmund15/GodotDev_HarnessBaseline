@@ -18,6 +18,8 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
+from _platform_skip import skip
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 HOOKS = os.path.join(ROOT, "hooks")
@@ -215,6 +217,13 @@ def run_hook(command):
     return subprocess.run([sys.executable, HOOK],
                           input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
                           capture_output=True, text=True, timeout=60)
+
+
+if os.name != 'nt':
+    for command, _ in DANGEROUS_COMMANDS:
+        if 'C:' in command:
+            skip(command, "Windows drive targets have no Windows filesystem meaning on Linux")
+    DANGEROUS_COMMANDS = [(command, hint) for command, hint in DANGEROUS_COMMANDS if 'C:' not in command]
 
 
 # Each command runs in its own hook process, so they start together; the verdicts print in list order.

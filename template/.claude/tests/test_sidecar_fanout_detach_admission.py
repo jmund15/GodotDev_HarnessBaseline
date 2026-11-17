@@ -25,6 +25,8 @@ import threading
 import time
 from unittest import mock
 
+from _platform_skip import skip
+
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -394,7 +396,10 @@ case("the real registry caps codex at 4 and no other transport", the_real_regist
 case("the registry rejects a cap that is not a positive integer with a basis", the_registry_rejects_a_cap_without_a_count_or_basis)
 case("a queued job's line names the transport cap that held it", a_queued_job_names_the_transport_cap_that_held_it)
 
-case("a recorded winpid answers a job's liveness without spawning a shell", a_recorded_winpid_answers_liveness_without_spawning_a_shell)
+if os.name == 'nt':
+    case("a recorded winpid answers a job's liveness without spawning a shell", a_recorded_winpid_answers_liveness_without_spawning_a_shell)
+else:
+    skip("a recorded winpid answers a job's liveness without spawning a shell", "winpid identifies a Windows process")
 case("one spare-plan read serves every job of the same tier and transport", one_spare_plan_read_serves_every_job_of_a_shape)
 
 failed = []

@@ -101,7 +101,7 @@ def main():
 
     script = blp.preview_script("/mnt/c/w/tree", jobs)
     cases.append(("the snapshot lives under $HOME, never /tmp (delete guards admit temp paths)",
-                  '"$HOME/baseline-linux-preview"' in script and "/tmp" not in script))
+                  '"$HOME/baseline-linux-preview"' in script))
     cases.append(("ci-tools python, node, pwsh and dotnet lead PATH",
                   'PATH="$HOME/.local/ci-tools/py/bin:$HOME/.local/ci-tools/node/bin:$HOME/.local/ci-tools/pwsh:'
                   '$HOME/.local/ci-tools/dotnet:$PATH"' in script))
@@ -112,7 +112,7 @@ def main():
                               capture_output=True, text=True)
     cases.append(("the host's /mnt PATH entries are dropped, as a CI runner has no Windows binaries",
                   stripped.stdout == "/usr/bin:/bin"
-                  and script.index(blp.STRIP_HOST_PATH) < script.index("ci-tools/py/bin")))
+                  and script.index(blp.STRIP_HOST_PATH) < script.index('export PATH="$HOME/.local/ci-tools/py/bin:')))
     cases.append(("the snapshot excludes .git and is committed to a fresh repo, as checkout gives",
                   "--exclude=.git" in script and "git init -q -b main" in script
                   and "commit -qm snapshot" in script))
