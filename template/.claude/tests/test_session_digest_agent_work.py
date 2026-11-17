@@ -159,6 +159,7 @@ class AgentWorkPacket(unittest.TestCase):
         gate_out = cls.repo / ".claude" / "scratch" / "test_runs" / "gate_run_1.out"
         gate_out.parent.mkdir(parents=True)
         gate_out.write_text("running\n" * 10, encoding="utf-8")
+        cls.gate_out = gate_out
         t.call("2026-10-01T10:45:30.000Z", "Bash", {"command": "pwsh regression_gate.ps1 -Detach"},
                "DETACHED pid=9 mode=full\r\nOUT=" + str(gate_out) + "\r\nERR=" + str(gate_out) + ".err\r\n"
                "WAIT=poll OUT until a line begins VERDICT=")
@@ -217,7 +218,8 @@ class AgentWorkPacket(unittest.TestCase):
     def test_a_detached_job_is_listed_with_its_output_file_and_is_not_a_dispatch(self):
         section = agent_section(self.packet)
         self.assertRegex(section, r"Detached jobs . 1 launched")
-        self.assertRegex(section, r"gate_run_1 . \.claude/scratch/test_runs/gate_run_1\.out . 90 B")
+        self.assertRegex(section, r"gate_run_1 . \.claude/scratch/test_runs/gate_run_1\.out . %d B"
+                         % self.gate_out.stat().st_size)
 
     def test_background_job_without_an_end_notice_is_open_and_an_ended_one_is_not(self):
         section = agent_section(self.packet)

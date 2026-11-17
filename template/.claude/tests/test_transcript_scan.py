@@ -34,7 +34,21 @@ import orchestration_metrics as om  # noqa: E402
 import session_digest as sd  # noqa: E402
 
 FIXTURE = HERE / "fixtures" / "transcript_scan" / "rows.jsonl"
-LINES = FIXTURE.read_text(encoding="utf-8").splitlines(keepends=True)
+LINES = []
+for line in FIXTURE.read_text(encoding="utf-8").splitlines():
+    row = json.loads(line)
+    row['cwd'] = Path(STATE).as_posix()
+    content = row.get('message', {}).get('content', [])
+    for item in content if isinstance(content, list) else []:
+        if item.get('type') != 'tool_use':
+            continue
+        inputs = item.get('input', {})
+        for key, value in inputs.items():
+            if isinstance(value, str):
+                value = value.replace(r'C:\work\sample', Path(STATE).as_posix())
+                value = value.replace('C:/work/sample', Path(STATE).as_posix())
+                inputs[key] = value.replace('\\', '/') if key == 'file_path' else value
+    LINES.append(json.dumps(row) + '\n')
 SPLIT = len(LINES) * 2 // 3
 def cold_owner(path):
     """The cold full parse the cache must reproduce: the builder's user messages merged with both

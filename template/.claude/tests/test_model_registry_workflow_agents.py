@@ -11,6 +11,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -105,16 +106,21 @@ class WorkflowAgentPricingTests(unittest.TestCase):
         self.assertEqual(mr.session_transcript(SID, 'anthropic-secondary', data=self.data).name, SID + '.jsonl')
         probes = []
         real_stat, real_isfile = mr.os.stat, mr.os.path.isfile
+        probing = threading.local()
 
         def stat(path, *args, **kwargs):
-            if str(projects) in str(path):
+            if str(projects) in str(path) and not getattr(probing, 'active', False):
                 probes.append(('stat', str(path)))
             return real_stat(path, *args, **kwargs)
 
         def isfile(path):
             if str(projects) in str(path):
                 probes.append(('isfile', str(path)))
-            return real_isfile(path)
+            probing.active = True
+            try:
+                return real_isfile(path)
+            finally:
+                probing.active = False
 
         with patch.object(mr.os, 'stat', stat), patch.object(mr.os.path, 'isfile', isfile):
             self.assertIsNone(mr.session_transcript('absent-probe', 'anthropic-secondary', data=self.data))
@@ -129,16 +135,21 @@ class WorkflowAgentPricingTests(unittest.TestCase):
         self.assertEqual(mr.session_transcript(SID, 'anthropic-secondary', data=self.data).name, SID + '.jsonl')
         probes = []
         real_stat, real_isfile = mr.os.stat, mr.os.path.isfile
+        probing = threading.local()
 
         def stat(path, *args, **kwargs):
-            if str(projects) in str(path):
+            if str(projects) in str(path) and not getattr(probing, 'active', False):
                 probes.append(('stat', str(path)))
             return real_stat(path, *args, **kwargs)
 
         def isfile(path):
             if str(projects) in str(path):
                 probes.append(('isfile', str(path)))
-            return real_isfile(path)
+            probing.active = True
+            try:
+                return real_isfile(path)
+            finally:
+                probing.active = False
 
         finished = time.time() - 60
         with patch.object(mr.os, 'stat', stat), patch.object(mr.os.path, 'isfile', isfile):

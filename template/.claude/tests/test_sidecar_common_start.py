@@ -5,6 +5,7 @@ Python start. A launch calls the first about thirty times and the second once; e
 
 Run: python3 .claude/tests/test_sidecar_common_start.py
 """
+import os
 import subprocess
 import sys
 import unittest
@@ -29,6 +30,7 @@ def run(script):
 
 
 class StartCost(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'cygpath translates Git Bash paths for Windows Python')
     def test_sc_to_native_answers_as_cygpath_does(self):
         probe = "; ".join('printf "%%s\\t%%s\\n" "$(sc_to_native %s)" "$(cygpath -w %s)"' % (p if p.startswith("'") else "'%s'" % p,
                                                                                          p if p.startswith("'") else "'%s'" % p)

@@ -18,6 +18,9 @@ _LOG = os.environ.get("HARNESS_READ_LOG")
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 if _LOG:
+    import threading
+
+    _probing = threading.local()
     _seen = set()
     _fh = None
 
@@ -107,7 +110,11 @@ if _LOG:
                 p = _abs(path)
                 if p:
                     _emit("p", p)
-            return original(path, *rest, **kw)
+            _probing.depth = getattr(_probing, "depth", 0) + 1
+            try:
+                return original(path, *rest, **kw)
+            finally:
+                _probing.depth -= 1
         return probe
 
     # `pathlib`'s exists/is_file/is_dir route through these.
@@ -117,7 +124,7 @@ if _LOG:
     def _stat(original):
         """A stat observes a size, a time or a listing, which a presence probe does not key: `["t", path]`."""
         def stat(path, *rest, **kw):
-            if isinstance(path, (str, bytes, os.PathLike)):
+            if not getattr(_probing, "depth", 0) and isinstance(path, (str, bytes, os.PathLike)):
                 p = _abs(path)
                 if p and not p.startswith(_LOG):
                     _emit("t", p)

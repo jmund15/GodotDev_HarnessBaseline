@@ -118,6 +118,7 @@ class Contracts(unittest.TestCase):
             fixture.rows(fixture.row(section='__module__'))
             root = str(fixture.repo)
             proof = str(fixture.repo/PROOF)
+            (fixture.repo/'.claude/logs').mkdir()
             with patch.object(runner, 'STAMP_PATH', str(fixture.repo/'.claude/logs/stamp.json')), patch.dict(os.environ, HARNESS_MACHINE_SLOTS='0'):
                 self.assertIn(proof, runner.select_for(root, [IMPL]))
                 def execute():
