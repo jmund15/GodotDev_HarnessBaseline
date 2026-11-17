@@ -19,6 +19,7 @@ so the runner records a pass per case and later skips a case whose recorded pass
 (`HARNESS_CASES_REUSED`)."""
 import json
 import os
+import multiprocessing
 import subprocess
 import sys
 import traceback
@@ -61,7 +62,8 @@ def _case_reads(name):
 def _isolated(case):
     """The case's error text, or None. A fresh one-process executor per case, so a crash breaks
     only this case's pool."""
-    with ProcessPoolExecutor(max_workers=1, initializer=_case_reads, initargs=(case.__name__,)) as pool:
+    with ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_case_reads, initargs=(case.__name__,)) as pool:
         try:
             return pool.submit(_run_one, case).result()
         except BrokenProcessPool as exc:

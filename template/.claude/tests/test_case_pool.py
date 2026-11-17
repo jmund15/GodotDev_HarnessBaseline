@@ -170,6 +170,7 @@ def main():
     # This fixture proves available parallel capacity, independent of live machine occupancy.
     pool_root = tempfile.mkdtemp(prefix='case_pool_budget_')
     os.environ.update(HARNESS_SLOT_DIR=pool_root, HARNESS_MACHINE_ROOT=pool_root, HARNESS_MACHINE_SLOTS='6')
+    os.environ.pop("POOL_SPANS", None)
     failures = sections_proof() + only_proof()
     spans = tempfile.mkdtemp()
     os.environ["POOL_SPANS"] = spans
