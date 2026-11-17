@@ -7,6 +7,7 @@ channel (deny via stderr + exit 2, or allow via exit 0).
     python3 .claude/tests/test_git_guardrails_harness_commit.py
 """
 import atexit
+import hashlib
 import importlib.util
 import io
 import json
@@ -606,7 +607,7 @@ def commit_proof_cases():
             write(repo, doc, "old\n")
             for i, code in enumerate(codes):
                 write(repo, ".claude/tests/test_bound_%d.py" % i,
-                      "# planted_contract.md\nimport pathlib, sys\n"
+                      "DOC = 'planted_contract.md'\nimport pathlib, sys\n"
                       "pathlib.Path(%r).write_text('ran')\n"
                       "print('preamble')\nprint('FAIL planted doc contract')\nsys.exit(%d)\n"
                       % (os.path.join(repo, "ran_%d" % i), code))
@@ -634,6 +635,116 @@ def commit_proof_cases():
                 failures.append(case("C unchanged pass costs no proof run", reused, ALLOW))
         finally:
             shutil.rmtree(repo, ignore_errors=True)
+    return failures
+
+
+ADAPTATION = ".claude/skills/project_subsystems/adaptation.json"
+
+
+def excluded_proof_cases():
+    """An edit to a tool whose every tracked proof `adaptation.json` `proof_excluded` keeps from running commits, with
+    an advisory that names the exclusion; a proof the close runs, a comment-only edit and another file's edit stay silent."""
+    failures = []
+
+    def planted(proofs, excluded, edited="y = 2\n", also=None):
+        repo = make_repo()
+        write(repo, ".claude/tools/y.py", "# a comment\ny = 1\n")
+        for name in proofs:
+            write(repo, ".claude/tests/" + name, "# proof\n")
+        write(repo, ADAPTATION, json.dumps({"proof_excluded": excluded}))
+        git(repo, ["add", "-A"])
+        git(repo, ["commit", "-qm", "seed"])
+        write(repo, ".claude/tools/y.py", edited)
+        git(repo, ["add", ".claude/tools/y.py"])
+        if also:
+            write(repo, also, "z = 1\n")
+            git(repo, ["add", also])
+        return repo
+
+    def silent(label, got, needle):
+        ok = got[0] == ALLOW and needle not in got[1]
+        print("%-4s %s" % ("ok" if ok else "FAIL", label))
+        return None if ok else "%s\n     got=%s %r" % (label, got[0], got[1][:300])
+
+    reason = "report generator"
+    repo = planted(["test_y_report.py"], {"test_y_report.py": reason})
+    got = run_hook("git commit -F msg -- .claude/tools/y.py", repo)
+    failures.append(case("a tool whose only tracked proof is in proof_excluded commits and the advisory names the exclusion",
+                         got, ALLOW, (".claude/tools/y.py", "test_y_report.py", "proof_excluded", reason,
+                                      "the close never runs")))
+    repo = planted(["test_y_report.py", "test_y.py"], {"test_y_report.py": reason})
+    failures.append(silent("a tool with one excluded and one running proof stays silent",
+                           run_hook("git commit -F msg -- .claude/tools/y.py", repo), "proof_excluded"))
+    repo = planted(["test_y.py"], {"test_other.py": reason})
+    failures.append(silent("a tool whose proof is not excluded stays silent",
+                           run_hook("git commit -F msg -- .claude/tools/y.py", repo), "proof_excluded"))
+    repo = planted(["test_y_report.py"], {"test_y_report.py": reason}, edited="# another comment\ny = 1\n")
+    failures.append(silent("a comment-only edit to an excluded tool stays silent",
+                           run_hook("git commit -F msg -- .claude/tools/y.py", repo), "proof_excluded"))
+    repo = planted(["test_y_report.py"], {"test_y_report.py": reason}, edited="# a comment\ny = 1\n",
+                   also="README.md")
+    failures.append(silent("a commit that leaves the excluded tool unchanged stays silent",
+                           run_hook("git commit -F msg -- README.md", repo), "proof_excluded"))
+    repo = make_repo()
+    write(repo, ".claude/tools/y.py", "y = 1\n")
+    git(repo, ["add", "-A"])
+    failures.append(case("a tool with no tracked proof still denies, excluded list or not",
+                         run_hook("git commit -F msg -- .claude/tools/y.py", repo), DENY, "no re-runnable proof"))
+    return failures
+
+
+def layer_closure_cases():
+    """A commit that touches a tracked lock row advises each layer-closure finding over the touched rows: a tracked proof
+    reading a file no layer ships. Silent for a clean row, an untouched or untracked one, and a checkout with no lock;
+    an unreadable pin is a lost check, named."""
+    failures = []
+    helper, proof = ".claude/tools/unrowed.py", ".claude/tests/test_p.py"
+    reads = 'import subprocess\nsubprocess.run(["python3", "tools/unrowed.py"])\n'
+
+    def planted(rows, pin=True, lock=True, edited=reads + "# edited\n", edit=proof):
+        repo = make_repo()
+        clone = os.path.join(repo, ".claude", ".cache", "baseline-repo")
+        os.makedirs(clone)
+        git(clone, ["init", "-q"])
+        write(clone, "baseline.manifest.json", '{"files": []}')
+        git(clone, ["add", "baseline.manifest.json"])
+        git(clone, ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "pin"])
+        sha = git(clone, ["rev-parse", "HEAD"]).strip() if pin else "0" * 40
+        write(repo, proof, reads)
+        write(repo, helper, "x = 1\n")
+        write(repo, ".claude/reference/note.md", "old\n")
+        if lock:
+            write(repo, ".claude/baseline.lock.json", json.dumps({"synced_commit": sha, "files": rows}))
+        git(repo, ["add", "-f", proof, helper, ".claude/reference/note.md"] + ([".claude/baseline.lock.json"] if lock else []))
+        git(repo, ["commit", "-qm", "seed"])
+        write(repo, edit, edited if edit == proof else "x = 2\n")
+        git(repo, ["add", edit])
+        return repo
+
+    tracked = {"status": "tracked", "layer": "pure"}
+    commit = "git commit -F msg -- %s" % proof
+    repo = planted({proof: tracked})
+    failures.append(case("a touched tracked proof reading a file no layer ships advises the finding by source and kind",
+                         run_hook(commit, repo), ALLOW, ("layer closure", proof, "local-only", "unrowed.py")))
+    repo = planted({proof: tracked, helper: tracked})
+    got = run_hook(commit, repo)
+    failures.append(case("... a proof whose read file is rowed stays silent",
+                         (got[0], "" if "layer closure" not in got[1] else got[1]), ALLOW))
+    repo = planted({proof: tracked}, edit=".claude/reference/note.md")
+    got = run_hook("git commit -F msg -- .claude/reference/note.md", repo)
+    failures.append(case("... a touched file that is not a lock row costs no scan and stays silent",
+                         (got[0], "" if "layer closure" not in got[1] else got[1]), ALLOW))
+    repo = planted({proof: {"status": "forked", "layer": "pure"}})
+    got = run_hook(commit, repo)
+    failures.append(case("... a forked row is this project's own copy and stays silent",
+                         (got[0], "" if "layer closure" not in got[1] else got[1]), ALLOW))
+    repo = planted({proof: tracked}, lock=False)
+    got = run_hook(commit, repo)
+    failures.append(case("a checkout with no lock commits with no layer-closure line",
+                         (got[0], "" if "layer closure" not in got[1] else got[1]), ALLOW))
+    repo = planted({proof: tracked}, pin=False)
+    failures.append(case("a pin the local cache clone lacks is a named lost check, never a fetch or a deny",
+                         run_hook(commit, repo), ALLOW, ("layer closure not checked", "pinned baseline manifest")))
     return failures
 
 
@@ -1344,9 +1455,88 @@ def baseline_owned_cases():
     return failures
 
 
+def pull_proof_cases():
+    """A pulled path commits only once its recorded proof is green: pending or red blocks, green releases, and a
+    path edited after its proof is not the pulled tree, so its own commit is not judged by that record."""
+    failures = []
+    rel = ".claude/reference/pulled.md"
+    for label, result, edit, expected, needle in (
+            ("red pulled proof blocks its commit", "red", False, DENY, "pull commit"),
+            ("pending pulled proof blocks its commit", "pending", False, DENY, "pull commit"),
+            ("green pulled proof releases its commit", "green", False, ALLOW, ""),
+            ("a pulled path edited after its proof is not judged by it", "red", True, ALLOW, "")):
+        repo = make_repo()
+        try:
+            write(repo, rel, "pulled\n")
+            record = os.path.join(repo, ".claude", "logs", "baseline_pull_proof.json")
+            os.makedirs(os.path.dirname(record), exist_ok=True)
+            with open(record, "w", encoding="utf-8") as fh:
+                with open(os.path.join(repo, rel), "rb") as source:
+                    digest = hashlib.sha256(source.read()).hexdigest()
+                json.dump({"paths": {rel: {"sha": digest, "result": result}}}, fh)
+            write(repo, "msg", "pull\n")
+            git(repo, ["add", rel])
+            if edit:
+                write(repo, rel, "edited\n")
+                git(repo, ["add", rel])
+            got = run_hook("git commit -F msg", repo, unguarded=True)
+            failures.append(case("C " + label, got, expected, needle))
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+
+    # A record that exists but does not read (not JSON, or no `paths` object) is unknown, so a pulled path's commit
+    # is denied: the reader must not turn it into an empty record that releases every path.
+    for label, text in (("not JSON", "{not json"),
+                        ("paths is a list", json.dumps({"paths": []}))):
+        repo = make_repo()
+        try:
+            write(repo, rel, "pulled\n")
+            write(repo, ".claude/logs/baseline_pull_proof.json", text)
+            write(repo, "msg", "pull\n")
+            git(repo, ["add", rel])
+            got = run_hook("git commit -F msg", repo, unguarded=True)
+            failures.append(case("C unreadable record (%s) denies a pulled path's commit" % label, got, DENY,
+                                 ("pull proof record", "unreadable", "baseline_sync.py pull")))
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+
+    # write() over an unreadable record must not drop its content: it raises and leaves the bytes in place.
+    repo = make_repo()
+    try:
+        write(repo, ".claude/logs/baseline_pull_proof.json", "{not json")
+        spec = importlib.util.spec_from_file_location("pull_proof_under_test", os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "hooks", "_pull_proof.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        write(repo, rel, "pulled\n")
+        try:
+            module.write(repo, {rel: "pending"})
+            detail = "write() returned over an unreadable record"
+        except module.Unreadable:
+            detail = ""
+        with open(module.record_path(repo), encoding="utf-8") as fh:
+            kept = fh.read()
+        failures.append("" if not detail and kept == "{not json" else detail or "record content changed: %r" % kept)
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+
+    # No record at all: a commit with no pull journal is not blocked by the pull guard.
+    repo = make_repo()
+    try:
+        write(repo, rel, "pulled\n")
+        write(repo, "msg", "pull\n")
+        git(repo, ["add", rel])
+        got = run_hook("git commit -F msg", repo, unguarded=True)
+        failures.append(case("C no pull record: commit is allowed", got, ALLOW, ""))
+    finally:
+        shutil.rmtree(repo, ignore_errors=True)
+    return failures
+
+
 GROUPS = (string_constants_cases, commit_proof_cases, inline_cases, inline_cases_b, inline_cases_c, index_cases, push_base_cases,
           same_command_write_cases, staged_blob_cases, must_allow_proof, retargeted_merge_cases,
-          baseline_owned_cases, missing_cwd_cases)
+          baseline_owned_cases, missing_cwd_cases, pull_proof_cases, excluded_proof_cases,
+          layer_closure_cases)
 
 
 def main():

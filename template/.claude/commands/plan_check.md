@@ -54,7 +54,7 @@ Before the panel, write the seats and the reviewed plan paths to `<run dir>/spec
 
 Seat only the mandates the ledger returns. A design mandate covered at the unchanged design hash is not re-judged; that plan gets a spot-check instead: `plc-evidence-grounding`, `plc-test-readiness` and `plc-memory-alignment` only, sized by what the plan adds beyond the covered design (units the design does not state), per `orchestration` §2 *Later rounds*. Owner-fork answers no reviewer has seen still get the full check.
 
-Set the spec's `noNewDecision` true when the §1b facts show no new decision. The post-check's ledger step carries it too, so each row it writes carries `noNewDecision: true`, .
+Set the spec's `noNewDecision` true when the §1b facts show no new decision. The post-check's ledger step carries it too, so each row it writes carries `noNewDecision: true`.
 
 ```json
 {

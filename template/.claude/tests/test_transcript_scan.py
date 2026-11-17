@@ -6,9 +6,10 @@ transcript, and its result equals a cold full parse: owner prompts with their U-
 the ledger's prior summaries and facts block, the anchor's reply contexts and the metrics launch
 scan. A truncated, rewritten or replaced transcript, or an edited reader, restarts at line 1. Caches
 of a deleted transcript are swept. Both compaction hooks log duration and output bytes per run.
-The rows are cut from a captured session transcript and trimmed, planted here: an owner prompt and a
-short reply, a command's `ARGUMENTS:` companion, a question answer, two compaction summaries, a
-background launch and a fan-out launch. tests/fixtures/ never ships, so nothing is read from it.
+The rows are read from tests/fixtures/transcript_scan/rows.jsonl: lines cut from one captured session
+transcript (each row's uuid and type match a line of it) and trimmed, with absolute paths moved under a
+neutral root and prose neutral where no case checks it. They hold an owner prompt and a short reply, a command's `ARGUMENTS:` companion, a question
+answer, compaction summaries, a background launch and a fan-out launch.
 
     python3 .claude/tests/test_transcript_scan.py
 """
@@ -32,53 +33,9 @@ import compact_directive_ledger as ledger  # noqa: E402
 import orchestration_metrics as om  # noqa: E402
 import session_digest as sd  # noqa: E402
 
-STAMP = "2026-10-17T17:%02d:00.000Z"
-
-
-def _user(index, content, **extra):
-    row = {"type": "user", "uuid": "u%d" % index, "timestamp": STAMP % index,
-           "message": {"role": "user", "content": content}}
-    row.update(extra)
-    return row
-
-
-def _assistant(index, blocks):
-    return {"type": "assistant", "uuid": "a%d" % index, "timestamp": STAMP % index,
-            "message": {"role": "assistant", "model": "a-model", "content": blocks}}
-
-
-def _result(index, tool_use_id, text, **extra):
-    row = _user(index, [{"type": "tool_result", "tool_use_id": tool_use_id, "content": text}], **extra)
-    return row
-
-
-ROWS = [
-    _user(0, "Read and follow the brief in full, then report back."),
-    _assistant(1, [{"type": "text", "text": "Lane A is running. Both worktrees built clean."}]),
-    _user(2, "Yes please codify all Fs."),
-    _user(3, [{"type": "text", "text": "# /feature_drive — One-Plan Drive\n\nARGUMENTS: plan.md --task t1"}],
-          isMeta=True),
-    _assistant(4, [{"type": "tool_use", "id": "q1", "name": "AskUserQuestion",
-                    "input": {"questions": [{"question": "Which rulings?"}]}}]),
-    _result(5, "q1", "All of them"),
-    _user(6, "Summary one.\n\nOwner directives:\nU1 — holds — do the thing.", isCompactSummary=True),
-    _user(7, "Summary two.", isCompactSummary=True),
-    _assistant(8, [{"type": "tool_use", "id": "b1", "name": "Bash",
-                    "input": {"command": "python3 .claude/scripts/long_job.py", "run_in_background": True}}]),
-    _result(9, "b1", "running", toolUseResult={"backgroundTaskId": "task-1"}),
-    _assistant(10, [{"type": "tool_use", "id": "w1", "name": "Write",
-                     "input": {"file_path": ".claude/scratch/jobs.json", "content": '{"jobs":[{"label":"j1"}]}'}}]),
-    _result(11, "w1", "File created successfully"),
-    _assistant(12, [{"type": "tool_use", "id": "s1", "name": "Bash", "input": {
-        "command": "python3 .claude/tools/sidecar_fanout.py .claude/scratch/jobs.json "
-                   "--out-dir .claude/scratch/out --detach"}}]),
-    _result(13, "s1", "launched"),
-    _user(14, "Also codify every finding from that run."),
-]
-LINES = [json.dumps(row) + "\n" for row in ROWS]
+FIXTURE = HERE / "fixtures" / "transcript_scan" / "rows.jsonl"
+LINES = FIXTURE.read_text(encoding="utf-8").splitlines(keepends=True)
 SPLIT = len(LINES) * 2 // 3
-
-
 def cold_owner(path):
     """The cold full parse the cache must reproduce: the builder's user messages merged with both
     recover passes, each reading the whole file."""

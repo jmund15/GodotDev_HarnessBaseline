@@ -22,7 +22,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
-from _case_pool import _jobs as _case_jobs
+from _case_pool import _jobs as _case_jobs, _budget as _case_budget
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS_DIR = os.path.normpath(os.path.join(HERE, "..", "hooks"))
@@ -39,7 +39,7 @@ def pmap(fn, items):
     """Run fn over items on threads (each case is a subprocess wait); the first failure raises. `_case_pool`
     owns the width, so the land runner's `HARNESS_CASE_JOBS` cap holds here too."""
     items = list(items)
-    with ThreadPoolExecutor(max_workers=max(1, min(len(items), _case_jobs(None)))) as pool:
+    with _case_budget(max(1, min(len(items), _case_jobs(None)))) as width, ThreadPoolExecutor(max_workers=width) as pool:
         return list(pool.map(fn, items))
 
 
@@ -572,7 +572,9 @@ def main():
             check(label + " — exit 0", proc.returncode == 0, proc.stderr)
 
     # A planted violation must FIRE through the dispatcher, not just agree with a silent chain.
-    d_blocked, _, _, proc = dispatcher_verdict(payload("Bash", "rm -rf build_out"), env)
+    # The delete's target is the call's own cwd-relative path: the repo may sit under the system temp, which
+    # the guard exempts, so the planted call runs from the filesystem root, never from where the proof lives.
+    d_blocked, _, _, proc = dispatcher_verdict(payload("Bash", "rm -rf build_out", os.path.abspath(os.sep)), env)
     check("rm -rf is blocked through the dispatcher (exit 2, stderr names it)",
           proc.returncode == 2 and "rm" in proc.stderr, proc.stderr)
     check("an exit-2 block carries only the guard's own text",

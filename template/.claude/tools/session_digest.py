@@ -5,7 +5,11 @@ Presentation modes are deliberately separate:
   --brief is a bounded identity card (2,048 UTF-8 bytes) for locating a session. It is not a
       resume packet.
   --handoff, and the no-mode default, are a bounded resume packet (16,384 UTF-8 bytes) that keeps
-      the task anchor, priority corrections/answers, recent owner input, friction and files.
+      the task anchor, priority corrections/answers, recent owner input, the agent's own work
+      (commits, pushes, dispatches and returns, open jobs, state files; `agent_work`), friction and files.
+      16,384 stays the bound: a packet is read once. The agent-work section sheds its lists
+      (6, 3, 1, 0 rows) after files, friction and the timeline, so its counts always survive.
+      A handoff run also adopts the running sidecars of a session with no live host (`adoption_note`).
   --full is an offline human-readable Markdown projection. It writes atomically to
       logs/session_digest_<sid8>.full.md and prints only a bounded receipt. It is not raw JSON or
       transcript parity; use --select/--evidence-page for exact machine evidence.
@@ -31,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -43,6 +48,8 @@ import _owner_text  # noqa: E402
 import _transcript_scan  # noqa: E402
 import _transcript_summary  # noqa: E402
 import review_result  # noqa: E402  -- the one `path:line` rule for a journal finding
+import _background_tasks  # noqa: E402  -- the one `<task-notification>` shape
+import dispatch_result  # noqa: E402  -- the one `<label>.md` deliverable path
 
 BRIEF_MAX_BYTES = 2_048
 HANDOFF_MAX_BYTES = 16_384
@@ -334,6 +341,12 @@ def owner_prompts(path: Path) -> list[dict]:
     return merge_recovered_prompts(state["messages"], state["meta"] + state["answers"])
 
 
+def last_owner_timestamp(messages: list[dict]) -> str | None:
+    """The timestamp of the owner's last substantive prompt: the line the agent's own work is counted from."""
+    stamps = [m["timestamp"] for m in messages if is_substantive_owner_prompt(m) and m.get("timestamp")]
+    return max(stamps, key=lambda stamp: _aw_epoch(stamp) or 0) if stamps else None
+
+
 SYNTHETIC_MODEL = "<synthetic>"
 
 
@@ -372,6 +385,433 @@ def session_facts(path: Path) -> dict:
     if len(turns) > 1:
         facts["driver_mixed"] = True
     return facts
+
+
+# ---- Agent work: what the agent itself did, for the handoff packet -------------------------------------
+# The owner's prompts say what was asked. A session that ran unattended for hours holds most of its state in
+# what the agent did after them: commits, pushes, dispatched jobs and their returns, background jobs still
+# open, the state and Close files it wrote, and what it told the owner it left undone or needs decided.
+# `agent_work(path, last_owner_ts, cwd)` reads the transcript once and git once and returns one JSON-native
+# dict, stored as `agent_work` in the digest and rendered by `agent_work_lines`. Every fact names its source:
+#   transcript - a tool call the hooks did not deny, paired with its result; a `<task-notification>` naming a
+#                background task (`hooks/_background_tasks.py` owns that notice shape);
+#   disk       - a deliverable, state or Close file the transcript names, checked for existence and size;
+#   git        - the commits in the session's time window (`git log --branches`, every session's) and the
+#                checkout's state now. A commit result in a transcript is not evidence (`-q`, `| tail`).
+# Nothing here says work is complete. The agent's own closing words are rendered apart and labeled. A file the
+# session wrote is pointed at, never copied: its owner (the Close doc, a task record, a state file) holds it.
+
+AW_GIT_TIMEOUT_S = 8  # bounds one git call; a timeout reports git unavailable rather than stalling the packet
+AW_GIT_MAX_COMMITS = 500  # bounds `git log`; the count line says when the window held more
+AW_KEEP = {"commits": 40, "dispatches": 200, "detached": 100, "shells": 100, "files": 60, "pushes": 20}  # rows kept in the saved JSON; the packet shows fewer
+AW_ITEM_CLIP = 170  # one packet line stays one screen line
+AW_STATED_MAX = 8  # the not-done and decision lines kept from the agent's last message
+
+_AW_PUSH_RE = re.compile(r"\bgit\b(?:\s+-C\s+\S+)?(?:\s+-c\s+\S+)*\s+push\b")
+_AW_COMMIT_RE = re.compile(r"\bgit\b(?:\s+-C\s+\S+)?(?:\s+-c\s+\S+)*\s+commit\b")
+_AW_REF_UPDATE_RE = re.compile(r"[0-9a-f]{7,40}\.\.\.?[0-9a-f]{7,40}\s+\S+\s+->\s+\S+|\[new branch\]\s+\S+\s+->\s+\S+")
+_AW_FANOUT_JOB_RE = re.compile(r"^\[fanout\] (?P<label>\S+): admitted on (?P<plan>\S+) \((?P<model>[^,)]+), (?P<effort>[^)]+)\)",
+                            re.MULTILINE)
+_AW_FANOUT_DIR_RE = re.compile(r"summary goes to (?P<dir>\S+?)/fanout-driver\.log")
+_AW_DETACHED_RE = re.compile(r"^DETACHED pid=\d+", re.MULTILINE)
+_AW_SIDECAR_PATH_RE = re.compile(r"^(?P<key>OUT|EXIT)=(?P<path>\S+)", re.MULTILINE)
+_AW_SHORT_HASH_RE = re.compile(r"[0-9a-f]{12,40}")
+_AW_RUN_ID_RE = re.compile(r"Run ID:\s*(\S+)")
+_AW_TASK_ID_RE = re.compile(r"Task ID:\s*(\w+)|background with ID:\s*(\w+)")
+# A file a later session reads to resume: a state, handoff, resume or Close doc, the vault's Overnight
+# Close docs, and the plan files.
+_AW_HANDOFF_FILE_RE = re.compile(r"(?i)(?:^|[\\/])(?:state|handoff|resume|status|close)[\w.-]*\.md$"
+                              r"|[\\/]Overnight[\\/][^\\/]+\.md$|[\\/]\.claude[\\/]plans[\\/][^\\/]+\.md$")
+_AW_CLOSE_DOC_RE = re.compile(r"[\\/]Overnight[\\/][^\\/]+\.md$")  # `commands/overnight.md` names where the Close doc lives
+_AW_MD_TOKEN_RE =re.compile(r"""[^\s"'<>|;&()=]+\.md\b""")
+_AW_BASH_WRITE_WORDS = ("tee ", "open(", "write_text(", "Set-Content", "Out-File", "Add-Content", "shutil.copy")
+_AW_HEADING_RE = re.compile(r"(?i)\b(?:not done|left undone|undone|remaining|unfinished|still open|"
+                         r"decisions?(?: for you)?|open decisions?|questions?|blockers?|blocked|parked)\b")
+_AW_CODE_RE = re.compile(r"^[\s>*_`-]*(?:\*\*)?\s*(?:Q|D)\d+\b")
+
+
+def _aw_epoch(stamp):
+    try:
+        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _aw_hhmm(stamp):
+    text = str(stamp or "")
+    return text[11:16] if len(text) >= 16 else "--:--"
+
+
+def _aw_clip(text, n=AW_ITEM_CLIP):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[:n - 1].rstrip() + "…"
+
+
+def _aw_result_text(block):
+    content = block.get("content")
+    if isinstance(content, list):
+        return "\n".join(str(part.get("text", "")) for part in content if isinstance(part, dict))
+    return content if isinstance(content, str) else ""
+
+
+def _aw_rel(path, cwd):
+    """`path` relative to `cwd` when it sits under it, else as written: a packet line a reader opens."""
+    try:
+        rel = os.path.relpath(path, cwd) if cwd and os.path.isabs(path) else path
+    except ValueError:
+        return path
+    return path if rel.startswith("..") else rel.replace("\\", "/")
+
+
+def _aw_size(n):
+    return f"{n / 1024:.1f} KB" if n >= 1024 else f"{n} B"
+
+
+def _aw_stat(path, cwd):
+    for candidate in (path, os.path.join(cwd, path) if cwd else path):
+        try:
+            info = os.stat(candidate)
+        except (OSError, ValueError):
+            continue
+        if os.path.isfile(candidate):
+            return {"path": candidate, "bytes": info.st_size, "mtime": info.st_mtime}
+    return None
+
+
+def _aw_git(cwd, *args):
+    done = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=AW_GIT_TIMEOUT_S)
+    if done.returncode != 0:
+        raise OSError((done.stderr or "git failed").strip().splitlines()[0] if (done.stderr or "").strip() else "git failed")
+    return done.stdout
+
+
+def _aw_patch_ids(cwd, window):
+    """Full commit hash -> patch-id for the window's commits on every local branch. A cherry-pick shares its
+    source's patch-id; a commit with no diff has none."""
+    diff = _aw_git(cwd, "log", "--branches", *window, "-p", "--no-color", "--no-decorate")
+    done = subprocess.run(["git", "-C", cwd, "patch-id", "--stable"], input=diff, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=AW_GIT_TIMEOUT_S)
+    if done.returncode != 0:
+        raise OSError((done.stderr or "git patch-id failed").strip().splitlines()[0])
+    return {parts[1]: parts[0] for parts in (line.split() for line in done.stdout.splitlines()) if len(parts) == 2}
+
+
+def _aw_one_per_change(rows, ids, on_head):
+    """One row per change, newest first. A change on several branches keeps the copy `HEAD` holds, else the newest."""
+    best = {}
+    for row in rows:  # git log order: newest first
+        key = ids.get(row["full"]) or row["full"]
+        kept = best.get(key)
+        if kept is None or (row["full"] in on_head and kept["full"] not in on_head):
+            best[key] = row
+    return sorted(best.values(), key=lambda r: r["time"], reverse=True)
+
+
+def agent_work_git(cwd, start, end, owner_epoch):
+    """The commits in `[start, end]` (every session's, on every local branch) and the checkout's state now.
+
+    `{"unavailable": <reason>}` when `cwd` is missing, outside git, or git does not answer in time."""
+    if not cwd or not os.path.isdir(cwd):
+        return {"unavailable": "the session's working directory is gone"}
+    try:
+        status = _aw_git(cwd, "status", "--porcelain=v1", "-b").splitlines()
+        head = _aw_git(cwd, "log", "-1", "--format=%h%x09%s").strip().split("\t", 1)
+        since = start
+        until = datetime.fromtimestamp((_aw_epoch(end) or 0) + 60).astimezone().isoformat() if end else ""
+        window = [f"--since={since}", *([f"--until={until}"] if until else []), f"--max-count={AW_GIT_MAX_COMMITS}"] if since else []
+        log = _aw_git(cwd, "log", "--branches", *window, "--format=%H%x09%h%x09%ct%x09%s") if since else ""
+        on_head = set(_aw_git(cwd, "log", "HEAD", *window, "--format=%H").split()) if since else set()
+        ids = _aw_patch_ids(cwd, window) if since else {}
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {"unavailable": _aw_clip(str(exc), 120)}
+    header = status[0][3:] if status and status[0].startswith("## ") else ""
+    branch = header.split("...")[0].split(" ")[0]
+    ahead = re.search(r"ahead (\d+)", header)
+    behind = re.search(r"behind (\d+)", header)
+    rows = []
+    for line in log.splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) == 4:
+            when = datetime.fromtimestamp(int(parts[2]), timezone.utc) if parts[2].isdigit() else None
+            rows.append({"full": parts[0], "hash": parts[1], "time": when.strftime("%Y-%m-%dT%H:%M:%SZ") if when else "",
+                         "subject": parts[3]})
+    commits = _aw_one_per_change(rows, ids, on_head)
+    after = sum(1 for c in commits if owner_epoch is not None and (_aw_epoch(c["time"]) or 0) > owner_epoch)
+    return {"branch": branch, "head": head[0] if head else "", "head_subject": head[1] if len(head) > 1 else "",
+            "upstream": "..." in header, "ahead": int(ahead.group(1)) if ahead else 0,
+            "behind": int(behind.group(1)) if behind else 0, "dirty": max(len(status) - 1, 0),
+            "commits": {"total": len(commits), "after_owner": after, "newest": commits[:AW_KEEP["commits"]]}}
+
+
+def agent_work(path, last_owner_ts=None, fallback_cwd=None, with_git=True):
+    """The agent-work record of one transcript. `last_owner_ts` is the timestamp of the owner's last prompt.
+    Git and relative paths use the working directory the transcript last ran in, `fallback_cwd` when it is gone."""
+    owner_epoch = _aw_epoch(last_owner_ts) if last_owner_ts else None
+    uses = {}
+    ended = {}
+    first_ts = last_ts = last_cwd = None
+    total_calls = calls_after = turns_after = 0
+    last_text = None
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("isSidechain"):
+                continue
+            ts = row.get("timestamp")
+            if ts:
+                first_ts = first_ts or ts
+                last_ts = ts
+            last_cwd = row.get("cwd") or last_cwd
+            after = owner_epoch is not None and (_aw_epoch(ts) or 0) > owner_epoch
+            message = row.get("message") if isinstance(row.get("message"), dict) else {}
+            content = message.get("content")
+            kind = row.get("type")
+            if kind == "assistant" and isinstance(content, list):
+                used = False
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_use":
+                        used = True
+                        total_calls += 1
+                        calls_after += after
+                        uses[block.get("id")] = {"name": block.get("name"), "input": block.get("input") or {},
+                                                 "ts": ts, "cwd": row.get("cwd") or last_cwd}
+                    elif block.get("type") == "text" and len((block.get("text") or "").strip()) >= 40:
+                        last_text = {"timestamp": ts, "after_owner": after}
+                turns_after += after and used
+            elif kind == "user":
+                texts = [content] if isinstance(content, str) else []
+                for block in content if isinstance(content, list) else ():
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        entry = uses.get(block.get("tool_use_id"))
+                        if entry is not None:
+                            entry["result"] = _aw_result_text(block)
+                            entry["error"] = bool(block.get("is_error"))
+                            entry["task_id"] = _background_tasks.launched_task_id(row)
+                    elif isinstance(block, dict) and block.get("type") == "text":
+                        texts.append(block.get("text") or "")
+                for text in texts:
+                    for notice in _background_tasks.ended_notices({"content": text}):
+                        ended[notice["task_id"]] = {"status": notice.get("status"), "time": ts,
+                                                    "exit_code": notice.get("exit_code")}
+            elif kind == "queue-operation":
+                for notice in _background_tasks.ended_notices(row):
+                    ended[notice["task_id"]] = {"status": notice.get("status"), "time": ts,
+                                                "exit_code": notice.get("exit_code")}
+            elif kind == "attachment":
+                attachment = row.get("attachment") if isinstance(row.get("attachment"), dict) else {}
+                if attachment.get("type") == "queued_command":
+                    for notice in _background_tasks.ended_notices({"content": attachment.get("prompt")}):
+                        ended[notice["task_id"]] = {"status": notice.get("status"), "time": ts,
+                                                    "exit_code": notice.get("exit_code")}
+    work = {"window": {"start": first_ts, "end": last_ts, "last_owner": last_owner_ts, "cwd": last_cwd},
+            "tool_calls": {"session": total_calls, "since_owner": calls_after},
+            "turns_since_owner": turns_after, "last_text": last_text,
+            "commit_calls": 0, "push_calls": 0, "pushes": [], "dispatches": [], "detached": [], "shells": [], "files": []}
+    cwd = last_cwd if last_cwd and os.path.isdir(last_cwd) else (fallback_cwd or "")
+    files = {}
+    for entry in uses.values():
+        if entry.get("error") or "result" not in entry:
+            continue
+        _aw_classify(entry, work, files, ended, cwd)
+    work["files"] = sorted(files.values(), key=lambda f: f["last_ts"] or "", reverse=True)[:AW_KEEP["files"]]
+    for key in ("pushes", "dispatches", "detached", "shells"):
+        work[key] = work[key][-AW_KEEP[key]:]
+    work["git"] = (agent_work_git(cwd, first_ts, last_ts, owner_epoch) if with_git and first_ts
+                   else {"unavailable": "not requested" if not with_git else "no timestamps in the transcript"})
+    return work
+
+
+def _aw_record_file(files, path, ts, cwd):
+    info = _aw_stat(path, cwd)
+    key = os.path.normcase(os.path.abspath(os.path.join(cwd, path))) if cwd else os.path.normcase(os.path.normpath(path))
+    row = files.setdefault(key, {"path": path, "writes": 0, "last_ts": ts, "bytes": None, "on_disk": False})
+    if os.path.isabs(path):
+        row["path"] = path
+    row["writes"] += 1
+    row["last_ts"] = ts
+    row["on_disk"] = info is not None
+    row["bytes"] = info["bytes"] if info else None
+
+
+def _aw_classify(entry, work, files, ended, cwd):
+    name, inputs, result, ts = entry["name"], entry["input"], entry["result"], entry["ts"]
+    if name in ("Write", "Edit"):
+        path = str(inputs.get("file_path") or "")
+        if path and _AW_HANDOFF_FILE_RE.search(path):
+            _aw_record_file(files, path, ts, cwd)
+        return
+    if name == "Workflow":
+        run = _AW_RUN_ID_RE.search(result)
+        task = _AW_TASK_ID_RE.search(result)
+        if run:
+            task_id = (task.group(1) or task.group(2)) if task else None
+            end = ended.get(task_id) if task_id else None
+            work["dispatches"].append({
+                "kind": "workflow", "label": Path(str(inputs.get("scriptPath") or "workflow")).stem + " " + run.group(1),
+                "model": None, "effort": None, "time": ts, "return": (
+                    {"how": "notice", "status": end["status"], "time": end["time"]} if end else None)})
+        return
+    if name != "Bash":
+        return
+    command = str(inputs.get("command") or "")
+    if _AW_PUSH_RE.search(command):
+        work["push_calls"] += 1
+        refs = _AW_REF_UPDATE_RE.findall(result)
+        if refs:
+            work["pushes"].append({"time": ts, "refs": [_AW_SHORT_HASH_RE.sub(lambda m: m.group(0)[:9], r) for r in refs][:3]})
+    if _AW_COMMIT_RE.search(command):
+        work["commit_calls"] += 1
+    jobs = list(_AW_FANOUT_JOB_RE.finditer(result))
+    if jobs:
+        out_dir = _AW_FANOUT_DIR_RE.search(result)
+        for job in jobs:
+            deliverable = str(dispatch_result.deliverable_path(out_dir.group("dir"), job.group("label"))) if out_dir else None
+            info = _aw_stat(deliverable, cwd) if deliverable else None
+            launched = _aw_epoch(ts)
+            returned = bool(info and (launched is None or info["mtime"] >= launched - 1))
+            work["dispatches"].append({
+                "kind": "fanout", "label": job.group("label"), "model": job.group("model"),
+                "effort": job.group("effort").strip(), "time": ts, "deliverable": deliverable,
+                "return": {"how": "deliverable", "path": deliverable, "bytes": info["bytes"], "mtime": info["mtime"]}
+                if returned else None})
+    elif _AW_DETACHED_RE.search(result):
+        paths = {m.group("key"): m.group("path") for m in _AW_SIDECAR_PATH_RE.finditer(result)}
+        out = paths.get("OUT", "")
+        if not (out.endswith(".record.json.out") and "EXIT" in paths):
+            info = _aw_stat(out, cwd) if out else None
+            work["detached"].append({
+                "label": os.path.splitext(os.path.basename(out))[0] or "detached", "time": ts, "out": out,
+                "bytes": info["bytes"] if info else None,
+                "mtime": datetime.fromtimestamp(info["mtime"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if info else None})
+            return
+        label = re.sub(r"\.record\.json\.out$", "", os.path.basename(out))
+        exit_info = _aw_stat(paths["EXIT"], cwd) if "EXIT" in paths else None
+        work["dispatches"].append({
+            "kind": "sidecar", "label": label, "model": None, "effort": None, "time": ts,
+            "deliverable": paths.get("EXIT"),
+            "return": {"how": "exit file", "path": paths["EXIT"], "bytes": exit_info["bytes"], "mtime": exit_info["mtime"]}
+            if exit_info else None})
+    if inputs.get("run_in_background") and "watch_records" not in command and entry.get("task_id"):
+        end = ended.get(entry["task_id"])
+        work["shells"].append({"id": entry["task_id"], "time": ts, "end": end,
+                               "label": _aw_clip(inputs.get("description") or command, 90)})
+    if any(word in command for word in _AW_BASH_WRITE_WORDS) or re.search(r"(?<![0-9&>])>{1,2}\s*[\"']?[^\s\"'|;&]", command):
+        for token in _AW_MD_TOKEN_RE.findall(command):
+            if _AW_HANDOFF_FILE_RE.search(token.replace("\\", "/")) or _AW_HANDOFF_FILE_RE.search(token):
+                _aw_record_file(files, token, ts, cwd)
+
+
+def _aw_title(text):
+    """The first clause of a row: up to its first `?`, `;` or sentence end when that is short, else a clip."""
+    found = re.search(r"\?|;|\. ", text)
+    return text[:found.end()].rstrip(" ;.") if found and found.end() <= 110 else _aw_clip(text, 90)
+
+
+def agent_work_stated(text, limit=AW_STATED_MAX, title_only=False):
+    """Lines the agent's own message puts under a not-done or decision heading, and every `Q<n>`/`D<n>` line.
+
+    Words of the agent, unverified: the packet labels them so. `title_only` keeps each row's first clause:
+    the Close doc the session wrote owns the rest of the row (options, recommendation, default)."""
+    items = []
+    under = None
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#") or re.fullmatch(r"\*\*[^*]+:?\*\*:?", line):
+            heading = line.lstrip("# ").strip("*: ")
+            under = heading if _AW_HEADING_RE.search(heading) else None
+            continue
+        if _AW_CODE_RE.match(line) or (under and re.match(r"^[-*\d]", line)):
+            body = re.sub(r"\*\*", "", re.sub(r"^[-*\d.)\s>]+", "", line))
+            row = ((under + ": ") if under and not _AW_CODE_RE.match(line) else "") + body
+            items.append(_aw_title(row) if title_only else _aw_clip(row))
+    return items[:limit]
+
+
+def agent_work_lines(work, outcome="", limit=6):
+    """The packet's lines for one `agent_work` record. `limit` caps each list (None: every row; 0: counts only)."""
+    def newest(rows):
+        return list(reversed(rows))[:limit]
+
+    win = work.get("window") or {}
+    calls = work.get("tool_calls") or {}
+    git = work.get("git") or {}
+    owner = _aw_hhmm(win.get("last_owner")) if win.get("last_owner") else None
+    out = ["## Agent work — transcript, disk and git evidence (UTC), not a completion verdict"]
+    if owner:
+        minutes = max(int(((_aw_epoch(win.get("end")) or 0) - (_aw_epoch(win.get("last_owner")) or 0)) // 60), 0)
+        out.append(f"Since the last owner prompt ({owner}): {minutes} min · {work.get('turns_since_owner', 0)} assistant turns "
+                   f"with tool calls · {calls.get('since_owner', 0)} tool calls. Whole session: {calls.get('session', 0)} tool calls.")
+    else:
+        out.append(f"No owner prompt found. Whole session: {calls.get('session', 0)} tool calls.")
+
+    if "unavailable" in git:
+        out.append(f"Commits — git unavailable ({git['unavailable']}); transcript: {work.get('commit_calls', 0)} `git commit` calls not denied.")
+    else:
+        c = git["commits"]
+        out.append(f"Commits — git, every session on this repo's local branches, {_aw_hhmm(win.get('start'))}–{_aw_hhmm(win.get('end'))}: "
+                   f"{c['total']} total, {c['after_owner']} since the last owner prompt "
+                   f"(transcript: {work.get('commit_calls', 0)} `git commit` calls not denied).")
+        out += [f"- {x['hash']} {_aw_hhmm(x['time'])} {_aw_clip(x['subject'], 110)}" for x in c["newest"][:limit]]
+        out.append(f"Git now — {git['branch'] or 'detached'} @{git['head']} · ahead {git['ahead']} / behind {git['behind']}"
+                   f"{'' if git['upstream'] else ' (no upstream)'} · {git['dirty']} dirty path(s) in {_aw_clip(win.get('cwd'), 60)}")
+    pushes = work.get("pushes") or []
+    out.append(f"Pushes — transcript: {work.get('push_calls', 0)} `git push` call(s) not denied, {len(pushes)} printed a ref update."
+               + (f" Last: {pushes[-1]['refs'][0]} ({_aw_hhmm(pushes[-1]['time'])})" if pushes else ""))
+
+    dispatches = work.get("dispatches") or []
+    if dispatches:
+        back = [d for d in dispatches if d.get("return")]
+        open_ = [d["label"] for d in dispatches if not d.get("return")]
+        out.append(f"Dispatches — transcript and disk: {len(dispatches)} launched, {len(back)} with a return on disk or an end notice"
+                   + (f"; no return: {', '.join(open_[:8])}{f' …[+{len(open_) - 8}]' if len(open_) > 8 else ''}." if open_ else "."))
+        unreturned = [d for d in dispatches if not d.get("return")]
+        for d in (newest(unreturned) + newest(back))[:limit]:
+            pin = f" ({d['model']} {d['effort']})" if d.get("model") else ""
+            ret = d.get("return")
+            if not ret:
+                tail = {"fanout": "no deliverable on disk", "sidecar": "no exit file"}.get(d["kind"], "no end notice")
+            elif ret["how"] == "notice":
+                tail = f"returned: {ret['status']} notice {_aw_hhmm(ret['time'])}"
+            else:
+                tail = f"returned: {_aw_rel(str(ret['path']), win.get('cwd'))} {_aw_size(ret['bytes'])}"
+            out.append(f"- {d['label']}{pin} {d['kind']} {_aw_hhmm(d['time'])} → {tail}")
+    detached = work.get("detached") or []
+    if detached:
+        out.append(f"Detached jobs — {len(detached)} launched; each one's output file, size and last write "
+                   f"(its own end marker, if any, is inside the output):")
+        out += [f"- {d['label']} · {_aw_rel(d['out'], win.get('cwd'))} · "
+                + (f"{_aw_size(d['bytes'])}, last write {_aw_hhmm(d['mtime'])}" if d["bytes"] is not None else "no output file on disk")
+                for d in newest(detached)]
+    shells = [s for s in work.get("shells") or [] if not s.get("end")]
+    gone = len(work.get("shells") or []) - len(shells)
+    out.append(f"Background shells — {len(shells)} with no end notice, {gone} ended. Verify each on disk or in the process list "
+               f"before calling it hung." if shells or gone else "Background shells — none launched.")
+    out += [f"- {s['label']} ({_aw_hhmm(s['time'])}, task {s['id']})" for s in newest(shells)]
+    files = work.get("files") or []
+    if files:
+        out.append("Handoff files this session wrote — pointers; read the file, the packet does not copy it:")
+        out += [f"- {_aw_rel(f['path'], win.get('cwd'))} · last write {_aw_hhmm(f['last_ts'])} · "
+                + (f"{_aw_size(f['bytes'])} on disk" if f["on_disk"] else "not on disk")
+                for f in files[:limit]]
+    close = next((f for f in files if f["on_disk"] and _AW_CLOSE_DOC_RE.search(f["path"])), None)
+    said = agent_work_stated(outcome, title_only=bool(close))
+    stamp = (work.get("last_text") or {})
+    when = f" ({_aw_hhmm(stamp.get('timestamp'))}, {'after' if stamp.get('after_owner') else 'before'} the last owner prompt)" if stamp else ""
+    if said:
+        owner = (f"; first clauses only, the rows are in the Close doc {_aw_rel(close['path'], win.get('cwd'))}" if close else "")
+        out.append(f"Said in the last assistant message{when} — the agent's words, unverified{owner}:")
+        out += [f"- {line}" for line in (said if limit is None else said[:max(limit, 3)])]
+    return out
 
 
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9_\-]{4,}")
@@ -1461,9 +1901,15 @@ def _render_brief_mode(d: dict, path: Path, outcome: str, project_dir: str = "",
             return text
 
 
+def _agent_work_block(d: dict, outcome: str, limit: int | None) -> list[str]:
+    """The agent-work lines, or none when the record carries no `agent_work` (a digest saved before it)."""
+    work = d.get("agent_work")
+    return [""] + agent_work_lines(work, outcome, limit) if work else []
+
+
 def _handoff_mode_body(d: dict, path: Path, outcome: str, project_dir: str, task_record: str,
                        timeline: list[dict], friction_limit: int, file_limit: int,
-                       clips: tuple[int, int, int, int, int, int]) -> str:
+                       clips: tuple[int, int, int, int, int, int], agent_limit: int = 6) -> str:
     row_clip, friction_clip, anchor_clip, latest_clip, outcome_clip, task_clip = clips
     census = d.get("tool_census") or {}
     sub_note = (f" (+{census['subagent_total']} in {census['subagent_transcripts']} subagent transcripts)"
@@ -1487,8 +1933,9 @@ def _handoff_mode_body(d: dict, path: Path, outcome: str, project_dir: str, task
         out += ["", f"## Latest command request ({_mode_row_attribution(latest_command)})",
                 _mode_prompt_line(latest_command, latest_clip)]
     out += ["", "## Status evidence — last substantive assistant text (not a completion verdict)",
-            _excerpt(outcome, outcome_clip) or "(no assistant text)",
-            "", f"## Prompt timeline (shown/total: {len(timeline)}/{len(all_rows)})"]
+            _excerpt(outcome, outcome_clip) or "(no assistant text)"]
+    out += _agent_work_block(d, outcome, agent_limit)
+    out += ["", f"## Prompt timeline (shown/total: {len(timeline)}/{len(all_rows)})"]
     out += [_mode_prompt_line(row, row_clip) for row in timeline] or ["(none recorded)"]
     if len(timeline) < len(all_rows):
         omitted_ids = [_evidence_id("U", row) for row in all_rows if row not in timeline]
@@ -1515,9 +1962,10 @@ def _render_handoff_mode(d: dict, path: Path, outcome: str, project_dir: str = "
     friction_limit = min(8, len(d.get("friction") or []))
     file_limit = min(16, len(d.get("files_modified_counts") or {}))
     clips = [500, 260, 500, 500, 1800, 2000]
+    agent_limit = 6
     while True:
         text = _handoff_mode_body(d, path, outcome, project_dir, task_record, timeline,
-                                  friction_limit, file_limit, tuple(clips))
+                                  friction_limit, file_limit, tuple(clips), agent_limit)
         if len(text.encode("utf-8")) <= HANDOFF_MAX_BYTES:
             return text
         if file_limit:
@@ -1529,6 +1977,9 @@ def _render_handoff_mode(d: dict, path: Path, outcome: str, project_dir: str = "
         minimum = _mode_unique_rows(priority + rows[-4:])
         if timeline != minimum and len(timeline) > len(minimum):
             timeline = minimum
+            continue
+        if d.get("agent_work") and agent_limit > 0:
+            agent_limit = {6: 3, 3: 1}.get(agent_limit, 0)
             continue
         if len(timeline) > 8:
             timeline = _prompt_preview(timeline, max(8, len(timeline) // 2))
@@ -1571,6 +2022,7 @@ def _render_full_mode(d: dict, path: Path, outcome: str, project_dir: str = "", 
     items = _mode_files(d, project_dir)
     out += ["", f"## Files modified ({len(items)}) — complete list"]
     out += [f"- {p} ×{c}" for p, c in items] or ["(none)"]
+    out += _agent_work_block(d, outcome, None)
     if tools:
         normalized = {"main": census.get("main", {}), "subagents": census.get("subagents", {}),
                       "subagent_transcripts": census.get("subagent_transcripts", 0),
@@ -1776,6 +2228,7 @@ def main() -> None:
         d["outcome_last_assistant_text"] = outcome
         d["tool_census"] = tool_census(path)
         d["user_messages"] = owner_prompts(path)
+        d["agent_work"] = agent_work(path, last_owner_timestamp(d["user_messages"]), a.project_dir)
         if isinstance(d.get("evidence_coverage"), dict):
             d["evidence_coverage"]["collected_user_messages"] = len(d["user_messages"])
     else:
@@ -1807,7 +2260,29 @@ def main() -> None:
                 raise SystemExit(1)
             sys.stdout.write(full_export_receipt(d, export_path, projection, block, a.project_dir, a.tools))
         else:
-            sys.stdout.write(projection)
+            sys.stdout.write(projection + ("" if a.brief else adoption_note(path.stem)))
+
+
+def adoption_note(target: str) -> str:
+    """Hand the running sidecars of `target`, a session with no live host, to this session, and say which.
+
+    A resume packet is the pickup, so its run moves the jobs: this session's `watch_records.py --session`
+    reads only its own hook state, and the jobs' wakes would otherwise stay with a session that is gone.
+    `dispatch_table.adopt_sidecars` owns the live-host test and the move. Empty when nothing moved; a failure
+    is reported, because the jobs then wake nobody."""
+    current = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    if not current or not target or current == target:
+        return ""
+    try:
+        import dispatch_table
+        moved = dispatch_table.adopt_sidecars(target, current)
+    except Exception as exc:
+        return "\n\nAdopting the running jobs of session %s failed (%s: %s); their ends wake no session.\n" % (
+            target[:8], type(exc).__name__, exc)
+    if not moved:
+        return ""
+    return "\n\nAdopted %d running job(s) of session %s; this session's watcher wakes on each end:\n%s\n" % (
+        len(moved), target[:8], "\n".join("- %s  %s" % (e["jobs"][0].get("label"), e.get("record")) for e in moved))
 
 
 def task_record_block(session_id: str, project_dir: str) -> str:

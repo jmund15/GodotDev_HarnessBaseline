@@ -75,8 +75,9 @@ class ProcessTree:
                 k32.CloseHandle(wintypes.HANDLE(job))
 
     def end(self):
-        if os.name == "nt":
+        if os.name == "nt" and self.proc.poll() is None:
             # Before the job termination: a grandchild started through Git Bash escapes the job object.
+            # An exited process has no tree for taskkill to walk, and the spawn costs 0.3 to 0.5 s per bounded run.
             try:
                 subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.proc.pid)], capture_output=True,
                                timeout=CLEANUP_SECONDS)

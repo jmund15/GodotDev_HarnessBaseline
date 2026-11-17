@@ -15,11 +15,14 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from _case_pool import run_cases  # noqa: E402
+
 SCRIPT = os.path.join(HERE, "..", "scripts", "land_run.ps1")
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 ENV_PROBES = ("LAND_USER_PROBE", "LAND_PROJECT_PROBE", "LAND_BOTH", "HOME",
-              "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL")
+              "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "HARNESS_RUNNER_ENV")
 STUB_CLOSE = '''import json, os, subprocess
 with open("close_env.json", "w") as fh:
     json.dump({k: os.environ.get(k) for k in %r}, fh)
@@ -120,15 +123,42 @@ def push_peer(origin, tmp, edits, message):
     return git("rev-parse", "HEAD", cwd=peer)
 
 
-def main():
-    failures = []
+# Each case builds its own temp origin and clone, so the pool runs them side by side in separate processes.
+_FAILURES = []
 
-    def check(label, ok, detail=""):
-        print("%-4s %s" % ("ok" if ok else "FAIL", label))
-        if not ok:
-            failures.append(label + (": " + str(detail)[-400:] if detail else ""))
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+def check(label, ok, detail=""):
+    print("%-4s %s" % ("ok" if ok else "FAIL", label), flush=True)
+    if not ok:
+        _FAILURES.append(label + (": " + str(detail)[-400:] if detail else ""))
+
+
+def case(fn):
+    """A pool case: its checks all run, then any failed one raises."""
+    def run():
+        fn()
+        if _FAILURES:
+            raise AssertionError("; ".join(_FAILURES))
+    run.__name__ = fn.__name__
+    run.__qualname__ = fn.__name__
+    return run
+
+
+def tmpdir():
+    return tempfile.TemporaryDirectory(prefix="landrun_")
+
+
+def read_close_env(work):
+    try:
+        with open(os.path.join(work, "close_env.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+    except OSError:
+        return {}
+
+
+@case
+def case_green_close_lands():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         rc, out = land(work, sha, "land/t1")
         main_now = git("rev-parse", "main", cwd=origin)
@@ -143,8 +173,17 @@ def main():
               "FLAKY C:/r/.claude/tests/test_baseline_sync.py: failed in the pool" in out, out)
         check("a green land whose close excused no pre-existing red carries no pre-existing field",
               "pre-existing=" not in out, out)
+        with open(os.path.join(work, ".claude", "scratch", "land_close.log"), encoding="utf-8", errors="replace") as fh:
+            log = fh.read().splitlines()
+        check("the close log's first line names the run's sha and branch, so the land watcher reads only its own run's log",
+              log[:1] == ["LAND_CLOSE sha=%s branch=land/t1" % sha], log[:2])
+        check("... and the log still carries the close's own lines after it",
+              any(l.startswith("harness_tests: close green") for l in log), log)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_pre_existing_green():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         write(os.path.join(work, "close_pre_existing.txt"), "")
         rc, out = land(work, sha, "land/t1")
@@ -152,7 +191,10 @@ def main():
               rc == 0 and "LAND_RESULT=green" in out
               and "pre-existing=2 test_instruction_quality_split.py,workflow_amend_line_test.js" in out, out)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_pre_existing_red():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         write(os.path.join(work, "close_pre_existing.txt"), "")
         write(os.path.join(work, "close_red.txt"), "")
@@ -162,7 +204,10 @@ def main():
               rc == 1 and "LAND_RESULT=red stage=close" in out and "pre-existing=2 " in out
               and "workflow_amend_line_test.js" in out and git("rev-parse", "main", cwd=origin) == before, out)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_args_refused():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         before = git("rev-parse", "main", cwd=origin)
         rc, out = land(work, sha, "main")
@@ -172,7 +217,10 @@ def main():
         check("a malformed sha is refused before main moves",
               rc == 1 and "LAND_RESULT=red stage=args" in out and git("rev-parse", "main", cwd=origin) == before, out)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_change_outside_harness_owes_gate():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp, changed="project.godot")
         before = git("rev-parse", "main", cwd=origin)
         rc, out = land(work, sha, "land/t1")
@@ -180,30 +228,53 @@ def main():
               rc == 1 and "LAND stage=gate" in out and "skipped=1" not in out
               and git("rev-parse", "main", cwd=origin) == before, out)
 
-    for ignore_file in (".gitignore", ".searchignore"):
-        with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
-            origin, work, sha = make(tmp, changed=ignore_file)
-            rc, out = land(work, sha, "land/t1")
-            check("an ignore file no build or test reads (%s) skips the gate" % ignore_file,
-                  rc == 0 and "skipped=1" in out and git("rev-parse", "main", cwd=origin) == sha, out)
 
-    # The base attributes line every checkout reads; a change keeps it and adds below it.
-    attrs = {".gitattributes": "* text=auto eol=lf\n"}
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
-        origin, work, sha = make(tmp, changed=".gitattributes", base_files=attrs,
+def ignore_file_skips_gate(ignore_file):
+    with tmpdir() as tmp:
+        origin, work, sha = make(tmp, changed=ignore_file)
+        rc, out = land(work, sha, "land/t1")
+        check("an ignore file no build or test reads (%s) skips the gate" % ignore_file,
+              rc == 0 and "skipped=1" in out and git("rev-parse", "main", cwd=origin) == sha, out)
+
+
+@case
+def case_gitignore_skips_gate():
+    ignore_file_skips_gate(".gitignore")
+
+
+@case
+def case_searchignore_skips_gate():
+    ignore_file_skips_gate(".searchignore")
+
+
+# The base attributes line every checkout reads; a change keeps it and adds below it.
+ATTRS = {".gitattributes": "* text=auto eol=lf\n"}
+
+
+@case
+def case_gitattributes_harness_only_skips_gate():
+    with tmpdir() as tmp:
+        origin, work, sha = make(tmp, changed=".gitattributes", base_files=ATTRS,
                                  text=".claude/baseline.lock.json merge=baseline-lock\n# harness merge drivers\n")
         rc, out = land(work, sha, "land/t1")
         check("a .gitattributes change whose every line names a .claude/ path skips the gate",
               rc == 0 and "skipped=1" in out and git("rev-parse", "main", cwd=origin) == sha, out)
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
-        origin, work, sha = make(tmp, changed=".gitattributes", base_files=attrs,
+
+
+@case
+def case_gitattributes_outside_claude_owes_gate():
+    with tmpdir() as tmp:
+        origin, work, sha = make(tmp, changed=".gitattributes", base_files=ATTRS,
                                  text=".claude/baseline.lock.json merge=baseline-lock\n*.cs eol=crlf\n")
         rc, out = land(work, sha, "land/t1")
         check("a .gitattributes line outside .claude/ owes the gate: it can change the bytes a build checks out",
               rc == 1 and "LAND stage=gate" in out and "skipped=1" not in out
               and git("rev-parse", "main", cwd=origin) != sha, out)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_commit_main_holds_is_noop():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         git("push", "-q", "origin", sha + ":refs/heads/main", cwd=work)
         rc, out = land(work, sha, "land/t1")
@@ -212,7 +283,10 @@ def main():
         branches = git("branch", "--list", "land/*", cwd=origin)
         check("... and deletes its land branch", branches == "", branches)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_same_branch_pushed_again_supersedes():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         with open(os.path.join(work, "later.md"), "w", newline="\n") as fh:
             fh.write("later\n")
@@ -227,8 +301,13 @@ def main():
               and "by=land/t1" in out and "stage=close" not in out, out)
         check("... and keeps the branch at the newer push for its own run",
               git("for-each-ref", "--format=%(objectname)", "refs/heads/land/t1", cwd=origin) == newer and "branch-delete=kept" in out, out)
+        check("a branch delete that loses its lease to a newer push is a rejection, not a dropped connection: no retry",
+              "LAND retry" not in out, out)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_other_branch_contains_supersedes():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         with open(os.path.join(work, "later.md"), "w", newline="\n") as fh:
             fh.write("later\n")
@@ -243,7 +322,10 @@ def main():
         check("... and deletes its own land branch",
               git("branch", "--list", "land/t1", cwd=origin) == "", out)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_branch_without_commit_supersedes_nothing():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         git("checkout", "-q", "--detach", "HEAD~1", cwd=work)
         with open(os.path.join(work, "other.md"), "w", newline="\n") as fh:
@@ -256,7 +338,10 @@ def main():
         check("a land branch that does not contain the commit supersedes nothing",
               rc == 0 and git("rev-parse", "main", cwd=origin) == sha and "LAND_RESULT=green" in out, out)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_close_env():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         user_claude = os.path.join(tmp, "userhome", ".claude")
         os.makedirs(user_claude)
@@ -265,18 +350,19 @@ def main():
         env = {k: v for k, v in os.environ.items() if k not in ENV_PROBES}
         env["USERPROFILE"] = os.path.join(tmp, "userhome")
         rc, out = land(work, sha, "land/t1", env=env)
-        try:
-            with open(os.path.join(work, "close_env.json"), encoding="utf-8") as fh:
-                seen = json.load(fh)
-        except OSError:
-            seen = {}
+        seen = read_close_env(work)
         check("the close runs with the user settings env a session gets", seen.get("LAND_USER_PROBE") == "u", seen)
         check("... and the project settings env, which overrides the user's",
               seen.get("LAND_PROJECT_PROBE") == "p" and seen.get("LAND_BOTH") == "project", seen)
         check("... and HOME, set from USERPROFILE when the service has none",
               seen.get("HOME") == env["USERPROFILE"], seen)
+        check("... and HARNESS_RUNNER_ENV=1, so each proof runs with a clean runner's environment",
+              seen.get("HARNESS_RUNNER_ENV") == "1", seen)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_leftover_never_blocks_checkout():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         git("checkout", "-q", "--detach", "HEAD~1", cwd=work)
         with open(os.path.join(work, "notes.md"), "w", newline="\n") as fh:
@@ -285,21 +371,35 @@ def main():
         check("a prior run's leftover in the land worktree never blocks the checkout",
               rc == 0 and git("rev-parse", "main", cwd=origin) == sha and "LAND_RESULT=green" in out, out)
 
-    for side, key, program in (("fetch", "uploadpack", "git-upload-pack"), ("push", "receivepack", "git-receive-pack")):
-        with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
-            origin, work, sha = make(tmp)
-            flaky = os.path.join(tmp, "flaky_%s.sh" % key).replace("\\", "/")
-            marker = os.path.join(tmp, "failed_once").replace("\\", "/")
-            with open(flaky, "w", newline="\n") as fh:
-                fh.write('if [ ! -f "%s" ]; then touch "%s"; echo "Recv failure: Connection was reset" >&2; exit 128; fi\n'
-                         'exec %s "$@"\n' % (marker, marker, program))
-            git("config", "remote.origin." + key, "sh " + flaky, cwd=work)
-            rc, out = land(work, sha, "land/t1")
-            check("a %s that drops its connection once is retried, and the land goes green" % side,
-                  rc == 0 and git("rev-parse", "main", cwd=origin) == sha and "LAND_RESULT=green" in out
-                  and "LAND retry" in out, out)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+def dropped_connection_retried(side, key, program):
+    with tmpdir() as tmp:
+        origin, work, sha = make(tmp)
+        flaky = os.path.join(tmp, "flaky_%s.sh" % key).replace("\\", "/")
+        marker = os.path.join(tmp, "failed_once").replace("\\", "/")
+        with open(flaky, "w", newline="\n") as fh:
+            fh.write('if [ ! -f "%s" ]; then touch "%s"; echo "Recv failure: Connection was reset" >&2; exit 128; fi\n'
+                     'exec %s "$@"\n' % (marker, marker, program))
+        git("config", "remote.origin." + key, "sh " + flaky, cwd=work)
+        rc, out = land(work, sha, "land/t1")
+        check("a %s that drops its connection once is retried, and the land goes green" % side,
+              rc == 0 and git("rev-parse", "main", cwd=origin) == sha and "LAND_RESULT=green" in out
+              and "LAND retry" in out, out)
+
+
+@case
+def case_fetch_drop_retried():
+    dropped_connection_retried("fetch", "uploadpack", "git-upload-pack")
+
+
+@case
+def case_push_drop_retried():
+    dropped_connection_retried("push", "receivepack", "git-receive-pack")
+
+
+@case
+def case_rebase_disjoint_lands():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         moved = push_peer(origin, tmp, {"peer.md": "peer\n"}, "peer")
         env = {k: v for k, v in os.environ.items() if k not in ENV_PROBES}
@@ -308,15 +408,14 @@ def main():
         check("a branch cut before main moved, with disjoint changes, lands as its rebased tip",
               rc == 0 and landed != sha and git("rev-parse", "main^", cwd=origin) == moved
               and "LAND_RESULT=green" in out and ("landed=" + landed) in out, out)
-        try:
-            with open(os.path.join(work, "close_env.json"), encoding="utf-8") as fh:
-                seen = json.load(fh)
-        except OSError:
-            seen = {}
+        seen = read_close_env(work)
         check("a rebase's committer identity does not reach the close",
               seen.get("GIT_COMMITTER_NAME") is None and seen.get("GIT_COMMITTER_EMAIL") is None, seen)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_rebase_conflict_stops():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp)
         moved = push_peer(origin, tmp, {"notes.md": "elsewhere\n"}, "peer")
         rc, out = land(work, sha, "land/t1")
@@ -324,7 +423,10 @@ def main():
               rc == 1 and "LAND_RESULT=red stage=rebase" in out and "notes.md" in out
               and git("rev-parse", "main", cwd=origin) == moved, out)
 
-    with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
+
+@case
+def case_lock_rows_both_land():
+    with tmpdir() as tmp:
         origin, work, sha = make(tmp, base_files=LOCK_BASE)
         git("config", "merge.baseline-lock.driver", LOCK_DRIVER, cwd=work)
         base = git("rev-parse", "HEAD", cwd=work)
@@ -343,48 +445,75 @@ def main():
         check("two branches that each add a different lock row both land, the second rebased through the lock driver",
               rc_a == 0 and rc_b == 0 and sorted(rows) == ["a.md", "b.md"], out_a + out_b)
 
-    for moves, want_green in ((1, True), (2, False)):
-        with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
-            origin, work, sha = make(tmp)
-            peer = os.path.join(tmp, "peer")
-            git("clone", "-q", origin, peer, cwd=tmp)
-            # Each hook line is a JSON list of argv lists: the runner service has no `sh` on its PATH.
-            hooks = [json.dumps([["git", "-C", peer, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
-                                  "--allow-empty", "-m", "m%d" % n],
-                                 ["git", "-C", peer, "push", "-q", "origin", "HEAD:main"]])
-                     for n in range(1, moves + 1)]
-            write(os.path.join(work, "close_hooks.txt"), "\n".join(hooks) + "\n")
-            rc, out = land(work, sha, "land/t1")
-            label = "once" if want_green else "twice"
-            if want_green:
-                parent = git("log", "-1", "--format=%s", "main^", cwd=origin)
-                check("a main that moves once during the close is rebased and re-proved, and lands (%s)" % label,
-                      rc == 0 and "LAND_RESULT=green" in out and parent == "m1"
-                      and ("landed=" + git("rev-parse", "main", cwd=origin)) in out, out)
-            else:
-                check("a main that moves a second time during the re-proved close stops at stage=push (%s)" % label,
-                      rc == 1 and "LAND_RESULT=red stage=push" in out
-                      and git("log", "-1", "--format=%s", "main", cwd=origin) == "m2", out)
 
-    for left, want_green in ((1, True), (2, False)):
-        with tempfile.TemporaryDirectory(prefix="landrun_") as tmp:
-            origin, work, sha = make(tmp)
-            write(os.path.join(work, "close_incomplete.txt"), str(left))
-            rc, out = land(work, sha, "land/t1")
-            if want_green:
-                check("a close left incomplete with no new red is run once more, and lands",
-                      rc == 0 and "LAND_RESULT=green" in out and out.count("LAND stage=close") == 2, out)
-            else:
-                check("a close incomplete twice stops at stage=close after one rerun",
-                      rc == 1 and "LAND_RESULT=red stage=close" in out and out.count("LAND stage=close") == 2, out)
+def main_moves_during_close(moves, want_green):
+    with tmpdir() as tmp:
+        origin, work, sha = make(tmp)
+        peer = os.path.join(tmp, "peer")
+        git("clone", "-q", origin, peer, cwd=tmp)
+        # Each hook line is a JSON list of argv lists: the runner service has no `sh` on its PATH.
+        hooks = [json.dumps([["git", "-C", peer, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                              "--allow-empty", "-m", "m%d" % n],
+                             ["git", "-C", peer, "push", "-q", "origin", "HEAD:main"]])
+                 for n in range(1, moves + 1)]
+        write(os.path.join(work, "close_hooks.txt"), "\n".join(hooks) + "\n")
+        rc, out = land(work, sha, "land/t1")
+        label = "once" if want_green else "twice"
+        if want_green:
+            parent = git("log", "-1", "--format=%s", "main^", cwd=origin)
+            check("a main that moves once during the close is rebased and re-proved, and lands (%s)" % label,
+                  rc == 0 and "LAND_RESULT=green" in out and parent == "m1"
+                  and ("landed=" + git("rev-parse", "main", cwd=origin)) in out, out)
+        else:
+            check("a main that moves a second time during the re-proved close stops at stage=push (%s)" % label,
+                  rc == 1 and "LAND_RESULT=red stage=push" in out
+                  and git("log", "-1", "--format=%s", "main", cwd=origin) == "m2", out)
+        check("a push that main's move rejected is not retried as a dropped connection: no retry line (%s)" % label,
+              "LAND retry" not in out, out)
 
-    if failures:
-        print("\n%d FAILED" % len(failures))
-        for f in failures:
-            print(" -", f)
-        sys.exit(1)
-    print("\nall passed")
 
+@case
+def case_main_moves_once_during_close():
+    main_moves_during_close(1, True)
+
+
+@case
+def case_main_moves_twice_during_close():
+    main_moves_during_close(2, False)
+
+
+def incomplete_close(left, want_green):
+    with tmpdir() as tmp:
+        origin, work, sha = make(tmp)
+        write(os.path.join(work, "close_incomplete.txt"), str(left))
+        rc, out = land(work, sha, "land/t1")
+        if want_green:
+            check("a close left incomplete with no new red is run once more, and lands",
+                  rc == 0 and "LAND_RESULT=green" in out and out.count("LAND stage=close") == 2, out)
+        else:
+            check("a close incomplete twice stops at stage=close after one rerun",
+                  rc == 1 and "LAND_RESULT=red stage=close" in out and out.count("LAND stage=close") == 2, out)
+
+
+@case
+def case_incomplete_close_rerun_lands():
+    incomplete_close(1, True)
+
+
+@case
+def case_incomplete_close_twice_stops():
+    incomplete_close(2, False)
+
+
+CASES = [case_green_close_lands, case_pre_existing_green, case_pre_existing_red, case_args_refused,
+         case_change_outside_harness_owes_gate, case_gitignore_skips_gate, case_searchignore_skips_gate,
+         case_gitattributes_harness_only_skips_gate, case_gitattributes_outside_claude_owes_gate,
+         case_commit_main_holds_is_noop, case_same_branch_pushed_again_supersedes,
+         case_other_branch_contains_supersedes, case_branch_without_commit_supersedes_nothing, case_close_env,
+         case_leftover_never_blocks_checkout, case_fetch_drop_retried, case_push_drop_retried,
+         case_rebase_disjoint_lands, case_rebase_conflict_stops, case_lock_rows_both_land,
+         case_main_moves_once_during_close, case_main_moves_twice_during_close,
+         case_incomplete_close_rerun_lands, case_incomplete_close_twice_stops]
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run_cases(CASES))

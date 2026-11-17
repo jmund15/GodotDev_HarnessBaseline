@@ -74,8 +74,7 @@ The last `Triage:` line counts. Declare local, shared or external reach; standin
 A command that sizes work reads the recorded fields and collects only the facts the record lacks.
 
 The commit check derives reach and oracle from the staged diff and prints any field raised above the recorded
-triage. With neither trailer nor record, it appends a distinct `Triage-Derived:` trailer containing only reach and oracle,
-and speaks only above local reach. It advises; re-triage on its raise. It also
+triage. With neither trailer nor record, it leaves the call as written and speaks only above local reach. It advises; re-triage on its raise. It also
 prints `candidate review owed` only for admitted mandates with changed-since-reviewed pairs, once per change of the
 owed set (`tools/review_ledger.py`). Never-reviewed files alone do not trigger it. The candidate review re-derives the path-derivable fields of the commits it covers (`triage.py rederive`) and flags any
 recorded value below the derived one, and runs

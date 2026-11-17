@@ -30,8 +30,10 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
 import quota_bands  # noqa: E402  (the band table the 5h width threshold is read from)
 from _display_words import banned_in
+from _planted_checkout import enter_planted_checkout
 from _transport_fixture import hook_env, planted_mcp_workdir
 
+enter_planted_checkout()  # a payload with no cwd makes the hook ask git about the working directory
 os.environ["SC_WORKDIR"] = planted_mcp_workdir()
 HOOK = os.path.join(HERE, "..", "hooks", "workflow_provider_guard.py")
 WORKFLOWS = os.path.join(HERE, "..", "workflows")

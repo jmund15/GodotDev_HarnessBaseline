@@ -63,9 +63,11 @@ root when it gives none). A hit names its anchor: `against project root` or `aga
 
 `dispatch_size(jobs)` takes the jobs list or the whole jobs file / Workflow args object, is pure, and raises
 only on a spec that holds no job list. `line(spec, root)` is its one-line form, None when the spec holds no
-job or cannot be sized. `/delegate` runs it on the jobs file before launch. It never blocks a launch; instead
-`preflight_lines(spec)` prints every unmet launch precondition as a fact: each job the fan-out would refuse by
-`kind` (in the fan-out's own text), each pinned tier with no ladder slice in this context, and each governing
+job or cannot be sized. `/delegate` runs it on the jobs file before launch. The tool itself blocks nothing; the
+fan-out refuses a job whose reading is past its window (`over_window_lines`, the `over` that
+`lens_briefs.seat_overage` refuses a review seat on). `preflight_lines(spec)` prints every unmet launch precondition
+as a fact: each job the fan-out would refuse by `kind` (in the fan-out's own text), each job it would refuse for
+reading past its window, each pinned tier with no ladder slice in this context, and each governing
 skill the briefs need that is not in context. Each names its load step and never the ladder itself; a check that
 cannot run prints `preflight: not checked`, and one `preflight: clean` line is the launch's go.
 """
@@ -583,6 +585,15 @@ def fit_lines(size: dict) -> list:
     return out
 
 
+def over_window_lines(size: dict) -> list:
+    """One line per pinned job whose reading is past the point it compacts at: the job, its reading and its window.
+    The measure is `perJob[].over`, the number `lens_briefs.seat_overage` refuses a review seat on, so the fan-out's
+    launch refusal and the panel's agree. A job whose pin cannot be sized is not named here (`fit_lines` says so)."""
+    return ["`%s` (%s): reading %d tokens, past its usable window of %d tokens (%s); over by %d"
+            % (job["label"], job["model"], job["tokens"], job["usable"], job["pointSource"], job["over"])
+            for job in size["perJob"] if job["model"] and job["usable"] and job["over"] > 0]
+
+
 def denied_lines(size: dict) -> list:
     """One `fit: `label` denied: ...` fact per job that a deny rule hits; [] when none does."""
     return ["fit: `%s` %s" % (job["label"], _denied_text(job["denied"])) for job in size["perJob"] if job.get("denied")]
@@ -608,6 +619,40 @@ def _kind_refusals(jobs: list) -> list:
             text = str(exc)
             refusals.append("preflight: unmet: " + (text if text.startswith("job ") else "job %s: %s" % (label, text)))
     return refusals
+
+
+def _over_window_unmet(spec, root: Path) -> list:
+    """One unmet line per job the fan-out refuses for reading past its window (`over_window_lines`), so a clean
+    preflight is never printed over a job the launch will refuse. A spec that cannot be sized is `not checked`."""
+    try:
+        lines = over_window_lines(dispatch_size(spec, root))
+    except Exception as exc:
+        return ["preflight: not checked: job reading against its window (%s)" % exc]
+    return ["preflight: unmet: job %s; the launch refuses it (split its reading, drop a named file, or pin a row "
+            "with a larger window)" % line for line in lines]
+
+
+_WIDER_RUN = re.compile(r"harness_tests\.py\s+--(?:proofs-for|for|close|all)\b|regression_gate\.ps1\s+-\w")
+
+
+def _wider_run_lines(jobs: list, root: Path) -> list:
+    """One line per job whose brief invokes a run wider than its edited units' proof files (the runner's bound,
+    close or whole-suite modes, the C# gate): the dispatcher runs those once at its merge or close."""
+    out = []
+    for index, job in enumerate(jobs):
+        texts = [job["prompt"]] if isinstance(job.get("prompt"), str) else []
+        for key in ("promptPath", "promptFile"):
+            if isinstance(job.get(key), str):
+                try:
+                    texts.append((root / job[key]).read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    pass
+        found = next((m.group(0) for text in texts for m in [_WIDER_RUN.search(text)] if m), None)
+        if found:
+            out.append("preflight: unmet: job %s: its brief orders a wider run (`%s`); a brief names its edited units' "
+                       "proof files and the dispatcher runs the wider run once at its merge or close "
+                       "(orchestration reference brief_checks.md)" % (job.get("label") or "job%d" % (index + 1), found))
+    return out
 
 
 def _session_transcript(session_id: str):
@@ -671,7 +716,8 @@ def _credit_lines(spec, root: Path, session_id: str, transcript_path) -> list:
 
 def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> list:
     """Every unmet launch precondition, as facts, in the output `/delegate` already reads before a launch: each
-    job the fan-out would refuse by `kind`, each pinned tier with no ladder slice in this context, and each
+    job the fan-out would refuse by `kind`, each brief that orders a run wider than its edited units' proof
+    files, each pinned tier with no ladder slice in this context, and each
     governing skill the briefs need that is not in context. One `preflight: clean: ...` line means every check
     ran and passed, so a clean preflight is the launch's go. A check that cannot run prints `preflight: not
     checked: ...`, never a pass. Facts only; no check denies on these lines."""
@@ -680,7 +726,7 @@ def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> l
         jobs = _jobs_of(spec)
     except ValueError:
         return ["preflight: not checked: launch preconditions (the spec holds no job list)"]
-    out = _kind_refusals(jobs)
+    out = _kind_refusals(jobs) + _wider_run_lines(jobs, root) + _over_window_unmet(spec, root)
     session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session_id:
         return out + ["preflight: not checked: ladder and skill credit (CLAUDE_CODE_SESSION_ID is unset)"]

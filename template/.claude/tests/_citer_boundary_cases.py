@@ -21,7 +21,8 @@ def cases(root):
     def brief(name, subjects, header=True):
         sweep = root / (name + "_citers.json")
         rows = [{"path": str(p.resolve()), "hash": subprocess.check_output(
-            ["git", "hash-object", str(p)], text=True).strip(), "head": "unrelated-old-head"} for p in subjects]
+            ["git", "hash-object", str(p)], text=True, cwd=str(root)).strip(), "head": "unrelated-old-head"}
+            for p in subjects]
         sweep.write_text(json.dumps({"subjects": rows}), encoding="utf-8")
         return write(name + ".md", ("<!-- lens brief: planted -->\n" if header else "")
                      + f"> Sweep file: `{sweep.as_posix()}`. Grep that file for the surfaces you judge.\n")

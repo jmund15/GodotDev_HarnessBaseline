@@ -33,7 +33,7 @@ class HarnessIntegrityTests(unittest.TestCase):
                  patch.object(runner, 'tree_entries', side_effect=lambda _root: dict(state)), \
                  patch.object(runner, '_git', return_value='fixture-head'), \
                  patch.object(runner, 'run_proof', side_effect=proof), \
-                 patch.dict(runner.os.environ, {'HARNESS_SLOT_DIR': str(Path(tmp) / 'slots')}), \
+                 patch.dict(runner.os.environ, {'HARNESS_SLOT_BUDGET': '', 'HARNESS_SLOT_DIR': str(Path(tmp) / 'slots')}), \
                  contextlib.redirect_stdout(io.StringIO()) as output:
                 if verbose:
                     code = runner.run_all(tmp, verbose=True)
@@ -136,7 +136,7 @@ class HarnessIntegrityTests(unittest.TestCase):
                  patch.object(runner, 'tree_entries', return_value={'.claude/tools/subject.py': 'v'}), \
                  patch.object(runner, '_git', return_value='fixture-head'), \
                  patch.object(runner, 'run_proof', side_effect=proof), \
-                 patch.dict(runner.os.environ, {'HARNESS_TEST_JOBS': str(jobs),
+                 patch.dict(runner.os.environ, {'HARNESS_TEST_JOBS': str(jobs), 'HARNESS_SLOT_BUDGET': '',
                                                'HARNESS_SLOT_DIR': str(Path(tmp) / 'slots')}), \
                  contextlib.redirect_stdout(io.StringIO()) as output:
                 code = runner.run_all(tmp)
@@ -222,7 +222,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         self.assertEqual(calls['test_red.py'], 2)
         self.assertNotIn('test_red.py', timing)
 
-    def test_flaky_log_is_capped(self):
+    def test_flaky_log_trim_drops_rows_its_count_no_longer_reads(self):
         with tempfile.TemporaryDirectory(prefix='harness-flaky-cap-') as tmp:
             log = Path(tmp) / 'flaky.jsonl'
             log.write_text(''.join(json.dumps({'ts': 0, 'proof': 'p%d' % i}) + '\n' for i in range(400)),
@@ -230,8 +230,7 @@ class HarnessIntegrityTests(unittest.TestCase):
             with patch.object(runner, 'FLAKY_LOG', str(log)):
                 runner._record_flaky('test_new.py', 'TIMEOUT', 1.0)
             rows = [json.loads(l) for l in log.read_text(encoding='utf-8').splitlines()]
-        self.assertEqual(len(rows), 200)
-        self.assertEqual(rows[-1]['proof'], 'test_new.py')
+        self.assertEqual([row['proof'] for row in rows], ['test_new.py'])
 
     def test_flaky_row_names_the_failing_cases(self):
         detail = '\n'.join([
@@ -368,6 +367,38 @@ class HarnessIntegrityTests(unittest.TestCase):
             runner.os.environ['HARNESS_CASE_JOBS'] = '5'
             runner.run_proof('test_ordinary.py')
             self.assertEqual(process.call_args.args[1].get('HARNESS_CASE_JOBS'), '5')
+
+    def test_a_proof_reads_its_own_snapshot_of_the_capacity_cache_and_starts_no_warm_probe(self):
+        # The live cache is rewritten by every capacity probe: a proof that read it keyed its pass on bytes
+        # that change every few minutes, and a sibling's rewrite could land mid-read.
+        seen = {}
+
+        def child(cmd, env, timeout, out_path, cwd=None):
+            path = env.get('PROVIDER_CAPACITY_CACHE')
+            seen.update(path=path, warm=env.get('HARNESS_CAPACITY_WARM'), temp=env.get('TMP'),
+                        text=Path(path).read_text(encoding='utf-8') if path and os.path.exists(path) else None)
+            return 0, ''
+
+        with tempfile.TemporaryDirectory(prefix='harness-capacity-') as tmp:
+            live = Path(tmp) / 'live.json'
+            live.write_text('{"anthropic": {"marker": "live"}}', encoding='utf-8')
+            with patch.object(runner, '_run_child', side_effect=child), \
+                    patch.dict(runner.os.environ, {'PROVIDER_CAPACITY_CACHE': str(live)}, clear=False):
+                runner.os.environ.pop('HARNESS_CAPACITY_WARM', None)
+                runner.run_proof('test_ordinary.py')
+            self.assertEqual(seen['warm'], '0')
+            self.assertNotEqual(os.path.normcase(seen['path']), os.path.normcase(str(live)))
+            self.assertTrue(os.path.normcase(seen['path']).startswith(os.path.normcase(seen['temp'])), seen)
+            self.assertEqual(seen['text'], '{"anthropic": {"marker": "live"}}')
+            self.assertEqual(live.read_text(encoding='utf-8'), '{"anthropic": {"marker": "live"}}')
+
+            seen.clear()
+            with patch.object(runner, '_run_child', side_effect=child), \
+                    patch.dict(runner.os.environ, {'PROVIDER_CAPACITY_CACHE': str(Path(tmp) / 'absent.json')},
+                               clear=False):
+                runner.run_proof('test_ordinary.py')
+            self.assertTrue(os.path.normcase(seen['path']).startswith(os.path.normcase(seen['temp'])), seen)
+            self.assertIsNone(seen['text'])
 
     def test_underscore_helpers_are_not_proofs(self):
         with tempfile.TemporaryDirectory(prefix='harness-discover-') as tmp:

@@ -30,7 +30,7 @@ error, so a broken guard can never fail open.
 No bypass variable -- nothing needs one: a dropped row has a documented home (`never_ship`).
 
 Wired in: settings.json hooks.PreToolUse, matcher "Bash|PowerShell|Monitor", via
-`pre_bash_dispatch.HOOKS` before the guards that must judge its rewritten command.
+`pre_bash_dispatch.HOOKS`.
 """
 from __future__ import annotations
 

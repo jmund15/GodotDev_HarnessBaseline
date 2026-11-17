@@ -9,7 +9,10 @@ import sys
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _planted_checkout import enter_planted_checkout  # noqa: E402
 from _transport_fixture import hook_env  # noqa: E402
+
+enter_planted_checkout()  # the hooks it runs ask git about the working directory
 
 HOOKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks")
 MARKER = os.path.join(HOOKS, "skill_load_marker.py")

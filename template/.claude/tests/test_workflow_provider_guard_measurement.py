@@ -21,6 +21,10 @@ os.environ["CLAUDE_CONFIG_DIR"] = _MCP_CFG
 # a project without it has no lens to name, so no fit rule to skip and nothing to deny.
 PLAN_CHECK_SHIPPED = os.path.isfile(os.path.join(CLAUDE, "commands", "agents", "plan_check_agents.md"))
 sys.path.insert(0, os.path.join(CLAUDE, "hooks"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _planted_checkout import enter_planted_checkout  # noqa: E402
+
+enter_planted_checkout()  # a payload with no cwd makes the hook ask git about the working directory
 import workflow_provider_guard as g  # noqa: E402
 
 DATA = g._load_registry()
@@ -114,4 +118,7 @@ def test_tier_alias_rewrites_once_through_the_emitted_input(monkeypatch, capsys)
 
 if __name__ == "__main__":
     import pytest
-    sys.exit(pytest.main([__file__, "-q"]))
+    # The import above moved cwd into a planted checkout: with no root given, pytest walks from there to this file,
+    # scanning every entry of the folders between (all of the temp folder when this file sits under it).
+    sys.exit(pytest.main([__file__, "-q", "--rootdir", os.path.dirname(os.path.abspath(__file__)),
+                          "-p", "no:cacheprovider"]))

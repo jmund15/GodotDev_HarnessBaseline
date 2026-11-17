@@ -112,6 +112,7 @@ class Replay(unittest.TestCase):
         self.save("digest.json", digest)
         self.cli("post_check", "review", "--findings", str(self.root / "findings.json"),
                  "--digest", str(self.root / "digest.json"), "--snapshot", str(self.root / "snapshot.json"),
+                 "--root", str(self.root),
                  "--stage", "candidate", "--subject", SUBJECT, "--roster", str(self.root / "roster.json"),
                  "--task", "replay", "--out", str(self.root / "report.json"), code=0)
         report = self.read("report.json")
@@ -156,7 +157,7 @@ class Replay(unittest.TestCase):
         payload = {"tool_name": "Bash", "cwd": str(self.root), "session_id": session,
                    "tool_input": {"command": command}}
         done = subprocess.run([sys.executable, str(CLAUDE / "hooks/triage_commit_check.py")],
-                              input=json.dumps(payload), capture_output=True, text=True, env=self.env)
+                              input=json.dumps(payload), capture_output=True, text=True, env=self.env, cwd=self.root)
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout
 
@@ -196,7 +197,7 @@ class Replay(unittest.TestCase):
                                           "deferred": [], "changedPaths": [note]})
         self.cli("post_check", "review", "--findings", str(self.root / "harness.findings.json"),
                  "--digest", str(self.root / "harness.digest.json"),
-                 "--snapshot", str(self.root / "harness.snapshot.json"), "--stage", "candidate",
+                 "--snapshot", str(self.root / "harness.snapshot.json"), "--root", str(self.root), "--stage", "candidate",
                  "--subject", SUBJECT, "--roster", str(self.root / "roster.json"),
                  "--out", str(self.root / "harness.json"), code=0)
         report = self.read("harness.json")
@@ -220,7 +221,7 @@ class Replay(unittest.TestCase):
                   "deferred": [], "changedPaths": ["fix.md", "adapted.md"]})
         self.cli("post_check", "review", "--findings", str(self.root / "negative.findings.json"),
                  "--digest", str(self.root / "negative.digest.json"), "--snapshot", str(self.root / "negative.snapshot.json"),
-                 "--stage", "candidate", "--subject", SUBJECT, "--roster", str(self.root / "roster.json"),
+                 "--root", str(self.root), "--stage", "candidate", "--subject", SUBJECT, "--roster", str(self.root / "roster.json"),
                  "--out", str(self.root / "negative.json"), code=0)
         failures = self.read("negative.json")["failures"]
         self.assertEqual([f["files"] for f in failures if f["kind"] == "fold-not-applied"], [["fix.md"]])

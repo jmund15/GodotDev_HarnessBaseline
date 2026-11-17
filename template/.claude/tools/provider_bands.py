@@ -188,8 +188,11 @@ def _recent_rate(transport, window, now, samples):
     """(rate in percentage points per second, span in seconds the samples cover) from the plan's own samples
     of `window` in the current reset period over the last day; None when the samples cannot state one.
 
-    The rate is the least-squares slope of `used` over time. The reset filter already confines the
-    samples to one period, so a dip is two writers rounding one plan apart, never a roll."""
+    The rate is the least-squares slope of `used` over time. The reset filter confines the samples to one
+    period, and within one a dip of up to `USED_RESOLUTION` is two writers rounding one plan apart. A fall of
+    more is the plan's usage given back with its reset time unchanged (2026-11-10: 99 to 55): the samples
+    before it describe a spend that no longer counts, and a slope fitted across the step reads negative and
+    clamps to an idle plan, so the rate is measured from the fall on."""
     reset = provider_capacity._epoch(window.get("resetsAt"))
     rows = []
     for s in samples or []:
@@ -208,6 +211,13 @@ def _recent_rate(transport, window, now, samples):
         if reset is None or seen_reset is None or abs(seen_reset - reset) > RESET_TOLERANCE_S:
             continue
         rows.append((float(ts), float(used)))
+    rows.sort()
+    peak, start = float("-inf"), 0
+    for i, (_ts, used) in enumerate(rows):
+        if used < peak - USED_RESOLUTION:
+            start, peak = i, used
+        peak = max(peak, used)
+    rows = rows[start:]
     span = max(r[0] for r in rows) - min(r[0] for r in rows) if rows else 0.0
     if len(rows) < 2 or span < RECENT_MIN_SPAN_S:
         return None
@@ -248,6 +258,10 @@ def unused_at_reset(transport, window, now=None, samples=None, windows=None):
     """{pct, basis, daysLeft} for `window`: the share of its allowance the plan's recent rate leaves
     at its reset, or None when the window cannot say (no used share, length or future reset).
 
+    A window ahead of even pace (`ahead_of_pace`: its used share is more than the share of the window gone) leaves
+    nothing, whatever its last day's rate: `pct` is 0 and `basis` `pace`. A quiet day after an early burst is a
+    pause in the spend; the rate refines the plain pace and never contradicts it.
+
     `basis` is the shortest honest one that applies. A rate needs a span of `RATE_FULL_SPAN_S` or the time left,
     whichever is shorter: with a shorter span the next basis is tried, and with the window's own elapsed time also
     shorter the answer is None. `recent`: the plan's own samples of this window,
@@ -278,6 +292,8 @@ def unused_at_reset(transport, window, now=None, samples=None, windows=None):
     if minutes * 60.0 - time_left < RECENT_MIN_SPAN_S:
         return None  # a window that just rolled says nothing about the rate it will spend at
     elapsed = minutes * 60.0 - time_left
+    if ahead_of_pace(window, now):
+        return {"pct": 0.0, "basis": "pace", "daysLeft": time_left / 86400.0}
     recent = _recent_rate(transport, window, now, _samples() if samples is None else samples)
     basis, source = "recent", None
     needed = min(RATE_FULL_SPAN_S, time_left)
@@ -470,7 +486,7 @@ def plan_room(transport, data, read, now):
         observed = provider_capacity._epoch(got.get("observedAt"))
         if observed is not None:
             row["age"] = int(max(0.0, now - observed))
-    gates = [(room(w, now), w.get("name")) for w in windows if w is not window and _gates(w, now)]
+    gates = [(room(w, now), w.get("name")) for w in windows if w is not window and ahead_of_pace(w, now)]
     tightest = min((g for g in gates if g[0] < value), default=None)
     if tightest:
         row["bindingRoom"], row["binding"] = tightest
@@ -487,8 +503,10 @@ def spent_reset(capacity):
     return max((r for r in resets if r is not None), default=None)
 
 
-def _gates(window, now):
-    """True when a non-routing window's allowance left falls short of its time left by more than `USED_RESOLUTION`."""
+def ahead_of_pace(window, now):
+    """True when a window's allowance left falls short of its time left by more than `USED_RESOLUTION`: it has
+    spent faster than time. A non-routing window that is ahead gates its plan (`plan_room`); the routing window
+    that is ahead leaves nothing unused at its reset (`unused_at_reset`)."""
     value = room(window, now)
     if value is None or value >= 1.0:
         return False
@@ -560,7 +578,7 @@ def _ledger_jobs():
     rows = []
     if transcript_usage is not None:
         try:
-            records = transcript_usage.iter_records(transcript_usage.sidecar_ledger_path())
+            records = transcript_usage.ledger_records(transcript_usage.sidecar_ledger_path())
             rows = [job for job in map(ledger_job, records) if job]
         except Exception:
             rows = []
@@ -595,17 +613,43 @@ def plan_rate(plan, window, jobs, samples):
     return (rise / cost if counted >= RATE_MIN_PERIODS else None), counted
 
 
-def job_usd(model, effort, shape, jobs):
-    """The `DRAIN_QUANTILE` list-price cost of finished jobs of `model`, `effort` and `shape`: the narrowest group
+def _group_quantile(model, effort, shape, jobs, value):
+    """The `DRAIN_QUANTILE` of `value(job)` over finished jobs of `model`, `effort` and `shape`: the narrowest group
     of at least `GROUP_MIN_JOBS` jobs, widening to the model and effort, then the model. None when no group is that
-    large. A job a usage limit cut short is left out: its cost is the part it ran."""
+    large. A job a usage limit cut short is left out: its cost and its run are the part it ran."""
     done = [j for j in jobs or [] if not j.get("truncated") and j.get("model") == model]
     for group in ([j for j in done if j.get("effort") == effort and j.get("shape") == shape],
                   [j for j in done if j.get("effort") == effort], done):
         if len(group) >= GROUP_MIN_JOBS:
-            ordered = sorted(j["usd"] for j in group)
+            ordered = sorted(value(j) for j in group)
             return ordered[min(len(ordered) - 1, int(DRAIN_QUANTILE * len(ordered)))]
     return None
+
+
+def job_usd(model, effort, shape, jobs):
+    """The `DRAIN_QUANTILE` list-price cost of finished jobs of `model`, `effort` and `shape` (`_group_quantile`)."""
+    return _group_quantile(model, effort, shape, jobs, lambda j: j["usd"])
+
+
+def job_span(model, effort, shape, jobs):
+    """The `DRAIN_QUANTILE` run time in seconds of finished jobs of `model`, `effort` and `shape`
+    (`_group_quantile`): how long a job of its group spends its drain over. None when no group is that large."""
+    return _group_quantile(model, effort, shape, jobs, lambda j: j["end"] - j["start"])
+
+
+def charge(drain, now, resets_at=None, started=None):
+    """The points of a job's `drain` ({pct, span}) that land in a window between `now` and its `resets_at`: the
+    share of the job's run still ahead of it that falls before the reset. A job that `started` before `now` has
+    spent its elapsed share already, and the window's reading holds it; the next window takes what it spends after
+    the reset. The whole `pct` where the group has no known `span`, and the whole run counts ahead where the job's
+    start or the window's future reset is unknown: nothing proves less."""
+    pct, span = drain["pct"], drain.get("span")
+    if not span or span <= 0:
+        return pct
+    ahead = span - (max(0.0, now - started) if started is not None else 0.0)
+    if resets_at is not None and resets_at > now:
+        ahead = min(ahead, resets_at - now)
+    return pct * max(0.0, ahead) / span
 
 
 def reset_drain_cache():
@@ -613,8 +657,8 @@ def reset_drain_cache():
 
 
 def job_drain(plan, window, model, effort, shape, jobs=None, samples=None):
-    """{pct, basis, usd, rate, why} for one job on `plan`: the percentage points it is expected to take from the
-    plan's `window`. basis `measured` is `plan_rate` x `job_usd`. basis `default` is `JOB_DRAIN_PCT`, and `why`
+    """{pct, basis, usd, rate, span, why} for one job on `plan`: the percentage points it is expected to take from the
+    plan's `window`, over `span` seconds (`job_span`, None with no group). basis `measured` is `plan_rate` x `job_usd`. basis `default` is `JOB_DRAIN_PCT`, and `why`
     names the missing measure. `jobs` and `samples` default to the ledger and the samples file, each read once per
     SAMPLES_TTL_S; a plan's rate is computed once per reading of them."""
     explicit = jobs is not None or samples is not None
@@ -630,7 +674,8 @@ def job_drain(plan, window, model, effort, shape, jobs=None, samples=None):
         if (plan, window) not in _drain_cache:
             _drain_cache[(plan, window)] = plan_rate(plan, window, jobs, samples)
         rate, counted = _drain_cache[(plan, window)]
-    default = {"pct": JOB_DRAIN_PCT, "basis": "default", "usd": None, "rate": rate}
+    default = {"pct": JOB_DRAIN_PCT, "basis": "default", "usd": None, "rate": rate,
+               "span": job_span(model, effort, shape, jobs)}
     if not window:
         return dict(default, why="no window to measure")
     if rate is None:
@@ -639,7 +684,7 @@ def job_drain(plan, window, model, effort, shape, jobs=None, samples=None):
     usd = job_usd(model, effort, shape, jobs)
     if usd is None:
         return dict(default, why="fewer than %d finished jobs of %s" % (GROUP_MIN_JOBS, model))
-    return {"pct": rate * usd, "basis": "measured", "usd": usd, "rate": rate, "why": None}
+    return dict(default, pct=rate * usd, basis="measured", usd=usd, why=None)
 
 
 def plan_rows(data=None, read=None, now=None):
@@ -1089,7 +1134,11 @@ def main(argv):
             band = view["band"] if view else (
                 provider_capacity.reason_text(capacity) or "uncomputable")
             pressure = view["binding"].get("pressure") if view else None
-            print(f"{name}\t{band}\t{pressure}\t{capacity.get('planType') or '?'}")
+            observed = provider_capacity._epoch(capacity.get("observedAt"))
+            age = "?" if observed is None else f"{max(0, int(time.time() - observed))}s"
+            failure = (capacity.get("liveFailure") or {}).get("message")
+            reading_age = f"{age}: {failure}" if failure else age
+            print(f"{name}\t{band}\t{pressure}\t{capacity.get('planType') or '?'}\t{reading_age}")
         return 0
     if argv[0] == "room":
         print("provider_bands.py room is retired: run "

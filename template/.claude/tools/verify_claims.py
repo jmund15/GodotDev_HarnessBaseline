@@ -167,6 +167,33 @@ def _match(body, quote, whole_words=False):
     return True
 
 
+_COMMENT_LEADER = re.compile(r"^[ \t]*(#+|/{2,}|;+)[ \t]?")
+
+
+def _unwrap_comments(text):
+    """`text` with the leader (`#`, `//`, `;`) removed from each line that continues a comment: a sentence wrapped
+    over two comment lines reads straight through, and a quote that joins code to a comment is left alone."""
+    out, previous = [], None
+    for line in text.split("\n"):
+        found = _COMMENT_LEADER.match(line)
+        kind = found.group(1)[0] if found else None
+        out.append(line[found.end():] if kind and kind == previous else line)
+        previous = kind
+    return "\n".join(out)
+
+
+def _holds(text, quote, prepared=None):
+    """The quote is in `text`: exact, normalized, as a raw whitespace-collapsed run, or across a wrapped comment.
+    `prepared` is a callable returning `prepare(text)` for a caller that caches it; an exact hit never calls it."""
+    exact = quoted_text(quote).strip()
+    if exact and exact in text:
+        return True
+    if _match(prepared() if prepared else prepare(text), quote) or _raw_hit(text, quote):
+        return True
+    unwrapped = _unwrap_comments(text)
+    return unwrapped != text and _match(prepare(unwrapped), quote)
+
+
 def quote_matches(body, quote):
     """`body` is `normalize`d text (any case)."""
     return _match(body.casefold(), quote)
@@ -326,8 +353,7 @@ def _check_quote(kind, cited, quote, artifact, ctx, legacy):
     if span:
         lines = text.splitlines()[span[0] - 1:span[1]]
         extra["rangeHit"] = _match(prepare("\n".join(lines)), quote)
-    exact = quoted_text(quote).strip()
-    if not (exact and exact in text) and not _match(_prepared(held), quote) and not _raw_hit(text, quote):
+    if not _holds(text, quote, lambda: _prepared(held)):
         return _result(kind, UNVERIFIED, "quote-absent", **extra)
     if legacy:
         needle, body = normalize(quoted_text(quote)).casefold(), _prepared(held)
@@ -340,9 +366,11 @@ def _check_quote(kind, cited, quote, artifact, ctx, legacy):
 
 
 def _commit_text(ctx, sha, path):
-    """`git show <sha>` text, or the file `<sha>:<path>` at that commit; None when git cannot read it."""
+    """`git show --stat --patch <sha>` text (message, stat summary, diff), or the file `<sha>:<path>` at that
+    commit; None when git cannot read it."""
     try:
-        code, text, _err = _run_git(["show", f"{sha}:{path}" if path else sha], ctx.root, ctx.timeout)
+        code, text, _err = _run_git(["show", f"{sha}:{path}"] if path else ["show", "--stat", "--patch", sha],
+                                    ctx.root, ctx.timeout)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return text if code == 0 else None
@@ -358,8 +386,7 @@ def _check_commit(cited, sha, path, quote, ctx):
         return _result("file", UNVERIFIED, "path-absent-at-commit" if path else "unreadable-commit", file=cited)
     if not isinstance(quote, str) or not quote.strip():
         return _result("file", UNVERIFIED, "empty-quote", file=cited)
-    exact = quoted_text(quote).strip()
-    if not (exact and exact in text) and not _match(prepare(text), quote) and not _raw_hit(text, quote):
+    if not _holds(text, quote):
         return _result("file", UNVERIFIED, "quote-absent", file=cited)
     return _result("file", VERIFIED, "quote-found", file=cited, commit=sha)
 
@@ -885,7 +912,7 @@ def load_findings(location):
     errors = []
     if path.is_dir() and (path / "journal.jsonl").is_file():
         import session_digest
-        archive = session_digest.build_workflow_result_archive(path, "review")
+        archive = session_digest.build_workflow_result_archive(path, "review", verify=False)
         rows = _findings_from_payload({"items": archive["items"]}, path.name)
         if archive["status"] != "completed":
             errors.append(f"workflow coverage is {archive['status']}, not completed")

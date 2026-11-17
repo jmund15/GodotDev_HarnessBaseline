@@ -6,8 +6,10 @@ environment. A proof that builds a child's own `PYTHONPATH` keeps `HARNESS_READ_
 sitecustomize this one shadows still runs. Each process appends
 one JSON line per new event to `<dir>/<pid>.jsonl`, so a child killed mid-run still leaves what it read:
 `["r"|"w", path]` for a file open, `["l", path]` for a directory listing other than the importer's,
-`["p", path]` for an existence or stat probe or a path an import could resolve to, and `["s", {argv, cwd, recorded}]` for a spawned process, where `recorded` says whether the
-child loads this recorder with the same log: Python imports only the first sitecustomize on its path."""
+`["p", path]` for an existence probe or a path an import could resolve to, `["t", path]` for an `os.stat` or `os.lstat`
+(a size, a time, a listing), and `["s", {argv, cwd, recorded, genv}]` for a spawned process, where `recorded` says whether the
+child loads this recorder with the same log (Python imports only the first sitecustomize on its path) and `genv` is the
+`GIT_*` environment the child starts with."""
 import json
 import os
 import sys
@@ -86,7 +88,9 @@ if _LOG:
                                            and _customizer(env.get("PYTHONPATH")) == os.path.normcase(_HERE))
                 _emit("s", {"argv": [os.fsdecode(a) if isinstance(a, (str, bytes, os.PathLike)) else str(a) for a in argv],
                             "cwd": _abs(args[2]) if len(args) > 2 and args[2] is not None else os.getcwd(),
-                            "recorded": inherits})
+                            "recorded": inherits,
+                            "genv": {os.fsdecode(k): os.fsdecode(v) for k, v in (env if env is not None else os.environ).items()
+                                     if os.fsdecode(k).upper().startswith("GIT_")}})
         except Exception:
             pass
 
@@ -106,12 +110,47 @@ if _LOG:
             return original(path, *rest, **kw)
         return probe
 
-    # `pathlib`'s exists/is_file/is_dir route through these. `os.stat` stays unwrapped: stdlib code tests it
-    # by identity (`os.stat in os.supports_dir_fd`), and a wrapper would change what that code does.
+    # `pathlib`'s exists/is_file/is_dir route through these.
     for _name in ("exists", "isfile", "isdir", "lexists"):
         setattr(os.path, _name, _probe(getattr(os.path, _name)))
 
+    def _stat(original):
+        """A stat observes a size, a time or a listing, which a presence probe does not key: `["t", path]`."""
+        def stat(path, *rest, **kw):
+            if isinstance(path, (str, bytes, os.PathLike)):
+                p = _abs(path)
+                if p and not p.startswith(_LOG):
+                    _emit("t", p)
+            return original(path, *rest, **kw)
+        return stat
+
+    # Stdlib code tests `os.stat` by identity (`os.stat in os.supports_dir_fd`): the wrapper joins each such set.
+    for _name in ("stat", "lstat"):
+        _original = getattr(os, _name)
+        _wrapper = _stat(_original)
+        for _set in (os.supports_dir_fd, os.supports_fd, os.supports_follow_symlinks):
+            if _original in _set:
+                _set.add(_wrapper)
+        setattr(os, _name, _wrapper)
+
     sys.addaudithook(_hook)
+
+
+def retarget(log_dir):
+    """Send this process's later events, and every child's that inherits the environment, to `log_dir`;
+    False when recording is off. A case pool's worker calls it before its case runs, so each case's reads
+    land in their own folder while what the worker loaded before stays with the proof's."""
+    global _LOG, _fh, _seen
+    if not _LOG:
+        return False
+    if _fh is not None:
+        try:
+            _fh.close()
+        except Exception:
+            pass
+    _LOG, _fh, _seen = log_dir, None, set()
+    os.environ["HARNESS_READ_LOG"] = log_dir
+    return True
 
 
 def _run_shadowed():

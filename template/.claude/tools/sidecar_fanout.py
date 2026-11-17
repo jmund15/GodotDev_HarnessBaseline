@@ -40,7 +40,9 @@ effort. A move or a launch fallback switches alias and effort to the next plan's
 
 EACH PLAN PACES ITSELF, AND LEARNS FROM WHAT ITS JOBS DREW (`Waves`). A plan prices a job per window, since points of
 two windows are different units: each window's headroom is held against that window's own history
-(`provider_bands.job_drain`), and the plan holds the job only while every window does. Every readable plan is paced,
+(`provider_bands.job_drain`), and the plan holds the job only while every window does. A window is charged only the
+share of a job's run still ahead that falls before its reset (`provider_bands.charge`): what a running job already
+spent is in the reading, and what a job spends after the reset lands in the next window. Every readable plan is paced,
 whatever its jobs' summed forecast, because a forecast is wrong by what nothing has measured yet. Every job end and
 launch decision fresh-reads the plan: a job launches while each window holds it beside the jobs still running (at least
 one job per plan), `--max-parallel` (when given) still bounds the total, and once a job has ended and a window's reading has moved,
@@ -146,7 +148,9 @@ fields this route has no use for (`readOnly`) are ignored; `agentType` refuses, 
                           when a job ends cleanly unless another job of the same group in this fan-out still
                           runs; `reference/sidecar_dispatch.md` step 6 says when to group. Without one, a
                           job of a file with a top-level `measurement` joins group `measurement`, and a lens
-                          or reviewer joins `lenses`; any other job wakes the session on its own end. A failure wakes at once
+                          or reviewer joins `lenses`; any other job joins group `call`, shared by every job
+                          launched together, so the call wakes the session once. `alone` is a group of
+                          one: that job wakes the session on its own end. A failure wakes at once
 
 CITER COVERAGE. Process guard, advisory until plan C's live proof permits promotion.
 Beside tool-profile brief validation, citer_coverage validates meta subjects' current
@@ -192,7 +196,7 @@ REFUSALS IN YOUR OWN CALL. These refusals a job's launcher would make from the j
 before anything spawns or detaches, in `--dry-run` too: an unknown alias or kind, an unavailable row, an effort
 outside the transport's vocabulary or in the row's registry `effort.avoid` (each row of `rows` checked alike), a plan
 that does not pay for the route (of any listed row), `rows` beside `alias` or `effort`, and a pin outside the job's tier (`tier`, else its `kind` row's in `guards/tool_profiles.json`; the refusal text is the
-launcher's, printed to stdout, naming every unfit job). Every exit before an inventory exists also writes its
+launcher's, printed to stdout, naming every unfit job), and a job whose reading (brief, context, must-read and named files) is past its pin's usable window (the refusal names the job, its reading and its window; `dispatch_size.over_window_lines` owns the measure). Every exit before an inventory exists also writes its
 text, exit code and UTC time to `<out-dir>/launch-refused.txt`, which a launch that writes an inventory removes.
 A `--detach` run returns only once each first-wave job is printed `admitted`, `refused ... nothing ran`, `queued` or `undecided` (a `<label>.stream` written since the launch marks a job past every gate), and a child's capacity refusal moves the job to its next plan. Not decided here, because only the shell launcher owns them: an
 `armDisclosure` outside bare|pointer|full and `longContext` on a row with no long-context step (`sidecar_common.sh`).
@@ -450,11 +454,14 @@ SYNTHESIS_KINDS = ("lens", "reviewer")
 
 
 def wake_groups(jobs, measurement=None):
-    """{label: group} for the jobs whose results are pieces of one result; a blank or non-string `wakeWith` refuses.
+    """{label: group} for every job of one call; a blank or non-string `wakeWith` refuses.
 
-    A job's own `wakeWith` names its group. Without one, every job of a declared `measurement` joins the group
-    `measurement`, and a lens or reviewer joins `lenses`, since its findings feed one synthesis. Any other job is its
-    own unit: its result is actionable alone."""
+    Jobs launched together wake the session once, at the last end, because each wake re-reads the whole context.
+    A job's own `wakeWith` names its group; `alone` (`watch_records.WAKE_ALONE`) makes it a group of one, for a job
+    whose result the session needs before the others. Without one, every job of a declared `measurement` joins the
+    group `measurement`, and a lens or reviewer joins `lenses`, since its findings feed one synthesis. An author is
+    alone, since its result is actionable on its own (merge it, launch what it gates). Any other job joins the call's
+    group (`watch_records.WAKE_CALL`)."""
     groups = {}
     for job in jobs:
         if not isinstance(job, dict):
@@ -468,6 +475,10 @@ def wake_groups(jobs, measurement=None):
             groups[job.get("label")] = "measurement"
         elif job.get("kind") in SYNTHESIS_KINDS:
             groups[job.get("label")] = "lenses"
+        elif job.get("kind") == "author":
+            groups[job.get("label")] = watch_records.WAKE_ALONE
+        else:
+            groups[job.get("label")] = watch_records.WAKE_CALL
     return groups
 
 
@@ -733,9 +744,30 @@ def plan_signature(job, data):
     return lambda plan: job_signature(job_on(job, plan, data), data)
 
 
+class Running(tuple):
+    """A job signature with `started`, the epoch its launcher began, None when unknown: the plan's reading already
+    holds what the job spent since (`provider_bands.charge`)."""
+    started = None
+
+    def __new__(cls, signature, started=None):
+        job = super().__new__(cls, signature)
+        job.started = started
+        return job
+
+
+def _began(text):
+    """Epoch of a process table's local `yyyy-MM-dd HH:mm:ss` start, None when it does not read."""
+    try:
+        return time.mktime(time.strptime(text, "%Y-%m-%d %H:%M:%S"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def live_plan_load(table, data):
-    """{plan: [signature, ...]} from a process table: one signature per distinct job (its `-R` record, else its
-    `-l` label and `-f` prompt) among the bash launchers, read from the launcher's `-m`, `-e` and `-G`. The plan is
+    """{plan: [Running signature, ...]} from a process table: one signature per distinct job (its `-R` record, else its
+    `-l` label and `-f` prompt) among the bash launchers, read from the launcher's `-m`, `-e` and `-G`, started when
+    the job's first launcher process began. A job whose `-R` record's current run has an `ended` journal row is
+    left out: its launcher outlives it only to clean up. The plan is
     the one whose registered launcher the job was INVOKED through; a job's re-exec snapshots are named for the
     shared base script (`anthropic_sidecar.sh.N.sh` for every Anthropic plan), so they decide only a job whose
     invoked launcher is gone. A script two plans share names no plan and counts for none."""
@@ -746,7 +778,7 @@ def live_plan_load(table, data):
         launcher = (cfg or {}).get("launcher") if isinstance(cfg, dict) else None
         if launcher:
             scripts.setdefault(os.path.basename(launcher).lower(), set()).add(name)
-    invoked, snapshots = {}, {}
+    invoked, snapshots, starts = {}, {}, {}
     for row in table.values():
         if not reap.is_launcher(row):
             continue
@@ -759,14 +791,20 @@ def live_plan_load(table, data):
             continue
         flags = sidecar_argv.sidecar_flags(reap.launcher_args(row.get("cmd")))
         key = flags.get("R") or (flags.get("l"), flags.get("f"))
+        if isinstance(flags.get("R"), str) and any(
+                step.get("event") == "ended" for step in watch_records.current_run(flags["R"])):
+            continue  # the job ended and its launcher is still cleaning up: it spends nothing more
         alias = flags.get("m")
         sig = job_signature({"alias": alias if isinstance(alias, str) else None,
                              "effort": flags.get("e") if isinstance(flags.get("e"), str) else None,
                              "kind": flags.get("G") if isinstance(flags.get("G"), str) else None}, data)
         (snapshots if "sidecar-snapshots" in script.replace("\\", "/") else invoked)[key] = (next(iter(plans)), sig)
+        began = _began(row.get("start"))
+        if began is not None and began < starts.get(key, began + 1):
+            starts[key] = began
     load = {}
-    for plan, sig in {**snapshots, **invoked}.values():
-        load.setdefault(plan, []).append(sig)
+    for key, (plan, sig) in {**snapshots, **invoked}.items():
+        load.setdefault(plan, []).append(Running(sig, starts.get(key)))
     return load
 
 
@@ -786,10 +824,12 @@ def plan_load(data):
     return load
 
 
-def _holds(row, load, signature):
+def _holds(row, load, signature, now):
     """(holds, drain, committed) of one readable plan row for a job. Each window prices every job by its own history
-    (`provider_bands.job_drain`), since points of two windows are different units, and the plan holds the job only
-    while every window does (`provider_bands.fits`), beside the jobs `load` already puts on the plan. `drain` and
+    (`provider_bands.job_drain`), since points of two windows are different units, charges it only the share of its
+    run that falls before the window's reset (`provider_bands.charge`; the next window takes the rest), and the plan
+    holds the job only while every window does (`provider_bands.fits`), beside the jobs `load` already puts on the
+    plan; a running job's elapsed share is already in the window's reading, so it commits only the rest. `drain` and
     `committed` are the binding window's, the one that holds the fewest more of this job: `drain` carries its
     `window`, `headroom` and `resetsAt`. A row that states no window holds it, and its launcher's own gate decides."""
     plan, windows = row["transport"], provider_bands.row_windows(row)
@@ -797,13 +837,17 @@ def _holds(row, load, signature):
         return True, provider_bands.job_drain(plan, None, *signature), 0.0
     holds, binding = True, None
     for window in windows:
+        reset = window.get("resetsAt")
         drain = provider_bands.job_drain(plan, window["name"], *signature)
-        committed = sum(provider_bands.job_drain(plan, window["name"], *sig)["pct"] for sig in load.get(plan, ()))
-        holds = holds and provider_bands.fits({"headroom": window["headroom"]}, committed, drain["pct"])
-        more = (window["headroom"] - committed) / drain["pct"] if drain["pct"] > 0 else float("inf")
+        charged = provider_bands.charge(drain, now, reset)
+        committed = sum(provider_bands.charge(provider_bands.job_drain(plan, window["name"], *sig), now, reset,
+                                              getattr(sig, "started", None))
+                        for sig in load.get(plan, ()))
+        holds = holds and provider_bands.fits({"headroom": window["headroom"]}, committed, charged)
+        more = (window["headroom"] - committed) / charged if charged > 0 else float("inf")
         if binding is None or more < binding[0]:
             binding = (more, dict(drain, window=window["name"], headroom=window["headroom"],
-                                  resetsAt=window.get("resetsAt")), committed)
+                                  resetsAt=window.get("resetsAt"), charged=charged), committed)
     return holds, binding[1], binding[2]
 
 
@@ -821,8 +865,10 @@ def _unfit_text(row, drain, committed, jobs_on, now):
     """One plan's reason for not holding a job: its binding window's headroom against what is committed and this
     job's estimate."""
     reset = drain.get("resetsAt")
+    before = (f" ({drain['charged']:.1f} before its reset)"
+              if drain.get("charged") is not None and abs(drain["charged"] - drain["pct"]) >= 0.05 else "")
     return (f"{row['transport']}: {_headroom_text(drain)} points, {jobs_on} job{'' if jobs_on == 1 else 's'} "
-            f"on it commit {committed:.1f}, this job {_drain_text(drain)}"
+            f"on it commit {committed:.1f}, this job {_drain_text(drain)}{before}"
             + (f", resets {provider_bands.reset_text(reset, now)}" if reset is not None else ""))
 
 
@@ -854,7 +900,7 @@ def place_job(candidates, data, read, now, load, signature):
         if load is None:
             load = plan_load(data)
         name = row["transport"]
-        held[name] = _holds(row, load, signature(name) if callable(signature) else signature)
+        held[name] = _holds(row, load, signature(name) if callable(signature) else signature, now)
         if not held[name][0]:
             unfit[name] = _unfit_text(row, held[name][1], held[name][2], len(load.get(name, ())), now)
     fit = sorted((row for row in rows if held.get(row["transport"], (False,))[0]),
@@ -1106,14 +1152,23 @@ LAUNCH = Verdict("launch")
 
 class _Track:
     """One window of a paced plan: `first` its headroom at the plan's first launch, `head` the latest read, `observed`
-    the points a job has drawn from it (None until a job ended and the reading moved)."""
+    the points a job has drawn from it (None until a job ended and the reading moved), `reset` the epoch the window
+    resets at (None when it states none)."""
 
-    def __init__(self, head):
-        self.first, self.head, self.observed = None, head, None
+    def __init__(self, head, reset=None):
+        self.first, self.head, self.observed, self.reset = None, head, None, reset
+
+
+class _Flight(NamedTuple):
+    """A running job: its `forecast` at launch, `drains` ({window: `provider_bands.job_drain`}) and the epoch it
+    `started`. The reading already holds what it spent since, so it holds back only the share of its run still ahead."""
+    forecast: dict
+    drains: dict
+    started: float
 
 
 class _PlanWave:
-    """One plan's pace in a fan-out: `tracks` {window: _Track}, `flying` {label: forecast} of its running jobs and
+    """One plan's pace in a fan-out: `tracks` {window: _Track}, `flying` {label: _Flight} of its running jobs and
     `ended` the forecasts of the jobs that ran. A forecast is {window: points} (`Waves.forecasts`): points of two
     windows are different units, so each window is tracked, priced and held on its own."""
 
@@ -1135,9 +1190,13 @@ class _PlanWave:
         return observed * forecast / mean if mean > 0 else observed
 
     def reserve(self):
-        """{window: points} the running jobs are expected to draw."""
-        return {window: sum(self.price(window, forecast[window]) for forecast in self.flying.values()
-                            if window in forecast) for window in self.tracks}
+        """{window: points} the running jobs are expected to draw from here on: each job's share of its run still
+        ahead that falls before the window's reset (`provider_bands.charge`)."""
+        now = time.time()
+        return {window: sum(self.price(window, provider_bands.charge(flight.drains[window], now, track.reset,
+                                                                    flight.started))
+                            for flight in self.flying.values() if window in flight.drains)
+                for window, track in self.tracks.items()}
 
     def holds(self, forecast, reserve):
         """True while every window's latest headroom, less `reserve`, covers the price of a job forecast at `forecast`."""
@@ -1157,9 +1216,11 @@ class Waves:
     every method; `read(plan, data)` is the capacity reader and `say(line)` prints (default stderr).
 
     Every plan whose reading states a window is paced, whatever its jobs' summed forecast (`provider_bands.job_drain`,
-    priced per window): a forecast is wrong by what nothing has measured yet, and only a reading taken while jobs run
+    priced per window, each window charged the share of the run that falls before its reset,
+    `provider_bands.charge`): a forecast is wrong by what nothing has measured yet, and only a reading taken while jobs run
     sees it. `decide(label)` fresh-reads the plan and answers for a job: launch while every window's headroom, less
-    what its running jobs are expected to draw, holds this job's drain (a plan with nothing running always takes one
+    what its running jobs are expected to draw from here on (the share of each run still ahead: the reading holds
+    what they spent), holds this job's drain (a plan with nothing running always takes one
     job), else move it to a route sibling that holds it now (a job with a named `plan` never moves), else wait for a
     running job to end. `ended(label, result)` reads again and, once a job on the plan has ended and a window's
     reading has moved, replaces that window's forecast with the observed drain per job. A plan that reads spent, or
@@ -1188,9 +1249,18 @@ class Waves:
         return pick[:2] if pick else None
 
     def forecasts(self, plan, signature):
-        """{window: points} a job of `signature` is forecast to draw from each window of `plan` read so far."""
-        return {window: provider_bands.job_drain(plan, window, *signature)["pct"]
-                for window in self.states[plan].tracks}
+        """{window: points} a job of `signature` is forecast to draw from each window of `plan` read so far: the share
+        of its run that falls before the window's reset (`provider_bands.charge`; the next window takes the rest)."""
+        return self._charged(plan, self._drains(plan, signature))
+
+    def _drains(self, plan, signature):
+        """{window: `provider_bands.job_drain`} of a job of `signature` on each window of `plan` read so far."""
+        return {window: provider_bands.job_drain(plan, window, *signature) for window in self.states[plan].tracks}
+
+    def _charged(self, plan, drains):
+        now = time.time()
+        return {window: provider_bands.charge(drain, now, self.states[plan].tracks[window].reset)
+                for window, drain in drains.items()}
 
     def price(self, label):
         """The points a queued job is expected to draw now on its plan, from its binding window (a paced plan)."""
@@ -1228,7 +1298,7 @@ class Waves:
         """Bring `state`'s windows to the reading `row`: a window read for the first time gets a track."""
         for window in provider_bands.row_windows(row):
             track = state.tracks.setdefault(window["name"], _Track(window["headroom"]))
-            track.head = window["headroom"]
+            track.head, track.reset = window["headroom"], window.get("resetsAt")
 
     def _count(self, plan, state):
         """How many of the plan's queued jobs would launch now."""
@@ -1287,11 +1357,11 @@ class Waves:
             self._say(f"[fanout] resize {plan}: observed drain {seen:.1f}/job replaces forecast "
                       f"{state.mean(window):.1f} on {window}, next launch {self._count(plan, state)}")
 
-    def _start(self, label, state, forecast):
+    def _start(self, label, state, forecast, drains):
         for track in state.tracks.values():
             if track.first is None:
                 track.first = track.head
-        state.flying[label] = forecast
+        state.flying[label] = _Flight(forecast, drains, time.time())
         self.queued.remove(label)
         return LAUNCH
 
@@ -1300,7 +1370,8 @@ class Waves:
         candidates = [name for name in slot.candidates if name not in tried and name not in self.limited]
         if not candidates:
             return None
-        load = {plan: [self.slots[running].signature for running in state.flying]
+        load = {plan: [Running(self.slots[running].signature, flight.started)
+                       for running, flight in state.flying.items()]
                 for plan, state in self.states.items()}
         sign = (lambda name: slot.picks[name][2]) if slot.picks else slot.signature
         return place_job(candidates, self.data, self._reader, time.time(), load, sign)
@@ -1342,16 +1413,17 @@ class Waves:
             row = self._row(plan)
             if not self._spent(plan, row):
                 if not provider_bands.row_windows(row):
-                    return self._start(label, state, {})
+                    return self._start(label, state, {}, {})
                 self._observe(plan, state, row)
-                forecast = self.forecasts(plan, slot.signature)
+                drains = self._drains(plan, slot.signature)
+                forecast = self._charged(plan, drains)
                 if state.holds(forecast, state.reserve()):
-                    return self._start(label, state, forecast)
+                    return self._start(label, state, forecast, drains)
                 tried.add(plan)
                 if self._move(label, slot, tried, holds=True):
                     continue
                 if not state.flying:
-                    return self._start(label, state, forecast)
+                    return self._start(label, state, forecast, drains)
                 return Verdict("wait")
             tried.add(plan)
             # A plan its short window blocks is waited for when no sibling is a better spend (`worth_waiting`).
@@ -1386,9 +1458,9 @@ class Waves:
         state = self.states.get(plan)
         if state is None or label not in state.flying:
             return
-        forecast = state.flying.pop(label)
+        flight = state.flying.pop(label)
         if not result.get("preSpawnRefusal"):
-            state.ended.append(forecast)
+            state.ended.append(flight.forecast)
         row = self._row(plan)
         if provider_bands.row_windows(row) and not self._spent(plan, row):
             self._observe(plan, state, row)
@@ -1957,9 +2029,13 @@ def record_path_of(argv):
         return None
 
 
-def _pid_alive(pid):
-    """Best-effort PID-existence check: on Windows, MSYS `/proc/<pid>` through Git Bash (the
-    launchers' pids are MSYS pids), else OpenProcess (query-only); `os.kill(pid, 0)` on POSIX.
+def _pid_alive(pid, winpid=None):
+    """Best-effort PID-existence check: on Windows, the recorded `winpid` through OpenProcess when the launcher
+    wrote one (`sc_pid_line` does, for exactly this), else MSYS `/proc/<pid>` through Git Bash (the
+    launchers' pids are MSYS pids, which OpenProcess cannot see); `os.kill(pid, 0)` on POSIX.
+
+    A Git Bash spawn costs 0.1 s and more per probe, and the admission wait and each running job's driver
+    poll probe every job; the winpid answers in microseconds and spawns nothing.
 
     Existence-only: it cannot tell a live detached job from an unrelated process that later reused
     the same PID. That matches `_wait_detached`'s own tolerance -- a stale "alive" reading costs
@@ -1968,6 +2044,9 @@ def _pid_alive(pid):
     """
     if pid is None:
         return False
+    if winpid and platform.system() == "Windows":
+        import reap
+        return not reap.process_exited(int(winpid), None)
     if platform.system() == "Windows":
         # Launchers record `$BASHPID`/`$!`: an MSYS pid, which Git Bash numbers apart from Windows
         # pids, so OpenProcess cannot see it. MSYS's own /proc is the authority when bash runs.
@@ -2012,6 +2091,19 @@ def _detached_pid(record_path):
     return None
 
 
+def _record_pid_alive(record_path, pid):
+    """`_pid_alive` for the pid `_detached_pid` read from this record, with the winpid on the same `.pid` line."""
+    winpid = None
+    try:
+        with open(str(record_path) + ".pid", encoding="utf-8", errors="replace") as fh:
+            lines = [ln for ln in fh if "pid=" in ln]
+        found = re.search(r"\bwinpid=(\d+)\b", lines[-1]) if lines else None
+        winpid = found.group(1) if found else None
+    except OSError:
+        pass
+    return _pid_alive(pid, winpid) if winpid else _pid_alive(pid)
+
+
 def _wait_detached(record_path, poll_interval=None):
     """Block until the record's end is recorded (its journal's `ended` row, else `<record>.exit`), or the detached pid dies with none written.
 
@@ -2032,7 +2124,7 @@ def _wait_detached(record_path, poll_interval=None):
             except ValueError:
                 return None, False
         pid = _detached_pid(record_path)
-        if pid is not None and not _pid_alive(pid):
+        if pid is not None and not _record_pid_alive(record_path, pid):
             if grace_used:
                 return None, True
             grace_used = True
@@ -2270,12 +2362,20 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
     def one(label, argv, out_path, launch_id, record_path, continuing=False):
         # SIDECAR_FANOUT_ID marks siblings: jobs of one fan-out may share a brief, and are never
         # each other's duplicate launch (sidecar_common.sh sc_check_duplicate_launch).
-        child_env = dict(os.environ, SIDECAR_LAUNCH_ID=launch_id, SIDECAR_FANOUT_ID=fanout_id,
-                         SIDECAR_CHECK_OWNER=launch_id)
-        if label in FULL_WINDOW:
-            child_env["SIDECAR_FULL_WINDOW"] = "1"
+        import machine_slots
         identity = {"launchId": launch_id, "parentSessionId": parent_session,
                     "inventoryPath": str(inventory_path)}
+        try:
+            child_env = machine_slots.proof_environment(dict(os.environ, SIDECAR_LAUNCH_ID=launch_id,
+                             SIDECAR_FANOUT_ID=fanout_id, SIDECAR_CHECK_OWNER=launch_id))
+        except machine_slots.SlotStoreError as err:
+            # Raised in this worker thread, it dropped the job from the results without a word.
+            results[label] = {**identity, "exit": None, "error": f"machine slots unavailable: {err}"}
+            return
+        # Model work holds no local lane; direct proof processes admit themselves at startup.
+        child_env.pop("HARNESS_SLOT_BUDGET", None)
+        if label in FULL_WINDOW:
+            child_env["SIDECAR_FULL_WINDOW"] = "1"
         since = time.time()
         if True:
             print(f"[dispatch] {label}: {' '.join(argv[:6])} ...", flush=True)
@@ -2800,7 +2900,7 @@ def _attempt_state(record):
     pid = _detached_pid(record)
     if pid is None:
         return "pending", f"no pid recorded yet  {where}"
-    if _pid_alive(pid):
+    if _record_pid_alive(record, pid):
         return "running", f"pid {pid}  {where}"
     return "died", f"pid {pid} gone, no exit file  {where}"
 
@@ -3171,7 +3271,7 @@ def run_review_fold(review, args, data, out_dir, seats=()):
         jobs.append({"subject": subject, "label": label, "digest": str(out_dir / f"{label}_digest.json"),
                      "rows": [row for row in rows if routed.get(row["id"]) == index - 1]})
     _independent, verdicts = fold_check.independent_verdicts(rows, subjects, out_dir / "fold_input")
-    rigor = finding_bar.run_rigor(args.ledger_task, REPO)
+    rigor = finding_bar.run_rigor(args.ledger_task, getattr(args, "root", None) or REPO)
     authors = []
     for job in jobs:
         if not job["rows"]:
@@ -3446,25 +3546,55 @@ def launcher_fit_refusal(argv):
         return None  # the check could not run; each launcher still runs its own
 
 
-def fit_facts(jobs):
-    """Each pinned job's `dispatch_size.fit_lines` fact: its whole reading against the point it compacts at.
-    Advisory, printed beside the tier-fit check so a dispatcher who skipped the preflight still sees it; a spec it
-    cannot size prints nothing."""
+def fit_size(jobs):
+    """`dispatch_size.dispatch_size` over the jobs, each at its pin (a job listing `rows` at the tightest listed
+    window, since a reading that fits it fits every row the job may run); None when it cannot be sized."""
     try:
         import dispatch_size
         data = model_registry.load()
         sized = []
         for job in jobs:
             if isinstance(job, dict) and job.get("rows"):
-                # The tightest listed window: a reading that fits it fits every row the job may run.
                 usable = {alias: dispatch_size.fit_tokens(alias, 0, data, job)["usable"] for alias in job["rows"]}
                 known = {alias: u for alias, u in usable.items() if u}
                 alias = min(known, key=known.get) if known else next(iter(job["rows"]))
                 job = {**{k: v for k, v in job.items() if k != "rows"}, "alias": alias, "effort": job["rows"][alias]}
             sized.append(job)
-        return dispatch_size.fit_lines(dispatch_size.dispatch_size(sized, os.getcwd()))
+        return dispatch_size.dispatch_size(sized, os.getcwd())
+    except Exception:
+        return None
+
+
+def fit_facts(jobs, size=None):
+    """Each pinned job's `dispatch_size.fit_lines` fact: its whole reading against the point it compacts at.
+    Printed beside the tier-fit check so a dispatcher who skipped the preflight still sees it; a job over its
+    point is refused by `over_window_refusal` before these print. A spec it cannot size prints nothing."""
+    size = fit_size(jobs) if size is None else size
+    if size is None:
+        return []
+    try:
+        import dispatch_size
+        return dispatch_size.fit_lines(size)
     except Exception:
         return []
+
+
+def over_window_refusal(size):
+    """The refusal text for every job whose reading is past the point it compacts at, else None: the job, its
+    reading and its window. A job that reads more than it can hold compacts away part of what it was told to
+    read, so the run pays for a report that did not read its brief. `dispatch_size.over_window_lines` owns the
+    measure, the one `lens_briefs.seat_overage` refuses a review seat on."""
+    if size is None:
+        return None
+    try:
+        import dispatch_size
+        lines = dispatch_size.over_window_lines(size)
+    except Exception:
+        return None
+    if not lines:
+        return None
+    return ("Launch refused: a job reads more than its window holds. Split its reading across jobs, drop a "
+            "named file, or pin a row whose window holds it. Nothing dispatched.\n  " + "\n  ".join(lines))
 
 
 def spare_facts(jobs, data, now=None, read=None):
@@ -3473,6 +3603,7 @@ def spare_facts(jobs, data, now=None, read=None):
     plans, so it gets none. Facts only; a job it cannot read gets no line."""
     checks = _dispatch_checks_module()
     out = []
+    facts = {}  # (tier, transport) -> fact: one read of every plan's room serves every job of that shape
     for job in jobs:
         try:
             job = normalize_job(job, data)
@@ -3481,7 +3612,9 @@ def spare_facts(jobs, data, now=None, read=None):
                 continue
             tier = checks.job_tier(job.get("kind"), job.get("tier"))[0]
             transport = job.get("transport") or model_registry.resolve(rows[0][0], data)["transport"]
-            fact = checks.spare_plan_fact(tier, transport, data, now, read)
+            if (tier, transport) not in facts:
+                facts[(tier, transport)] = checks.spare_plan_fact(tier, transport, data, now, read)
+            fact = facts[(tier, transport)]
         except Exception:
             continue
         if fact:
@@ -3567,7 +3700,7 @@ def _admission_state(record, stream, since):
     if code is not None:
         return ("admitted" if written else "refused"), code
     pid = _detached_pid(record)
-    if written and pid is not None and _pid_alive(pid):
+    if written and pid is not None and _record_pid_alive(record, pid):
         return "admitted", None
     return ("starting" if pid is not None else "unstarted"), None
 
@@ -3960,7 +4093,11 @@ def _main(argv):
     fit = launcher_fit_refusal(argv if argv is not None else sys.argv[1:])
     if fit:
         return _refused(fit)
-    for fact in fit_facts(jobs):
+    size = fit_size(jobs)
+    over = over_window_refusal(size)
+    if over:
+        return _refused(over)
+    for fact in fit_facts(jobs, size):
         print(fact)
     if not args.refold:
         for fact in spare_facts(jobs, data):

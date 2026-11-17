@@ -13,7 +13,7 @@ Two subjects, one file, both on the real watcher:
    the watcher must end instead of polling forever. It must NOT end when the host cannot be observed (a
    proof fixture, or an old client that writes no session registry row).
 
-Waits here are for observable events (a line in the watcher's output, an exit), never elapsed time.
+Waits for an event are for observable events (a line in the watcher's output, an exit); the two stay-armed cases read silence for a fixed 1.0 s, ten host checks at HOST_SEC.
 """
 import json
 import os

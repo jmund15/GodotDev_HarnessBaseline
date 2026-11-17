@@ -1,7 +1,8 @@
 """Each Claude-client launcher's live init tool list equals its job kind's tool set.
 
-The rows are stream-json system/init events captured from real fan-out runs, one per launcher and
-kind, planted here (cut from tests/fixtures/dispatch_kind_init_events.json, which never ships). If a
+The rows are stream-json system/init events captured from real fan-out runs, one per launcher and kind,
+read from tests/fixtures/dispatch_kind_init_events.json (trimmed to type, subtype and tools). The
+session transcripts hold no init event for these launchers, so the captured file is the source. If a
 launcher ever hands a child tools its kind does not grant (or drops one), the recapture fails here:
 argv is the whole enforcement, so this is its check.
 
@@ -9,6 +10,7 @@ A row may carry `stale` when a profile change landed while its launcher's plan c
 (a plan quota exhausted): the missing-server direction is skipped and named, because only a
 fresh capture can answer it, and the extra-server direction still runs.
 """
+import json
 import os
 import sys
 
@@ -17,34 +19,12 @@ sys.path.insert(0, os.path.join(ROOT, ".claude", "tools"))
 import tool_profiles as tp  # noqa: E402
 
 SCHEMA_TOOL = "StructuredOutput"
-AI_WORKER = ["mcp__ai-worker__check_local_queue", "mcp__ai-worker__extract_session_chat",
-             "mcp__ai-worker__get_stats", "mcp__ai-worker__list_models", "mcp__ai-worker__read_files",
-             "mcp__ai-worker__read_web", "mcp__ai-worker__write_doc"]
-GIT = ["mcp__git__git_blame", "mcp__git__git_branch", "mcp__git__git_diff", "mcp__git__git_for_each_ref",
-       "mcp__git__git_grep", "mcp__git__git_log", "mcp__git__git_ls_files", "mcp__git__git_merge_base",
-       "mcp__git__git_rev_list", "mcp__git__git_rev_parse", "mcp__git__git_show", "mcp__git__git_status"]
-SEMANTIC = ["mcp__plugin_semantic-search_semantic-search__search"]
-READ_ONLY = ["Glob", "Grep", "Read"] + AI_WORKER + GIT + SEMANTIC
-AUTHOR = ["Bash", "Edit", "Glob", "Grep", "Read", "Write"] + AI_WORKER + SEMANTIC
-RUNS = [
-    {"launcher": "anthropic_secondary_sidecar.sh", "kind": "scout", "type": "system", "subtype": "init",
-     "tools": READ_ONLY},
-    {"launcher": "anthropic_secondary_sidecar.sh", "kind": "lens", "type": "system", "subtype": "init",
-     "tools": READ_ONLY},
-    {"launcher": "anthropic_secondary_sidecar.sh", "kind": "reviewer", "type": "system", "subtype": "init",
-     "tools": ["Glob", "Grep", "Read", SCHEMA_TOOL] + AI_WORKER + GIT + SEMANTIC},
-    {"launcher": "anthropic_secondary_sidecar.sh", "kind": "author", "type": "system", "subtype": "init",
-     "tools": AUTHOR},
-    {"launcher": "deepseek_sidecar.sh", "kind": "scout", "type": "system", "subtype": "init", "tools": READ_ONLY},
-    {"launcher": "deepseek_sidecar.sh", "kind": "author", "type": "system", "subtype": "init", "tools": AUTHOR},
-    {"launcher": "opencode_sidecar.sh", "kind": "scout", "type": "system", "subtype": "init", "tools": READ_ONLY},
-    {"launcher": "opencode_sidecar.sh", "kind": "author", "type": "system", "subtype": "init", "tools": AUTHOR},
-    # Captured before the read-only kinds gained the git server; the codex plan allowance was exhausted on
-    # 2026-11-05, so the row could not be recaptured. Run the launcher again when it has room and replace it.
-    {"launcher": "codex_proxy_sidecar.sh", "kind": "scout", "type": "system", "subtype": "init",
-     "tools": READ_ONLY[:3] + AI_WORKER + SEMANTIC, "stale": "captured before the read-only kinds gained the git server"},
-    {"launcher": "codex_proxy_sidecar.sh", "kind": "author", "type": "system", "subtype": "init", "tools": AUTHOR},
-]
+# The captured rows: stream-json system/init events of live `sidecar_fanout -P` runs, trimmed to
+# launcher, kind, type, subtype and tools (plus the codex row's denyApplied flag). A project transcript
+# holds no such event for these launchers, so the captured file is the only source; the proof reads it.
+FIXTURE = os.path.join(ROOT, ".claude", "tests", "fixtures", "dispatch_kind_init_events.json")
+with open(FIXTURE, encoding="utf-8") as fh:
+    RUNS = json.load(fh)["runs"]
 
 failures = []
 skipped = []

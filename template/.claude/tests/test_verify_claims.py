@@ -19,9 +19,11 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import unittest.mock
 from pathlib import Path
 
 import _scan_fixtures as fx
@@ -40,8 +42,47 @@ def check(label, ok, detail=""):
         FAILURES.append(f"{label} :: {detail}")
 
 
+_PLANTED_HOME = tempfile.TemporaryDirectory(prefix="vc_")  # short: the p19 citations sit under a long repo path
+
+
+def planted_repo(name, copies):
+    """A committed git repo `name` under the proof's temp root, holding `copies`, {repo-relative path: live file or
+    directory}. The tool resolves a cited path, its tracked names and its ignore rules in the checkout it is given, so
+    the proof hands it this one and no git runs on the live checkout."""
+    root = Path(_PLANTED_HOME.name) / name
+    root.mkdir(parents=True)
+    for rel, source in copies.items():
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_dir():
+            shutil.copytree(source, target, dirs_exist_ok=True)
+        else:
+            shutil.copyfile(source, target)
+    for args in (("init", "-q"), ("config", "user.email", "proof@example.test"), ("config", "user.name", "Proof"),
+                 ("config", "commit.gpgsign", "false"), ("config", "core.longpaths", "true"),
+                 ("add", "-A"), ("commit", "-qm", "planted")):
+        done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0, (args, done.stderr)
+    return root
+
+
+def cited_checkout():
+    """The checkout the part-one claims cite: the p19 files and the F37 workflow, planted at their repo paths."""
+    global _CITED
+    if _CITED is None:
+        rels = {F37[0]}
+        if P19_CLAIMS.is_file():
+            rels |= {row["file"] for row in json.loads(P19_CLAIMS.read_text(encoding="utf-8")) if row.get("file")}
+        _CITED = planted_repo("cited", {rel: REPO / rel for rel in sorted(rels)})
+    return _CITED
+
+
+_CITED = None
+
+
 def verdicts(claims, root=None):
-    proc = subprocess.run([sys.executable, str(TOOL), "-", *(["--root", str(root)] if root else [])], input=json.dumps(claims), text=True,
+    proc = subprocess.run([sys.executable, str(TOOL), "-", "--root", str(root or cited_checkout())],
+                          input=json.dumps(claims), text=True,
                           capture_output=True, cwd=str(REPO), timeout=60, encoding="utf-8")
     if proc.returncode not in (0, 1) or "Traceback" in proc.stderr:
         return ["CRASH"] * len(claims), proc.stderr
@@ -147,7 +188,7 @@ def part_one():
         check("the docstring's UNCHECKED row names each non-path citation",
               all(name in doc.split("UNCHECKED  ")[1].splitlines()[0]
                   for name in ("context7", "WebSearch", "memory")), doc)
-        proc = subprocess.run([sys.executable, str(TOOL), "-"], input=json.dumps([
+        proc = subprocess.run([sys.executable, str(TOOL), "-", "--root", str(cited_checkout())], input=json.dumps([
             {"subject": "relative", "file": F37[0], "evidence": F37[1]}]), text=True,
             capture_output=True, cwd=tmp, timeout=60, encoding="utf-8")
         check("a repo-relative legacy citation resolves from outside the repo root",
@@ -155,14 +196,15 @@ def part_one():
         manifest = os.path.join(tmp, "manifest.tsv")
         with open(manifest, "w", encoding="utf-8", newline="\n") as fh:
             fh.write("OK\t200\t10\t%s\thttps://example.test/page\n" % planted)
-        proc = subprocess.run([sys.executable, str(TOOL), "-", "--manifest", manifest], input=json.dumps([
+        proc = subprocess.run([sys.executable, str(TOOL), "-", "--root", str(cited_checkout()), "--manifest", manifest],
+                              input=json.dumps([
             {"subject": "fetched", "file": "https://example.test/page", "evidence": "pins 4.6.1 as the engine"},
             {"subject": "unfetched", "file": "https://example.test/other", "evidence": "pins 4.6.1 as the engine"}]),
             text=True, capture_output=True, cwd=tmp, timeout=60, encoding="utf-8")
         rows = [line.split()[0] for line in proc.stdout.splitlines() if line.split()[:1] and line.split()[0].isupper()]
         check("a legacy URL claim resolves through the fetch manifest and is UNCHECKED without a row",
               rows[:2] == ["VERIFIED", "UNCHECKED"], proc.stdout + proc.stderr)
-        proc = subprocess.run([sys.executable, str(TOOL), "-"], input=json.dumps([
+        proc = subprocess.run([sys.executable, str(TOOL), "-", "--root", str(cited_checkout())], input=json.dumps([
             {"subject": "ranged", "file": F37[0] + ":2", "evidence": F37[1]}]), text=True,
             capture_output=True, cwd=tmp, timeout=60, encoding="utf-8")
         check("a legacy citation with a `:N` suffix resolves (legacy mode took the path whole before)",
@@ -615,7 +657,7 @@ def part_three(vc):
         claims = json.loads((base / "claims.json").read_text(encoding="utf-8"))
         check(f"fixtures {name}: the dossier holds {size} claims", len(claims) == size, len(claims))
         tracked = (base / "tracked.txt").read_text(encoding="utf-8").split()
-        tree = base / "tree"
+        tree = planted_repo("tree_" + name, {".": base / "tree"})
         rows = [{"id": c["id"], "evidence": vc.items_of(c["claim"], root=tree, tracked=tracked),
                  "polarity": c["claim"].get("polarity")} for c in claims]
         report = vc.check_claims(rows, root=tree)
@@ -647,13 +689,22 @@ def part_three(vc):
               sum(counts.values()) == size, counts)
 
     base = FIXTURES / "review"
+    review_tree = planted_repo("tree_review", {".": base / "tree"})
     out = base / "verdicts.out.json"
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "verdicts.json"
-        code = vc.verify_findings(str(base), str(out), {}, False, root=base / "tree")
+        code = vc.verify_findings(str(base), str(out), {}, False, root=review_tree)
         payload = json.loads(out.read_text(encoding="utf-8")) if out.is_file() else {}
         check("fixtures review: the journal's findings verify to a complete verdict file",
               code == 0 and payload.get("status") == "complete" and payload.get("verdicts"), (code, payload.get("errors")))
+        with unittest.mock.patch.object(vc, "check_claims", side_effect=AssertionError("checked")):
+            try:
+                vc.load_findings(base)
+                loaded_unchecked = True
+            except AssertionError:
+                loaded_unchecked = False
+        check("fixtures review: loading a journal's findings checks no claim (verify_findings checks them in its --root)",
+              loaded_unchecked)
         raw = {}
         archive_items = vc.load_findings(base)[0]
         for row in archive_items:
@@ -661,7 +712,7 @@ def part_three(vc):
         wrong = []
         for row in payload.get("verdicts", []):
             texts = [t for ev in raw[row["id"]] if isinstance(ev, dict) and ev.get("file")
-                     for t in tree_texts(base / "tree", ev["file"], "")]
+                     for t in tree_texts(review_tree, ev["file"], "")]
             frags = [f for ev in raw[row["id"]] if isinstance(ev, dict) and isinstance(ev.get("quote"), str)
                      for f in oracle_fragments(ev["quote"])]
             state = oracle_state(texts, frags)
@@ -882,6 +933,8 @@ def commit_cases(root, COMMIT_SHA):
         ("a bare sha names a commit", COMMIT_SHA, COMMIT_SUBJECT, "VERIFIED"),
         ("<sha>:<path> reads that path at that commit", f"{COMMIT_SHA}:.claude/tools/verify_claims.py",
          "def claim_verdict(item_verdicts, polarity=None):", "VERIFIED"),
+        ("a bare sha's `git show --stat` summary line is VERIFIED", COMMIT_SHA,
+         "1 file changed, 2 insertions(+)", "VERIFIED"),
         ("a quote absent from the commit is UNVERIFIED", f"git {COMMIT_SHA}",
          "no commit holds this zz-absent sentence", "UNVERIFIED"),
         ("a path absent at the commit is UNVERIFIED", f"{COMMIT_SHA}:.claude/tools/no_such_file.py",
@@ -898,6 +951,47 @@ def commit_cases(root, COMMIT_SHA):
         check(label, got == want, f"{file!r}: want {want}, got {got}\n{out[-300:]}")
 
 
+WRAPPED_PY = (
+    "x = 1\n"
+    "# A shell whose command line only mentions the script name, as in `python -c`, is not a\n"
+    "# launcher: the pattern binds the script argument.\n"
+    "y = 2\n"
+)
+WRAPPED_JS = (
+    "call();\n"
+    "    // Round one proves the branch as pushed. Round two runs only after a push lost a race to a\n"
+    "    // moved main, and a second loss stops the run.\n"
+    "done();\n"
+)
+
+
+def part_wrapped_comments():
+    """A quote that reads across a wrapped comment holds: the leader on each continuation line (`#`, `//`) is not
+    part of the sentence. Code joined to a comment, and words the comment lacks, stay UNVERIFIED."""
+    cases = [
+        ("a quote across two `#` comment lines is VERIFIED", "wrapped.py",
+         "is not a launcher: the pattern binds the script argument.", "VERIFIED"),
+        ("a quote across two `//` comment lines is VERIFIED", "wrapped.js",
+         "a push lost a race to a moved main, and a second loss", "VERIFIED"),
+        ("a quote with the leader kept still holds", "wrapped.py",
+         "is not a\n# launcher: the pattern", "VERIFIED"),
+        ("a quote joining code to the comment after it stays UNVERIFIED", "wrapped.py",
+         "x = 1 A shell whose command", "UNVERIFIED"),
+        ("words a wrapped comment lacks stay UNVERIFIED", "wrapped.py",
+         "is not a launcher: the pattern ignores the script argument.", "UNVERIFIED"),
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "wrapped.py").write_text(WRAPPED_PY, encoding="utf-8", newline="\n")
+        (root / "wrapped.js").write_text(WRAPPED_JS, encoding="utf-8", newline="\n")
+        claims = [{"id": f"W{index}", "evidence": [{"file": file, "quote": quote}]}
+                  for index, (_, file, quote, _) in enumerate(cases)]
+        rows, out = verdicts(claims, root)
+    for index, (label, file, _quote, want) in enumerate(cases):
+        got = rows[index] if index < len(rows) else "MISSING"
+        check(label, got == want, f"{file!r}: want {want}, got {got}\n{out[-300:]}")
+
+
 def main():
     part_one()
     import verify_claims as vc
@@ -909,6 +1003,7 @@ def main():
     part_owner_turn_cache(vc)
     part_contract_examples()
     part_commit_citations()
+    part_wrapped_comments()
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")
         for failure in FAILURES:

@@ -183,6 +183,27 @@ def main():
         rc, err = run_bash(*a, 'cp a.jsonl %s/b.jsonl' % M, prompt=brief)
         ck('deny a Bash cp to an undeclared main path with a brief', rc == 2, (rc, err))
 
+        # The child cannot widen its own writeSet: the brief the guard re-reads is never a path it may write,
+        # wherever the dispatcher put it (the spill dir, the workdir, outside the checkout, a declared dir).
+        in_spill = spill / 'job_prompt.md'
+        in_work = work / 'brief.md'
+        in_declared = deck / 'brief.md'
+        for place in (in_spill, in_work, in_declared):
+            place.parent.mkdir(parents=True, exist_ok=True)
+            place.write_text(brief.read_text(encoding='utf-8'), encoding='utf-8')
+        for label, place in (('the spill dir', in_spill), ('the workdir', in_work), ('a declared dir', in_declared),
+                             ('a folder outside the checkout', brief)):
+            declared('deny a Write of the brief in ' + label, 2, 'Write', place, prompt=place)
+            declared('deny an Edit of the brief in ' + label, 2, 'Edit', place, prompt=place)
+            rc, err = run_bash(*a, 'echo x >> %s' % place.as_posix(), prompt=place)
+            ck('deny a Bash append to the brief in ' + label, rc == 2, (rc, err))
+            rc, err = run_bash(*a, 'cat %s' % place.as_posix(), prompt=place)
+            ck('allow a Bash read of the brief in ' + label, rc == 0, (rc, err))
+        declared('allow a report beside the brief in the spill dir', 0, 'Write', spill / 'job.md', prompt=in_spill)
+        declared('allow a workdir file beside the brief', 0, 'Write', work / 'a.py', prompt=in_work)
+        declared('deny the brief named by a path that climbs out of its folder', 2, 'Write',
+                 spill / 'sub' / '..' / 'job_prompt.md', prompt=in_spill)
+
     with tempfile.TemporaryDirectory() as tmp:
         repo, linked = Path(tmp, 'repo'), Path(tmp, 'linked')
         git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@t']

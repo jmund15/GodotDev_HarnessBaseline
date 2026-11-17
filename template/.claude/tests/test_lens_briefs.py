@@ -13,8 +13,25 @@ import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _planted_checkout import enter_planted_checkout  # noqa: E402
+
+PLANTED = enter_planted_checkout()  # the rigor reader asks git about the working directory
 import lens  # noqa: E402
 import lens_briefs  # noqa: E402
+
+
+# The two reads that ask git about the tool's own checkout root (the rigor, the base sizes) run the real code
+# against the planted repository; every other read of REPO (config, templates) keeps the real root.
+_real_sizes, _real_rigor = lens_briefs._base_sizes, lens_briefs.finding_bar.run_rigor
+
+
+def _planted(root):
+    return PLANTED if root == lens_briefs.REPO else root
+
+
+lens_briefs._base_sizes = lambda root, base, files: _real_sizes(_planted(root), base, files)
+lens_briefs.finding_bar.run_rigor = lambda task, root, *rest, **kw: _real_rigor(task, _planted(root), *rest, **kw)
 
 FAILURES = []
 

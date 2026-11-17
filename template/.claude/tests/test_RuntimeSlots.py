@@ -167,8 +167,33 @@ def isolation(tmp):
           rc == 0 and got == os.path.join(tmp, "t", "harness-activity", "runtime-slots").replace("\\", "/"), f"rc={rc} {out!r}")
 
 
+def machine_lane(tmp):
+    """A runtime lane takes a local-work lane from the common pool before its runtime slots, and spends a parent's loan."""
+    sys.path.insert(0, os.path.join(REPO, ".claude", "tools"))
+    import machine_slots
+    pool = os.path.join(tmp, "pool")
+    env = {"HARNESS_SLOT_DIR": pool, "HARNESS_MACHINE_SLOTS": "1", "HARNESS_SLOT_BUDGET": ""}
+    body = ("$l = Enter-RunLocks -Repo '%s' -Runtime -SlotCount 2 -SlotNames @('mp-%s-a','mp-%s-b') "
+            "-CheckoutLockName 'mp-%s-ck' -RecordDir '%s' -TimeoutMs 300; ('R=' + $l.Acquired + ':' + $l.Blocker); Exit-RunLocks $l"
+            % (REPO, os.getpid(), os.getpid(), os.getpid(), os.path.join(tmp, "records")))
+    old = {name: os.environ.get(name) for name in env}
+    os.environ.update({"HARNESS_SLOT_DIR": pool, "HARNESS_MACHINE_SLOTS": "1"})
+    os.environ.pop("HARNESS_SLOT_BUDGET", None)
+    held = machine_slots.take(True)
+    try:
+        rc, out, err = drive(body, tmp, env)
+        check("a runtime lane waits behind a full common pool and names it", rc == 0 and "R=False:machine-slots" in out, f"rc={rc} {out!r} {err[-200:]!r}")
+        rc, out, err = drive(body, tmp, {**env, "HARNESS_SLOT_BUDGET": "1"})
+        check("a runtime lane under a parent's loan takes no second pool lane", rc == 0 and "R=True:" in out, f"rc={rc} {out!r} {err[-200:]!r}")
+    finally:
+        machine_slots.release_all(held)
+        for name, value in old.items():
+            os.environ.pop(name, None) if value is None else os.environ.__setitem__(name, value)
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="RuntimeSlots-proof-") as tmp:
         main(tmp)
+        machine_lane(tmp)
     print("FAILED: " + ", ".join(failures) if failures else "all passed")
     sys.exit(1 if failures else 0)

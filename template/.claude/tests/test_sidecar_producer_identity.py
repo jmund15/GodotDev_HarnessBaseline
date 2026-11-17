@@ -187,6 +187,18 @@ sc_write_record "$RAW" "$RC"
                 call.assert_not_called()
             self.assertEqual(original, path.read_bytes())
 
+    def test_a_job_whose_machine_pool_is_unavailable_returns_its_error(self):
+        import machine_slots
+        refused = machine_slots.SlotStoreError('USERPROFILE is missing; refusing a private machine pool')
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(machine_slots, 'proof_environment', side_effect=refused), \
+                patch.object(fanout.subprocess, 'call', return_value=0) as call, \
+                patch.object(fanout, 'freeze_fingerprint', return_value=None):
+            result = fanout.run_jobs([('job', ['fixture'], str(Path(temp) / 'job.out.json'))], 1, temp)
+        self.assertIn('job', result)
+        self.assertIn('machine slots unavailable', result['job'].get('error') or '')
+        call.assert_not_called()
+
     def test_inventory_unknown_parent_stays_unknown(self):
         with tempfile.TemporaryDirectory() as temp, \
                 patch.dict(os.environ, {}, clear=True), \

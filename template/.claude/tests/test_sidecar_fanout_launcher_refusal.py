@@ -230,6 +230,59 @@ def refused_set_prints_no_fit():
 
 case("a refused job set prints the refusal and no fit line", refused_set_prints_no_fit)
 
+# A job whose reading is past the point it compacts at is refused like an unfit pin: the fit line used to print the
+# overage and the launch went on (2026-11-10: 523,580 tokens against a 467,000-token window). The measure is
+# `dispatch_size`'s `over`, the one `lens_briefs.seat_overage` refuses a review seat on.
+import dispatch_size  # noqa: E402
+
+OVER_ALIAS = FIT[0]
+WINDOW = dispatch_size.fit_tokens(OVER_ALIAS, 0, DATA)["usable"]
+BIG = os.path.join(TMP, "big_brief.md")
+with open(BIG, "w", encoding="utf-8") as fh:
+    fh.write("x" * int((WINDOW + 30000) * dispatch_size.CHARS_PER_TOKEN))
+
+
+def over_job(label="too-big"):
+    return job(label, OVER_ALIAS, promptFile=BIG)
+
+
+for mode in ("--detach", "--dry-run", None):
+    flags = (mode,) if mode else ()
+    shown = mode or "foreground"
+
+    def over_is_refused(flags=flags):
+        code, out, err, detached, ran, out_dir = run([over_job()], *flags)
+        return code == 2 and detached == 0 and ran == 0 and not os.path.exists(os.path.join(out_dir, "fanout-driver.log"))
+
+    def over_refusal_names_job_reading_and_window(flags=flags):
+        _code, out, err, *_ = run([over_job()], *flags)
+        text = out + err
+        return ("`too-big`" in text and "%d tokens" % WINDOW in text and "over by" in text
+                and re.search(r"reading [\d,]+ tokens", text) is not None)
+
+    def only_the_over_job_is_refused_and_a_fitting_one_still_launches(flags=flags):
+        code, out, err, *_ = run([over_job(), job("fits-b", FIT[0])], *flags)
+        text = out + err
+        return code == 2 and "`too-big`" in text and "fits-b" not in text
+
+    case("%s: a job reading past its window exits 2 and starts nothing" % shown, over_is_refused)
+    case("%s: the refusal names the job, its reading and its window" % shown, over_refusal_names_job_reading_and_window)
+    case("%s: only the over-window job is named" % shown, only_the_over_job_is_refused_and_a_fitting_one_still_launches)
+
+
+def the_refusal_uses_the_seat_measure():
+    """One measure: the line's overage is the number `lens_briefs.seat_overage` refuses a seat on."""
+    import lens_briefs
+    empty = os.path.join(TMP, "empty_context.md")
+    open(empty, "w", encoding="utf-8").close()
+    seat = lens_briefs.seat_reading(key="k", token=OVER_ALIAS, body=open(BIG, encoding="utf-8").read(),
+                                    context_path=empty, entries=[], data=DATA)
+    _code, out, err, *_ = run([over_job()], "--dry-run")
+    return seat["over"] > 0 and ("over by %d" % seat["over"]) in out + err
+
+
+case("the over-window refusal's overage is the review seat's own measure", the_refusal_uses_the_seat_measure)
+
 
 def receipted_job_is_not_checked_twice():
     """The hook's fan-out receipt (written by the real `remember_checks`) means it already ran the tier check for

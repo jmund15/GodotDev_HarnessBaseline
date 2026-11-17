@@ -17,7 +17,10 @@ Dependencies read per file type:
   literals that are wholly a `.md`/`.json` file name or path (a registry's filename; not in a test, whose
   literals are plant data), and bare string literals naming a sibling module (a sub-hook chain imported
   by name). A file importing `_optional_hooks` loads by name through it, so its names count as optional;
-  `OPTIONAL_DATA` lists the sources that tolerate their `.md`/`.json` literals absent;
+  `OPTIONAL_DATA` lists the sources that tolerate their `.md`/`.json` literals absent. A literal naming a
+  file the source produces is no dependency: a piece of a path placed under a gitignored folder
+  (`IGNORED_DIRS`, such as `HERE / "scratch" / "out.json"`), or a path the source only writes
+  (`open(p, "w")`, `p.write_text(...)`);
 - shell, javascript, powershell: script paths outside comments (`#` lines and trailing `# ...`, and
   PowerShell `<# #>` blocks).
 
@@ -52,6 +55,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import functools
 import json
 import os
 import posixpath
@@ -152,8 +156,9 @@ def _cache_clone(root: Path) -> Path:
     return Path(common.stdout.strip()).parent / rel if common.returncode == 0 else Path(root) / rel
 
 
-def pinned_manifest(root: Path, lock: dict) -> dict | None:
-    """The manifest at the lock's pinned baseline commit, read from the sync engine's cache clone."""
+def pinned_manifest(root: Path, lock: dict, fetch: bool = True) -> dict | None:
+    """The manifest at the lock's pinned baseline commit, read from the sync engine's cache clone. A pin the clone
+    lacks is fetched from the baseline remote first; `fetch=False` (a caller on a deadline) reads the clone only."""
     import subprocess
     clone = _cache_clone(root)
     sha = lock.get("synced_commit")
@@ -164,7 +169,7 @@ def pinned_manifest(root: Path, lock: dict) -> dict | None:
                               capture_output=True, text=True, encoding="utf-8")
 
     shown = show()
-    if shown.returncode != 0:
+    if shown.returncode != 0 and fetch:
         try:
             subprocess.run(["git", "-C", str(clone), "fetch", "-q", "origin"], capture_output=True, timeout=120)
         except (OSError, subprocess.TimeoutExpired):
@@ -401,10 +406,93 @@ def _catches_import_error(handler: ast.ExceptHandler) -> bool:
     return bool({"ImportError", "ModuleNotFoundError", "Exception", "BaseException"} & set(names))
 
 
+IGNORED_DIRS = frozenset(pat[:-2] for pat in GENERATED if pat.endswith("/*") and not set("*/") & set(pat[:-2]))
+WRITE_METHODS = frozenset({"write_text", "write_bytes"})
+
+
+def _is_path_node(node) -> bool:
+    return isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div) or _is_path_join(node) \
+        or isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("Path", "PurePath") \
+        or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "joinpath"
+
+
+def _path_parts(node) -> list:
+    """The operands of a path expression, left to right, nested expressions flattened."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _path_parts(node.left) + _path_parts(node.right)
+    if isinstance(node, ast.Call) and _is_path_node(node):
+        head = _path_parts(node.func.value) if isinstance(node.func, ast.Attribute) else []
+        return head + [part for arg in node.args for part in _path_parts(arg)]
+    return [node]
+
+
+def _opens_for_write(call: ast.Call) -> bool:
+    """`open(path, "w")`, `open(path, mode="a")` or `<path>.open("x")`."""
+    func = call.func
+    if not (isinstance(func, ast.Name) and func.id == "open" or isinstance(func, ast.Attribute) and func.attr == "open"):
+        return False
+    modes = call.args[1:2] if isinstance(func, ast.Name) else call.args[:1]
+    modes = modes + [kw.value for kw in call.keywords if kw.arg == "mode"]
+    return any(isinstance(m, ast.Constant) and isinstance(m.value, str) and set(m.value) & set("wax") for m in modes)
+
+
+FILE_NAME_TEXT = re.compile(r"\.(?:md|json|py|sh|js|ps1)\b")
+
+
+def _output_literals(module: ast.AST, text: str) -> set[int]:
+    """Ids of the string literals that name a file the source produces rather than reads: a piece of a path
+    placed under a gitignored folder (`HERE / "scratch" / "out.json"`), and a path the source only writes
+    (`open(p, "w")`, `p.write_text(...)`). A name is a dependency when the file reads it. A source whose text
+    names no such file has nothing to classify."""
+    out: set[int] = set()
+    if not FILE_NAME_TEXT.search(text):
+        return out
+    parent: dict[int, ast.AST] = {}
+    path_nodes, constants, stack = [], [], [module]
+    while stack:
+        node = stack.pop()
+        for child in ast.iter_child_nodes(node):
+            parent[id(child)] = node
+            stack.append(child)
+            if _is_path_node(child):
+                path_nodes.append(child)
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                constants.append(child)
+    for node in path_nodes:
+        if _is_path_node(parent.get(id(node))):
+            continue
+        under = False
+        for part in _path_parts(node):
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                if under:
+                    out.add(id(part))
+                under = under or bool(IGNORED_DIRS & set(re.split(r"[/\\]", part.value)))
+    for node in constants + path_nodes:
+        up = parent.get(id(node))
+        while _is_path_node(up):
+            node, up = up, parent.get(id(up))
+        written = isinstance(up, ast.Attribute) and up.attr in WRITE_METHODS and up.value is node \
+            or isinstance(up, ast.Call) and _opens_for_write(up) and (
+                node in up.args[:1] and isinstance(up.func, ast.Name) or up.func is not node and
+                isinstance(up.func, ast.Attribute) and up.func.value is node)
+        if written:
+            out.update(id(n) for n in ast.walk(node) if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    return out
+
+
 def _python_deps(text: str):
     """(module names imported unguarded, string literals outside docstrings, optional names, whether the
     file imports OPTIONAL_LOADER at all: a guarded loader import still loads its chain by name)."""
+    imports, strings, optional, loader = _parsed_python_deps(text)
+    return set(imports), list(strings), set(optional), loader
+
+
+# Keyed by the text alone: a lock write scans every shipped file before and after it (~60 s each), and the
+# second scan reads the same texts.
+@functools.lru_cache(maxsize=4096)
+def _parsed_python_deps(text: str):
     tree = ast.parse(text)
+    outputs = _output_literals(tree, text)
     guarded: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Try) and any(_catches_import_error(h) for h in node.handlers):
@@ -430,9 +518,9 @@ def _python_deps(text: str):
                 isinstance(node.func.value, ast.Name) and node.func.value.id == OPTIONAL_LOADER:
             optional.update(a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str))
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings \
-                and id(node) not in guarded:
+                and id(node) not in guarded and id(node) not in outputs:
             strings.append(node.value)
-    return imports, strings, optional, loader or OPTIONAL_LOADER in imports
+    return frozenset(imports), tuple(strings), frozenset(optional), loader or OPTIONAL_LOADER in imports
 
 
 SCRIPT_REF = re.compile(r"([\w./${}-]*?)([A-Za-z_][\w-]*(?:\.py|\.sh|\.js|\.ps1))\b")
@@ -496,6 +584,11 @@ def _anchored_reads(text: str) -> list[str]:
     """Paths a proof joins onto a name bound from `__file__` (`HERE / "fixtures" / "rows.jsonl"`,
     `ROOT / ".claude/scripts/map.json"`): reads of the repo. A path joined onto any other name (a temp root)
     is one the proof plants."""
+    return list(_parsed_anchored_reads(text))
+
+
+@functools.lru_cache(maxsize=4096)
+def _parsed_anchored_reads(text: str) -> tuple[str, ...]:
     module = ast.parse(text)
     anchored: dict[str, list[str]] = {}
 
@@ -537,7 +630,7 @@ def _anchored_reads(text: str) -> list[str]:
         path = posixpath.normpath("/".join(found)) if found else ""
         if path and path != "." and not path.startswith(".."):
             reads.append(path)
-    return reads
+    return tuple(reads)
 
 
 def _proof_data_refs(tree: Tree, source: str, strings, joined=()):
@@ -667,6 +760,8 @@ def registration_findings(tree: Tree, check: set[str] | None = None) -> list[Fin
         match = re.fullmatch(r"\.claude/hooks/([A-Za-z0-9][\w-]*)\.py", rel)
         if match and FIXTURE_TREE not in rel:
             hooks[match.group(1)] = rel
+    if check is not None and not any(rel in check for rel in hooks.values()):
+        return []
     settings = {}
     for layer in LAYERS:
         rel = f".claude/settings.{SETTINGS_NAME[layer]}.json"
@@ -689,6 +784,9 @@ def registration_findings(tree: Tree, check: set[str] | None = None) -> list[Fin
                if any(ORDER[layer] <= ORDER[tree.layers[hooks[name]]] and name in names
                       for layer, (_, names) in settings.items())
                or any(ORDER[layer] <= ORDER[tree.layers[hooks[name]]] and name in names for layer, names in armed)}
+    if check is not None and all(name in reached or name.startswith("_") or "stdin" not in texts[name]
+                                 for name, rel in hooks.items() if rel in check):
+        return []  # each checked hook is already registered or exempt; the import walk can only add to `reached`
     pending = list(reached)
     while pending:
         text = texts.get(pending.pop(), "")
@@ -751,6 +849,23 @@ def row_dependencies(root: Path, relpath: str, layers: dict[str, str] | None = N
     for _ in _scan_text(tree, relpath, text):
         pass
     return sorted(tree.deps - {relpath})
+
+
+def dependents(root: Path, layers: dict[str, str], texts: dict[str, str], targets: set[str]) -> dict[str, list[str]]:
+    """The reverse of `row_dependencies`: for each target, the rows of `texts` ({relpath: text}) whose scan
+    resolves to it. One tree serves every row, so a whole shipped set scans in one pass. A row absent from
+    `layers`, a fixture-tree copy and the target itself never count."""
+    tree = Tree(Path(root), layers)
+    found: dict[str, list[str]] = {target: [] for target in targets}
+    for source in sorted(texts):
+        if source not in layers or FIXTURE_TREE in "/" + source:
+            continue
+        tree.deps = set()
+        for _ in _scan_text(tree, source, texts[source]):
+            pass
+        for target in sorted((tree.deps & targets) - {source}):
+            found[target].append(source)
+    return found
 
 
 def lock_findings(root: Path, lock: dict, manifest: dict | None) -> list[Finding]:

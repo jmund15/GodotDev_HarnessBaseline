@@ -12,6 +12,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _case_pool import _jobs, _budget as _case_budget  # noqa: E402
 
 HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                     "..", "hooks", "gate_cadence_guard.py")
@@ -316,51 +320,91 @@ def post_red_cases(run_one):
     return out
 
 
-def completed_peer_cases():
-    """A completed narrow run must cover the red on the current content, not its session id."""
-    import hashlib
-    from datetime import datetime, timezone
-    from pathlib import Path
-    repo = Path(tempfile.mkdtemp(prefix='postred_record_'))
-    env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
-    def git(*args):
-        return subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True, env=env)
-    git('init', '-q', '-b', 'main')
-    (repo / 'input.txt').write_text('tested tree\n')
-    git('add', 'input.txt')
-    git('-c', 'user.name=proof', '-c', 'user.email=proof@local', 'commit', '-qm', 'init')
-    peer = repo / 'peer'
-    git('worktree', 'add', '-q', '--detach', str(peer))
-    # Ignore the linked fixture checkout, as the real .claude/worktrees directory is ignored.
-    (repo / '.git/info/exclude').write_text('peer/\n.claude/\n')
-    name = ('App.Tests.Integration.ScenarioSuite.SomeScenarioTests.'
-            'Scenario_PlacesEverySubject_InsideItsOwnSight.'
-            'Scenario_PlacesEverySubject_InsideItsOwnSight:2 ("case_two")')
-    gate = Path(write_gate_last(str(repo), 'FAIL', age_sec=60, session='record-owner'))
-    # Shape from gate_last_20261017-052956-13996.md.
-    with gate.open('a', encoding='utf-8') as fh:
-        fh.write('\n## Integration — FAILING\n\nfailed=1 — genuine test failure, not a count-drift signal\n'
-                 '### Integration failing tests\n- ' + name + ' :: sight assertion\n')
-    red_at = time.time() - 60
-    os.utime(gate, (red_at, red_at))
-    script = Path(HOOK).resolve().parents[1] / 'scripts/TreeDigest.ps1'
-    ps = ". '%s'; (Get-TreeDigest -Repo '%s').digest" % (script, repo)
+PEER_NAME = ('App.Tests.Integration.ScenarioSuite.SomeScenarioTests.'
+             'Scenario_PlacesEverySubject_InsideItsOwnSight.'
+             'Scenario_PlacesEverySubject_InsideItsOwnSight:2 ("case_two")')
+PEER_FILTER = 'FullyQualifiedName~Tests.Integration.ScenarioSuite.SomeScenarioTests'
+TREE_DIGEST = os.path.join(os.path.dirname(HOOK), '..', 'scripts', 'TreeDigest.ps1')
+
+
+def tree_digest(repo, env):
+    ps = ". '%s'; (Get-TreeDigest -Repo '%s').digest" % (os.path.abspath(TREE_DIGEST), repo)
     result = subprocess.run(['pwsh', '-NoProfile', '-Command', ps], capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr
-    digest = result.stdout.strip()
-    # TRX fields cut from TestResults/sandbox_g6.trx; keep its parameterized identifier intact.
-    import xml.sax.saxutils as xml_escape
-    trx = peer / '.claude/scratch/test_runs/narrow.trx'
-    trx.parent.mkdir(parents=True)
-    trx.write_text('<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">'
-                   '<Results><UnitTestResult testName=' + xml_escape.quoteattr(name) + ' outcome="Passed" /></Results>'
-                   '<ResultSummary outcome="Completed"><Counters total="1" executed="1" passed="1" failed="0" />'
-                   '</ResultSummary></TestRun>', encoding='utf-8')
-    stamp = lambda seconds: datetime.fromtimestamp(seconds, timezone.utc).isoformat()
-    record = dict(filter='FullyQualifiedName~Tests.Integration.ScenarioSuite.SomeScenarioTests', elapsedSec=1,
-                  treeDigest=digest, startedAt=stamp(time.time() - 20), finishedAt=stamp(time.time() - 10),
-                  trxPath=str(trx), trxSha256=hashlib.sha256(trx.read_bytes()).hexdigest())
-    path = trx.with_suffix('.green')
+    return result.stdout.strip()
+
+
+class PeerFixture:
+    """One planted checkout, a linked peer worktree and an open red, owned by one group of cases.
+
+    A completed narrow run must cover the red on the current content, not its session id. The groups share no
+    state, so each builds its own fixture and they run beside each other; the cases inside a group run in order
+    on the one `.green` record the hook reads. The digest names content, never a path or a commit (TreeDigest.ps1
+    §THE SOUNDNESS RULE), so fixtures holding the same bytes share the digest `peer_digest` computes once; a wrong
+    one would fail the covered cases, which must allow.
+    """
+
+    def __init__(self, digest):
+        import hashlib
+        from datetime import datetime, timezone
+        from pathlib import Path
+        self.hashlib, self.Path, self.digest = hashlib, Path, digest
+        self.repo = repo = Path(tempfile.mkdtemp(prefix='postred_record_'))
+        # GIT_CONFIG_* stays: the tree digest the guard computes must see the config this fixture's own git calls ran under.
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_') or k.startswith('GIT_CONFIG_')}
+        self.git('init', '-q', '-b', 'main')
+        (repo / 'input.txt').write_text('tested tree\n')
+        self.git('add', 'input.txt')
+        self.git('-c', 'user.name=proof', '-c', 'user.email=proof@local', 'commit', '-qm', 'init')
+        self.peer = peer = repo / 'peer'
+        self.git('worktree', 'add', '-q', '--detach', str(peer))
+        # Ignore the linked fixture checkout, as the real .claude/worktrees directory is ignored.
+        (repo / '.git/info/exclude').write_text('peer/\n.claude/\n')
+        self.name = PEER_NAME
+        self.gate = Path(write_gate_last(str(repo), 'FAIL', age_sec=60, session='record-owner'))
+        # Shape from gate_last_20261017-052956-13996.md.
+        with self.gate.open('a', encoding='utf-8') as fh:
+            fh.write('\n## Integration — FAILING\n\nfailed=1 — genuine test failure, not a count-drift signal\n'
+                     '### Integration failing tests\n- ' + self.name + ' :: sight assertion\n')
+        self.red_at = time.time() - 60
+        os.utime(self.gate, (self.red_at, self.red_at))
+        # TRX fields cut from TestResults/sandbox_g6.trx; keep its parameterized identifier intact.
+        import xml.sax.saxutils as xml_escape
+        self.trx = trx = peer / '.claude/scratch/test_runs/narrow.trx'
+        trx.parent.mkdir(parents=True)
+        trx.write_text('<TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">'
+                       '<Results><UnitTestResult testName=' + xml_escape.quoteattr(self.name)
+                       + ' outcome="Passed" /></Results>'
+                       '<ResultSummary outcome="Completed"><Counters total="1" executed="1" passed="1" failed="0" />'
+                       '</ResultSummary></TestRun>', encoding='utf-8')
+        self.stamp = lambda seconds: datetime.fromtimestamp(seconds, timezone.utc).isoformat()
+        self.record = dict(filter=PEER_FILTER, elapsedSec=1, treeDigest=digest,
+                           startedAt=self.stamp(time.time() - 20), finishedAt=self.stamp(time.time() - 10),
+                           trxPath=str(trx), trxSha256=hashlib.sha256(trx.read_bytes()).hexdigest())
+        self.path = trx.with_suffix('.green')
+        self.raw_trx = trx.read_bytes()
+
+    def git(self, *args):
+        return subprocess.run(['git', '-C', str(self.repo), *args], check=True, capture_output=True, env=self.env)
+
+    def observed(self, value):
+        self.path.write_text(json.dumps(value), encoding='utf-8')
+        return run(GATE + ' # gate: final', 'record-owner', str(self.repo))
+
+    def red_run(self, tree, status='FAIL', session='record-owner'):
+        """Shape from the gate's <ledgerDir>/<runId>.result.json (regression_gate.ps1 Complete-Gate)."""
+        ledger = self.repo / '.claude/scratch/gate_ledger'
+        ledger.mkdir(parents=True, exist_ok=True)
+        (ledger / '20261022-181326-50980.result.json').write_text(
+            json.dumps(dict(id='20261022-181326-50980', status=status, treeDigest=tree,
+                            sessionId=session)), encoding='utf-8')
+
+
+def peer_produced_cases(digest):
+    """The runner's own producer writes the record the hook reads; a same-tree peer record covers the red."""
+    fx = PeerFixture(digest)
+    repo, trx, path, record = fx.repo, fx.trx, fx.path, fx.record
+    script = os.path.abspath(TREE_DIGEST)
     writer = repo / 'producer.ps1'
     writer.write_text('''param($Source, $DigestScript, $Repo, $Record, $Trx, $Digest, $Started)
 $asts = foreach ($file in @($Source, (Join-Path (Split-Path -Parent $Source) 'RuntimeSlots.ps1'))) {
@@ -379,73 +423,111 @@ Save-SuiteGreen -Repo $Repo -Path $Record -Trx $Trx -TreeDigest $Digest -DigestS
     # This script is proof machinery, not a build input in the planted checkout.
     with (repo / '.git/info/exclude').open('a') as fh:
         fh.write('producer.ps1\n')
-    source = script.parent / 'run_test_suite.ps1'
-    producer = subprocess.run(['pwsh', '-NoProfile', '-File', str(writer), str(source), str(script), str(repo),
-                               str(path), str(trx), digest, stamp(time.time() - 20)],
-                              capture_output=True, text=True, env=env)
+    source = os.path.join(os.path.dirname(script), 'run_test_suite.ps1')
+    producer = subprocess.run(['pwsh', '-NoProfile', '-File', str(writer), source, script, str(repo),
+                               str(path), str(trx), digest, fx.stamp(time.time() - 20)],
+                              capture_output=True, text=True, env=fx.env)
     assert producer.returncode == 0, producer.stderr
     produced = json.loads(path.read_text(encoding='utf-8-sig'))
     assert produced['treeDigest'] == digest and produced['trxSha256'] == record['trxSha256'], produced
     assert produced['filter'] == record['filter'], produced
-    def observed(value):
-        path.write_text(json.dumps(value), encoding='utf-8')
-        return run(GATE + ' # gate: final', 'record-owner', str(repo))
-    raw_trx = trx.read_bytes()
-    out = [('runner-produced record covers red', observed(produced), ALLOW, ''),
-           ('completed same-tree peer narrow run covers red', observed(record), ALLOW, '')]
+    return [('runner-produced record covers red', fx.observed(produced), ALLOW, ''),
+            ('completed same-tree peer narrow run covers red', fx.observed(record), ALLOW, '')]
+
+
+def peer_record_mutation_cases(digest):
+    """A record that is foreign, early, unfinished, unnamed or over a rewritten TRX does not clear the red."""
+    fx = PeerFixture(digest)
+    out = []
     for label, mutation in (
         ('foreign tree', dict(treeDigest='0' * 40)),
-        ('pre-red run', dict(startedAt=stamp(red_at - 20), finishedAt=stamp(red_at - 10))),
+        ('pre-red run', dict(startedAt=fx.stamp(fx.red_at - 20), finishedAt=fx.stamp(fx.red_at - 10))),
         ('unfinished run', dict(finishedAt='')),
         ('missing filter', dict(filter='')),
         ('overwritten TRX', dict(trxSha256='0' * 64)),
     ):
-        out.append((label + ' does not clear red', observed(dict(record, **mutation)), DENY, 'nothing narrower'))
-    trx.write_text(trx.read_text().replace(name.split('.')[0], 'Unrelated'), encoding='utf-8')
-    unrelated = dict(record, trxSha256=hashlib.sha256(trx.read_bytes()).hexdigest())
-    out.append(('unrelated peer pass does not clear red', observed(unrelated), DENY, 'nothing narrower'))
+        out.append((label + ' does not clear red', fx.observed(dict(fx.record, **mutation)), DENY, 'nothing narrower'))
+    return out
+
+
+def peer_trx_cases(digest):
+    """A pass that is unrelated, executed nothing or is not green, or a red whose listing is incomplete, clears nothing."""
+    fx = PeerFixture(digest)
+    trx, record = fx.trx, fx.record
+    out = []
+    trx.write_text(trx.read_text().replace(fx.name.split('.')[0], 'Unrelated'), encoding='utf-8')
+    unrelated = dict(record, trxSha256=fx.hashlib.sha256(trx.read_bytes()).hexdigest())
+    out.append(('unrelated peer pass does not clear red', fx.observed(unrelated), DENY, 'nothing narrower'))
     for label, changed in (
-        ('zero executed', raw_trx.replace(b'executed="1"', b'executed="0"')),
-        ('non-green test', raw_trx.replace(b'outcome="Passed"', b'outcome="Failed"')),
+        ('zero executed', fx.raw_trx.replace(b'executed="1"', b'executed="0"')),
+        ('non-green test', fx.raw_trx.replace(b'outcome="Passed"', b'outcome="Failed"')),
     ):
         trx.write_bytes(changed)
         out.append((label + ' does not clear red',
-                    observed(dict(record, trxSha256=hashlib.sha256(changed).hexdigest())), DENY, 'nothing narrower'))
-    trx.write_bytes(raw_trx)
-    detail = gate.read_text(encoding='utf-8')
-    gate.write_text(detail.replace('failed=1', 'failed=2'), encoding='utf-8')
-    os.utime(gate, (red_at, red_at))
-    out.append(('incomplete red failure listing stays denied', observed(record), DENY, 'nothing narrower'))
-    gate.write_text(detail, encoding='utf-8')
-    os.utime(gate, (red_at, red_at))
-    # A passing rerun on the red's own content shows a flake, not a repair. Shape from the gate's
-    # <ledgerDir>/<runId>.result.json (regression_gate.ps1 Complete-Gate).
-    ledger = repo / '.claude/scratch/gate_ledger'
-    ledger.mkdir(parents=True)
-    def red_run(tree_digest, status='FAIL', session='record-owner'):
-        (ledger / '20261022-181326-50980.result.json').write_text(
-            json.dumps(dict(id='20261022-181326-50980', status=status, treeDigest=tree_digest,
-                            sessionId=session)), encoding='utf-8')
-    red_run(digest)
-    out.append(('pass on the red\'s own content is not a repair', observed(record), DENY, 'content is unchanged'))
+                    fx.observed(dict(record, trxSha256=fx.hashlib.sha256(changed).hexdigest())), DENY,
+                    'nothing narrower'))
+    trx.write_bytes(fx.raw_trx)
+    detail = fx.gate.read_text(encoding='utf-8')
+    fx.gate.write_text(detail.replace('failed=1', 'failed=2'), encoding='utf-8')
+    os.utime(fx.gate, (fx.red_at, fx.red_at))
+    out.append(('incomplete red failure listing stays denied', fx.observed(record), DENY, 'nothing narrower'))
+    return out
+
+
+def peer_unrepaired_cases(digest):
+    """A passing rerun on the red's own content shows a flake, not a repair, unless a gate input changed after it."""
+    fx = PeerFixture(digest)
+    record, red_at = fx.record, fx.red_at
+    out = []
+    fx.red_run(digest)
+    out.append(('pass on the red\'s own content is not a repair', fx.observed(record), DENY, 'content is unchanged'))
     out.append(('unrepaired deny names the repair and the owner\'s known-failure acceptance',
-                observed(record), DENY, 'known failure'))
-    red_run('1' * 40)
-    out.append(('pass on content changed since the red clears it', observed(record), ALLOW, ''))
-    red_run('')
-    out.append(('red run with no recorded digest keeps the narrow-pass rule', observed(record), ALLOW, ''))
-    red_run(digest, status='PASS')
-    out.append(('newest ledger run that is not a red is no evidence of one', observed(record), ALLOW, ''))
-    (ledger / '20261022-181326-50980.result.json').unlink()
+                fx.observed(record), DENY, 'known failure'))
+    # The tree digest excludes `.claude/`, and the gate dot-sources and runs `.claude/scripts`, so a repair there
+    # leaves the digest equal. An input the gate runs that changed after the red is a repair; one older than the
+    # red, or a regenerable cache beside it, is not.
+    gate_script = fx.repo / '.claude/scripts/regression_gate.ps1'
+    gate_script.parent.mkdir(parents=True)
+    gate_script.write_text('# gate\n', encoding='utf-8')
+    os.utime(gate_script, (red_at - 600, red_at - 600))
+    cache = fx.repo / '.claude/scripts/__pycache__/x.cpython-314.pyc'
+    cache.parent.mkdir()
+    cache.write_bytes(b'\0')
+    out.append(('a gate script older than the red and a newer cache file are not a repair',
+                fx.observed(record), DENY, 'content is unchanged'))
+    os.utime(gate_script, (time.time(), time.time()))
+    out.append(('an edit to a gate script (a digest-excluded input) after the red is a repair',
+                fx.observed(record), ALLOW, ''))
+    return out
+
+
+def peer_ledger_cases(digest):
+    """A pass on content changed since the red clears it; a ledger row with no digest, or no red, adds no block."""
+    fx = PeerFixture(digest)
+    record = fx.record
+    fx.red_run('1' * 40)
+    out = [('pass on content changed since the red clears it', fx.observed(record), ALLOW, '')]
+    fx.red_run('')
+    out.append(('red run with no recorded digest keeps the narrow-pass rule', fx.observed(record), ALLOW, ''))
+    fx.red_run(digest, status='PASS')
+    out.append(('newest ledger run that is not a red is no evidence of one', fx.observed(record), ALLOW, ''))
+    return out
+
+
+def peer_edited_cases(digest):
+    """A once-valid record is stale after an input edit here; a fix edited here repairs a red recorded in a worktree."""
+    fx = PeerFixture(digest)
+    repo, peer, record = fx.repo, fx.peer, fx.record
+    out = []
     # Even a once-valid record is stale after an input edit in this checkout.
     (repo / 'input.txt').write_text('changed after verification\n')
-    out.append(('edited checkout does not inherit peer proof', observed(record), DENY, 'nothing narrower'))
+    out.append(('edited checkout does not inherit peer proof', fx.observed(record), DENY, 'nothing narrower'))
     # A red recorded in a linked worktree, the fix edited here: the narrow run's content is this checkout's,
     # so the repair test reads this checkout's digest, not the worktree's.
-    peer_gate = Path(write_gate_last(str(peer), 'FAIL', age_sec=40, session='record-owner'))
+    peer_gate = fx.Path(write_gate_last(str(peer), 'FAIL', age_sec=40, session='record-owner'))
     with peer_gate.open('a', encoding='utf-8') as fh:
         fh.write('\n## Integration — FAILING\n\nfailed=1 — genuine test failure, not a count-drift signal\n'
-                 '### Integration failing tests\n- ' + name + ' :: sight assertion\n')
+                 '### Integration failing tests\n- ' + fx.name + ' :: sight assertion\n')
     peer_red_at = time.time() - 40
     os.utime(peer_gate, (peer_red_at, peer_red_at))
     peer_ledger = peer / '.claude/scratch/gate_ledger'
@@ -453,27 +535,59 @@ Save-SuiteGreen -Repo $Repo -Path $Record -Trx $Trx -TreeDigest $Digest -DigestS
     (peer_ledger / '20261022-181400-50981.result.json').write_text(
         json.dumps(dict(id='20261022-181400-50981', status='FAIL', treeDigest=digest, sessionId='record-owner')),
         encoding='utf-8')
-    fixed = subprocess.run(['pwsh', '-NoProfile', '-Command', ps], capture_output=True, text=True, env=env)
-    assert fixed.returncode == 0 and fixed.stdout.strip() != digest, fixed.stderr
+    fixed = tree_digest(repo, fx.env)
+    assert fixed != digest, fixed
     out.append(('a fix edited in this checkout repairs a red recorded in a linked worktree',
-                observed(dict(record, treeDigest=fixed.stdout.strip(),
-                              startedAt=stamp(time.time() - 20), finishedAt=stamp(time.time() - 10))), ALLOW, ''))
+                fx.observed(dict(record, treeDigest=fixed,
+                                 startedAt=fx.stamp(time.time() - 20), finishedAt=fx.stamp(time.time() - 10))),
+                ALLOW, ''))
     return out
 
 
-def main():
+PEER_GROUPS = (peer_produced_cases, peer_record_mutation_cases, peer_trx_cases, peer_unrepaired_cases,
+               peer_ledger_cases, peer_edited_cases)
+
+
+def peer_digest():
+    """The digest of the planted tree, from the real function, once for every peer group."""
+    repo = tempfile.mkdtemp(prefix='postred_digest_')
+    env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_') or k.startswith('GIT_CONFIG_')}
+    with open(os.path.join(repo, 'input.txt'), 'w') as fh:
+        fh.write('tested tree\n')
+    for args in (['init', '-q', '-b', 'main'], ['add', 'input.txt'],
+                 ['-c', 'user.name=proof', '-c', 'user.email=proof@local', 'commit', '-qm', 'init']):
+        subprocess.run(['git', '-C', repo] + args, check=True, capture_output=True, env=env)
+    return tree_digest(repo, env)
+
+
+def main(beside=()):
+    """Every hook case; `beside` are further independent checks (callables that raise on failure) run in the same pool."""
     repo = tempfile.mkdtemp(prefix="gatecadence_")
     failures = []
+    # Every hook run is a process spawn, and the groups below share no state (a session id or a repo of its own each),
+    # so they run beside each other; the sequenced group stays one task because its cases share one session.
+    with _case_budget(_jobs(None)) as width, ThreadPoolExecutor(max_workers=width) as pool:
+        # The slow groups go in first so they start first. The digest task precedes its groups in the queue, so it
+        # is running or done by the time a group waits on it.
+        beside_runs = [pool.submit(check) for check in beside]
+        digest_run = pool.submit(peer_digest)
+        peer_runs = [pool.submit(lambda group=group: group(digest_run.result())) for group in PEER_GROUPS]
+        post_run = pool.submit(post_red_cases, run)
+        first = [pool.submit(run, command, "iso%03d" % i, repo) for i, (_, command, _, _) in enumerate(CASES)]
+        retired_run = pool.submit(run, GATE + " -Smoke  # gate: final", "retired-cite", repo)
+        sequence_run = pool.submit(lambda: [run(command, "seq001", repo) for _, command, _, _ in SEQUENCE])
+        compound_runs = [pool.submit(run, command, "compound%03d" % i, repo) for i, (_, command, _, _) in enumerate(COMPOUND)]
+        stale_run = pool.submit(stale_state_case)
 
-    for i, (label, command, expected, needle) in enumerate(CASES):
-        got, reason = run(command, "iso%03d" % i, repo)
+    for (label, command, expected, needle), future in zip(CASES, first):
+        got, reason = future.result()
         ok = got == expected and (not needle or needle in reason)
         print("%-4s %s" % ("ok" if ok else "FAIL", label))
         if not ok:
             failures.append("%s\n     expected=%s got=%s reason=%r"
                             % (label, expected, got, reason[:200]))
 
-    retired_status, retired_reason = run(GATE + " -Smoke  # gate: final", "retired-cite", repo)
+    retired_status, retired_reason = retired_run.result()
     retired_ok = (retired_status == DENY and "regression_gate §Invocation" in retired_reason
                   and "verify.ps1" in retired_reason)
     print("%-4s retired width denial cites regression_gate invocation and keeps verify step"
@@ -482,8 +596,7 @@ def main():
         failures.append("retired width denial lacks invocation cite or verify.ps1 next step")
 
     print("  -- sequenced (one session) --")
-    for label, command, expected, needle in SEQUENCE:
-        got, reason = run(command, "seq001", repo)
+    for (label, command, expected, needle), (got, reason) in zip(SEQUENCE, sequence_run.result()):
         ok = got == expected and (not needle or needle in reason)
         print("%-4s %s" % ("ok" if ok else "FAIL", label))
         if not ok:
@@ -491,15 +604,15 @@ def main():
                             % (label, expected, got, reason[:200]))
 
     print("  -- compound invocations --")
-    for i, (label, command, expected, needle) in enumerate(COMPOUND):
-        got, reason = run(command, "compound%03d" % i, repo)
+    for (label, command, expected, needle), future in zip(COMPOUND, compound_runs):
+        got, reason = future.result()
         ok = got == expected and (not needle or needle in reason)
         print("%-4s %s" % ("ok" if ok else "FAIL", label))
         if not ok:
             failures.append("%s\\n     expected=%s got=%s reason=%r"
                             % (label, expected, got, reason[:200]))
 
-    stale_result, stale_removed = stale_state_case()
+    stale_result, stale_removed = stale_run.result()
     stale_ok = stale_result[0] == ALLOW and stale_removed
     print("%-4s planted stale state swept on narrow verification"
           % ("ok" if stale_ok else "FAIL"))
@@ -507,7 +620,9 @@ def main():
         failures.append("stale state file was not swept: %r" % (stale_result,))
 
     print("  -- post-red reflex check --")
-    post = post_red_cases(lambda cmd, sid, rp: run(cmd, sid, rp)) + completed_peer_cases()
+    for future in beside_runs:
+        future.result()
+    post = post_run.result() + [case for future in peer_runs for case in future.result()]
     for label, (got, reason), expected, needle in post:
         ok = got == expected and (not needle or needle in reason)
         if expected == DENY and 'nothing narrower' in needle:
@@ -543,7 +658,17 @@ def test_old_format_and_unknown_session_advise():
         assert status == NUDGE, reason
 
 
+SESSION_KEYS = ('CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID')
+
+
 def test_real_complete_gate_writes_session(tmp_path):
+    for key in SESSION_KEYS:
+        (tmp_path / key).mkdir()
+        real_complete_gate_writes_session(tmp_path / key, key)
+
+
+def real_complete_gate_writes_session(tmp_path, key):
+    """The gate's real Complete-Gate stamps the session id it reads from environment variable `key`."""
     from pathlib import Path
     gate = Path(HOOK).resolve().parents[1] / 'scripts/regression_gate.ps1'
     script = tmp_path / 'writer.ps1'
@@ -559,20 +684,23 @@ $logDir = $Log; $detailPath = Join-Path $Log 'detail.md'
 $script:Detail = @(); $suiteResults = @{}; $runId = 'proof'; $queueDir = Join-Path $Log 'queue'
 Complete-Gate 'FAIL' 1
 ''', encoding='utf-8')
-    for key in ('CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID'):
-        env = {k: v for k, v in os.environ.items() if k not in ('CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID')}
-        env[key] = 'producer-session'
-        result = subprocess.run(['pwsh', '-NoProfile', '-File', str(script), str(gate), str(tmp_path)],
-                                capture_output=True, text=True, env=env, timeout=90)
-        assert result.returncode == 1, result.stderr
-        body = (tmp_path / 'gate_last.md').read_text(encoding='utf-8-sig')
-        assert 'SESSION=producer-session' in body[:400], body[:400]
-        assert 'VERDICT=FAIL' in body[:400]
+    env = {k: v for k, v in os.environ.items() if k not in SESSION_KEYS}
+    env[key] = 'producer-session'
+    result = subprocess.run(['pwsh', '-NoProfile', '-File', str(script), str(gate), str(tmp_path)],
+                            capture_output=True, text=True, env=env, timeout=90)
+    assert result.returncode == 1, result.stderr
+    body = (tmp_path / 'gate_last.md').read_text(encoding='utf-8-sig')
+    assert 'SESSION=producer-session' in body[:400], body[:400]
+    assert 'VERDICT=FAIL' in body[:400]
 
 
 if __name__ == "__main__":
     from pathlib import Path
-    test_old_format_and_unknown_session_advise()
+    # Named here, not run as `main()`: the runner runs every pytest case this block does not call, so a bare
+    # `main()` ran all 92 cases a second time under pytest. The other checks run beside its cases, one task each.
     with tempfile.TemporaryDirectory(prefix='gate_writer_') as tmp:
-        test_real_complete_gate_writes_session(Path(tmp))
-    sys.exit(main())
+        for session_key in SESSION_KEYS:
+            (Path(tmp) / session_key).mkdir()
+        beside = [test_old_format_and_unknown_session_advise] + [
+            (lambda k=session_key: real_complete_gate_writes_session(Path(tmp) / k, k)) for session_key in SESSION_KEYS]
+        assert main(beside) == 0

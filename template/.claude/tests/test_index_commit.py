@@ -32,9 +32,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from _case_pool import _jobs  # noqa: E402
 REPO = HERE.parents[1]
 TOOL = REPO / ".claude" / "tools" / "index_commit.py"
 sys.path.insert(0, str(TOOL.parent))
@@ -763,19 +766,26 @@ def main():
     if not TOOL.exists():
         print("FAIL tool missing: %s" % TOOL)
         return 1
-    with tempfile.TemporaryDirectory(prefix="index_commit_proof_") as tmp:
-        for case in (case_new_gitignored_file, case_deleted_path, case_forget_row_of_earlier_deletion,
-                     case_lock_path_refused, case_peer_and_resync, case_changed_row_travels_with_its_path,
-                     case_peer_staged_same_path, case_head_moved, case_resync_after_later_commit,
-                     case_seeded_from_recorded_base, case_head_moved_lock_rows,
-                     case_resync_before_commit, case_blob, case_blob_keeps_head_mode, case_no_commit_argv,
-                     case_usage_errors, case_entries_keep_modes_and_peer, case_resync_keeps_same_blob_peer_mode,
-                     case_resync_nochange_entry, case_failed_stage_keeps_peer_rows, case_resync_transaction,
-                     case_submodule_gitlink, case_submodule_without_checkout):
-            try:
-                case(tmp)
-            except Exception as exc:  # a case that cannot stage its fixture is a failure
-                check("%s crashed" % case.__name__, False, "%r" % (exc,))
+    cases = (case_new_gitignored_file, case_deleted_path, case_forget_row_of_earlier_deletion,
+             case_lock_path_refused, case_peer_and_resync, case_changed_row_travels_with_its_path,
+             case_peer_staged_same_path, case_head_moved, case_resync_after_later_commit,
+             case_seeded_from_recorded_base, case_head_moved_lock_rows,
+             case_resync_before_commit, case_blob, case_blob_keeps_head_mode, case_no_commit_argv,
+             case_usage_errors, case_entries_keep_modes_and_peer, case_resync_keeps_same_blob_peer_mode,
+             case_resync_nochange_entry, case_failed_stage_keeps_peer_rows, case_resync_transaction,
+             case_submodule_gitlink, case_submodule_without_checkout)
+
+    def attempt(case, tmp):
+        try:
+            case(tmp)
+        except Exception as exc:  # a case that cannot stage its fixture is a failure
+            check("%s crashed" % case.__name__, False, "%r" % (exc,))
+
+    # The cases spend their time spawning git and the tool, and each builds its own scene (a repo named for it),
+    # so they run beside each other.
+    with tempfile.TemporaryDirectory(prefix="index_commit_proof_") as tmp, ThreadPoolExecutor(max_workers=_jobs(None)) as pool:
+        for future in [pool.submit(attempt, case, tmp) for case in cases]:
+            future.result()
     print("\n%d failure(s)" % len(failures) if failures else "\nall ok")
     for line in failures:
         print("  " + line)

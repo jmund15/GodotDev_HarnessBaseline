@@ -217,6 +217,22 @@ def main():
         stamped, out, _, _ = scenario(old, old, commit=True, base=True)
         check("(l) --base names the revision before the change: a red there too is pre-existing",
               stamped and "pre-existing red" in out, out[-600:])
+        judges, real_run = [], harness_tests._run_selected
+
+        def capture(selected, verbose, statuses=None, details=None, options=harness_tests.RunOptions()):
+            judges.append(options.red)
+            return real_run(selected, verbose, statuses, details, options)
+        harness_tests._run_selected = capture
+        try:
+            stamped, out, reruns, _ = scenario(old, old, commit=True, base=True)
+        finally:
+            harness_tests._run_selected = real_run
+        judge = judges[0] if judges else None
+        alpha = [p for p in harness_tests.discover(os.path.join(os.path.dirname(harness_tests.STAMP_PATH), ".claude", "tests"))
+                 if p.endswith("test_alpha.py")]
+        verdict = judge({alpha[0]: "\n".join(old)}) if judge and alpha else "no judge"
+        check("(o) a --base run's red judge excuses a red pre-existing at base, so it never cuts the timeout retries",
+              verdict is False and stamped and reruns == 1, "verdict=%r stamped=%s reruns=%s" % (verdict, stamped, reruns))
     except Exception as exc:
         check("scenarios", False, "%s: %s" % (type(exc).__name__, exc))
     try:
@@ -272,6 +288,28 @@ def main():
               bool(note) and "(first recorded red 2026-11-09, 2 earlier closes)" in note[0], out[-600:])
     except Exception as exc:
         check("known_red_case", False, "%s: %s" % (type(exc).__name__, exc))
+    try:
+        # A full log: one early red of test_rare.py, then 399 of test_daily.py; the next red trims it.
+        log = os.path.join(tempfile.mkdtemp(prefix="harnessknownred_"), "harness_known_red.jsonl")
+        rows = [{"ts": 1790708822.85, "proof": "test_rare.py", "head": "a" * 40}] + [
+            {"ts": 1790708900.0 + n, "proof": "test_daily.py", "head": "b" * 40} for n in range(399)]
+        with open(log, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("".join(json.dumps(row) + "\n" for row in rows))
+        harness_tests.KNOWN_RED_LOG = log
+        harness_tests._record_known_red("test_daily.py", "c" * 40, "FAILED", "FAILED")
+        harness_tests._record_known_red("test_daily.py", "d" * 40, "FAILED", "FAILED")
+        with open(log, encoding="utf-8") as fh:
+            kept = fh.read().splitlines()
+        check("(o) the known-red log stays bounded", len(kept) <= 400, len(kept))
+        check("(o) a trimmed known-red log keeps a proof's first red and its close count",
+              harness_tests._known_red_history("test_rare.py", log) == (1790708822.85, 1)
+              and harness_tests._known_red_history("test_daily.py", log) == (1790708900.0, 401),
+              (harness_tests._known_red_history("test_rare.py", log), harness_tests._known_red_history("test_daily.py", log)))
+        check("(o) the newest rows stay whole", json.loads(kept[-1]).get("head") == "d" * 40, kept[-1])
+    except Exception as exc:
+        check("known_red_trim", False, "%s: %s" % (type(exc).__name__, exc))
+    finally:
+        harness_tests.KNOWN_RED_LOG = None
     print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
     for failure in FAILURES:
         print("  FAIL " + failure)

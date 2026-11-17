@@ -54,7 +54,12 @@
   .claude/scratch/test_runs/gate_last_<runId>.md so stdout stays ~20 lines;
   gate_last.md is a latest-run pointer copy. Read the detail file only when the
   verdict is not PASS. Every completed run also writes <ledgerDir>/<runId>.result.json
-  (the ledger cross-session REUSE consumes) — best-effort, never fatal.
+  (the checkout's own ledger) and a slim copy, minus the comment-gate snapshot, to
+  <git-common-dir>/harness/gate_ledger/<runId>.result.json, which every worktree of the repository shares.
+  Cross-session REUSE reads both: a verdict recorded in any checkout serves a run in any other, and its
+  `checkout=` field names the producer. Each record also carries `stages`, a wall-clock start and end per
+  stage (reuse, preflight, guards, build, docs, import, sanity, pool, post); a STAGES line summarizes them.
+  Both writes are best-effort, never fatal.
 
   A gate that finds its checkout busy waits on the lock itself (Enter-GateHeld), holding nothing, and prints WAIT lines
   naming the holder; at -WaitSec it ends BUSY. The ledger record is written before the lock is released, so a waiter
@@ -207,6 +212,15 @@ $env:HARNESS_GATE_RUN = $runId
 # Machine-global on purpose: worktrees are separate directories, so a
 # per-checkout path cannot see peer sessions.
 $activityDir = Join-Path (Get-HarnessTempRoot) 'harness-activity'
+# The ledger every checkout of this repository shares, under the git common dir like harness_tests.py's pass store;
+# a repository git cannot name keeps the checkout's own ledger.
+function Get-SharedLedgerDir {
+    param([Parameter(Mandatory)] [string] $Repo)
+    $common = (& git -C $Repo rev-parse --path-format=absolute --git-common-dir 2>$null)
+    if ($LASTEXITCODE -ne 0 -or -not $common -or -not (Test-Path -LiteralPath ([string]$common).Trim() -PathType Container)) { return (Join-Path $Repo '.claude\scratch\gate_ledger') }
+    Join-Path ([string]$common).Trim() 'harness\gate_ledger'
+}
+
 # The checkout-derived paths. A routed gate re-points them at its twin (Set-GateCheckout) once it holds the twin's lock.
 function Set-GateCheckout {
     param([Parameter(Mandatory)] [string] $Path)
@@ -218,10 +232,14 @@ function Set-GateCheckout {
     $script:detailPath = Join-Path $script:logDir "gate_last_$runId.md"
     $script:baselineP  = Join-Path $Path 'Tests\regression_baseline.json'
     $script:ledgerDir  = Join-Path $Path '.claude\scratch\gate_ledger'
+    $script:sharedLedgerDir = Get-SharedLedgerDir -Repo $Path
     $script:PoolRepo   = $Path
     New-Item -ItemType Directory -Force -Path $script:logDir | Out-Null
 }
 Set-GateCheckout -Path $repo
+# Where this invocation's detached output (gate_run_<runId>.out) lands. A routed twin re-points $logDir, and the history the
+# growth report reads is the runs that were invoked here.
+$script:TrendDir = $script:logDir
 
 $script:Detail       = [System.Collections.Generic.List[string]]::new()
 $script:ActivityOn   = $false
@@ -243,6 +261,9 @@ $script:Load        = $null    # peers and slot holders observed at the verdict,
 $script:Waited       = $false  # Enter-GateHeld saw a busy checkout; a gate that waited re-checks REUSE
 $script:WaitTickSec  = 60      # how often a long wait prints its WAIT line
 $suiteResults        = [ordered]@{}
+$script:Stages       = [System.Collections.Generic.List[object]]::new()
+$script:OpenStage    = $null
+$script:EmitLog      = [System.Collections.Generic.List[string]]::new()  # every line Emit printed, for the growth report
 
 # ---------------------------------------------------------------- coverage contract (mode)
 # The normalized arg set, NOT a bare enum: -RetryOnly reruns only non-green batches, so it
@@ -255,12 +276,43 @@ if ($RetryOnly)        { $script:Mode += '+retry-only' }
 if ($NoBaselineUpdate) { $script:Mode += '+no-baseline-update' }
 
 function Add-Detail { param([string] $Text) $script:Detail.Add($Text) }
+
+# Wall-clock stage times: Enter-Stage closes the open stage and opens the next; Stop-Stage closes without opening.
+function Stop-Stage {
+    if ($script:OpenStage) {
+        $script:OpenStage.end = (Get-Date -AsUTC -Format 'o')
+        $script:OpenStage.sec = [math]::Round(([datetime]$script:OpenStage.end - [datetime]$script:OpenStage.start).TotalSeconds, 1)
+        $script:OpenStage = $null
+    }
+}
+function Enter-Stage {
+    param([Parameter(Mandatory)] [string] $Name)
+    Stop-Stage
+    $script:OpenStage = [ordered]@{ name = $Name; start = (Get-Date -AsUTC -Format 'o'); end = $null; sec = $null }
+    $script:Stages.Add($script:OpenStage)
+}
+function Get-StageSummary {
+    'STAGES ' + ((@($script:Stages) | ForEach-Object { '{0}={1}s' -f $_.name, $_.sec }) -join ' ')
+}
 function Emit {
     param([string] $Text)
     Write-Output $Text
+    $script:EmitLog.Add($Text)
     # Every phase line is also this run's registry heartbeat + label, so a peer
     # reading the registry sees WHAT we are doing, not just that we exist.
     Update-ActivityRecord -Label $Text
+}
+
+# The units of this run that ran above their recorded range (tools/gate_trend.py), one `gate_trend:` line each; none when
+# nothing grew. Returns lines only and never fails the gate: a report, not a verdict.
+function Get-GateTrendLines {
+    if ($script:ReusedFrom -or -not (@($script:EmitLog | Where-Object { $_ -like 'BATCH *' }).Count)) { return @() }
+    $interp = Get-PythonCommand
+    if (-not $interp) { return @() }
+    $tool = Join-Path (Split-Path $scripts) 'tools\gate_trend.py'
+    $found = @($script:EmitLog | & $interp $tool --dir $script:TrendDir --run $runId --state (Join-Path $script:logDir 'integration_batches.json') --repo $script:repo 2>$null)
+    if ($LASTEXITCODE -ne 0) { return @() }
+    return @($found | Where-Object { $_ -like 'gate_trend:*' })
 }
 
 function Complete-Gate {
@@ -289,6 +341,9 @@ function Complete-Gate {
         $script:Load = [ordered]@{ peersSeen = $loadPeers; slotHoldersAtEnd = $loadSlots }
         Add-Detail "Load: $loadPeers peer(s) seen at suite boundaries; $loadSlots other runtime-slot holder(s) at the end."
     } catch { }
+    Stop-Stage
+    if ($script:Stages.Count -gt 0) { Emit (Get-StageSummary) }
+    try { foreach ($line in @(Get-GateTrendLines)) { Emit $line } } catch { }
     $commentEvidence = Get-Variable -Name CommentOnlyEvidence -Scope Script -ValueOnly -ErrorAction SilentlyContinue
     $isCommentPass = $Verdict -eq 'PASS' -and $null -ne $commentEvidence
     $verdictSuffix = if ($isCommentPass) {
@@ -326,6 +381,8 @@ function Complete-Gate {
             commentOnly    = $(if ($isCommentPass) { $commentEvidence } else { $null })
             fullGreenSnapshot = $snapshot
             id             = $runId
+            checkout       = $repo
+            stages         = @($script:Stages)
             status         = $Verdict
             exitCode       = $Code
             # Early exits (preflight/BLOCKED) reach here before $script:RunTree is set; a null
@@ -347,6 +404,14 @@ function Complete-Gate {
         }
         New-Item -ItemType Directory -Force -Path $ledgerDir | Out-Null
         Set-Content -Path (Join-Path $ledgerDir "$runId.result.json") -Value ($rec | ConvertTo-Json -Depth 8) -Encoding utf8
+        # The shared copy drops the ~3 MB comment-gate snapshot: only the checkout that produced it can use it. Skipped when git
+        # cannot name a common dir and the shared path is the checkout's own ledger.
+        if ($sharedLedgerDir -ne $ledgerDir) { try {
+            $slim = [ordered]@{}
+            foreach ($k in $rec.Keys) { if ($k -ne 'fullGreenSnapshot') { $slim[$k] = $rec[$k] } }
+            New-Item -ItemType Directory -Force -Path $sharedLedgerDir | Out-Null
+            Set-Content -Path (Join-Path $sharedLedgerDir "$runId.result.json") -Value ($slim | ConvertTo-Json -Depth 8) -Encoding utf8
+        } catch { } }
     } catch { }
     if ($script:TwinSource) {
         foreach ($line in @(Copy-TwinOutputsBack -Source $script:TwinSource -Twin $repo -Paths $script:GateOutputs -Hashes $script:TwinHashes)) { Emit $line }
@@ -361,6 +426,7 @@ function Complete-Gate {
 
 function Exit-IfStaticRoute {
     param($Route)
+    if ($NoReuse -and $Route.eligible) { $Route = [pscustomobject]@{ eligible = $false; reason = 'no-reuse'; base = ''; files = @() } }
     if ($Route.eligible) {
         Assert-TreeStable -Phase 'comment-only'
         $script:CommentOnlyEvidence = $Route
@@ -389,16 +455,52 @@ function Get-Prop {
     if ($Obj.PSObject.Properties[$Name]) { return $Obj.$Name }
     $Default
 }
-# Identity of the engine's import output. Get-TreeDigest sees tracked content only, and .godot/imported is gitignored,
-# so a fixed import (--headless --import) changes no digest; a verdict reuses only on an equal stamp.
+# Identity of the engine's import output, read through the tree. Get-TreeDigest sees tracked content only and
+# .godot/imported is gitignored, so a missing import (which --headless --import repairs) changes no digest, and a
+# verdict must carry the import state it ran on. That state is NOT the directory: the directory is checkout
+# history, so two checkouts of one tree never agree, and the stamp would never carry a verdict between them. The
+# tree's import manifest does hold across checkouts: every tracked *.import names its dest_files, and each dest's
+# .md5 sidecar records the source_md5 it was imported from. So the stamp is one entry per dest — present? and
+# which source — and two checkouts whose caches are current for this tree stamp equal. A missing artifact, a
+# missing sidecar and a stale (source changed, not reimported) entry each move it; artifacts the tree no longer
+# names do not. 'none' when git cannot list the tree (an unreadable stamp never matches).
+# A source type no headless import opens is excluded: its dests are editor history, not import state. Godot 4.7
+# ships no Aseprite importer (addons/nklbdev.importality provides one, but project.godot's [editor_plugins]
+# enabled list omits it), so --headless --import never imports a .aseprite source: only an editor run writes
+# those dests, so a checkout that only ran the gate lacks them. Folding them made two current caches never agree
+# (S0c of .claude/tests/test_regression_gate_reuse.py).
 function Get-ImportStamp {
     param([string] $Repo)
     $dir = Join-Path $Repo '.godot\imported'
-    if (-not (Test-Path -LiteralPath $dir -PathType Container)) { return 'none' }
-    $lines = [string[]]@(Get-ChildItem -LiteralPath $dir -File | ForEach-Object { "$($_.Name)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" })
-    [Array]::Sort($lines, [System.StringComparer]::Ordinal)
+    $unimportedExt = @('.aseprite')
+    try { $tracked = @(& git -C $Repo -c core.quotePath=false ls-files -- '*.import' 2>$null) } catch { return 'none' }
+    if ($LASTEXITCODE -ne 0) { return 'none' }
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($f in $tracked) {
+        if (-not $f) { continue }
+        if ($unimportedExt -contains [System.IO.Path]::GetExtension($f.Substring(0, $f.Length - 7)).ToLowerInvariant()) { continue }
+        $text = ''
+        try { $text = [System.IO.File]::ReadAllText((Join-Path $Repo $f)) } catch { continue }
+        $deps = [regex]::Match($text, '(?ms)^dest_files=\[(.*?)\]')
+        if (-not $deps.Success) { continue }
+        foreach ($m in [regex]::Matches($deps.Groups[1].Value, '"([^"]+)"')) {
+            $name = ($m.Groups[1].Value -split '/')[-1]
+            $stem = [regex]::Match($name, '^(.*-[0-9a-fA-F]{32})\.')
+            $dot = $name.LastIndexOf('.')
+            $sideName = $(if ($stem.Success) { $stem.Groups[1].Value } elseif ($dot -gt 0) { $name.Substring(0, $dot) } else { $name }) + '.md5'
+            $src = ''
+            try {
+                $sm = [regex]::Match([System.IO.File]::ReadAllText((Join-Path $dir $sideName)), 'source_md5="([0-9a-fA-F]+)"')
+                if ($sm.Success) { $src = $sm.Groups[1].Value }
+            } catch { }
+            $present = $(if ([System.IO.File]::Exists((Join-Path $dir $name))) { '1' } else { '0' })
+            $lines.Add("$name|$present|$src")
+        }
+    }
+    $sorted = [string[]]$lines.ToArray()
+    [Array]::Sort($sorted, [System.StringComparer]::Ordinal)
     $sha = [System.Security.Cryptography.SHA1]::Create()
-    try   { $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))) }
+    try   { $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes(($sorted -join "`n"))) }
     finally { $sha.Dispose() }
     (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
 }
@@ -936,13 +1038,17 @@ if ($Watch) {
 # carries the producer's failing-test list so the exit-1 adjudication presents real failures.
 function Invoke-LedgerReuse {
     if ($NoReuse) { return }
+    Enter-Stage 'reuse'
     $curDigest = (Get-TreeDigest -Repo $repo).digest
     $curStamp  = Get-ImportStamp -Repo $repo
     $nowUtc    = (Get-Date).ToUniversalTime()
     $best      = $null
     # -RetryOnly asks for the missing or red batches to re-run, so a red producer never serves it.
     $servable  = if ($RetryOnly) { @('PASS', 'STATIC_PASS') } else { @('PASS', 'FAIL', 'WARN', 'STATIC_PASS') }
-    foreach ($f in @(Get-ChildItem -Path $ledgerDir -Filter '*.result.json' -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
+    # This checkout's own ledger (records older than the shared one live only here) and every checkout's shared one.
+    $ledgerFiles = @(@($ledgerDir, $sharedLedgerDir) | Select-Object -Unique | ForEach-Object {
+        Get-ChildItem -Path $_ -Filter '*.result.json' -ErrorAction SilentlyContinue } | Sort-Object Name -Descending)
+    foreach ($f in $ledgerFiles) {
         $rec = $null
         try { $rec = Get-Content -Path $f.FullName -Raw | ConvertFrom-Json } catch { continue }
         if ((Get-Prop $rec 'mode' '') -ne $script:Mode) { continue }
@@ -964,7 +1070,7 @@ function Invoke-LedgerReuse {
         # digest, which the scan already verified matches this one.
         $script:RunTree = Get-TreeDigest -Repo $repo
         $producerAction = [string](Get-Prop $best 'baselineAction' 'unknown')
-        Emit "REUSE from=$from mode=$($script:Mode) age=${ageM}m session=$(Get-Prop $best 'sessionId' 'n/a')"
+        Emit "REUSE from=$from mode=$($script:Mode) age=${ageM}m session=$(Get-Prop $best 'sessionId' 'n/a') checkout=$(Get-Prop $best 'checkout' 'unrecorded')"
         Emit "BASELINE action=none reason=reused producer-action=$producerAction"
         Add-Detail "## REUSE`n`nThis run reused the verdict of run **$from** (${ageM}m old): content-exact digest match, identical mode ($($script:Mode)), engine probe re-run and OK. The producer's baseline action: $producerAction. A reused verdict is a run against byte-identical content and toolchain — report it as such, never as a fresh run."
         if ((Get-Prop $best 'status' '') -eq 'FAIL') {
@@ -982,6 +1088,7 @@ function Invoke-LedgerReuse {
         }
         Complete-Gate ([string](Get-Prop $best 'status' 'PASS')) ([int](Get-Prop $best 'exitCode' 0))
     }
+    Stop-Stage
 }
 
 Start-ActivityRecord
@@ -1024,6 +1131,7 @@ if ($route.Twin) {
 if ($script:Waited -or $route.Twin) { Invoke-LedgerReuse }
 
 # ---------------------------------------------------------------- python
+Enter-Stage 'preflight'
 $py = Get-PythonCommand
 if (-not $py) {
     Emit 'PREFLIGHT=BLOCKED reason=no-python-interpreter'
@@ -1143,6 +1251,7 @@ if (Test-InteractiveSessionLocked) {
 }
 
 # ---------------------------------------------------------------- static guards
+Enter-Stage 'guards'
 $guardRun = Invoke-StaticGuards -Repo $repo -Hooks $hooks -Py $py
 foreach ($line in $guardRun.Details) { Add-Detail $line }
 Emit "GUARDS $($guardRun.Results -join ' ')"
@@ -1155,6 +1264,7 @@ if ($guardRun.Blocked.Count -gt 0) {
 # ---------------------------------------------------------------- build
 # Warnings stay IN $buildOut (no -consoleLoggerParameters:ErrorsOnly) so the DOCS check below can
 # read them. Costs nothing visible: $buildOut is a captured variable, printed only on build failure.
+Enter-Stage 'build'
 Assert-NoEditor -Phase 'build'
 # Computed at run start, before the build — this is the tree the verdict is readable against.
 $script:RunTree = Get-TreeDigest -Repo $repo
@@ -1181,6 +1291,7 @@ if ($script:HeldLease) {
 # never saw. Codes match {{PROJECT_NAME}}.csproj's own stated worklist. Scope is whatever this build
 # compiled, which is the newly-changed code a commit-time gate should police; sweep the whole tree
 # on demand with .claude/scripts/doc_warning_check.sh. Doctrine: rules/csharp_patterns.md.
+Enter-Stage 'docs'
 $docCodes = 'CS1587|CS1574|CS1734|CS1570|CS1572|CS1711|CS0419'
 $docHits = @(($buildOut | Out-String) -split "`r?`n" |
     Select-String -Pattern "\((\d+),(\d+)\): warning ($docCodes)" |
@@ -1210,6 +1321,7 @@ Exit-IfStaticRoute -Route $commentRoute
 # Catches what the static gate (1c) cannot: Node cascades, escape-hatch inline
 # placements ([Export] Resource?), and Jmodot-side gaps.
 if ($true) {
+    Enter-Stage 'import'
     Assert-TreeStable -Phase 'import-gate'
     Assert-NoEditor -Phase 'import-gate'
     # Orphan scope: no suite has started, so anything of OURS is gone, and anything
@@ -1285,6 +1397,59 @@ function Write-ReaperDetail {
     Add-Detail "## $($R.label) — reaper`n`n``````"
     Add-Detail ((([string] $R.raw) -split "`r?`n" | Where-Object { $_ -match '^(REAP |  kill |  spare )' }) -join "`n")
     Add-Detail '``````'
+}
+
+# Logic runs as partitions in the pool: each group of the project's `logic_groups` (scripts/gate_domain_map.json) is a set
+# of Tests.Logic.<folder> namespaces (folder = namespace), sized by test count so the units are near equal; the last
+# unit, Logic_rest, is the complement (every Tests.Logic test no group names), so a new folder or a root-level test class
+# is always run. A group keeps only the folders that exist; none left means one unit, `Logic`. No `logic_groups` key
+# also means one unit. The gate sums the units: a unit that ran no tests is a silent skip, and the sum is held to the
+# baseline, so a test no unit ran cannot pass.
+function Get-LogicGroups {
+    param([string] $Repo)
+    $mapPath = Join-Path $Repo '.claude\scripts\gate_domain_map.json'
+    if (-not (Test-Path -LiteralPath $mapPath)) { return @() }
+    $map = Get-Content -LiteralPath $mapPath -Raw | ConvertFrom-Json
+    if (-not $map.PSObject.Properties['logic_groups']) { return @() }
+    @($map.logic_groups | ForEach-Object { , @($_) })
+}
+function Get-LogicUnits {
+    param([string] $Repo, [string] $RenderExcl, [int] $TimeoutMs, [string] $Suffix = '')
+    $kept = @(foreach ($g in (Get-LogicGroups -Repo $Repo)) {
+        $dirs = @($g | Where-Object { Test-Path -LiteralPath (Join-Path $Repo "Tests\Logic\$_") -PathType Container })
+        if ($dirs.Count -gt 0) { ,$dirs }
+    })
+    $mk = { param($label, $filter) @{ label = "$label$Suffix"; filter = $filter; timeoutMs = $TimeoutMs; expectSec = $TimeoutMs / 1000; windowed = $false } }
+    if ($kept.Count -eq 0) { return @(& $mk 'Logic' "FullyQualifiedName~Tests.Logic$RenderExcl") }
+    $units = @(); $i = 0
+    foreach ($g in $kept) {
+        $i++
+        $units += & $mk "Logic_$i" ('(' + (($g | ForEach-Object { "FullyQualifiedName~Tests.Logic.$_." }) -join '|') + ')' + $RenderExcl)
+    }
+    $excl = ($kept | ForEach-Object { $_ } | ForEach-Object { "&FullyQualifiedName!~Tests.Logic.$_." }) -join ''
+    $units += & $mk 'Logic_rest' "FullyQualifiedName~Tests.Logic$excl$RenderExcl"
+    $units
+}
+
+# One Logic result from its units' results. Any unit that ran no tests, or hit the silent-skip signature, makes the
+# whole silent-skip; a unit the wrapper did not count makes the sum unknown (-1, UNPARSED).
+function Merge-LogicResults {
+    param([object[]] $Results)
+    if ($Results.Count -eq 1) { return $Results[0] }
+    $uncounted = @($Results | Where-Object { $_.passed -lt 0 })
+    $empty = @($Results | Where-Object { $_.passed -ge 0 -and ($_.passed + $_.failed) -eq 0 })
+    $skip = ($Results | Where-Object { $_.silentSkip }) -or $empty.Count -gt 0
+    $worst = @($Results | Where-Object { $_.silentSkip -or $_.status -in @('LOCK_TIMEOUT', 'LOCKED') -or $_.status -in $script:IncompleteStatuses -or $_.status -notin @('GREEN', 'DONE') })
+    $status = if ($skip) { 'SILENT_SKIP' } elseif ($worst.Count -gt 0) { [string] $worst[0].status } else { 'GREEN' }
+    $show = if ($worst.Count -gt 0) { $worst[0] } else { $Results[0] }
+    [ordered]@{
+        label = 'Logic'; raw = (($Results | ForEach-Object { "## $($_.label)`n$($_.raw)" }) -join "`n"); exit = (($Results | ForEach-Object { [int] $_.exit }) | Measure-Object -Maximum).Maximum
+        status = $status; elapsed = (($Results | ForEach-Object { [double] $_.elapsed }) | Measure-Object -Maximum).Maximum; outPath = $show.outPath
+        passed = $(if ($uncounted.Count -gt 0) { -1 } else { [int] (($Results | ForEach-Object { $_.passed }) | Measure-Object -Sum).Sum })
+        failed = $(if ($uncounted.Count -eq $Results.Count) { -1 } else { [int] (($Results | Where-Object { $_.failed -ge 0 } | ForEach-Object { $_.failed }) | Measure-Object -Sum).Sum })
+        silentSkip = [bool] $skip
+        failedTests = @($Results | ForEach-Object { $_.failedTests }); failedMessages = @($Results | ForEach-Object { $_.failedMessages })
+    }
 }
 
 function Test-SuiteTiers {
@@ -1396,6 +1561,7 @@ $suiteTimeoutMs = 480000
 
 # --- Sanity: the one held child admitted before `recompiled` (-RecompilePass). It runs GdUnit4's single editor pass,
 # and it is a 20 s smoke.
+Enter-Stage 'sanity'
 Assert-NoEditor -Phase 'suite:Sanity'
 $t0 = Get-Date
 $peers0 = @(Get-SuitePeers)
@@ -1446,6 +1612,7 @@ if (-not $script:Recompiled -and -not $sanityRed) {
 # wall-clock budget applies: each is bounded by the wrapper's -TimeoutMs and the pool's backstop.
 $intTxt = ''
 $intCode = 0
+Enter-Stage 'pool'
 if ($script:Recompiled -and -not $sanityRed) {
     $intStatePath = Join-Path $logDir 'integration_batches.json'
     $manifestPath = Join-Path $repo 'Tests\integration_batch_durations.json'
@@ -1458,19 +1625,20 @@ if ($script:Recompiled -and -not $sanityRed) {
     $intSubUnits = Get-IntegrationSubUnits -Repo $repo -Segments $allUnitSegs -Manifest $man -MaxBatchTests 380
     $plan = New-IntegrationPlan -Segments $allUnitSegs -Manifest $man -TargetBatchSec $intTargetSec -MaxBatchTests 380 -Quarantine $quarantine -SubUnits $intSubUnits -RenderClasses $renderClasses
     if ($RetryOnly) { foreach ($line in @(Restore-PriorGreens -Plan $plan -StatePath $intStatePath -TreeDigest $script:RunTree.digest)) { Emit $line } }
-    # Logic has no measured duration home; its cap orders it first, as the longest unit.
-    $logicUnit = @{ label = 'Logic'; filter = "FullyQualifiedName~Tests.Logic$renderExcl"; timeoutMs = $suiteTimeoutMs; expectSec = $suiteTimeoutMs / 1000; windowed = $false }
+    # Logic has no measured duration home; its cap orders its units first.
+    $logicUnits = @(Get-LogicUnits -Repo $repo -RenderExcl $renderExcl -TimeoutMs $suiteTimeoutMs)
+    Emit "LOGIC units=$($logicUnits.Count) labels=$((@($logicUnits | ForEach-Object { $_.label })) -join ',')"
     $poolT0 = Get-Date
     $poolPeers0 = @(Get-SuitePeers)
     $intSw = [System.Diagnostics.Stopwatch]::StartNew()
-    Invoke-GatePool -Units (@($logicUnit) + @(Get-IntegrationUnits -Plan $plan -CostCeilingMs $intMaxTimeoutMs -BatchWall $man.batchWall)) -Phase 'main'
+    Invoke-GatePool -Units (@($logicUnits) + @(Get-IntegrationUnits -Plan $plan -CostCeilingMs $intMaxTimeoutMs -BatchWall $man.batchWall)) -Phase 'main'
     $first = @($script:PoolResults)
     Assert-TreeStable -Phase 'pool:main'
     $intFinal = @{}
-    foreach ($x in @($first | Where-Object { $_.label -ne 'Logic' })) { $intFinal[$x.label] = $x }
+    foreach ($x in @($first | Where-Object { $_.label -notlike 'Logic*' })) { $intFinal[$x.label] = $x }
     Update-IntegrationPlan -Plan $plan -Results @($intFinal.Values)
     Save-BatchState -StatePath $intStatePath -Plan $plan -TargetBatchSec $intTargetSec -TreeDigest $script:RunTree.digest -RunId $runId
-    $r = ConvertTo-SuiteResult (@($first | Where-Object { $_.label -eq 'Logic' })[0])
+    $r = Merge-LogicResults @(@($first | Where-Object { $_.label -like 'Logic*' }) | ForEach-Object { ConvertTo-SuiteResult $_ })
     $t = Test-SuiteTiers -R $r -Label 'Logic'
 
     $retryUnits = @(Select-RetryUnits -Plan $plan -CostCeilingMs $intMaxTimeoutMs -BatchWall $man.batchWall)
@@ -1479,18 +1647,18 @@ if ($script:Recompiled -and -not $sanityRed) {
     $logicRetry = ($t.tier -in @('PARTIAL', 'INVALID') -and $r.status -ne 'HANG')
     if ($logicRetry) {
         Emit "SUITE Logic rerun=1 reason=$($t.tier)"
-        $retryUnits = @(@{ label = 'Logic_retry'; filter = $logicUnit.filter; timeoutMs = $suiteTimeoutMs; expectSec = $logicUnit.expectSec; windowed = $false }) + $retryUnits
+        $retryUnits = @(Get-LogicUnits -Repo $repo -RenderExcl $renderExcl -TimeoutMs $suiteTimeoutMs -Suffix '_retry') + $retryUnits
     }
     if ($retryUnits.Count -gt 0) {
         Invoke-GatePool -Units $retryUnits -Phase 'retry'
         $again = @($script:PoolResults)
         Assert-TreeStable -Phase 'pool:retry'
         if ($logicRetry) {
-            $r = ConvertTo-SuiteResult (@($again | Where-Object { $_.label -eq 'Logic_retry' })[0])
+            $r = Merge-LogicResults @(@($again | Where-Object { $_.label -like 'Logic*_retry' }) | ForEach-Object { ConvertTo-SuiteResult $_ })
             $t = Test-SuiteTiers -R $r -Label 'Logic'
         }
-        foreach ($x in @($again | Where-Object { $_.label -ne 'Logic_retry' })) { $intFinal[($x.label -replace '_retry$', '')] = $x }
-        Update-IntegrationPlan -Plan $plan -Results @($again | Where-Object { $_.label -ne 'Logic_retry' })
+        foreach ($x in @($again | Where-Object { $_.label -notlike 'Logic*_retry' })) { $intFinal[($x.label -replace '_retry$', '')] = $x }
+        Update-IntegrationPlan -Plan $plan -Results @($again | Where-Object { $_.label -notlike 'Logic*_retry' })
         Save-BatchState -StatePath $intStatePath -Plan $plan -TargetBatchSec $intTargetSec -TreeDigest $script:RunTree.digest -RunId $runId
         $first += $again
     }
@@ -1552,6 +1720,7 @@ if ($script:Recompiled -and -not $sanityRed) {
 # ---------------------------------------------------------------- engine errors (advisory)
 # Godot ERROR lines fail no suite. A full run counts them per signature against the baseline and reports growth; a
 # -RetryOnly run restores prior greens whose logs this run never produced, so it has no honest count.
+Enter-Stage 'post'
 $engineProfile = $null
 if (-not $RetryOnly) {
     try {

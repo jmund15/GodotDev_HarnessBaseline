@@ -123,23 +123,28 @@ def case_a_binary_left_on_disk_after_its_deletion_freezes(directory):
     assert (repo / binary).is_file(), "the leftover copy stays on disk"
 
 
+class InOwnFolder:
+    """A case as a pool case: it plants its checkout in a folder of its own, removed when it ends."""
+
+    def __init__(self, case):
+        self.case, self.__name__ = case, case.__name__
+
+    def __call__(self):
+        directory = tempfile.mkdtemp(prefix="session-audit-inputs-proof-")
+        try:
+            self.case(directory)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
+
 def main():
+    # Each case spends its time in git and tool spawns on a checkout of its own, so the cases run beside each other.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _case_pool import run_cases
     cases = [case_unreadable_roster_exits_nonzero, case_out_path_outside_checkout_exits_nonzero,
              case_planted_checkout_freezes_inputs, case_must_read_carries_each_admitted_diff_and_links_its_whole_copy,
              case_a_binary_left_on_disk_after_its_deletion_freezes]
-    failures = []
-    for case in cases:
-        directory = tempfile.mkdtemp(prefix="session-audit-inputs-proof-")
-        try:
-            case(directory)
-            print("ok " + case.__name__)
-        except Exception as exc:
-            failures.append(case.__name__)
-            print("FAIL %s: %s" % (case.__name__, exc))
-        finally:
-            shutil.rmtree(directory, ignore_errors=True)
-    print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    return 1 if failures else 0
+    return run_cases([InOwnFolder(case) for case in cases])
 
 
 if __name__ == "__main__":

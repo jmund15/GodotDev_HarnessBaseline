@@ -20,7 +20,10 @@ CITER_LABEL = "declared citer non-review"
 
 def run():
     failures = 0
-    with tempfile.TemporaryDirectory(prefix="native_citers_") as root:
+    with tempfile.TemporaryDirectory(prefix="native_citers_") as root, \
+            patch.dict(guard.citer_coverage.coverage_reason.__kwdefaults__, {"root": Path(root)}):
+        # The guard calls `coverage_reason` with its default root; the sweep hashes run in the planted root
+        # (every path the cases name is absolute), not in this checkout.
         for engine in ("dispatch", "review_fanout"):
             for blocking in (False, True):
                 rows = [(label, job, None, bad and (CITER_REGISTRY_SHIPPED or label != CITER_LABEL))

@@ -48,15 +48,21 @@ class OvernightTests(unittest.TestCase):
         result = self.call("--arm", goal, sid=sid)
         self.assertEqual(0, result.returncode, result.stderr)
 
-    def close_doc(self, sid="one", q_line=None, next_session="- Next session: anthropic · Opus"):
+    EVIDENCE = 'Evidence: {"file": "settled.txt", "quote": "the check settled it"}'
+
+    def close_doc(self, sid="one", q_line=None, next_session="- Next session: anthropic · Opus",
+                  evidence=EVIDENCE):
         path = self.root / "Overnight" / f"2026-09-20-{sid}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
+        (self.root / "settled.txt").write_text("the check settled it\n", encoding="utf-8")
         rows = ["## Outcome", "", "- done — proof"]
         if q_line and next_session:
             rows.append(next_session)
         rows += ["", "## Decisions for you", ""]
         if q_line:
             rows.append(q_line)
+            if evidence and not q_line.startswith("**Q1 — choose later"):
+                rows.append(evidence)
         rows.extend(["", "## Left undone", "", "- None.", ""])
         path.write_text("\n".join(rows), encoding="utf-8")
         return path
@@ -82,23 +88,66 @@ class OvernightTests(unittest.TestCase):
         self.arm(goal="first")
         self.arm(sid="two", goal="second")
         self.assertEqual("first", json.loads(self.marker().read_text())["goal"])
-        self.prompt("morning", sid="two")
+        self.prompt("/overnight off", sid="two")
         self.assertEqual("deny", self.decision())
         self.assertEqual("allow", self.decision(sid="two"))
         self.assertTrue(self.marker().exists())
 
-    def test_owner_prompt_ends_the_unattended_run(self):
+    def test_owner_prompt_without_the_keyword_keeps_the_run_armed(self):
         self.arm()
-        out = self.prompt("morning, what happened?")
-        self.assertFalse(self.marker().exists())
-        self.assertIn("disarmed", json.loads(out)["hookSpecificOutput"]["additionalContext"])
-        self.assertEqual("allow", self.decision())
+        for text in ("morning, what happened?", "<system-reminder>ctx</system-reminder>\nok go on",
+                     "overnight went badly, why?", "/overnight review", "overnight_review went badly",
+                     "/overnight_reviewer", "what does /overnight offer?"):
+            with self.subTest(text=text):
+                out = self.prompt(text)
+                self.assertTrue(self.marker().exists())
+                context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("/overnight off", context)
+                self.assertIn("armed", context)
+                self.assertEqual("deny", self.decision())
+
+    def test_overnight_off_in_an_owner_prompt_ends_the_run(self):
+        for text in ("/overnight off", "ok, enough. /overnight off", "<system-reminder>ctx</system-reminder>\n/overnight off"):
+            with self.subTest(text=text):
+                self.arm()
+                out = self.prompt(text)
+                self.assertFalse(self.marker().exists())
+                context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("ended", context)
+                self.assertNotIn("--arm", context)
+                self.assertEqual("allow", self.decision())
+
+    def test_overnight_review_in_an_owner_prompt_ends_the_run(self):
+        for text in ("/overnight_review", "/overnight_review 3", "ok, answered. /overnight_review",
+                     "<command-message>overnight_review</command-message>\n<command-name>/overnight_review</command-name>"):
+            with self.subTest(text=text):
+                self.arm()
+                out = self.prompt(text)
+                self.assertFalse(self.marker().exists())
+                context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("ended", context)
+                self.assertIn("/overnight_review", context)
+                self.assertNotIn("--arm", context)
+                self.assertEqual("allow", self.decision())
+
+    def test_overnight_review_ends_only_its_own_session_run(self):
         self.arm()
-        self.prompt("<system-reminder>ctx</system-reminder>\nok go on")
+        self.prompt("/overnight_review", sid="two")
+        self.assertTrue(self.marker().exists())
+
+    def test_overnight_review_with_no_armed_run_changes_nothing(self):
+        self.assertEqual("", self.prompt("/overnight_review").strip())
         self.assertFalse(self.marker().exists())
+
+    def test_overnight_review_from_a_runtime_envelope_does_not_end_the_run(self):
         self.arm()
-        self.prompt("overnight went badly, why?")
-        self.assertFalse(self.marker().exists())
+        self.prompt('<task-notification><task-id>x</task-id>/overnight_review</task-notification>')
+        self.assertTrue(self.marker().exists())
+
+    def test_overnight_off_from_a_runtime_envelope_does_not_end_the_run(self):
+        self.arm()
+        self.prompt('<task-notification><task-id>x</task-id>/overnight off</task-notification>')
+        self.assertTrue(self.marker().exists())
 
     def test_runtime_envelopes_and_overnight_resume_keep_it_armed(self):
         self.arm()
@@ -116,11 +165,129 @@ class OvernightTests(unittest.TestCase):
 
     def test_a_close_doc_validates_after_the_owner_disarmed_the_run(self):
         self.arm()
-        self.prompt("morning, what happened?")
+        self.prompt("/overnight off")
         self.assertFalse(self.marker().exists())
         result = self.call("--validate-close", str(self.close_doc()))
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertNotEqual(0, self.call("--validate-close", str(self.close_doc(sid="other"))).returncode)
+
+    def vault_doc(self, sid="one", rows=()):
+        """Plant the baseline lock and this session's Close doc in the vault Overnight dir it names."""
+        vault = self.root / "vault"
+        folder = vault / "DevProjects/Proj/Claude/TODO/Overnight"
+        folder.mkdir(parents=True, exist_ok=True)
+        (self.root / ".claude").mkdir(exist_ok=True)
+        (self.root / ".claude/baseline.lock.json").write_text(json.dumps({"substitutions": {
+            fx.placeholder("VAULT_ROOT"): str(vault), fx.placeholder("PROJECT_NAME"): "Proj"}}), encoding="utf-8")
+        (self.root / "settled.txt").write_text("the check settled it\n", encoding="utf-8")
+        body = ["## Outcome", "", "- done — proof", "- Next session: anthropic · Opus", "", "## Decisions for you", ""]
+        body += list(rows) + ["", "## Left undone", "", "- None.", ""]
+        path = folder / f"2026-09-20-{sid}.md"
+        path.write_text("\n".join(body), encoding="utf-8")
+        return path
+
+    def ended(self, sid="one"):
+        return self.root / ".claude/scratch/overnight" / f"ended-{sid}.json"
+
+    def context(self, out):
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out.strip() else ""
+
+    def test_ending_a_run_names_each_q_row_still_open_in_this_sessions_close_doc(self):
+        for text in ("/overnight off", "/overnight_review Q5 yes"):
+            with self.subTest(text=text):
+                self.arm()
+                self.vault_doc(rows=[self.new_row(), self.EVIDENCE, "",
+                                     self.new_row().replace("Q1", "Q2"), self.EVIDENCE, self.RESOLVED])
+                self.vault_doc(sid="two", rows=[self.new_row().replace("Q1", "Q7"), self.EVIDENCE])
+                context = self.context(self.prompt(text))
+                self.assertIn("Q1", context)
+                self.assertNotIn("Q2", context)
+                self.assertNotIn("Q7", context)
+                self.assertIn("AskUserQuestion", context)
+                self.assertIn("this turn", context)
+                self.assertIn("commands/overnight.md §Step 4", context)
+                self.assertNotIn("allowed again", context)
+                self.assertEqual([1], json.loads(self.ended().read_text(encoding="utf-8"))["open"])
+
+    def test_ending_a_run_with_no_open_row_says_so_and_still_ends_parking(self):
+        self.arm()
+        self.vault_doc(rows=[self.new_row(), self.EVIDENCE, self.RESOLVED])
+        context = self.context(self.prompt("/overnight off"))
+        self.assertIn("no Q row is open", context)
+        self.assertNotIn("Q1", context)
+        self.assertIn("commands/overnight.md §Step 4", context)
+
+    def test_ending_a_run_whose_overnight_dir_cannot_be_read_says_to_read_the_close_doc(self):
+        self.arm()
+        context = self.context(self.prompt("/overnight off"))
+        self.assertFalse(self.marker().exists())
+        self.assertIn("could not be read", context)
+        self.assertIsNone(json.loads(self.ended().read_text(encoding="utf-8"))["open"])
+
+    def test_an_open_row_is_named_on_each_owner_prompt_until_a_question_is_asked_or_it_resolves(self):
+        self.arm()
+        doc = self.vault_doc(rows=[self.new_row(), self.EVIDENCE])
+        self.prompt("/overnight_review")
+        later = self.context(self.prompt("so where are we?"))
+        self.assertIn("Q1", later)
+        self.assertIn("AskUserQuestion", later)
+        self.assertNotIn("armed", later)
+        self.assertEqual("", self.prompt("<task-notification><task-id>x</task-id></task-notification>").strip())
+        self.assertEqual("", self.prompt("so where are we?", sid="two").strip())
+        self.assertEqual("allow", self.decision(tool="Bash"))
+        self.assertIn("Q1", self.context(self.prompt("and now?")))
+        self.assertEqual("allow", self.decision())
+        self.assertEqual("", self.prompt("and now?").strip())
+        self.arm()
+        self.prompt("/overnight off")
+        doc.write_text(doc.read_text(encoding="utf-8").replace(self.EVIDENCE, self.EVIDENCE + "\n" + self.RESOLVED),
+                       encoding="utf-8")
+        self.assertEqual("", self.prompt("and now?").strip())
+
+    def test_a_q_row_opened_after_the_owner_ended_the_run_fails_validation(self):
+        self.arm()
+        doc = self.vault_doc(rows=[self.new_row(), self.EVIDENCE])
+        self.prompt("/overnight_review")
+        kept = self.call("--validate-close", str(doc))
+        self.assertEqual(0, kept.returncode, kept.stderr)
+        self.assertIn("Q1", kept.stdout)
+        self.assertIn("AskUserQuestion", kept.stdout)
+        doc = self.vault_doc(rows=[self.new_row(), self.EVIDENCE, "", self.new_row().replace("Q1", "Q2"), self.EVIDENCE])
+        parked = self.call("--validate-close", str(doc))
+        self.assertEqual(2, parked.returncode)
+        self.assertIn("Q2", parked.stderr)
+        self.assertNotIn("Q1", parked.stderr)
+        self.assertIn("AskUserQuestion", parked.stderr)
+        self.assertIn("commands/overnight.md §Step 4", parked.stderr)
+        doc = self.vault_doc(rows=[self.new_row().replace("Q1", "Q2"), self.EVIDENCE, self.RESOLVED])
+        answered = self.call("--validate-close", str(doc))
+        self.assertEqual(0, answered.returncode, answered.stderr)
+
+    def test_a_new_run_clears_the_ended_record_and_parks_again(self):
+        self.arm()
+        self.vault_doc()
+        self.prompt("/overnight off")
+        self.assertTrue(self.ended().exists())
+        self.arm()
+        self.assertFalse(self.ended().exists())
+        doc = self.vault_doc(rows=[self.new_row(), self.EVIDENCE])
+        result = self.call("--validate-close", str(doc))
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_an_ended_record_lapses_with_the_run_ttl_and_a_peers_is_never_read(self):
+        self.arm()
+        doc = self.vault_doc(rows=[self.new_row(), self.EVIDENCE])
+        self.prompt("/overnight off")
+        doc = self.vault_doc(rows=[self.new_row().replace("Q1", "Q2"), self.EVIDENCE])
+        peer = self.vault_doc(sid="two", rows=[self.new_row(), self.EVIDENCE])
+        self.assertEqual(0, self.call("--validate-close", str(peer), sid="two").returncode)
+        self.assertEqual(2, self.call("--validate-close", str(doc)).returncode)
+        record = json.loads(self.ended().read_text(encoding="utf-8"))
+        record["ended_at"] = time.time() - 17 * 3600
+        self.ended().write_text(json.dumps(record), encoding="utf-8")
+        self.assertEqual(0, self.call("--validate-close", str(doc)).returncode)
+        self.assertFalse(self.ended().exists())
+        self.assertEqual("", self.prompt("and now?").strip())
 
     def test_the_model_cannot_disarm_itself(self):
         self.arm()
@@ -253,14 +420,6 @@ class OvernightTests(unittest.TestCase):
         self.assertIn("commands/overnight.md §Step 2", reason)
         self.assertNotIn("reversible from the branch", reason)
 
-    def test_overnight_review_prompt_disarms(self):
-        for text in ("/overnight_review", "<command-name>/overnight_review</command-name>"):
-            with self.subTest(text=text):
-                self.arm()
-                self.prompt(text)
-                self.assertFalse(self.marker().exists())
-                self.assertEqual("allow", self.decision())
-
     def questions(self, docs):
         folder = self.root / "Overnight"
         folder.mkdir(parents=True, exist_ok=True)
@@ -320,6 +479,19 @@ class OvernightTests(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("Reversibility", result.stderr)
 
+    def test_a_q_row_always_carries_a_recommendation_and_no_recommendation_park_exists(self):
+        # Lack of a recommendation is never a park reason: the run gathers evidence and decides.
+        self.arm()
+        for line, ok in (
+            (self.new_row(reason="no-recommendation"), False),
+            (self.new_row(rec="none"), False),
+            (self.new_row(rec="a"), True),
+        ):
+            with self.subTest(row=line):
+                result = self.call("--validate-close", str(self.close_doc(q_line=line)))
+                self.assertEqual(ok, result.returncode == 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
     def test_a_recommendation_holding_a_period_keeps_both_fields(self):
         result = self.validate(self.new_row(rec="use v1.2 as is"))
         self.assertEqual(0, result.returncode, result.stderr)
@@ -336,6 +508,39 @@ class OvernightTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
+
+    RESOLVED = "Resolved: 2026-10-01 — a — done"
+
+    def test_an_open_q_row_needs_a_verified_evidence_item(self):
+        row = self.new_row()
+        missing = self.validate(row, evidence=None)
+        self.assertEqual(2, missing.returncode)
+        self.assertIn("Q1", missing.stderr)
+        self.assertIn("Evidence", missing.stderr)
+        absent = self.validate(row, evidence='Evidence: {"file": "settled.txt", "quote": "never written there"}')
+        self.assertEqual(2, absent.returncode)
+        self.assertIn("Q1", absent.stderr)
+        for bad in ("Evidence: unknown", 'Evidence: {"owner": "go ahead"}', 'Evidence: {"file": "settled.txt"}'):
+            with self.subTest(line=bad):
+                self.assertEqual(2, self.validate(row, evidence=bad).returncode)
+        present = self.validate(row)
+        self.assertEqual(0, present.returncode, present.stderr)
+        command = self.validate(row, evidence='Evidence: {"command": "git status", "output": "no such text"}')
+        self.assertEqual(2, command.returncode)
+
+    def test_a_resolved_q_row_needs_no_evidence_line(self):
+        for lines in (self.RESOLVED, self.EVIDENCE + chr(10) + self.RESOLVED):
+            with self.subTest(lines=lines):
+                result = self.validate(self.new_row() + chr(10) + lines, evidence=None)
+                self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_open_questions_reads_rows_with_and_without_the_evidence_line(self):
+        out = self.questions({"a.md": chr(10).join([
+            "## Decisions for you", "", self.new_row(), self.EVIDENCE, "",
+            self.new_row().replace("Q1", "Q2"), "",
+            self.new_row().replace("Q1", "Q3"), self.EVIDENCE, self.RESOLVED])})
+        self.assertEqual([1, 2], sorted(r["number"] for r in out["open"]))
+        self.assertEqual([3], [r["number"] for r in out["resolved"]])
 
     def test_a_doc_with_a_q_row_needs_a_next_session_line(self):
         row = self.new_row()
@@ -485,4 +690,5 @@ class OvernightTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    from _case_pool import run_cases, unittest_cases
+    sys.exit(run_cases(unittest_cases(OvernightTests)))

@@ -3,7 +3,9 @@
 
 Receipt completion is author-recorded and freshness-checked, not a semantic audit.
 Read/Skill/tool-success observations alone never prove that a full phase finished.
-Default check is precommit; --stage final additionally checks commit and reindex.
+Default check is precommit; --stage final additionally checks commit and reindex, and prints one line per
+shared-checkout artifact the session changed (index, lock rows, model registry, composed settings) with its check's
+result (`shared_artifact_lines`); the lines report and leave the exit code to the phases.
 --resume reports gaps without failing. --record stores one session-scoped receipt.
 A gated phase (`GATED`) skips only on `--predicate <file>`: the predicate object `close_predicates.py`
 wrote for that stem, stored in the receipt. A false predicate is the skip; a true or null predicate ran
@@ -467,11 +469,104 @@ def unpublished_peer_sessions(repo, transcript):
     return {line.strip() for line in r.stdout.splitlines() if line.strip()} - own
 
 
+def unresolved_pull(repo):
+    """Paths an earlier `baseline_sync.py pull` wrote whose proof is still red or pending and that no commit has
+    taken (the pull journal, `hooks/_pull_proof.py`): rows left in the tree that nothing else reports at close.
+    Empty when the project keeps no journal."""
+    hooks = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'hooks')
+    sys.path.insert(0, hooks)
+    try:
+        import _pull_proof
+    except ImportError:
+        return []
+    finally:
+        sys.path.remove(hooks)
+    try:
+        return _pull_proof.open_paths(repo)
+    except _pull_proof.Unreadable:
+        # Unknown rows stay named: the record itself is the open row.
+        return [_pull_proof.RECORD]
+
+
 def phase_mandatory(stem, mandatory, project_dir=None):
     """Whether `stem` must end completed or skipped: its PHASES flag, unless it runs a command the project lacks."""
     if not mandatory or stem not in PROJECT_COMMAND_PHASES:
         return mandatory
     return os.path.isfile(os.path.join(project_dir or _PROJECT_DIR, '.claude', 'commands', stem + '.md'))
+
+
+# Shared-checkout artifacts a peer's next run reads, each with the path whose change in this session makes it the
+# session's own (None: always listed, since a staged leftover is no commit). `lock rows` is judged by the findings
+# `baseline_sync.py check --json` prints when it is not clean; the other checks are their tool's exit code.
+SHARED_ARTIFACTS = (
+    ('index', None),
+    ('lock rows', re.compile(r'\.claude/baseline\.lock\.json')),
+    ('model registry', re.compile(r'\.claude/reference/external_models\.json')),
+    ('composed settings', re.compile(r'\.claude/settings(?!\.local\.json)(?:\.[A-Za-z0-9_-]+)?\.json')),
+)
+LOCK_FINDING_KEYS = ('layer_closure', 'layer_drift', 'unimported_layer_files')
+# `baseline_sync.py check --json` took 26 s on this repo, the other checks under a second.
+CHECK_TIMEOUT_SECONDS = 180
+
+
+def _run_check(argv, repo):
+    """(exit code, stdout) of one artifact check run in `repo`; OSError and a timeout propagate."""
+    r = subprocess.run(argv, cwd=repo, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                       timeout=CHECK_TIMEOUT_SECONDS)
+    return r.returncode, r.stdout
+
+
+def artifact_changes(repo, sid, transcript):
+    """(the repo-relative paths this session's commits and named dirty files touch, None) or (None, reason)."""
+    try:
+        return close_predicates.Ctx(repo, session=sid, transcript=transcript, live=True).git_changes()
+    except Exception as error:  # an unreadable scope runs every check; it never reads as "nothing changed"
+        return None, str(error)
+
+
+def _artifact_verdict(name, repo, runner):
+    """(state, detail) for one artifact: ok, FAIL, or unknown when the check could not run or be read."""
+    tools = [sys.executable, os.path.join(_TOOLS_DIR, 'baseline_sync.py')]
+    try:
+        if name == 'index':
+            rc, out = runner(['git', 'diff', '--cached', '--name-only'], repo)
+            if rc != 0:
+                return 'unknown', 'git diff --cached exit %d' % rc
+            staged = [line for line in out.splitlines() if line.strip()]
+            return ('FAIL', '%d path(s) staged: %s' % (len(staged), ', '.join(staged[:5]))) if staged \
+                else ('ok', 'nothing staged')
+        if name == 'lock rows':
+            rc, out = runner(tools + ['check', '--json'], repo)
+            try:
+                payload = json.loads(out)
+            except ValueError:
+                return 'unknown', 'check --json exit %d printed no JSON' % rc
+            if rc != 0 or not isinstance(payload, dict):
+                return 'unknown', 'check --json exit %d' % rc
+            found = [key for key in LOCK_FINDING_KEYS if payload.get(key)]
+            return ('FAIL', 'check --json reports ' + ', '.join(found)) if found else ('ok', 'check --json: no finding')
+        argv = ([sys.executable, os.path.join(_TOOLS_DIR, 'model_registry.py'), '--check'] if name == 'model registry'
+                else tools + ['compose', '--check'])
+        rc, out = runner(argv, repo)
+        first = next((line.strip() for line in out.splitlines() if line.strip()), '')
+        label = ' '.join(os.path.basename(a) for a in argv[1:])
+        return ('ok', first or label + ' exit 0') if rc == 0 else ('FAIL', '%s exit %d: %s' % (label, rc, first))
+    except (OSError, subprocess.SubprocessError) as error:
+        return 'unknown', 'check could not run: %s' % error
+
+
+def shared_artifact_lines(repo, changed, reason=None, runner=None):
+    """One line per shared-checkout artifact the session changed (`SHARED_ARTIFACTS`), each with its check's result.
+    `changed` None (its `reason` names why) means the session's scope is unknown, so every artifact is checked."""
+    runner = runner or _run_check
+    lines = ['shared-checkout artifacts this session changed:' if changed is not None else
+             'shared-checkout artifacts: this session\'s changes are unreadable (%s), so every check ran:' % reason]
+    for name, trigger in SHARED_ARTIFACTS:
+        if changed is not None and trigger is not None and not any(trigger.fullmatch(p) for p in changed):
+            continue
+        state, detail = _artifact_verdict(name, repo, runner)
+        lines.append('  [%s] %s — %s' % (state, name, detail))
+    return lines
 
 
 def render(path, sid, archive_path, artifacts, receipts=None, stage='precommit', repo=None):
@@ -597,6 +692,16 @@ def main():
         print('Recorded ' + a.record + ': ' + a.status)
         return 0
     missing, resume_label = render(path, sid, a.archive, a.resume or a.artifacts, receipts, a.stage, a.repo)
+    stuck = unresolved_pull(a.repo)
+    if stuck:
+        print('unresolved baseline pull: ' + ', '.join(stuck))
+        print('  an earlier pull wrote these paths and their proof is red or pending; rerun '
+              '`python3 .claude/scripts/harness_tests.py --for ' + ' '.join(stuck) + '`, then commit them')
+
+    if a.stage == 'final' and not a.resume:
+        changed, why = artifact_changes(a.repo, sid, path)
+        print()
+        print('\n'.join(shared_artifact_lines(a.repo, changed, why)))
 
     print()
     if a.resume:
@@ -612,6 +717,8 @@ def main():
         for m in missing:
             print(f"  - {m}")
         print("Finish the phase and record evidence, or record its specific blocker. A mention is not completion.")
+        return 1
+    if stuck:
         return 1
     print("All checked phases have current receipts; verify their stated scope before claiming full closeout.")
     return 0

@@ -1,8 +1,8 @@
 """Proof for the ladder cut `for-role` prints above its plan-filtered tier table.
 
-The slice is what a dispatcher reads instead of the whole ladder: the role definitions and terms, the
-Role guidance rows whose registry `roles` claim a named tier, the selection-line bullets and the axis
-definitions. `model_registry.py ladder-slice` is retired and names `for-role`; crediting a delivered
+The slice is what a dispatcher reads instead of the whole ladder: the requested tiers' work-shape rows, the
+Role guidance rows whose registry `roles` claim a named tier and the selection-line bullets; the term and
+axis glossaries stay in the ladder file. `model_registry.py ladder-slice` is retired and names `for-role`; crediting a delivered
 table is the dispatch gate's (`tests/test_model_ladder_gate.py`).
 """
 import contextlib
@@ -73,17 +73,38 @@ def test_slice_covers_the_union_of_two_tiers_in_ladder_order(mr):
     assert _guidance_rows(_slice(mr, "architect", "scout")) == expected
 
 
-def test_slice_carries_definitions_selection_and_axes_whole(mr, live_lines):
+def test_slice_carries_requested_tier_rows_and_selection_lines_whole(mr, live_lines):
     text = _slice(mr, "architect")
-    start = live_lines.index("## Role definitions")
+    lines = text.splitlines()
     guidance = live_lines.index("## Role guidance")
-    for line in live_lines[start:guidance]:
-        assert line in text.splitlines(), line
     table_end = max(i for i, l in enumerate(live_lines) if l.startswith("| "))
-    axes = live_lines.index("## Axis definitions")
     for line in live_lines[table_end + 1:]:
-        assert line in text.splitlines(), line
-    assert axes > table_end
+        if line.startswith("## Compaction"):
+            break
+        assert line in lines, line
+    assert "## Compaction" not in lines and "Compaction" in lines[-1]
+    assert any(l.startswith("| `architect` |") for l in lines)
+    for other in ("orchestrator", "executor", "fanout", "scout"):
+        assert not any(l.startswith("| `%s` |" % other) for l in lines), other
+
+
+def test_slice_leaves_the_glossaries_in_the_ladder_and_points_at_it(mr):
+    text = _slice(mr, "executor")
+    assert "Terms the cells use" not in text and "## Axis definitions" not in text
+    assert "**oracle:**" not in text and "**intel:**" not in text
+    assert "model_ladder_evidence.md" in text.splitlines()[-1]
+
+
+def test_a_two_tier_slice_keeps_both_tier_rows_and_the_validation_line_only_with_fanout(mr):
+    lines = _slice(mr, "architect", "scout").splitlines()
+    assert any(l.startswith("| `architect` |") for l in lines) and any(l.startswith("| `scout` |") for l in lines)
+    assert not any(l.startswith("`validation` is not a tier") for l in lines)
+    assert any(l.startswith("`validation` is not a tier") for l in _slice(mr, "fanout").splitlines())
+
+
+def test_the_executor_slice_is_well_under_the_whole_ladder(mr):
+    whole = len(mr.ladder_path().read_bytes())
+    assert len(_slice(mr, "executor").encode("utf-8")) < whole * 0.85
 
 
 def test_slice_of_one_tier_is_smaller_than_the_whole_ladder_on_the_live_ladder(mr):
@@ -228,3 +249,85 @@ def test_slice_keeps_only_the_rows_the_table_lists(mr):
     assert len(full) > 1
     kept = _guidance_rows(mr.ladder_slice(["architect"], only={full[0]}))
     assert kept == [full[0]]
+
+
+def _doctrine_lines(text):
+    """The doctrine a print repeats on every call: the paragraphs and selection bullets."""
+    return [l for l in text.splitlines()
+            if l.startswith(("Five tiers", "A tier a row lists", "`effort` gives", "- **", "  1. ", "  2. "))]
+
+
+def test_a_context_holding_the_doctrine_gets_the_cut_without_it(mr):
+    full = _slice(mr, "fanout")
+    lean = mr.ladder_slice(["fanout"], doctrine=False)
+    assert _doctrine_lines(full) and not _doctrine_lines(lean)
+    assert _guidance_rows(lean) == _guidance_rows(full)
+    lines = lean.splitlines()
+    assert any(l.startswith("| `fanout` |") for l in lines)
+    for table_head in ("| tier | work shape |", "| model |"):
+        head = next(i for i, l in enumerate(lines) if l.startswith(table_head))
+        assert lines[head + 1].startswith("|---"), lines[head + 1]
+    assert any(l.startswith("`validation` is not a tier") for l in lines)
+    assert "\n\n\n" not in lean and "model_ladder_evidence.md" in lines[-1] and "earlier in this context" in lines[-1]
+    assert len(lean) < len(full) * 0.6
+
+
+def _print(mr, monkeypatch, tmp_path, session, *tiers):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parent))
+    from _capacity_fixtures import write_capacity_cache
+    cache = write_capacity_cache(tmp_path / "capacity.json", mr.load())
+    monkeypatch.setenv("PROVIDER_CAPACITY_CACHE", str(cache))
+    monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
+    if session:
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", session)
+    else:
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert mr.main(["for-role", *tiers, "--from", "anthropic"]) == 0
+    return out.getvalue()
+
+
+def test_the_doctrine_prints_once_per_context_and_the_gate_still_credits_every_tier(mr, tmp_path, monkeypatch):
+    """Executor first, then fanout, then a compaction, then fanout again. Each delivery credits its tiers, the
+    second print omits the doctrine, and the compaction brings it back."""
+    monkeypatch.syspath_prepend(str(HOOKS))
+    import _hook_state
+    import model_ladder_gate
+    monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
+    sid = "doctrine-once"
+    cmd = "python3 .claude/tools/model_registry.py for-role %s --from anthropic"
+
+    def deliver(*tiers):
+        text = _print(mr, monkeypatch, tmp_path, sid, *tiers)
+        payload = {"tool_name": "Bash", "session_id": sid, "tool_input": {"command": cmd % tiers[0]},
+                   "tool_response": {"stdout": text.rstrip("\n"), "exitCode": 0}}
+        assert model_ladder_gate.mark_loaded(payload) is True
+        return text
+
+    first = deliver("executor")
+    second = deliver("fanout")
+    assert _doctrine_lines(first) and not _doctrine_lines(second)
+    assert "for-role: tiers fanout" in second and any(l.startswith("| `fanout` |") for l in second.splitlines())
+    assert _hook_state.ladder_slice_tiers(sid) == ["executor", "fanout"]
+    assert model_ladder_gate.tier_in_context(sid, "executor") and model_ladder_gate.tier_in_context(sid, "fanout")
+    _hook_state.clear_compaction_keys(sid)
+    assert _hook_state.ladder_slice_tiers(sid) == []
+    assert _doctrine_lines(_print(mr, monkeypatch, tmp_path, sid, "fanout"))
+
+
+def test_an_undelivered_print_leaves_the_next_one_whole(mr, tmp_path, monkeypatch):
+    """The cut keys on credited delivery: a print that was piped earned no credit, so the doctrine is not in context."""
+    monkeypatch.syspath_prepend(str(HOOKS))
+    import model_ladder_gate
+    monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
+    text = _print(mr, monkeypatch, tmp_path, "doctrine-piped", "executor")
+    payload = {"tool_name": "Bash", "session_id": "doctrine-piped",
+               "tool_input": {"command": "python3 .claude/tools/model_registry.py for-role executor | head -3"},
+               "tool_response": {"stdout": "".join(text.splitlines(True)[:3]), "exitCode": 0}}
+    assert model_ladder_gate.mark_loaded(payload) is False
+    assert _doctrine_lines(_print(mr, monkeypatch, tmp_path, "doctrine-piped", "fanout"))
+
+
+def test_a_run_with_no_session_prints_the_whole_doctrine(mr, tmp_path, monkeypatch):
+    assert _doctrine_lines(_print(mr, monkeypatch, tmp_path, None, "executor"))

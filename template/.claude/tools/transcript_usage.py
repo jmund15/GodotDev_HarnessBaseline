@@ -28,6 +28,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_registry  # noqa: E402
+import spend_ledger  # noqa: E402
 
 HOST_TRANSPORT = "anthropic"
 PROXIED = "proxied"
@@ -126,10 +127,16 @@ def call_usage(mid, record):
         cw1h=_number(split.get("ephemeral_1h_input_tokens")))
 
 
+def ledger_records(path=None):
+    """Every JSON object of the sidecar spend ledger: its segments (`spend_ledger`), oldest first, then the live file."""
+    for file in spend_ledger.paths(path or sidecar_ledger_path()):
+        yield from iter_records(file)
+
+
 def ledger_transports(path=None):
     """{sessionId: transport} from the sidecar spend ledger; {} when it is absent."""
     out = {}
-    for rec in iter_records(path or sidecar_ledger_path()):
+    for rec in ledger_records(path):
         sid, transport = rec.get("sessionId"), rec.get("transport")
         if sid and transport:
             out[str(sid)] = str(transport)

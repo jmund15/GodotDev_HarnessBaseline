@@ -21,7 +21,7 @@ Set-StrictMode -Version Latest
 $t = $null; $e = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile('@GATE@', [ref]$t, [ref]$e)
 if ($e.Count) { throw ($e | Out-String) }
-foreach ($name in @('Get-Prop', 'Get-ImportStamp', 'Complete-Gate', 'Exit-IfStaticRoute', 'Invoke-LedgerReuse', 'Write-VerdictRow')) {
+foreach ($name in @('Get-Prop', 'Get-ImportStamp', 'Complete-Gate', 'Exit-IfStaticRoute', 'Invoke-LedgerReuse', 'Write-VerdictRow', 'Get-SharedLedgerDir', 'Enter-Stage', 'Stop-Stage', 'Get-StageSummary')) {
     $fn = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
     if ($fn) { . ([scriptblock]::Create($fn.Extent.Text)) }
 }
@@ -55,6 +55,9 @@ $repo = '@REPO@'
 $ledgerDir = Join-Path $repo '.claude/scratch/gate_ledger'
 $detailPath = Join-Path $ledgerDir 'detail.md'
 $logDir = $ledgerDir
+$sharedLedgerDir = Get-SharedLedgerDir -Repo $repo
+$script:Stages = [System.Collections.Generic.List[object]]::new()
+$script:OpenStage = $null
 New-Item -ItemType Directory -Force -Path $ledgerDir | Out-Null
 function Get-FixtureTree {
     param([string] $Root = $repo)
@@ -140,6 +143,7 @@ def main(tmp):
     case('D4 identifier rename -> full', base, base.replace('Value', 'Renamed'), routed=False)
     case('D5 no prior green base -> full', base, base + '// note', routed=False, seed_base=False)
     case('D6 tokenizer error -> full', base, base + ' /* unterminated', routed=False)
+    case('-NoReuse refuses the comment-only route -> full', base, base + '// note\n', routed=False, pre='$NoReuse = $true')
     case('XML documentation and block comments -> accepted', base, '/// <summary>A.</summary>\nclass Sample { /*note*/ int Value = 1; }', routed=True)
     case('string spaces remain significant', 'class Sample { string S = "a b"; }', 'class Sample { string S = "ab"; }', routed=False)
     for name, literal, changed in [

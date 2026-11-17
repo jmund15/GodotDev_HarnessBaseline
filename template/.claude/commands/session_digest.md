@@ -11,9 +11,12 @@ compactions). The full JSON and evidence index remain the exact retrieval source
 Presentation modes are distinct:
 
 - **Default / `--handoff`** — a bounded resume packet for `/clear`, parallel-session pickup and compaction
-  recovery. It keeps the task anchor, latest directive, priority corrections and answers, recent timeline,
-  friction, files, status evidence and retrieval IDs. `.claude/tools/session_digest.py` owns the byte cap,
-  which includes the active task record.
+  recovery. It keeps the task anchor, latest directive, priority corrections and answers, status evidence,
+  the agent's own work, recent timeline, friction, files and retrieval IDs. `.claude/tools/session_digest.py`
+  owns the byte cap, which includes the active task record. The **Agent work** section is evidence from the
+  transcript, disk and git: commits, pushes, dispatches and their returns, jobs with no end, the state and Close
+  files the session wrote, and the not-done and decision lines the agent's last message states, marked as its
+  words. It points to those files and does not copy them.
 - **`--brief`** — a bounded identity card for locating or comparing sessions; `.claude/tools/session_digest.py`
   owns the cap. It is not enough to resume non-trivial work.
 - **`--full`** — an offline Markdown projection written atomically to `logs/session_digest_<sid8>.full.md`.
@@ -45,10 +48,18 @@ python3 .claude/tools/session_digest.py --list 8
 
 1. **What it was doing** — the task anchor, then one line per shown prompt; the latest owner directive is the
    live intent. Page omitted prompt IDs before claiming the full sequence.
-2. **Where it stopped** — the last message's Done/Left bullets.
-3. **Unfinished** — every job that message left running (background shells, workflows, campaigns), each
+2. **What it did** — the Agent work section. Its commit list is every session's on the repo's local branches in
+   this session's time window, so a peer's commits appear in it.
+3. **Where it stopped** — the last message's Done/Left bullets and the section's `Said` lines. Read the Close doc
+   or state file the section lists before acting on a decision it names.
+4. **Unfinished** — every job the section lists without a return (a dispatch with no deliverable or exit file, a
+   shell with no end notice, a detached job) and the checkout's dirty and ahead counts, each
    verified on disk or in the process list before it is called hung: a finished job nobody consumed looks the same.
-4. **Friction to avoid** — denials and errors that recur on the same path.
+   The default and `--handoff` runs move the running sidecar jobs of a session with no live host into this
+   session's hook state and print `Adopted <n> running job(s)` with their labels. The session watcher
+   (`watch_records.py --session --wake`) then wakes this session when each one ends. A session with a live host
+   keeps its jobs, and a job that already ended stays with the old session: read its result from its record.
+5. **Friction to avoid** — denials and errors that recur on the same path.
 
 Full record when a prompt was clipped: `logs/session_digest_<sid8>.json`. For complete prompt or friction
 analysis, page the saved evidence index until its `pages` count is exhausted; handoff is intentionally bounded.

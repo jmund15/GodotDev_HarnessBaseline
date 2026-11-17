@@ -55,6 +55,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import model_registry  # noqa: E402
+import spend_ledger  # noqa: E402
 from quota_bands import EXHAUSTED_BAND, compute_band, runout_ratio_for  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -226,14 +227,10 @@ def row_cost(row, path, data=None):
 def ledger_spend(path, transport, after, stored=None):
     """(spend, error): `transport`'s `costUSD` in `path`, for rows stamped after `after`, each repriced from its
     transcript. `stored`, when a list, collects the label of every row whose stored `costUSD` was summed as is."""
-    try:
-        handle = open(path, encoding="utf-8", errors="replace")
-    except OSError:
-        return 0.0, None
     spend = 0.0
     data = model_registry.load()
-    with handle:
-        for line in handle:
+    try:
+        for line in spend_ledger.iter_lines(path, since=after, needle=json.dumps(transport)):
             if not line.strip():
                 continue
             try:
@@ -257,6 +254,8 @@ def ledger_spend(path, transport, after, stored=None):
             if not repriced and stored is not None:
                 stored.append(row.get("label") or "unlabelled")
             spend += cost
+    except OSError:
+        return 0.0, None
     return spend, None
 
 

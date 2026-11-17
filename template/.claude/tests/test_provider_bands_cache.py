@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Proof that provider_bands is a thin view over live-first provider_capacity."""
+import contextlib
 import importlib.util
+import io
 import os
 import sys
+import time
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -88,6 +91,36 @@ def main():
         pb.provider_capacity.reading = broken
         cases.append(("runner failure is unknown, never a permissive band",
                       pb.reading("codex") is None))
+
+        # `list` prints each reading's age and its live-failure message, so a stale fallback shows as stale.
+        now = time.time()
+        stale_capacity = capacity(routing="Hot")
+        stale_capacity["observedAt"] = pb.provider_capacity._utc(now - 120)
+        stale = pb.provider_capacity._cache_fallback(stale_capacity, "network", now,
+                                                     "live capacity probe failed")
+        original_transports = pb.plan_quota_transports
+
+        def list_output(reading):
+            pb.provider_capacity.reading = lambda *_args, **_kwargs: reading
+            pb.plan_quota_transports = lambda *_args, **_kwargs: ["codex"]
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    pb.main(["list"])
+            finally:
+                pb.plan_quota_transports = original_transports
+            return out.getvalue().strip().split("\t")
+
+        fallback_row = list_output(stale)
+        cases.append(("list prints a fallback reading's age and its live-failure message",
+                      len(fallback_row) >= 5 and "120" in fallback_row[4]
+                      and "live capacity probe failed" in fallback_row[4]))
+        fresh_capacity = capacity(routing="Hot")
+        fresh_capacity["observedAt"] = pb.provider_capacity._utc(now)
+        fresh_row = list_output(fresh_capacity)
+        cases.append(("list prints a live reading's age with no failure message",
+                      len(fresh_row) >= 5 and fresh_row[4][:1].isdigit()
+                      and "probe" not in fresh_row[4]))
     finally:
         pb.provider_capacity.reading = original
 

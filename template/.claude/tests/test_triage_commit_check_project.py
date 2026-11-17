@@ -303,6 +303,7 @@ def test_premises_missing_quote_and_once(tmp_path, monkeypatch):
     import triage_commit_check as hook
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
     root = make_project(str(tmp_path), "premises")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", root)  # the in-process rigor reads this checkout's changes, never the live one's
     write(root, ".claude/rules/example.md", "rule\n")
     stage(root, ".claude/rules/example.md")
     from _git_commit import commit_invocations
@@ -319,6 +320,7 @@ def test_premises_ask_is_keyed_by_commit_message(tmp_path, monkeypatch):
     import triage_commit_check as hook
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
     root = make_project(str(tmp_path), "premises-ask-commit")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", root)
     write(root, ".claude/rules/example.md", "rule\n")
     stage(root, ".claude/rules/example.md")
     from _git_commit import commit_invocations
@@ -334,6 +336,7 @@ def test_prose_premises_note_names_fence_form(tmp_path, monkeypatch):
     import triage_commit_check as hook
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
     root = make_project(str(tmp_path), "premises-prose-fence")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", root)
     write(root, ".claude/rules/example.md", "rule\n")
     stage(root, ".claude/rules/example.md")
     from _git_commit import commit_invocations
@@ -425,8 +428,16 @@ def test_launcher_derived_trailers(tmp_path):
     write(root, "notes.txt", "notes v2\n")
     write(root, "hooks/g.py", "x = 2\n")
     stage(root, "notes.txt", "hooks/g.py")
-    local = "Triage-Derived: reach=local oracle=none"
-    shared = "Triage-Derived: reach=shared oracle=new-test"
+    # Only a session record is written into a commit (nothing reads a derived trailer), so the launcher shapes
+    # run under a record and the trailer is the record's.
+    rec = h.record(root, "launcher-rec", "launcher-derived", "shared", "gate+new-test", ["notes.txt", "hooks/g.py"])
+    assert rec.returncode == 0, rec.stderr
+    _ctx, _raw, probe = h.context(root, payload(root, "git commit -m probe -- notes.txt", session="launcher-derived"))
+    probed = _git_commit.commit_invocations(
+        probe.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", ""), root)
+    assert len(probed) == 1 and _git_commit.commit_trailer_lines(probed[0].rest), probe
+    local = shared = _git_commit.commit_trailer_lines(probed[0].rest)[0]
+    assert local.startswith("Triage: reach=shared"), local
     commands = (
         ("bash -c 'git commit -m nested -- notes.txt'", [local]),
         ("bash -c 'git commit -m nested -- notes.txt'; git commit -m direct -- hooks/g.py", [local, shared]),
@@ -442,9 +453,9 @@ def test_launcher_derived_trailers(tmp_path):
         updated = parsed.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
         calls = _git_commit.commit_invocations(updated, root)
         messages = [_git_commit.commit_message(call.rest, call.cwd) or "" for call in calls]
-        check("launcher derived trailer stays with its commit: " + command,
+        check("launcher record trailer stays with its commit: " + command,
               raw[0] == 0 and len(messages) == len(expected) and all(
-                  trailer in message if trailer else "Triage-Derived:" not in message
+                  trailer in message if trailer else "Triage:" not in message
                   for message, trailer in zip(messages, expected)), (raw, updated, messages))
         if expected[0] is None:
             check("unsafe launcher body stays unchanged: " + command,
@@ -512,13 +523,13 @@ def main(tmp):
     stage(root, "notes.txt")
     ctx, raw, parsed = h.context(root, payload(root, 'git commit -m "plain message"', session="sess-none"))
     updated = parsed.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
-    check("no trailer and local diff gets a derived trailer without context",
-          raw[0] == 0 and ctx == "" and '--trailer "Triage-Derived: reach=local oracle=none"' in updated, raw)
-    own = 'printf x > later.txt && git commit --trailer "Triage-Derived: reach=local oracle=none" -F later.txt'
+    check("no trailer, no record and a local diff: no context and the call is not rewritten",
+          raw[0] == 0 and ctx == "" and updated == "" and "Triage-Derived" not in raw[1], raw)
+    own = 'printf x > later.txt && git commit --trailer "Triage: reach=local design=settled grounding=verified oracle=none size=one-context" -F later.txt'
     ctx, raw, parsed = h.context(root, payload(root, own, session="sess-none"))
     updated = parsed.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
-    check("a commit carrying its own Triage-Derived trailer, its -F file written by the same command, gets no second one",
-          raw[0] == 0 and updated.count("Triage-Derived:") <= 1, raw)
+    check("a commit carrying its own Triage trailer, its -F file written by the same command, gets no second one",
+          raw[0] == 0 and updated.count("Triage:") <= 1, raw)
     write(root, "msg.txt", "fix: x\n\n" + TRAILER % ("local", "gate") + "\n")
     check("a satisfying trailer on the same staged change prints nothing",
           is_silent(h.context(root, payload(root, commit, session="sess-none"))))
@@ -639,25 +650,30 @@ def main(tmp):
         'git -c core.editor="unused value" commit -m "quoted global value"',
         'cat > data <<\'EOF\'\ngit commit -m "body"\nEOF\ngit commit -m "real"',
     )
+    import re as _re
+    import _git_commit
+    rec = h.record(root, "shapes-rec", "derived-shapes", "local", "none", ["notes.txt"])
+    assert rec.returncode == 0, rec.stderr
+    record_option = _re.compile(r' --trailer "Triage: reach=local[^"]*"')
     for command in shapes:
         ctx, raw, parsed = h.context(root, payload(root, command, session="derived-shapes"))
         updated = parsed.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
-        import _git_commit
         count = len(_git_commit.commit_invocations(command, root))
-        check("derived rewrite preserves shell bytes: " + command.splitlines()[0],
-              raw[0] == 0 and ctx == "" and updated.count(' --trailer "Triage-Derived: reach=local oracle=none"') == count
-              and updated.replace(' --trailer "Triage-Derived: reach=local oracle=none"', '') == command, raw)
+        check("record rewrite preserves shell bytes: " + command.splitlines()[0],
+              raw[0] == 0 and ctx == "" and len(record_option.findall(updated)) == count
+              and record_option.sub("", updated) == command, raw)
         rewritten_invocations = _git_commit.commit_invocations(updated, root)
-        check("derived options belong to commit arguments",
+        check("record options belong to commit arguments",
               len(rewritten_invocations) == count and all(
-                  "Triage-Derived: reach=local oracle=none" in (_git_commit.commit_message(i.rest, i.cwd) or "")
+                  "Triage: reach=local" in (_git_commit.commit_message(i.rest, i.cwd) or "")
                   for i in rewritten_invocations), updated)
-        check("derived rewrite is idempotent", is_silent(h.context(root, payload(root, updated, session="derived-shapes"))))
+        check("record rewrite is idempotent", is_silent(h.context(root, payload(root, updated, session="derived-shapes"))))
     write(root, "hooks/g.py", "x = 2\n")
     stage(root, "hooks/g.py")
-    ctx, raw, parsed = h.context(root, payload(root, 'git commit -m "shared"', session="derived-shapes"))
-    check("derived shared reach speaks once in this call and records only derived fields",
-          "derived reach=shared oracle=new-test" in ctx and "Triage-Derived:" in raw[1] and "kind=" not in raw[1], raw)
+    ctx, raw, parsed = h.context(root, payload(root, 'git commit -m "shared"', session="norec-shapes"))
+    check("derived shared reach with no record speaks once in this call and rewrites nothing",
+          "derived reach=shared oracle=new-test" in ctx and "updatedInput" not in raw[1]
+          and "Triage-Derived" not in raw[1], raw)
 
     root = previous_root
     # --- through the dispatcher -----------------------------------------------------------------------
@@ -715,8 +731,8 @@ def main(tmp):
     ctx, raw, _ = h.context(root, payload(root, commit))
     check("a commit over an uncovered staged file prints the owed line and nothing else", ctx == owed, raw)
     ctx, raw, _ = h.context(root, payload(root, 'git commit -m "plain message"', session="sess-owed-none"))
-    check("a no-triage commit over an uncovered file rewrites and keeps the owed line",
-          NO_TRIAGE not in ctx and owed in ctx and 'Triage-Derived:' in raw[1], raw)
+    check("a no-triage commit over an uncovered file keeps the owed line and is not rewritten",
+          NO_TRIAGE not in ctx and owed in ctx and 'updatedInput' not in raw[1], raw)
     write(root, "Dungeon/b.txt", "b\n")
     stage(root, "Dungeon/b.txt")
     ctx, raw, _ = h.context(root, payload(root, commit))

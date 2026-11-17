@@ -635,9 +635,10 @@ def route(rows, subjects):
     return routed, unrouted, ambiguous
 
 
-def independent_verdicts(rows, subjects, out):
+def independent_verdicts(rows, subjects, out, root=None):
     """Seam 1 over the original evidence; a quote citing a subject file resolves against that file's snapshot
-    bytes, written beside `out` where the author cannot reach them."""
+    bytes, written beside `out` where the author cannot reach them. A row no subject holds is checked in
+    `root`, the checkout under review (this tool's own when none is given)."""
     snap_dir = Path(str(out) + ".snap")
     artifacts = {}
 
@@ -679,7 +680,7 @@ def independent_verdicts(rows, subjects, out):
         if not row['evidence']:
             continue
         subject = subjects[routed[row["id"]]] if row["id"] in routed else None
-        report = verify_claims.check_claims([row], root=subject.root if subject else REPO)
+        report = verify_claims.check_claims([row], root=subject.root if subject else root or REPO)
         errors.extend(report["errors"])
         verdicts.extend(dict(id=key, **value) for key, value in report["verdicts"].items())
     result = {"status": "complete" if not errors else "failed", "verdicts": verdicts, "errors": errors}
@@ -971,7 +972,7 @@ def _expanded_job(job, views):
     return copy
 
 
-def run(findings, jobs, out, *, independent=None, original=None):
+def run(findings, jobs, out, *, independent=None, original=None, root=None):
     subjects = [job["subject"] for job in jobs]
     views = (load_rows(findings) if findings is not None else
              _validated([row for job in jobs for row in job['rows']], 'fold prompts'))
@@ -1005,7 +1006,7 @@ def run(findings, jobs, out, *, independent=None, original=None):
     # Host receipts over a consolidated row cannot verify its independently falsifiable members.
     if any(by_source.get(row['id'], row['id']) != row['id'] for row in rows):
         independent = None
-    independent, verdicts_path = independent if independent is not None else independent_verdicts(rows, subjects, out)
+    independent, verdicts_path = independent if independent is not None else independent_verdicts(rows, subjects, out, root)
     if set(independent) != {row['id'] for row in rows if row.get('evidence')}:
         raise Unusable('host independent verdicts do not cover this fold')
     unrouted = [i for i in unrouted if i not in filed]

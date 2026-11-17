@@ -33,7 +33,8 @@ class RepoCase(unittest.TestCase):
         self.git('config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*')
         self.stamp = self.repo / 'stamp.json'
         self.env = {'HARNESS_TEST_STAMP': str(self.stamp), 'HARNESS_NO_PASS_CACHE': '1',
-                    'HARNESS_SLOT_DIR': str(self.repo / 'slots')}
+                    'HARNESS_SLOT_DIR': str(self.repo / 'slots'),
+                    'HARNESS_MACHINE_ROOT': str(self.repo / 'slots'), 'HARNESS_SLOT_BUDGET': ''}
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, self.env).start()
         os.environ.pop('CLAUDE_CODE_SESSION_ID', None)  # a proof's close never waits on the live session's dispatches

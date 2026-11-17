@@ -16,8 +16,9 @@ Exemptions, each judged on the resolved target and never on the command's wordin
 - A recursive delete whose every target is a regenerable cache inside the project, a path below the
   system temp directory holding no git repository, this session's own `.claude/scratch/<session id>`
   output, a pushed regenerable clone, a scratch folder holding no git repository and no registered
-  worktree, a retired worktree (nothing git lacks, every commit on a remote; its ignored files go
-  only when this session created it), or a `NAME=$(mktemp -d)` variable the same command owns.
+  worktree, a folder a proof planted under `.claude/tmp` (`is_proof_plant`, holding no git repository; the owner's loose files
+  there stay protected), a retired worktree (nothing git lacks, every commit on a remote; its ignored
+  files go only when this session created it), or a `NAME=$(mktemp -d)` variable the same command owns.
   Any chained second delete, glob in a directory part, `~`, `%` or unresolvable target disqualifies it, as
   does a target a live peer session works in, or a scratch target that is or holds another session's id folder.
 - A forced `rm` whose every target is a literal path proven ABSENT inside this project's
@@ -39,8 +40,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _command_text import executable_text, executable_spans, command_words, _REDIRECTION  # noqa: E402
-from _regenerable_clone import (empty_leftover, is_regenerable_clone, is_retired_worktree,  # noqa: E402
-                                lossless_orphan_worktree, session_created_worktree)
+from _regenerable_clone import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
+                                is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
+                                session_created_worktree)
 from _git_commit import literal_assignments, expand_literal, resolve_cd  # noqa: E402
 
 
@@ -228,11 +230,26 @@ def _strip_double(s: str, i: int) -> tuple[str, int]:
     return " ".join(kept), i + 1
 
 
+_git_memo: dict | None = None  # one `check_bash_command` call's git answers, so each of its targets reuses them
+
+
+def _memoized(key, compute):
+    if _git_memo is None:
+        return compute()
+    if key not in _git_memo:
+        _git_memo[key] = compute()
+    return _git_memo[key]
+
+
 def _registered_worktrees() -> list[str]:
     """Normalized paths of the project's registered worktrees; an unreadable list holds the project root,
     so every scratch target counts as holding one and the delete stays denied."""
-    import subprocess
     root = _project_root()
+    return _memoized(('worktrees', root), lambda: _list_registered_worktrees(root))
+
+
+def _list_registered_worktrees(root: str) -> list[str]:
+    import subprocess
     try:
         out = subprocess.run(['git', '-C', root, 'worktree', 'list', '--porcelain'], capture_output=True,
                              text=True, timeout=20)
@@ -243,7 +260,7 @@ def _registered_worktrees() -> list[str]:
     return [_norm(line[len('worktree '):]) for line in out.stdout.splitlines() if line.startswith('worktree ')]
 
 
-_ANY_SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+_ANY_SESSION_ID = ANY_SESSION_ID
 
 
 def _peer_session_folder(target: str, transcript_path: str | None) -> str | None:
@@ -308,19 +325,33 @@ def _removable_scratch_entry(token: str, target: str, cwd: str | None, transcrip
 def _scratch_bases(root: str, cwd: str | None) -> list[str]:
     """The checkouts whose `.claude/scratch` this delete may judge: the project root, plus the git toplevel
     of `cwd` when that toplevel is a registered linked worktree (its `.git` is a file) of this repository
-    (a delegate removing its own scratch). An unreadable toplevel or an unregistered checkout adds nothing."""
+    (a delegate removing its own scratch). An unreadable toplevel or an unregistered checkout adds nothing. A
+    toplevel that is the project root is already the first base, so the registered-worktree list (a git process that
+    stats every registered worktree) is read only for a different one."""
     bases = [root]
     if cwd and os.path.isdir(cwd):
-        import subprocess
-        try:
-            out = subprocess.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], capture_output=True,
-                                 text=True, timeout=20)
-        except (OSError, subprocess.SubprocessError):
-            return bases
-        top = out.stdout.strip() if out.returncode == 0 else ''
-        if top and os.path.isfile(os.path.join(top, '.git')) and _norm(top) in _registered_worktrees():
+        top = _memoized(('toplevel', cwd), lambda: _git_toplevel(cwd))
+        if top and _norm(top) != _norm(root) and os.path.isfile(os.path.join(top, '.git')) \
+                and _norm(top) in _registered_worktrees():
             bases.append(top)
     return bases
+
+
+def _git_toplevel(cwd: str) -> str:
+    import subprocess
+    try:
+        out = subprocess.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], capture_output=True,
+                             text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return ''
+    return out.stdout.strip() if out.returncode == 0 else ''
+
+
+def _under_a_scratch_folder(path: str) -> bool:
+    """`path` sits below some `.claude/scratch`: the only place a base `_scratch_bases` names can match, so a
+    target elsewhere skips the git call that finds the cwd's toplevel."""
+    parts = path.replace('\\', '/').split('/')
+    return any(parts[i:i + 2] == ['.claude', 'scratch'] and i + 2 < len(parts) for i in range(len(parts) - 2))
 
 
 def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | None = None,
@@ -339,8 +370,9 @@ def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | N
         return False
     if is_regenerable_clone(token, cwd or root, root):
         return True
-    if any(_strictly_under(_norm(target), _norm(os.path.join(base, '.claude', 'scratch')))
-           for base in _scratch_bases(root, cwd)):
+    if _under_a_scratch_folder(_norm(target)) and any(
+            _strictly_under(_norm(target), _norm(os.path.join(base, '.claude', 'scratch')))
+            for base in _scratch_bases(root, cwd)):
         if empty_leftover(_norm(target)):
             return True
         if _UNSAFE_PATH_CHARS.search(token):
@@ -621,6 +653,13 @@ def _is_regenerable_or_scratch(path: str) -> bool:
             return False
         root = _project_root()
         return is_regenerable_clone(path, root, root)
+    if lowered[:2] == [".claude", "tmp"]:
+        if len(parts) < 3 or not is_proof_plant(parts[2]):
+            return False
+        plant = path
+        for _ in range(len(parts) - 3):
+            plant = os.path.dirname(plant)
+        return not _holds_git(plant)
     if lowered[:2] in ([".claude", ".cache"], [".claude", "logs"]) or lowered[0] == ".godot":
         return True
     return any(p in _CACHE_SEGMENTS for p in lowered)
@@ -726,6 +765,15 @@ def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> st
 def check_bash_command(command: str, cwd: str | None = None,
                        transcript_path: str | None = None) -> tuple[bool, str]:
     """Check bash command for dangerous patterns. Returns (blocked, message)."""
+    global _git_memo
+    _git_memo = {}
+    try:
+        return _check_bash_command(command, cwd, transcript_path)
+    finally:
+        _git_memo = None
+
+
+def _check_bash_command(command: str, cwd: str | None, transcript_path: str | None) -> tuple[bool, str]:
     # A heredoc body is data handed to another program, not something this command runs --
     # the same reason quoted spans blank above. Writing a script or a prompt that MENTIONS a
     # recursive delete was denied repeatedly while no delete was ever going to execute.

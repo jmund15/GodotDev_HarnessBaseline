@@ -21,7 +21,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 ## condensed
 
 - Bounded reads cover the focused span or, together, every required line of a must-read subject. Search logs for error markers. Extract transcript evidence deterministically. Read catalogs with an accessor (`kfm.py`, `lens.py`, grep for the family manifest) through it. Copyable bulk extraction → `mcp__ai-worker__read_files`, focused or derived reads stay direct (CLAUDE.core.md §9).
-- Single-flight concurrency (only when your dispatch declares concurrency; it bars single-flight tools, never `.claude/tests/` proofs), read-only-if-marked, and the return contract (named artifact plus its digest, else the final message): `guards/single_flight.json` for the concurrency bar, `dispatch.js` and `orchestration` §4 for the rest.
+- Single-flight concurrency (only when your dispatch declares concurrency; it bars single-flight tools, never `.claude/tests/` proofs) and the return contract (named artifact plus its digest, else the final message): `guards/single_flight.json` for the concurrency bar, `orchestration` §4 for the return.
 - A rail that conflicts with your brief is reported, never silently resolved: orchestration §4.
 - Verbatim quoting; inference kept in its own labeled section: orchestration §4.
 - Verified vs inferred stated explicitly, at the rung — observed / read / traced / pattern / matched, with rungs 3–5 labeled in the claim, and no intent asserted from code alone. The rung grades evidence, not tool choice: `reference/claim_confidence.md`.

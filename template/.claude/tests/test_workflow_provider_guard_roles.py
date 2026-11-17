@@ -6,7 +6,10 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _planted_checkout import enter_planted_checkout
 from _transport_fixture import hook_env
+
+enter_planted_checkout()  # a payload with no cwd makes the hook ask git about the working directory
 
 HOOK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     "hooks", "workflow_provider_guard.py")

@@ -903,7 +903,8 @@ def _observations(results):
 def _stored_observations():
     runner = _proof_runner()
     rows = []
-    for path in (runner.runs_path(), runner.passes_path()):
+    store = Path(runner.pass_store_dir())
+    for path in [runner.runs_path()] + (sorted(store.glob("*.json")) if store.is_dir() else []):
         try:
             doc = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, ValueError):

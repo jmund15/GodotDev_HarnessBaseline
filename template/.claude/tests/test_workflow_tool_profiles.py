@@ -232,10 +232,9 @@ for path in sorted(glob.glob(os.path.join(WF, "*.js"))):
     text = open(path, encoding="utf-8").read()
     if "agent(" in text and os.path.basename(path) not in RETIRED:
         sites.append((os.path.basename(path), text))
-# The engine list is enumerated from git, not hand-counted: a new engine should not force an edit here.
-tracked = [os.path.basename(f) for f in subprocess.check_output(
-    ["git", "-C", os.path.dirname(CLAUDE), "ls-files", "--", ".claude/workflows"], text=True).splitlines()
-    if f.endswith(".js")]
+# The engine list is enumerated from the folder, not hand-counted: a new engine should not force an edit here.
+from _walk_files import walk_files  # noqa: E402
+tracked = [os.path.basename(f) for f in walk_files(os.path.dirname(CLAUDE), ".claude/workflows", (".js",))]
 unlisted = [n for n in tracked if os.path.isfile(os.path.join(WF, n)) and n not in RETIRED
             and n not in {name for name, _ in sites}
             and "agent(" in open(os.path.join(WF, n), encoding="utf-8").read()]

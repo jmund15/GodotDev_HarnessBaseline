@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Executed review-preparation conformance cases."""
+import atexit
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +18,13 @@ import lens_briefs
 import extract_numbers
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_extract_numbers import mkrepo, write, _rm
+
+# Every repository here is planted in temp (`mkrepo`, and the child JS proof plants its own), so the process starts in
+# an empty temp folder: no git command runs with this checkout as its directory.
+_HERE = Path.cwd()
+_CWD = tempfile.mkdtemp(prefix='conformance_j4_cwd_')
+os.chdir(_CWD)
+atexit.register(lambda: (os.chdir(_HERE), shutil.rmtree(_CWD, ignore_errors=True)))
 
 
 class ReviewPreparation(unittest.TestCase):

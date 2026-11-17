@@ -17,7 +17,9 @@ def process(pid):
         "winpid=%d " % pid if os.name == "nt" else "") + "pid=%d" % pid
 
 
-with tempfile.TemporaryDirectory(prefix="rearm_chain_test_") as temp:
+# The proof's verdict is made inside the block; Windows refuses to remove a root some process still holds (a scanner,
+# a straggling child), and that scratch is regenerable, so a cleanup refusal never turns a passed proof red.
+with tempfile.TemporaryDirectory(prefix="rearm_chain_test_", ignore_cleanup_errors=True) as temp:
     root = Path(temp)
     state = root / "state"
     state.mkdir()
@@ -32,8 +34,10 @@ with tempfile.TemporaryDirectory(prefix="rearm_chain_test_") as temp:
     transcript.write_bytes(b"x" * (9 * 1024 * 1024))
     long_payload = {"session_id": SID, "transcript_path": str(transcript),
                     "prompt": "<task-notification><status>killed</status></task-notification>"}
+    # The chain's git-state member asks git about the working directory: a repository of its own, not this checkout.
+    subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True, stdin=subprocess.DEVNULL)
     long_run = subprocess.run([sys.executable, str(DISPATCH)], input=json.dumps(long_payload),
-                              text=True, capture_output=True, env=env, timeout=40)
+                              text=True, capture_output=True, env=env, timeout=40, cwd=str(root))
     if str(record) not in long_run.stdout:
         raise AssertionError("registry survives a transcript longer than 8 MiB: %s" % long_run.stderr)
     print("PASS registry survives a transcript longer than 8 MiB")

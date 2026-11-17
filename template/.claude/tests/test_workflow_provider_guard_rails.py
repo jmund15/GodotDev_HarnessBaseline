@@ -21,7 +21,10 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from _planted_checkout import enter_planted_checkout  # noqa: E402
 from _transport_fixture import planted_mcp_workdir  # noqa: E402
+
+enter_planted_checkout()  # a payload with no cwd makes the hook ask git about the working directory
 
 os.environ["SC_WORKDIR"] = planted_mcp_workdir()
 spec = importlib.util.spec_from_file_location("wpg", os.path.join(HERE, "..", "hooks", "workflow_provider_guard.py"))

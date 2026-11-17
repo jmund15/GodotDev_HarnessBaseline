@@ -5,7 +5,11 @@ The creating `git worktree add` must be a Bash call in the session transcript (t
 real transcript); the same command in prose, or no creation at all, is denied as not retired. The guard
 reads no reply, so a transcript answer grants nothing.
 
-    python3 .claude/tests/test_pattern_enforcer_own_worktree.py
+    python3 .claude/tests/test_pattern_enforcer_own_worktree.py          # part 1 of 4
+    python3 .claude/tests/test_pattern_enforcer_own_worktree_part2.py    # parts 2-4 likewise; the runner runs all four
+
+Each case spends its time spawning the guard's git calls (~3-4 s a verdict, one per subcase), so the cases are
+independent and wait only on the machine: they run as four parts beside each other (~155 s as one process).
 """
 import json
 import os
@@ -34,19 +38,23 @@ class OwnWorktree(unittest.TestCase):
         self.root = Path(self.tmp.name) / "repo"
         self.root.mkdir()
         git(self.root, "init", "-q", "-b", "main")
-        (self.root / ".gitignore").write_text(".claude/scratch/\n", encoding="utf-8")
+        # `notes/` is ignored work the guard cannot call regenerable: not a cache, not listed by the project,
+        # not scratch output (CLAUDE.core.md §Shell Discipline, Destructive operations).
+        (self.root / ".gitignore").write_text(".claude/scratch/\nnotes/\n", encoding="utf-8")
         git(self.root, "add", ".gitignore")
         git(self.root, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init")
-        remote = Path(self.tmp.name) / "origin.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, capture_output=True)
-        git(self.root, "remote", "add", "origin", str(remote))
-        git(self.root, "push", "-q", "-u", "origin", "main")
+        # What a push to origin leaves in this repo, without the bare repo and the pack transfer (~1 s each case):
+        # the remote, its tracking ref and main's upstream. Every guard reads only these local refs.
+        git(self.root, "remote", "add", "origin", str(Path(self.tmp.name) / "origin.git"))
+        git(self.root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        git(self.root, "config", "branch.main.remote", "origin")
+        git(self.root, "config", "branch.main.merge", "refs/heads/main")
         # A file's mtime lags the wall clock by up to a kernel tick (~4-8 ms on Linux); the harness stamps a call
         # well before its shell creates anything, so the planted call starts a margin ahead of the add.
         self.started = (datetime.now(timezone.utc) - timedelta(milliseconds=100)).isoformat()
         git(self.root, "worktree", "add", "-q", "-b", "scratch/mine", ".claude/worktrees/mine", "HEAD")
         self.finished = datetime.now(timezone.utc).isoformat()
-        evidence = self.root / ".claude/worktrees/mine/.claude/scratch/evidence.txt"
+        evidence = self.root / ".claude/worktrees/mine/notes/evidence.txt"
         evidence.parent.mkdir(parents=True)
         evidence.write_text("a job's own scratch\n", encoding="utf-8")
 
@@ -272,7 +280,7 @@ class OwnWorktree(unittest.TestCase):
         rows = [self.created_row(), self.result_row()]
         git(self.root, 'worktree', 'remove', '--force', '.claude/worktrees/mine')
         git(self.root, 'worktree', 'add', '-q', '-b', 'peer-recreated', '.claude/worktrees/mine', 'HEAD')
-        evidence = self.root / '.claude/worktrees/mine/.claude/scratch/peer.txt'
+        evidence = self.root / '.claude/worktrees/mine/notes/peer.txt'
         evidence.parent.mkdir(parents=True)
         evidence.write_text('peer evidence', encoding='utf-8')
         self.assertTrue(self.blocked(rows))
@@ -320,7 +328,7 @@ class OwnWorktree(unittest.TestCase):
     def test_clone_with_ignored_evidence_is_not_recoverable(self):
         clone = self.root / '.claude/scratch/probe'
         git(self.root, 'clone', '-q', str(self.root), str(clone))
-        evidence = clone / '.claude/scratch/evidence'
+        evidence = clone / 'notes/evidence'
         evidence.parent.mkdir(parents=True)
         evidence.write_text('ignored evidence', encoding='utf-8')
         with patch.dict(os.environ, CLAUDE_PROJECT_DIR=str(self.root)), \
@@ -360,9 +368,36 @@ class OwnWorktree(unittest.TestCase):
             {"type": "text", "text": "git worktree add -q -b scratch/mine .claude/worktrees/mine HEAD"}]}}
         self.assertTrue(self.blocked([prose]))
 
+    def test_scratch_output_goes_with_any_pushed_worktree_but_not_a_session_folder(self):
+        # CLAUDE.core.md §Shell Discipline: "scratch output holding no repository or session-id-named folder
+        # go[es] regardless" of ownership. The fixture's other ignored file (`notes/`) is moved out so only scratch is left.
+        wt = self.root / '.claude/worktrees/mine'
+        (wt / 'notes/evidence.txt').unlink()
+        scratch = wt / '.claude/scratch'
+        scratch.mkdir(parents=True, exist_ok=True)
+        (scratch / 'job_output.txt').write_text('a job\'s output', encoding='utf-8')
+        self.assertFalse(self.blocked([]))
+        folder = scratch / '947c1a2b-0000-4000-8000-123456789abc'
+        folder.mkdir()
+        (folder / 'record.json').write_text('{}', encoding='utf-8')
+        self.assertTrue(self.blocked([]))
+
     def test_another_sessions_worktree_stays_denied(self):
         self.assertTrue(self.blocked([]))
 
 
+PARTS = 4
+
+
+def main(part=1):
+    """Part `part` of PARTS: the cases split round-robin by name. The two slowest (the loop and hidden-add cases,
+    ~40-50 s each) land in different parts."""
+    for other in range(2, PARTS + 1):  # a deleted part file would silently drop its cases
+        assert (HERE / ("test_pattern_enforcer_own_worktree_part%d.py" % other)).is_file(), "missing part %d" % other
+    cases = [OwnWorktree(name) for name in unittest.TestLoader().getTestCaseNames(OwnWorktree)]
+    suite = unittest.TestSuite(cases[part - 1::PARTS])
+    return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    sys.exit(main())

@@ -60,6 +60,20 @@ function Invoke-StaticGuards {
             $out.Details += (($text | Out-String).TrimEnd())
             $out.Details += '``````'
         }
+        # The gate's own domain map: a test namespace it maps to no domain runs in no scoped gate, and the harness
+        # close does not select a proof for a Tests/ path. verify.ps1 -SelfTest owns the check.
+        $selfTest = Join-Path $PSScriptRoot 'verify.ps1'
+        if ((Test-Path $selfTest) -and (Test-Path (Join-Path $Repo '.claude/scripts/gate_domain_map.json'))) {
+            $text = & pwsh -NoProfile -File $selfTest -SelfTest -Repo $Repo 2>&1
+            if ($LASTEXITCODE -eq 0) { $out.Results += 'domain_map=OK' }
+            else {
+                $out.Results += 'domain_map=FAIL'
+                $out.Blocked += 'domain_map'
+                $out.Details += "## Guard domain_map (verify.ps1 -SelfTest exit $LASTEXITCODE)`n`n``````"
+                $out.Details += ((@($text) | Where-Object { $_ -match 'FAIL' } | Out-String).TrimEnd())
+                $out.Details += '``````'
+            }
+        }
     } finally { Pop-Location }
     return $out
 }

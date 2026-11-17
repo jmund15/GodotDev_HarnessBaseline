@@ -60,6 +60,10 @@ def case_exits():
     os._exit(3)
 
 
+def case_fails_with_log():
+    raise AssertionError("roster did not end: the reason\nGRID START\nGRID COMPLETE")
+
+
 class PlantedUnit(unittest.TestCase):
     def setUp(self):
         self.ready = True
@@ -122,8 +126,51 @@ def sections_proof():
     return problems
 
 
+def _run_only(only, runner_slot=None):
+    saved = {k: os.environ.pop(k, None) for k in ("HARNESS_CASES_ONLY", "HARNESS_SLOT_DIR")}
+    os.environ["HARNESS_CASES_ONLY"] = only
+    if runner_slot:
+        os.environ["HARNESS_SLOT_DIR"] = runner_slot
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            rc = run_cases([case_fails, case_reads_env, case_sets_env], jobs=2)
+    finally:
+        for key, value in saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value
+    return rc, out.getvalue()
+
+
+def only_proof():
+    """`HARNESS_CASES_ONLY` runs the cases it names and no other, says the run is partial, fails when it names none,
+    and is ignored under the harness runner, whose pass must cover every case."""
+    problems = []
+    rc, text = _run_only("reads_env,sets_env")
+    if rc != 0 or "ok case_reads_env" not in text or "ok case_sets_env" not in text or "case_fails" in text:
+        problems.append("named cases alone: rc=%s %r" % (rc, text))
+    elif "partial: 2 of 3 cases" not in text:
+        problems.append("the count line does not say the run is partial: %r" % text)
+    rc, text = _run_only("fails")
+    if rc != 1 or "FAIL case_fails" not in text:
+        problems.append("a named failing case fails the run: rc=%s %r" % (rc, text))
+    rc, text = _run_only("no_such_case")
+    if rc != 1 or "case_reads_env" not in text:
+        problems.append("a filter matching no case fails and lists the names: rc=%s %r" % (rc, text))
+    rc, text = _run_only("reads_env", runner_slot=tempfile.mkdtemp())
+    if rc != 1 or "FAIL case_fails" not in text or "partial" in text:
+        problems.append("under the runner every case runs: rc=%s %r" % (rc, text))
+    ok = not problems
+    print("%-4s HARNESS_CASES_ONLY runs the named cases alone, outside the runner only %s" % ("ok" if ok else "FAIL", problems))
+    return problems
+
+
 def main():
-    failures = sections_proof()
+    # This fixture proves available parallel capacity, independent of live machine occupancy.
+    pool_root = tempfile.mkdtemp(prefix='case_pool_budget_')
+    os.environ.update(HARNESS_SLOT_DIR=pool_root, HARNESS_MACHINE_ROOT=pool_root, HARNESS_MACHINE_SLOTS='6')
+    failures = sections_proof() + only_proof()
     spans = tempfile.mkdtemp()
     os.environ["POOL_SPANS"] = spans
     rc = run_cases([case_slow_a, case_slow_b, case_slow_c, case_slow_d, case_sets_env, case_reads_env], jobs=6)
@@ -141,6 +188,14 @@ def main():
         print("%-4s %s fails the run and is the only case named FAIL: %s" % ("ok" if ok else "FAIL", bad.__name__, named))
         if not ok:
             failures.append("%s: rc=%s named=%s" % (bad.__name__, rc, named))
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = run_cases([case_fails_with_log], jobs=1)
+    line = next((l for l in out.getvalue().splitlines() if l.startswith("FAIL ")), "")
+    ok = rc == 1 and "the reason" in line and "GRID COMPLETE" not in line
+    print("%-4s a multi-line failure names its reason line, never only the log tail that ends it: %r" % ("ok" if ok else "FAIL", line))
+    if not ok:
+        failures.append("multi-line failure line: %r" % line)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         rc = run_cases(unittest_cases(PlantedUnit), jobs=2)

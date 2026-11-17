@@ -75,7 +75,9 @@ class DiscardLosesNothing(unittest.TestCase):
         transcript.write_text('\n'.join(json.dumps(r) for r in rows), encoding='utf-8')
         payload = {'tool_name': 'Bash', 'cwd': str(self.root), 'session_id': 'owner-discard',
                    'transcript_path': str(transcript), 'tool_input': {'command': command}}
-        env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+        # The repository-local GIT_* variables stay out; GIT_CONFIG_* stays in, so the hook hashes under the config
+        # this proof's own `git` calls ran under (a runner has no system `core.autocrlf`; a session may).
+        env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_') or k.startswith('GIT_CONFIG_')}
         p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
                            capture_output=True, text=True, env=env, timeout=90)
         self.assertIn(p.returncode, (0, 2), p.stderr)

@@ -109,7 +109,7 @@ def shared_writer_cases(tmp, cases):
                   rc != 0 and real_open(file, "rb").read() == before
                   and sorted(os.listdir(tmp)) == sorted(["o.jsonl", "history.jsonl", "cap.jsonl",
                                                        "concurrent_20.jsonl", "concurrent_5.jsonl", "atomic.jsonl",
-                                                       "removal.jsonl"])))
+                                                       "removal.jsonl", "repeat.jsonl"])))
     with patch.object(module, "locked", side_effect=TimeoutError("planted lock timeout"), create=True):
         rc = module.main(["record", *ROW, "--file", file])
     cases.append(("lock timeout exits nonzero without an unlocked write",
@@ -208,6 +208,30 @@ def main():
                       and "rules/x.md.bak" not in got))
         rc, out, _ = run(h, "history", "--target", "rules/none.md")
         cases.append(("history of an unseen target prints nothing and exits 0", rc == 0 and out.strip() == ""))
+
+        # A repeat of a recorded choice is named at the record call, where the agent logs the slip: the earlier
+        # `recorded` rows on the same target that no `applied` row has closed since.
+        r = os.path.join(tmp, "repeat.jsonl")
+        base = ["--session", "s1", "--recommended", "apply", "--reason", "first slip"]
+        rec = ["--outcome", "recorded"]
+        _, out, _ = run(r, "record", "--date", "2026-10-18", "--target", "hooks/a.py", "--signal", "idled beside a gate",
+                        *base, *rec)
+        cases.append(("a first recorded row on a target names no repeat", "repeat" not in out))
+        _, out, _ = run(r, "record", "--date", "2026-10-28", "--target", "hooks/b.py", "--signal", "other", *base, *rec)
+        cases.append(("a recorded row on another target names no repeat", "repeat" not in out))
+        rc, out, _ = run(r, "record", "--date", "2026-11-10", "--target", "hooks/a.py;rules/z.md#Top",
+                         "--signal", "idled again", *base, *rec)
+        cases.append(("a second recorded row on the target names the earlier open row",
+                      rc == 0 and "repeat" in out and "2026-10-18" in out and "idled beside a gate" in out
+                      and "2026-10-28" not in out))
+        run(r, "record", "--date", "2026-11-11", "--target", "hooks/a.py", "--signal", "fixed", *base,
+            "--outcome", "applied", "--fix", "hook")
+        _, out, _ = run(r, "record", "--date", "2026-11-12", "--target", "hooks/a.py", "--signal", "after landing",
+                        *base, *rec)
+        cases.append(("an applied row closes the earlier recorded rows", "repeat" not in out))
+        _, out, _ = run(r, "record", "--date", "2026-11-13", "--target", "hooks/a.py", "--signal", "declined now",
+                        "--session", "s1", "--recommended", "apply", "--reason", "no", "--outcome", "declined")
+        cases.append(("a declined row prints no repeat", "repeat" not in out))
 
         g = os.path.join(tmp, "cap.jsonl")
         for i in range(7):

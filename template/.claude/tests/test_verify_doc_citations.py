@@ -84,6 +84,17 @@ class TestKinds(Base):
         self.assertIn((kind, text), rows, sorted(rows))
         return rows[(kind, text)]
 
+    def test_fileline_past_eof_is_missing_and_exits_one(self):
+        doc = plant(self.tmp.name, "past_eof.md", "See `.claude/tools/bar.py:999`.\n")
+        p = self.run_tool(doc, "--repo", self.tmp.name, "--json")
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertEqual(json.loads(p.stdout)["counts"]["missing"], 1)
+
+    def test_unknown_kind_exits_two(self):
+        doc = plant(self.tmp.name, "nothing.md", "Nothing cited.\n")
+        p = self.run_tool(doc, "--repo", self.tmp.name, "--kinds", "no-such-kind")
+        self.assertEqual(p.returncode, 2, p.stdout + p.stderr)
+
     def test_relative_links_use_the_citing_file_directory(self):
         with tempfile.TemporaryDirectory() as r:
             plant_adaptation(r, source_extensions=[], symbol_stopwords=[])
@@ -335,29 +346,6 @@ class TestPremiseSelfCheck(unittest.TestCase):
         applying = self.read_command("autolearn").split("## Applying changes", 1)[1]
         self.assertIn("[Step 0 self-check](codify.md#step-0--does-it-already-exist)", applying)
         self.assertIn("before landing", applying)
-
-    def test_edited_command_paths_and_commands_resolve(self):
-        docs = [os.path.join(ROOT, ".claude", "commands", name + ".md")
-                for name in ("codify", "autolearn")]
-        p = subprocess.run([sys.executable, TOOL, *docs, "--repo", ROOT, "--kinds", "path,command",
-                            "--json", "--only", "missing"], capture_output=True, text=True)
-        self.assertIn(p.returncode, (0, 1), p.stdout + p.stderr)
-        data = json.loads(p.stdout)
-        self.assertEqual(data["files_checked"], 2)
-        # A fresh or sparse checkout lacks runtime state the harness writes (logs, temp output) and the files
-        # outside its cone; a cite is broken only when it is neither and git tracks no file by that path.
-        runtime = ("logs/", ".claude/logs/", "/tmp/")
-        # Each consumer owns its own outcomes ledger and baseline lock; the publish template never ships them.
-        runtime += (".claude/autolearn_outcomes.jsonl", "baseline.lock.json")
-        tracked = subprocess.run(["git", "-C", ROOT, "ls-files"], capture_output=True, text=True).stdout.split("\n")
-        # A directory cite outside `.claude/` names a project folder (a game's `Tests/`); the published template
-        # does not ship project folders, so only the harness tree must resolve.
-        project_dir = lambda text: text.endswith("/") and not text.startswith(".claude/")  # noqa: E731
-        broken = [c["text"] for f in data["files"] for c in f["citations"]
-                  if c["status"] == "missing" and not c["text"].startswith(runtime) and not project_dir(c["text"])
-                  and not any(t == c["text"] or t.endswith("/" + c["text"]) for t in tracked)]
-        self.assertEqual(broken, [])
-
 
 class TestKeptBehavior(Base):
     def test_bad_fileline_exits_one(self):

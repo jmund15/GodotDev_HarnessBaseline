@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import vault_sync
 from vault_sync import SYNC_INTERVAL_MIN, default_git_dir
 
+# Under the 120 s the registration gives the hook (settings.project.json).
 TOOL_TIMEOUT_S = 100
 
 

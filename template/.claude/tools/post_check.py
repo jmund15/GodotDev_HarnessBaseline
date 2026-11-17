@@ -559,7 +559,8 @@ def review(args, *, independent=None):
     fold_report = None
     if src.jobs:
         fold_report = fold_check.run(src.findings_path if not args.applied and (args.findings or args.sidecar_dir) else None,
-                                     src.jobs, fold_out, independent=independent, original=src.rows)
+                                     src.jobs, fold_out, independent=independent, original=src.rows,
+                                     root=Path(args.root or REPO))
         _write(fold_out + ".json", fold_report)
         failures += fold_report["failures"]
         independent = {item["id"]: item["verdict"] for item in fold_report["independentVerdicts"]}

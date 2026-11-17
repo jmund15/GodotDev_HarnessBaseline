@@ -82,6 +82,7 @@ import model_registry  # noqa: E402
 import model_tier_readout  # noqa: E402
 import session_timeline  # noqa: E402
 import sidecar_argv  # noqa: E402
+import spend_ledger  # noqa: E402
 import transcript_usage  # noqa: E402
 import watch_records  # noqa: E402
 import cli_usage  # noqa: E402
@@ -2019,7 +2020,8 @@ def collect_sidecar(ledger=SIDECAR_LEDGER, include_unlabeled=False, diagnostics=
     label. --sidecar-all surfaces them for spend audits."""
     rows = []
     claims = _task_claims()
-    for rec in _iter_jsonl_objects(ledger, diagnostics, 'sidecar-ledger'):
+    for rec in (rec for file in spend_ledger.paths(ledger)
+                for rec in _iter_jsonl_objects(file, diagnostics, 'sidecar-ledger')):
         if not rec.get('label') and not include_unlabeled:
             continue
         rec = model_registry.reprice_record(rec, ledger)

@@ -2,6 +2,7 @@
 
     python3 .claude/tests/test_conformance_j1.py
 """
+import atexit
 import hashlib
 import json
 import os
@@ -13,6 +14,11 @@ import tempfile
 import unittest
 
 CLAUDE = Path(__file__).resolve().parents[1]
+# The runner stores `behavior_report` and the CLI children read (runs, passes) are this proof's own: the live ones sit
+# under the repository's git dir, and a read there keys every pass on the whole repository state.
+_STAMP_DIR = tempfile.mkdtemp(prefix="conformance_j1_stamp_")
+atexit.register(shutil.rmtree, _STAMP_DIR, True)
+os.environ["HARNESS_TEST_STAMP"] = os.path.join(_STAMP_DIR, "harness_tests_stamp.json")
 sys.path.insert(0, str(CLAUDE / "tools"))
 sys.path.insert(0, str(CLAUDE / "tests"))
 import extract_numbers as en
@@ -319,6 +325,14 @@ class ClaimTracer(unittest.TestCase):
         report = en.behavior_report(self.repo, ["unknown.bin"])
         self.assertEqual(report["status"], "uncovered")
 
+    def test_the_runner_stores_the_report_reads_are_planted(self):
+        """`behavior_report` reads recorded observations from the runner's run and pass stores. The live ones sit
+        under the repository's git dir and change every close, so this proof plants its own."""
+        runner = en._proof_runner()
+        temp = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
+        for path in (runner.runs_path(), runner.passes_path(), runner.pass_store_dir()):
+            self.assertTrue(os.path.normcase(os.path.realpath(path)).startswith(temp + os.sep), path)
+
     def test_existing_case_observation_store_not_file_level_cache(self):
         write(str(self.repo), DOC, SENTENCE + "\n")
         self.rows(self.row(section="__module__"))
@@ -326,7 +340,7 @@ class ClaimTracer(unittest.TestCase):
         previous = runner.STAMP_PATH
         runner.STAMP_PATH = str(self.repo / ".claude/logs/harness_tests_stamp.json")
         try:
-            passes = Path(runner._beside_stamp(runner.PASSES_PATH, "harness_proof_passes.json"))
+            passes = Path(runner._store_file(runner.pass_store_dir(), PROOF))
             passes.parent.mkdir(parents=True, exist_ok=True)
             passes.write_text(json.dumps({PROOF: {"key": "ordinary-file-pass", "ts": 1}}))
             self.assertEqual(self.report()["claims"][0]["status"], "uncovered")

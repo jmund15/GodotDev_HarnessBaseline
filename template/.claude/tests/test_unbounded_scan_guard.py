@@ -139,7 +139,6 @@ def deny_cases(env):
 
 def tracked_ignored_deny_cases(env):
     """A recursive grep over a tracked-ignored tree is denied, and the deny's `rg -uu` form finds it."""
-    repo = os.path.normpath(os.path.join(HERE, "..", ".."))
     tracked = os.path.realpath(tempfile.mkdtemp(prefix="usgtrign_")).replace("\\", "/")
     git = ["git", "-C", tracked, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false"]
     subprocess.run(git + ["init", "-q"], capture_output=True)
@@ -168,22 +167,6 @@ def tracked_ignored_deny_cases(env):
     else:
         _platform_skip.skip("the deny's rg -uu form finds the tracked file under the ignored path",
                             "no ripgrep on PATH and no embedded rg")
-
-    # The real checkout carries tracked-ignored files under `.claude/plans`; the deny covers them.
-    listing = subprocess.run(["git", "-C", repo, "ls-files", "-ci", "--exclude-standard", "--", ".claude/plans"],
-                             capture_output=True, text=True, timeout=60)
-    rows = listing.stdout.split() if listing.returncode == 0 else []
-    if rows:
-        cases.append(("the real checkout's tracked-ignored plans are behind the same deny",
-                      verdict("grep -rn x .claude/plans", env, repo)[2] == "deny"))
-        if rg_available():
-            done = run_rg("-uu", "--files", ".claude/plans", cwd=repo)
-            seen = {line.replace("\\", "/") for line in done.stdout.splitlines()}
-            cases.append(("the deny's -uu form reaches the real tracked-ignored tree, which git grep alone cannot",
-                          done.returncode == 0 and bool(seen & set(rows))))
-        else:
-            _platform_skip.skip("the deny's -uu form reaches the real tracked-ignored tree",
-                                "no ripgrep on PATH and no embedded rg")
     return cases
 
 

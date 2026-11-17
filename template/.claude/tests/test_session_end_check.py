@@ -8,6 +8,7 @@ RESUME AT line, or `--artifacts`' Phase 3 artifact check shows up as a failing c
 
     python3 .claude/tests/test_session_end_check.py
 """
+import hashlib
 import json
 import importlib.util
 from pathlib import Path
@@ -102,6 +103,18 @@ def current_predicates(stems, repo, sid, transcript):
         raise RuntimeError('fixture evaluator failure')
     return {stem: {'value': now.get(stem, False), 'predicate': 'fixture', 'basis': {}} for stem in stems}
 checker.current_predicates = current_predicates
+# The final stage's artifact checks read the repo and run tools; a fixture repo is no checkout, so the run binds
+# the session's changed paths and each check's answer to the case's PLANT_CHANGED and PLANT_CHECKS.
+import os
+plant = json.loads(os.environ.get('PLANT_CHECKS', '{}'))
+def run_check(argv, repo):
+    text = ' '.join(argv)
+    for key, (rc, out) in plant.items():
+        if key in text:
+            return rc, out
+    return 0, ''
+checker._run_check = run_check
+checker.artifact_changes = lambda repo, sid, transcript: (set(json.loads(os.environ.get('PLANT_CHANGED', '[]'))), None)
 sys.argv = [sys.argv[1]] + sys.argv[4:]
 sys.exit(checker.main())
 """
@@ -224,6 +237,32 @@ def main():
         rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_ledger])
         check("--artifacts accepts a ledger-only Phase 3 row", rc == 0,
               detail=out[-400:])
+
+        # --- an earlier baseline pull left a path unproven: the close names it and fails -------------
+        left, record = Path(tmp, "pulled.py"), Path(tmp, ".claude", "logs", "baseline_pull_proof.json")
+        left.write_text("x = 1\n", encoding="utf-8")
+        record.parent.mkdir(parents=True, exist_ok=True)
+
+        def pulled(result):
+            digest = hashlib.sha256(left.read_bytes()).hexdigest()
+            record.write_text(json.dumps({"ts": 0, "paths": {"pulled.py": {"sha": digest, "result": result}}}),
+                              encoding="utf-8")
+        pulled("red")
+        rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_hit])
+        check("--artifacts fails while a pulled path's proof is still red", rc == 1
+              and "unresolved baseline pull" in out and "pulled.py" in out, detail=out[-400:])
+        rc, out = run(["--transcript", all_path, "--resume", "--archive", archive_hit])
+        check("--resume names the unresolved pull and still exits 0", rc == 0 and "pulled.py" in out, detail=out[-400:])
+        left.write_text("x = 2\n", encoding="utf-8")
+        rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_hit])
+        check("a pulled path edited after its pull is not the pulled tree", rc == 0 and "unresolved baseline pull" not in out,
+              detail=out[-400:])
+        left.write_text("x = 1\n", encoding="utf-8")
+        pulled("green")
+        rc, out = run(["--transcript", all_path, "--artifacts", "--archive", archive_hit])
+        check("a green pulled path leaves the close clean", rc == 0 and "unresolved baseline pull" not in out,
+              detail=out[-400:])
+        record.unlink()
 
         # --- --resume --artifacts: a receipted phase whose artifact is missing moves RESUME AT ----
         rc, out = run(["--transcript", all_path, "--resume", "--artifacts", "--archive", archive_miss])
@@ -707,6 +746,92 @@ def main():
         rc, out = run(['--transcript', cur_path, '--current-inputs', 'session_audit'])
         check("--current-inputs exits 2 naming review_ledger.py uncovered",
               rc == 2 and 'retired: use review_ledger.py uncovered (session_end.md Phase 1)' in out, detail=out[-300:])
+
+    # --- shared-checkout artifacts: one line per artifact the session changed, with its check's result ---
+    def planted_runner(plant):
+        """A runner answering by the first plant key found in the joined argv; any other check passes."""
+        def runner(argv, repo):
+            text = ' '.join(argv)
+            for key, (rc, out) in plant.items():
+                if key in text:
+                    if rc == 'raise':
+                        raise OSError('fixture runner failure')
+                    return rc, out
+            return 0, ''
+        return runner
+
+    def artifact_lines(changed, plant=None, reason=None):
+        return checker.shared_artifact_lines('.', changed, reason, planted_runner(plant or {}))
+
+    def named(lines, artifact):
+        return [ln for ln in lines if artifact in ln]
+
+    lines = artifact_lines({'Assets/a.cs'})
+    check("an unrelated change prints the index line alone",
+          len(named(lines, 'index')) == 1 and not any(a in ' '.join(lines) for a in
+                                                     ('lock rows', 'model registry', 'composed settings')),
+          detail=repr(lines))
+    for path in ('.claude/settings.json', '.claude/settings.base.json', '.claude/settings.project.json',
+                 '.claude/settings.godot.json'):
+        lines = artifact_lines({path}, {'compose --check': (1, 'drift: settings.json')})
+        check("a change to %s runs the compose check and reports its failure" % path,
+              len(named(lines, 'composed settings')) == 1 and 'FAIL' in named(lines, 'composed settings')[0]
+              and 'drift' in named(lines, 'composed settings')[0], detail=repr(lines))
+    lines = artifact_lines({'.claude/settings.local.json'})
+    check("settings.local.json is not a composed artifact", not named(lines, 'composed settings'), detail=repr(lines))
+    lines = artifact_lines({'.claude/settings.json'}, {'compose --check': (0, 'no drift')})
+    check("a clean compose check prints ok", 'ok' in named(lines, 'composed settings')[0], detail=repr(lines))
+    lines = artifact_lines({'.claude/reference/external_models.json'}, {'model_registry.py': (2, 'registry invalid: x')})
+    check("a changed model registry reports its failing check",
+          len(named(lines, 'model registry')) == 1 and 'FAIL' in named(lines, 'model registry')[0], detail=repr(lines))
+    lines = artifact_lines({'.claude/reference/external_models.json'}, {'model_registry.py': (0, 'registry OK')})
+    check("a valid model registry prints ok", 'ok' in named(lines, 'model registry')[0], detail=repr(lines))
+    lines = artifact_lines({'.claude/baseline.lock.json'}, {'check --json': (0, json.dumps({'layer_closure': ['a cites b']}))})
+    check("changed lock rows with a layer-closure finding fail, naming it",
+          'FAIL' in named(lines, 'lock rows')[0] and 'layer_closure' in named(lines, 'lock rows')[0], detail=repr(lines))
+    lines = artifact_lines({'.claude/baseline.lock.json'}, {'check --json': (0, json.dumps({'results': {}, 'layer_closure': []}))})
+    check("changed lock rows with no finding print ok", 'ok' in named(lines, 'lock rows')[0], detail=repr(lines))
+    lines = artifact_lines({'.claude/baseline.lock.json'}, {'check --json': (0, 'not json')})
+    check("lock rows whose check output cannot be read are unknown, never ok",
+          'unknown' in named(lines, 'lock rows')[0] and 'ok' not in named(lines, 'lock rows')[0].split('—')[0],
+          detail=repr(lines))
+    lines = artifact_lines({'.claude/settings.json'}, {'compose --check': ('raise', '')})
+    check("a check that cannot run is unknown, never ok", 'unknown' in named(lines, 'composed settings')[0],
+          detail=repr(lines))
+    lines = artifact_lines(None, reason='transcript not found')
+    check("an unreadable session scope runs every check and says so",
+          all(named(lines, a) for a in ('index', 'lock rows', 'model registry', 'composed settings'))
+          and 'transcript not found' in ' '.join(lines), detail=repr(lines))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        planted = os.path.join(tmp, 'repo')
+        os.makedirs(planted)
+        git_env = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
+                       GIT_COMMITTER_EMAIL='t@t')
+        subprocess.run(['git', 'init', '-q'], cwd=planted, check=True, env=git_env)
+        real = checker.shared_artifact_lines(planted, set(), None)
+        check("a clean index reports ok through the real runner", 'ok' in named(real, 'index')[0], detail=repr(real))
+        Path(planted, 'staged.txt').write_text('x\n')
+        subprocess.run(['git', 'add', 'staged.txt'], cwd=planted, check=True, env=git_env)
+        real = checker.shared_artifact_lines(planted, set(), None)
+        check("a staged path fails the index line, naming it",
+              'FAIL' in named(real, 'index')[0] and 'staged.txt' in named(real, 'index')[0], detail=repr(real))
+        real = checker.shared_artifact_lines(os.path.join(tmp, 'absent'), set(), None)
+        check("an index that cannot be read is unknown", 'unknown' in named(real, 'index')[0], detail=repr(real))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        final_path = write_transcript(tmp, PARTIAL_LINES, sid=SID)
+        plant = {'compose --check': [1, 'drift: settings.json']}
+        with patch.dict(os.environ, {'PLANT_CHANGED': json.dumps(['.claude/settings.project.json']),
+                                     'PLANT_CHECKS': json.dumps(plant)}):
+            rc_final, out = run(['--transcript', final_path, '--stage', 'final'])
+        check("--stage final prints the changed artifact's line with its result",
+              'FAIL' in line_with(out, 'composed settings') and 'index' in out, detail=out[-600:])
+        with patch.dict(os.environ, {'PLANT_CHANGED': json.dumps(['.claude/settings.project.json']),
+                                     'PLANT_CHECKS': json.dumps(plant)}):
+            rc_pre, out_pre = run(['--transcript', final_path])
+        check("the default precommit stage prints no artifact line", 'composed settings' not in out_pre, detail=out_pre[-300:])
+        check("an artifact line leaves the close's exit code to its phases", rc_final == rc_pre == 1, detail=(rc_final, rc_pre))
 
     with tempfile.TemporaryDirectory() as config:
         repo_dir = os.path.join(config, 'repo')

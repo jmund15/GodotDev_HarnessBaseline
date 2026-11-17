@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 r"""pre_bash_dispatch sub-hook: repair Bash client-shell fidelity.
 
-An executing git/gh segment with a ref:path operand gains `MSYS_NO_PATHCONV=1` before
-that invocation, unless already present. Windows drive paths, URLs and quoted mentions are excluded.
-This repair does not depend on the client-version record.
+An executing git/gh segment with a ref:path operand whose text before the colon holds a slash
+(`origin/main:f`) gains `MSYS_NO_PATHCONV=1` before that invocation, unless already present. Git Bash
+(measured 2026-11-15) turns only such an operand into a path list (`origin\main;f`); `HEAD:f`, `main:f`
+and `:f` arrive intact and are left alone, because each rewrite costs a turn under auto mode, whose
+classifier gives no verdict on a call a hook changed. Windows drive paths, URLs and quoted mentions are
+excluded. This repair does not depend on the client-version record.
 
 Measured on Claude Code 2.1.270, Git Bash, win32 (2026-09-14 and 2026-09-15), inside single quotes,
 double quotes and quoted heredocs alike:
@@ -269,7 +272,7 @@ def evaluate(payload):
         if not words or words[0].replace('\\', '/').rsplit('/', 1)[-1] not in ('git', 'git.exe', 'gh', 'gh.exe'):
             continue
         if any(not word.startswith('-') and '=' not in word
-               and re.match(r'^(?![A-Za-z]:[/\\])[^:\s]*:(?!//)[^\s]+$', word) for word in words[1:]):
+               and re.match(r'^(?![A-Za-z]:[/\\])[^:\s]*/[^:\s]*:(?!//)[^\s]+$', word) for word in words[1:]):
             if 'MSYS_NO_PATHCONV=1' not in inline and (text == command or joined.count(segment) == 1):
                 replacements.append(at)
     prefixed = bool(replacements)

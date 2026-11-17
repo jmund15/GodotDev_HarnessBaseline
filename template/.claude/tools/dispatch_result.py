@@ -14,6 +14,7 @@ USAGE
     python3 .claude/tools/dispatch_result.py <workflow-run-dir | fanout-out-dir> [--out-dir DIR]
     python3 .claude/tools/dispatch_result.py check <spill.md> --block <name>=<key,key...> [--block ...]
     python3 .claude/tools/dispatch_result.py consume <workflow-run-dir | sidecar-out-dir | sidecar-record.json> --label <label> [--check-timeout S] [--brief P]
+    python3 .claude/tools/dispatch_result.py take <sidecar-out-dir | sidecar-record.json> --label <label> [--run-proofs]
 
 A workflow run dir is the Workflow result's transcript dir (it holds `journal.jsonl`). Its out dir
 is the run's spillDir, read from the sibling run record `<session>/workflows/<runId>.json`;
@@ -871,8 +872,9 @@ def main_consume(argv):
     ap.add_argument("--check-timeout", type=float, default=DEFAULT_CHECK_TIMEOUT,
                     help="seconds each check may run before it reports TIMEOUT")
     ap.add_argument("--brief", default=None, help="the brief path: required for a sidecar source, optional for a Workflow run whose record names it")
+    ap.add_argument("--root", default=None, help="the checkout the job worked in (default: this tool's own)")
     args = ap.parse_args(argv)
-    res = consume(args.source, args.label, REPO, args.check_timeout, brief=args.brief)
+    res = consume(args.source, args.label, args.root or REPO, args.check_timeout, brief=args.brief)
     if res["refused"]:
         print("refused: " + res["refused"], file=sys.stderr)
         return 2
@@ -945,10 +947,15 @@ def main(argv=None):
         return main_check(argv[1:])
     if argv and argv[0] == "consume":
         return main_consume(argv[1:])
+    if argv and argv[0] == "take":
+        import dispatch_take
+        return dispatch_take.main(argv[1:])
     ap = argparse.ArgumentParser(description="Write each dispatch job's deliverable to <outDir>/<label>.md.",
                                  epilog="Subcommands: `check <report.md> --block <name>=<fields>` checks a job's "
                                         "report blocks; `consume <out dir> --label <label>` prints a finished "
-                                        "job's digest, checks and diff. Each has its own --help.")
+                                        "job's digest, checks and diff; `take <out dir> --label <label>` prints "
+                                        "a returned author job's commits, asserts, new files and watcher state. "
+                                        "Each has its own --help.")
     ap.add_argument("dir", help="a Workflow run's transcript dir, or a sidecar fan-out out dir")
     ap.add_argument("--out-dir", default=None, help="where <label>.md lands (Workflow runs only)")
     args = ap.parse_args(argv)

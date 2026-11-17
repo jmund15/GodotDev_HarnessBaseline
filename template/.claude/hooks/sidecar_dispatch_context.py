@@ -30,8 +30,9 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
    budget-band, provider-capacity, balance, and pricing refusals remain owned by the launchers.
    A direct launch whose `-R` or `-l` value comes from a shell variable is denied: tracking
    reads those values from the command text (`reference/sidecar_dispatch.md` Procedure step 5).
-2. DOCTRINE (deny). A launch while the orchestration skill or the model ladder is not in this
-   context (a compaction clears both) is denied with each document's load route
+2. DOCTRINE (deny). A launch while the orchestration skill, a governing skill its brief or
+   artifacts name (`skill_dispatch_gate.required_skills`) or the model ladder is not in this
+   context (a compaction clears them) is denied with each document's load route
    (`model_ladder_gate.doctrine_check`): the full Read, or `model_registry.py for-role <tier>` for
    the tiers the launch's `-G <kind>` rows imply; a deny for another reason carries the same routes. Fan-out
    calls include their `--fold-*` authors (also under `--refold`) in doctrine and tier-fit checks. Hook-written
@@ -111,7 +112,7 @@ SAFE_JOB_FIELDS = frozenset({
 })
 REQUIRED_JOB_FIELDS = frozenset({"label", "promptFile", "kind"})  # and `alias` or `rows`, per `_listed_rows`
 # Auto-approval rungs. `ultra` stays out on purpose: a job at it falls to owner approval.
-SAFE_EFFORTS = frozenset(model_registry.EFFORT_ORDER[:-1]) if model_registry else frozenset()  # no registry: none auto-approves
+SAFE_EFFORTS = frozenset(model_registry.EFFORT_ORDER) - {"ultra"} if model_registry else frozenset()  # no registry: none auto-approves
 LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 NON_DISPATCHING_FANOUT_ARGS = frozenset({"--status", "--dry-run", "--help", "-h"})
 # The whole budget stays below pre_bash_dispatch.py's 75 s settings timeout;

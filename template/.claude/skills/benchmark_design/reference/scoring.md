@@ -88,7 +88,16 @@ names** rather than borrowing a neighbour's.
   fitted plan-window rate once `plan_usage_calc.py` has one; never by a plan-quota label, list price
   alone, or an estimate. `python3 .claude/tools/run_cost.py --a <incumbent runs> --b <candidate runs>` prints
   that comparison. Candidates run as a ladder in measured-cost order, cheapest first, and a rung
-  runs only after the one below it fails for that task. A recognition task starts at the fan-out tier;
+  runs only after the one below it fails for that task. `bench judge-ladder` computes the order (the
+  current rows' registry cost rank, then effort) and names each seat's next rung and its command;
+  `bench succession <task>` with no `--candidate` runs it. Every decided study (ADMIT or KEEP-INCUMBENT)
+  writes one row to `COST-FLOOR-JUDGE-STUDIES.json` beside the published JUDGE-SUCCESSION files, and that
+  record alone sets a rung's standing at the task's current instrument version: more ADMIT than KEEP
+  admits it (promote it, climb no further), more KEEP than ADMIT rejects it (the ladder climbs), and
+  **one ADMIT plus one KEEP is a tie: run one more `--new` study at that rung, and the ladder climbs only
+  if that study rejects it.** Probes flake on identical pins, so a split pair is evidence in dispute,
+  never an admission and never a rejection. A study that changed both seats, or ran at an older instrument
+  version, is listed and decides nothing. A recognition task starts at the fan-out tier;
   an architect-tier judge keeps a panel only after the cheaper row fails Admit at the descriptor's effort
   and its one retry. The self-judge audit and the exec scorer follow the same rule.
 - **Every judge pin is an exact model id, declared once.** The descriptor's `defaultPanel` names it (a

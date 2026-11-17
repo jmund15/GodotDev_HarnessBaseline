@@ -6,21 +6,28 @@ ownership from a basename. `is_retired_worktree` checks whether retirement loses
 
 A standalone scratch clone is regenerable only when all these hold:
 - the token is a literal path: no glob, variable, `~` or `..`;
-- it resolves strictly inside `<project>/.claude/scratch/`, never scratch itself;
+- it resolves strictly inside a `.claude/scratch/` of the project or one of its linked worktrees,
+  never scratch itself;
 - it has a `.git` directory and is its own top level;
 - it has one worktree, a remote, no changed, untracked or ignored files, no stash, and
   no branch or tag commit unreachable from a remote-tracking ref.
+
+A saved copy the guard can verify under the project's `.claude/scratch` makes the work regenerable
+instead: a bundle holding the commits, or a tar or patch holding the files (`_saved_copy_holds`).
 
 Missing or ambiguous evidence fails closed.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tarfile
+from collections import Counter
 from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
@@ -29,6 +36,7 @@ from _git_commit import (resolve_cd, segments, git_invocation, cd_target,
                          executable_text, literal_assignments, expand_literal)
 
 _UNSAFE_PATH_CHARS = re.compile(r"[*?\[\]{}$~%]")
+ANY_SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 # A proof running the whole hook on a loaded machine raises the bound through the environment.
 try:
     _GIT_TIMEOUT_S = int(os.environ.get("REGENERABLE_CLONE_GIT_TIMEOUT_S", "10"))
@@ -434,8 +442,264 @@ def session_created_worktree(path: str, transcript_path: str | None) -> bool:
     return False
 
 
+def _scratch_clone_path(target: Path, project_root: Path) -> bool:
+    """True when `target` lies strictly under a `.claude/scratch` of the project or of one of its linked
+    worktrees: the directories this repository's own jobs publish into."""
+    for parent in target.parents:
+        if parent.name == "scratch" and parent.parent.name == ".claude":
+            holder = parent.parent.parent
+            if _same_path(holder, project_root):
+                return True
+            return _same_path(holder.parent, project_root / ".claude" / "worktrees")
+    return False
+
+
+# Saved copies a deleting agent may leave for the guard to verify. The name carries the target's
+# directory name only to narrow candidates; every check below reads the artifact's content.
+_SAVED_COPY_SUFFIXES = (".bundle", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz",
+                        ".patch", ".diff")
+# Files at most this many path components below `.claude/scratch`: the deepest copy observed is a job's
+# `bundles/`, and a scandir walk to that depth measured 1.3 s over a 4,616-directory scratch.
+_SAVED_COPY_LEVELS = 3
+
+
+def _saved_copies(project_root: Path, stem: str, target: Path) -> list[Path]:
+    """Files under the project's `.claude/scratch` whose name carries `stem` and whose suffix is a
+    saved-copy format, never inside `target` (it dies with the delete). The name narrows candidates;
+    `_saved_copy_holds` decides on content."""
+    base = project_root / ".claude" / "scratch"
+    if not base.is_dir():
+        return []
+    needle = stem.lower()
+    found: list[Path] = []
+    level: list[tuple[Path, int]] = [(base, 0)]
+    while level:
+        nxt: list[tuple[Path, int]] = []
+        for here, depth in level:
+            try:
+                entries = list(os.scandir(here))
+            except OSError:
+                continue
+            for entry in entries:
+                path = Path(entry.path)
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name != ".git" and depth + 1 < _SAVED_COPY_LEVELS \
+                                and not _same_path(path, target):
+                            nxt.append((path, depth + 1))
+                    elif (needle in entry.name.lower() and entry.name.lower().endswith(_SAVED_COPY_SUFFIXES)
+                          and not any(_same_path(parent, target) for parent in path.parents)):
+                        found.append(path)
+                except OSError:
+                    continue
+        level = nxt
+    return found
+
+
+def _sha256(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
+def _archive_contents(path: Path) -> dict[str, str] | None:
+    """`{relative path: sha256}` for every regular file in a tar archive, with one shared top directory
+    (`pubcopy/...`) removed. None when the file is not a readable tar or holds a link or unreadable entry."""
+    try:
+        with tarfile.open(path) as archive:
+            members = [member for member in archive if member.isfile()]
+            raw = [_tar_name(member.name) for member in members]
+            tops = {name.split("/", 1)[0] for name in raw}
+            cut = next(iter(tops)) + "/" if len(tops) == 1 and all("/" in name for name in raw) else ""
+            contents: dict[str, str] = {}
+            for member, name in zip(members, raw):
+                handle = archive.extractfile(member)
+                if handle is None or not name:
+                    return None
+                contents[name[len(cut):]] = hashlib.sha256(handle.read()).hexdigest()
+        return contents
+    except (OSError, tarfile.TarError):
+        return None
+
+
+def _tar_name(name: str) -> str:
+    name = name.replace("\\", "/")
+    while name.startswith("./"):
+        name = name[2:]
+    return name.lstrip("/")
+
+
+def _patch_paths(path: Path, repo: Path) -> set[str] | None:
+    """The paths a patch touches, or None when git cannot read it."""
+    out = _git(["apply", "--numstat", "-z", str(path)], repo)
+    if out is None:
+        return None
+    return {record.split("\t")[-1] for record in out.split("\0") if record.strip()}
+
+
+def _patch_holds(path: Path, target: Path, wanted: set[str]) -> bool:
+    """True when the patch covers exactly the target's changed paths and reverses cleanly from its
+    working tree: applying it to the base commit reconstructs the target's content. The caller has
+    already required every commit to be on a remote, so the base survives the delete."""
+    return _patch_paths(path, target) == wanted and _git(["apply", "--reverse", "--check", str(path)],
+                                                         target) is not None
+
+
+def _bundle_covers(target: Path, bundle: Path, commits: list[str]) -> bool:
+    """True when the bundle verifies against `target` and every commit is at or behind one of its heads."""
+    if _git(["bundle", "verify", str(bundle)], target) is None:
+        return False
+    listing = _git(["bundle", "list-heads", str(bundle)], target)
+    heads = [line.split()[0] for line in (listing or "").splitlines() if line.split()]
+    return all(any(_git(["merge-base", "--is-ancestor", commit, head], target) is not None for head in heads)
+               for commit in commits)
+
+
+def _saved_copy_holds(target: Path, project_root: Path, deleting: Path | None = None) -> bool:
+    """True when deleting `target` loses nothing: its git state survives the delete (every ref on a remote
+    or in a bundle named for it, and for a `.git` file a repository lying outside `deleting`), and every
+    file `_losses` reports is held by a saved copy under the project's `.claude/scratch` — a tar with the
+    same files, or a patch covering exactly the target's changes that reverses cleanly from its tree. A
+    clean tree has no file loss, so its refs decide it and no file copy is needed."""
+    deleting = deleting or target
+    copies = _saved_copies(project_root, target.name, target)
+    bundles = [copy for copy in copies if copy.name.lower().endswith(".bundle")]
+    copy_is_worktree = not (target / ".git").is_dir()
+    if copy_is_worktree:
+        for flag in ("--git-dir", "--git-common-dir"):
+            found = (_git(["rev-parse", "--path-format=absolute", flag], target) or "").strip()
+            if not found or any(_same_path(Path(found), spot)
+                                or any(_same_path(parent, spot) for parent in Path(found).parents)
+                                for spot in (target, deleting)):
+                return False  # the repository holding this copy goes with the delete
+        off_remote = (_git(["rev-list", "HEAD", "--not", "--remotes"], target) or "").strip()
+        required = off_remote.split()
+    else:
+        worktrees = _git(["worktree", "list", "--porcelain"], target)
+        if worktrees is None or sum(1 for line in worktrees.splitlines()
+                                    if line.startswith("worktree ")) != 1:
+            return False  # a linked worktree's content is not in this tree's status
+        required = (_git(["rev-list", "--branches", "--tags", "--not", "--remotes"], target) or "").split()
+        stash = (_git(["rev-parse", "--verify", "-q", "refs/stash"], target) or "").strip()
+        if stash:
+            required.append(stash)
+    if required and not any(_bundle_covers(target, bundle, required) for bundle in bundles):
+        return False  # a commit no remote holds dies with the target; only a bundle saves it
+    status = _git(["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], target)
+    if status is None:
+        return False
+    wanted: dict[str, str] = {}
+    for line in _losses(status, target, patterns=_project_patterns(project_root)):
+        entry = line[3:].split(" (")[0]
+        if len(entry) > 1 and entry[0] == entry[-1] == '"' and "\\" not in entry:
+            entry = entry[1:-1]
+        path = target / entry.rstrip("/")
+        files = [path] if path.is_file() else (sorted(p for p in path.rglob("*") if p.is_file())
+                                               if path.is_dir() else [])
+        if not files:
+            return False
+        for file in files:
+            digest = None if file.is_symlink() else _sha256(file)
+            if digest is None:
+                return False
+            wanted[file.relative_to(target).as_posix()] = digest
+    if not wanted:
+        return not copy_is_worktree  # a clean checkout of another repository's worktree has no loss here
+    for copy in copies:
+        name = copy.name.lower()
+        if name.endswith(".bundle"):
+            continue
+        if name.endswith((".patch", ".diff")):
+            if _patch_holds(copy, target, set(wanted)):
+                return True
+        elif _archive_holds(copy, wanted):
+            return True
+    return False
+
+
+def _archive_holds(path: Path, wanted: dict[str, str]) -> bool:
+    contents = _archive_contents(path)
+    return contents is not None and all(contents.get(rel) == digest for rel, digest in wanted.items())
+
+
+def _bundle_holds(path: Path, head: str, repo: Path) -> bool:
+    """True when the bundle verifies against `repo` (every prerequisite is there) and lists `head`."""
+    if _git(["bundle", "verify", str(path)], repo) is None:
+        return False
+    listing = _git(["bundle", "list-heads", str(path)], repo)
+    return any(line.split()[:1] == [head] for line in (listing or "").splitlines())
+
+
+def _bundle_preserves(project_root: Path, target: Path, head: str) -> bool:
+    """True when a saved bundle named for `target` holds `head`: its commits can be restored from it."""
+    return any(_bundle_holds(copy, head, project_root)
+               for copy in _saved_copies(project_root, target.name, target)
+               if copy.name.lower().endswith(".bundle"))
+
+
+def _clean_pushed_clone(target: Path, reasons: list[str], project_root: Path | None = None,
+                        deleting: Path | None = None) -> bool:
+    """True only when `target` is a standalone clone whose deletion loses nothing: a saved copy under the
+    project's `.claude/scratch` holds everything it would lose (`_saved_copy_holds`), or it is its own top
+    level, has one worktree and a remote, and holds no changed, untracked or ignored file (beyond a
+    regenerable cache), no stash, and no branch or tag commit unreachable from a remote-tracking ref."""
+    def reject(reason):
+        reasons.append(reason)
+        return False
+
+    if project_root is not None and _saved_copy_holds(target, project_root, deleting):
+        return True
+    if not (target / ".git").is_dir():
+        return reject('target is not a standalone clone (no .git directory)')
+    top = _git(["rev-parse", "--show-toplevel"], target)
+    try:
+        if top is None or not _same_path(Path(top.strip()).resolve(strict=True), target):
+            return reject('target is not its own repository root')
+    except OSError:
+        return reject('target is not its own repository root')
+    worktrees = _git(["worktree", "list", "--porcelain"], target)
+    if worktrees is None or sum(1 for line in worktrees.splitlines() if line.startswith("worktree ")) != 1:
+        return reject('clone has linked worktrees')
+    remotes = _git(["remote"], target)
+    if not remotes or not remotes.strip():
+        if _git(["rev-list", "--all", "-n", "1"], target) != "":  # a repository with no commit has nothing to push
+            return reject('clone has no remote')
+    status = _git(["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], target)
+    if status is None:
+        return reject('cannot read clone status')
+    loss = _first_loss(status, target, project_root=project_root)
+    if loss:
+        return reject('clone has local files or changes: ' + loss)
+    if _git(["stash", "list"], target) != "":
+        return reject('clone has a stash')
+    if _git(["rev-list", "--branches", "--tags", "--not", "--remotes"], target) != "":
+        return reject('clone has commits on no remote branch')
+    return True
+
+
+def _scratch_clone_target(token: str, cwd: str, project_root: str) -> Path | None:
+    """`token` resolved to a clone directory under a project or worktree scratch, else None."""
+    if not token or _UNSAFE_PATH_CHARS.search(token):
+        return None
+    parts = [p for p in token.replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or ".." in parts:
+        return None
+    try:
+        target = Path(resolve_cd(cwd, token)).resolve(strict=True)
+        root = Path(project_root).resolve(strict=True)
+    except OSError:
+        return None
+    return target if _scratch_clone_path(target, root) else None
+
+
 def is_regenerable_clone(token: str, cwd: str, project_root: str, reasons: list[str] | None = None) -> bool:
-    """True only when `token` names a clean, fully pushed standalone clone under scratch.
+    """True only when `token` names a clean, fully pushed standalone clone under the project's
+    `.claude/scratch` or a linked worktree's `.claude/scratch` (a publish job's copy).
 
     Its status may hold only what `_first_loss` treats as regenerable, the same rule a retired
     worktree meets. If supplied, `reasons` receives the first failed condition."""
@@ -449,43 +713,14 @@ def is_regenerable_clone(token: str, cwd: str, project_root: str, reasons: list[
     parts = [p for p in token.replace("\\", "/").split("/") if p not in ("", ".")]
     if not parts or ".." in parts:
         return reject('target contains path traversal or has no path')
-    try:
-        target = Path(resolve_cd(cwd, token)).resolve(strict=True)
-        scratch = (Path(project_root) / ".claude" / "scratch").resolve(strict=True)
-    except OSError:
-        return reject('target does not exist')
-    if _same_path(target, scratch) or not any(_same_path(p, scratch) for p in target.parents):
-        return reject('target is not inside .claude/scratch')
-    if not (target / ".git").is_dir():
-        return reject('target is not a standalone clone (no .git directory)')
-
-    top = _git(["rev-parse", "--show-toplevel"], target)
-    try:
-        if top is None or not _same_path(Path(top.strip()).resolve(strict=True), target):
-            return reject('target is not its own repository root')
-    except OSError:
-        return reject('target is not its own repository root')
-
-    worktrees = _git(["worktree", "list", "--porcelain"], target)
-    if worktrees is None or sum(1 for line in worktrees.splitlines() if line.startswith("worktree ")) != 1:
-        return reject('clone has linked worktrees')
-    remotes = _git(["remote"], target)
-    if not remotes or not remotes.strip():
-        return reject('clone has no remote')
-    status = _git(["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], target)
-    if status is None:
-        return reject('cannot read clone status')
-    loss = _first_loss(status, target)
-    if loss:
-        return reject('clone has local files or changes: ' + loss)
-    if _git(["stash", "list"], target) != "":
-        return reject('clone has a stash')
-    if _git(["rev-list", "--branches", "--tags", "--not", "--remotes"], target) != "":
-        return reject('clone has commits on no remote branch')
-    return True
+    found = _scratch_clone_target(token, cwd, project_root)
+    if found is None:
+        return reject('target is not inside a .claude/scratch of the project or its worktrees')
+    return _clean_pushed_clone(found, reasons if reasons is not None else [], Path(project_root), found)
 
 
 _GENERATED_UNTRACKED_SUFFIXES = (".import",)
+_GODOT_IMPORT_TEMP = re.compile(r"\.import(?:\d+|~RF[0-9a-f]+)\.tmp$", re.I)
 _REGENERABLE_IGNORED_SEGMENTS = frozenset({".godot", "__pycache__", ".pytest_cache", ".search-index", ".cache",
                                            "TestResults"})
 _REGENERABLE_IGNORED_PAIRS = frozenset({(".claude", "cache"), (".claude", "logs")})
@@ -533,12 +768,135 @@ def _only_listed_files(path: Path, entry: str, patterns: tuple[str, ...]) -> boo
     return True
 
 
-def _regenerable_ignored(entry: str, patterns: tuple[str, ...] = (), root: Path | None = None) -> bool:
-    """A shared cache, a path the project lists, or (given `root`) an ignored directory whose every file is listed."""
+# `.claude/tmp` holds the owner's loose files (transcripts, drafts, probes) beside the folders a proof plants
+# there. Only a folder whose name a proof builds from `PROOF_PLANT_PREFIX`, a kind and `tempfile.mkdtemp`'s
+# fixed eight-character suffix is exhaust: whatever sits inside one is the proof's own fixture.
+PROOF_PLANT_PREFIX = "pe_absent_"
+_PROOF_PLANT = re.compile("^" + re.escape(PROOF_PLANT_PREFIX) + r"[a-z]+_[a-z0-9_]{8}$")
+
+
+def is_proof_plant(name: str) -> bool:
+    """True when `name`, a folder directly under a checkout's `.claude/tmp`, is one a proof planted."""
+    return bool(_PROOF_PLANT.match(name))
+
+
+def is_plant_exhaust(path: Path) -> bool:
+    """True when `path` is a proof's planted folder (`is_proof_plant` on its name) that is no link and holds no
+    `.git` entry at any depth: a repository inside one may hold commits no remote has, so it takes the
+    ordinary judgment. A folder that cannot be read is not exhaust."""
+    if not is_proof_plant(path.name) or path.is_symlink():
+        return False
+    try:
+        return not any(".git" in dirs or ".git" in files for _here, dirs, files in os.walk(path, followlinks=False))
+    except OSError:
+        return False
+
+
+def _scratch_start(parts: list[str]) -> int | None:
+    """The index just past the first `.claude/scratch` or `.claude/tmp` pair in `parts`, or None. `.claude/tmp`
+    is where a proof plants a fixture under a name unique to its run, so it is judged as a job's scratch."""
+    for index, pair in enumerate(zip(parts, parts[1:])):
+        if pair in ((".claude", "scratch"), (".claude", "tmp")):
+            return index + 2
+    return None
+
+
+def _names_no_commit(git_dir: Path) -> bool:
+    """True for a `.git` directory git cannot open (no `HEAD`) that holds no ref: no `packed-refs` and no file
+    under `refs/`, so no branch, tag or stash names a commit in it and only loose objects remain. A directory
+    that cannot be read is not judged empty."""
+    if (git_dir / "HEAD").exists() or (git_dir / "packed-refs").exists():
+        return False
+    try:
+        return not any(p.is_file() or p.is_symlink() for p in (git_dir / "refs").rglob("*"))
+    except OSError:
+        return False
+
+
+def _job_scratch(entry: str, root: Path | None = None, project_root: Path | None = None) -> str | None:
+    """Why an ignored `.claude/scratch` or `.claude/tmp` entry keeps the delete denied, or None when it is a
+    job's own output, or a folder a proof planted under `.claude/tmp` that holds no `.git` entry at any depth
+    (`is_plant_exhaust`; without `root` its name alone, and the rest of it is not judged): no link, no folder named by a session id, and no git repository except a clean, pushed
+    standalone clone (`_clean_pushed_clone`), one a saved copy under the project's `.claude/scratch`
+    holds (`_saved_copy_holds`), or a `.git` directory that names no commit (`_names_no_commit`). A session id
+    names that session's own output folder; a file only named by one (a guard's per-session state, a copied
+    fixture) is no folder. Any other repository may hold commits on no remote. Either keeps the delete
+    denied. Given `root`, the tree under the entry is read, since git reports an ignored directory as one line; a nested copy's own
+    `template/.claude/scratch` counts at any depth."""
+    parts = entry.split("/")
+    start = _scratch_start(parts)
+    if start is None:
+        return None
+
+    def named(name: str, folder: bool = True) -> str | None:
+        if name == ".git":
+            return 'holds a git repository that is not a clean pushed clone'
+        if folder and ANY_SESSION_ID.search(name):
+            return 'holds another session\'s output folder'
+        return None
+
+    if parts[start - 1] == "tmp" and start < len(parts) and is_proof_plant(parts[start]) \
+            and (root is None or is_plant_exhaust(root.joinpath(*parts[:start + 1]))):
+        return None
+    leaf_is_file = root is not None and (root / entry).is_file()
+    for index, name in enumerate(parts[start:], start):
+        reason = named(name, folder=not (leaf_is_file and index == len(parts) - 1))
+        if reason:
+            return reason
+    if root is None:
+        return None
+    top = root / entry
+    if top.is_symlink():
+        return 'is a link, so its contents cannot be judged'
+    if not top.is_dir():
+        return None
+    try:
+        for here, dirs, files in os.walk(top, followlinks=False):
+            rel = os.path.relpath(here, root).replace("\\", "/")
+            if rel.endswith(".claude/tmp"):  # a proof's planted folder is its own fixture, never walked
+                dirs[:] = [d for d in dirs if not is_plant_exhaust(Path(here) / d)]
+            if ".git" in files:
+                if project_root is not None and _saved_copy_holds(Path(here), project_root, root):
+                    dirs[:] = []
+                    continue
+                return rel + ' holds a linked worktree, not a clean pushed clone (save a copy of it under ' \
+                             '.claude/scratch named for it, then retry)'
+            if ".git" in dirs and _names_no_commit(Path(here) / ".git"):
+                dirs.remove(".git")
+            if ".git" in dirs:
+                why: list[str] = []
+                if _clean_pushed_clone(Path(here), why, project_root, root):
+                    dirs[:] = []  # a clean clone's own ignored files were judged; do not descend
+                    continue
+                return rel + ' holds a git repository that loses work: ' + (why[0] if why else 'unreadable') \
+                    + ' (save a copy of it under .claude/scratch named for it, then retry)'
+            for name, folder in [(d, True) for d in dirs] + [(f, False) for f in files]:
+                reason = named(name, folder)
+                if reason:
+                    return rel + '/' + name + ' ' + reason
+            for name in dirs:
+                if (Path(here) / name).is_symlink():
+                    return rel + '/' + name + ' is a link, so its contents cannot be judged'
+    except OSError:
+        return 'cannot read the job scratch tree'
+    return None
+
+
+def _job_scratch_regenerable(entry: str, root: Path | None = None, project_root: Path | None = None) -> bool:
+    """True only for a `.claude/scratch` or `.claude/tmp` entry whose tree loses nothing (`_job_scratch`)."""
+    return _scratch_start(entry.split("/")) is not None and _job_scratch(entry, root, project_root) is None
+
+
+def _regenerable_ignored(entry: str, patterns: tuple[str, ...] = (), root: Path | None = None,
+                         project_root: Path | None = None) -> bool:
+    """A shared cache, a Godot import temp file, a path the project lists, a job's scratch output
+    (`_job_scratch`), or (given `root`) an ignored directory whose every file is listed."""
     parts = entry.split("/")
     return (bool(_REGENERABLE_IGNORED_SEGMENTS & set(parts))
+            or bool(_GODOT_IMPORT_TEMP.search(entry))
             or any(pair in _REGENERABLE_IGNORED_PAIRS for pair in zip(parts, parts[1:]))
             or _listed(entry, patterns)
+            or _job_scratch_regenerable(entry, root, project_root)
             or (root is not None and _only_listed_files(root / entry, entry, patterns)))
 
 
@@ -567,25 +925,36 @@ def _format_losses(losses: list[str]) -> str:
     return "; ".join(losses[:_LOSS_LIST_CAP]) + (" (and %d more)" % more if more > 0 else "")
 
 
-def _losses(status: str, root: Path, allow_ignored: bool = False, patterns: tuple[str, ...] = ()) -> list[str]:
+def _losses(status: str, root: Path, allow_ignored: bool = False, patterns: tuple[str, ...] = (),
+            project_root: Path | None = None) -> list[str]:
     """Every `git status --porcelain --ignored=matching` line whose deletion loses work.
-    Untracked Godot `.import` files, ignored regenerable caches, the project's `regenerable_ignored` paths and
-    ignored directories holding no file lose nothing; `allow_ignored` (this session created the worktree) lets every ignored entry go."""
+    Untracked Godot `.import` files, a tracked file missing from the checkout (` D`: its index entry equals HEAD,
+    which `_pushed` holds), ignored regenerable caches, a job's scratch output, the project's
+    `regenerable_ignored` paths and ignored directories holding no file lose nothing; `allow_ignored` (this
+    session created the worktree) lets every ignored entry go. Given `project_root`, a nested repository a
+    saved copy under its `.claude/scratch` holds is no loss either."""
     out = []
     for line in status.splitlines():
-        entry = line[3:].rstrip("/")
+        entry = line[3:]
+        if len(entry) > 1 and entry[0] == entry[-1] == '"' and "\\" not in entry:
+            entry = entry[1:-1]  # git quotes a path holding a space; an escaped path stays quoted and blocks
+        entry = entry.rstrip("/")
         if line.startswith("?? ") and entry.endswith(_GENERATED_UNTRACKED_SUFFIXES):
             continue
-        if line.startswith("!! ") and (allow_ignored or _regenerable_ignored(entry, patterns, root)
+        if line.startswith(" D "):
+            continue
+        if line.startswith("!! ") and (allow_ignored or _regenerable_ignored(entry, patterns, root, project_root)
                                        or _holds_no_file(root / entry)):
             continue
-        out.append(line)
+        problem = _job_scratch(entry, root, project_root) if line.startswith("!! ") else None
+        out.append(line + (' (' + problem + ')' if problem else ''))
     return out
 
 
-def _first_loss(status: str, root: Path, allow_ignored: bool = False, patterns: tuple[str, ...] = ()) -> str | None:
+def _first_loss(status: str, root: Path, allow_ignored: bool = False, patterns: tuple[str, ...] = (),
+                project_root: Path | None = None) -> str | None:
     """The first line `_losses` reports, or None."""
-    return next(iter(_losses(status, root, allow_ignored, patterns)), None)
+    return next(iter(_losses(status, root, allow_ignored, patterns, project_root)), None)
 
 
 def _unstored_losses(status: str, root: Path) -> list[str]:
@@ -615,11 +984,132 @@ def _first_unstored_loss(status: str, root: Path) -> str | None:
     return next(iter(_unstored_losses(status, root)), None)
 
 
-def _pushed(repo: Path, reasons: list[str] | None = None, prefix: str = '', also: Path | None = None) -> bool:
-    """Every HEAD commit is on a remote, by hash or, for a lane landed by rebase, by patch: each
-    local-only non-merge commit's patch is on the remote's default branch. `also` is the main
-    checkout's copy of the same submodule: a worktree's submodule clone keeps its own remote refs,
-    which go stale, so a HEAD that copy sees on a remote branch is pushed."""
+# Each candidate costs one git call inside a hook's 75 s budget; every real landing observed sat within
+# 14 commits of the tip on its paths, and an older holder fails closed.
+_HISTORY_SCAN = 20
+_REAPPLY_SCAN = 8
+
+
+def _patch_lines(repo: Path, rev: str) -> tuple[Counter, Counter] | None:
+    """The added and removed lines of `rev`'s own change, or None for a merge or an unreadable diff."""
+    parents = _git(["rev-list", "--parents", "-n", "1", rev], repo)
+    if parents is None or len(parents.split()) != 2:
+        return None
+    text = _git(["diff", "--no-renames", "--no-color", "--no-ext-diff", "-U0", rev + "^", rev], repo)
+    if text is None:
+        return None
+    added, removed, in_hunk = Counter(), Counter(), False
+    for line in text.splitlines():
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif not in_hunk:
+            in_hunk = line.startswith("@@")
+        elif line.startswith("+"):
+            added[line[1:]] += 1
+        elif line.startswith("-"):
+            removed[line[1:]] += 1
+    return added, removed
+
+
+def _diff_paths(repo: Path, rev: str) -> set[str] | None:
+    """The paths `rev` changed, or None when git cannot say."""
+    out = _git(["diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", rev], repo)
+    return (set(out.split("\n")) - {""}) if out is not None else None
+
+
+def _merge_adds_nothing(repo: Path, ref: str) -> bool:
+    """True when a clean three-way merge of HEAD into `ref` yields `ref`'s own tree: the default branch
+    already carries the branch's net change."""
+    merged = _git(["merge-tree", "--write-tree", ref, "HEAD"], repo)
+    want = _git(["rev-parse", ref + "^{tree}"], repo)
+    return bool(merged and want and merged.split("\n", 1)[0].strip() == want.strip())
+
+
+def _content_held_by_history(repo: Path, ref: str, paths: list[str]) -> bool:
+    """True when a commit reachable from `ref` carries HEAD's content for every path the branch changed:
+    a squash or rebase whose state the default branch later built on."""
+    listing = _git(["rev-list", "--max-count=%d" % _HISTORY_SCAN, ref, "--", *paths], repo)
+    if listing is None:
+        return False
+    for sha in listing.split():
+        if _git(["diff", "--quiet", sha, "HEAD", "--", *paths], repo) is not None:
+            return True
+    return False
+
+
+def _reapplied(repo: Path, ref: str, commit: str) -> bool:
+    """One commit's re-application: a commit on `ref` changed the same paths with the same added and
+    removed lines, on a different base. Candidates come from the commit's new-file blobs
+    (`--find-object`), else from the changed path `ref` touched least; an unanchored commit fails
+    closed. A merge commit never qualifies."""
+    mine = _patch_lines(repo, commit)
+    paths = _diff_paths(repo, commit)
+    if mine is None or not paths:
+        return False
+    candidates: set[str] = set()
+    added = _git(["diff-tree", "--no-commit-id", "--diff-filter=A", "--name-only", "--no-renames", "-r", commit], repo)
+    for path in (added or "").splitlines():
+        blob = _git(["rev-parse", commit + ":" + path], repo)
+        if blob and blob.strip():
+            found = _git(["log", "--format=%H", "--no-color", "--find-object=" + blob.strip(), ref, "--", path], repo)
+            candidates.update((found or "").split())
+    if not candidates:
+        counts = []
+        for path in paths:
+            count = _git(["rev-list", "--count", ref, "--", path], repo)
+            if count is None or not count.strip().isdigit():
+                return False
+            counts.append((int(count), path))
+        listing = _git(["rev-list", "--max-count=%d" % _REAPPLY_SCAN, ref, "--", min(counts)[1]], repo)
+        candidates.update((listing or "").split())
+    for other in candidates:
+        if other != commit and _diff_paths(repo, other) == paths and _patch_lines(repo, other) == mine:
+            return True
+    return False
+
+
+def _commits_reapplied(repo: Path, ref: str) -> bool:
+    """True when every commit HEAD holds but `ref` does not is a re-application of a commit on `ref`."""
+    unique = _git(["rev-list", "HEAD", "--not", ref], repo)
+    if unique is None:
+        return False
+    return all(_reapplied(repo, ref, commit) for commit in unique.split())
+
+
+def _landed_on(repo: Path, ref: str) -> bool:
+    """Every HEAD commit's work is on `ref`: HEAD is reachable from it, each commit's patch is on it and none
+    is a merge (a cherry-pick or a rebased lane), or no file the branch changed since the merge base differs
+    from `ref` (a squash), or `ref` holds the work in another form: a merge of HEAD into it changes nothing
+    (`_merge_adds_nothing`), a commit on it carries HEAD's content for every changed path
+    (`_content_held_by_history`), or each of HEAD's commits is a re-application of one on `ref`
+    (`_commits_reapplied`)."""
+    if _git(["rev-list", "HEAD", "--not", ref], repo) == "":
+        return True
+    if (_git(["rev-list", "--merges", "HEAD", "--not", ref], repo) == ""
+            and _git(["rev-list", "--cherry-pick", "--right-only", "--no-merges", ref + "...HEAD"], repo) == ""):
+        return True
+    base = (_git(["merge-base", ref, "HEAD"], repo) or "").strip()
+    changed = _git(["diff", "--name-only", "--no-renames", "-z", base, "HEAD"], repo) if base else None
+    differs = _git(["diff", "--name-only", "--no-renames", "-z", ref, "HEAD"], repo)
+    if (changed is not None and differs is not None
+            and not (set(changed.split("\0")) & set(differs.split("\0"))) - {""}):
+        return True
+    paths = [path for path in (changed or "").split("\0") if path]
+    if not paths:
+        return False
+    return (_merge_adds_nothing(repo, ref)
+            or _content_held_by_history(repo, ref, paths)
+            or _commits_reapplied(repo, ref))
+
+
+def _pushed(repo: Path, reasons: list[str] | None = None, prefix: str = '', also: Path | None = None,
+            local_default: bool = False, preserved=None) -> bool:
+    """Every HEAD commit is on a remote, or its work is on the remote's default branch (`_landed_on`). `also`
+    is the main checkout's copy of the same submodule: a worktree's submodule clone keeps its own remote refs,
+    which go stale, so a HEAD that copy sees on a remote branch is pushed. `local_default` (the worktree of
+    the project, whose branches live in the shared repository and outlast it) also accepts work on the local
+    default branch; a submodule's clone is deleted with its worktree, so it never takes this. `preserved(head)`
+    accepts a HEAD that a saved copy holds instead."""
     def reject(reason):
         if reasons is not None:
             reasons.append(prefix + reason)
@@ -633,17 +1123,20 @@ def _pushed(repo: Path, reasons: list[str] | None = None, prefix: str = '', also
     head = (_git(['rev-parse', 'HEAD'], repo) or '').strip()
     if also is not None and head and (_git(["branch", "-r", "--contains", head], also) or '').strip():
         return True
+    if preserved is not None and head and preserved(head):
+        return True
+    next_step = (' (save a bundle of its refs under .claude/scratch named for the worktree, then retry)'
+                 if preserved is not None else ' (push it to a remote, then retry)')
     unpushed = 'HEAD ' + (_git(['rev-parse', '--short', 'HEAD'], repo) or '(unreadable)').strip() \
-        + ' is on no remote branch'
-    if _git(["rev-list", "--merges", "HEAD", "--not", "--remotes"], repo) != "":
-        return reject(unpushed)
+        + ' is on no remote branch' + next_step
     default = (_git(["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"], repo) or "").strip()
     if not default:
         return reject(unpushed)
-    missing = _git(["rev-list", "--cherry-pick", "--right-only", "--no-merges", default + "...HEAD"], repo)
-    if missing is None or missing.strip():
-        return reject(unpushed)
-    return True
+    refs = [default]
+    local = default.split("/", 1)[-1]
+    if local_default and "/" in default and _git(["rev-parse", "--verify", "-q", "refs/heads/" + local], repo):
+        refs.insert(0, "refs/heads/" + local)  # a job's work lands here first; skip the remote's full scan
+    return True if any(_landed_on(repo, ref) for ref in refs) else reject(unpushed)
 
 
 def _registered_unlocked(listing: str, target: Path, reasons: list[str] | None = None) -> bool:
@@ -902,7 +1395,10 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
     file go (`lossless_orphan_worktree` is that check alone). A leftover directory with no `.git` file
     (an interrupted removal) is judged the same way, and so is a submodule whose `.git` names a pruned
     admin directory, against the main checkout's `.git/modules/<path>` store. A submodule HEAD counts
-    as pushed when the main checkout's copy of that submodule sees it on a remote branch. If supplied,
+    as pushed when the main checkout's copy of that submodule sees it on a remote branch. A standalone
+    clone under a project or worktree `.claude/scratch` is judged by `_clean_pushed_clone`. A saved copy
+    under the project's `.claude/scratch` makes an unpushed HEAD or a nested repository's files
+    regenerable instead (`_saved_copy_holds`). If supplied,
     `reasons` receives every failed condition, so one deny names them all; a target or registration
     that cannot be judged stops at that reason. The bool contract is unchanged.
     """
@@ -911,6 +1407,9 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
             reasons.append(reason)
         return False
 
+    clone = _scratch_clone_target(token, cwd, project_root)
+    if clone is not None:
+        return _clean_pushed_clone(clone, reasons if reasons is not None else [], Path(project_root), clone)
     located = _worktree_target(token, cwd, project_root, reject)
     if located is None:
         return False
@@ -936,10 +1435,12 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, allow_ignored: 
         return reject('cannot read worktree status')
     failed: list[str] = []
     patterns = _project_patterns(root)
-    loss = _unstored_losses(status, target) if allow_ignored else _losses(status, target, patterns=patterns)
+    loss = _unstored_losses(status, target) if allow_ignored else _losses(
+        status, target, patterns=patterns, project_root=root)
     if loss:
         failed.append('worktree has local files or changes: ' + _format_losses(loss))
-    _pushed(target, failed)
+    _pushed(target, failed, local_default=True,
+            preserved=lambda head: _bundle_preserves(root, target, head))
 
     for name in broken:
         if not allow_ignored:

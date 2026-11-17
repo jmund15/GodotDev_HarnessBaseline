@@ -29,6 +29,12 @@ def cli(*args):
     return r.returncode, r.stdout, r.stderr
 
 
+# The checkout a consume judges writeSet paths in: planted, so no git runs on the live checkout.
+QUIET_ROOT = os.path.join(TMP, "quiet_root")
+os.makedirs(QUIET_ROOT)
+subprocess.run(["git", "init", "-q", QUIET_ROOT], check=True)
+
+
 def plant_run(name, events, record=None):
     """<TMP>/<name>/<sid>/subagents/workflows/<runId>/journal.jsonl plus the sibling run record
     <TMP>/<name>/<sid>/workflows/<runId>.json, the layout the Workflow runtime writes."""
@@ -310,7 +316,8 @@ _pass = consume(_ok_run, "w1")
 case("consume prints PASS for a passing check and exits 0",
      lambda: _pass[0] == 0 and "CHECK 1 PASS" in _pass[1])
 _indented = consume(plant_consume("indented", "done\n", None, brief_body=
-                                  "```task\n" + json.dumps({"check": [PY_OK], "writeSet": ["a.py"]}, indent=1) + "\n```\n")[0], "w1")
+                                  "```task\n" + json.dumps({"check": [PY_OK], "writeSet": ["a.py"]}, indent=1) + "\n```\n")[0], "w1",
+                    "--root", QUIET_ROOT)
 case("a task block printed over several lines is one JSON object and runs",
      lambda: _indented[0] == 0 and "CHECK 1 PASS" in _indented[1])
 _bare = consume(plant_consume("strcheck", "done\n", {"check": PY_OK})[0], "w1")
@@ -367,6 +374,19 @@ import importlib.util
 _spec = importlib.util.spec_from_file_location("dispatch_result_tool", TOOL)
 _tool = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_tool)
+# `floor_reason` replays git_guardrails against `REPO`, and a discard check reads that checkout's diff: plant it,
+# with `x/notes.txt` committed then edited, so `git checkout -- notes.txt` there really would discard work.
+import pathlib
+
+_FLOOR_REPO = os.path.join(TMP, "floor_repo")
+os.makedirs(os.path.join(_FLOOR_REPO, "x"))
+for _args in (("init", "-q"), ("config", "user.name", "proof"), ("config", "user.email", "proof@example.invalid")):
+    subprocess.run(["git", "-C", _FLOOR_REPO, *_args], check=True)
+open(os.path.join(_FLOOR_REPO, "x", "notes.txt"), "w", encoding="utf-8", newline="\n").write("committed\n")
+subprocess.run(["git", "-C", _FLOOR_REPO, "add", "x/notes.txt"], check=True)
+subprocess.run(["git", "-C", _FLOOR_REPO, "commit", "-q", "-m", "seed"], check=True)
+open(os.path.join(_FLOOR_REPO, "x", "notes.txt"), "w", encoding="utf-8", newline="\n").write("edited\n")
+_tool.REPO = pathlib.Path(_FLOOR_REPO)
 _KILL_ALLOWED = ("grep -n kill notes.txt", "git log --grep=kill", "echo taskkill is refused",
                  "python3 .claude/tools/reap.py kill --pid 1")
 _KILL_REFUSED = ("taskkill /F /PID 1", "echo reap.py; taskkill /F /PID 1", "kill -9 1234",
@@ -382,7 +402,7 @@ case("a check that git_guardrails would block as a discard is refused; a dry run
      and all(_tool.floor_reason(c) is None for c in _DISCARD_ALLOWED))
 
 _changed = consume(plant_consume("changed",'result\nchangedPaths: ["inside.txt", "outside.txt"]\n',
-                                 {"check": [PY_OK], "writeSet": ["inside.txt"]})[0], "w1")
+                                 {"check": [PY_OK], "writeSet": ["inside.txt"]})[0], "w1", "--root", QUIET_ROOT)
 case("a returned changedPaths entry outside writeSet is flagged outside-writeSet",
      lambda: _changed[0] == 0 and any("outside.txt" in l and "outside-writeSet" in l for l in _changed[1].splitlines()))
 
@@ -414,6 +434,10 @@ case("the diff carries the content of a new untracked file and of a new gitignor
      and "older" not in _gi.get("diff", ""))
 case("a gitignored file older than the run start is not listed",
      lambda: not any(row["path"].endswith("older.txt") for row in _gi["changed"]))
+_gi_cli = consume(plant_consume("gitignored_cli", "done\n", {"check": [PY_OK], "writeSet": ["fresh.txt"]})[0], "w1",
+                  "--root", GIT_ROOT)
+case("the consume command judges writeSet paths in the checkout --root names, not the tool's own",
+     lambda: _gi_cli[0] == 0 and "CHANGED ?? fresh.txt" in _gi_cli[1].splitlines())
 
 # ---- consume: a sidecar source (a -R record or a fan-out out dir) with --brief -------------------
 def plant_sidecar(name, task):

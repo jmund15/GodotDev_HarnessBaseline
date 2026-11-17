@@ -10,8 +10,8 @@ Run synthetic integration tests that verify review and audit agents produce corr
 
 **Arguments:** `$ARGUMENTS`
 - Empty or `all`: run all smoke fixtures
-- Agent name (e.g., `error-hunter`): run only fixtures targeting that agent
-- Specific fixture path (e.g., `smoke/project_error_hunter`): run one fixture
+- Agent name (an `agent:` value from a fixture under `.claude/tests/agent_fixtures/`): run only fixtures targeting that agent
+- Specific fixture path (`smoke/<fixture>`, relative to that folder): run one fixture
 
 ---
 

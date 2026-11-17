@@ -237,14 +237,23 @@ async function foldCases() {
   const cp = require('child_process')
   const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'j3-publish-'))
   try {
-    const originals = [finding({ id: 'F1', evidence: [{ file: FANOUT, quote: 'export const meta' }] }),
-      finding({ id: 'F2', evidence: [{ file: FANOUT, quote: 'absent fixture quote' }] })]
+    // The cited file sits in a repository planted in temp and post_check reads that one (`--root`, cwd): its ledger and
+    // worktree reads never touch the checkout holding the proof.
+    const subject = path.join(tmp, 'subject')
+    fs.mkdirSync(subject)
+    fs.writeFileSync(path.join(subject, 'workflow.js'), 'export const meta = { name: "fixture" }\n')
+    for (const args of [['init', '-q'], ['add', '-A'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'seed']]) {
+      const made = cp.spawnSync('git', args, { cwd: subject, encoding: 'utf8' })
+      if (made.status !== 0) throw new Error('planted subject: git ' + args.join(' ') + ': ' + made.stderr)
+    }
+    const originals = [finding({ id: 'F1', evidence: [{ file: path.join(subject, 'workflow.js'), quote: 'export const meta' }] }),
+      finding({ id: 'F2', evidence: [{ file: path.join(subject, 'workflow.js'), quote: 'absent fixture quote' }] })]
     const input = path.join(tmp, 'findings.json')
     const output = path.join(tmp, 'report.json')
     fs.writeFileSync(input, JSON.stringify({ sources: originals.map(f => ({ id: f.id, finding: f })),
       view: [mergedFinding({ id: 'M1' })] }))
     const done = cp.spawnSync('python3', [path.join(__dirname, '..', 'tools', 'post_check.py'),
-      'review', '--findings', input, '--out', output], { encoding: 'utf8' })
+      'review', '--findings', input, '--root', subject, '--out', output], { cwd: subject, encoding: 'utf8' })
     const report = JSON.parse(fs.readFileSync(output, 'utf8'))
     check('grouped publication fixture uses a real original-ID failing report', done.status === 0
       && report.status === 'fail' && report.counts.VERIFIED === 1 && report.counts.UNVERIFIED === 1, JSON.stringify(report))
@@ -624,13 +633,19 @@ const REPO = path.join(__dirname, '..', '..')
 const CHECK_DIR = '.claude/scratch/fold_check_fixture_' + process.pid + '_' + Date.now().toString(36)
 const CHECK_PLAN = CHECK_DIR + '/p.md'
 async function verificationCases() {
-  const dir = path.join(REPO, CHECK_DIR)
-  fs.rmSync(dir, { recursive: true, force: true })
+  // The subject's checkout is a repository planted in temp: the post-check tools snapshot and diff the plan in the
+  // repository they run in, so their git reads this one, never the checkout holding the proof.
+  const CHECKOUT = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fold-check-checkout-')))
+  const dir = path.join(CHECKOUT, CHECK_DIR)
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, 'src.txt'), 'def x():\n    return None\n')
   fs.writeFileSync(path.join(dir, 'p.md'), 'Step 3: teh default.\n')
+  for (const args of [['init', '-q'], ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'seed']]) {
+    const done = childProcess.spawnSync('git', args, { cwd: CHECKOUT, encoding: 'utf8' })
+    if (done.status !== 0) throw new Error('planted checkout: git ' + args.join(' ') + ': ' + done.stderr)
+  }
   const snap = childProcess.spawnSync('python3', [path.join(REPO, '.claude/tools/post_check.py'), 'snapshot', '--root', '.', '--files', CHECK_PLAN,
-    '--out', CHECK_DIR + '/snapshot.json'], { cwd: REPO, encoding: 'utf8' })
+    '--out', CHECK_DIR + '/snapshot.json'], { cwd: CHECKOUT, encoding: 'utf8' })
   fs.writeFileSync(path.join(dir, 'p.md'), 'Step 3: the default.\n')
   const seat = { findings: [finding({ agent: 'one', file: CHECK_PLAN + ':1', description: 'typo', old: 'teh default', new: 'the default',
     evidence: [{ file: CHECK_DIR + '/src.txt:2', quote: 'return None' }] })] }
@@ -653,7 +668,12 @@ async function verificationCases() {
       { type: 'result', key: 'k', agentId: 'fold1', result: digest },
     ].map(row => JSON.stringify(row)).join('\n') + '\n')
     const out = path.join(wf, 'fold_check.json')
-    const proc = childProcess.spawnSync('python3', [path.join(REPO, '.claude/tools/fold_check.py'), '--workflow-dir', wf, '--out', out], { cwd: REPO, encoding: 'utf8' })
+    // fold_check resolves the manifest's paths against the repository its script sits in: the same tool runs with that
+    // one location set to the planted checkout.
+    const foldCheck = 'import sys; sys.path.insert(0, ' + JSON.stringify(path.join(REPO, '.claude/tools').replace(/\\/g, '/')) + '); '
+      + 'import fold_check; from pathlib import Path; fold_check.REPO = Path(' + JSON.stringify(CHECKOUT.replace(/\\/g, '/')) + '); '
+      + 'sys.exit(fold_check.main())'
+    const proc = childProcess.spawnSync('python3', ['-c', foldCheck, '--workflow-dir', wf, '--out', out], { cwd: CHECKOUT, encoding: 'utf8' })
     const report = fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : null
     return { r, proc, report, label }
   }
@@ -675,7 +695,7 @@ async function verificationCases() {
       reworded.proc.stderr + ' ' + JSON.stringify(reworded.report))
     fs.writeFileSync(path.join(dir, 'p.md'), 'Step 3: the default.\n')
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
+    fs.rmSync(CHECKOUT, { recursive: true, force: true })
   }
 }
 

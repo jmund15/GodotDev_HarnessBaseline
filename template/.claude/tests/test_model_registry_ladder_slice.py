@@ -67,17 +67,17 @@ def test_slice_covers_the_union_of_two_tiers_in_ladder_order(mr):
     assert _guidance_rows(_slice(mr, "architect", "scout")) == expected
 
 
-def test_slice_carries_definitions_selection_and_axes_whole(mr, live_lines):
+def test_slice_drops_the_glossaries_and_keeps_selection_lines_whole(mr, live_lines):
     text = _slice(mr, "architect")
-    start = live_lines.index("## Role definitions")
-    guidance = live_lines.index("## Role guidance")
-    for line in live_lines[start:guidance]:
-        assert line in text.splitlines(), line
+    lines = text.splitlines()
     table_end = max(i for i, l in enumerate(live_lines) if l.startswith("| "))
-    axes = live_lines.index("## Axis definitions")
     for line in live_lines[table_end + 1:]:
-        assert line in text.splitlines(), line
-    assert axes > table_end
+        if line.startswith("## Compaction"):
+            break
+        assert line in lines, line
+    assert "## Axis definitions" not in text and "Terms the cells use" not in text
+    assert "## Compaction" not in text and "compaction point" not in text.replace(lines[-1], "")
+    assert "Compaction" in lines[-1] and "model_ladder_evidence.md" in lines[-1]
 
 
 def test_slice_of_one_tier_is_smaller_than_the_whole_ladder_on_the_live_ladder(mr):
