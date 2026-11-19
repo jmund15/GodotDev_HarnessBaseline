@@ -924,8 +924,13 @@ class StateBranch(MainCheckCase):
 class WorkflowFile(unittest.TestCase):
     """The real workflow: its three steps run the stages in order, the later two always, one run at a time."""
 
-    # Read from the commit: a close proves in a sparse `.claude` checkout that holds no `.github`.
-    text = subprocess.run(['git', '-C', str(ROOT), 'show', 'HEAD:.github/workflows/main_check.yml'],
+    # Read from the commit: a close proves in a sparse `.claude` checkout that holds no `.github`. A repository
+    # that has not installed the workflow (the baseline and its profiles) ships only the template it installs from.
+    # `HEAD:./` is relative to ROOT, which the baseline repository nests below its own root.
+    _installed = subprocess.run(['git', '-C', str(ROOT), 'cat-file', '-e', 'HEAD:./.github/workflows/main_check.yml'],
+                                capture_output=True).returncode == 0
+    text = subprocess.run(['git', '-C', str(ROOT), 'show', 'HEAD:./' + ('.github/workflows/main_check.yml' if _installed
+                                                                       else '.claude/templates/workflows/main_check.yml')],
                           capture_output=True, text=True, encoding='utf-8', check=True).stdout
 
     def test_the_three_steps_run_the_stages_in_order_and_gate_and_finalize_always_run(self):

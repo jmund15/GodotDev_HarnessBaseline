@@ -1592,16 +1592,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/guards/any.godot.md",
-      "layer": "godot",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/guards/any.md",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/guards/author.coding.md",
       "layer": "coding",
       "sync": "auto"
