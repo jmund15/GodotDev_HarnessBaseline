@@ -309,6 +309,25 @@ case('--status shows waiting-memory and readings before stale progress',
 open(_wait_record + '.exit', 'w', encoding='utf-8').write('12')
 _wait_done = subprocess.run([sys.executable, MOD, '--status', STATUS_DIR],
                             capture_output=True, text=True, timeout=30, encoding='utf-8')
+_quota_record = os.path.join(STATUS_DIR, 'quotawait.record.json')
+open(_quota_record + '.journal.jsonl', 'w', encoding='utf-8').write('')
+open(os.path.join(STATUS_DIR, 'quotawait.stream'), 'w', encoding='utf-8').write('')
+sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+import io
+from contextlib import redirect_stdout
+_sf_spec = importlib.util.spec_from_file_location("sf_status_quota", MOD)
+_sf_mod = importlib.util.module_from_spec(_sf_spec)
+_sf_spec.loader.exec_module(_sf_mod)
+_real_memory_wait = watch_records.memory_wait
+watch_records.memory_wait = lambda record: "waiting-quota: window full" if record and "quotawait" in str(record) else None
+_quota_out = io.StringIO()
+try:
+    with redirect_stdout(_quota_out):
+        _sf_mod.print_status(STATUS_DIR)
+finally:
+    watch_records.memory_wait = _real_memory_wait
+case('--status labels a wait whose text starts waiting-quota: as waiting-quota',
+     lambda: any(line.split()[:2] == ['quotawait', 'waiting-quota'] for line in _quota_out.getvalue().splitlines()))
 case('terminal exit 12 wins over a leftover memory marker',
      lambda: _status_lines(_wait_done).get('waiting', ('', ''))[0] == 'finished'
              and 'exit=12' in _wait_done.stdout)

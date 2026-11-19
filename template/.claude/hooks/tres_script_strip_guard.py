@@ -43,10 +43,13 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _commit_scope import authored_paths, publishes_index  # noqa: E402
 from _checkout_root import repo_arg  # noqa: E402
+from _hook_parts import bounded_decision, bounded_report  # noqa: E402
 
 # Windows pipes default to cp1252 through Python 3.14; git diff text now decodes as real
 # UTF-8, so a non-ASCII .tres string payload or path would raise UnicodeEncodeError on write.
-sys.stdout.reconfigure(encoding="utf-8")
+# LF-only: Windows text mode adds a CR per line, which the cap's byte count does not see.
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+sys.stderr.reconfigure(encoding="utf-8", newline="\n")
 
 def tree_write_blockers():
     """Live gate/suite runs this repair would void. Fails OPEN: an unreadable registry must
@@ -119,22 +122,40 @@ def find_strips(range_arg, worktree=False):
     return [(p, r, a) for p, (r, a) in per_file.items() if r > a]
 
 
-def report(findings):
-    print(
+SCRATCH_DIR = Path(__file__).resolve().parents[1] / "scratch"
+
+
+def scratch_list(session_id=""):
+    """The whole-list file for this caller: one per session, so a peer session's rerun replaces only its own.
+    A caller with no session id (the CLI and SessionStart scans) names its process instead of sharing one list."""
+    stem = "".join(c if c.isalnum() or c in "-_." else "_" for c in (session_id or "pid%d" % os.getpid()))
+    return str(Path(SCRATCH_DIR) / ("tres_script_strip_findings.%s.txt" % stem))
+INSTRUCTION = (
+    "A custom-Resource .tres that loses its `script = ExtResource(...)` line loads as a "
+    "bare Godot.Resource -> casts to its C# type throw at runtime with a green build (the "
+    "stale-registry editor-resave strip; gotcha_godot_editor_resave_hazards). "
+    "Restore the binding with `tres_script_strip_guard.py --worktree --repair-inplace`, "
+    "or if you genuinely deleted a scripted sub-resource, set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1."
+)
+
+
+def finding_row(path, removed, added):
+    return f"  {path}: script bindings removed={removed} added={added}"
+
+
+def report_parts(findings):
+    """`(lead, rows)` of the report, the verdict and instruction lines apart from the finding rows."""
+    lead = (
         "[tres-script-strip-guard] Suspected editor-resave script-binding strip "
-        f"({len(findings)} file(s)):",
-        file=sys.stderr,
+        f"({len(findings)} file(s)):\n" + INSTRUCTION + "\n"
     )
-    for path, removed, added in findings:
-        print(f"  {path}: script bindings removed={removed} added={added}", file=sys.stderr)
-    print(
-        "\nA custom-Resource .tres that loses its `script = ExtResource(...)` line loads as a "
-        "bare Godot.Resource -> casts to its C# type throw at runtime with a green build (the "
-        "stale-registry editor-resave strip; gotcha_godot_editor_resave_hazards). "
-        "Restore the binding with `tres_script_strip_guard.py --worktree --repair-inplace`, "
-        "or if you genuinely deleted a scripted sub-resource, set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1.",
-        file=sys.stderr,
-    )
+    return lead, [finding_row(*row) for row in findings]
+
+
+def report(findings, session_id=""):
+    """The CLI report, for the human or Bash call that reads stderr."""
+    lead, rows = report_parts(findings)
+    sys.stderr.write(bounded_report(lead, rows, scratch_list(session_id)))
 
 
 def standalone(range_arg):
@@ -178,17 +199,17 @@ def hook():
             print("{}")
             return 0
 
-        report(findings)  # surfaced in the transcript alongside the deny
         reason = (
             f"Blocked (rules/godot_files.md): {len(findings)} staged .tres lost a `script = ExtResource(...)` binding "
             "(editor-resave script strip -> bare-Resource load / InvalidCastException). Restore the "
             "binding, or set HARNESS_ALLOW_TRES_SCRIPT_REMOVAL=1 if the removal is intentional."
         )
-        print(json.dumps({"hookSpecificOutput": {
+        lead, rows = report_parts(findings)
+        sys.stdout.write(bounded_decision(lambda text: json.dumps({"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }}))
+            "permissionDecisionReason": reason + "\n" + text,
+        }}) + "\n", lead, rows, scratch_list(data.get("session_id") or "")))
         return 0
     if any(_restores_tres(git_invocation(seg)) for seg in segments(cmd)):
         # A git-restore of a .tres re-plants the OLD-FORMAT dirty-flag bomb (missing ext_resource
@@ -257,41 +278,43 @@ def worktree_scan(revert, repair=False):
     findings = find_strips(None, worktree=True)
     if not findings:
         return 0
-    print(
+    header = (
         f"[tres-script-strip-guard] WORKING-TREE script-binding strip detected in "
-        f"{len(findings)} file(s) -- the editor-resave corruption is present RIGHT NOW:"
+        f"{len(findings)} file(s) -- the editor-resave corruption is present RIGHT NOW:\n"
     )
-    for path, removed, added in findings:
-        print(f"  {path}: script bindings removed={removed} added={added}")
+    rows = [finding_row(*row) for row in findings]
     if repair:
         blockers = tree_write_blockers()
         if blockers:
             who = ", ".join(
                 f"{b.get('kind')} '{b.get('label', '?')}' (pid {b.get('pid')})" for b in blockers[:3]
             )
-            print(
+            lead = header + (
                 f"[tres-script-strip-guard] Repair DEFERRED — {who} is live on this checkout and "
                 "digests the tree mid-run; writing now would void that run with no test signal. "
                 "The strip above is still present. Re-run after the run finishes:\n"
-                "  python .claude/hooks/tres_script_strip_guard.py --worktree --repair-inplace"
+                "  python .claude/hooks/tres_script_strip_guard.py --worktree --repair-inplace\n"
             )
+            sys.stdout.write(bounded_report(lead, rows, scratch_list()))
             return 0
-        repair_inplace(findings)
-        print(f"[tres-script-strip-guard] Repaired {len(findings)} file(s) in place (bindings restored).")
+        results = repair_inplace(findings)
+        lead = header + f"[tres-script-strip-guard] Repaired {len(findings)} file(s) in place (bindings restored).\n"
+        sys.stdout.write(bounded_report(lead, rows + results, scratch_list()))
     elif revert:
         subprocess.run(["git", "checkout", "--"] + [p for p, _, _ in findings])
-        print(f"[tres-script-strip-guard] Reverted {len(findings)} file(s) from HEAD.")
-        print(
+        lead = header + f"[tres-script-strip-guard] Reverted {len(findings)} file(s) from HEAD.\n" + (
             "WARNING: git-restore re-plants OLD-FORMAT .tres (ext_resource uid backfill pending), "
             "re-arming the dirty-flag bomb -- the strip recurs at the next editor save. Prefer "
-            "--repair-inplace, which keeps the editor's normalization and re-adds the binding."
+            "--repair-inplace, which keeps the editor's normalization and re-adds the binding.\n"
         )
+        sys.stdout.write(bounded_report(lead, rows, scratch_list()))
     else:
-        print(
+        lead = header + (
             "Fix now: verify each diff is a strip (not an intentional removal), then "
             "`tres_script_strip_guard.py --worktree --repair-inplace` (keeps the editor's "
-            "normalization, re-adds bindings from HEAD). See gotcha_godot_editor_resave_hazards."
+            "normalization, re-adds bindings from HEAD). See gotcha_godot_editor_resave_hazards.\n"
         )
+        sys.stdout.write(bounded_report(lead, rows, scratch_list()))
     return 0
 
 
@@ -342,11 +365,12 @@ def repair_inplace(findings):
     and the strip recurs at the next bind-failure window. In-place keeps the editor's
     serialization and re-adds only the lost script binding, making the file a fixed point.
     """
+    results = []
     for path, _, _ in findings:
         wf = Path(path)
         text = wf.read_text(encoding="utf-8")
         if "resource_local_to_scene = \"\"" not in text:
-            print(f"  {path}: no strip marker -- already repaired?")
+            results.append(f"  {path}: no strip marker -- already repaired?")
             continue
         head = subprocess.run(
             ["git", "show", f"HEAD:{path}"], capture_output=True, text=True,
@@ -366,17 +390,17 @@ def repair_inplace(findings):
                 r'\[sub_resource[^\n]*id="' + re.escape(bid) + r'"[^\n]*\]\n(.*?)(?=\n\[|\Z)',
                 head, re.S)
             if not head_block:
-                print(f"  {path}: HEAD has no sub_resource id={bid} -- manual repair required")
+                results.append(f"  {path}: HEAD has no sub_resource id={bid} -- manual repair required")
                 continue
             head_binding = re.search(r'^script = ExtResource\("([^"]+)"\)', head_block.group(1), re.M)
             if not head_binding:
-                print(f"  {path}: HEAD's sub_resource id={bid} has no script binding -- manual repair")
+                results.append(f"  {path}: HEAD's sub_resource id={bid} has no script binding -- manual repair")
                 continue
             ref_id = head_binding.group(1)
             head_ext = re.search(
                 r'\[ext_resource[^\n]*id="' + re.escape(ref_id) + r'"[^\n]*\]', head)
             if not head_ext:
-                print(f"  {path}: HEAD ext_resource id={ref_id} not found -- manual repair")
+                results.append(f"  {path}: HEAD ext_resource id={ref_id} not found -- manual repair")
                 continue
             ext_line = head_ext.group(0)
             ext_path = re.search(r'path="([^"]+)"', ext_line).group(1)
@@ -384,7 +408,7 @@ def repair_inplace(findings):
             if existing:
                 final_id = re.search(r'id="([^"]+)"', existing.group(0)).group(1)
             elif re.search(r'id="' + re.escape(ref_id) + r'"', text):
-                print(f"  {path}: ext_resource id {ref_id} collides in worktree -- manual repair")
+                results.append(f"  {path}: ext_resource id {ref_id} collides in worktree -- manual repair")
                 continue
             else:
                 insert_at = text.find("\n[ext_resource")
@@ -392,8 +416,9 @@ def repair_inplace(findings):
                 final_id = ref_id
             text = text.replace(
                 'resource_local_to_scene = ""', f'script = ExtResource("{final_id}")', 1)
-            print(f"  {path}: restored binding -> {ext_path} (id {final_id})")
+            results.append(f"  {path}: restored binding -> {ext_path} (id {final_id})")
         wf.write_text(text, encoding="utf-8", newline="\n")
+    return results
 
 
 def main():

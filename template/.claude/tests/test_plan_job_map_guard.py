@@ -240,14 +240,15 @@ def main():
     os.remove(plan_d)
     check("10 recorded plan deleted since: production write allowed", run_hook(pre("Write", SRC, D))[0], ALLOW)
 
-    # 11. bounded state: 40 recorded plans name at most 32 in the advisory.
+    # 11. bounded state: 40 recorded plans keep the last 32; the advisory names a few and counts the rest.
     M = "many_sid_0006"
     for i in range(40):
         run_hook(post("Write", write(p(".claude", "plans", "plan-many-%02d.md" % i), "# M\n"), M))
     verdict, reason = run_hook(pre("Write", SRC, M))
     named = reason.count("plan-many-")
     check("11 advisory with 40 recorded plans is an advisory", verdict, ADVISE)
-    check("11 advisory names at most 32 plans (bounded state)", 1 <= named <= 32, True, "named=%d" % named)
+    check("11 advisory names a few plans and counts the rest", 1 <= named <= 3 and "29" in reason, True,
+          "named=%d" % named)
     check("11 the next write after that advisory: silent", run_hook(pre("Write", SRC, M))[0], ALLOW)
 
     # 12. fail posture: a recorded path that cannot be read is a lost check, not a block.

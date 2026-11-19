@@ -126,7 +126,7 @@ def main():
     finally:
         lc.ast.parse = real_parse
     check("a second scan of unchanged files parses none of them again; an edited file parses again "
-          "(a lock write scans before and after, ~60 s each)", first > 0 and again == 0 and edited > 0,
+          "(a lock write scans before and after)", first > 0 and again == 0 and edited > 0,
           (first, again, edited))
     got = dependencies({row: "import helper\n", helper: "x = 1\n"}, {row: "pure"}, row)
     check("row_dependencies returns an imported module no layer ships", got == [helper], got)
@@ -434,18 +434,18 @@ def main():
                   {optional: "pure", agents: "godot"})
     check("a source the OPTIONAL_DATA table lists tolerates its named files absent", got == [], kinds(got))
 
-    dispatch_guard = ".claude/hooks/skill_dispatch_gate.py"
-    owner_map = ".claude/hooks/skill_dispatch.project.json"
-    owner_literal = 'OWNER_MAP = ".claude/hooks/skill_dispatch.project.json"\n'
-    got = planted({dispatch_guard: owner_literal}, {dispatch_guard: "pure"}, extra=(owner_map,))
-    check("the dispatch guard's optional project owner map is not a shipped dependency",
-          got == [], kinds(got))
-    got = planted({dispatch_guard: owner_literal}, {dispatch_guard: "pure"})
-    check("the dispatch guard closes without a project owner map", got == [], kinds(got))
-    got = planted({dispatch_guard: 'OTHER = ".claude/hooks/required.project.json"\n'},
-                  {dispatch_guard: "pure"}, extra=(".claude/hooks/required.project.json",))
-    check("the dispatch guard's optional-data declaration exempts only its owner map",
-          kinds(got) == [(dispatch_guard, "local-only", ".claude/hooks/required.project.json")], kinds(got))
+    sync_tool = ".claude/tools/vault_sync.py"
+    owner_map = ".claude/tools/vault_sync.project.json"
+    owner_literal = 'CONFIG = ".claude/tools/vault_sync.project.json"\n'
+    got = planted({sync_tool: owner_literal}, {sync_tool: "pure"}, extra=(owner_map,))
+    check("a tool's optional project config is not a shipped dependency", got == [], kinds(got))
+    got = planted({sync_tool: owner_literal}, {sync_tool: "pure"})
+    check("a tool closes without its optional project config", got == [], kinds(got))
+    mirror_hook = ".claude/hooks/vault_mirror_start.py"
+    got = planted({mirror_hook: 'OTHER = ".claude/hooks/required.project.json"\n'},
+                  {mirror_hook: "pure"}, extra=(".claude/hooks/required.project.json",))
+    check("an optional-data declaration exempts only the files it names",
+          kinds(got) == [(mirror_hook, "local-only", ".claude/hooks/required.project.json")], kinds(got))
 
     other = ".claude/tools/lens_briefs.py"
     got = planted({other: 'REGISTRIES = ("scene_agents.md",)\n', agents: "# a\n"}, {other: "pure", agents: "godot"})

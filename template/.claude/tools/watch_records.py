@@ -55,7 +55,7 @@ leaves no work or unreported event, the armed watcher stays idle: exiting it wou
 Ended Workflow runs and undelivered shells never trigger a decision wake: they print with the next wake, once. A running shell is live
 work, so it earns the check-in and keeps the watcher registered; its end is the client's own notification, and the watcher that
 stays armed with nothing live exits only on `HOST GONE`. The Stop hook blocks on a running shell with no live session watcher
-by the same test (`session_running_shells`: the Stop payload's running task ids, kept to those `wake_digest.running_shells` names). The last lines before `STILL RUNNING`
+by the same test (`session_running_shells`: the Stop payload's running task ids, kept to those `wake_digest.running_shells` names). A session watcher that exits with work still live records an in-flight wake in session hook state (`sidecar_wake_inflight`), so the Stop at the end of that turn is covered until the wake is delivered. The last lines before `STILL RUNNING`
 or `NONE` are `UNRATED <n>: <run:label>, ...` when the session has unrated dispatches.
 Usage: python3 .claude/tools/watch_records.py --pane. The owner's live view: a background shell that polls the session's
 `checkin_lines` every `PANE_SECONDS` (`WATCH_RECORDS_PANE_SEC` overrides it) and appends a frame, closed by a stamp line,
@@ -167,6 +167,11 @@ PANE_SECONDS = float(os.environ.get("WATCH_RECORDS_PANE_SEC", "20"))
 PANE_HEARTBEAT_SECONDS = 600  # an unchanged pane reprints so its stamp shows it is alive
 STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # the launch ids reap.py stopped for this session
 SHELL_OFFSET_KEY = "sidecar_wake_shell_offset"  # the transcript byte offset the last wake scanned to for ended shells
+# A session watcher that exits with a wake deregisters before its output arrives at the session, so the
+# Stop at the end of that turn sees no watcher. This mark carries the gap: it is written as the watcher
+# exits with work still live and cleared at the next turn boundary (the rearm hook), on a new session-wide
+# registration, and by the first Stop it covers.
+INFLIGHT_KEY = "sidecar_wake_inflight"
 WAKE_CALL = "call"  # the group a fan-out writes on every job that names none: jobs launched together wake the session once
 WAKE_ALONE = "alone"  # a job's own `wakeWith` value for "wake me on my end": it is a group of one, however many jobs say it
 REPORTED_ONCE_KINDS = ("end", "shell")  # a non-triggering line of these kinds prints once, then is acknowledged
@@ -177,6 +182,9 @@ CHECKIN_RULE = (
     "Not converging: the same unit reworked, results flat, a new cause each cycle. A job not converging gets, in order "
     "of cost kept: an amend file for its brief (the brief's full file name plus `.amend.md`), its finished items split off, or a stop through "
     "tools/reap.py with these facts in hand. A job still progressing stops only on the owner's word. "
+    "A job can progress while the run does not: then judge the run against its goal (orchestration §10). When the "
+    "rounds so far left the goal's open question unsettled, the next dispatch is the cheapest check that settles it "
+    "(a probe on real answers, a measurement), not another round of the same work. "
     "`watch_records.py --digest <record or transcript>` prints a job's whole course. Then re-arm (the RE-ARM NOW line).")
 
 
@@ -491,17 +499,27 @@ def record_state(record, inventory=None):
 
 
 def memory_wait(record):
-    """The launcher's current admission-wait reading, or None when this run has none standing. The
-    launcher writes one `waiting-memory` row per launch; its own next transition (the post-spawn
-    `started`) puts that row behind the run's current slice once admission finishes."""
+    """The launcher's current admission wait, or None when this run has none standing. The launcher writes one
+    `waiting-memory` row (memory admission) or one `waiting-quota` row (quota fit) per launch; its own next
+    transition (the post-spawn `started`) puts that row behind the run's current slice once admission finishes.
+    A quota wait returns `waiting-quota: <message>`; a memory wait returns its `WAIT`/`STILL WAITING` reading."""
     for row in reversed(current_run(record)):
         event = row.get("event")
         if event in ("started", "ended"):
             return None
+        if event == "waiting-quota":
+            return "waiting-quota: " + str(row.get("message") or "")
         if event == "waiting-memory":
             message = str(row.get("message") or "")
             return message if message.startswith(('WAIT memory headroom', 'STILL WAITING')) else None
     return None
+
+
+def wait_line(label, waiting):
+    """`WAITING-QUOTA <label>: <message>` or `WAITING-MEMORY <label>: <reading>` for a `memory_wait` result."""
+    if waiting.startswith("waiting-quota: "):
+        return "WAITING-QUOTA %s: %s" % (label, waiting[len("waiting-quota: "):])
+    return "WAITING-MEMORY %s: %s" % (label, waiting)
 
 
 def _norm_record(path):
@@ -530,8 +548,51 @@ def _covered(record, watchers):
 
 
 def session_watcher_live(state):
-    """True when `state` (a session's hook state) lists a live session-wide watcher."""
+    """True when `state` (a session's hook state) lists a live session-wide watcher. The re-arm and
+    takeover readers ask this ("is a watcher armed?"), so an in-flight wake mark is never an answer."""
     return _covered(None, state.get("sidecar_watchers") or [])
+
+
+def mark_inflight(path, identity=None):
+    """Record that the session watcher exits to deliver a wake while work is still live."""
+    if not path:
+        return
+    mark = {"at": time.time()}
+    if identity:
+        mark["identity"] = identity
+    _hook_state.update_json_locked(path, lambda state: state.__setitem__(INFLIGHT_KEY, mark))
+
+
+def clear_inflight(path):
+    """Drop the in-flight wake mark, when one is set. Returns whether it cleared one."""
+    if not path or INFLIGHT_KEY not in (_hook_state.read_json_salvage(path) or {}):
+        return False
+    _hook_state.update_json_locked(path, lambda state: state.pop(INFLIGHT_KEY, None))
+    return True
+
+
+def _inflight_horizon():
+    """The age at which the dispatch table drops a pending sidecar entry (`dispatch_table.STALE_SECONDS`):
+    past it the mark can cover no entry, so an undelivered wake cannot hide one forever."""
+    import dispatch_table
+    return dispatch_table.STALE_SECONDS
+
+
+def wake_inflight(state, now=None):
+    """True while a session watcher that exited with a wake has not had that wake delivered, within
+    `_inflight_horizon()` of its recorded exit."""
+    mark = (state or {}).get(INFLIGHT_KEY)
+    if not isinstance(mark, dict):
+        return False
+    at = mark.get("at")
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return False
+    return (time.time() if now is None else now) - float(at) <= _inflight_horizon()
+
+
+def session_covered(state):
+    """True when the session is watched: a live session watcher, or one whose exit is delivering a wake."""
+    return session_watcher_live(state) or wake_inflight(state)
 
 
 def registration(records, session_wide=False):
@@ -550,6 +611,7 @@ def registration(records, session_wide=False):
     def add(state):
         watches = state.get("sidecar_watchers") or []
         if session_wide:
+            state.pop(INFLIGHT_KEY, None)
             live = next((w for w in watches if w.get("session") and _covered(None, [w])), None)
             if live:
                 covering.append(live.get("process"))
@@ -1659,8 +1721,15 @@ def live_carriers(launch):
 _ORPHANS = {}
 
 
+def _launcher_exited(record, state):
+    """True once a run has ended and its launcher is gone: a DIED run, or a DONE run whose launcher left its
+    exit trap. A process that still carries the launch id then outlived the job (a background proof run the job
+    queued, say) and holds machine time nobody will read."""
+    return state == "DIED" or (state == "DONE" and _launcher_gone(record))
+
+
 def orphan_processes(label, record, launch=None):
-    """`ORPHAN <label> launch=<id> pids=<...>` once a DIED run's launch id is still carried by a live
+    """`ORPHAN <label> launch=<id> pids=<...>` once an ended run's launch id is still carried by a live
     process that is not a dispatch server; None otherwise. Read once per record per watcher."""
     key = _norm_record(record)
     if key not in _ORPHANS:
@@ -1681,7 +1750,7 @@ def gone_fanout_orphans(unit):
     out = []
     for job in jobs:
         record = job.get("recordPath")
-        if not record or _norm_record(record) in known or record_state(str(record))[0] != "DIED":
+        if not record or _norm_record(record) in known or not _launcher_exited(str(record), record_state(str(record))[0]):
             continue
         text = orphan_processes(str(job.get("label") or os.path.basename(str(record))), str(record), job.get("launchId"))
         if text:
@@ -1817,6 +1886,7 @@ def _mark_poll(mark):
     poll's reads finished, instead of sleeping. Unset in a session; nothing the watcher prints changes."""
     if mark:
         try:
+            # bare-append: one watcher process writes this proof mark, and only proofs set it.
             with open(mark, "a", encoding="utf-8") as fh:
                 fh.write(".\n")
         except OSError:
@@ -1928,7 +1998,7 @@ def _wake(grouped, now=None):
                 alone = (state == "DONE" and not failed and not stopped and bool(unit.get("fanout_dir"))
                          and not unit.get("folding") and not group_holds(unit, label))
                 lines.append(("end", identity, text, "once" if alone else failed and not stopped and not retried))
-                orphan = orphan_processes(label, record) if state == "DIED" else None
+                orphan = orphan_processes(label, record) if _launcher_exited(record, state) else None
                 if orphan:
                     lines.append(("orphan-process", ("orphan-process", _norm_record(record)), orphan, "always"))
                 continue
@@ -1940,7 +2010,7 @@ def _wake(grouped, now=None):
             waiting = memory_wait(record)
             if waiting:
                 standing.add(('memory', record))
-                lines.append(('memory', ('memory', record), 'WAITING-MEMORY %s: %s' % (label, waiting), False))
+                lines.append(('memory', ('memory', record), wait_line(label, waiting), False))
                 continue
             idle = stall_idle(record)
             if idle is not None:
@@ -2041,7 +2111,7 @@ def checkin_lines(grouped, now=None):
                 continue
             waiting = memory_wait(record)
             if waiting:
-                out.append('WAITING-MEMORY %s: %s' % (label, waiting))
+                out.append(wait_line(label, waiting))
                 continue
             if found_by == "inventory":
                 out.append("QUEUED %s" % label)
@@ -2148,7 +2218,8 @@ def _idle_since(source, armed):
         return armed
 
 
-def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregister=None, lifetime=None):
+def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregister=None, lifetime=None,
+              inflight=None):
     """Poll `source()` (a `{key: unit}` map) and apply the wake rule. Returns the exit code.
 
     A wake that ends in `STILL RUNNING` finishes its state writes and calls `unregister()` before it prints
@@ -2193,6 +2264,8 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
             leave()
             if unregister:
                 unregister()
+            if live and inflight:
+                inflight()
         _still_running(live, settle)
         return 0
 
@@ -2573,7 +2646,8 @@ def main(args=None):
         source = _session_source(session_id, path) if session_wide else _records_source(pending)
         closing = session_closing(session_id) if session_wide else None
         return wake_loop(source, ack_path=path, await_launch=await_launch, closing=closing,
-                         unregister=lambda: deregister(path, identity), lifetime=lifetime) \
+                         unregister=lambda: deregister(path, identity), lifetime=lifetime,
+                         inflight=(lambda: mark_inflight(path, identity)) if session_wide else None) \
             if wake or any(is_run_dir(p) for p in pending) else _stream(pending)
     finally:
         deregister(path, identity)

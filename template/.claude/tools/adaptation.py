@@ -42,19 +42,38 @@ Two contracts share this loader:
 read by `scripts/sync_plan_config.py`; an absent key means no project benchmark extras.
 `rigor_defaults` maps project classes to path globs and levels, read by `tools/triage.py`.
 `usage_reset` is the weekly quota reset ({weekday, hour}, machine-local), read by `tools/usage_report.py`.
-`land_prefix` is the branch prefix a project's land runner proves and fast-forwards onto the default branch
-(empty: no runner), read by `hooks/git_guardrails.py` and `/commit_push` step 6.
+`usage_bench_markers` is the list of folder-name fragments that mark a benchmark run's project folder, read by
+`tools/usage_report.py` so the report credits those runs to `bench` rather than `other` (empty: no project benchmark runs).
+`land_prefix` is the branch prefix whose pushes a project's land runner integrates and fast-forwards onto the
+default branch, with no proof run (empty: no runner), read by `hooks/git_guardrails.py` and `/commit_push` step 6.
+`main_check` names the workflow that proves the default branch after each push (empty: the project has none), read by
+`hooks/git_guardrails.py`: a project that declares one needs no local close before a harness push.
 `land_watch` is the command `/commit_push` step 6 starts after a land push to wait on the land and report it
 (`<land branch>` and `<pushed sha>` filled in; empty: no watcher).
 `regenerable_ignored` lists the project's ignored build outputs that a delete of an orphaned or retired worktree may
 discard: paths from the worktree root, `fnmatch` patterns, a listed directory covering everything under it; read by
 `hooks/_regenerable_clone.py` from the project root it judges for (empty: only the shared caches).
 
-Unknown keys are ignored everywhere.
+`gate_cadence` is a job's cadence data: `slice`, `merge` and `close` are command forms a rails' `Your checks` line
+prints verbatim, and `wide` holds one row per wide runner (invocation regex, exempt arguments, optional narrow rule,
+optional `hint` the deny prints as the narrow form to write instead). `reach` ({name, paths: [glob], cmd}),
+`reach_exempt` (globs) and `reach_fallback` (the full form) are the table `tools/reach_run.py` runs a slice from;
+`reach` and `reach_exempt` union across layers, so the harness layer's `.claude/**` entry reaches every consumer.
+`gate_cadence_errors` validates the merged table; `hooks/_dispatch_checks.py` and `hooks/wide_test_guard.py`
+read it through `hooks/_wide_runs.py`, `tools/guard_text.py` reads `slice`, `merge` and `close` directly for
+its `Your checks` line, and a malformed row fails `get gate_cadence` (exit 1).
+`drift_scan` is the config of `tools/drift_scan.py` ({sources, consumers, min_length, ignore}; empty: not configured).
+`gate_cadence.main` ({command: argv list, retry_exits: [int], outputs: [path]}) is the gate `scripts/main_check.py` runs on the default
+branch after a land (absent: the project runs none); exit 0 passes, exit 1 fails and names each failed test as a
+`FAILED_TEST=<id>` stdout line, an exit in `retry_exits` is rerun once, any other exit is no verdict, and `outputs` are
+paths the gate writes, which owe no gate when a range changes only them and harness paths.
+
+Unknown top-level keys are ignored; the `gate_cadence` table rejects its own unknown keys (`gate_cadence_errors`).
 """
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -93,9 +112,13 @@ DEFAULTS: dict = {
     "lens_preloads": {},
     "index_prebuild": [],
     "usage_reset": {"weekday": "sunday", "hour": 13},
+    "usage_bench_markers": [],
     "land_prefix": "",
+    "main_check": "",
     "land_watch": "",
     "regenerable_ignored": [],
+    "gate_cadence": {"slice": [], "merge": [], "close": [], "wide": []},
+    "drift_scan": {},
     "rigor_defaults": {
         "harness": {"paths": [".claude/**"], "level": "normal"},
         "side-tools": {"paths": ["tools/**", "scripts/**", ".claude/tools/**", ".claude/scripts/**"], "level": "light"},
@@ -138,11 +161,167 @@ _TYPES: dict = {
     "lens_preloads": dict,
     "index_prebuild": list,
     "usage_reset": dict,
+    "usage_bench_markers": list,
     "land_prefix": str,
+    "main_check": str,
     "land_watch": str,
     "regenerable_ignored": list,
+    "gate_cadence": dict,
+    "drift_scan": dict,
     "rigor_defaults": dict,
 }
+
+
+CADENCE_KEYS = ("slice", "merge", "close", "wide", "reach", "reach_exempt", "reach_fallback", "main")
+
+
+def _regex_error(pattern, where: str, one_group: bool = False):
+    """The error for a value that must be a compiling regex, or [] when it is one."""
+    if not isinstance(pattern, str) or not pattern.strip():
+        return ["%s is not a non-empty string" % where]
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        return ["%s does not compile: %s" % (where, exc)]
+    if one_group and compiled.groups != 1:
+        return ["%s needs exactly one capturing group, has %d" % (where, compiled.groups)]
+    return []
+
+
+def _cadence_list(value, key: str) -> list:
+    rows = value.get(key, [])
+    if not isinstance(rows, list):
+        return ["%s is not a list" % key]
+    return ["%s[%d] is not a non-empty string" % (key, index)
+            for index, row in enumerate(rows) if not isinstance(row, str) or not row.strip()]
+
+
+def _wide_row_errors(index: int, row) -> list:
+    where = "wide[%d]" % index
+    if not isinstance(row, dict):
+        return ["%s is not an object" % where]
+    errors = []
+    unknown = sorted(set(row) - {"runner", "exempt", "narrow", "hint"})
+    if unknown:
+        errors.append("%s has unknown keys %s" % (where, ", ".join(unknown)))
+    if "hint" in row and (not isinstance(row["hint"], str) or not row["hint"].strip()):
+        errors.append("%s.hint is not a non-empty string" % where)
+    errors += _regex_error(row.get("runner"), where + ".runner")
+    exempt = row.get("exempt", [])
+    if not isinstance(exempt, list):
+        errors.append("%s.exempt is not a list" % where)
+    else:
+        for at, pattern in enumerate(exempt):
+            errors += _regex_error(pattern, "%s.exempt[%d]" % (where, at))
+    narrow = row.get("narrow")
+    if narrow is None:
+        return errors
+    if not isinstance(narrow, dict):
+        return errors + ["%s.narrow is not an object or null" % where]
+    if set(narrow) not in ({"requires"}, {"declared"}):
+        return errors + ["%s.narrow needs exactly one of requires|declared" % where]
+    if "requires" in narrow:
+        terms = narrow["requires"]
+        if not isinstance(terms, list) or not terms:
+            return errors + ["%s.narrow.requires is not a non-empty list" % where]
+        for at, pattern in enumerate(terms):
+            errors += _regex_error(pattern, "%s.narrow.requires[%d]" % (where, at))
+        return errors
+    declared = narrow["declared"]
+    if not isinstance(declared, dict):
+        return errors + ["%s.narrow.declared is not an object" % where]
+    unknown = sorted(set(declared) - {"arg", "glob", "decl", "admit"})
+    if unknown:
+        errors.append("%s.narrow.declared has unknown keys %s" % (where, ", ".join(unknown)))
+    for field in ("arg", "glob"):
+        if not isinstance(declared.get(field), str) or not declared[field].strip():
+            errors.append("%s.narrow.declared.%s is not a non-empty string" % (where, field))
+    decl = declared.get("decl")
+    if not isinstance(decl, list) or not decl:
+        errors.append("%s.narrow.declared.decl is not a non-empty list" % where)
+    else:
+        for at, pattern in enumerate(decl):
+            errors += _regex_error(pattern, "%s.narrow.declared.decl[%d]" % (where, at), one_group=True)
+    admit = declared.get("admit")
+    if not isinstance(admit, list):
+        errors.append("%s.narrow.declared.admit is not a list" % where)
+    else:
+        for at, pattern in enumerate(admit):
+            errors += _regex_error(pattern, "%s.narrow.declared.admit[%d]" % (where, at))
+    return errors
+
+
+def _reach_errors(value) -> list:
+    errors = []
+    rows = value.get("reach", [])
+    if not isinstance(rows, list):
+        return ["reach is not a list"]
+    for index, row in enumerate(rows):
+        where = "reach[%d]" % index
+        if not isinstance(row, dict):
+            errors.append("%s is not an object" % where)
+            continue
+        unknown = sorted(set(row) - {"name", "paths", "cmd"})
+        if unknown:
+            errors.append("%s has unknown keys %s" % (where, ", ".join(unknown)))
+        for field in ("name", "cmd"):
+            if not isinstance(row.get(field), str) or not row[field].strip():
+                errors.append("%s.%s is not a non-empty string" % (where, field))
+        paths = row.get("paths")
+        if not isinstance(paths, list) or not paths or not all(isinstance(g, str) and g.strip() for g in paths):
+            errors.append("%s.paths is not a non-empty list of globs" % where)
+    exempt = value.get("reach_exempt", [])
+    if not isinstance(exempt, list) or not all(isinstance(g, str) and g.strip() for g in exempt):
+        errors.append("reach_exempt is not a list of globs")
+    fallback = value.get("reach_fallback", "")
+    if not isinstance(fallback, str):
+        errors.append("reach_fallback is not a string")
+    return errors
+
+
+def _main_errors(value) -> list:
+    if "main" not in value:
+        return []
+    main = value["main"]
+    if not isinstance(main, dict):
+        return ["main is not an object"]
+    errors = []
+    unknown = sorted(set(main) - {"command", "retry_exits", "outputs"})
+    if unknown:
+        errors.append("main has unknown keys %s" % ", ".join(unknown))
+    command = main.get("command")
+    if not isinstance(command, list) or not command or not all(isinstance(a, str) and a.strip() for a in command):
+        errors.append("main.command is not a non-empty argv list of strings")
+    exits = main.get("retry_exits", [])
+    if not isinstance(exits, list) or not all(isinstance(e, int) and not isinstance(e, bool) for e in exits):
+        errors.append("main.retry_exits is not a list of integers")
+    outputs = main.get("outputs", [])
+    if not isinstance(outputs, list) or not all(isinstance(o, str) and o.strip() for o in outputs):
+        errors.append("main.outputs is not a list of paths")
+    return errors
+
+
+def gate_cadence_errors(value) -> list:
+    """Shape errors of a merged `gate_cadence` value; [] when it is valid.
+    Per-VALUE validation is each consumer's own job (`load()` stays lenient); this function is that job for the
+    cadence table."""
+    if not isinstance(value, dict):
+        return ["is not an object"]
+    errors = []
+    unknown = sorted(set(value) - set(CADENCE_KEYS))
+    if unknown:
+        errors.append("has unknown keys %s" % ", ".join(unknown))
+    for key in ("slice", "merge", "close"):
+        errors += _cadence_list(value, key)
+    errors += _reach_errors(value)
+    errors += _main_errors(value)
+    wide = value.get("wide", [])
+    if not isinstance(wide, list):
+        errors.append("wide is not a list")
+    else:
+        for index, row in enumerate(wide):
+            errors += _wide_row_errors(index, row)
+    return errors
 
 
 def adaptation_path(claude_dir) -> Path:
@@ -254,6 +433,12 @@ def main(argv=None) -> int:
         print(f"adaptation: unknown key '{key}'", file=sys.stderr)
         return 2
     value = get(claude_dir, key)
+    if verb == "get" and key == "gate_cadence":
+        errors = gate_cadence_errors(value)
+        if errors:
+            for error in errors:
+                print("adaptation: gate_cadence %s" % error, file=sys.stderr)
+            return 1
     if verb == "get":
         if isinstance(value, list):
             for item in value:

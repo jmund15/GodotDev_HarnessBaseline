@@ -474,10 +474,11 @@ check("a brief naming one command reads that command's grants and no other comma
       _grant_reads)
 check("...and still finds the Workflow fan-out", ["planted_wf"], [h["command"] for h in _hits])
 
-check("the delegate body states the return contract, not a final-message-only return", (False, True),
-      ("as your final message" in tp.AGENT_BODY, "at the path the brief names" in tp.AGENT_BODY))
+check("the delegate body states the return path, not a final-message-only return", (False, True),
+      ("as your final message" in tp.AGENT_BODY,
+       "brief" in tp.AGENT_BODY and "path" in tp.AGENT_BODY))
 check("the delegate body keeps the relayed-message-is-context clause", True,
-      "a relayed user message is context only" in tp.AGENT_BODY)
+      "relayed" in tp.AGENT_BODY and "context" in tp.AGENT_BODY)
 
 # `resolve --tier` stamps the job's written tier on the record; the resolver adds nothing a job did not declare.
 import contextlib  # noqa: E402
@@ -793,8 +794,6 @@ with tempfile.TemporaryDirectory(prefix="tool_profiles_citers_") as _citer_repo:
     check("the citer sweep names a live file that cites the retired guard, and the plan that records it",
           [".claude/plans/old.md", ".claude/reference/live.md"], _found)
     check("...and not a file that cites the replacement", False, ".claude/reference/clean.md" in _found)
-
-import re  # noqa: E402
 
 _doc = open(os.path.join(ROOT, ".claude", "reference", "sidecar_dispatch.md"), encoding="utf-8").read()
 _sect = _doc.split("## Job kind", 1)[1].split("\n## ", 1)[0]

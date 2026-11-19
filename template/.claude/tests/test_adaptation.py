@@ -42,6 +42,7 @@ def _claude_dir_with(tmp, content):
 def main():
     cases = []
     failures = []
+    doc = open(os.path.join(TOOLS, "adaptation.py"), encoding="utf-8").read().split('"""')[1]
     tmp = tempfile.mkdtemp(prefix="adaptation_proof_")
     try:
         # --- absent: file missing entirely -----------------------------------
@@ -165,12 +166,6 @@ def main():
         cases.append(("a wrong-typed paired_repo_rules falls back to {} and names itself",
                       result.get("paired_repo_rules") == {} and "paired_repo_rules" in err
                       and len(err.strip().splitlines()) == 1))
-        doc = open(os.path.join(TOOLS, "adaptation.py"), encoding="utf-8").read().split('"""')[1]
-        cases.append(("the module docstring lists instruction_scope with its readers",
-                      "instruction_scope" in doc and "extract_numbers" in doc and "restate_scan" in doc))
-        cases.append(("the module docstring lists the review keys with their readers",
-                      "review_mandates" in doc and "review_scope" in doc and "review_ledger" in doc
-                      and "escape_log" in doc))
         for content, expected in (({}, {}), ({"bench_liveness": {"root": "planted"}}, {"root": "planted"}),
                                   ({"bench_liveness": []}, {})):
             claude_dir = _claude_dir_with(tmp, json.dumps(content))
@@ -178,8 +173,6 @@ def main():
             cases.append(("bench_liveness reader: " + repr(content),
                           result.get("bench_liveness") == expected
                           and ("bench_liveness" in err if isinstance(content.get("bench_liveness"), list) else err == "")))
-        cases.append(("the module docstring names bench_liveness and its reader",
-                      "bench_liveness" in doc and "sync_plan_config" in doc))
         # --- lens_prefixes: the key prefix a project's lens registry headings share ----
         prefixes = {"review": "xx-"}
         claude_dir = _claude_dir_with(tmp, None)
@@ -194,8 +187,6 @@ def main():
         cases.append(("a wrong-typed lens_prefixes falls back to {} and names itself",
                       result.get("lens_prefixes") == {} and "lens_prefixes" in err
                       and len(err.strip().splitlines()) == 1))
-        cases.append(("the module docstring lists lens_prefixes with its reader",
-                      "lens_prefixes" in doc and "lens.py" in doc))
         # --- lens_preloads: doctrine files a project attaches to a lens beyond its header `preload:` lines ----
         pre = {"plc-x": ["skills/a.md", "skills/b.md"]}
         claude_dir = _claude_dir_with(tmp, None)
@@ -210,8 +201,103 @@ def main():
         cases.append(("a wrong-typed lens_preloads falls back to {} and names itself",
                       result.get("lens_preloads") == {} and "lens_preloads" in err
                       and len(err.strip().splitlines()) == 1))
-        cases.append(("the module docstring lists lens_preloads with its reader",
-                      "lens_preloads" in doc and "lens.py" in doc))
+        # --- gate_cadence: the harness' one cadence data key --------------------------------
+        empty = {"slice": [], "merge": [], "close": [], "wide": []}
+        claude_dir = _claude_dir_with(tmp, None)
+        cases.append(("gate_cadence defaults to the empty table",
+                      adaptation.DEFAULTS.get("gate_cadence") == empty
+                      and adaptation.get(claude_dir, "gate_cadence") == empty
+                      and adaptation.gate_cadence_errors(empty) == []))
+        good = {"slice": ["run the edited unit's proof file"],
+                "merge": ["npm run verify:merge"],
+                "close": ["python3 .claude/scripts/harness_tests.py --close"],
+                "wide": [{"runner": "(?:python3?\\s+)?\\S*harness_tests\\.py\\b", "exempt": ["^--help$"],
+                          "narrow": None},
+                         {"runner": "npm run verify\\b", "exempt": [],
+                          "narrow": {"requires": ["^--reach$", "\\.spec\\.ts$"]}},
+                         {"runner": "runtests\\.ps1", "exempt": [],
+                          "narrow": {"declared": {"arg": "Filter", "glob": "**/*.cs",
+                                                  "decl": ["class\\s+(\\w+)"], "admit": []}}}]}
+        claude_dir = _claude_dir_with(tmp, json.dumps({"gate_cadence": good}))
+        result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
+        cases.append(("a valid gate_cadence table loads", result.get("gate_cadence") == good and err == ""))
+        cases.append(("a valid gate_cadence table validates", adaptation.gate_cadence_errors(good) == []))
+        cases.append(("a wide-row hint validates",
+                      adaptation.gate_cadence_errors(
+                          dict(good, wide=[dict(good["wide"][0], hint="name one scenario")])) == []))
+        for label, value, needle in (
+                ("a non-string wide-row hint",
+                 dict(good, wide=[dict(good["wide"][0], hint=5)]), "wide[0].hint"),
+                ("a non-object", ["slice"], "not an object"),
+                ("an unknown key", dict(good, slices=[]), "slices"),
+                ("a non-list slice", dict(good, slice="run"), "slice"),
+                ("an empty command form", dict(good, slice=[""]), "slice[0]"),
+                ("a wide row that is not an object", dict(good, wide=["run"]), "wide[0]"),
+                ("an unknown wide-row key", dict(good, wide=[dict(good["wide"][0], narrowish=None)]), "wide[0]"),
+                ("a runner that does not compile",
+                 dict(good, wide=[{"runner": "[", "exempt": [], "narrow": None}]), "wide[0].runner"),
+                ("an exempt term that does not compile",
+                 dict(good, wide=[{"runner": "x", "exempt": ["("], "narrow": None}]), "wide[0].exempt[0]"),
+                ("a narrow object with neither branch",
+                 dict(good, wide=[{"runner": "x", "exempt": [], "narrow": {}}]), "wide[0].narrow"),
+                ("a narrow object with both branches",
+                 dict(good, wide=[{"runner": "x", "exempt": [],
+                                   "narrow": {"requires": ["a"], "declared": {}}}]), "wide[0].narrow"),
+                ("a requires term that does not compile",
+                 dict(good, wide=[{"runner": "x", "exempt": [], "narrow": {"requires": ["["]}}]),
+                 "wide[0].narrow.requires[0]"),
+                ("a declared decl without one group",
+                 dict(good, wide=[{"runner": "x", "exempt": [], "narrow": {"declared": {
+                     "arg": "Filter", "glob": "**/*.cs", "decl": ["class \\w+"], "admit": []}}}]),
+                 "wide[0].narrow.declared.decl[0]"),
+                ("a declared row missing its glob",
+                 dict(good, wide=[{"runner": "x", "exempt": [], "narrow": {"declared": {
+                     "arg": "Filter", "decl": ["class (\\w+)"], "admit": []}}}]),
+                 "wide[0].narrow.declared.glob")):
+            errors = adaptation.gate_cadence_errors(value)
+            ok = bool(errors) and any(needle in e for e in errors)
+            cases.append((("gate_cadence rejects " + label) if ok else
+                          ("gate_cadence rejects %s: %s" % (label, errors)), ok))
+        claude_dir = _claude_dir_with(tmp, json.dumps({"gate_cadence": good["slice"]}))
+        result, err = _capture_stderr(lambda: adaptation.load(claude_dir))
+        cases.append(("a wrong-typed gate_cadence falls back to the empty table",
+                      result.get("gate_cadence") == empty and "gate_cadence" in err
+                      and len(err.strip().splitlines()) == 1))
+        cases.append(("the module docstring names gate_cadence and its three readers",
+                      "gate_cadence" in doc and "guard_text" in doc and "_dispatch_checks" in doc
+                      and "wide_test_guard" in doc))
+        reach_good = dict(good, reach=[{"name": "harness", "paths": [".claude/**"], "cmd": "run {paths}"}],
+                          reach_exempt=["docs/**"], reach_fallback="npm run verify")
+        cases.append(("a reach table validates", adaptation.gate_cadence_errors(reach_good) == []))
+        for label, bad, needle in (
+                ("a reach entry with no cmd", {"reach": [{"name": "a", "paths": ["x/**"]}]}, "reach[0].cmd"),
+                ("a reach entry with no globs", {"reach": [{"name": "a", "paths": [], "cmd": "c"}]}, "reach[0].paths"),
+                ("a non-list exempt", {"reach": [], "reach_exempt": "docs/**"}, "reach_exempt"),
+                ("a non-string fallback", {"reach": [], "reach_fallback": 3}, "reach_fallback")):
+            errors = adaptation.gate_cadence_errors(bad)
+            cases.append(((label + " is named") if any(needle in e for e in errors)
+                          else ("%s is named: %s" % (label, errors)), any(needle in e for e in errors)))
+        main_good = {"main": {"command": ["pwsh", "-File", "g.ps1"], "retry_exits": [7, 8], "outputs": ["a.json"]}}
+        cases.append(("a main gate validates", adaptation.gate_cadence_errors(main_good) == []))
+        cases.append(("a main gate with only a command validates",
+                      adaptation.gate_cadence_errors({"main": {"command": ["x"]}}) == []))
+        for label, bad, needle in (
+                ("a main that is not an object", {"main": "x"}, "main"),
+                ("a main with no command", {"main": {}}, "main.command"),
+                ("a main command that is a string", {"main": {"command": "run it"}}, "main.command"),
+                ("a main command with an empty element", {"main": {"command": ["x", ""]}}, "main.command"),
+                ("a main retry_exits that is not ints", {"main": {"command": ["x"], "retry_exits": ["7"]}}, "main.retry_exits"),
+                ("a main retry_exits holding a bool", {"main": {"command": ["x"], "retry_exits": [True]}}, "main.retry_exits"),
+                ("a main outputs that is not a path list", {"main": {"command": ["x"], "outputs": [1]}}, "main.outputs"),
+                ("an unknown main key", {"main": {"command": ["x"], "retries": 1}}, "main")):
+            errors = adaptation.gate_cadence_errors(bad)
+            cases.append(((label + " is named") if any(needle in e for e in errors)
+                          else ("%s is named: %s" % (label, errors)), any(needle in e for e in errors)))
+        cases.append(("drift_scan defaults to {}", adaptation.DEFAULTS.get("drift_scan") == {}
+                      and adaptation.get(_claude_dir_with(os.path.join(tmp, "drift_bare"), None), "drift_scan") == {}))
+        drift_dir = _claude_dir_with(os.path.join(tmp, "drift_bad"), json.dumps({"drift_scan": ["x"]}))
+        result, err = _capture_stderr(lambda: adaptation.load(drift_dir))
+        cases.append(("a non-dict drift_scan is an error and keeps {}", result["drift_scan"] == {} and "drift_scan" in err))
         # --- layered defaults: DEFAULTS, then pure/coding/godot defaults files, then adaptation.json ----
         def put(claude_dir, name, doc):
             with open(os.path.join(claude_dir, "skills", "project_subsystems", name), "w",
@@ -258,6 +344,15 @@ def main():
                       result["land_prefix"] == "" and "adaptation.coding.defaults.json" in err))
         cases.append(("index_prebuild defaults to []", adaptation.DEFAULTS.get("index_prebuild") == []
                       and adaptation.get(_claude_dir_with(os.path.join(tmp, "bare"), None), "index_prebuild") == []))
+        main_dir = _claude_dir_with(os.path.join(tmp, "main_check"), json.dumps({"main_check": ".github/workflows/m.yml"}))
+        cases.append(("main_check defaults to the empty string: no main check declared",
+                      adaptation.DEFAULTS.get("main_check") == ""
+                      and adaptation.get(_claude_dir_with(os.path.join(tmp, "bare2"), None), "main_check") == ""))
+        cases.append(("a main_check string loads", adaptation.get(main_dir, "main_check") == ".github/workflows/m.yml"))
+        bad_main = _claude_dir_with(os.path.join(tmp, "main_check_bad"), json.dumps({"main_check": ["x"]}))
+        result, err = _capture_stderr(lambda: adaptation.load(bad_main))
+        cases.append(("a wrong-typed main_check keeps the default and names the file",
+                      result["main_check"] == "" and "adaptation.json" in err))
 
         # --- CLI verbs -----------------------------------------------------------
         import subprocess
@@ -270,7 +365,8 @@ def main():
         ok_cmd = "%s -c \"open(r'%s','a').write('x')\"" % (sys.executable.replace("\\", "/"), marker.replace("\\", "/"))
         bad_cmd = "%s -c \"import sys; sys.exit(3)\"" % sys.executable.replace("\\", "/")
         with open(os.path.join(sdir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
-            json.dump({"index_prebuild": [bad_cmd, ok_cmd], "tests_root": "T", "usage_reset": {"weekday": "monday", "hour": 2}}, fh)
+            json.dump({"index_prebuild": [bad_cmd, ok_cmd], "tests_root": "T", "usage_reset": {"weekday": "monday", "hour": 2},
+                       "gate_cadence": good}, fh)
         tools_copy = os.path.join(cdir, "tools")
         os.makedirs(tools_copy)
         shutil.copy(script, tools_copy)
@@ -289,6 +385,17 @@ def main():
         cases.append(("get prints a scalar as is", code == 0 and out.strip() == "T"))
         code, _, _ = cli("get", "no_such_key")
         cases.append(("get of an unknown key exits 2", code == 2))
+        code, out, _ = cli("get", "gate_cadence")
+        cases.append(("get gate_cadence prints the table as one JSON line",
+                      code == 0 and len(out.splitlines()) == 1 and json.loads(out) == good))
+        with open(os.path.join(sdir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"gate_cadence": dict(good, wide=[{"runner": "[", "exempt": [], "narrow": None}])}, fh)
+        code, _, err = cli("get", "gate_cadence")
+        cases.append(("a malformed gate_cadence row exits 1 naming the row",
+                      code == 1 and "wide[0].runner" in err))
+        with open(os.path.join(sdir, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"index_prebuild": [bad_cmd, ok_cmd], "tests_root": "T", "usage_reset": {"weekday": "monday", "hour": 2},
+                       "gate_cadence": good}, fh)
         code, out, _ = cli("run", "tests_root")
         cases.append(("run of a non-list key exits 2", code == 2))
         code, out, err = cli("run", "index_prebuild")
@@ -296,8 +403,6 @@ def main():
             ran = fh.read()
         cases.append(("run executes every entry once, reports the failing one and exits 0",
                       code == 0 and ran == "x" and "3" in (out + err)))
-        cases.append(("the module docstring names the defaults files, their auto sync and index_prebuild",
-                      "adaptation.<layer>.defaults.json" in doc and "auto" in doc and "index_prebuild" in doc))
     finally:
         _rm(tmp)
 

@@ -20,6 +20,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import _hook_call
 import _settings_probe
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
@@ -154,11 +155,8 @@ def run_hook(tmp, payload, env_extra=None):
     env = dict(os.environ, CLAUDE_PROJECT_DIR=tmp, PYTHONIOENCODING="utf-8")
     env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
     env.update(env_extra or {})
-    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload).encode("utf-8"),
-                       capture_output=True, env=env, timeout=120)
-    out = (r.stdout or b"").decode("utf-8", errors="replace")
-    err = (r.stderr or b"").decode("utf-8", errors="replace")
-    return out, r.returncode != 0 or "Traceback" in err
+    code, out, err, _ = _hook_call.call(HOOK, payload, env=env)
+    return out, code != 0 or "Traceback" in err
 
 
 CHECKPOINTING = os.path.join(HERE, "..", "skills", "orchestration", "reference", "checkpointing.md")
@@ -209,7 +207,7 @@ def summary_fidelity_cases():
 
 def heavy_rows(count=30):
     """Mid-length owner messages: the anchor prints its ends whole and clips or omits the middle."""
-    return [user(f"Heavy owner message {n}. " + "detail " * 35 + f"END{n}") for n in range(count)]
+    return [user(f"Heavy owner message {n}. " + "detail " * 60 + f"END{n}") for n in range(count)]
 
 
 def whole_in_anchor(tmp, transcript, session):

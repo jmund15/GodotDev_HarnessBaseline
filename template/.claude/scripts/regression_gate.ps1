@@ -130,7 +130,7 @@ Set-StrictMode -Version Latest
 # module-missing exits print it through Exit-ModuleMissing, and -Help prints every row.
 $script:VerdictRows = [ordered]@{
     'PASS'        = @{ code = 0;   meaning = 'All tiers clear.'; next = 'Proceed. Stage any baseline diff.' }
-    'STATIC_PASS' = @{ code = 0;   meaning = 'Preflight, guards, build and DOCS passed. The .cs gate is NOT satisfied.'; next = 'Run the full gate before any .cs commit.' }
+    'STATIC_PASS' = @{ code = 0;   meaning = 'Preflight, guards, build and DOCS passed. The .cs gate is NOT satisfied.'; next = 'The main check runs the full gate after the land; run one locally only to reproduce a main-check red (change_control §Gate cadence).' }
     'FAIL'        = @{ code = 1;   meaning = 'Real test failures.'; next = 'Follow regression_gate.md §Failure handling: repair in-scope failures, then re-run the failing -Filter.' }
     'INVALID'     = @{ code = 2;   meaning = 'Silent-skip signature or below the architectural floor. Counts are untrustworthy.'; next = 'Do not read the counts. Verify the affected surface per change_control §Gate cadence, then re-run.' }
     'WARN'        = @{ code = 3;   meaning = 'Unexplained count drop. Baseline not written.'; next = 'Fix any counting or ratchet defect and re-verify. Ask the user only to accept lost coverage.' }
@@ -364,12 +364,17 @@ function Complete-Gate {
     # Ledger record — the ONLY writer of completed-run results. Written BEFORE the locks are released below, so a gate
     # waiting on this checkout takes the lock and finds this verdict for its REUSE re-check. Best-effort: a record-write
     # hiccup must never fail a gate.
+    $ft = @()
     try {
         $ft = @($script:ReusedFailedTests)
         foreach ($k in $suiteResults.Keys) {
             $sr = $suiteResults[$k]
             if ($sr.r.failedTests) { $ft += @($sr.r.failedTests) }
         }
+    } catch { }
+    # The ledger's failed tests, one stdout line each: a main check reads the verdict from exit code plus these lines.
+    foreach ($id in $ft) { Emit "FAILED_TEST=$id" }
+    try {
         $snapshot = $null
         if ($Verdict -eq 'PASS' -and -not $isCommentPass -and -not $script:ReusedFrom -and
             $script:Mode -like 'full*' -and $script:RunTree -and (Get-Command New-CommentGateSnapshot -ErrorAction SilentlyContinue)) {
@@ -1252,7 +1257,7 @@ if (Test-InteractiveSessionLocked) {
 
 # ---------------------------------------------------------------- static guards
 Enter-Stage 'guards'
-$guardRun = Invoke-StaticGuards -Repo $repo -Hooks $hooks -Py $py
+$guardRun = Invoke-StaticGuards -Repo $repo -Hooks $hooks -Py $py -FullGate
 foreach ($line in $guardRun.Details) { Add-Detail $line }
 Emit "GUARDS $($guardRun.Results -join ' ')"
 if ($guardRun.Unavailable) { Complete-Gate 'INVALID' 2 }

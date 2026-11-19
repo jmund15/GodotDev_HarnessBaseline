@@ -166,7 +166,9 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
     || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
   const quoteArg = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'"
-  const identity = JSON.stringify([mode, items.map(keyOf)])
+  // The verifier finds its journal by this label, and every review numbers its findings F1..Fn: the run's own report
+  // path keeps two runs with the same ids apart, and a resumed run keeps its label.
+  const identity = JSON.stringify([mode, out, items.map(keyOf)])
   let hash = 2166136261
   for (let i = 0; i < identity.length; i++) hash = Math.imul(hash ^ identity.charCodeAt(i), 16777619)
   const label = 'verify-' + (hash >>> 0).toString(36)
@@ -433,7 +435,7 @@ const BASE_CONTRACT = (l) => [
   RELAY_LINE,
   spills(l) ? 'Read-only: do NOT modify, create, or delete any file EXCEPT your own spill file, named in the SPILL-BEFORE-VALIDATE contract below.' : 'Read-only: do NOT modify, create, or delete any file.',
   CONCURRENT ? 'You are one of several lenses running CONCURRENTLY: do NOT run a single-flight tool (a test runner, build, engine or language server that allows one process per machine or per checkout; your delegate rails name this project\'s) — anchor with Grep and Read instead of a language server. Python and Node proofs under .claude/tests/ are not single-flight'
-    + (noShell(l) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file through `python3 .claude/tools/machine_slots.py run -- <proof command>`, not harness_tests.py (rules/harness_tooling.md).')
+    + (noShell(l) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file through `python3 .claude/tools/machine_slots.py run -- <proof command>` before you return (rules/harness_tooling.md).')
     + ' If your mandate needs a single-flight test run or call-site enumeration through a language server, report it as a gap; it needs a serialized dispatch.' : null,
   'You report STATE, never advice. A claim says what IS; it never says what should be built, fixed, or preferred. Recommendations are the orchestrator\'s to make from your claims.',
   '',

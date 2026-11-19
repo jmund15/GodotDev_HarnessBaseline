@@ -14,11 +14,14 @@ checkout path) or `claude-json` (~/.claude.json, read for that one key and never
 `unset` (exit 1, settings and local), `set`, `differs` (the home value is kept, exit 0), `manual` (the key is
 absent from ~/.claude.json: turn it on in the app) or `unreadable`; `install` adds only an absent key.
 `--repo` names the checkout.
-Exit codes: 0 green; 1 check finds a missing, unregistered or unset item, or lint and adopt find a
+A `file` item whose home copy is an earlier committed template reads `stale`, and `install` updates it; any
+other difference reads `drift` and is kept (`adopt <id>` carries it into the template).
+Exit codes: 0 green; 1 check finds a missing, stale, unregistered or unset item, or lint and adopt find a
 secret-shaped string, the home path or the user name; 2 a manifest, settings, write or refusal error
 (a manifest error writes nothing).
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -44,7 +47,7 @@ KIND_FIELDS = {
     "local": {"entries"},
 }
 COMMON_FIELDS = {"id", "kind", "note"}
-RED = {"missing", "unregistered", "unset"}
+RED = {"missing", "stale", "unregistered", "unset"}
 STORES = ("settings", "local", "claude-json")
 UNREADABLE = object()
 _replace = _hook_state.replace_path
@@ -194,6 +197,30 @@ def load_items(scope, home):
 
 def fold(data):
     return data.replace(b"\r\n", b"\n")
+
+
+def blob_id(data):
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def committed_blobs(template):
+    """Blob ids of every committed version of the template; empty when its history is unreadable, so an unknown
+    home copy stays `drift` and keeps its bytes."""
+    try:
+        done = subprocess.run(["git", "log", "--format=", "--raw", "--no-abbrev", "--", template.name],
+                              cwd=template.parent, capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if done.returncode:
+        return set()
+    return {line.split()[3] for line in done.stdout.decode("utf-8", "replace").splitlines()
+            if line.startswith(":") and len(line.split()) > 4}
+
+
+def is_stale(home_bytes, template):
+    """The home copy is an earlier committed template: the repo moved on and the home was never updated."""
+    blobs = committed_blobs(template)
+    return bool(blobs) and bool({blob_id(home_bytes), blob_id(fold(home_bytes))} & blobs)
 
 
 def write_atomic(path, data):
@@ -377,6 +404,9 @@ def inspect(items, home, scope, settings, repo=REPO):
                 row["detail"] = [copy]
             elif fold(dest.read_bytes()) == fold(template.read_bytes()):
                 row["status"] = "same"
+            elif is_stale(dest.read_bytes(), template):
+                row["status"] = "stale"
+                row["detail"] = ["install: python3 .claude/tools/user_scope.py install"]
             else:
                 row["status"] = "drift"
                 row["detail"] = [f"adopt: python3 .claude/tools/user_scope.py adopt {item['id']}",
@@ -447,9 +477,9 @@ def install(items, home, scope, repo=REPO):
                 write_atomic(backup, path.read_bytes())
             write_atomic(path, serialize_settings(settings))
     for item, row in zip(items, rows):
-        if row["status"] == "missing":
+        if row["status"] in ("missing", "stale"):
             write_atomic(dest_path(item, home), (scope / item["src"]).read_bytes())
-            actions.append({"id": row["id"], "action": "copied"})
+            actions.append({"id": row["id"], "action": "copied" if row["status"] == "missing" else "updated"})
         elif row["status"] == "unset" and item["kind"] == "env":
             set_user_env(item["name"], item["value"])
             actions.append({"id": row["id"], "action": "env-set"})

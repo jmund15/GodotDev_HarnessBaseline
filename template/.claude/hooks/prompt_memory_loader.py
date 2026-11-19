@@ -266,7 +266,7 @@ PLAN-PERMISSION MODE — gather context first: search auto-memory for gotchas, p
     # === EXECUTION MODE (High-Risk) ===
     elif is_high_risk(prompt):
         print("""<user-prompt-submit-hook>
-HIGH-RISK TASK — search auto-memory first (semantic-search if connected, else Grep, restrictToDir=.claude/auto-memory); identify domain(s) from CLAUDE.md, load matching Skills. Report: Skills: [invoked|auto-rules|N/A] | Memory: [query]. Re-search if scope grows.
+HIGH-RISK TASK — before acting, semantic-search .claude/auto-memory (else Grep) for this task's domain gotchas, load matching Skills, and re-search if scope grows. Report `Memory: <query|N/A> | Skills: <invoked|auto-rules|N/A>`.
 </user-prompt-submit-hook>""")
 
     # === EXECUTION MODE (Standard) ===

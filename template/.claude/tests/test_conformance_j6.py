@@ -27,7 +27,7 @@ class DispatchInterfaceTests(unittest.TestCase):
 
 
 class StopInvocationTests(unittest.TestCase):
-    def test_own_launch_passes_whatever_it_runs_and_an_unlaunched_task_is_denied(self):
+    def test_own_launch_passes_unless_paid_and_an_unlaunched_task_is_denied(self):
         commands = ["until test -s .claude/scratch/sidecar_fanout.py/out/a.record.json; do sleep 60; done",
                     "printf '%s' '.claude/tools/sidecar_fanout.py'",
                     "python3 .claude/tools/sidecar_fanout.py jobs.json",
@@ -35,9 +35,11 @@ class StopInvocationTests(unittest.TestCase):
         for command in commands:
             with self.subTest(command=command), patch.object(kill_guard, '_launch_of',
                     return_value=('Bash', {'command': command}, None)):
-                self.assertIsNone(kill_guard.taskstop_verdict(None, {'task_id': 'wait'}))
+                expected = 'ask' if 'python3 .claude/tools/sidecar_fanout.py jobs' in command else None
+                got = kill_guard.taskstop_decision(None, {'task_id': 'wait'})
+                self.assertEqual(got and got[0], expected)
         with patch.object(kill_guard, '_launch_of', return_value=None):
-            self.assertIn('no launch of task', kill_guard.taskstop_verdict(None, {'task_id': 'wait'}))
+            self.assertEqual(kill_guard.taskstop_decision(None, {'task_id': 'wait'})[0], 'deny')
 
 
 class TerminalStatusTests(unittest.TestCase):

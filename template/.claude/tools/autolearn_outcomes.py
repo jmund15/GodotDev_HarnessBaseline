@@ -85,8 +85,15 @@ def problems(row):
 
 
 def _targets(row):
-    """The file paths a row's target names (`;`-joined, with `#anchor` or a section name dropped)."""
-    return {t.split("#", 1)[0] for t in re.split(r"[;\s]+", str(row.get("target") or "")) if t}
+    """The file paths a row's target names: the first word of each `;`-joined part, its `#anchor` and a leading
+    `.claude/` dropped, so the words after a path name no path and both spellings of a harness file match."""
+    out = set()
+    for part in str(row.get("target") or "").split(";"):
+        words = part.split()
+        if words:
+            path = words[0].split("#", 1)[0]
+            out.add(path[len(".claude/"):] if path.startswith(".claude/") else path)
+    return out
 
 
 def open_recorded(rows, target):
@@ -170,10 +177,9 @@ def cmd_history(args):
     rows, bad = read_rows(args.file)
     if bad:
         print("autolearn_outcomes: %d unreadable row(s) in %s" % (bad, args.file), file=sys.stderr)
-    paths = set(args.target)
+    paths = _targets({"target": ";".join(args.target)})
     for r in rows:
-        tokens = re.split(r"[;\s]+", str(r.get("target") or ""))
-        if paths & {t.split("#", 1)[0] for t in tokens if t}:
+        if paths & _targets(r):
             print(json.dumps(r, ensure_ascii=False))
     return 0
 

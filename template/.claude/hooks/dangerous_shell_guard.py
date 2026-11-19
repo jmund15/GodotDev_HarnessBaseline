@@ -18,7 +18,9 @@ Exemptions, each judged on the resolved target and never on the command's wordin
   output, a pushed regenerable clone, a scratch folder holding no git repository and no registered
   worktree, a folder a proof planted under `.claude/tmp` (`is_proof_plant`, holding no git repository; the owner's loose files
   there stay protected), a retired worktree (nothing git lacks, every commit on a remote; its ignored
-  files go only when this session created it), or a `NAME=$(mktemp -d)` variable the same command owns.
+  files go only when this session created it), a `NAME=$(mktemp -d)` variable the same command owns, or a
+  folder a flagless `mkdir` of this session created (`_session_made_dir`: its transcript call succeeded and the
+  folder was born inside it), holding no git repository.
   Any chained second delete, glob in a directory part, `~`, `%` or unresolvable target disqualifies it, as
   does a target a live peer session works in, or a scratch target that is or holds another session's id folder.
 - A forced `rm` whose every target is a literal path proven ABSENT inside this project's
@@ -43,7 +45,8 @@ from _command_text import executable_text, executable_spans, command_words, _RED
 from _regenerable_clone import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
                                 is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
                                 session_created_worktree)
-from _git_commit import literal_assignments, expand_literal, resolve_cd  # noqa: E402
+from _git_commit import literal_assignments, expand_literal, resolve_cd, segments  # noqa: E402
+from _regenerable_clone import _timestamp  # noqa: E402
 
 
 # Dangerous command patterns — applied to BOTH the Bash and PowerShell tools
@@ -84,7 +87,7 @@ DANGEROUS_BASH_PATTERNS = [
 _CACHE_SEGMENTS = frozenset({".search-index", "__pycache__", ".pytest_cache"})
 _CACHE_PAIRS = frozenset({(".claude", ".cache"), (".claude", "logs")})
 _UNSAFE_PATH_CHARS = re.compile(r"[*?\[\]{}$~%]")
-_CACHE_HINT = " Allowed: caches, temp dirs, clean pushed scratch clones, retired worktrees (`orchestration` reference `worktrees.md`), scratch folders holding no git repository."
+_CACHE_HINT = " Allowed: caches, temp dirs, clean pushed scratch clones, retired worktrees (`orchestration` reference `worktrees.md`), scratch folders holding no git repository, folders this session made with a flagless mkdir."
 
 
 def _project_root() -> str:
@@ -407,11 +410,21 @@ def _is_own_session_scratch(token: str, cwd: str | None, transcript_path: str | 
     return rel.startswith(".claude/scratch/") and _inside_root(token, cwd)
 
 
+def _deletable_by_fact(target: str, here: str | None = None, transcript_path: str | None = None) -> bool:
+    """Every per-target fact that makes a recursive delete need no owner answer: a regenerable cache inside the
+    project, this session's own scratch output, a target holding nothing git cannot yield, or a folder a flagless
+    mkdir of this session created. One owner for the fact list, so a new class is one edit and both the token-level
+    and resolved evaluators admit it. The cheapest fact decides first; the transcript read comes last."""
+    return (_is_cache_path(target, here) or _is_own_session_scratch(target, here, transcript_path)
+            or _is_regenerable_target(target, here, transcript_path)
+            or _session_made_dir(target, here, transcript_path))
+
+
 def _is_safe_ephemeral_cleanup(scan: str, raw: str, cwd: str | None = None,
                                transcript_path: str | None = None) -> bool:
-    """True only for a single (non-chained) recursive delete whose every path argument is a
-    literal path at or under an allowlisted cache segment inside the repo (`_is_cache_path`) or a
-    regenerable scratch clone (`_is_regenerable_target`).
+    """True only for a single (non-chained) recursive delete whose every path argument satisfies
+    `_deletable_by_fact`: a regenerable cache inside the project, this session's own scratch output, a
+    target git cannot lose, or a folder this session's own mkdir made.
 
     Control operators are judged on the quote-blanked `scan`, so a chained second delete cannot
     ride along. Path arguments come from shell-tokenizing the unblanked `raw`, so a quoted literal
@@ -425,8 +438,7 @@ def _is_safe_ephemeral_cleanup(scan: str, raw: str, cwd: str | None = None,
     paths = [t for t in tokens
              if not t.startswith('-')
              and t.lower() not in ('rm', 'del', 'erase', 'ri', 'remove-item')]
-    return bool(paths) and all(_is_cache_path(p, cwd) or _is_own_session_scratch(p, cwd, transcript_path)
-                               or _is_regenerable_target(p, cwd, transcript_path) for p in paths)
+    return bool(paths) and all(_deletable_by_fact(p, cwd, transcript_path) for p in paths)
 
 
 def _forces_removal(args: list[str]) -> bool:
@@ -665,6 +677,77 @@ def _is_regenerable_or_scratch(path: str) -> bool:
     return any(p in _CACHE_SEGMENTS for p in lowered)
 
 
+def _mkdir_targets(command: str, cwd: str | None) -> list[str]:
+    """Normalized paths a flagless `mkdir` in `command` names, resolved through literal assignments and the
+    tracked `cd`. A heredoc body is data, so a `mkdir` written there names nothing."""
+    text = executable_text(command)
+    assignments = literal_assignments(text, cwd)
+    here, out = cwd, []
+    for segment in segments(text):
+        tokens = _cleanup_tokens(segment)
+        if not tokens:
+            continue
+        if tokens[0] == "cd" and len(tokens) == 2:
+            moved = expand_literal(tokens[1], assignments)
+            here = (resolve_cd(here, moved)
+                    if here is not None and moved and not _GLOB_CHARS.search(moved) else None)
+            continue
+        if tokens[0] != "mkdir" or here is None or len(tokens) < 2 or any(t.startswith("-") for t in tokens[1:]):
+            continue
+        for token in tokens[1:]:
+            value = expand_literal(token, assignments)
+            if value and not _UNSAFE_PATH_CHARS.search(value):
+                out.append(_norm(resolve_cd(here, value)))
+    return out
+
+
+def _session_made_dir(value: str, here: str, transcript_path: str | None) -> bool:
+    """`value`, resolved against `here`, is a folder a flagless `mkdir` of this session created: a main-thread Bash
+    call in the transcript names it, finished without error, and the folder's creation time lies inside that call.
+    A flagless `mkdir` fails on an existing path, so a folder born inside the window is the call's own. The folder
+    holds no git repository and no live peer session works in it. No creation time on this platform fails closed."""
+    if not transcript_path or here is None:
+        return False
+    target = _norm(resolve_cd(here, value))
+    try:
+        born = os.stat(target).st_birthtime
+    except (OSError, AttributeError):
+        return False
+    if not os.path.isdir(target) or _holds_git(target) or _peer_working_in(target, transcript_path):
+        return False
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    paths = [transcript_path] + ([os.path.join(os.path.dirname(transcript_path), sid + ".jsonl")] if sid else [])
+    for transcript in dict.fromkeys(paths):
+        pending = {}
+        try:
+            with open(transcript, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(row, dict) or row.get("isSidechain"):
+                        continue
+                    stamp = _timestamp(row)
+                    content = (row.get("message") or {}).get("content")
+                    for block in content if isinstance(content, list) else []:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "tool_use" and block.get("name") == "Bash":
+                            command = (block.get("input") or {}).get("command", "")
+                            if stamp is not None and "mkdir" in command \
+                                    and target in _mkdir_targets(command, row.get("cwd")):
+                                pending[block.get("id")] = stamp
+                        elif block.get("type") == "tool_result":
+                            start = pending.pop(block.get("tool_use_id"), None)
+                            if (start is not None and stamp is not None and not block.get("is_error")
+                                    and start <= born <= stamp):
+                                return True
+        except (OSError, TypeError, ValueError):
+            continue
+    return False
+
+
 def _is_regenerable_resolved(target: str, here: str) -> bool:
     return _is_regenerable_or_scratch(_norm(resolve_cd(here, target)))
 
@@ -787,9 +870,8 @@ def _check_bash_command(command: str, cwd: str | None, transcript_path: str | No
             if ('format' not in message.lower()
                     and (_is_safe_ephemeral_cleanup(scan, raw, cwd, transcript_path) or _is_owned_temp_cleanup(raw)
                          or _is_resolved_safe_cleanup(raw, cwd)
-                         or _is_resolved_safe_cleanup(raw, cwd, lambda value, here: (
-                             _is_cache_path(value, here) or _is_own_session_scratch(value, here, transcript_path)
-                             or _is_regenerable_target(value, here, transcript_path))))):
+                         or _is_resolved_safe_cleanup(
+                             raw, cwd, lambda value, here: _deletable_by_fact(value, here, transcript_path)))):
                 continue
             if 'recursive' in message.lower():
                 return True, (message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."

@@ -1,1 +1,18 @@
-{}
+{
+  "gate_cadence": {
+    "slice": ["for `.claude/**` units: the edited unit's proof file, run directly"],
+    "merge": [],
+    "reach": [
+      {"name": "harness", "paths": [".claude/**"], "cmd": "python3 .claude/scripts/harness_tests.py --proofs-for {paths}"}
+    ],
+    "close": ["python3 .claude/scripts/harness_tests.py --close"],
+    "wide": [
+      {
+        "runner": "(?i)(?:(?:python3?|py)\\s+)?(?:\\S*/)?harness_tests\\.py\\b",
+        "exempt": ["^--help$", "^--tiers$"],
+        "narrow": null,
+        "hint": "scoped proofs (`--for`/`--proofs-for`) run at the dispatcher's merge: dispatch a `gate` job with them"
+      }
+    ]
+  }
+}

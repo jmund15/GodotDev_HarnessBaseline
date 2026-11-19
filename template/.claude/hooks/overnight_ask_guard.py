@@ -438,8 +438,9 @@ def owner_return(payload):
     if owned_state(root, sid) is None:
         _remind_open(root, sid)
         return
-    if _OFF.search(body) or _REVIEW.search(body):
-        ended_by = "/overnight off" if _OFF.search(body) else "/overnight_review"
+    off = _OFF.search(body)
+    if off or _REVIEW.search(body):
+        ended_by = "/overnight off" if off else "/overnight_review"
         os.unlink(marker_path(root, sid))
         try:
             numbers = _session_open(root, sid)

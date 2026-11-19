@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import read_json_salvage, update_json_locked
+from _hook_state import fire_once_since_compaction, read_json_salvage, update_json_locked
 from _command_text import executable_text
 from _win_path import native_path
 
@@ -83,6 +83,14 @@ def sweep_stale_state(directory, keep=None, max_age_sec=7 * 24 * 3600):
                 os.unlink(path)
     except OSError:
         pass
+
+
+def gate_target(args, repo):
+    """The checkout the gate verifies: its `-Repo` value (relative to `repo`), else `repo`."""
+    for flag, value in zip(args, args[1:]):
+        if flag.lower() == '-repo' and value:
+            return os.path.join(repo, value)
+    return repo
 
 
 def gate_roots(repo):
@@ -178,6 +186,14 @@ def red_digest(root, session):
     return None
 
 
+def red_head(root, session):
+    """The commit (HEAD) the newest red of `session` ran at, else None. Read from the same ledger record as red_digest."""
+    rec = newest_ledger_record(root)
+    if rec is not None and rec.get('status') in ('FAIL', 'WARN') and rec.get('sessionId') == session:
+        return str(rec.get('head') or '').strip() or None
+    return None
+
+
 def open_red_at(repo):
     """Return (mtime, session, root) for a recent red in the newest gate artifact, else None.
 
@@ -217,29 +233,67 @@ UNCOVERED, UNREPAIRED, COVERED = 'uncovered', 'unrepaired', 'covered'
 # What the gate runs that the tree digest leaves out (`TreeDigest.ps1` excludes `.claude/` whole): the scripts it
 # dot-sources and invokes. A cache the interpreter regenerates beside them is not an input.
 GATE_INPUT_DIRS = ('.claude/scripts',)
+GATE_ROOT = 'regression_gate.ps1'
+# A script the gate names by a quoted literal (Join-Path arguments, dot-source paths).
+GATE_REF_RE = re.compile(r"""['"]([\w.-]+\.(?:ps1|psm1|py|json))['"]""")
 _REGENERATED = ('__pycache__',)
 
 
-def gate_inputs_changed_since(repo, since):
-    """True when a file the gate runs outside the tree digest was written after `since` (epoch seconds).
+def gate_run_files(repo):
+    """{name: path} of the GATE_INPUT_DIRS files the gate runs: GATE_ROOT and each script it names, transitively.
 
-    The digest cannot see such a file, so an unchanged digest does not show an unchanged gate: a repair in
-    `.claude/scripts` leaves it equal. The test is a write time, because the red records no content hash of these
-    files; an unreadable directory counts as unchanged, which keeps the flake deny.
+    Read from the gate's own source at hook time, so a new dot-source enters the set with no list to keep.
     """
+    found = {}
     for rel in GATE_INPUT_DIRS:
         for folder, dirs, files in os.walk(os.path.join(repo, rel)):
             dirs[:] = [d for d in dirs if d not in _REGENERATED]
             for name in files:
-                try:
-                    if os.path.getmtime(os.path.join(folder, name)) > since:
-                        return True
-                except OSError:
-                    continue
+                found.setdefault(name, os.path.join(folder, name))
+    run, pending = {}, [GATE_ROOT]
+    while pending:
+        name = pending.pop()
+        if name in run or name not in found:
+            continue
+        run[name] = found[name]
+        try:
+            pending.extend(GATE_REF_RE.findall(Path(found[name]).read_text(encoding='utf-8-sig', errors='replace')))
+        except OSError:
+            continue
+    return run
+
+
+def gate_inputs_changed_since(repo, since, head):
+    """True when a gate-run file outside the tree digest changed after the red taken at commit `head`.
+
+    The digest cannot see such a file, so an unchanged digest does not show an unchanged gate: a repair in
+    `.claude/scripts` leaves it equal. A gate-run file counts when its mtime is newer than `since` (epoch seconds)
+    AND its bytes differ from the blob at `head`; an absent blob differs. Bytes decide, so a touch that keeps the
+    red's content is no repair. An unknown or unreadable `head` proves nothing and counts as unchanged, which keeps
+    the flake deny.
+    """
+    if not head or subprocess.run(['git', '-C', repo, 'cat-file', '-e', head + '^{commit}'],
+                                  capture_output=True, timeout=10).returncode:
+        return False
+    for path in gate_run_files(repo).values():
+        try:
+            if os.path.getmtime(path) <= since:
+                continue
+        except OSError:
+            continue
+        rel = os.path.relpath(path, repo).replace(os.sep, '/')
+        # Blob ids, not raw bytes: git hashes the working file through the same filters `add` applies, so a line-ending
+        # setting alone reads as equal content.
+        was = subprocess.run(['git', '-C', repo, 'rev-parse', '-q', '--verify', '%s:%s' % (head, rel)],
+                             capture_output=True, text=True, timeout=10)
+        now = subprocess.run(['git', '-C', repo, 'hash-object', '--', rel],
+                             capture_output=True, text=True, timeout=10)
+        if was.returncode or now.returncode or was.stdout.strip() != now.stdout.strip():
+            return True
     return False
 
 
-def completed_narrow_covers_red(repo, red_at, red_tree=None, content_repo=None):
+def completed_narrow_covers_red(repo, red_at, red_tree=None, content_repo=None, red_head_sha=None):
     """Read runner-owned .green records from linked checkouts; bind coverage to content and TRX bytes.
 
     `repo` is the checkout holding the red; `content_repo` (default `repo`) is the checkout the fix is edited in.
@@ -291,7 +345,8 @@ def completed_narrow_covers_red(repo, red_at, red_tree=None, content_repo=None):
         covered = set().union(*(names for tree, names in candidates if tree == digest and digest))
         if not failures <= covered:
             return UNCOVERED
-        if red_tree and digest.lower() == red_tree and not gate_inputs_changed_since(str(content_repo or repo), red_at):
+        if red_tree and digest.lower() == red_tree and not gate_inputs_changed_since(
+                str(content_repo or repo), red_at, red_head_sha):
             return UNREPAIRED
         return COVERED
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -312,9 +367,9 @@ def allow():
     sys.exit(0)
 
 
-NO_MARKER = ("This full gate run declares no position (`# gate: final|prepush|checkpoint`). Between drive start "
-             "and drive close the expected gate count is zero: slice and Part-close verification is "
-             "`verify.ps1 -Scope <domains>`. Canon: change_control §Gate cadence.")
+NO_MARKER = ("This full gate run declares no position (`# gate: final|prepush|checkpoint`). The full gate runs in "
+             "the main check after a land; a session's local verification is `verify.ps1 -Scope <domains>` at each "
+             "lane, Part and drive close. Canon: change_control §Gate cadence.")
 
 RETIRED = """`%s` was deleted from the gate on 2026-08-20; the gate has no width knob.
 
@@ -340,10 +395,8 @@ and needs no further gate.
 Canon: change_control §Post-failure re-verification."""
 
 BROAD_FILTER = (
-    "Whole-tier test filter. Per-slice verification is blast-zone sized — narrow to "
-    "the sub-namespace the slice touched (e.g. `Tests.Integration.NPCs`), or use "
-    "`verify.ps1 -Scope <domain>`, unless you need the tier. A bare tier filter is the "
-    "close gate's job and holds this checkout's test lock and a runtime slot. "
+    "Whole-tier test filter: it holds this checkout's test lock and a runtime slot, and the drive-close scope run owns it. "
+    "Verify a slice with its sub-namespace (e.g. `Tests.Integration.NPCs`) or `verify.ps1 -Scope <domain>`. "
     "Canon: change_control §Gate cadence.")
 
 
@@ -452,7 +505,8 @@ def main():
             except (TypeError, ValueError):
                 narrow_at = 0.0
             # A failure listing that cannot be parsed names nothing to cover: any narrow run since the red clears it.
-            covered = completed_narrow_covers_red(red_root, red_at, red_digest(red_root, owner), repo)
+            covered = completed_narrow_covers_red(red_root, red_at, red_digest(red_root, owner),
+                                                  gate_target(args, repo), red_head(red_root, owner))
             if covered == UNREPAIRED:
                 deny(UNREPAIRED_FAIL)
             if (covered == UNCOVERED and retry_only and red_timeout_only(red_root)
@@ -475,7 +529,7 @@ def main():
         update_json_locked(path, lambda state: state.__setitem__("narrow_verify_at", time.time()))
         sweep_stale_state(os.path.dirname(path), keep=path)
 
-        if BROAD_FILTER_RE.search(command):
+        if BROAD_FILTER_RE.search(command) and fire_once_since_compaction(session or "", "gate_cadence:broad_filter"):
             emit({"additionalContext": BROAD_FILTER})
 
     allow()

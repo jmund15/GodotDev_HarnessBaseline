@@ -132,8 +132,8 @@ QUOTA_REFERENCE_ALIAS = 'sonnet'
 def quota_weight(model, data=None):
     """Plan-quota multiplier for a model id or alias, or None when unweighted."""
     data = data if data is not None else _registry()
-    row = model_registry.row_for_model(model, data)
-    ref = model_registry.row_for_model(QUOTA_REFERENCE_ALIAS, data)
+    row = model_registry.row_for_model(model, data, prefix=False)
+    ref = model_registry.row_for_model(QUOTA_REFERENCE_ALIAS, data, prefix=False)
     if row is None or ref is None or row['transport'] != ref['transport']:
         return None
     rates = [(r.get('price') or {}).get('outputPer1M') for r in (row, ref)]
@@ -899,6 +899,8 @@ def report_run(session, run_id):
     for r in seats:
         w(f"{r['label'][:52]:<52} {r['effort']:<7} {fmt(r.get('cw')):>8} {fmt(r.get('cr')):>8} "
           f"{fmt(r.get('out')):>7} {fmt(r.get('cost')):>9}")
+        for line in effort_lines(r):
+            w(line)
     total, known, unknown = _field_stats(seats, 'cost')
     w(f"seats: {len(seats)} | input-equivalent {fmt(total)} over {known} known"
       + (f' ({unknown} unknown)' if unknown else ''))
@@ -1058,7 +1060,37 @@ def _agent_base(rid, run, e, efforts, pins=None):
     for key in ('tier', 'pick', 'spec'):
         if recorded.get(key):
             base[key] = recorded[key]
+    base.update(_effort_fields(recorded))
     return base
+
+
+_EFFORT_ROW_KEYS = (('requestedEffort', 'effort_requested'), ('effortCase', 'effort_case'),
+                    ('justification', 'justification'), ('pick', 'pick'))
+
+
+def _effort_fields(record):
+    """The row keys of a record's effort fields (requested effort, case, justification, pick), from a PINS entry or a
+    fan-out inventory job. A field the record does not name is left out, so an old record reads as unknown."""
+    return {row_key: record[key] for key, row_key in _EFFORT_ROW_KEYS if record.get(key)}
+
+
+def effort_cells(row):
+    """The per-job effort columns a report prints: requested effort, ran effort, the case that decided it, the rating,
+    and the justification and pick when the record names them. A record that predates the fields prints `?`."""
+    return {'requested': row.get('effort_requested') or '?', 'ran': row.get('effort') or '?',
+            'case': row.get('effort_case') or '?', 'rating': outcome_of(row),
+            'justification': row.get('justification') or None, 'pick': row.get('pick') or None}
+
+
+def effort_lines(row):
+    """Indented report lines for one job's effort cells: the justification and pick only when present."""
+    cells = effort_cells(row)
+    lines = [f"    requested {cells['requested']} | ran {cells['ran']} | case {cells['case']} | rating {cells['rating']}"]
+    if cells['justification']:
+        lines.append(f"    justification: {cells['justification']}")
+    if cells['pick']:
+        lines.append(f"    pick: {cells['pick']}")
+    return lines
 
 
 def _session_candidate_rows(session_dir):
@@ -1698,6 +1730,15 @@ def pin_tokens(run):
     tokens = {}
     for line in run.get('logs') or []:
         s = str(line).strip()
+        if s.startswith('JUSTIFICATION '):
+            try:
+                raw = json.loads(s[len('JUSTIFICATION '):])
+            except ValueError:
+                continue
+            for label, text in (raw.items() if isinstance(raw, dict) else ()):
+                if isinstance(text, str) and text:
+                    tokens.setdefault(label, {})['justification'] = text
+            continue
         if not s.startswith('PINS '):
             continue
         try:
@@ -1712,6 +1753,10 @@ def pin_tokens(run):
                 entry['tier'] = _role_tier(tier.group(1)) or tier.group(1)
             for key in ('pick', 'spec'):
                 found = re.search(r'\b%s:(\S+)' % key, text)
+                if found and found.group(1) != '-':
+                    entry[key] = found.group(1)
+            for token, key in (('req', 'requestedEffort'), ('case', 'effortCase')):
+                found = re.search(r'\b%s:(\S+)' % token, text)
                 if found and found.group(1) != '-':
                     entry[key] = found.group(1)
     return {label: entry for label, entry in tokens.items() if entry}
@@ -2628,6 +2673,8 @@ def collect_session_sidecar(session, diagnostics=None, priced=True):
         row = _sidecar_record_row(path, record, diagnostics, claims, priced)
         if not row:
             continue
+        # The fan-out's inventory holds the effort fields its record lacks (`sidecar_fanout._inventory_job`).
+        row.update(_effort_fields(_inventory_job(os.path.dirname(path), expected_parent, path)))
         recorded_at = _iso_instant(row.get('timestamp'))
         if launched_at and (
                 not recorded_at
@@ -2844,6 +2891,8 @@ def report(rows, diagnostics=None, history=()):
         w(f"{r['phase'][:14]:<14} {r['label'][:30]:<30} {r['effort']:<7} {fmt(r.get('cost')):>8} "
           f"{fmt(r.get('out')):>7} {fmt(r.get('cr')):>8} {fmt(r.get('turns')):>6} "
           f"{fmt(r.get('tools')):>6} {secs}")
+        for line in effort_lines(r):
+            w(line)
     w('-' * 100)
     cost_total, cost_known, cost_unknown = _field_stats(rows, 'cost')
     _, out_known, _ = _field_stats(rows, 'out')
@@ -3204,6 +3253,8 @@ def report_sidecar(side):
             w(f"{r['label'][:30]:<30} {r['effort']:<6} {cell} "
               f"{fmt(r.get('inp')):>8} {fmt(r.get('out')):>8} {fmt(r.get('cr')):>8} "
               f"{fmt(r.get('turns')):>6} {secs} {r['state']:<10}")
+            for line in effort_lines(r):
+                w(line)
         w('-' * 101)
         priced = [r for r in rows if isinstance(r.get('cost_usd'), (int, float))]
         sub = sum(r['cost_usd'] for r in priced)

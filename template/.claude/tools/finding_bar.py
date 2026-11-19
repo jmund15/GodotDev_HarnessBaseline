@@ -14,13 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import triage  # noqa: E402
 
 RIGORS = triage.RIGORS
-BAR_PHRASES = (
-    "it is a defect that forces rework or a wrong result",
-    "it also is a significant gap",
-    "the Reporting Filter admits it at all",
-    "The bar decides which findings owe a later round and move a verdict, never what you report or where you look.",
-    "in doubt between two, take the lower",
-)
 _CLAUSE = {
     "light": "a defect that forces rework or a wrong result",
     "normal": "a defect that forces rework or a wrong result, or a significant gap",

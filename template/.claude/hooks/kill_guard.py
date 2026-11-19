@@ -11,10 +11,11 @@ cannot be read or the pattern cannot be resolved (an invalid regex, a Where-Obje
 from a variable or file, `.Kill()` and other in-language kills, and kills inside a script file the command runs.
 
 TaskStop decides on facts it observes in the transcript, never on owner wording (a stop verb, a keep word, an
-AskUserQuestion answer): it passes a task whose completion notice is already there (it stops nothing) and a task
-this session's main thread launched. Whether stopping a running task is wanted, paid work included, is the
-auto-mode classifier's to judge, as it is for `reap.py`. A task this session did not launch (a subagent's, a peer's)
-is denied: its own launcher or session stops it.
+AskUserQuestion answer): it passes a task whose completion notice is already there (it stops nothing) and an
+unpaid task this session's main thread launched. Running paid work this session launched (a Workflow, an Agent,
+a shell running a sidecar launcher) returns `ask`: the stop is the owner's call (CLAUDE.core.md §Shell Discipline),
+and reading the owner's words for consent failed repeatedly, so the permission prompt asks the owner directly.
+A task this session did not launch (a subagent's, a peer's) is denied: its own launcher or session stops it.
 
 A second floor guard in the same hook (class floor: it protects peer sessions) denies a Bash/PowerShell command
 that executes a terminal-window close by handle, title or host process (`window_close_verdict`). It has no
@@ -37,6 +38,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _background_tasks  # noqa: E402
 import _msys  # noqa: E402
+import foreground_wait_guard  # noqa: E402
 from _win_path import native_path  # noqa: E402
 
 # Killing any of these takes down work that cannot be resumed from where it stopped: a billed
@@ -69,13 +71,25 @@ TABLE_TIMEOUT_S = 10
 MAX_SCRIPT_BYTES = 512 * 1024
 SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|&\n(`]|\$\(")
 
-PID_RE = re.compile(r"(?:/PID|/pid|-PID)\s+(\d+)|(?:^|\s|;|&&|\|)kill\s+(?:-\w+\s+)?(\d+)\b")
+KILL_WORD = r"(?:^|[\s;&|(`])kill\s"
+# A quoted argument a shell-code reader runs is code; `_code_text` matches it unquoted. `body` is the program a
+# `-c` reader takes (`bash -lc '…'`, `pwsh -Command "…"`, `su root -c "…"`, `flock f -c`, `script -c`), `direct`
+# the first quoted argument of a reader that runs its arguments as a command (`eval "…"`, `watch -n 5 "…"`). The `-c`
+# readers are `foreground_wait_guard._SHELL_WORDS`, so `shell_code` and this match agree on which heads are readers.
+SHELL_PROGRAM_RE = re.compile(
+    r"""(?:^|(?<=[\s;&|(`]))(?:\S*[/\\])?(?:""" + "|".join(sorted(foreground_wait_guard._SHELL_WORDS)) + r""")(?:\.exe)?"""
+    r"""(?:\s+[^\s"';&|]+)*?\s+-[a-z]*c[a-z]*\s+(?P<body>"(?:\\.|[^"\\])*"|'[^']*')"""
+    r"""|(?:^|(?<=[\s;&|(`]))(?:eval|watch)(?:\s+[^\s"';&|]+)*?\s+(?P<direct>"(?:\\.|[^"\\])*"|'[^']*')""",
+    re.I | re.S)
+PID_RE = re.compile(r"(?:/PID|/pid|-PID)\s+(\d+)|" + KILL_WORD + r"+(?!-0\s)(?:-\w+\s+)?(\d+)\b")
 # settings.json gives this hook 20 s. Every PID lookup runs inside one budget under it; a lookup the
 # budget cannot afford resolves nothing, so the kill fails closed instead of the hook timing out open.
 HOOK_BUDGET_S = 15.0
 SUBPROCESS_TIMEOUT_S = 5
 NOT_LAUNCHED = ("BLOCKED TaskStop (CLAUDE.core.md §Shell Discipline) — no launch of task %s by this session's main thread is in the transcript "
                 "(a peer's or a subagent's task, or a transcript the hook cannot read). Stop it from the session or launcher that owns it.")
+PAID_RUNNING = ("Stop running paid work %s (%s)? Its finished agents' results stay on disk; its in-flight work is lost. "
+                "A stop of a running dispatch is the owner's call (CLAUDE.core.md §Shell Discipline).")
 
 
 def _launch_of(transcript_path, task_id):
@@ -147,10 +161,14 @@ def _local_path(token, cwd):
     return path if os.path.isabs(path) else os.path.join(cwd or os.getcwd(), path)
 
 
-def _fanout_calls(command):
+def _launcher_calls(command):
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
     import sidecar_argv
-    return [call for call in sidecar_argv.launcher_invocations(command) if call.kind == "fanout"]
+    return sidecar_argv.launcher_invocations(command)
+
+
+def _fanout_calls(command):
+    return [call for call in _launcher_calls(command) if call.kind == "fanout"]
 
 
 def _shell_segments(command):
@@ -244,13 +262,27 @@ def _process_table():
         return {}
 
 
-def taskstop_verdict(transcript_path, tool_input):
-    """None when the task ended (its completion notice is in the transcript) or this session's main thread
-    launched it. Whether stopping a running task is wanted is the auto-mode classifier's to judge."""
+def _paid(launch):
+    """True when the launch spends model quota: a Workflow, an Agent, or a shell running a sidecar launcher."""
+    tool, tool_input = launch[0], launch[1] if isinstance(launch[1], dict) else {}
+    if tool in ("Workflow", "Agent"):
+        return True
+    return tool in ("Bash", "PowerShell") and bool(_launcher_calls(tool_input.get("command") or ""))
+
+
+def taskstop_decision(transcript_path, tool_input):
+    """(decision, reason), or None to pass. Passes a task whose completion notice is in the transcript and an
+    unpaid task this session's main thread launched; asks the owner for running paid work this session launched;
+    denies any other task."""
     task_id = (tool_input or {}).get("task_id") if isinstance(tool_input, dict) else None
-    if _task_ended(transcript_path, task_id) or _launch_of(transcript_path, task_id):
+    if _task_ended(transcript_path, task_id):
         return None
-    return NOT_LAUNCHED % (task_id or "(no task id)")
+    launch = _launch_of(transcript_path, task_id)
+    if not launch:
+        return "deny", NOT_LAUNCHED % (task_id or "(no task id)")
+    if _paid(launch):
+        return "ask", PAID_RUNNING % (task_id, launch[0])
+    return None
 
 
 def pid_forms(cmd):
@@ -679,7 +711,7 @@ def _name_kill_problems(cmd):
 
 
 def _pid_problems(cmd, env):
-    if "taskkill" not in cmd and not re.search(r"(^|[\s;&|])kill\s", cmd):
+    if "taskkill" not in cmd and not re.search(KILL_WORD, cmd):
         return []
     allowed = {p.strip() for p in (env.get("HARNESS_ALLOW_KILL") or "").replace(",", " ").split() if p}
     problems = []
@@ -703,7 +735,32 @@ def _pid_problems(cmd, env):
     return problems
 
 
+def _code_text(cmd):
+    """`cmd` with each heredoc body and inline program blanked unless its reader is a shell, plus each quoted
+    argument a shell-code reader runs (SHELL_PROGRAM_RE) unquoted on its own line. A kill a python program holds is
+    data, a kill `bash -c '…'` or `eval "…"` runs is code, and a kill only named inside a quoted argument
+    (`echo "kill 1"`) is a mention. A shelled-out kill inside an interpreter program (`os.system`) is out of this
+    guard's reach, as `os.kill` always was. A reader this cannot parse leaves the text whole. Each reader's program
+    is taken from `cmd` when its head survives in the blanked text: `shell_code` reads the word before `-c` as the
+    program, so it blanks `su root -c "…"`, while a reader inside a data heredoc has no surviving head."""
+    code = cmd
+    if "<<" in cmd or re.search(r"\s-[cep]\s", cmd):
+        try:
+            code = foreground_wait_guard.shell_code(cmd)
+        except Exception:
+            code = cmd
+
+    def programs(text):
+        for m in SHELL_PROGRAM_RE.finditer(text):
+            group = "body" if m.group("body") is not None else "direct"
+            yield m.group(0)[:m.start(group) - m.start()], m.group(group)[1:-1]
+
+    heads = {head for head, _ in programs(code)}
+    return "\n".join([code] + [body for head, body in programs(cmd) if head in heads])
+
+
 def verdict(cmd, env):
+    cmd = _code_text(cmd)
     pid_problems = _pid_problems(cmd, env)
     name_problems = _name_kill_problems(cmd)
     if not pid_problems and not name_problems:
@@ -781,7 +838,12 @@ def main():
         return 0
     tool = payload.get("tool_name")
     if tool == "TaskStop":
-        why = taskstop_verdict(payload.get("transcript_path"), payload.get("tool_input"))
+        decision = taskstop_decision(payload.get("transcript_path"), payload.get("tool_input"))
+        if decision:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "permissionDecision": decision[0],
+                "permissionDecisionReason": decision[1]}}))
+        return 0
     elif tool in ("Bash", "PowerShell"):
         cmd = (payload.get("tool_input") or {}).get("command") or ""
         inline = dict(os.environ)

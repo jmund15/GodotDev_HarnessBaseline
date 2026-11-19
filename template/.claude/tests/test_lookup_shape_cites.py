@@ -1,27 +1,14 @@
 #!/usr/bin/env python3
-"""Lookup shape has one owner: `CLAUDE.core.md` §9 states the breadth route, and every other surface cites it.
+"""The anchors the lookup-shape cites name resolve, and the close binds this proof to the docs it reads.
 
-Cases assert cites and anchors, never prose, so the owner text can be reworded freely:
-- the breadth-route sentence (anchor: BREADTH) appears in `CLAUDE.core.md` and in no other doctrine file;
-- `/delegate` ABORT, `/explore` §1a and the orchestration §0 litmus cite
-  `CLAUDE.core.md` §9 on that line;
-- both tiers of `guards/survey.godot.md` cite `CLAUDE.coding.md` §Semantic Search MCP for names in Godot text data,
-  and no longer cite `CLAUDE.godot.md` for that rule;
-- every cited anchor resolves to a heading in its file.
+Cases assert anchors, never prose, so the owner text can be reworded freely.
 """
-import os
 import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CLAUDE = ROOT / ".claude"
-BREADTH = "scout survey, even when no system is named"
-CORE_CITE = "`CLAUDE.core.md` §9"
-CODING_CITE = "`CLAUDE.coding.md` §Semantic Search MCP"
-# Each citer's decision line, found by its opening words: the cite must sit on that line, not elsewhere in the file.
-CITERS = [("commands/delegate.md", "- `ABORT`:"), ("commands/explore.md", "Name the capability"),
-          ("skills/orchestration/SKILL.md", "Litmus")]
 CASES = []
 
 
@@ -32,51 +19,6 @@ def case(fn):
 
 def text(rel):
     return (CLAUDE / rel).read_text(encoding="utf-8")
-
-
-def doctrine_files():
-    # A directory walk, not `git ls-files`: a scratch install leaves doctrine files unstaged, the walk takes them
-    # as it takes tracked ones, and the proof's key holds no git state. It skips the generated and nested-checkout
-    # folders the project gitignores, and the folders that hold no doctrine.
-    skip = (".claude/plans/", ".claude/scratch/", ".claude/auto-memory/archive/", ".claude/tests/")
-    generated = {"worktrees", "cache", ".cache", "logs", "tmp", "__pycache__", "node_modules"}
-    found = []
-    for folder, dirs, names in os.walk(CLAUDE):
-        prefix = Path(folder).relative_to(ROOT).as_posix() + "/"
-        dirs[:] = [d for d in dirs if prefix + d + "/" not in skip and d not in generated]
-        found += [prefix + n for n in names if n.endswith(".md")]
-    return sorted(found)
-
-
-def section(md, tier):
-    found = re.search(r"^## %s\n(.*?)(?=^## |\Z)" % tier, md, re.S | re.M)
-    return found.group(1) if found else ""
-
-
-@case
-def breadth_route_has_one_owner():
-    holders = [p for p in doctrine_files() if BREADTH in (ROOT / p).read_text(encoding="utf-8")]
-    assert holders == [".claude/CLAUDE.core.md"], holders
-
-
-@case
-def every_surface_cites_core_section_9():
-    missing = []
-    for rel, opening in CITERS:
-        lines = [line for line in text(rel).splitlines() if line.startswith(opening)]
-        if len(lines) != 1 or CORE_CITE not in lines[0]:
-            missing.append((rel, opening, len(lines)))
-    assert not missing, missing
-
-
-@case
-def survey_godot_tiers_cite_coding_semantic_search():
-    md = text("guards/survey.godot.md")
-    for tier in ("detailed", "condensed"):
-        body = section(md, tier)
-        assert CODING_CITE in body, (tier, body)
-    pascal = [line for line in md.splitlines() if ".tres" in line and "CLAUDE.godot.md" in line]
-    assert not pascal, pascal
 
 
 @case

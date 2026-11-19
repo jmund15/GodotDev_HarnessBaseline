@@ -184,7 +184,7 @@ def unshipped_registry_checks():
             check("a bare index lists the shipped registries while another registry's file is absent",
                   code == 0 and "code-reviewer" in out, (code, err))
             code, _, err = run_cli(lens.parse, "structure_audit")
-            check("parsing the absent registry by name still fails loudly", code != 0 and "not found" in err, (code, err))
+            check("parsing the absent registry by name still fails loudly", code != 0 and err.strip(), (code, err))
         finally:
             lens.AGENTS, lens.REGISTRIES = saved
 

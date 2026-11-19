@@ -1,0 +1,37 @@
+{
+ "_source": "close key of .claude/worktrees/land-runner/.claude/logs/harness_tests_stamp.json (the land of 3effc286, 2026-11-17); proofs, paths and behavior trimmed",
+ "record": {
+  "ts": 1794961141.56025,
+  "head": "3effc28693a0cad158674dd3516bae314d940ef4",
+  "base": "27242e137f7dfa598f8bf143d87d65a781544e9b",
+  "verdict": "green",
+  "red": [],
+  "preExisting": [],
+  "cannotRun": [],
+  "uncommittedProofRed": [],
+  "paths": [
+   ".claude/baseline.lock.json",
+   ".claude/plans/fix-check-loops.md"
+  ],
+  "proofs": [
+   "test_baseline_classification_guard.py",
+   "test_bench_sandbox.py",
+   "test_claude_core_standalone.py"
+  ],
+  "behavior": {
+   "status": "pass",
+   "counts": {
+    "units": 0,
+    "claims": 0,
+    "gaps": 0,
+    "changedUnits": 0,
+    "pass": 0,
+    "unbound": 0,
+    "fail": 0,
+    "uncovered": 0,
+    "stale": 0
+   }
+  },
+  "observations": []
+ }
+}

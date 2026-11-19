@@ -11,6 +11,7 @@ Windows broker: flock and Windows delete-sharing are not one lock protocol.
 HARNESS_SLOT_DIR isolates planted pools; HARNESS_MACHINE_ROOT preserves the real
 pool across proof HOME/temp changes. HARNESS_SLOT_BUDGET loans one held lane to a
 serial child. parallel_budget borrows only free extra lanes, never waits for them.
+`run` exports HARNESS_LANE_CORES, the held lanes' share of the machine's cores.
 """
 import argparse
 from contextlib import contextmanager
@@ -102,6 +103,34 @@ def capacity(folder=None):
     return recorded if type(recorded) is int and recorded > 0 else 4
 
 
+def lane_cores(lanes, width, busy=None):
+    """The cores `lanes` held lanes may use: the machine's cores split over the `busy` lanes held at admission
+    (the whole `width` when unknown), at least one. `run` exports it as HARNESS_LANE_CORES, so a runner that would
+    take every core (a test worker pool, a build's job count) takes its share instead. Splitting over the whole
+    width starved a lone suite of idle cores (2 of 24 ran it at half speed); a later arrival gets a smaller share,
+    so staggered starts oversubscribe at most the harmonic sum of the width."""
+    cores = os.cpu_count() or 1
+    if width <= 0:
+        return cores
+    return max(1, cores * lanes // max(lanes, min(width, busy if busy is not None else width)))
+
+
+def busy_lanes(folder, width, held):
+    """The lanes held now: the caller's `held` plus each other slot whose lock a probe cannot take."""
+    mine = {handle.path for handle in held}
+    busy = len(held)
+    for index in range(width):
+        path = os.path.join(folder, 'slot-%d.lock' % index)
+        if path in mine:
+            continue
+        probe = _file_lock.acquire(path, 0)
+        if probe:
+            _file_lock.release(probe)
+        else:
+            busy += 1
+    return busy
+
+
 def claim_width(folder, count):
     """Called under drain.lock: adopt the held width; change it only with no live lane."""
     path = os.path.join(folder, 'width.json')
@@ -191,7 +220,7 @@ def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, in
     except OSError as exc:
         raise SlotStoreError('machine slot directory unusable: %s (%s)' % (folder, exc)) from exc
     held = []
-    ticket = None
+    ticket = drain = None
     try:
         # First come, first served: only the oldest live ticket scans the slots, so a releaser that
         # re-takes at once, or a case pool borrowing extras, never passes a waiting proof.
@@ -204,35 +233,54 @@ def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, in
         next_notice = began + NOTICE_AFTER
         while True:
             if not _live_ticket_before(queue, name):
-                drain = _file_lock.acquire(os.path.join(folder, 'drain.lock'), 0)
+                # The head keeps drain.lock and each slot it collects until it holds all it wants, or its deadline
+                # passes and `finally` returns them. A harness without the queue (another project's, an old
+                # checkout's) claims any free slot while drain.lock is free, so a slot the head let go between
+                # scans would go to it, and an exclusive head would wait for as long as that harness runs.
+                drain = drain or _file_lock.acquire(os.path.join(folder, 'drain.lock'), 0)
                 if drain:
-                    try:
-                        active_width = claim_width(folder, width)
-                        wanted = active_width if exclusive else max(1, min(count, active_width))
-                        for index in range(active_width):
-                            handle = _file_lock.acquire(os.path.join(folder, 'slot-%d.lock' % index), 0)
-                            if handle:
-                                held.append(handle)
-                                if len(held) == wanted:
-                                    result, held = held, []
-                                    return result
-                        # A multi-slot take is atomic: a partial hold is returned, never waited on.
-                        release_all(held)
-                        held = []
-                    finally:
-                        _file_lock.release(drain)
+                    active_width = claim_width(folder, width)
+                    wanted = active_width if exclusive else max(1, min(count, active_width))
+                    mine = {handle.path for handle in held}
+                    for index in range(active_width):
+                        if len(held) >= wanted:
+                            break
+                        path = os.path.join(folder, 'slot-%d.lock' % index)
+                        handle = None if path in mine else _file_lock.acquire(path, 0)
+                        if handle:
+                            held.append(handle)
+                    if len(held) >= wanted:
+                        result, held = held, []
+                        return result
             if deadline is not None and time.time() >= deadline:
                 return None
             if notice and time.monotonic() >= next_notice:
-                print('machine slots: queued %ds behind the full pool (%s)' % (time.monotonic() - began, folder),
-                      file=sys.stderr, flush=True)
+                print('machine slots: queued %ds behind the full pool (%s)%s' % (
+                    time.monotonic() - began, folder, _holders(folder, held)), file=sys.stderr, flush=True)
                 next_notice += 60
             time.sleep(.05)
     except (OSError, TimeoutError) as exc:
         raise SlotStoreError('machine admission failed: %s' % exc) from exc
     finally:
         release_all(held)
+        _file_lock.release(drain)
         _file_lock.release(ticket)
+
+
+def _holders(folder, mine):
+    """`; held by pid N (k slots), ...` over the slots another process holds, read from their lock files."""
+    ours = {handle.path for handle in mine}
+    counts = {}
+    for entry in sorted(os.listdir(folder)):
+        path = os.path.join(folder, entry)
+        if entry.startswith('slot-') and path not in ours:
+            try:
+                with open(path, encoding='ascii') as fh:
+                    pid = fh.read().strip()
+            except (OSError, ValueError):
+                continue
+            counts[pid] = counts.get(pid, 0) + 1
+    return ''.join('; held by pid %s (%d)' % item for item in sorted(counts.items()) if item[0])
 
 
 _TICKETS = itertools.count()
@@ -342,7 +390,11 @@ def main():
             return 0 if held is not None else 2
         if held is None:
             raise SlotStoreError('deadline passed before admission')
-        env = dict(os.environ, HARNESS_SLOT_BUDGET='1', HARNESS_MACHINE_ROOT=machine_root())
+        width = args.width or capacity(args.folder)
+        lanes = width if args.exclusive else args.count
+        busy = busy_lanes(args.folder or slot_dir(), width, held) if held else None
+        env = dict(os.environ, HARNESS_SLOT_BUDGET='1', HARNESS_MACHINE_ROOT=machine_root(),
+                   HARNESS_LANE_CORES=str(lane_cores(lanes, width, busy)))
         return subprocess.call(command, env=env)
     except SlotStoreError as exc:
         print(json.dumps({'error': str(exc)}) if args.mode == 'broker' else str(exc), flush=True)

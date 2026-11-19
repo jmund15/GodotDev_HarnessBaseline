@@ -444,10 +444,8 @@ def main():
 
     plumbing_reason = run([])[1]
     plumbing_checks = [
-        ("S13: plumbing advisory reports the skipped check",
-         "allowed without that check" in plumbing_reason),
         ("S13: plumbing advisory names the repair route",
-         "Repair hooks/dispatch_mechanism_guard.py" in plumbing_reason),
+         "hooks/dispatch_mechanism_guard.py" in plumbing_reason),
         ("E6: plumbing denial does not ask the agent to load a skill",
          "Skill" not in plumbing_reason),
     ]

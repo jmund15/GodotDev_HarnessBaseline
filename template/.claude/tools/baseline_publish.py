@@ -300,11 +300,37 @@ def _collect(root: Path, source: dict, requested: list[str] | None, lock: dict,
 MOVED_STATES = ("diverged", "upstream-updated")
 
 
+def _proofs_left_behind(root: Path, lock: dict, source: dict, records: list[dict], reader) -> list[str]:
+    """A shipped row and its proofs travel together. Returns each proof the runner binds to a shipped row that the
+    baseline holds at a copy other than the source commit's and the rows leave out; a proof the baseline lacks
+    runs in no consumer lane, and one the source commit lacks has nothing to ship. A proof whose row is not
+    `tracked` (a fork or a local copy) cannot travel without overwriting the baseline's copy, so it is left to the
+    battery (the PR's CI, or step 5 under `--full-battery`), which runs the baseline's copy against the shipped rows."""
+    shipped = {r["relpath"] for r in records if r["kind"] == "lock" and r["op"] != "D"}
+    if not shipped:
+        return []
+    subs = lock.get("substitutions", {})
+    files = lock.get("files", {})
+    left: list[str] = []
+    for path in sync._harness_tests().select_for(str(root), sorted(shipped)):
+        rel = Path(os.path.relpath(path, root)).as_posix()
+        if rel in shipped or (files.get(rel) or {}).get("status", "tracked") != "tracked":
+            continue
+        upstream = sync.upstream_text(reader, rel, subs)
+        if upstream is None:
+            continue
+        shown = _git(Path(source["repo"]), ["show", f"{source['commit']}:{rel}"], check=False)
+        if shown.returncode == 0 and sync.row_text(rel, shown.stdout) != upstream:
+            left.append(rel)
+    return left
+
+
 def _read_check_states(root: Path, lock: dict, source: dict, records: list[dict], baseline_cache: Path,
                        baseline_sha: str, over_upstream: list[str]) -> str:
     """Step 1 reads `check`'s state of each row a commit source ships, against the freshly pinned baseline, and
     returns the counts as evidence. A row whose baseline copy changed since its base (`diverged`,
-    `upstream-updated`) would have that change overwritten, so it refuses unless the owner declined that exact
+    `upstream-updated`) would have that change overwritten, and another consumer's published work is lost to every
+    lane that pins the baseline, so it refuses unless the owner declined that exact
     upstream copy: `--over-upstream <relpath>` records the decline on the lock row (`declined.upstream` is the
     baseline copy's sha), and a later publish reads it there until the baseline moves again. A worktree source
     authors upstream first, so its rows have no consumer state to read."""
@@ -333,10 +359,16 @@ def _read_check_states(root: Path, lock: dict, source: dict, records: list[dict]
             refused.append(f"  {record['relpath']}: {state}; the baseline's copy changed since this row's base, so "
                            f"publishing overwrites that change; run `pull --merge {record['relpath']}` first, or "
                            f"publish over it with `--over-upstream {record['relpath']}`")
+        left = _proofs_left_behind(root, lock, source, records, reader)
     finally:
         reader.close()
+    if left:
+        refused.append(f"  {len(left)} proof(s) the runner binds to a shipped row differ from the baseline's copy and "
+                       f"are not in the rows; the baseline's older copy runs against the newer row in every consumer "
+                       f"lane. Judge them with `judge <proof> --verdict push`, then rebuild the rows file:\n"
+                       + "\n".join(f"    {rel}" for rel in left))
     if refused:
-        raise PublishError("publish would overwrite upstream changes:\n" + "\n".join(refused))
+        raise PublishError("publish refused:\n" + "\n".join(refused))
     if declare:
         def apply(current: dict):
             for relpath, upstream in declare.items():
@@ -557,31 +589,16 @@ def _is_workflow_row(relpath: str) -> bool:
 
 
 def _battery_mode(records: list[dict], full_battery: bool) -> tuple[str, str]:
-    if full_battery:
-        return "full", "flag"
-    for record in records:
-        relpath = record["relpath"].replace("\\", "/")
-        if record["kind"] == "root" and not _is_workflow_row(relpath):
-            return "full", relpath
-        if relpath.startswith((".claude/hooks/", ".claude/scripts/")):
-            return "full", relpath
-        if relpath.startswith(".claude/settings") and relpath.endswith(".json"):
-            return "full", relpath
-        if relpath in {".claude/tools/adaptation.py", ".claude/tools/_lock_rows.py",
-                       ".claude/tools/layer_closure.py"} or (
-                relpath.startswith(".claude/tools/baseline_") and relpath.endswith(".py")
-        ):
-            return "full", relpath
-        if relpath.startswith(".claude/tests/") and record["op"] == "D":
-            return "full", relpath
-    return "scoped", "published rows"
+    """The PR's CI runs the template battery and the root proofs on Linux, and the land's main check runs the
+    same proofs on Windows, so a local run repeats both on the session's path; only the flag asks for it."""
+    return ("full", "flag") if full_battery else ("ci", "the PR's CI runs the battery and root proofs")
 
 
 def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
-    """Run every check without stopping at a red: manifest, audit, baseline tests and the battery.
-    All reds go into one PublishError. Each check takes a machine lane; the battery
-    is a coordinator whose proofs take their own lanes in the same pool. No private
-    battery pool or all-machine reservation hides its nested load."""
+    """Run every check without stopping at a red: manifest, audit and the battery count; with
+    `--full-battery`, the root proofs and the whole template battery too. All reds go into one
+    PublishError. Each check takes a machine lane; the battery is a coordinator whose proofs take
+    their own lanes in the same pool."""
     mode, reason = _battery_mode(records, full_battery)
     reds: list[str] = []
     outputs: list[str] = []
@@ -603,26 +620,17 @@ def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
          lambda: run_check(["tools/audit_baseline.py", "--strict"], "audit_baseline.py --strict"), False),
     ]
     tests_root = worktree / "tests"
-    if tests_root.is_dir():
+    if tests_root.is_dir() and mode == "full":
         for test_path in sorted(tests_root.glob("test_*.py")):
             rel, name = str(test_path.relative_to(worktree)), f"tests/{test_path.name}"
             tasks.append((name, lambda rel=rel, name=name: run_check([rel], name), False))
     battery_label = ""
     if has_battery:
         tasks.append(("battery counts", counts_check, False))
-        if mode == "full":
-            args, battery_label, battery_cwd = ["template/.claude/scripts/harness_tests.py"], "harness_tests.py", worktree
-        else:
-            rows = [r["relpath"] for r in records if r["kind"] == "lock" and r["op"] != "D"]
-            args = [".claude/scripts/harness_tests.py", "--proofs-for", *rows]
-            battery_label, battery_cwd = "harness_tests.py --proofs-for", worktree / "template"
+    if has_battery and mode == "full":
+        args, battery_label, battery_cwd = ["template/.claude/scripts/harness_tests.py"], "harness_tests.py", worktree
         battery_env = machine_slots.proof_environment(os.environ)
-        # HARNESS_RUNNER_ENV: the battery runs each proof with a clean runner's environment (harness_tests.py
-        # `_RUNNER_ENV`), not the publishing session's home, git config and CLAUDE_* names.
-        battery_env["HARNESS_RUNNER_ENV"] = "1"
-        # Only the full battery reuses recorded passes: the scoped child already builds its own cache.
-        if mode == "full":
-            battery_env["HARNESS_REUSE_PASSES"] = "1"
+        battery_env["HARNESS_REUSE_PASSES"] = "1"
         tasks.append((battery_label, lambda: _run_python_args(battery_cwd, args, battery_label, battery_env), True))
 
     # Longest known first, so the pool's start order puts the long tasks ahead of the short ones.
@@ -667,8 +675,8 @@ def _validate(worktree: Path, records: list[dict], full_battery: bool) -> str:
         elif output:
             outputs.append(output)
     selected = [line.strip() for line in battery_output.splitlines()
-                if (mode == "scoped" or battery_failed) and line.startswith(("OK ", "FAIL ", "CANNOT-RUN "))]
-    proofs = ", ".join(selected) or ("none selected" if mode == "scoped" and has_battery else "full battery")
+                if battery_failed and line.startswith(("OK ", "FAIL ", "CANNOT-RUN "))]
+    proofs = ", ".join(selected) or ("full battery" if mode == "full" else "the PR's CI")
     header = (f"mode={mode}; reason={reason}; proofs={proofs}; checks={checks_elapsed:.3f}s; "
               f"battery={battery_elapsed:.3f}s; windows={windows_elapsed:.3f}s; {'; '.join(task_times)}")
     if reds:
@@ -891,12 +899,13 @@ CHECKS_POLL_S = 10.0  # gh's own watch default interval
 
 
 def _wait_for_checks(worktree: Path, pr_url: str) -> tuple[bool, str]:
-    """Poll `gh pr checks --json` with short calls. Returns (green, detail); detail names the failed checks."""
+    """Poll `gh pr checks --required --json` with short calls. Returns (green, detail); detail names the failed
+    required checks. A lane no ruleset requires (the Linux lanes) reports after the merge, as a main-check row."""
     began = time.monotonic()
     seen_checks = False
     unreadable_since: float | None = None
     while True:
-        polled = _gh(worktree, ["pr", "checks", pr_url, "--json", "name,state,bucket"])
+        polled = _gh(worktree, ["pr", "checks", pr_url, "--required", "--json", "name,state,bucket"])
         out = _lf(polled.stdout).decode("utf-8", errors="replace")
         err = _lf(polled.stderr).decode("utf-8", errors="replace")
         try:
@@ -911,11 +920,11 @@ def _wait_for_checks(worktree: Path, pr_url: str) -> tuple[bool, str]:
                 return False, ", ".join(f"{c.get('name')}: {c.get('state')}" for c in failed)
             if not any(c.get("bucket") == "pending" for c in checks):
                 return True, ""
-        elif "no checks reported" in out + err:
+        elif "checks reported" in out + err:
             unreadable_since = None
             if not seen_checks and time.monotonic() - began >= CHECKS_REGISTER_WAIT_S:
                 raise PublishError(
-                    f"no CI checks registered on {pr_url} within {int(CHECKS_REGISTER_WAIT_S)} s"
+                    f"no required CI checks registered on {pr_url} within {int(CHECKS_REGISTER_WAIT_S)} s"
                 )
         else:
             if unreadable_since is None:

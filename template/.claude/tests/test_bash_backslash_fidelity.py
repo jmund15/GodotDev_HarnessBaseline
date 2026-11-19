@@ -37,6 +37,7 @@ import sys
 import tempfile
 import uuid
 
+import _hook_call
 import _settings_probe
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -116,18 +117,20 @@ def write_record(path, collapses, before_quote=False, include_quote=True):
         json.dump({KEY: row}, fh)
 
 
+class _P:
+    def __init__(self, code, out, err):
+        self.returncode, self.stdout, self.stderr = code, out, err
+
+
 def run(script, payload, env, args=()):
-    p = subprocess.run([sys.executable, script] + list(args), input=json.dumps(payload),
-                       capture_output=True, text=True, encoding="utf-8", timeout=90, env=env, cwd=REPO)
-    # A missing script also exits 2 ("can't open file"); that is a CRASH, not a deny.
-    crashed = p.returncode not in (0, 2) or "Traceback" in p.stderr or "can't open file" in p.stderr
-    hso = {}
-    if p.stdout.strip():
+    code, out, err, hso = _hook_call.call(script, payload, env=env, cwd=REPO, argv=args)
+    crashed = code not in (0, 2) or "Traceback" in err or "can't open file" in err
+    if not hso and out.strip():
         try:
-            hso = json.loads(p.stdout).get("hookSpecificOutput") or {}
+            hso = json.loads(out).get("hookSpecificOutput") or {}
         except ValueError:
-            hso = {"UNPARSEABLE": p.stdout}
-    return p, hso, crashed
+            hso = {"UNPARSEABLE": out}
+    return _P(code, out, err), hso, crashed
 
 
 def payload(command, transcript, tool="Bash", sid=None, extra=None, cwd=REPO):
@@ -155,6 +158,7 @@ def test_s9_colon_operands(tmp_path):
         p, out, crashed = run(HOOK, payload(command, ''), env)
         assert not crashed and p.returncode == 0
         assert out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 ' + command
+        assert 'additionalContext' not in out, (command, out)  # the rewrite is already applied: a note changes no action
         p, again, crashed = run(HOOK, payload(out['updatedInput']['command'], ''), env)
         assert not crashed and 'updatedInput' not in again
     command = 'cd /repo && git show origin/main:README.md'

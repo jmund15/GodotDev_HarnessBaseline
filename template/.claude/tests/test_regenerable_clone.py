@@ -49,12 +49,25 @@ ENV = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COM
 
 
 def force_rmtree(path):
-    """Remove a fixture tree, clearing the read-only bit git sets on object files."""
+    """Remove a fixture tree, clearing the read-only bit git sets on object files.
+
+    Windows keeps a killed child's file handles a moment after the child exits, so a removal it refuses
+    (WinError 32/5 on a `.git` file) is retried for up to five seconds: the fixture is gone either way,
+    and the verdict must not turn on how fast the OS releases a handle.
+    """
     def on_error(func, target, _exc):
         os.chmod(target, stat.S_IWRITE)
         func(target)
-    if os.path.isdir(path):
-        shutil.rmtree(path, onerror=on_error)
+    if not os.path.isdir(path):
+        return
+    for attempt in range(50):
+        try:
+            shutil.rmtree(path, onerror=on_error)
+            return
+        except OSError:
+            if attempt == 49 or not os.path.isdir(path):
+                raise
+            time.sleep(0.1)
 
 
 def git(*args, cwd=None):

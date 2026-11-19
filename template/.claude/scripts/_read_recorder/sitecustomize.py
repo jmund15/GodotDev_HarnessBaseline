@@ -8,8 +8,9 @@ one JSON line per new event to `<dir>/<pid>.jsonl`, so a child killed mid-run st
 `["r"|"w", path]` for a file open, `["l", path]` for a directory listing other than the importer's,
 `["p", path]` for an existence probe or a path an import could resolve to, `["t", path]` for an `os.stat` or `os.lstat`
 (a size, a time, a listing), and `["s", {argv, cwd, recorded, genv}]` for a spawned process, where `recorded` says whether the
-child loads this recorder with the same log (Python imports only the first sitecustomize on its path) and `genv` is the
-`GIT_*` environment the child starts with."""
+child loads this recorder with a log this process's events join (the same folder, or one under `<log>/nested`, where a
+runner this process runs puts its proof's log; Python imports only the first sitecustomize on its path, past one that
+starts the next, as the slot bootstrap's does) and `genv` is the `GIT_*` environment the child starts with."""
 import json
 import os
 import sys
@@ -87,7 +88,7 @@ if _LOG:
             elif event == "subprocess.Popen":
                 argv = args[1] if isinstance(args[1], (list, tuple)) else [args[1]]
                 env = args[3] if len(args) > 3 else None
-                inherits = env is None or (env.get("HARNESS_READ_LOG") == _LOG
+                inherits = env is None or (_followed(env.get("HARNESS_READ_LOG"))
                                            and _customizer(env.get("PYTHONPATH")) == os.path.normcase(_HERE))
                 _emit("s", {"argv": [os.fsdecode(a) if isinstance(a, (str, bytes, os.PathLike)) else str(a) for a in argv],
                             "cwd": _abs(args[2]) if len(args) > 2 and args[2] is not None else os.getcwd(),
@@ -97,10 +98,39 @@ if _LOG:
         except Exception:
             pass
 
+    def _followed(log):
+        """True when a child logging to `log` is one the runner reads back with this process's events: the same
+        folder, or one under `<this log>/nested`, where a runner this process runs puts its proof's log."""
+        if not log:
+            return False
+        if log == _LOG:
+            return True
+        folder = os.path.dirname(os.path.abspath(log))
+        return os.path.basename(folder) == "nested" and \
+            os.path.normcase(os.path.dirname(folder)) == os.path.normcase(os.path.abspath(_LOG))
+
+    _chains = {}
+
+    def _starts_next(entry):
+        """True when `entry` is a slot bootstrap whose sitecustomize starts the next one on the path
+        (`_previous_startup`), so a recorder behind it still loads. A stale copy without it hides the recorder. The
+        file is read once per folder, and only for a folder named `_slot_bootstrap`: a sandboxed child audits every
+        open, so the check reads nothing for the recorder's own folder or any other."""
+        if os.path.basename(os.path.normpath(entry)) != "_slot_bootstrap":
+            return False
+        if entry not in _chains:
+            try:
+                with open(os.path.join(entry, "sitecustomize.py"), encoding="utf-8") as fh:
+                    _chains[entry] = any(line.startswith("def _previous_startup") for line in fh)
+            except (OSError, UnicodeDecodeError):
+                _chains[entry] = False
+        return _chains[entry]
+
     def _customizer(pythonpath, isfile=os.path.isfile):
-        """The `PYTHONPATH` entry whose sitecustomize Python imports: the first that holds one."""
+        """The `PYTHONPATH` entry whose sitecustomize Python imports and that does not hand over to the next one:
+        the first that holds one, past each slot bootstrap that starts the next."""
         for entry in str(pythonpath or "").split(os.pathsep):
-            if entry and isfile(os.path.join(entry, "sitecustomize.py")):
+            if entry and isfile(os.path.join(entry, "sitecustomize.py")) and not _starts_next(entry):
                 return os.path.normcase(os.path.abspath(entry))
         return None
 

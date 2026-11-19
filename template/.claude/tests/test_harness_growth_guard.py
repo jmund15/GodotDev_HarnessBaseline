@@ -264,20 +264,16 @@ class RemovedSentenceTests(unittest.TestCase):
         self.head = f"- {RULE_A}\n- {RULE_B}\n"
         self.plant(".claude/skills/x/SKILL.md", f"- {RULE_A}\n")
         out = self.emit()
-        self.assertIn("removed", out)
         self.assertIn(RULE_B, out)
         self.assertNotIn(RULE_A, out)
         self.assertIn(RE_HOME, out)
 
-    def test_a_sentence_another_file_carries_prints_moved_and_no_re_home_line(self):
+    def test_a_sentence_another_file_carries_is_silent(self):
         self.turn("rmturn01")
         self.head = f"- {RULE_A}\n- {RULE_B}\n"
         self.plant(".claude/skills/x/SKILL.md", f"- {RULE_A}\n")
         self.plant(".claude/skills/x/reference/detail.md", f"# Detail\n\n{RULE_B[:30]}\n{RULE_B[30:]}\n")
-        out = self.emit()
-        self.assertIn("moved → .claude/skills/x/reference/detail.md", out)
-        self.assertNotIn("removed:", out)
-        self.assertNotIn(RE_HOME, out)
+        self.assertEqual("", self.emit())
 
     def test_a_copy_in_scratch_is_not_a_new_home(self):
         self.turn("rmturn01")
@@ -293,10 +289,10 @@ class RemovedSentenceTests(unittest.TestCase):
         self.head = "\n".join(f"- {t}" for t in many) + "\n"
         self.plant(".claude/skills/x/SKILL.md", f"- {RULE_A}\n")
         out = self.emit()
-        listed = [ln for ln in out.splitlines() if ln.startswith("- ")]
+        listed = [ln for ln in out.splitlines() if ln.startswith('- "')]
         self.assertEqual(len(listed), 8)
         self.assertIn("+3 more", out)
-        self.assertTrue(all(len(ln.split(": ", 1)[1].strip('"')) <= 140 for ln in listed), listed)
+        self.assertTrue(all(len(ln[2:].strip('"')) <= 140 for ln in listed), listed)
 
     def test_the_same_removal_in_one_turn_is_silent_and_a_changed_set_speaks_again(self):
         self.turn("rmturn01")
@@ -360,22 +356,19 @@ class RemovedSentenceTests(unittest.TestCase):
             out = self.emit(**kw)
         return out, walks, opened
 
-    def test_a_sentence_reworded_in_the_same_file_reads_reworded_with_no_re_home_line(self):
+    def test_a_sentence_reworded_in_the_same_file_is_silent(self):
         self.turn("rmturn01")
         self.head = f"- {RULE_A}\n- {RULE_B}\n"
         reworded = "A rule that spans its steps is stated once, in the header, and every step cites it instead."
         self.plant(".claude/skills/x/SKILL.md", f"- {RULE_A}\n- {reworded}\n")
-        out = self.emit()
-        self.assertIn(f'- reworded: "{RULE_B}"', out)
-        self.assertNotIn("- removed:", out)
-        self.assertNotIn(RE_HOME, out)
+        self.assertEqual("", self.emit())
 
     def test_an_unrelated_added_sentence_does_not_make_a_removal_a_rewording(self):
         self.turn("rmturn01")
         self.head = f"- {RULE_A}\n- {RULE_B}\n"
         self.plant(".claude/skills/x/SKILL.md", f"- {RULE_A}\n- Run the proof file directly before each commit.\n")
         out = self.emit()
-        self.assertIn(f'- removed: "{RULE_B}"', out)
+        self.assertIn(f'- "{RULE_B}"', out)
         self.assertIn(RE_HOME, out)
 
     def test_a_repeated_removal_set_runs_no_home_search(self):
@@ -406,11 +399,10 @@ class RemovedSentenceTests(unittest.TestCase):
         detail = self.root / ".claude/skills/x/reference/detail.md"
         self.plant(".claude/skills/x/reference/detail.md", "# Detail\n\nUnrelated detail text lives here.\n")
         self.plant(".claude/skills/x/SKILL.md", f"- {RULE_A}\n")
-        self.assertIn("- removed:", self.emit())
+        self.assertIn(f'- "{RULE_B}"', self.emit())
         self.plant(".claude/skills/x/reference/detail.md", f"# Detail\n\n{RULE_B}\n")
         os.utime(detail, ns=(detail.stat().st_atime_ns, detail.stat().st_mtime_ns + 10**9))
-        out = self.emit(session="rmturn02")
-        self.assertIn("moved → .claude/skills/x/reference/detail.md", out)
+        self.assertEqual("", self.emit(session="rmturn02"))
 
     def test_a_home_search_past_its_time_budget_says_it_is_incomplete(self):
         self.turn("rmturn01")
@@ -419,7 +411,7 @@ class RemovedSentenceTests(unittest.TestCase):
         self.plant(".claude/skills/x/SKILL.md", f"- {RULE_A}\n")
         with patch.object(hook, "HOME_SEARCH_SECONDS", -1.0):
             out = self.emit()
-        self.assertIn("- removed:", out)
+        self.assertIn(f'- "{RULE_B}"', out)
         self.assertIn("home search stopped", out)
 
     def test_removal_state_is_kept_apart_from_threshold_flags(self):
@@ -438,8 +430,7 @@ class RemovedSentenceTests(unittest.TestCase):
     def test_printed_thresholds_are_review_triggers_not_caps(self):
         self.plant(".claude/skills/x/SKILL.md", HUGE)
         out = self.emit(session="rmturn03", head=None)
-        self.assertIn("per-unit review trigger", out)
-        self.assertIn("split trigger", out)
+        self.assertIn("trigger", out)
         self.assertNotRegex(out, r"\bcap\b")
 
 

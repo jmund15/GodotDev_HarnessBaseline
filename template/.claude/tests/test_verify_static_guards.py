@@ -79,8 +79,9 @@ class VerifyStaticGuardsTests(unittest.TestCase):
         self.assertIn('tool_cascade=UNAVAILABLE', out)
         self.assertNotIn('STUB', out)
 
-    def test_a_test_namespace_mapped_to_no_domain_blocks_before_any_suite(self):
-        """The domain map is the gate's own table: a Tests folder it does not map ran in no gate for two weeks."""
+    def test_the_domain_map_is_not_checked_in_a_scope_run(self):
+        """The domain map is the gate's own table; the full gate runs it (tests/test_StaticGuards.py proves the
+        switch). A scope run pays for a check it cannot act on, so it leaves it out even with an unmapped folder."""
         plant = self.tmp / 'Tests/Logic/ZzzUnmappedProbe'
         plant.mkdir()
         (plant / 'ZzzUnmappedProbeTests.cs').write_text(
@@ -88,15 +89,9 @@ class VerifyStaticGuardsTests(unittest.TestCase):
             '{\n    [TestCase]\n    public void Probe() { }\n}\n', encoding='utf-8', newline='\n')
         run = self.run_verify()
         out = run.stdout + run.stderr
-        self.assertEqual(run.returncode, 4, out)
-        self.assertIn('domain_map=FAIL', out)
-        self.assertIn('Tests.Logic.ZzzUnmappedProbe', out)
-        self.assertIn('VERIFY=BLOCKED', out)
-        self.assertNotIn('STUB', out)
-
-    def test_a_mapped_tree_passes_the_domain_map_check(self):
-        run = self.run_verify()
-        self.assertIn('domain_map=OK', run.stdout + run.stderr)
+        self.assertEqual(run.returncode, 0, out)
+        self.assertNotIn('domain_map', out)
+        self.assertIn('STUB only=Prototypes retry=False', out)
 
     def test_retry_only_continues_a_run_whose_guards_already_passed(self):
         (self.tmp / '.claude/hooks/refcounted_free_guard.py').write_text(FAILING, encoding='utf-8', newline='\n')

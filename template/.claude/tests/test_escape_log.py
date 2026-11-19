@@ -26,6 +26,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 HERE = os.path.dirname(os.path.abspath(__file__))
 MOD = os.path.join(HERE, "..", "tools", "escape_log.py")
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 import review_ledger  # noqa: E402
 REPO_ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 
@@ -90,6 +92,11 @@ def plant(tmp, changed=("pkg/a.py",), trailer=TRAILER, tags=TAGS, mandates=MANDA
     return root, _setup_git(root, "rev-parse", "HEAD").stdout.strip()
 
 
+class _P:
+    def __init__(self, code, out, err):
+        self.returncode, self.stdout, self.stderr = code, out, err
+
+
 def run(argv, root, log=None, cwd=None, script=MOD, project=True):
     env = dict(os.environ, HARNESS_REVIEW_CLAUDE_DIR=os.path.join(root, ".claude"))
     if project:
@@ -100,8 +107,12 @@ def run(argv, root, log=None, cwd=None, script=MOD, project=True):
         env.pop(name, None)
     if log:
         env["HARNESS_ESCAPE_LOG"] = log
-    return subprocess.run([sys.executable, script] + argv, cwd=cwd or root, env=env,
-                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    workdir = cwd or root
+    path = script if os.path.isabs(script) else os.path.join(workdir, script)
+    code, out, err, _ = _hook_call.call(path, "", env=env, cwd=workdir, argv=argv)
+    if "Traceback" in err:
+        raise AssertionError("escape_log crashed: " + err[-800:])
+    return _P(code, out, err)
 
 
 def rows_of(root):
@@ -394,6 +405,11 @@ def build(tmp):
     result_none = run(["add", "--sha", sha_none, "--writer", "debugging", "--should-have-caught", "none"], root_none)
     check("an escape trailer prints oracle=none for an empty oracle",
           result_none.returncode == 0 and "oracle=none" in str(rows_of(root_none)[0].get("triage")), result_none.stderr)
+
+    spawned = subprocess.run([sys.executable, MOD, "--help"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace")
+    check("the tool imports and exits 0 from its registered command",
+          spawned.returncode == 0 and "Traceback" not in spawned.stderr, spawned.stderr[-300:])
 
     return cases
 

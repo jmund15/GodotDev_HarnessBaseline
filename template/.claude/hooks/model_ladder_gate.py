@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Compaction-scoped ladder markers, and the doctrine check both dispatch hooks deny on.
 
-dispatch_mechanism_guard (Workflow) and sidecar_dispatch_context (sidecar launches) deny a dispatch until its
-observed governing skills, orchestration and the ladder are in this context. skill_dispatch_gate derives the
-skills from the actual reading and project artifact ownership. The ladder is read in full, or printed as the per-tier slice
+dispatch_mechanism_guard (Workflow) and sidecar_dispatch_context (sidecar launches) deny a dispatch until the
+orchestration skill and the ladder are in this context. Which other skills a brief's job follows is the briefing
+session's judgment (orchestration §0 Governing skills); no reading of the brief decides it. The ladder is read in full, or printed as the per-tier slice
 (`model_registry.py for-role <tier>...`) for every tier the call implies; a deny that reaches the session
 carries the whole `for-role` text for every tier the registry claims and records them all in one write, and
 names each missing tier with its dispatch consumer. A slice credits when the run's own stdout appears whole
@@ -254,15 +254,9 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
     ladder_ready, covered = state
     covered = set(covered) if isinstance(covered, list) else set()
     unmet, slice_text = [], None
-    import skill_dispatch_gate
-    required, faults = skill_dispatch_gate.required_skills(payload)
-    for name in sorted(set(required) | {'orchestration'}):
-        if not skill_in_context(session_id, name, agent_id=payload.get('agent_id') or '',
-                                transcript_path=payload.get('transcript_path'), root=str(_root(payload))):
-            unmet.append(SKILL_STEP if name == 'orchestration' else
-                         f'invoke Skill(skill="{name}") (orchestration §0 Governing skills)')
-    fault = ('Governing-skill check incomplete: ' + '; '.join(faults)
-             + '. Repair the named reading or hooks/skill_dispatch_gate.py before relying on this check.') if faults else None
+    if not skill_in_context(session_id, 'orchestration', agent_id=payload.get('agent_id') or '',
+                            transcript_path=payload.get('transcript_path'), root=str(_root(payload))):
+        unmet.append(SKILL_STEP)
     if not ladder_ready:
         needed = _call_tiers(tiers)
         if needed is None:
@@ -276,7 +270,7 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
                 unmet.append(SLICE_BELOW_STEP.format(which=named) if slice_text
                              else SLICE_STEP.format(which=named, tiers=' '.join(missing)))
     if not unmet:
-        return None, fault
+        return None, None
     reason = ('Dispatch DENIED: the dispatch doctrine is not in context since the session started or last compacted. '
               'Load it: ' + '; '.join(unmet) + '. Then check this call against it (route, jobs, '
               'models, efforts, reading) and re-issue it with any change it calls for.')
@@ -285,9 +279,7 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
         reason += ' The last for-role run did not reach context: %s.' % failure
     if slice_text:
         reason += '\n\n' + slice_text
-    if fault:
-        reason += '\n' + fault
-    return reason, fault
+    return reason, None
 
 
 def tier_in_context(session_id, tier):

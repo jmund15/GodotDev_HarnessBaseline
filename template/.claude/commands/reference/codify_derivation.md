@@ -6,6 +6,8 @@ disable-model-invocation: true
 
 Read at `/codify` §Independent derivation when the owner asked for the codification. Entrypoint: [`../codify.md`](../codify.md).
 
+Two derivations meet because the session that made the mistake diagnoses it under the same momentum that produced it.
+
 1. **Brief, facts only.** Write `.claude/scratch/codify_<sid8>_<n>/brief.md`, with `<n>` one past the highest existing folder for the session because an earlier pass's folder holds its evidence. The brief holds the owner's words verbatim, the session id and the transcript span (`session_digest.py --select` reads it), the evidence paths, and this command's path, and follows `orchestration` §4 *A judged job's brief is facts only*.
 2. **Seal your own.** Run Steps 0–5 yourself and write the result to `.claude/scratch/codify_<sid8>_<n>/own.md` beside the brief before the delegate returns; never edit it after.
 3. **Dispatch** one read-only delegate — `kind: reviewer` with `tools: "+Bash"`, since Steps 0–5 run `session_digest.py` and `verify_claims.py` — at the architect tier's scoped-architecting cell (`reference/model_ladder_evidence.md`) to run Steps 0–5 from the brief and return its Report block without landing anything. The job writes `tier: architect`, which its read-only shape does not imply.

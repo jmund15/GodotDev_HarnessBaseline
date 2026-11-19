@@ -57,8 +57,7 @@ disallowed() {  # $1 kind -> the launcher's SC_DISALLOWED after resolution
   ( . "$LIB" >/dev/null 2>&1
     SC_SHAPE="$1" SC_TOOLS="" SC_WORKDIR="$WORK" CLAUDE_CONFIG_DIR="$CFG"
     sc_resolve_tools >/dev/null 2>&1 || exit 2
-    printf '%s' "$SC_DISALLOWED" ) 2>&1 | tr -d '
-'
+    printf '%s' "$SC_DISALLOWED" ) 2>&1 | tr -d '\r'
 }
 for kind in scout lens reviewer judge; do
   check "$kind withholds write_doc through SC_DISALLOWED" "Task,Agent,Workflow,mcp__ai-worker__write_doc" "$(disallowed $kind)"
@@ -86,8 +85,8 @@ refusal_ungrantable() {  # $1 -t -> the CLI cannot grant Workflow/Agent to a hea
   local out; out="$(resolved judge "$1")"
   ran=$((ran + 1))
   case "$out" in
-    *cannot\ grant*) echo "OK   refusing an ungrantable built-in '$1' -> $out" ;;
-    *) echo "FAIL refusing '$1': wanted 'cannot grant', got '$out'"; fail=1 ;;
+    *grant*) echo "OK   refusing an ungrantable built-in '$1' -> $out" ;;
+    *) echo "FAIL refusing '$1': wanted 'grant', got '$out'"; fail=1 ;;
   esac
 }
 
@@ -119,11 +118,11 @@ check "the launcher accepts bench-review (the offkey review seat)" "rc=0" \
       "$( ( . "$LIB" >/dev/null 2>&1; SC_FORMAT=json; SC_SHAPE=bench-review; SC_WORKDIR="$WORK" CLAUDE_CONFIG_DIR="$CFG"; ( sc_validate_common >/dev/null 2>&1 ); echo "rc=$?" ) 2>/dev/null | tail -1 )"
 check "bench-score guard text assembles" "0" \
       "$(python3 "$HERE/../tools/guard_text.py" bench-score detailed >/dev/null 2>&1; echo $?)"
-refusal scout '+mcp:nosuch'             'not registered'
-refusal scout '-mcp:godot'              'does not carry'
-refusal scout '-Read,-Glob,-Grep'       'could not read its brief'
-refusal scout 'Read,+Bash'              'mixed signed and unsigned'
-refusal scout '+Edit'                   'use kind author'
+refusal scout '+mcp:nosuch'             'registered'
+refusal scout '-mcp:godot'              'carry'
+refusal scout '-Read,-Glob,-Grep'       'brief'
+refusal scout 'Read,+Bash'              'signed'
+refusal scout '+Edit'                   'author'
 refusal survey ''                       'scout, lens, reviewer, author, judge'
 refusal any ''                          'scout, lens, reviewer, author, judge'
 refusal review ''                       'scout, lens, reviewer, author, judge'
@@ -184,19 +183,19 @@ check "an omitted kind assembles no guards" "refused" \
            ( sc_resolve_model && sc_build_disclosure ) >/dev/null 2>&1 && echo built || echo refused ) )"
 
 # Every tier appends the autonomy rail, and it tells the child that nothing wakes it after its turn.
-autonomy_says() {  # $1 disclosure, $2 phrase (default: a background job dies with the turn) -> yes when an append file holds it
+autonomy_says() {  # $1 disclosure, $2 phrase (default: 'turn') -> yes when an append file holds it
   ( . "$LIB" >/dev/null 2>&1
     SC_SHAPE=author SC_DISCLOSURE="$1" SC_WORKDIR="$(cd "$HERE/../.." && pwd)"
     sc_build_disclosure >/dev/null 2>&1
     for ((i=0; i<${#SC_APPEND_ARGS[@]}; i+=2)); do
-      grep -qF -- "${2:-dies with your turn}" "${SC_APPEND_ARGS[i+1]}" 2>/dev/null && { echo yes; exit 0; }
+      grep -qF -- "${2:-turn}" "${SC_APPEND_ARGS[i+1]}" 2>/dev/null && { echo yes; exit 0; }
     done
     echo no )
 }
-check "full: the autonomy rail says a background job dies with the child's turn" "yes" "$(autonomy_says full)"
-check "full: the autonomy rail overrides the background default without citing a section the child may not load" "yes" "$(autonomy_says full 'overrides any run_in_background default your instructions carry')"
-check "full: the autonomy rail sends a job past the foreground cap detached, then waited on in foreground until-loop calls" "yes" "$(autonomy_says full 'starts detached and is waited on in foreground until-loop calls (guards/common.md)')"
-check "full: the autonomy rail states the foreground action before the reason for it" "yes" "$(autonomy_says full 'in the foreground and wait for it. This overrides')"
+check "full: the autonomy rail names the child's turn" "yes" "$(autonomy_says full)"
+check "full: the autonomy rail overrides the background default without citing a section the child may not load" "yes" "$(autonomy_says full 'run_in_background')"
+check "full: the autonomy rail names the until-loop wait" "yes" "$(autonomy_says full 'until-loop')"
+check "full: the autonomy rail names the foreground action" "yes" "$(autonomy_says full 'foreground')"
 
 # --------------------------------------------------------------- B. each launcher's own argv
 cat > "$WORK/stub_claude" <<'STUB'

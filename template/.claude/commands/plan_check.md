@@ -40,19 +40,21 @@ Every admitted mandate of the shape runs. Width and depth come from the triage 1
 
 | Shape | Mandates | Merge order |
 |---|---|---|
-| Code | `plc-memory-alignment`, `plc-pattern-fit`, `plc-architecture-quality`, `plc-test-readiness`, `plc-evidence-grounding` | 1. `plc-pattern-fit` + `plc-evidence-grounding`; 2. that seat + `plc-architecture-quality` |
-| Meta | `plc-memory-alignment`, `plc-instruction-quality`, `plc-doctrine-consistency`, `plc-evidence-grounding` | 1. text (`plc-instruction-quality` + `plc-doctrine-consistency`); 2. grounding (`plc-evidence-grounding` + `plc-memory-alignment`) |
-| Mixed | `plc-memory-alignment`, `plc-pattern-fit`, `plc-architecture-quality`, `plc-test-readiness`, `plc-evidence-grounding`, `plc-instruction-quality`, `plc-doctrine-consistency` | 1. the Code merge 1 and the Meta text seat; 2. the Code merge 2 |
+| Code | `plc-memory-alignment`, `plc-pattern-fit`, `plc-architecture-quality`, `plc-test-readiness`, `plc-evidence-grounding`, `plc-whole-plan` | 1. `plc-pattern-fit` + `plc-evidence-grounding`; 2. that seat + `plc-architecture-quality` |
+| Meta | `plc-memory-alignment`, `plc-instruction-quality`, `plc-doctrine-consistency`, `plc-evidence-grounding`, `plc-whole-plan` | 1. text (`plc-instruction-quality` + `plc-doctrine-consistency`); 2. grounding (`plc-evidence-grounding` + `plc-memory-alignment`) |
+| Mixed | `plc-memory-alignment`, `plc-pattern-fit`, `plc-architecture-quality`, `plc-test-readiness`, `plc-evidence-grounding`, `plc-instruction-quality`, `plc-doctrine-consistency`, `plc-whole-plan` | 1. the Code merge 1 and the Meta text seat; 2. the Code merge 2 |
 
-Split plans get one seat map. Classify each plan's shape; use the Mixed row when their shapes differ, else that shape's row. A shape-only mandate's brief names only its shape's plans; `plc-memory-alignment` and `plc-evidence-grounding` review every plan. Every finding's `file` begins with its plan's path.
+`plc-whole-plan` is its own seat in every shape and never merges: a merged seat concatenates lens bodies, and another lens's filter (grounding's "Do NOT flag design decisions") would suppress its cut findings. In a later round it is seated whenever `orchestration` §2 *Later rounds* seats any unit of the round; a revision that only narrows or stays inside judged units is recorded inline, so its coverage clears. It stays one lens until its ratings show each of its questions finds what the other lenses do not.
+
+Split plans get one seat map. Classify each plan's shape; use the Mixed row when their shapes differ, else that shape's row. A shape-only mandate's brief names only its shape's plans; `plc-memory-alignment`, `plc-evidence-grounding` and `plc-whole-plan` review every plan. Every finding's `file` begins with its plan's path.
 
 Re-rank the order when the panel-yield lines of `/orchestration_metrics` flag a merged mandate or a solo seat with no unique finding.
 
-Add a lens only for a distinct uncovered risk (`orchestration` §0). Judgment needs a qualified review role. Pin each seat to its lenses' `seat_tier` (`lens.py`) at the lowest value of that tier's review effort; `orchestration` §5 *Effort* owns a raise.
+Add a lens only for a distinct uncovered risk (`orchestration` §0). Judgment needs a qualified review role. Pin each seat to its lenses' `seat_tier` (`lens.py`); a seat whose spec omits its effort gets the rung its lens's reading computes from that row's ladder cell (`orchestration` §5 *Effort*).
 
-Before the panel, write the seats and the reviewed plan paths to `<run dir>/spec.json`. The seats are the seat map's keys, each at its lenses' `seat_tier` and that row's review effort.
+Before the panel, write the seats and the reviewed plan paths to `<run dir>/spec.json`. The seats are the seat map's keys, each at its lenses' `seat_tier`, with no effort unless the owner named one; an owner-named effort also sets the seat's `"pick": "owner"`, so it runs as named.
 
-Seat only the mandates the ledger returns. A design mandate covered at the unchanged design hash is not re-judged; that plan gets a spot-check instead: `plc-evidence-grounding`, `plc-test-readiness` and `plc-memory-alignment` only, sized by what the plan adds beyond the covered design (units the design does not state), per `orchestration` §2 *Later rounds*. Owner-fork answers no reviewer has seen still get the full check.
+Seat only the mandates the ledger returns. A design mandate covered at the unchanged design hash is not re-judged; that plan gets a spot-check instead: `plc-evidence-grounding`, `plc-test-readiness`, `plc-memory-alignment` and `plc-whole-plan` only, sized by what the plan adds beyond the covered design (units the design does not state), per `orchestration` §2 *Later rounds*. Owner-fork answers no reviewer has seen still get the full check.
 
 Set the spec's `noNewDecision` true when the §1b facts show no new decision. The post-check's ledger step carries it too, so each row it writes carries `noNewDecision: true`.
 

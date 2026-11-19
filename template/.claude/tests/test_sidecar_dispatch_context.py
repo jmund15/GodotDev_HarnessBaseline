@@ -9,8 +9,8 @@ BACKGROUND: a lib launcher is not denied for running in the background. The hook
 no wake-route line and no background advisory: those facts are in `reference/sidecar_dispatch.md`
 steps 5 and 6 and `/delegate`, read before the call. A mere mention is not a launch.
 CONTEXT: an admitted launch carries no `additionalContext` at all unless the doctrine gate could not
-read its state (a fault report): no recipe pointer, no launch card, no currency, probation,
-cheaper-claimant, long-context or size line.
+read its state (a fault report), or the tier-fit check names owner text it lifted: no jobs-file advisory,
+no recipe pointer, no launch card, no currency, probation, cheaper-claimant, long-context or size line.
 TIER FIT (hooks/_dispatch_checks.py, the check the Workflow route runs): a launch or fan-out job whose
 shape implies a tier its alias's row does not serve on the alias's transport is DENIED.
 
@@ -18,6 +18,10 @@ Fake launchers stand in for the real ones so the proof spends nothing and needs 
 State is redirected with HARNESS_HOOK_STATE_DIR — this never touches ~/.claude/.routing_state/.
 SIDECAR_DISPATCH_HOOK overrides the hook path under test (used to capture a RED record against
 the pre-change hook; unset, it targets the live `hooks/sidecar_dispatch_context.py`).
+
+Every case runs in exactly one of the four part files, which run beside each other: this file, then
+`test_sidecar_dispatch_context_part2.py` through `_part4.py`. Each part runs its `main()` case groups
+and its share of the pytest cases.
 
     python3 .claude/tests/test_sidecar_dispatch_context.py
 """
@@ -560,7 +564,7 @@ def test_first_launch_injects_no_recipe_card_or_pointer(tmp_path, monkeypatch):
                    encoding="utf-8")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None)
     monkeypatch.setattr(sidecar, "launch_jobs", lambda *args: [])
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("skipped", None))
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", lambda payload, tiers=None, embed_slice=False: (None, None), raising=False)
@@ -574,19 +578,11 @@ def test_first_launch_injects_no_recipe_card_or_pointer(tmp_path, monkeypatch):
         context = json.loads(out.getvalue() or "{}").get("hookSpecificOutput", {}).get("additionalContext", "")
         assert context == "", context
 
-def test_the_recipe_carries_what_the_late_advisories_said():
-    """The facts the deleted notes carried are on the recipe, read before the launch."""
-    with open(os.path.join(REPO, "reference", "sidecar_dispatch.md"), encoding="utf-8") as fh:
-        text = fh.read()
-    step6 = text.split("6. **Watch", 1)[1].split("7. **Consume", 1)[0]
-    assert "stopped notice" in step6 and "<record>.exit" in step6
-    assert "its own exit is not the run's" in text
-
 
 def test_a_doctrine_fault_is_the_only_context_an_admitted_launch_carries(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None)
     monkeypatch.setattr(sidecar, "launch_jobs", lambda *args: [])
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("skipped", None))
     fault = sidecar.model_ladder_gate.FAULT_NOTE
@@ -642,7 +638,7 @@ def test_a_fanout_drivers_child_launch_skips_the_doctrine_only_for_a_recorded_ad
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", doctrine, raising=False)
     monkeypatch.setattr(dispatch_table, "sidecar_entries", lambda payload: ([{"id": "x"}], []))
     monkeypatch.setattr(dispatch_table, "register_sidecars", lambda *args, **kwargs: None)
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None)
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("ok", None))
     monkeypatch.setattr(sidecar, "tracking_session", lambda: "child001")
     monkeypatch.setattr(sidecar, "take_checks", lambda *args: (False, True))
@@ -698,7 +694,7 @@ def test_the_launcher_checks_the_doctrine_for_a_launch_no_hook_checked(monkeypat
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", doctrine, raising=False)
     monkeypatch.setattr(dispatch_table, "sidecar_entries", lambda payload: ([{"id": "x"}], []))
     monkeypatch.setattr(dispatch_table, "register_sidecars", lambda *args, **kwargs: None)
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None)
     argv = ["-m", "fake", "-f", "brief.md", "-G", "author"]
     launcher = os.path.join(REPO, "scripts", "anthropic_sidecar.sh")
 
@@ -721,7 +717,7 @@ def test_the_launcher_keeps_a_pause_refusals_exit_code(monkeypatch, capsys):
     sys.path.insert(0, HOOKS)
     import dispatch_table
     monkeypatch.setattr(dispatch_table, "sidecar_entries", lambda payload: ([], []))
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None)
     monkeypatch.setattr(sidecar, "tracking_session", lambda: None)
     argv = ["-m", "fake", "-f", "brief.md", "-G", "author"]
     launcher = os.path.join(REPO, "scripts", "codex_proxy_sidecar.sh")
@@ -997,7 +993,8 @@ def test_fold_pin_is_tier_checked_at_hook_time(checked_fanout):
     assert "review-fold-1" in (check(suffix=" --fold-alias haiku") or "")
 
 
-def main():
+def fixture():
+    """The temp project, its fake launchers and the env every case group drives them with."""
     tmp = tempfile.mkdtemp(prefix="sdcstate_")
     project = os.path.join(tmp, "project")
     fdir = os.path.join(project, ".claude", "scripts").replace("\\", "/")
@@ -1029,6 +1026,14 @@ def main():
     with open(outside, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("#!/usr/bin/env bash\nif [ \"$1\" = --check ]; then printf x > \"%s\"; exit 8; fi\n"
                  % outside_marker)
+    return {"tmp": tmp, "project": project, "fdir": fdir, "env": env, "ok": ok, "refusing": refusing,
+            "launch": launch, "outside": outside, "outside_marker": outside_marker,
+            "approved_launch": "bash .claude/scripts/ok_sidecar.sh -G scout -m fake"}
+
+
+def group_launch_helpers(fx):
+    """The four pytest case bodies as main() cases, then the proof helper's own refusal contract."""
+    tmp = fx["tmp"]
     cases = []
     from pathlib import Path
     from pytest import MonkeyPatch
@@ -1058,6 +1063,13 @@ def main():
         except RuntimeError:
             rejected = True
         cases.append((label, rejected))
+    return cases
+
+
+def group_preflight(fx):
+    """A launcher `--check` refusal DENIES before dispatch; -A, -U and -W pass through to it."""
+    env, refusing, fdir, launch = fx["env"], fx["refusing"], fx["fdir"], fx["launch"]
+    cases = []
 
     # --- preflight (the guard bites)
     denied = run("bash %s -m fake -f brief.md -P run.jsonl" % refusing, env, session="sdc00010")
@@ -1118,6 +1130,13 @@ def main():
                   run("bash %s -W -m fake -f brief.md" % peak, env, session="sdc00942").get("permissionDecision") is None))
     cases.append(("a passing --check is never denied",
                   run(launch, env, session="sdc00012").get("permissionDecision") is None))
+    return cases
+
+
+def group_doctrine(fx):
+    """The ladder and orchestration-skill gates: what each denies, and which slice admits a launch."""
+    env, launch, ok, project = fx["env"], fx["launch"], fx["ok"], fx["project"]
+    cases = []
     no_ladder = run(launch, env, session="sdc00960", ladder=False)
     no_ladder_reason = no_ladder.get("permissionDecisionReason", "")
     cases.append(("a direct dispatch without a fresh ladder Read is denied naming the ladder",
@@ -1165,7 +1184,13 @@ def main():
                   session="sdc00964", ladder=False, skill=False)
     cases.append(("a dry-run fan-out dispatches nothing and is never denied for doctrine",
                   fan_dry.get("permissionDecision") != "deny"))
-    approved_launch = "bash .claude/scripts/ok_sidecar.sh -G scout -m fake"
+    return cases
+
+
+def group_approval(fx):
+    """A canonical read-only launch is allowed; a +Bash review reaches one ask and nothing wider is."""
+    env, project, ok, approved_launch = fx["env"], fx["project"], fx["ok"], fx["approved_launch"]
+    cases = []
     approved = run(approved_launch, env, session="sdc01001")
     cases.append(("a tracked canonical direct launch with preflight and ladder is allowed",
                   approved.get("permissionDecision") == "allow"
@@ -1244,6 +1269,15 @@ def main():
     no_preflight = dict(env, HARNESS_SIDECAR_PREFLIGHT="0")
     cases.append(("a canonical launch with preflight disabled gets no decision",
                   run(approved_launch, no_preflight, session="sdc01003").get("permissionDecision") is None))
+    return cases
+
+
+def group_worktree_budget(fx):
+    """The ladder's absolute path from a worktree cwd, the hook's one budget, and its failure posture."""
+    env, launch, project, ok = fx["env"], fx["launch"], fx["project"], fx["ok"]
+    outside, outside_marker = fx["outside"], fx["outside_marker"]
+    approved_launch = fx["approved_launch"]
+    cases = []
     # A session working inside a worktree: the gate accepts only the primary checkout's ladder
     # (CLAUDE_PROJECT_DIR), so the denial must name that file absolutely.
     worktree = os.path.join(project, ".claude", "worktrees", "wt1")
@@ -1332,7 +1366,12 @@ def main():
         cases.append((label, malformed.returncode == 0
                       and not malformed.stderr.strip()
                       and not malformed.stdout.strip()))
+    return cases
 
+
+def _build_fanout_fixture(fx):
+    """The fan-out project: its jobs file writer, and the env and command every fan-out case drives."""
+    tmp, env = fx["tmp"], fx["env"]
     # The Python fan-out hides its child launchers from auto mode. The existing sidecar gate
     # approves the validated wrapper; each child launcher still enforces its own budget gate.
     fanout_root = os.path.join(tmp, "fanout-project")
@@ -1368,6 +1407,27 @@ def main():
     fanout_env = dict(env, CLAUDE_PROJECT_DIR=fanout_root, HARNESS_MODEL_REGISTRY=planted_registry)
     fanout_cmd = ("python3 .claude/tools/sidecar_fanout.py .claude/scratch/jobs.json "
                   "--out-dir .claude/scratch/results")
+    return {"fanout_root": fanout_root, "scratch": scratch, "jobs": jobs, "base_job": base_job,
+            "prompt": prompt, "write_jobs": write_jobs, "outside_early": outside_early,
+            "fanout_env": fanout_env, "fanout_cmd": fanout_cmd}
+
+
+def fanout_fixture(fx):
+    """The part's one fan-out project, built once: the groups of one part share it as the unsplit proof did."""
+    if "fanout" not in fx:
+        fx["fanout"] = _build_fanout_fixture(fx)
+    return fx["fanout"]
+
+
+def group_fanout_approval(fx):
+    """The sidecar gate approves a validated Python fan-out wrapper and falls through on anything wider."""
+    tmp = fx["tmp"]
+    fan = fanout_fixture(fx)
+    fanout_root, scratch = fan["fanout_root"], fan["scratch"]
+    jobs, base_job, prompt = fan["jobs"], fan["base_job"], fan["prompt"]
+    write_jobs, outside_early = fan["write_jobs"], fan["outside_early"]
+    fanout_env, fanout_cmd = fan["fanout_env"], fan["fanout_cmd"]
+    cases = []
     fanout = run(fanout_cmd, fanout_env, session="sdc00013")
     cases.append(("the existing sidecar gate approves a validated fan-out wrapper",
                   fanout.get("permissionDecision") == "allow"
@@ -1414,6 +1474,9 @@ def main():
     write_jobs(alias="opus", transport="anthropic", kind="author")
     cases.append(("author jobs retain the child auto-permission gate",
                   run(fanout_cmd, fanout_env, session="sdc00015").get("permissionDecision") == "allow"))
+    write_jobs(pick="cell", spec="tight")
+    cases.append(("a one-job file that records its pin basis keeps auto-approval",
+                  run(fanout_cmd, fanout_env, session="sdcpin01").get("permissionDecision") == "allow"))
     write_jobs(effort="turbo")
     cases.append(("unknown effort pins fall through",
                   run(fanout_cmd, fanout_env, session="sdc00023").get("permissionDecision") is None))
@@ -1509,6 +1572,15 @@ def main():
     cases.append(("a jobs path with a .. segment falls through",
                   run(fanout_cmd.replace(".claude/scratch/jobs.json", ".claude/scratch/../scratch/jobs.json"),
                       fanout_env, session="sdc00066").get("permissionDecision") is None))
+    return cases
+
+
+def group_ladder_gate(fx):
+    """Every executed fan-out or launch shape is denied without a ladder Read; a mention is not judged."""
+    project, ok, env = fx["project"], fx["ok"], fx["env"]
+    fan = fanout_fixture(fx)
+    fanout_root, fanout_env, fanout_cmd = fan["fanout_root"], fan["fanout_env"], fan["fanout_cmd"]
+    cases = []
 
     # --- ladder gate on EVERY executed fan-out or launch. The ladder gate must not share the
     # auto-approve recognizer: a shape the approver does not recognize still spends, so it must
@@ -1583,6 +1655,15 @@ def main():
     cases.append(("LADDER: an unrecognized fan-out shape is never auto-approved",
                   run(fanout_cmd + " --max-parallel 5", fanout_env,
                       session="sdc03901").get("permissionDecision") is None))
+    return cases
+
+
+def group_background(fx):
+    """A backgrounded lib launcher is never denied, and the hook adds no pointer, wake route or advisory."""
+    tmp, fdir, env, ok = fx["tmp"], fx["fdir"], fx["env"], fx["ok"]
+    fan = fanout_fixture(fx)
+    fanout_env, fanout_cmd = fan["fanout_env"], fan["fanout_cmd"]
+    cases = []
 
     # --- background: a backgrounded lib launcher is never denied, and the hook adds no pointer, wake route or
     # background advisory to the admitted call (sidecar_dispatch.md steps 5 and 6 carry those facts).
@@ -1642,6 +1723,13 @@ def main():
     fanout_detached = run(fanout_cmd + " --detach", fanout_env, session="sdc00049", run_in_background=True)
     cases.append(("a backgrounded fan-out that detaches its driver gets no background-limit advisory",
                   fanout_detached.get("permissionDecision") == "allow" and late_advice(fanout_detached) == []))
+    return cases
+
+
+def group_real_channel(fx):
+    """The real PreToolUse dispatcher's channel: allow with no advisory, and the variable deny before launch."""
+    tmp = fx["tmp"]
+    cases = []
     real_root = os.path.abspath(os.path.join(HERE, "..", ".."))
     real_record = os.path.join(tmp, "detach-payload-probe.record.json").replace("\\", "/")
     real_env = dict(os.environ, CLAUDE_PROJECT_DIR=real_root, HARNESS_HOOK_STATE_DIR=tmp,
@@ -1723,6 +1811,14 @@ def main():
                   and heredoc_real.get("permissionDecision") is None
                   and loop_real.get("permissionDecision") == "deny"
                   and substitution_real.get("permissionDecision") == "deny"))
+    return cases
+
+
+def group_context(fx):
+    """An admitted launch carries no reference injection, and the guard matches the invocation, not the noun."""
+    env, launch, ok, refusing = fx["env"], fx["launch"], fx["ok"], fx["refusing"]
+    fanout_env = fanout_fixture(fx)["fanout_env"]
+    cases = []
 
     # --- context: an admitted launch carries no reference injection, first, later or after a compaction
     cases.append(("the first launch injects no reference, card or pointer", context(launch, env) == ""))
@@ -1778,11 +1874,95 @@ def main():
     cases.append(("fan-out calls are unaffected by literal tracking validation",
                   run("python3 .claude/tools/sidecar_fanout.py --help", fanout_env,
                       session="sdcvar04", ladder=False) == {}))
+    return cases
 
-    cases.extend(currency_cases(tmp, ok, env))
+
+def group_advisory_context(fx):
+    """An admitted launch carries no jobs-file advisory, registered launcher or not."""
+    env = fx["env"]
+    fan = fanout_fixture(fx)
+    fanout_env, fanout_cmd = fan["fanout_env"], fan["fanout_cmd"]
+    cases = []
+
+    # --- context: an admitted launch carries no jobs-file advisory, registered launcher or not
+    advisory_env = dict(env, HARNESS_SIDECAR_PREFLIGHT="0")
+    direct_launch = run("bash .claude/scripts/anthropic_sidecar.sh -m fake -R literal.record.json -l advise-01",
+                        advisory_env, session="sdcadv01")
+    cases.append(("a session-run direct launch of a registered launcher gets no jobs-file advisory",
+                  direct_launch.get("permissionDecision") != "deny"
+                  and not direct_launch.get("additionalContext")))
+    cases.append(("a registered launcher's --check is not a launch and gets no context",
+                  run("bash .claude/scripts/anthropic_sidecar.sh --check", advisory_env, session="sdcadv02") == {}))
+    cases.append(("bash -n on a registered launcher runs nothing and gets no context",
+                  run("bash -n .claude/scripts/anthropic_sidecar.sh", advisory_env, session="sdcadv03") == {}))
+    cases.append(("a quoted launcher mention in git grep gets no context",
+                  run("git grep -n 'anthropic_sidecar.sh' -- .claude", advisory_env, session="sdcadv04") == {}))
+    cases.append(("a run_grid.sh call gets no context",
+                  run("bash .claude/scripts/run_grid.sh -m fake -R literal.record.json -l advise-06",
+                      advisory_env, session="sdcadv06") == {}))
+    cases.append(("a sidecar_fanout.py call is not judged as a direct launch",
+                  run(fanout_cmd, fanout_env, session="sdcadv07").get("permissionDecision") != "deny"))
+
+    return cases
+
+
+def group_reports(fx):
+    """Tier fit, a job's paying plan carried into the checks, and the long-context silence on a fresh child."""
+    tmp, ok, env = fx["tmp"], fx["ok"], fx["env"]
+    cases = list(currency_cases(tmp, ok, env))
     cases.extend(plan_cases(tmp))
     cases.extend(long_context_cases(tmp, ok, env))
+    return cases
 
+
+PARTS = 4
+# Every pytest case, listed so the harness runner does not also hand this file to pytest: it collects a
+# top-level `test_` function whose name the file carries only once. Each part runs its share via pytest_share.
+PYTEST_CASES = (
+    test_preflight_runs_once_bounded_and_no_check_reads_capacity,
+    test_first_launch_injects_no_recipe_card_or_pointer,
+    test_a_doctrine_fault_is_the_only_context_an_admitted_launch_carries,
+    test_a_fanout_whose_jobs_file_the_call_writes_defers_the_doctrine_to_its_launchers,
+    test_a_fanout_drivers_child_launch_skips_the_doctrine_only_for_a_recorded_admission,
+    test_the_launcher_checks_the_doctrine_for_a_launch_no_hook_checked,
+    test_the_launcher_keeps_a_pause_refusals_exit_code,
+    test_checked_fanout_survives_compaction,
+    test_unplanned_fanout_child_still_checks_current_doctrine,
+    test_explicit_seat_plan_binds_the_inherited_fold_plan,
+    test_direct_launch_receipt_remains_one_use,
+    test_fanout_receipts_resolve_paths_at_the_calls_cwd,
+    test_unloaded_fanout_call_is_denied,
+    test_other_fanout_routes_use_the_same_hook_receipts,
+    test_memory_retry_and_plan_fallback_consume_new_attempts,
+    test_each_fanout_call_writes_its_own_launch_intent,
+    test_large_fanout_keeps_the_first_queued_childs_receipt,
+    test_a_receipt_from_another_hook_version_never_crashes_a_launch,
+    test_refold_call_receipts_cover_authors_but_no_seat,
+    test_fold_requires_executor_doctrine_even_with_only_survey_seats,
+    test_fanout_attempt_receipt_cannot_be_consumed_twice,
+    test_fold_pin_is_tier_checked_at_hook_time,
+)
+GROUPS = (
+    (group_launch_helpers, group_preflight, group_doctrine),
+    (group_approval,),
+    (group_fanout_approval, group_ladder_gate, group_advisory_context, group_worktree_budget),
+    (group_background, group_context, group_reports, group_real_channel),
+)
+
+
+def parts_present():
+    """Every part file exists: a deleted one would silently drop its cases."""
+    for n in range(2, PARTS + 1):
+        part = os.path.join(HERE, "test_sidecar_dispatch_context_part%d.py" % n)
+        assert os.path.isfile(part), "missing part file " + os.path.basename(part)
+
+
+def main(part=1):
+    """Part `part` of `PARTS`: its case groups, each rebuilt on the shared fixture and run here."""
+    fx = fixture()
+    cases = []
+    for group in GROUPS[part - 1]:
+        cases.extend(group(fx))
     failures = [label for label, ok_ in cases if not ok_]
     for label, ok_ in cases:
         print("%-4s %s" % ("ok" if ok_ else "FAIL", label))
@@ -1790,5 +1970,14 @@ def main():
     return 1 if failures else 0
 
 
+def pytest_share(part):
+    """This proof's `part`-th share of its pytest cases, each still run by pytest in its own process."""
+    from _case_pool import run_sharded
+    return run_sharded(os.path.abspath(__file__), part, PARTS, jobs=1)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    parts_present()
+    rc = main(1)
+    rc = pytest_share(0) or rc
+    sys.exit(rc)

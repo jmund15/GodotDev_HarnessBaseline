@@ -179,6 +179,14 @@ class PeerMessageGuardTests(unittest.TestCase):
         self.assertEqual("allow", self.decide("twin")[0])
         self.assertEqual("deny", self.decide("twin [aaaaaa]")[0])
 
+    def test_one_warmth_predicate_reads_status_and_last_entry(self):
+        sys.path.insert(0, str(HOOK.parent))
+        import peer_message_guard as guard
+        self.assertTrue(guard.is_warm({"status": "busy"}, None))
+        self.assertTrue(guard.is_warm({"status": "idle"}, guard.WARM_SEC - 1))
+        self.assertFalse(guard.is_warm({"status": "idle"}, guard.WARM_SEC))
+        self.assertFalse(guard.is_warm({"status": "idle"}, None))
+
     def test_other_tools_and_bad_input_pass(self):
         self.peer(1, "peer-d7", "idle")
         self.assertEqual("allow", self.decide("peer-d7", tool="Bash")[0])

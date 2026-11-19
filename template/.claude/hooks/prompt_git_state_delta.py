@@ -3,10 +3,13 @@
 """
 Hook: UserPromptSubmit - Git state delta injector
 
-Emits a <git-state-delta> block ONLY when the working-tree state has changed
-since the previous prompt. Silent on the first prompt of a session (SessionStart
-already injected the initial context) and on all subsequent prompts where
-nothing has moved.
+Emits a <git-state-delta> block ONLY when the branch, HEAD, upstream counts, a watched
+submodule or the index (`staged`) changed since the previous prompt. Silent on the first
+prompt of a session (SessionStart already injected the initial context), on prompts where
+nothing has moved, and where only the unstaged or untracked counts moved: in a shared tree
+those counts cannot tell this session's edits from a peer's or the owner's, and the check that
+decides on peer work (`git status --short <file>` before calling it peer-owned) reads files, not
+counts. The cache follows such a change so the next delta's "was" values are current.
 
 Catches:
   - Cross-window commits (user committed in another shell)
@@ -288,11 +291,14 @@ def _write_cached(path: Path, session_id: str, fp: str) -> None:
 
 
 def _format_delta(prev: dict[str, str], curr: dict[str, str]) -> str:
-    """Build a <git-state-delta> block listing only the fields that actually changed.
+    """Build a <git-state-delta> block listing only the fields that actually changed, or ""
+    when nothing the next action depends on moved.
 
     A field is mentioned if-and-only-if its value differs from the previous
     fingerprint. Fields that didn't move stay out of the block — keeps the
-    signal sharp.
+    signal sharp. A change confined to the unstaged and untracked counts is the
+    session's own edits, so it earns no block of its own; the index (`staged`)
+    moving does, since the working tree is shared.
     """
     lines = ["<git-state-delta>"]
 
@@ -301,20 +307,6 @@ def _format_delta(prev: dict[str, str], curr: dict[str, str]) -> str:
 
     if curr["head"] != prev["head"]:
         lines.append(f"HEAD: {curr['head']} (was: {prev['head']})")
-
-    # Working-tree counts are reported as a single line if any of the three changed.
-    wt_changed = (
-        curr["staged"] != prev["staged"]
-        or curr["unstaged"] != prev["unstaged"]
-        or curr["untracked"] != prev["untracked"]
-    )
-    if wt_changed:
-        lines.append(
-            f"Working tree: staged={curr['staged']} unstaged={curr['unstaged']} "
-            f"untracked={curr['untracked']} "
-            f"(was: staged={prev['staged']} unstaged={prev['unstaged']} "
-            f"untracked={prev['untracked']})"
-        )
 
     if curr["ahead"] != prev["ahead"] or curr["behind"] != prev["behind"]:
         lines.append(
@@ -336,6 +328,22 @@ def _format_delta(prev: dict[str, str], curr: dict[str, str]) -> str:
                 "Fix: git submodule update --init --recursive"
             )
 
+    # Counts ride along whenever the block speaks for another reason; alone, only the index moving does.
+    wt_changed = (
+        curr["staged"] != prev["staged"]
+        or curr["unstaged"] != prev["unstaged"]
+        or curr["untracked"] != prev["untracked"]
+    )
+    if wt_changed and (curr["staged"] != prev["staged"] or len(lines) > 1):
+        lines.append(
+            f"Working tree: staged={curr['staged']} unstaged={curr['unstaged']} "
+            f"untracked={curr['untracked']} "
+            f"(was: staged={prev['staged']} unstaged={prev['unstaged']} "
+            f"untracked={prev['untracked']})"
+        )
+
+    if len(lines) == 1:
+        return ""
     lines.append("</git-state-delta>")
     return "\n".join(lines)
 
@@ -390,8 +398,10 @@ def main() -> None:
         _write_cached(cache_file, session_id, curr_fp)
         sys.exit(0)
 
-    print(_format_delta(prev, curr))
-    _write_cached(cache_file, session_id, curr_fp)
+    block = _format_delta(prev, curr)
+    if block:
+        print(block)
+    _write_cached(cache_file, session_id, curr_fp)  # a silent change still moves the baseline
     sys.exit(0)
 
 

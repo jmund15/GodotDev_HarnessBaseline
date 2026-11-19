@@ -24,6 +24,10 @@ VERIFY = "pwsh -NoProfile -File .claude/scripts/verify.ps1"
 
 ALLOW, DENY, NUDGE = "allow", "deny", "nudge"
 
+# The once-per-window advisories record their firing in the per-session hook state; left at the user's real
+# store, the first run marks them fired and every later run reads an expected nudge as allow.
+HOOK_STATE_DIR = tempfile.mkdtemp(prefix="gatecadence_hookstate_")
+
 
 def run(command, session, repo):
     payload = {"tool_name": "Bash", "session_id": session, "cwd": repo,
@@ -31,6 +35,7 @@ def run(command, session, repo):
     # The hook roots its state on CLAUDE_PROJECT_DIR before the payload cwd. Inherited from a session,
     # it points every case at one real checkout, so gate counts leak across runs. Each case owns its repo.
     env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
+    env["HARNESS_HOOK_STATE_DIR"] = HOOK_STATE_DIR
     r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload),
                        capture_output=True, text=True, timeout=90, env=env)
     if r.returncode not in (0, 2) or 'Traceback' in r.stderr:
@@ -65,15 +70,15 @@ CASES = [
 
     # --- a missing marker is a nudge, never a deny -------------------------------------------
     ("bare invocation with no marker gets the nudge",
-     GATE, NUDGE, "declares no position"),
+     GATE, NUDGE, "change_control §Gate cadence"),
     ("bogus marker gets the nudge",
-     GATE + "  # gate: whenever", NUDGE, "declares no position"),
+     GATE + "  # gate: whenever", NUDGE, "change_control §Gate cadence"),
     ("the retired `mid` marker is no longer a position",
-     GATE + "  # gate: mid", NUDGE, "declares no position"),
+     GATE + "  # gate: mid", NUDGE, "change_control §Gate cadence"),
     ("a marker after a pipe declares the one piped gate",
      GATE + " -Detach 2>&1 | tail -3  # gate: final", ALLOW, ""),
     ("a piped gate with no marker still gets the nudge",
-     GATE + " -Detach 2>&1 | tail -3", NUDGE, "declares no position"),
+     GATE + " -Detach 2>&1 | tail -3", NUDGE, "change_control §Gate cadence"),
     ("-StaticOnly is exempt from the marker",
      GATE + " -StaticOnly", ALLOW, ""),
     ("-RouteOnly runs no gate, so it is exempt from the marker",
@@ -81,9 +86,9 @@ CASES = [
     ("-Watch is exempt: it streams a detached run's OUT and runs no gate",
      GATE + ' -Watch -Out "C:/x/.claude/scratch/test_runs/gate_run_1.out"', ALLOW, ""),
     ("-Detach -Watch spawns a gate before it watches, so it gets the marker nudge",
-     GATE + " -Detach -Watch", NUDGE, "declares no position"),
+     GATE + " -Detach -Watch", NUDGE, "change_control §Gate cadence"),
     ("-Watch -Detach in either order still gets the marker nudge",
-     GATE + " -Watch -Detach", NUDGE, "declares no position"),
+     GATE + " -Watch -Detach", NUDGE, "change_control §Gate cadence"),
 
     # --- the mandatory stops ------------------------------------------------
     ("final is allowed uncapped",
@@ -106,7 +111,7 @@ CASES = [
      VERIFY + " -Scope Domain,AI", ALLOW, ""),
     ("whole-tier filter is nudged, not denied",
      'pwsh -File .claude/scripts/run_test_suite.ps1 '
-     '-Filter "FullyQualifiedName~Tests.Integration" -Label x', NUDGE, "blast-zone"),
+     '-Filter "FullyQualifiedName~Tests.Integration" -Label x', NUDGE, "verify.ps1"),
     ("blast-zone filter is silent",
      'pwsh -File .claude/scripts/run_test_suite.ps1 '
      '-Filter "FullyQualifiedName~Tests.Integration.Domain" -Label x', ALLOW, ""),
@@ -119,25 +124,31 @@ SEQUENCE = [
     ("third checkpoint allowed", GATE + "  # gate: checkpoint", ALLOW, ""),
     ("final is never capped", GATE + "  # gate: final", ALLOW, ""),
     ("prepush is never capped", GATE + "  # gate: prepush", ALLOW, ""),
+    ("the first whole-tier filter of a session is nudged",
+     'pwsh -File .claude/scripts/run_test_suite.ps1 -Filter "FullyQualifiedName~Tests.Integration" -Label a',
+     NUDGE, "verify.ps1"),
+    ("the same nudge is not repeated within the session",
+     'pwsh -File .claude/scripts/run_test_suite.ps1 -Filter "FullyQualifiedName~Tests.Integration" -Label b',
+     ALLOW, ""),
 ]
 
 COMPOUND = [
     ("marked checkpoint then unmarked gate nudged",
-     GATE + "  # gate: checkpoint\n" + GATE, NUDGE, "declares no position"),
+     GATE + "  # gate: checkpoint\n" + GATE, NUDGE, "change_control §Gate cadence"),
     ("commented gate mention does not execute",
      GATE + "  # gate: checkpoint; " + GATE, ALLOW, ""),
     ("subshell gate without marker nudged",
-     "(" + GATE + ")", NUDGE, "declares no position"),
+     "(" + GATE + ")", NUDGE, "change_control §Gate cadence"),
     ("brace group gate without marker nudged",
-     "{ " + GATE + "; }", NUDGE, "declares no position"),
+     "{ " + GATE + "; }", NUDGE, "change_control §Gate cadence"),
     ("if body gate without marker nudged",
-     "if true; then " + GATE + "; fi", NUDGE, "declares no position"),
+     "if true; then " + GATE + "; fi", NUDGE, "change_control §Gate cadence"),
     ("else body gate without marker nudged",
-     "if false; then true; else " + GATE + "; fi", NUDGE, "declares no position"),
+     "if false; then true; else " + GATE + "; fi", NUDGE, "change_control §Gate cadence"),
     ("and chain gate without marker nudged",
-     "true && " + GATE, NUDGE, "declares no position"),
+     "true && " + GATE, NUDGE, "change_control §Gate cadence"),
     ("or chain gate without marker nudged",
-     "false || " + GATE, NUDGE, "declares no position"),
+     "false || " + GATE, NUDGE, "change_control §Gate cadence"),
     ("marked subshell gate allowed",
      "(" + GATE + "  # gate: checkpoint\n)", ALLOW, ""),
     ("marked brace gate allowed",
@@ -147,16 +158,16 @@ COMPOUND = [
     ("marked and chain gate allowed",
      "true && " + GATE + "  # gate: checkpoint", ALLOW, ""),
     ("marked gate then unmarked subshell nudged",
-     GATE + "  # gate: checkpoint\n(" + GATE + ")", NUDGE, "declares no position"),
+     GATE + "  # gate: checkpoint\n(" + GATE + ")", NUDGE, "change_control §Gate cadence"),
     ("unmarked gate then marked checkpoint nudged",
-     GATE + "; " + GATE + "  # gate: checkpoint", NUDGE, "declares no position"),
+     GATE + "; " + GATE + "  # gate: checkpoint", NUDGE, "change_control §Gate cadence"),
     ("exempt gate then unmarked gate nudged",
-     GATE + " -StaticOnly; " + GATE, NUDGE, "declares no position"),
+     GATE + " -StaticOnly; " + GATE, NUDGE, "change_control §Gate cadence"),
     ("unmarked gate then exempt gate nudged",
-     GATE + "; " + GATE + " -StaticOnly", NUDGE, "declares no position"),
+     GATE + "; " + GATE + " -StaticOnly", NUDGE, "change_control §Gate cadence"),
     ("narrowed flag is denied", GATE + " -Smoke  # gate: final", DENY, "verify.ps1"),
     ("gate wrapped in bash -c without marker nudged",
-     "bash -c 'pwsh -File .claude/scripts/regression_gate.ps1'", NUDGE, "declares no position"),
+     "bash -c 'pwsh -File .claude/scripts/regression_gate.ps1'", NUDGE, "change_control §Gate cadence"),
     ("gate wrapped in bash -c with marker allowed",
      "bash -c 'pwsh -File .claude/scripts/regression_gate.ps1'  # gate: final", ALLOW, ""),
     ("gate named inside echo executes nothing",
@@ -356,6 +367,7 @@ class PeerFixture:
         (repo / 'input.txt').write_text('tested tree\n')
         self.git('add', 'input.txt')
         self.git('-c', 'user.name=proof', '-c', 'user.email=proof@local', 'commit', '-qm', 'init')
+        self.head = head_of(self)
         self.peer = peer = repo / 'peer'
         self.git('worktree', 'add', '-q', '--detach', str(peer))
         # Ignore the linked fixture checkout, as the real .claude/worktrees directory is ignored.
@@ -391,13 +403,17 @@ class PeerFixture:
         self.path.write_text(json.dumps(value), encoding='utf-8')
         return run(GATE + ' # gate: final', 'record-owner', str(self.repo))
 
-    def red_run(self, tree, status='FAIL', session='record-owner'):
+    def red_run(self, tree, status='FAIL', session='record-owner', head=None):
         """Shape from the gate's <ledgerDir>/<runId>.result.json (regression_gate.ps1 Complete-Gate)."""
         ledger = self.repo / '.claude/scratch/gate_ledger'
         ledger.mkdir(parents=True, exist_ok=True)
         (ledger / '20261022-181326-50980.result.json').write_text(
-            json.dumps(dict(id='20261022-181326-50980', status=status, treeDigest=tree,
+            json.dumps(dict(id='20261022-181326-50980', status=status, treeDigest=tree, head=head or self.head,
                             sessionId=session)), encoding='utf-8')
+
+
+def head_of(fx):
+    return fx.git('rev-parse', 'HEAD').stdout.decode().strip()
 
 
 def peer_produced_cases(digest):
@@ -495,9 +511,32 @@ def peer_unrepaired_cases(digest):
     cache.write_bytes(b'\0')
     out.append(('a gate script older than the red and a newer cache file are not a repair',
                 fx.observed(record), DENY, 'content is unchanged'))
+    unrelated = fx.repo / '.claude/scripts/bench_notes.py'
+    unrelated.write_text('# bench notes\n', encoding='utf-8')
+    out.append(('a new file under .claude/scripts the gate never runs is not a repair',
+                fx.observed(record), DENY, 'content is unchanged'))
+    unrelated.unlink()
     os.utime(gate_script, (time.time(), time.time()))
     out.append(('an edit to a gate script (a digest-excluded input) after the red is a repair',
                 fx.observed(record), ALLOW, ''))
+
+    # Tracked gate inputs: a touch with the red's bytes is no repair; a gate-run helper the gate dot-sources, edited, is one.
+    fx2 = PeerFixture(digest)
+    gate2 = fx2.repo / '.claude/scripts/regression_gate.ps1'
+    helper = fx2.repo / '.claude/scripts/Helper.ps1'
+    gate2.parent.mkdir(parents=True)
+    gate2.write_text("# gate\n. (Join-Path $PSScriptRoot 'Helper.ps1')\n", encoding='utf-8')
+    helper.write_text('# helper\n', encoding='utf-8')
+    fx2.git('add', '-f', '.claude/scripts')
+    fx2.git('-c', 'user.name=proof', '-c', 'user.email=proof@local', 'commit', '-qm', 'gate inputs')
+    fx2.red_run(digest, head=head_of(fx2))
+    for path in (gate2, helper):
+        os.utime(path, (time.time(), time.time()))
+    out.append(('a touch of tracked gate inputs with the red\'s bytes is not a repair',
+                fx2.observed(record), DENY, 'content is unchanged'))
+    helper.write_text('# helper, edited after the red\n', encoding='utf-8')
+    out.append(('an edit to a helper the gate dot-sources after the red is a repair',
+                fx2.observed(record), ALLOW, ''))
     return out
 
 
@@ -540,6 +579,17 @@ def peer_edited_cases(digest):
     out.append(('a fix edited in this checkout repairs a red recorded in a linked worktree',
                 fx.observed(dict(record, treeDigest=fixed,
                                  startedAt=fx.stamp(time.time() - 20), finishedAt=fx.stamp(time.time() - 10))),
+                ALLOW, ''))
+    # The red and the fix both in the worktree, the gate launched from this checkout with -Repo naming it: the
+    # repair test reads the gate's target, so the worktree's fixed content is the content the narrow run proved.
+    (peer / 'input.txt').write_text('fixed in the worktree\n')
+    in_peer = tree_digest(peer, fx.env)
+    assert in_peer not in (digest, fixed), in_peer
+    fx.path.write_text(json.dumps(dict(record, treeDigest=in_peer, startedAt=fx.stamp(time.time() - 20),
+                                       finishedAt=fx.stamp(time.time() - 10))), encoding='utf-8')
+    out.append(('a fix proven in the worktree a -Repo gate targets repairs its red',
+                run(GATE + ' -Repo ' + str(peer).replace('\\', '/') + ' -Detach # gate: final', 'record-owner',
+                    str(repo)),
                 ALLOW, ''))
     return out
 
@@ -626,10 +676,9 @@ def main(beside=()):
     for label, (got, reason), expected, needle in post:
         ok = got == expected and (not needle or needle in reason)
         if expected == DENY and 'nothing narrower' in needle:
-            ok = ok and ('Rerun the failing `-Filter`' in reason
-                         and 'rerun the failing `-Filter`, not the scope' not in reason
+            ok = ok and ('-Filter' in reason
                          and 'change_control §Post-failure re-verification' in reason
-                         and 'run_test_suite.ps1' in reason and 'Say which' not in reason)
+                         and 'run_test_suite.ps1' in reason)
         print("%-4s %s" % ("ok" if ok else "FAIL", label))
         if not ok:
             failures.append("%s\n     expected=%s got=%s reason=%r"

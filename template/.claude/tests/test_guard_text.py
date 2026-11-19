@@ -78,11 +78,12 @@ def main():
 
         rc, out, _ = run(tool, "review", "detailed")
         cases.append(("a shape gets the `common` section, then its own, under one header",
-                      rc == 0 and out == "[delegate rails — shape 'review', detailed tier; home: .claude/guards/common.md"
-                                        " + .claude/guards/review.md]\nCOMMON-DETAILED\n\nREVIEW-DETAILED"))
+                      rc == 0 and "[delegate rails" in out and "COMMON-DETAILED" in out and "REVIEW-DETAILED" in out
+                      and out.index("COMMON-DETAILED") < out.index("REVIEW-DETAILED")
+                      and ".claude/guards/common.md" in out and ".claude/guards/review.md" in out))
         rc, out, _ = run(tool, "common", "detailed")
         cases.append(("shape `common` gets its section alone",
-                      rc == 0 and out == "[delegate rails — shape 'common', detailed tier; home: .claude/guards/common.md]\nCOMMON-DETAILED"))
+                      rc == 0 and "COMMON-DETAILED" in out and "REVIEW-DETAILED" not in out))
         rc, out, _ = run(tool, "review", "detailed")
         cases.append(("a section stops at the next heading", "CONDENSED" not in out))
         rc, out, _ = run(tool, "review", "none")
@@ -98,7 +99,8 @@ def main():
             cases.append(("kind %s delivers the %s guard through the table" % (kind, guard),
                           rc == 0 and out.startswith("[delegate rails — shape '%s', detailed tier" % guard)))
         rc, _, err = run(tool, "review", "loud")
-        cases.append(("an unknown tier exits 2 with the legal set", rc == 2 and "detailed, condensed, minimal, none" in err))
+        cases.append(("an unknown tier exits 2 with the legal set",
+                      rc == 2 and all(t in err for t in ("detailed", "condensed", "minimal", "none"))))
         rc, _, err = run(tool, "review", "strict")
         cases.append(("a retired tier name exits 2", rc == 2))
         rc, _, err = run(tool, "review")

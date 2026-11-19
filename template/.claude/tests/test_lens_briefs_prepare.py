@@ -156,6 +156,24 @@ def ok(proc):
     return proc.returncode == 0, (proc.stdout[-600:], proc.stderr[-1200:])
 
 
+def check_record(label, f, kind, seats, read=None):
+    """The run's prepared job record holds the one contract, and it seats `seats` for `kind`, each
+    brief file existing; `read` names a file at least one seat must read."""
+    path = f.out / "jobs_p.json"
+    jobs = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    problems = lens_briefs.record_problems(jobs, kind=kind) if isinstance(jobs, list) else ["no jobs_p.json"]
+    check(f"{label}: the prepared job record holds its contract", bool(jobs) and not problems, problems)
+    got = [job.get("seat") or job.get("key") for job in jobs] if isinstance(jobs, list) else []
+    check(f"{label}: the record seats {', '.join(seats)}", got == list(seats), got)
+    prompts = [job.get("promptPath") or job.get("promptFile") for job in jobs or []]
+    check(f"{label}: every seat's brief file exists",
+          bool(prompts) and all(isinstance(p, str) and Path(p).is_file() for p in prompts), prompts)
+    if read is not None:
+        reads = [str(entry.get("path")).replace("\\", "/") for job in jobs or []
+                 for entry in job.get("mustRead") or []]
+        check(f"{label}: a seat reads {read}", any(entry.endswith(read) for entry in reads), reads)
+
+
 HOOK = REPO / ".claude" / "hooks" / "workflow_provider_guard.py"
 EXPLORE_ENGINE = REPO / ".claude" / "workflows" / "explore_fanout.js"
 REVIEW_ENGINE = REPO / ".claude" / "workflows" / "review_fanout.js"
@@ -250,10 +268,7 @@ def mode_explore():
     check("explore: args carry lenses, a context prefix and the checker",
           isinstance(args, dict) and isinstance(args.get("lenses"), list) and args["lenses"]
           and args.get("contextPrefixPath") and args.get("checker", {}).get("model"), args)
-    check("explore: each lens carries its own model and effort",
-          isinstance(args, dict) and all(j.get("model") and j.get("effort") for j in args.get("lenses") or []), args)
-    check("explore: the brief file each lens names exists",
-          isinstance(args, dict) and all(Path(j["promptPath"]).is_file() for j in args.get("lenses") or []), args)
+    check_record("explore", f, "lens", ["exp-integration-surface"], "docs/plan.md")
     check("explore: the printed next call passes the args file",
           good and "Workflow(" in proc.stdout and "argsFile" in proc.stdout, proc.stdout[-500:])
     check_engine("explore", f, EXPLORE_ENGINE)
@@ -276,8 +291,8 @@ def mode_plan_check():
     good, detail = ok(proc)
     args = f.args()
     check("plan-check: prepare writes a dispatchable args.json", good and isinstance(args, dict), detail)
-    check("plan-check: args carry agents mapped from the ledger roster",
-          isinstance(args, dict) and args.get("agents") and all(a.get("promptPath") for a in args["agents"]), args)
+    check_record("plan-check", f, "reviewer",
+                 [seat["key"] for seat in plan_check_roster()], "docs/plan.md")
     check("plan-check: the ledger handle names the filled roster file",
           isinstance(args, dict) and (args.get("ledger") or {}).get("roster")
           and (f.out / Path(args["ledger"]["roster"]).name).is_file(), args.get("ledger"))
@@ -307,6 +322,7 @@ def mode_pr_review():
     good, detail = ok(proc)
     args = f.args()
     check("pr-review: prepare writes a dispatchable args.json", good and isinstance(args, dict), detail)
+    check_record("pr-review", f, "reviewer", [REVIEW_SEAT], "docs/plan.md")
     check("pr-review: args carry the review ledger handle with its scope",
           isinstance(args, dict) and (args.get("ledger") or {}).get("scopeJson"), args.get("ledger"))
     check("pr-review: prepare prints the crossFamily obligation it composed",
@@ -329,6 +345,7 @@ def mode_design_redteam():
     check("design-redteam: prepare writes a dispatchable args.json with the design stage",
           good and isinstance(args, dict) and (args.get("ledger") or {}).get("stage") == "design",
           (detail, args.get("ledger") if isinstance(args, dict) else None))
+    check_record("design-redteam", f, "reviewer", [RT_SEAT], "docs/design.md")
     check_engine("design-redteam", f, REVIEW_ENGINE)
 
 
@@ -357,8 +374,7 @@ def mode_pr_ready():
           == ["data-reach", "wire-reach"], (detail, args))
     check("pr-ready: the spec effort reaches each seat without an --effort flag",
           isinstance(args, dict) and all(a.get("effort") == EFFORT_HI for a in args.get("agents") or []), args)
-    check("pr-ready: each registry-less seat's brief file exists",
-          isinstance(args, dict) and all(Path(a["promptPath"]).is_file() for a in args.get("agents") or []), args)
+    check_record("pr-ready", f, "reviewer", [seat["key"] for seat in PR_READY_SEATS], "docs/plan.md")
     check_engine("pr-ready", f, REVIEW_ENGINE)
 
 
@@ -383,6 +399,7 @@ def mode_session_audit():
     check("session-audit: prepare writes a dispatchable args.json", good and isinstance(args, dict), detail)
     check("session-audit: the frozen packet's premise, head and blob handles ride in the ledger",
           ledger.get("premiseCommits") and ledger.get("head") and ledger.get("blobs"), ledger)
+    check_record("session-audit", f, "reviewer", ["sa-harness-quality"])
     check("session-audit: the harness seat's brief cites a frozen packet artifact",
           good and (f.out / "p_sa-harness-quality.md").exists()
           and "doctrine-commits.md" in (f.out / "p_sa-harness-quality.md").read_text(encoding="utf-8"),
@@ -619,6 +636,40 @@ def base_sizes_past_a_command_line():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def record_contract():
+    """The prepared job record's one contract: a complete record passes, and each planted omission fails."""
+    tmp = Path(tempfile.mkdtemp(prefix="lb_record_"))
+    brief = tmp / "brief.md"
+    brief.write_text("brief\n", encoding="utf-8")
+    listed = tmp / "subject.md"
+    listed.write_text("subject\n", encoding="utf-8")
+    record = {"label": "p-seat", "seat": "seat", "mandates": ["seat"],
+              "mustRead": [{"path": listed.as_posix(), "lines": 1}],
+              "promptPath": brief.as_posix(), "model": PANEL, "tier": "executor",
+              "effort": EFFORT, "kind": "reviewer"}
+    verdict = lens_briefs.record_problems([record], kind="reviewer")
+    check("a complete prepared record holds the one contract", verdict == [], verdict)
+    for field in ("label", "mandates", "mustRead", "promptPath", "effort", "kind"):
+        planted = dict(record)
+        planted.pop(field)
+        problems = lens_briefs.record_problems([planted], kind="reviewer")
+        check(f"a record missing {field} fails the contract, naming it",
+              bool(problems) and field in " ".join(problems), problems)
+    windows = dict(record, promptPath=brief.as_posix().replace("/", "\\"))
+    check("a record whose prompt path is not POSIX fails the contract",
+          bool(lens_briefs.record_problems([windows], kind="reviewer")))
+    wrong_kind = dict(record, kind="author")
+    check("a record carrying another build's kind fails the contract",
+          bool(lens_briefs.record_problems([wrong_kind], kind="reviewer")))
+    side = {"label": "p-seat", "mandates": ["seat"], "mustRead": record["mustRead"],
+            "promptFile": brief.as_posix(), "alias": "probe-alias", "tier": "architect", "effort": "high",
+            "kind": "reviewer", "schemaFile": (tmp / "schema.json").as_posix(), "workdir": tmp.as_posix(),
+            "contextFiles": [listed.as_posix()]}
+    (tmp / "schema.json").write_text("{}", encoding="utf-8")
+    side_problems = lens_briefs.record_problems([side], kind="reviewer")
+    check("a complete sidecar record holds the same contract", side_problems == [], side_problems)
+
+
 def spec_refused_before_any_write():
     f = Fixture()
     common = dict(mode="explore", lenses=["exp-integration-surface"], engine=str(f.root / "engine.js"),
@@ -651,7 +702,7 @@ def main():
                  mode_session_audit, over_window_refusal, refusals_state_their_shape, sidecar_target, stale_kfm_snapshot,
                  task_text_not_backticked, later_round_diff, base_sizes_past_a_command_line,
                  mixed_roster_code_seat_keeps_its_files, spec_refused_before_any_write,
-                 doc_defined_none_placeholder):
+                 doc_defined_none_placeholder, record_contract):
         if NEEDS.get(case.__name__, "") and NEEDS[case.__name__] not in SHIPPED:
             print("skip %s: the %s lens registry is not installed" % (case.__name__, NEEDS[case.__name__]))
             continue

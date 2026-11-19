@@ -40,11 +40,27 @@ class Unreadable(Exception):
     """The record exists but does not read as a `paths` object. Readers treat it as unknown, never as empty."""
 
 
-def _entries(root):
+ABSENT, UNREADABLE, VALID = "absent", "unreadable", "valid"
+
+
+def record_state(root):
+    """`(state, paths)` for the record: `absent` (no file, no rows), `unreadable` (it exists but does not parse as
+    a `paths` object, so its rows are unknown), or `valid` with the `paths` object. Every reader asks this one
+    place, so a broken record reads the same at every call site."""
     path = record_path(root)
     if not os.path.exists(path):
-        return {}
-    return _entries_at(path)
+        return ABSENT, {}
+    try:
+        return VALID, _entries_at(path)
+    except Unreadable:
+        return UNREADABLE, {}
+
+
+def _entries(root):
+    state, paths = record_state(root)
+    if state == UNREADABLE:
+        raise Unreadable("%s is unreadable" % RECORD)
+    return paths
 
 
 def _entries_at(path):
@@ -100,9 +116,9 @@ def write(root, results, pin=None):
     update_json_locked(record_path(root), update, raising=True, reader=_strict_read)
 
 
-def blocked(root, relpaths):
+def blocked(root, relpaths, entries=None):
     """The relpaths whose recorded result is pending or red and whose bytes are still the recorded bytes."""
-    entries = _entries(root)
+    entries = _entries(root) if entries is None else entries
     out = []
     for rel in relpaths:
         entry = entries.get(rel)
@@ -113,9 +129,10 @@ def blocked(root, relpaths):
     return out
 
 
-def unresolved(root):
+def unresolved(root, entries=None):
     """Every recorded path still blocked, for a pull that reruns its proofs."""
-    return blocked(root, sorted(_entries(root)))
+    entries = _entries(root) if entries is None else entries
+    return blocked(root, sorted(entries), entries)
 
 
 def _git_paths(root, args):
@@ -126,11 +143,11 @@ def _git_paths(root, args):
     return out.stdout.split("\0")
 
 
-def open_paths(root):
+def open_paths(root, entries=None):
     """The journal's open rows: unresolved paths still uncommitted, the rows an earlier pull left in the tree with
     no green proof. A path git reports clean was committed, so it left the journal; a path git does not track
     (never committed, or ignored) stays. When git cannot answer every unresolved path stays, the alarming side."""
-    pending = unresolved(root)
+    pending = unresolved(root, entries)
     if not pending:
         return []
     try:

@@ -75,7 +75,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
-from _hook_state import replace_path  # noqa: E402
+from _hook_state import append_jsonl_rotating, replace_path  # noqa: E402
 
 LOG_PATH = Path("logs/routing_audit.jsonl")
 STATS_PATH = Path("logs/routing_audit_stats.json")
@@ -304,9 +304,8 @@ def rotate_old(entries: list[dict], cutoff_days: int) -> tuple[list[dict], dict[
         ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
         for month_key, archived in by_month.items():
             archive_path = ARCHIVE_DIR / f"{month_key}.jsonl"
-            with archive_path.open("a", encoding="utf-8") as f:
-                for entry in archived:
-                    f.write(json.dumps(entry, ensure_ascii=True) + "\n")
+            if not append_jsonl_rotating(str(archive_path), archived, max_bytes=None):
+                raise OSError("cannot append to %s" % archive_path)
             archive_counts[month_key] = len(archived)
 
     return kept, archive_counts

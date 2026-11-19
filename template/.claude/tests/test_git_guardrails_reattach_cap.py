@@ -23,6 +23,8 @@ CLAUDE = os.path.dirname(HERE)
 HOOK = os.path.join(CLAUDE, "hooks", "git_guardrails.py")
 sys.path.insert(0, os.path.join(CLAUDE, "hooks"))
 sys.path.insert(0, os.path.join(CLAUDE, "tools"))
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 from _hook_state import SKILL_REATTACH_CHARS  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("gg_reattach", HOOK)
@@ -148,11 +150,10 @@ def _():
     payload = {"tool_name": "Bash", "session_id": "s1", "cwd": d,
                "tool_input": {"command": "git commit -q -m x"}}
     env = dict(os.environ, HARNESS_NO_PASS_CACHE="1")
-    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True, text=True,
-                       timeout=120, env=env, cwd=d)
-    if r.returncode != 0:
+    code, out, err, hso = _hook_call.call(HOOK, payload, env=env, cwd=d)
+    if code != 0:
         return False
-    ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+    ctx = hso.get("additionalContext", "")
     return ".claude/commands/big.md" in ctx and "re-attach" in ctx
 
 
@@ -164,9 +165,15 @@ def _():
     payload = {"tool_name": "Bash", "session_id": "s1", "cwd": d,
                "tool_input": {"command": "git commit -q -m x"}}
     env = dict(os.environ, HARNESS_NO_PASS_CACHE="1")
-    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True, text=True,
-                       timeout=120, env=env, cwd=d)
-    return r.returncode == 0 and "re-attach" not in r.stdout
+    code, out, err, hso = _hook_call.call(HOOK, payload, env=env, cwd=d)
+    return code == 0 and "re-attach" not in out
+
+
+@case("the hook imports and exits 0 from its registered command")
+def _():
+    r = subprocess.run([sys.executable, HOOK], input="{}", capture_output=True, text=True,
+                       encoding="utf-8", cwd=repo())
+    return r.returncode == 0 and "Traceback" not in r.stderr
 
 
 def main():

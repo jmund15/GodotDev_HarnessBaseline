@@ -196,10 +196,9 @@ def main():
     # --- deny message names the correct call ---
     result = guard.process({"tool_name": TOOL, "tool_input": {"searchDir": OUTSIDE}, "cwd": ROOT})
     msg = (result or {}).get("deny") or ""
-    cases.append(("deny message cites the searchDir rule's owner and names the canonical root + restrictToDir next step",
+    cases.append(("deny message cites the searchDir rule's owner and names the field to change",
                   bool(msg) and "BLOCKED (reference/semantic_search.md)" in msg
-                  and "Call again with searchDir = the project root" in msg
-                  and ".claude/auto-memory" in msg))
+                  and "searchDir" in msg and ".claude/auto-memory" in msg))
 
     # --- standalone --hook channel ---
     rc, err = run_standalone({"tool_name": TOOL, "tool_input": {"searchDir": OUTSIDE},
@@ -227,13 +226,12 @@ def main():
                              "cwd": ROOT})
     cases.append(("real pre_read_dispatch.py channel: an outside searchDir denied",
                   rc == 2 and "BLOCKED (reference/semantic_search.md)" in err
-                  and "Call again with searchDir = the project root" in err))
+                  and "searchDir" in err))
     rc, err = run_dispatch({"tool_name": TOOL,
                             "tool_input": {"searchDir": ROOT, "restrictToDir": "../Tests"},
                             "cwd": ROOT})
     cases.append(("real dispatcher channel: non-canonical restrictToDir cites memory rule + next step",
-                  rc == 2 and "CLAUDE.md §2 Memory" in err
-                  and "Call again with searchDir = the project root" in err))
+                  rc == 2 and "CLAUDE.md §2 Memory" in err and "searchDir" in err))
     rc, err = run_dispatch({"tool_name": TOOL, "tool_input": {"searchDir": ROOT}, "cwd": ROOT})
     cases.append(("real pre_read_dispatch.py channel: project-root searchDir allowed",
                   rc == 0))

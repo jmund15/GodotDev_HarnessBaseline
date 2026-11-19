@@ -55,7 +55,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
 import extract_numbers as en  # noqa: E402
+from _hook_state import append_jsonl_rotating  # noqa: E402
 
 Thresholds = namedtuple("Thresholds", "lexical_cutoff anchor_cap citation_rule stoplist_df")
 # Each rate is measured on the tracked labeled pairs (`fixtures/restate_scan/labeled_pairs.jsonl`); the
@@ -777,14 +779,15 @@ def cmd_rule(args):
     paths = {m["hash"]: m["path"] for m in g["members"]}
     sha = {m["hash"]: m["sha"] for m in g["members"]}
     os.makedirs(rows_dir, exist_ok=True)
-    with open(os.path.join(rows_dir, "rulings.jsonl"), "a", encoding="utf-8", newline="\n") as fh:
-        for p in g["pairs"]:
-            (a, a_key), (b, b_key) = sorted(((sha[p["a"]], p["a"]), (sha[p["b"]], p["b"])))
-            row = {"a": a, "b": b, "ruling": args.ruling, "reason": args.reason, "group": g["id"],
-                   "paths": [paths.get(a_key), paths.get(b_key)]}
-            if held_by:
-                row["heldBy"] = held_by
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    rulings = []
+    for p in g["pairs"]:
+        (a, a_key), (b, b_key) = sorted(((sha[p["a"]], p["a"]), (sha[p["b"]], p["b"])))
+        row = {"a": a, "b": b, "ruling": args.ruling, "reason": args.reason, "group": g["id"],
+               "paths": [paths.get(a_key), paths.get(b_key)]}
+        if held_by:
+            row["heldBy"] = held_by
+        rulings.append(row)
+    append_jsonl_rotating(os.path.join(rows_dir, "rulings.jsonl"), rulings, max_bytes=None)
     print("restate_scan: ruled %d pairs of group %s %s" % (len(g["pairs"]), g["id"], args.ruling))
     return 0
 

@@ -105,7 +105,8 @@ seconds, error) to logs/workflow_provider_guard.jsonl; HARNESS_PROVIDER_GUARD_LO
 DEATH RESUME: the hook does no resume stat work. The engine/rails staleness check is a step before the
 call, owned by commands/agents/orchestrator_action_protocol.md#death-resume.
 
-CHANNEL: hookSpecificOutput.permissionDecision=deny (block) or additionalContext (advice).
+CHANNEL: hookSpecificOutput.permissionDecision=deny (block) or additionalContext (advice: a lost check, a skipped
+tier check, an unreadable rigor). A computed alias rewrite is silent.
 Doctrine: orchestration §5 and §5b. Proof: tests/test_workflow_provider_guard*.py.
 """
 import datetime
@@ -132,6 +133,7 @@ except Exception:  # no session record → an owner statement is not held across
     _hook_state = None
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _owner_text  # noqa: E402  the one owner-row parser; this file holds only the projection
+from _checkout_root import payload_cwd as _payload_cwd, session_checkout as _repo_root  # noqa: E402
 import _dispatch_checks  # noqa: E402  tier fit and currency, shared with the sidecar hook
 from _dispatch_checks import kind_tiers  # noqa: E402
 from _dispatch_pins import (  # noqa: E402
@@ -557,7 +559,8 @@ def decide_tiers(payload, transport, data):
     A review_fanout seat keyed by a registry lens is judged with its panel through `_dispatch_checks.seat_fit`:
     a pin holding the lens tier only in registry `supplementary` is admitted when a qualified seat in the same
     call carries every mandate the seat does, and denied alone (ladder Role definitions). Every other pin goes
-    through `tier_fit`. A declared `args.measurement` returns before either.
+    through `tier_fit`. A row the owner names in the session's turns (`payload["transcript_path"]`) passes both, and
+    the allow carries its `owner-named` line as an advisory note. A declared `args.measurement` returns before either.
     """
     pins = call_pins(payload)
     if not pins:
@@ -583,7 +586,8 @@ def decide_tiers(payload, transport, data):
     if measured:
         return None, [f"measurement: {measured[:160]} — tier fit skipped"], resolved
     panel = review_panel(payload)
-    unfit, rule, seats = [], [], []
+    unfit, rule, seats, named = [], [], [], []
+    owner = _dispatch_checks.OwnerTexts(payload.get("transcript_path"))
     for label, model, tier, implied in resolved:
         if not tier:
             continue
@@ -593,20 +597,23 @@ def decide_tiers(payload, transport, data):
             continue
         try:
             why = _dispatch_checks.tier_fit(model, tier, transport, data,
-                                            pin_name=lambda r: native_pin(r, transport))
+                                            pin_name=lambda r: native_pin(r, transport),
+                                            owner_texts=owner, notes=named)
         except Exception:
             why = f"{model} is not among the `{tier}` rows on {transport} (none on this transport)"
         if why:
             unfit.append(f"{label}→{why}")
     if seats:
         try:
-            verdicts = _dispatch_checks.seat_verdicts(seats, data, pin_name=lambda r: native_pin(r, transport))
+            verdicts = _dispatch_checks.seat_verdicts(seats, data, pin_name=lambda r: native_pin(r, transport),
+                                                      owner_texts=owner, notes=named)
         except Exception as err:
             verdicts = []
             for seat in seats:
                 try:
                     why = _dispatch_checks.tier_fit(seat["model"], seat["tier"], transport, data,
-                                                    pin_name=lambda r: native_pin(r, transport))
+                                                    pin_name=lambda r: native_pin(r, transport),
+                                                    owner_texts=owner, notes=named)
                 except Exception:
                     why = (f"{seat['model']} is not among the `{seat['tier']}` rows on {transport} "
                            "(none on this transport)")
@@ -625,7 +632,7 @@ def decide_tiers(payload, transport, data):
         if rule:
             parts.append("Supplementary seat without a qualified seat beside it — " + "; ".join(rule[:8]))
         return "deny", " ".join(parts), resolved
-    return None, [], resolved
+    return None, named, resolved
 
 
 # ---------------------------------------------------------------- the owner statement
@@ -1051,35 +1058,6 @@ def required_returns(payload):
     return out
 
 
-def _payload_cwd(payload):
-    """The hook payload's working directory as an absolute forward-slash path, or "" when it is missing,
-    relative or holds a `..` segment (review_fanout.js refuses such a `fold.repoRoot`)."""
-    cwd = payload.get("cwd")
-    root = cwd.strip().replace("\\", "/").rstrip("/") if isinstance(cwd, str) else ""
-    if not re.match(r"^([A-Za-z]:)?/", root) or re.search(r"(^|/)\.\.(/|$)", root):
-        return ""
-    return root
-
-
-def _git_line(cwd, *argv):
-    try:
-        done = subprocess.run(["git", "-C", cwd, *argv], capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return done.stdout.strip().replace("\\", "/").rstrip("/") if done.returncode == 0 else ""
-
-
-def _repo_root(payload):
-    """The checkout the payload cwd belongs to, absolute with forward slashes: the superproject working tree
-    when the cwd sits inside a submodule, else the cwd's own top level (a linked worktree is its own root).
-    "" when git cannot answer. An engine builds repository-relative paths and commands against this, because the
-    agents that run them resolve relative paths against a session cwd that drifts."""
-    cwd = _payload_cwd(payload)
-    if not cwd:
-        return ""
-    return _git_line(cwd, "rev-parse", "--show-superproject-working-tree") or _git_line(cwd, "rev-parse", "--show-toplevel")
-
-
 def _review_rigor(payload, task_id, repo_root, advice):
     """The run's rigor for a review_fanout call, or None. An unreadable record names its cause in `advice`
     (`additionalContext`). The reader is `triage.rigor`, the call post-check makes through `finding_bar`."""
@@ -1382,7 +1360,7 @@ ROLE_LADDER_HEADER = ("[role ladder (orchestration §5)] model: the tiers its re
                       "cheaper), in ladder order. A pin must claim its job's tier, except a tier marked supplementary, which fills a "
                       "review seat beside a qualified seat only (ladder §Role definitions); which claimant to use is your choice "
                       "by the ladder's selection line. "
-                      "Efforts and `±` are in .claude/reference/model_ladder_evidence.md. ")
+                      "Efforts and `±`: .claude/reference/model_ladder_evidence.md. ")
 _PARENS = re.compile(r"\s*\([^)]*\)")
 
 
@@ -1589,7 +1567,7 @@ def check(payload):
         _deny(alias_reason)
         return
     tool_input = payload.get("tool_input") or {}
-    guard_notes += alias_notes
+    # An alias rewritten inside its implied tier is the tool's computed fix, and the dispatch table shows what runs: no note.
 
     # RULE 0 — a rung the pin's registry row declares non-thinking (`effort.nonThinking`), on
     # review_fanout.js, which dispatches review lenses and nothing else: illegal there at every band.

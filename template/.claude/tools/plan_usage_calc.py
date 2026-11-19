@@ -21,8 +21,10 @@ prints no dollar figure for this plan-quota transport; `price` prints tokens and
 Fit. Within each reset period the cumulative `used` level is regressed, through the origin, on the
 cumulative weight per family since the period began. Levels, not interval deltas: consecutive
 deltas share endpoints, so their errors correlate. One coefficient set is shared by every period.
-A drop in `used` inside one period means the window rolls instead of resetting in fixed blocks,
-which voids that window's fit. A family's standard error is a bootstrap over reset periods. A
+A fall in `used` between two consecutive readings inside one period, at most READING_RESOLUTION
+(one whole-percent reading), is reading noise: the samples are kept. A larger fall is an event the
+samples do not explain (the windows reset in fixed blocks), so that whole period is excluded from
+the fit and from drift, and the report lists it on an `excluded:` line. A family's standard error is a bootstrap over reset periods. A
 family under MIN_SHARE of the spend, or collinear with the others (VIF above MAX_VIF), prints
 `unidentified`. Fewer than MIN_PERIODS reset periods print `insufficient data` and no number.
 
@@ -51,6 +53,7 @@ WINDOWS = {"5h": ("five_hour", 5 * 3600), "7d": ("seven_day", 7 * 86400)}
 MIN_PERIODS = 5
 MIN_SHARE = 0.10
 MAX_VIF = 10.0
+READING_RESOLUTION = 1.0
 BOOTSTRAP_ROUNDS = 200
 DRIFT_RECENT_DAYS = 7
 DRIFT_PRIOR_DAYS = 21
@@ -188,16 +191,23 @@ def periods_of(samples, window, window_seconds):
     return out
 
 
-def rolling_reason(periods):
-    for p in sorted(periods.values(), key=lambda p: p["resets_at"]):
+def excluded_periods(periods):
+    """{reset key: {resets_at, frm, to}} for each period with a fall in `used` larger than READING_RESOLUTION."""
+    out = {}
+    for key, p in periods.items():
         prev = None
-        for ts, used in p["samples"]:
-            if prev is not None and used < prev:
-                return ("used fell from %g%% to %g%% inside the period resetting at %s: the window "
-                        "rolls rather than resetting in fixed blocks" % (
-                            prev, used, time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(p["resets_at"]))))
+        for _ts, used in p["samples"]:
+            if prev is not None and prev - used > READING_RESOLUTION:
+                out[key] = dict(resets_at=p["resets_at"], frm=prev, to=used)
+                break
             prev = used
-    return None
+    return out
+
+
+def _excluded_lines(result):
+    return ["excluded: used fell from %g%% to %g%% inside the period resetting at %s" % (
+                e["frm"], e["to"], time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(e["resets_at"])))
+            for e in sorted(result.get("excluded", []), key=lambda e: e["resets_at"])]
 
 
 class Spend:
@@ -294,9 +304,14 @@ class Context:
 
     def scan(self, since):
         if self._scan is None or self._scan[0] > since:
-            self._scan = (since, transcript_usage.scan(self.projects, since=since,
+            self._scan = (since, transcript_usage.scan(self.projects or self.plan_projects(), since=since,
                                                        ledger_path=self.ledger))
         return self._scan[1]
+
+    def plan_projects(self):
+        import model_registry
+        login = ((self.data.get("transports") or {}).get(PROVIDER) or {}).get("configDir")
+        return model_registry.projects_dir(login)
 
 
 def _window_periods(ctx, window_key, days):
@@ -317,12 +332,12 @@ def _events(ctx, periods):
 
 def fit(ctx, window_key="5h", days=DEFAULT_DAYS):
     window, _seconds, periods = _window_periods(ctx, window_key, days)
-    reason = rolling_reason(periods)
-    events, unpriced, scan = _events(ctx, list(periods.values()))
-    result = fit_periods(list(periods.values()), events) if not reason else dict(
-        status="void", reason=reason, periods=len(periods),
-        samples=sum(len(p["samples"]) for p in periods.values()), families={})
-    result.update(window=window, window_key=window_key, days=days, unpriced=unpriced, scan=scan)
+    excluded = excluded_periods(periods)
+    kept = [p for key, p in periods.items() if key not in excluded]
+    events, unpriced, scan = _events(ctx, kept)
+    result = fit_periods(kept, events)
+    result.update(window=window, window_key=window_key, days=days, unpriced=unpriced, scan=scan,
+                  excluded=list(excluded.values()))
     return result
 
 
@@ -347,10 +362,8 @@ def _inputs_lines(ctx, result):
 
 def format_fit(ctx, result):
     head = "fit: window %s (%s), last %d days" % (result["window_key"], result["window"], result["days"])
-    lines = [head]
-    if result["status"] == "void":
-        lines.append("void: " + result["reason"])
-    elif result["status"] == "insufficient":
+    lines = [head] + _excluded_lines(result)
+    if result["status"] == "insufficient":
         lines.append("insufficient data (%d periods, %d samples)%s" % (
             result["periods"], result["samples"],
             ": " + result["reason"] if result.get("reason") else ""))
@@ -372,16 +385,14 @@ def format_fit(ctx, result):
 
 def drift(ctx, window_key="5h"):
     window, seconds, periods = _window_periods(ctx, window_key, DRIFT_RECENT_DAYS + DRIFT_PRIOR_DAYS)
-    reason = rolling_reason(periods)
+    excluded = excluded_periods(periods)
+    kept = {key: p for key, p in periods.items() if key not in excluded}
     split = ctx.now - DRIFT_RECENT_DAYS * 86400
-    recent = [p for p in periods.values() if p["resets_at"] > split]
-    prior = [p for p in periods.values() if p["resets_at"] <= split]
-    events, unpriced, scan = _events(ctx, list(periods.values()))
-    out = dict(window=window, window_key=window_key, unpriced=unpriced, scan=scan, reason=reason,
-               recent=None, prior=None, moves={})
-    if reason:
-        out["status"] = "void"
-        return out
+    recent = [p for p in kept.values() if p["resets_at"] > split]
+    prior = [p for p in kept.values() if p["resets_at"] <= split]
+    events, unpriced, scan = _events(ctx, list(kept.values()))
+    out = dict(window=window, window_key=window_key, unpriced=unpriced, scan=scan,
+               excluded=list(excluded.values()), recent=None, prior=None, moves={})
     out["recent"], out["prior"] = fit_periods(recent, events), fit_periods(prior, events)
     if "insufficient" in (out["recent"]["status"], out["prior"]["status"]):
         out["status"] = "insufficient"
@@ -403,9 +414,8 @@ def drift(ctx, window_key="5h"):
 def format_drift(ctx, out):
     lines = ["drift: window %s (%s), last %d days vs the %d before"
              % (out["window_key"], out["window"], DRIFT_RECENT_DAYS, DRIFT_PRIOR_DAYS)]
-    if out["status"] == "void":
-        lines.append("void: " + out["reason"])
-    elif out["status"] == "insufficient":
+    lines.extend(_excluded_lines(out))
+    if out["status"] == "insufficient":
         for name in ("recent", "prior"):
             seg = out[name]
             if seg["status"] == "insufficient":
@@ -465,9 +475,8 @@ def price(ctx, path, days=DEFAULT_DAYS):
     for key in WINDOWS:
         result = results[key]
         if result["status"] != "ok":
-            why = ("void: " + result["reason"] if result["status"] == "void"
-                   else "insufficient data (%d periods, %d samples)" % (result["periods"], result["samples"]))
-            lines.append("%s window: n/a (%s)" % (key, why))
+            lines.append("%s window: n/a (insufficient data (%d periods, %d samples))"
+                         % (key, result["periods"], result["samples"]))
             continue
         parts, total, complete = [], 0.0, not unpriced
         for fam, agg in sorted(by_family.items()):

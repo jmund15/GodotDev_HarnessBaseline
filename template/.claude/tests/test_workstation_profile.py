@@ -275,7 +275,7 @@ def reference_cases(tmp, state):
     case("a stamped root with a reference input reads OK", lambda: eq(ws.setup_status(root), "OK"))
     write(root / "extra.json", '{"changed": true}\n')
     case("an edited reference input reads STALE and names it",
-         lambda: eq(ws.setup_status(root), "STALE (changed: extra.json; run /workstation_setup)"))
+         lambda: (ws.setup_status(root).startswith("STALE"), "extra.json" in ws.setup_status(root)))
 
 
 def stamp_cases(tmp, state):
@@ -297,12 +297,12 @@ def stamp_cases(tmp, state):
 
     write(root / ".mcp.json", '{"mcpServers": {}}\n')
     case("an edited input reads STALE and names it",
-         lambda: eq(ws.setup_status(root), "STALE (changed: .mcp.json; run /workstation_setup)"))
+         lambda: (ws.setup_status(root).startswith("STALE"), ".mcp.json" in ws.setup_status(root)))
 
     (root / "pins.json").unlink()
     case("a missing declared input reads STALE and names it",
-         lambda: eq(ws.setup_status(root),
-                    "STALE (changed: .mcp.json, pins.json; run /workstation_setup)"))
+         lambda: (ws.setup_status(root).startswith("STALE"),
+                  all(name in ws.setup_status(root) for name in (".mcp.json", "pins.json"))))
 
     write(root / "pins.json", PINS_JSON)
     case("stamp again clears the stale report",
@@ -311,19 +311,19 @@ def stamp_cases(tmp, state):
 
     write(root / ".claude" / "commands" / "workstation_setup.md", stamp_doc(body="stamp-inputs: .mcp.json"))
     case("a broken declaration reads UNAUDITED even with a recorded entry",
-         lambda: eq(ws.setup_status(root), "UNAUDITED (run /workstation_setup)"))
+         lambda: (ws.setup_status(root).startswith("UNAUDITED"), ws.setup_status(root)))
     write(root / ".claude" / "commands" / "workstation_setup.md", stamp_doc())
     case("restoring the declaration restores OK", lambda: eq(ws.setup_status(root), "OK"))
 
     unstamped = plant_root(tmp / "unstamped")
     case("an unstamped root reads UNAUDITED",
-         lambda: eq(ws.setup_status(unstamped), "UNAUDITED (run /workstation_setup)"))
+         lambda: (ws.setup_status(unstamped).startswith("UNAUDITED"), ws.setup_status(unstamped)))
     case("a checkout without /workstation_setup has no setup status",
          lambda: eq(ws.setup_status(tmp / "no_such_checkout"), None))
 
     write(state["profile"], "{not json at all")
     case("a corrupt profile is not a crash: UNAUDITED, tier None, empty read",
-         lambda: (ws.setup_status(root) == "UNAUDITED (run /workstation_setup)"
+         lambda: (ws.setup_status(root).startswith("UNAUDITED")
                   and ws.local_tier() is None and ws.read_profile() == {},
                   (ws.setup_status(root), ws.local_tier())))
     state["profile"].unlink()

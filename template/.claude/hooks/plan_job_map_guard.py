@@ -15,7 +15,8 @@ Events (one script, `hook_event_name` picks the branch):
                                     `plan-` or `plan_`, and never under `<project>/.claude/scratch/`.
   PreToolUse  Write|Edit            allows every call. A production write while a recorded plan
                                     that still exists has no heading matching `^#{2,6}\\s*Job map\\b` emits
-                                    one advisory through `additionalContext` naming that plan. The advisory
+                                    one advisory through `additionalContext` naming that plan (at most
+                                    MAX_PLANS_NAMED, then a count). The advisory
                                     fires once per plan per session: the state records each plan advised, so
                                     a later write for the same plan is silent. A plan that gains the heading
                                     never advises; a newly recorded mapless plan advises once for itself.
@@ -41,6 +42,7 @@ JOB_MAP_RE = re.compile(r"^#{2,6}\s*Job map\b", re.IGNORECASE | re.MULTILINE)
 STATE_KEY = "job_map_plans"
 ADVISED_KEY = "job_map_advised"
 MAX_PLANS = 32
+MAX_PLANS_NAMED = 3  # the advisory names the first few mapless plans and counts the rest; every one is marked advised
 WRITE_TOOLS = ("Write", "Edit")
 SKIP_PREFIXES = (".claude/", "logs/", ".git/", "node_modules/", ".search-index/")
 ADVISORY_TEXT = ("[plan-job-map] advisory: plan without a job map: {paths}. Add a `## Job map` section "
@@ -179,7 +181,9 @@ def _advice(payload):
     fresh = _claim_advice(session_id, lacking)
     if not fresh:
         return None
-    return ADVISORY_TEXT.format(paths=", ".join(fresh))
+    paths = ", ".join(fresh[:MAX_PLANS_NAMED]) + (" (+%d more)" % (len(fresh) - MAX_PLANS_NAMED)
+                                                  if len(fresh) > MAX_PLANS_NAMED else "")
+    return ADVISORY_TEXT.format(paths=paths)
 
 
 def _emit(event, body):

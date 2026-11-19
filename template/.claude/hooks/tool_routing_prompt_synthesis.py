@@ -121,19 +121,14 @@ def _build_reminder() -> str:
     # about the EVIDENCE shape, and dropping the arm would silently retire the bulk-copyable class.
     # A sidecar child cannot dispatch, so it gets no delegate route; delegation is orchestration §0's.
     delegate = not os.environ.get("CLAUDE_CODE_SIDECAR")
-    bulk_route = ("Bulk copyable I/O: use a bounded Read (offset/limit), with complete per-input results. "
+    bulk_route = ("bulk copyable I/O: a bounded Read (offset/limit)"
                   if _ai_worker_absent() else
-                  "Bulk copyable I/O: use `mcp__ai-worker__read_files` "
-                  "with complete per-input results. ")
-    derived = ("Derived multi-file judgment/execution: load `orchestration` and use one qualified "
-               "delegate (orchestration §0). " if delegate else "")
+                  "bulk copyable I/O: `mcp__ai-worker__read_files`")
+    derived = ("; derived multi-file judgment: one qualified delegate (`orchestration` §0)" if delegate else "")
     return (
         "<user-prompt-submit-hook>\n"
-        "Synthesis-shaped request: route by evidence need and output, not read count or path. "
-        "Known focused evidence or line-level judgment: use direct Read/search. "
-        "Large exact scans/joins: use deterministic bounded extraction. "
-        + bulk_route + derived +
-        "Do not redo evidence already retrieved. CLAUDE.core.md §9.\n"
+        "Synthesis-shaped request: route by evidence need, not read count or path (CLAUDE.core.md §9). "
+        "This machine: " + bulk_route + derived + ".\n"
         "</user-prompt-submit-hook>"
     )
 

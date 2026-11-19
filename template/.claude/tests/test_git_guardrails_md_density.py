@@ -150,7 +150,31 @@ def c_names_the_fix():
     d = repo()
     write(d, ".claude/skills/x.md", "# X\n\n" + OVER + "\n")
     v = verdict(d, ".claude/skills/x.md") or ""
-    return "§5" in v and "§6" in v and "never a cap" in v
+    return "§5" in v and "§6" in v
+
+
+def c_one_unit_is_flagged_once_per_session():
+    """A unit an earlier commit advisory in this session already listed (same file, same text) is not listed again;
+    another session, a unit grown since, and a session that compacted since (it lost the line) still hear it."""
+    saved = os.environ.get("HARNESS_HOOK_STATE_DIR")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = tempfile.mkdtemp(prefix="ggdensstate_")
+    try:
+        d = repo()
+        write(d, ".claude/skills/x.md", "# X\n\n" + OVER + "\n")
+        flag = lambda session: gg._md_density_verdict(d, [".claude/skills/x.md"], None, session_id=session)
+        first, again, other = flag("dens-a"), flag("dens-a"), flag("dens-b")
+        write(d, ".claude/skills/x.md", "# X\n\n" + OVER + " more narrative that restates itself.\n")
+        grown = flag("dens-a")
+        import _hook_state
+        _hook_state.clear_compaction_keys("dens-a")
+        compacted = flag("dens-a")
+        return (first is not None and again is None and other is not None and grown is not None
+                and compacted is not None)
+    finally:
+        if saved is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = saved
 
 
 for n, f in (("a NEW over-cap unit on a loaded surface is flagged", c_new_over),
@@ -163,7 +187,8 @@ for n, f in (("a NEW over-cap unit on a loaded surface is flagged", c_new_over),
              ("a benchmark judge rubric (sealed instrument text) is exempt", c_judge_rubric_exempt),
              ("the benchmark campaign README still fires", c_benchmark_readme_still_fires),
              ("a non-.md staged path is ignored", c_non_md_ignored),
-             ("the advisory names §5's split test and §6's cuts, and calls the size a trigger", c_names_the_fix)):
+             ("the advisory cites §5 and §6", c_names_the_fix),
+             ("one unit is flagged once per session, a grown one again", c_one_unit_is_flagged_once_per_session)):
     case(n, f)
 
 

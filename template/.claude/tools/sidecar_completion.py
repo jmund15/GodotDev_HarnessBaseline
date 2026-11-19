@@ -8,6 +8,7 @@ A missing, unreadable or incomplete report marks every row UNCHECKED.
 import argparse
 import json
 from pathlib import Path
+import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -17,12 +18,16 @@ from cli_usage import usage
 
 VERDICTS = ('VERIFIED', 'UNVERIFIED', 'UNCHECKED')
 REPO = Path(__file__).resolve().parents[2]
+_JSON_FENCE = re.compile(r"^```json[ \t]*\r?\n(.*?)\r?\n```", re.S | re.M)
 
 
 def source_rows(label, value):
     if isinstance(value, str):
+        # A model often fences its JSON answer, with or without prose around it; read as prose, its
+        # claims would count as none. Only a lone ```json block is the answer: two are ambiguous.
+        fenced = _JSON_FENCE.findall(value)
         try:
-            value = json.loads(value)
+            value = json.loads(fenced[0] if len(fenced) == 1 else value)
         except ValueError:
             pass
     if isinstance(value, dict) and not any(key in value for key in post_check.CLAIM_MEMBERS):

@@ -7,6 +7,7 @@ channel (deny via stderr + exit 2, or allow via exit 0).
     python3 .claude/tests/test_git_guardrails_harness_commit.py
 """
 import atexit
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -78,6 +79,10 @@ _UNGUARDED = ("import importlib.util, sys\n"
 # starving it past the commit deadline.
 _SLOT_DIR = tempfile.mkdtemp(prefix="ggharness_slots_")
 atexit.register(shutil.rmtree, _SLOT_DIR, ignore_errors=True)
+# A once-key a case spends (a density advisory) lives in the session state file; the default one is the machine's,
+# so a second run of this proof read the keys the first left and lost the advisory it asserts.
+_STATE_DIR = tempfile.mkdtemp(prefix="ggharness_state_")
+atexit.register(shutil.rmtree, _STATE_DIR, ignore_errors=True)
 
 
 def run_hook(command, repo, env_extra=None, unguarded=False, process=False):
@@ -85,7 +90,7 @@ def run_hook(command, repo, env_extra=None, unguarded=False, process=False):
     this process (a floor guard's crash is a deny when guarded, a traceback when `unguarded`)."""
     payload = {"tool_name": "Bash", "session_id": "s1", "cwd": repo,
                "tool_input": {"command": command}}
-    env = dict(os.environ, HARNESS_SLOT_DIR=_SLOT_DIR, HARNESS_NO_PASS_CACHE="1")
+    env = dict(os.environ, HARNESS_SLOT_DIR=_SLOT_DIR, HARNESS_NO_PASS_CACHE="1", HARNESS_HOOK_STATE_DIR=_STATE_DIR)
     if env_extra:
         env.update(env_extra)
     if process:
@@ -130,16 +135,32 @@ def _hook():
     return sys.modules["git_guardrails_inproc"]
 
 
+@contextlib.contextmanager
+def adaptation(seed):
+    """The in-process guard reading a planted adaptation.json (`land_prefix`, `main_check`), so no verdict depends on
+    the checkout's own declarations."""
+    claude = tempfile.mkdtemp(prefix="ggadapt_")
+    path = os.path.join(claude, "skills", "project_subsystems")
+    os.makedirs(path)
+    with open(os.path.join(path, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(seed, fh)
+    module = _hook()
+    saved, module._ADAPTATION_DIR = module._ADAPTATION_DIR, claude
+    try:
+        yield claude
+    finally:
+        module._ADAPTATION_DIR = saved
+        shutil.rmtree(claude, ignore_errors=True)
+
+
 def case(label, got, expected, needle=""):
     got_verdict, reason = got
     needles = (needle,) if isinstance(needle, str) else needle
     ok = got_verdict == expected and all(not part or part in reason for part in needles)
     if expected == DENY and "no re-runnable proof" in reason:
-        ok = (ok and "rules/harness_tooling.md" in reason
-              and "add a tracked proof" in reason)
+        ok = ok and "rules/harness_tooling.md" in reason
     if expected == DENY and "would revert a peer's commit" in reason:
-        ok = (ok and "CLAUDE.md §Core Principles: preserve peer work" in reason
-              and "Rebuild it from the current HEAD" in reason)
+        ok = ok and "CLAUDE.md §Core Principles: preserve peer work" in reason
     print("%-4s %s" % ("ok" if ok else "FAIL", label))
     if not ok:
         return "%s\n     expected=%s got=%s reason=%r" % (label, expected, got_verdict, reason[:300])
@@ -548,23 +569,26 @@ def push_base_cases():
                          run_hook('git push origin HEAD:new', repo), ALLOW))
     write(repo, '.claude/hooks/base.py', 'BASE = 2\n')
     git(repo, ['commit', '-qam', 'new harness'])
-    got = run_hook('git push origin HEAD:new', repo)
-    failures.append(case('unpublished ref with new harness changes still needs close', got, DENY,
-                         'the runner runs the close' if 'the runner runs the close' in got[1]
-                         else 'harness_tests.py --close'))
+    with adaptation({}):
+        failures.append(case('where no main check is declared, an unpublished ref with new harness changes still needs close',
+                             run_hook('git push origin HEAD:new', repo), DENY, 'harness_tests.py --close'))
+    with adaptation({'main_check': '.github/workflows/main_check.yml'}):
+        failures.append(case('where main_check is declared, an unpublished ref with new harness changes needs no close',
+                             run_hook('git push origin HEAD:new', repo), ALLOW))
     head = git(repo, ['rev-parse', 'HEAD']).strip()
     stamp = os.path.join(repo, 'stamp.json')
     with open(stamp, 'w', encoding='utf-8') as source:
         json.dump({'close': {'head': head, 'base': base, 'verdict': 'green', 'red': [],
                              'paths': ['.claude/hooks/base.py']}}, source)
-    failures.append(case('unpublished ref accepts close coverage of only its outgoing harness changes',
-                         run_hook('git push origin HEAD:new', repo, {'HARNESS_TEST_STAMP': stamp}), ALLOW))
+    with adaptation({}):
+        failures.append(case('unpublished ref accepts close coverage of only its outgoing harness changes',
+                             run_hook('git push origin HEAD:new', repo, {'HARNESS_TEST_STAMP': stamp}), ALLOW))
     return failures
 
 
 def test_string_constants_advise_but_branch_denies():
     repo = make_repo()
-    path = ".claude/tools/unproven.py"
+    path = ".claude/hooks/unproven.py"
     write(repo, path, 'MESSAGE = "old"\nPATTERN = r"^old$"\n')
     git(repo, ["add", "-A"])
     git(repo, ["commit", "-q", "-m", "seed tool"])
@@ -576,7 +600,7 @@ def test_string_constants_advise_but_branch_denies():
             verdict, output = run_hook("git commit -F msg -- " + path, repo)
             assert verdict == ALLOW, output
             context = json.loads(output)["hookSpecificOutput"]["additionalContext"]
-            assert "if a changed string is a pattern" in context
+            assert context.strip()
         write(repo, path, 'MESSAGE = "old"\nPATTERN = r"^old$"\nif MESSAGE:\n    print(MESSAGE)\n')
         git(repo, ["add", path])
         verdict, output = run_hook("git commit -F msg -- " + path, repo, process=True)  # the one real stdin payload
@@ -589,17 +613,16 @@ def commit_proof_cases():
     failures = []
     for label, times, codes, staged, expected_run, needles in (
             ("red doc proof advises without denying", [0.1], [1], True, [0],
-             ("test_bound_0.py", "FAIL planted doc contract", "fixed before the close")),
+             ("test_bound_0.py", "FAIL planted doc contract")),
             ("green doc proof has no failure advisory", [0.1], [0], True, [0], ()),
             ("unavailable doc proof advises without denying", [0.1], [2], True, [0],
-             ("proof run incomplete", "test_bound_0.py", "unproven, not passed",
-              "--proofs-for .claude/reference/planted_contract.md")),
+             ("test_bound_0.py", "--proofs-for .claude/reference/planted_contract.md")),
             ("over-inner-budget proof stays at close", [10.1], [1], True, [],
-             ("1 bound proof(s) left to the close", "unproven, not passed")),
+             ("--proofs-for .claude/reference/planted_contract.md",)),
             ("unrecorded proof stays at close", [None], [1], True, [],
-             ("1 bound proof(s) left to the close",)),
+             ("--proofs-for .claude/reference/planted_contract.md",)),
             ("total cap stops adding even a later smaller proof", [10, 10, 10, 1, 0.1],
-             [0] * 5, True, [0, 1, 2], ("2 bound proof(s) left to the close",)),
+             [0] * 5, True, [0, 1, 2], ("--proofs-for .claude/reference/planted_contract.md",)),
             ("non-harness commit runs no proof", [0.1], [1], False, [], ())):
         repo = make_repo()
         try:
@@ -622,17 +645,58 @@ def commit_proof_cases():
             cache_off = "" if label == "green doc proof has no failure advisory" else "1"
             write(repo, ".claude/logs/harness_proof_durations.json",
                   json.dumps({"test_bound_%d.py" % i: t for i, t in enumerate(times) if t is not None}))
-            got = run_hook("git commit -F msg", repo, {"HARNESS_TEST_STAMP": stamp, "HARNESS_NO_PASS_CACHE": cache_off}, unguarded=True)
+            commit_env = {"HARNESS_TEST_STAMP": stamp, "HARNESS_NO_PASS_CACHE": cache_off,
+                          "HARNESS_HOOK_STATE_DIR": tempfile.mkdtemp(prefix="ggproofstate_")}
+            got = run_hook("git commit -F msg", repo, commit_env, unguarded=True)
             ran = [i for i in range(len(codes)) if os.path.exists(os.path.join(repo, "ran_%d" % i))]
             if ran != expected_run or (not any(codes) and "fixed before the close" in got[1]):
                 got = (CRASH, "ran=%r expected=%r output=%r" % (ran, expected_run, got[1]))
             failures.append(case("C " + label, got, ALLOW, needles))
+            if label == "unavailable doc proof advises without denying":
+                again = run_hook("git commit -F msg", repo, commit_env, unguarded=True)
+                if "--proofs-for" in again[1]:
+                    again = (CRASH, "the same unproven cause was advised twice in one session: %r" % again[1][:200])
+                failures.append(case("C the same unproven cause is advised once per session", again, ALLOW))
             if label == "green doc proof has no failure advisory":
                 os.remove(os.path.join(repo, "ran_0"))
-                reused = run_hook("git commit -F msg", repo, {"HARNESS_TEST_STAMP": stamp, "HARNESS_NO_PASS_CACHE": cache_off}, unguarded=True)
+                reused = run_hook("git commit -F msg", repo, commit_env, unguarded=True)
                 if os.path.exists(os.path.join(repo, "ran_0")):
                     reused = (CRASH, "unchanged passing proof ran again")
                 failures.append(case("C unchanged pass costs no proof run", reused, ALLOW))
+        finally:
+            shutil.rmtree(repo, ignore_errors=True)
+    return failures
+
+
+NL = chr(10)
+
+
+def latch_cases():
+    """A once-per-session commit line is spent only when it reaches the agent: a commit denied after the line was
+    built (a missing proof, a later git call in the same command) leaves the retry carrying it."""
+    failures = []
+    dense = "# X" + NL * 2 + "**A packed rule.** " + "narrative that restates itself and carries inline evidence " * 12 + NL
+    for label, first, second in (
+            ("a missing-proof deny", "git commit -F msg", "git commit -F msg"),
+            ("a later git call of the same command that is denied", "git commit -F msg && git reset --hard",
+             "git commit -F msg")):
+        repo = make_repo()
+        try:
+            env = {"HARNESS_HOOK_STATE_DIR": tempfile.mkdtemp(prefix="gglatch_"),
+                   "HARNESS_TEST_STAMP": os.path.join(repo, ".claude/logs/harness_tests_stamp.json")}
+            write(repo, ".claude/skills/x.md", dense)
+            write(repo, ".claude/hooks/noproof.py", 'MESSAGE = "a"' + NL + "if MESSAGE:" + NL + "    print(MESSAGE)" + NL)
+            git(repo, ["add", "-A"])
+            if label == "a missing-proof deny":
+                failures.append(case("C " + label + " denies the commit", run_hook(first, repo, env, unguarded=True),
+                                     DENY, "no re-runnable proof"))
+                git(repo, ["reset", "-q", ".claude/hooks/noproof.py"])
+            else:
+                git(repo, ["reset", "-q", ".claude/hooks/noproof.py"])
+                failures.append(case("C " + label + " denies the command", run_hook(first, repo, env, unguarded=True),
+                                     DENY, ""))
+            failures.append(case("C the retry after " + label + " still carries the density line",
+                                 run_hook(second, repo, env, unguarded=True), ALLOW, "audit trigger"))
         finally:
             shutil.rmtree(repo, ignore_errors=True)
     return failures
@@ -688,8 +752,13 @@ def excluded_proof_cases():
     repo = make_repo()
     write(repo, ".claude/tools/y.py", "y = 1\n")
     git(repo, ["add", "-A"])
-    failures.append(case("a tool with no tracked proof still denies, excluded list or not",
-                         run_hook("git commit -F msg -- .claude/tools/y.py", repo), DENY, "no re-runnable proof"))
+    failures.append(case("a tool with no proof file of its own commits: whether its logic needs a proof is the author's call",
+                         run_hook("git commit -F msg -- .claude/tools/y.py", repo), ALLOW))
+    repo = make_repo()
+    write(repo, ".claude/hooks/y.py", "y = 1\n")
+    git(repo, ["add", "-A"])
+    failures.append(case("a hook with no tracked proof denies: a hook is a guard",
+                         run_hook("git commit -F msg -- .claude/hooks/y.py", repo), DENY, "no re-runnable proof"))
     return failures
 
 
@@ -877,15 +946,6 @@ def inline_cases():
         run_hook('git commit -F msg -- .claude', repo),
         DENY, "tests/test_x*.py"))
 
-    # 5. staged tool without a proof -> deny.
-    repo = make_repo()
-    write(repo, ".claude/tools/y.py", "y = 1\n")
-    git(repo, ["add", "-A"])
-    failures.append(case(
-        "staged tool without proof -> deny naming tests/test_y*.py",
-        run_hook('git commit -F msg -- .claude', repo),
-        DENY, "tests/test_y*.py"))
-
     # 6. git show naming a hook path is read-only, never the commit branch -> allow.
     repo = make_repo()
     write(repo, ".claude/hooks/x.py", "x = 1\n")
@@ -962,14 +1022,19 @@ def inline_cases_b():
     failures.append(case('-am includes a dirty proved hook -> allow',
                          run_hook('git commit -am "tweak hook"', repo), ALLOW))
 
-    # 12. --amend republishes HEAD's harness paths even with a clean index.
+    # 12. --amend republishes HEAD's harness paths even with a clean index. HEAD is this session's own commit, so the
+    #     amend guard (test_git_guardrails_amend.py) admits it and the proof-presence check decides.
     repo = make_repo()
     write(repo, ".claude/hooks/x.py", "x = 1\n")
     write(repo, ".claude/tests/test_x_ok.py", "# proof\n")
     git(repo, ["add", "-A"])
-    git(repo, ["commit", "-q", "-m", "add hook"])
+    git(repo, ["commit", "-q", "-m", "add hook\n\nClaude-Session: https://claude.ai/code/session_OWN"])
+    own = tempfile.mkdtemp(prefix="ggharness_home_")
+    os.makedirs(os.path.join(own, ".claude", "sessions"))
+    with open(os.path.join(own, ".claude", "sessions", "1.json"), "w", encoding="utf-8") as fh:
+        json.dump({"pid": 1, "sessionId": "s1", "bridgeSessionId": "session_OWN"}, fh)
     failures.append(case('--amend --no-edit of a proved hook -> allow',
-                         run_hook('git commit --amend --no-edit', repo), ALLOW))
+                         run_hook('git commit --amend --no-edit', repo, {"HOME": own, "USERPROFILE": own}), ALLOW))
 
     # 13. A broken runner import leaves the commit proof-presence and force-push checks live.
     broken_root = tempfile.mkdtemp(prefix="ggharness_broken_")
@@ -995,7 +1060,7 @@ def inline_cases_b():
                        input=json.dumps(payload), capture_output=True, text=True, timeout=30, cwd=repo)
     got = (DENY, r.stderr) if r.returncode == 2 else (CRASH, r.stderr) if r.returncode else (ALLOW, r.stdout)
     failures.append(case("runner import error is advisory on an authored doc commit", got, ALLOW,
-                         ("bound proofs could not run", "runner import error", "unproven, not passed")))
+                         "[harness commit]"))
     write(repo, "README.md", "seed2\n")
     git(repo, ["add", "-A"])
     payload["tool_input"]["command"] = "git push --force"
@@ -1456,15 +1521,15 @@ def baseline_owned_cases():
 
 
 def pull_proof_cases():
-    """A pulled path commits only once its recorded proof is green: pending or red blocks, green releases, and a
-    path edited after its proof is not the pulled tree, so its own commit is not judged by that record."""
+    """A pending or red pull proof is a commit advisory, never a block: the main check proves the landed range.
+    A green proof adds no note, and a path edited after its proof is not the pulled tree, so its commit gets none."""
     failures = []
     rel = ".claude/reference/pulled.md"
     for label, result, edit, expected, needle in (
-            ("red pulled proof blocks its commit", "red", False, DENY, "pull commit"),
-            ("pending pulled proof blocks its commit", "pending", False, DENY, "pull commit"),
-            ("green pulled proof releases its commit", "green", False, ALLOW, ""),
-            ("a pulled path edited after its proof is not judged by it", "red", True, ALLOW, "")):
+            ("red pulled proof advises its commit", "red", False, ALLOW, ("[harness commit]", "pull proof")),
+            ("pending pulled proof advises its commit", "pending", False, ALLOW, ("[harness commit]", "pull proof")),
+            ("green pulled proof adds no note", "green", False, ALLOW, ""),
+            ("a pulled path edited after its proof gets no note", "red", True, ALLOW, "")):
         repo = make_repo()
         try:
             write(repo, rel, "pulled\n")
@@ -1484,8 +1549,8 @@ def pull_proof_cases():
         finally:
             shutil.rmtree(repo, ignore_errors=True)
 
-    # A record that exists but does not read (not JSON, or no `paths` object) is unknown, so a pulled path's commit
-    # is denied: the reader must not turn it into an empty record that releases every path.
+    # A record that exists but does not read (not JSON, or no `paths` object) is unknown: the commit proceeds with
+    # an advisory, and the reader must not turn it into an empty record that releases every path silently.
     for label, text in (("not JSON", "{not json"),
                         ("paths is a list", json.dumps({"paths": []}))):
         repo = make_repo()
@@ -1495,8 +1560,8 @@ def pull_proof_cases():
             write(repo, "msg", "pull\n")
             git(repo, ["add", rel])
             got = run_hook("git commit -F msg", repo, unguarded=True)
-            failures.append(case("C unreadable record (%s) denies a pulled path's commit" % label, got, DENY,
-                                 ("pull proof record", "unreadable", "baseline_sync.py pull")))
+            failures.append(case("C an unreadable record (%s) advises a pulled path's commit" % label, got, ALLOW,
+                                 ("pull proof", "unreadable", "baseline_sync.py pull")))
         finally:
             shutil.rmtree(repo, ignore_errors=True)
 
@@ -1536,7 +1601,7 @@ def pull_proof_cases():
 GROUPS = (string_constants_cases, commit_proof_cases, inline_cases, inline_cases_b, inline_cases_c, index_cases, push_base_cases,
           same_command_write_cases, staged_blob_cases, must_allow_proof, retargeted_merge_cases,
           baseline_owned_cases, missing_cwd_cases, pull_proof_cases, excluded_proof_cases,
-          layer_closure_cases)
+          layer_closure_cases, latch_cases)
 
 
 def main():

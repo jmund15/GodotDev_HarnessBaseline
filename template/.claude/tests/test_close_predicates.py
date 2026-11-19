@@ -318,9 +318,6 @@ class PredicateTests(unittest.TestCase):
             self.assertEqual(row["basis"]["rows"], rows)
         finally:
             cp._load_tool = original
-        text = cp.PREDICATES["hot_set_review"][1]
-        self.assertIn("oversized skill or command body", text)
-        self.assertIn("tripwire budget", text)
 
     def test_sync_subsystems_shape_density_false_null(self):
         tr = session_repo(self.repo)

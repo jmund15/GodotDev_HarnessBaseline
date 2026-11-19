@@ -49,6 +49,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adaptation  # noqa: E402
 from triage import glob_regex  # noqa: E402
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
+from _hook_state import append_jsonl_rotating, replace_path  # noqa: E402
+
 # ---- tokenizer: pass-1 digit rules and the pass-3 word-form pattern, unchanged -----------------
 DROP = [r"§\s*\d+[a-z]?(?:\.\d+)*", r"\b\d{4}-\d{2}-\d{2}(?:T[\d:]+Z?)?\b", r"\bv?\d+(?:\.\d+){1,3}\b",
         r"\b[0-9a-f]{7,40}\b", r"\b[A-Z][A-Za-z]{0,3}-?\d+[a-z]?\b", r"#\d+", r":\d+(?:-\d+)?\b",
@@ -1161,8 +1164,7 @@ def cmd_behavior(args):
             return 1
         directory = repo / scope.rows_dir
         directory.mkdir(parents=True, exist_ok=True)
-        with (directory / "behaviors.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
-            fh.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in source))
+        append_jsonl_rotating(str(directory / "behaviors.jsonl"), source, max_bytes=None)
         print("extract_numbers: added %d behavior rows" % len(source))
         return 0
     receipts = None
@@ -1363,6 +1365,53 @@ def cmd_list(args):
     return 0
 
 
+def _prune_dead(repo, rows, paths=None):
+    """Rewrite numbers.jsonl without the rows of `paths` (default: every row's path) whose sentence and token no
+    line of the file holds; return how many were dropped. A seeded rule row stays while its token is flagged in the
+    file with no row, since `_orphans` shows its verdict when that token fails. A file that exists but cannot be read
+    keeps its rows; a deleted file's rows go."""
+    live, owed = {}, set()
+    for p in {r.get("path") for r in rows.rows} if paths is None else set(paths):
+        if not isinstance(p, str):
+            continue
+        if not Path(repo, p).exists():
+            live[p] = set()
+            continue
+        text = _read_text(repo, p, False)
+        if text is None:
+            continue
+        live[p] = {(f.unit.hash, f.token) for f in flagged(p, text)}
+        owed |= {(p, f.token) for f in flagged(p, text) if (p, f.unit.hash, f.token) not in rows.by_key}
+
+    def dead(r):
+        p = r.get("path")
+        if p not in live or (r.get("hash"), r.get("token")) in live[p]:
+            return False
+        return not (r.get("kind") == "rule" and str(r.get("source", "")).startswith("seed") and (p, r.get("token")) in owed)
+
+    kept = [r for r in rows.rows if not dead(r)]
+    dropped = len(rows.rows) - len(kept)
+    if dropped:
+        target = os.path.join(rows.dir, "numbers.jsonl")
+        tmp = target + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.writelines(json.dumps(r, ensure_ascii=False) + "\n" for r in kept)
+        replace_path(tmp, target)
+    return dropped
+
+
+def cmd_prune(args):
+    ctx = _setup(args)
+    if ctx is None:
+        return 2
+    repo, _scope, rows = ctx
+    if rows.bad:
+        print("extract_numbers: %d unparseable row line(s); nothing pruned" % rows.bad)
+        return 1
+    print("extract_numbers: dropped %d dead rows" % _prune_dead(repo, rows))
+    return 0
+
+
 def cmd_add(args):
     ctx = _setup(args)
     if ctx is None:
@@ -1389,10 +1438,9 @@ def cmd_add(args):
         print("extract_numbers: %d of %d rows refused; nothing added" % (len(problems), len(src)))
         return 1
     os.makedirs(rows.dir, exist_ok=True)
-    with open(os.path.join(rows.dir, "numbers.jsonl"), "a", encoding="utf-8", newline="\n") as fh:
-        for r in src:
-            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-    print("extract_numbers: added %d rows" % len(src))
+    append_jsonl_rotating(os.path.join(rows.dir, "numbers.jsonl"), src, max_bytes=None)
+    dropped = _prune_dead(_repo, Rows(rows.dir), {r["path"] for r in src})
+    print("extract_numbers: added %d rows, dropped %d dead rows of their files" % (len(src), dropped))
     return 0
 
 
@@ -1417,6 +1465,8 @@ def main(argv=None):
     p.set_defaults(fn=cmd_check)
     p = sub.add_parser("stub", parents=[common, diff], help="print a row stub per token without a row")
     p.set_defaults(fn=cmd_stub)
+    p = sub.add_parser("prune", parents=[common], help="drop rows whose sentence and token no live line holds")
+    p.set_defaults(fn=cmd_prune)
     p = sub.add_parser("list", parents=[common], help="every flagged token of the named files with its row status")
     p.add_argument("paths", nargs="+")
     p.add_argument("--json", action="store_true")

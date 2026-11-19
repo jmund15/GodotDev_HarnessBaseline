@@ -481,11 +481,11 @@ def unresolved_pull(repo):
         return []
     finally:
         sys.path.remove(hooks)
-    try:
-        return _pull_proof.open_paths(repo)
-    except _pull_proof.Unreadable:
+    state, rows = _pull_proof.record_state(repo)
+    if state == _pull_proof.UNREADABLE:
         # Unknown rows stay named: the record itself is the open row.
         return [_pull_proof.RECORD]
+    return _pull_proof.open_paths(repo, rows)
 
 
 def phase_mandatory(stem, mandatory, project_dir=None):
@@ -695,8 +695,8 @@ def main():
     stuck = unresolved_pull(a.repo)
     if stuck:
         print('unresolved baseline pull: ' + ', '.join(stuck))
-        print('  an earlier pull wrote these paths and their proof is red or pending; rerun '
-              '`python3 .claude/scripts/harness_tests.py --for ' + ' '.join(stuck) + '`, then commit them')
+        print('  an earlier pull wrote these paths and no commit has taken them: their proof is red or pending, '
+              'or the pull record is unreadable')
 
     if a.stage == 'final' and not a.resume:
         changed, why = artifact_changes(a.repo, sid, path)

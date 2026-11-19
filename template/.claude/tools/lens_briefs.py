@@ -21,7 +21,8 @@ Usage:
 
 `prepare --spec <spec.json> --out <run dir>` is one fan-out prep: it composes `review_ledger.py plan`
 (ledger modes), `session_audit_inputs.py freeze` (a `sessionAudit` block), each seat's must-read list,
-the seat fit, the `kfm` snapshot, the fold snapshot, the briefs and `<run dir>/args.json`, the engine
+the seat fit, the `kfm` snapshot, the fold snapshot, the briefs, the job record
+`<run dir>/jobs_<prefix>.json` (one contract, `record_problems`) and `<run dir>/args.json`, the engine
 args `Workflow({scriptPath, args: {argsFile}})` expands. Spec keys: `mode` (`explore`, `session-audit`,
 `plan-check`, `pr-review`, `design-redteam`, `pr-ready`), `prefix`, `topic`, `questions`, `seats`
 (`{key, mandates?, tier?, effort?, pin?, mustRead?, brief?}`) or `roster` or `lenses`, `pins`,
@@ -54,9 +55,10 @@ tier through `_dispatch_checks.seat_fit`, and a pin outside it refuses the panel
 one exception is a pin that holds the lens tier only in registry `supplementary`: it fills a seat only beside a
 qualified seat in the same panel that carries every mandate the seat does, and refuses alone. On the sidecar
 target a written `--tier` or `--tier-for` is also checked against the pin's registry `roles` alone. A native job also carries its `seat` key and `mandates` (its lens keys), the
-identity `review_ledger.py record --run` joins a `dispatch.js` run's deliverables on. Effort is the caller's pin on both targets and is never derived from a
-seat's tier: `--effort` sets the panel and `--effort-for KEY=RUNG` raises one seat, and a seat with
-neither is refused, because a tier names a work shape and the ladder's effort cell selects the rung.
+identity `review_ledger.py record --run` joins a `dispatch.js` run's deliverables on. A seat's effort is never derived from its tier:
+`--effort` sets the panel and `--effort-for KEY=RUNG` sets one seat. A seat with neither takes the rung
+its lens's reading computes from the ladder's effort cell (`model_registry.pin_effort`); a written rung above that
+one is capped unless the run is a measurement run.
 {{CHECKLIST_CDS}}/{{CHECKLIST_RP}}/{{CHECKLIST_I}} come from
 commands/checklists/code_quality.md by section letter; {{TEST_QUALITY_CHECKLIST}} is test_quality.md
 below its frontmatter and {{CODE_QUALITY_CHECKLIST}} is code_quality.md whole. Each code_quality
@@ -122,6 +124,7 @@ from cli_usage import refusal as shape_lines, usage
 
 
 import argparse
+import difflib
 import functools
 import hashlib
 import json
@@ -422,6 +425,73 @@ def repo_path(entry: str) -> Path:
     return path if path.is_absolute() else REPO / path
 
 
+def record_problems(jobs: list[dict], *, kind: str) -> list[str]:
+    """Every reason `jobs` is not the prepared job record this build writes, as lines; empty when it is.
+
+    One contract for the native jobs, the sidecar jobs and `prepare`'s registry-less seats: each record
+    names a unique label and its seat's lens mandates, carries the build's `kind`, an `effort`, one POSIX
+    prompt path, one pin, and the `mustRead` files its seat reads. Every path a record carries is POSIX;
+    a sidecar record also names its schema, workdir and context files."""
+    if not isinstance(jobs, list) or not jobs or not all(isinstance(job, dict) for job in jobs):
+        return ["the prepared record must be a non-empty list of job objects"]
+    problems, labels = [], set()
+
+    def posix(value: str, absolute: bool = True) -> bool:
+        return (isinstance(value, str) and bool(value) and "\\" not in value
+                and (not absolute or Path(value).is_absolute()))
+
+    for job in jobs:
+        label = job.get("label")
+        who = f"job {label!r}" if isinstance(label, str) and label else "job (unlabelled)"
+        if not isinstance(label, str) or not label or any(ch.isspace() for ch in label):
+            problems.append(f"{who}: `label` must be a non-empty string with no whitespace")
+        elif label in labels:
+            problems.append(f"{who}: duplicate label")
+        else:
+            labels.add(label)
+        seat = job.get("seat")
+        if seat is not None and (not isinstance(seat, str) or not seat or not isinstance(label, str)
+                                 or not label.endswith("-" + seat)):
+            problems.append(f"{who}: `seat` must be the seat key its label ends with")
+        mandates = job.get("mandates")
+        if not isinstance(mandates, list) or not mandates or not all(
+                isinstance(m, str) and m for m in mandates):
+            problems.append(f"{who}: `mandates` must name the seat's lens keys")
+        if job.get("kind") != kind:
+            problems.append(f"{who}: `kind` is {job.get('kind')!r}, not this build's {kind!r}")
+        if not isinstance(job.get("effort"), str) or not job.get("effort"):
+            problems.append(f"{who}: `effort` is required")
+        if job.get("tier") is not None and job.get("tier") not in TIERS:
+            problems.append(f"{who}: `tier` {job.get('tier')!r} is not a registry tier")
+        prompts = [key for key in ("promptPath", "promptFile") if job.get(key) is not None]
+        if len(prompts) != 1:
+            problems.append(f"{who}: exactly one of `promptPath` (native) or `promptFile` (sidecar) is required")
+        elif not posix(job[prompts[0]]):
+            problems.append(f"{who}: `{prompts[0]}` must be the absolute POSIX path of its brief file")
+        must = job.get("mustRead")
+        if not isinstance(must, list) or not must:
+            problems.append(f"{who}: `mustRead` must list the files the seat reads")
+        else:
+            for entry in must:
+                if (not isinstance(entry, dict) or not posix(entry.get("path"), absolute=False)
+                        or not isinstance(entry.get("lines"), int) or entry["lines"] < 0):
+                    problems.append(f"{who}: `mustRead` entry {entry!r} is no {{path, lines}} row")
+                    break
+        pins = [key for key in ("model", "alias") if job.get(key) is not None]
+        if len(pins) != 1 or not isinstance(job[pins[0]], str) or not job[pins[0]]:
+            problems.append(f"{who}: exactly one of `model` (native) or `alias` (sidecar) names its pin")
+        if job.get("alias") is not None:
+            if not posix(job.get("schemaFile")):
+                problems.append(f"{who}: a sidecar record names its absolute POSIX `schemaFile`")
+            if not posix(job.get("workdir")):
+                problems.append(f"{who}: a sidecar record names its absolute POSIX `workdir`")
+            files = job.get("contextFiles")
+            if (not isinstance(files, list) or not files
+                    or not all(posix(entry) for entry in files)):
+                problems.append(f"{who}: a sidecar record carries its `contextFiles` as absolute POSIX paths")
+    return problems
+
+
 def packet_views(spec: str) -> dict[str, list[str]]:
     """`{mandate: [artifact paths]}` from a frozen `session_audit_inputs.py` packet, or a refusal.
 
@@ -542,11 +612,17 @@ def lens_tier_refusal(*, panel: dict, native: bool, data: dict) -> list[str]:
         seats.append({"label": key, "model": token, "tier": tier, "mandates": lens.seat_mandates(key) or [],
                       "transport": transport})
     pin_name = (lambda row: _dispatch_pins.native_pin(row, row["transport"])) if native else None
+    notes = []
+    verdicts = _dispatch_checks.seat_verdicts(
+        seats, data, pin_name, owner_texts=_dispatch_checks.OwnerTexts(_dispatch_checks.session_transcript_path),
+        notes=notes)
+    for line in notes:
+        print(line, file=sys.stderr)
     return [line if is_rule else (
                 f"{seat['label']}: {line}. The seat's lens tier is `{seat['tier']}` (`lens.py index`), whatever "
                 f"`--tier` or `--tier-for` the job writes; pin one of those rows "
                 f"(`model_registry.py for-role {seat['tier']}`)")
-            for seat, line, is_rule in _dispatch_checks.seat_verdicts(seats, data, pin_name)]
+            for seat, line, is_rule in verdicts]
 
 
 def resolve_sidecar_entry(token: str, what: str, data: dict) -> dict:
@@ -687,6 +763,65 @@ def _must_read_for(seat: dict, spec: dict, packet_views: dict) -> list[str]:
 def _write_list(path: Path, paths: list[str]) -> Path:
     path.write_text("".join(str(p) + "\n" for p in paths), encoding="utf-8", newline="\n")
     return path
+
+
+def _change_file(root: Path, out: Path, prefix: str, key: str, rel: str, blob: str) -> str | None:
+    """The change from the reviewed `blob` to the file's current bytes, written under the run dir; None when the
+    blob is gone from the object store or the file is absent."""
+    stored = subprocess.run(["git", "-C", str(root), "cat-file", "blob", blob], capture_output=True)
+    current = root / rel
+    if stored.returncode != 0 or not current.is_file():
+        return None
+    before = stored.stdout.decode("utf-8", "replace").splitlines(keepends=True)
+    now = current.read_bytes().decode("utf-8", "replace").splitlines(keepends=True)
+    text = "".join(difflib.unified_diff(before, now, fromfile=f"{rel} @ {blob[:12]}", tofile=rel))
+    path = out / f"{prefix}_{key.replace('+', '_')}_{rel.replace('/', '__')}.diff"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return _rel(path, root)
+
+
+def _citer_paths(root: Path, rel: str) -> list[str] | None:
+    """The files that cite `rel` in the repo's citer tool; None when `rel` is not at HEAD, so the tool cannot sweep it."""
+    import citers
+    if citers.text_at(root, "HEAD", rel) is None:
+        return None
+    try:
+        result = citers.sweep([{"kind": "path", "surface": rel, "change": "rewrite"}], repo=root)
+    except (citers.Usage, citers.Unresolved):
+        return None
+    return sorted({row["path"] for row in result["citers"] if row["path"] != rel})
+
+
+def _later_round_reads(root: Path, out: Path, prefix: str, seat: dict, paths: list[str]) -> tuple[list[str], list[str]]:
+    """(must-read, context) for a seat. A file `plan` re-owes after an earlier reviewed blob (`earlierReviewedBlobs`)
+    is read as its change from that blob plus the files citing it; the whole file becomes context. Any other path,
+    and a file whose change or citers cannot be built, stays whole in the must-read list."""
+    earlier = {}
+    for entry in seat.get("earlierReviewedBlobs") or []:
+        earlier.setdefault(entry["file"], set()).add(entry["blob"])
+    reads, context = [], []
+    for path in paths:
+        rel = _rel(Path(path) if Path(path).is_absolute() else root / path, root)
+        blobs = earlier.get(rel, set())
+        change = citers_of = None
+        if len(blobs) == 1:
+            change = _change_file(root, out, prefix, seat["key"], rel, next(iter(blobs)))
+            citers_of = _citer_paths(root, rel) if change else None
+        if change is None or citers_of is None:
+            reads.append(path)
+            continue
+        reads += [change, *citers_of]
+        context.append(path)
+    return list(dict.fromkeys(reads)), context
+
+
+def _note_context(brief: str, files: list[str]) -> None:
+    """Name each whole file as context in the seat's brief; the brief does not make it a must-read."""
+    text = Path(brief).read_text(encoding="utf-8")
+    lines = ["", "## Context, not must-read", ""]
+    lines += [f"- {path}: the whole current file. Read it only where a must-read change or citer points into it."
+              for path in files]
+    Path(brief).write_text(text.rstrip("\n") + "\n" + "\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 PRODUCTION_SUFFIXES = (".cs", ".tres")  # `/session_audit` §1a's code set
@@ -837,9 +972,26 @@ def _later_round_diff(spec: dict, root: Path) -> str:
     return "## Change since the reviewed copy\n\n```diff\n" + run.stdout + "\n```"
 
 
+def _seat_effort(seat: dict, key: str, alias, kind: str, efforts: dict, measured: bool):
+    """A registry seat's effort: its written rung when given, else the rung its lens's reading computes from the seat's
+    ladder cell (`model_registry.pin_effort`). A written rung above the computed one is capped unless measured or the
+    seat's `pick` is `owner` (a rung the owner named)."""
+    explicit = seat.get("effort") or efforts.get(key)
+    reading = lens.seat_reading(key)
+    if not alias or reading is None:
+        return explicit
+    try:
+        effort, _status = model_registry.pin_effort(alias, kind, reading, explicit, seat.get("pick") == "owner",
+                                                    measured)
+    except model_registry.UnknownModel:
+        return explicit
+    return effort
+
+
 def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list[dict], manual: list[dict],
-                  lists: dict, context: Path) -> list[dict]:
-    """Materialize registry seats through `build_briefs` and registry-less seats from the spec's own brief text."""
+                  lists: dict, context: Path, reads: dict) -> list[dict]:
+    """Materialize registry seats through `build_briefs` and registry-less seats from the spec's own brief text,
+    then write the run's one job record (`jobs_<prefix>.json`) after `record_problems` accepts it."""
     kind = MODE_KIND[spec["mode"]]
     jobs = []
     if registry:
@@ -867,7 +1019,7 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
             pin = seat.get("pin") or pins.get(key)
             if pin:
                 params.model_for.append(f"{key}={pin}")
-            effort = seat.get("effort") or efforts.get(key)
+            effort = _seat_effort(seat, key, pin or panel_pin, kind, efforts, bool(spec.get("measurement")))
             if effort:
                 params.effort_for.append(f"{key}={effort}")
             tier = seat.get("tier") or tiers.get(key)
@@ -877,6 +1029,7 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
             jobs += build_briefs(params)
         except ArgumentRefused as exc:
             sys.exit(f"prepare: {exc}")
+    pending = []
     for seat in manual:
         key = seat["key"]
         brief = seat.get("brief") or ""
@@ -884,17 +1037,23 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
         if not text.strip():
             sys.exit(f"prepare: seat {key!r} is not a lens-registry key and carries no `brief` text")
         path = out / f"{prefix}_{key}.md"
-        path.write_text(f"<!-- lens brief: {key} — generated by tools/lens_briefs.py prepare; do not edit -->\n\n"
-                        + text.rstrip() + "\n", encoding="utf-8", newline="\n")
+        pending.append((path, f"<!-- lens brief: {key} — generated by tools/lens_briefs.py prepare; do not edit -->\n\n"
+                              + text.rstrip() + "\n"))
         pins = spec.get("pins") or {}
         efforts = spec.get("efforts") or {}
         jobs.append({"label": f"{prefix}-{key}", "key": key,
                      "mandates": seat.get("mandates") or [key],
-                     "mustRead": must_read_entries(_must_read_for(seat, spec, {})),
+                     "mustRead": must_read_entries([str(entry).replace("\\", "/") for entry in reads[key][0]]),
                      "promptPath": str(path.resolve()).replace("\\", "/"),
                      "model": seat.get("pin") or pins.get(key) or pins.get("panel"),
                      "effort": seat.get("effort") or efforts.get(key) or efforts.get("panel"),
                      "tier": seat.get("tier"), "kind": kind})
+    problems = record_problems(jobs, kind=kind)
+    if problems:
+        sys.exit("prepare: the prepared job record does not hold its contract:\n  " + "\n  ".join(problems))
+    for path, body in pending:
+        path.write_text(body, encoding="utf-8", newline="\n")
+    (out / f"jobs_{prefix}.json").write_text(json.dumps(jobs, indent=2), encoding="utf-8", newline="\n")
     return jobs
 
 
@@ -1039,14 +1198,16 @@ def prepare_command(argv: list[str]) -> None:
     if unknown:
         sys.exit("prepare: no such lens and no `brief` text: " + ", ".join(unknown) + " — run `lens.py index`")
 
-    lists = {}
+    lists, reads = {}, {}
     for seat in seats:
-        if not _registry_seat(seat["key"], found):
-            continue
-        paths = _must_read_for(seat, spec, packet_views)
-        if not paths:
+        is_registry = _registry_seat(seat["key"], found)
+        paths = _must_read_for(seat, spec, packet_views if is_registry else {})
+        if is_registry and not paths:
             sys.exit(f"prepare: seat {seat['key']} has no must-read input; name `subjectFiles` or `seatFiles`")
-        lists[seat["key"]] = _write_list(out / ("must_" + seat["key"].replace("+", "_") + ".txt"), paths)
+        reads[seat["key"]] = _later_round_reads(root, out, prefix, seat, paths)
+        if is_registry:
+            lists[seat["key"]] = _write_list(out / ("must_" + seat["key"].replace("+", "_") + ".txt"),
+                                             reads[seat["key"]][0])
 
     additions = []
     if spec.get("task"):
@@ -1072,7 +1233,11 @@ def prepare_command(argv: list[str]) -> None:
     elif not context.exists():
         context.write_text(_context_text(spec, []), encoding="utf-8", newline="\n")
 
-    jobs = _write_briefs(root, spec, out, prefix, registry, manual, lists, context)
+    jobs = _write_briefs(root, spec, out, prefix, registry, manual, lists, context, reads)
+    whole_as_context = {f"{prefix}-{key}": files for key, (_, files) in reads.items() if files}
+    for job in jobs:
+        if job["label"] in whole_as_context:
+            _note_context(job.get("promptPath") or job["promptFile"], whole_as_context[job["label"]])
 
     fold = None
     if spec.get("fold"):
@@ -1158,7 +1323,8 @@ class BriefParams:
 
 
 def build_briefs(a: BriefParams) -> list[dict]:
-    """Write the selected seats' brief files and `jobs_<prefix>.json`; returns the job rows."""
+    """Write the selected seats' brief files and `jobs_<prefix>.json` once `record_problems` accepts the rows;
+    returns the job rows."""
     acceptance = acceptance_section(a.task) if a.task else ""
     rigor = finding_bar.run_rigor(a.task, REPO) if a.target == "sidecar" else None
     bar = finding_bar.bar_contract(rigor) + "\n" if rigor else ""
@@ -1402,7 +1568,8 @@ def build_briefs(a: BriefParams) -> list[dict]:
         token = model_overrides.get(k) or a.model
         entry = resolve_sidecar_entry(token, f"--model-for {k}" if k in model_overrides else "--model", data)
         written = tier_overrides.get(k) or a.tier
-        if written and not serves_tier(entry, written):
+        if written and not serves_tier(entry, written) and not _dispatch_checks.owner_named(
+                entry, _dispatch_checks.OwnerTexts(_dispatch_checks.session_transcript_path)):
             sys.exit(f"{k}: {token} does not claim {written} or a stronger review tier; "
                      "re-select a qualified row from model_registry.py for-role")
         rungs = effort_rungs(entry, data)
@@ -1435,7 +1602,7 @@ def build_briefs(a: BriefParams) -> list[dict]:
             "kind": "reviewer",
             "schemaFile": str(schema).replace("\\", "/"),
             "workdir": str(REPO).replace("\\", "/"),
-            "contextFiles": [a.context_path],
+            "contextFiles": [Path(a.context_path).resolve().as_posix()],
         })
         briefs.append((path, body))
     for key, reading, brief_bytes in readings:
@@ -1445,6 +1612,10 @@ def build_briefs(a: BriefParams) -> list[dict]:
         sys.exit("refused before launch: split each named seat's must-read list across seats with "
                  "--must-read-for KEY=<list file>, or pin a row with a larger window; never truncate a list.\n"
                  + "\n".join(refused))
+    problems = record_problems(jobs, kind=a.kind)
+    if problems:
+        sys.exit("refused before any file is written: the prepared job record does not hold its contract.\n"
+                 + "\n".join(problems))
     for path, body in briefs:
         path.write_text(body, encoding="utf-8", newline="\n")
     jp = out / f"jobs_{a.prefix}.json"

@@ -6,11 +6,13 @@ file — RED before the runner exists.
 
     python3 .claude/tests/test_harness_tests_runner.py
 """
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import time
 
 _SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
 sys.path.insert(0, _SCRIPTS_DIR)
@@ -419,8 +421,10 @@ def case_proof_does_not_inherit_git_repo_env(failures):
     (gotcha_concurrent_session_hazards #16)."""
     repo = make_repo()
     path = os.path.join(repo, ".claude", "tests", "test_env.py")
-    keys = harness_tests.GIT_REPO_ENV if hasattr(harness_tests, "GIT_REPO_ENV") else (
-        "GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR")
+    # The runner's own command-scope config (GIT_CONFIG_*) is no caller value; every other local name locates a repo.
+    keys = tuple(k for k in (harness_tests.GIT_REPO_ENV if hasattr(harness_tests, "GIT_REPO_ENV") else (
+        "GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"))
+        if not k.startswith("GIT_CONFIG"))
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("import os, sys\nsys.exit(1 if any(k in os.environ for k in %r) else 0)\n" % (tuple(keys),))
     saved = {k: os.environ.get(k) for k in keys}
@@ -798,13 +802,16 @@ def _durations(repo, value):
         json.dump(value, fh)
 
 
-def _run_stubbed(repo, path, default_timeout, outcomes):
+def _run_stubbed(repo, path, default_timeout, outcomes, held=None):
     """_run_selected over `path` with run_proof stubbed: each attempt pops the next outcome and the
-    timeout it was handed is recorded. Returns (status, timeouts)."""
+    timeout it was handed is recorded, and into `held` whether the run held the whole machine then.
+    Returns (status, timeouts)."""
     seen = []
 
-    def stub(proof, timeout=None, root=None):
+    def stub(proof, timeout=None, root=None, **_):
         seen.append(timeout)
+        if held is not None:
+            held.append(harness_tests._MACHINE_HELD)
         return outcomes.pop(0)
 
     real_run, real_timeout, saved = harness_tests.run_proof, harness_tests._TIMEOUT_SEC, dict(os.environ)
@@ -841,12 +848,12 @@ def case_a_recorded_slow_proof_gets_three_times_its_recorded_time(failures):
         failures.append("recorded-duration timeout: status=%s timeouts=%s" % (status, seen))
 
 
-def case_a_timeout_with_no_record_is_retried_alone_with_a_longer_timeout(failures):
-    """A proof never recorded that times out in the pool is retried alone at three times the timeout."""
+def case_a_timeout_with_no_record_is_retried_with_a_longer_timeout(failures):
+    """A proof never recorded that times out in the pool is retried at three times the timeout."""
     repo, path = _timing_repo("test_unrecorded.py", {})
     status, seen = _run_stubbed(repo, path, 1, [("fail", 1.0, "TIMEOUT after 1s"), ("pass", 0.5, "")])
     ok = status == "pass" and seen == [1, 3]
-    print("%-4s a pool timeout with no recorded pass is retried alone with three times the timeout"
+    print("%-4s a pool timeout with no recorded pass is retried with three times the timeout"
           % ("ok" if ok else "FAIL"))
     if not ok:
         failures.append("unrecorded timeout retry: status=%s timeouts=%s" % (status, seen))
@@ -863,6 +870,83 @@ def case_a_timeout_keeps_the_recorded_duration(failures):
     print("%-4s a proof that times out keeps its recorded duration" % ("ok" if ok else "FAIL"))
     if not ok:
         failures.append("timeout keeps record: status=%s record=%s timeouts=%s" % (status, kept, seen))
+
+
+def case_a_timeout_retry_takes_one_slot_and_an_assertion_retry_the_machine(failures):
+    """Load times a proof out; holding the whole machine for its retry stalls every run there. An assertion
+    failure can be a shared-state race, so its retry still runs alone."""
+    held_timeout, held_assert = [], []
+    repo, path = _timing_repo("test_slowed.py", {"test_slowed.py": 0.1})
+    timed = _run_stubbed(repo, path, 1, [("fail", 1.0, "TIMEOUT after 1s"), ("pass", 0.5, "")], held_timeout)[0]
+    repo, path = _timing_repo("test_raced.py", {"test_raced.py": 0.1})
+    raced = _run_stubbed(repo, path, 1, [("fail", 0.1, "AssertionError: boom"), ("pass", 0.1, "")], held_assert)[0]
+    ok = timed == "pass" and held_timeout == [False, False] and raced == "pass" and held_assert == [False, True]
+    print("%-4s a timeout retries on one slot; an assertion failure retries holding the machine" % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("retry hold: timeout=%s %s assertion=%s %s" % (timed, held_timeout, raced, held_assert))
+
+
+def case_live_pace_is_the_median_slowdown_of_passes_and_never_below_one(failures):
+    """A run's pace is how much slower than recorded its passing proofs ran: the median ratio, floored at 1."""
+    pace = harness_tests._LivePace()
+    empty = pace.factor()
+    pace.observe(0.5, 1.0)
+    floored = pace.factor()
+    pace.observe(4.0, 1.0)
+    pace.observe(12.0, 2.0)
+    ok = empty == 1.0 and floored == 1.0 and pace.factor() == 4.0
+    print("%-4s the live pace is the median slowdown of passes, never below one" % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("live pace: empty=%s floored=%s three=%s" % (empty, floored, pace.factor()))
+
+
+def case_a_run_feeds_each_pass_into_its_live_pace(failures):
+    """A pass that took five times its recorded time sets the pace the run's later deadlines stretch by."""
+    repo, path = _timing_repo("test_paced.py", {"test_paced.py": 2.0})
+    status = _run_stubbed(repo, path, 1, [("pass", 10.0, "")])[0]
+    factor = harness_tests._PACE.factor()
+    ok = status == "pass" and factor == 5.0
+    print("%-4s a run feeds each pass into its live pace" % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("pace feed: status=%s factor=%s" % (status, factor))
+
+
+def case_the_live_pace_stretches_a_running_proofs_deadline(failures):
+    """A child past its timeout but inside the stretched deadline finishes; unstretched, it times out."""
+    out = os.path.join(tempfile.mkdtemp(), "out.txt")
+    cmd = [sys.executable, "-c", "import time; time.sleep(3)"]
+    stretched = harness_tests._run_child(cmd, dict(os.environ), 1, out, stretch=lambda: 20.0)[0]
+    flat = harness_tests._run_child(cmd, dict(os.environ), 1, out, stretch=lambda: 1.0)[0]
+    ok = stretched == 0 and flat is None
+    print("%-4s the live pace stretches a running proof's deadline" % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("stretch: stretched rc=%s flat rc=%s" % (stretched, flat))
+
+
+def case_a_stretched_deadline_never_passes_harness_deadline(failures):
+    """HARNESS_DEADLINE caps a proof's timeout, and the live pace stretches it only up to that cap."""
+    seen, real_run, saved = [], harness_tests.run_proof, os.environ.get("HARNESS_DEADLINE")
+
+    def stub(path, timeout=None, root=None, **kw):
+        seen.append((timeout, kw.get("stretch")))
+        return ("pass", 0.1, "")
+
+    harness_tests.run_proof = stub
+    os.environ["HARNESS_DEADLINE"] = str(time.time() + 2)
+    try:
+        harness_tests._admitted_run("/x/test_slow.py", 120, None, None, behavior_cases=None, receipt_sink=None,
+                                    reads_sink=None, reuse_cases=None, stretch=lambda: 20.0)
+    finally:
+        harness_tests.run_proof = real_run
+        if saved is None:
+            os.environ.pop("HARNESS_DEADLINE", None)
+        else:
+            os.environ["HARNESS_DEADLINE"] = saved
+    waited = seen[0][0] * seen[0][1]() if seen and seen[0][1] else None
+    ok = waited is not None and waited <= 2.5
+    print("%-4s a stretched deadline never passes HARNESS_DEADLINE" % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("deadline: a proof cut to the deadline may wait %s s" % waited)
 
 
 HEAVY_CASES = (
@@ -902,7 +986,12 @@ CASES = (
     case_snapshot_precedes_proof_selection,
     case_overlapping_scoped_run_keeps_the_other_runs_entries,
     case_a_recorded_slow_proof_gets_three_times_its_recorded_time,
-    case_a_timeout_with_no_record_is_retried_alone_with_a_longer_timeout,
+    case_a_timeout_with_no_record_is_retried_with_a_longer_timeout,
+    case_a_timeout_retry_takes_one_slot_and_an_assertion_retry_the_machine,
+    case_live_pace_is_the_median_slowdown_of_passes_and_never_below_one,
+    case_a_run_feeds_each_pass_into_its_live_pace,
+    case_the_live_pace_stretches_a_running_proofs_deadline,
+    case_a_stretched_deadline_never_passes_harness_deadline,
     case_a_timeout_keeps_the_recorded_duration,
 )
 
@@ -932,6 +1021,56 @@ def case_commit_budget_selection(failures):
         failures.append("commit selection: selected=%s left=%s empty=%s" % (actual, left, empty))
 
 
+def case_a_recorded_pass_is_selected_whatever_its_recorded_time(failures):
+    """A bound proof whose recorded pass still holds costs no run, so the commit selects it past the budgets;
+    only a proof that would really run counts as left to the close."""
+    repo = make_repo()
+    cached, slow = "test_bound_cached.py", "test_bound_slow.py"
+    for name in (cached, slow):
+        with open(write_proof(repo, name, 0), "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("CONTRACT = 'commit_contract.md'\n")
+    seed_commit(repo)
+    saved = harness_tests.PASSES_PATH, harness_tests.STAMP_PATH
+    harness_tests.STAMP_PATH = os.path.join(repo, "stamp.json")
+    harness_tests.PASSES_PATH = os.path.join(repo, "passes.json")
+    try:
+        with open(harness_tests.durations_path(), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({cached: 500, slow: 500}, fh)
+        recorder = harness_tests._PassCache(repo)
+        recorder.snapshot_git()
+        proof = os.path.join(repo, ".claude", "tests", cached)
+        recorder.record(proof, key=recorder.key(proof))
+        selected, left = harness_tests.select_for_commit(
+            repo, [".claude/reference/commit_contract.md"], cache=harness_tests._pass_cache(repo, [proof]))
+        actual = [os.path.basename(p) for p in selected]
+    finally:
+        harness_tests.PASSES_PATH, harness_tests.STAMP_PATH = saved
+    ok = actual == [cached] and left == 1
+    print("%-4s commit selection: a recorded pass is selected past the budgets, a slow proof stays left" % (
+        "ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("cached selection: selected=%s left=%s" % (actual, left))
+
+
+def case_the_unproven_cause_is_the_set_of_proofs_not_its_size(failures):
+    """Two commits that each leave one different bound proof to the close are two causes: the second commit's
+    advisory names its own `--proofs-for` command, so it must not share the first's once-per-cause signature."""
+    repo = make_repo()
+    docs = {"a": ".claude/reference/cause_a.md", "b": ".claude/reference/cause_b.md"}
+    for key in docs:
+        with open(write_proof(repo, "test_slow_%s.py" % key, 0), "a", encoding="utf-8", newline="\n") as fh:
+            fh.write("CONTRACT = 'cause_%s.md'\n" % key)
+    seed_commit(repo)
+    harness_tests.STAMP_PATH = os.path.join(repo, "stamp.json")
+    with open(harness_tests.durations_path(), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"test_slow_a.py": 500, "test_slow_b.py": 500}, fh)
+    unproven = [harness_tests.run_commit(repo, [doc])["unproven"] for doc in docs.values()]
+    ok = all(unproven) and unproven[0]["signature"] != unproven[1]["signature"]
+    print("%-4s the unproven cause names which proofs are left, not how many" % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("unproven cause: %r" % unproven)
+
+
 def case_commit_runner_timeout(failures):
     repo = make_repo()
     hanging = os.path.join(repo, "hanging_runner.py")
@@ -947,6 +1086,21 @@ def case_commit_runner_timeout(failures):
     print("%-4s a hung commit runner returns one timeout advisory" % ("ok" if ok else "FAIL"))
     if not ok:
         failures.append("commit timeout: %r" % advisories)
+
+
+def case_commit_runs_the_committed_checkouts_runner(failures):
+    """A commit in another checkout (a worktree) is proved by that checkout's runner, the one its close uses, so its
+    advisory reuses the passes that runner recorded; the hook's own runner keys every pass differently."""
+    repo = make_repo()
+    own = os.path.join(repo, ".claude", "scripts", "harness_tests.py")
+    os.makedirs(os.path.dirname(own), exist_ok=True)
+    with open(own, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("import json\nprint(json.dumps({'advisories': ['own runner'], 'unproven': None}))\n")
+    advisories = harness_tests.commit_advisories(repo, [".claude/reference/doc.md"])
+    ok = advisories == ["own runner"]
+    print("%-4s a commit is proved by the committed checkout's own runner" % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("commit runner: %r" % advisories)
 
 
 def case_a_failure_line_above_the_tail_stays_in_the_excerpt(failures):
@@ -1055,6 +1209,22 @@ class _CloseUntrackedRed(RepoCase):
         self.assertNotEqual(rc, 0, out)
         self.assertIn('no proof bound to outgoing harness paths', out)
 
+    def test_incomplete_close_names_the_proof_that_neither_passed_nor_failed(self):
+        helper = os.path.dirname(os.path.abspath(__file__))
+        self.write('.claude/hooks/unit.py', "VALUE = 'good'\n")
+        self.write('.claude/tests/test_unit.py',
+                   "import sys\n" "sys.path.insert(0, %r)\n" "import _platform_skip\n"
+                   "open(__file__.replace('tests/test_unit.py', 'hooks/unit.py')).read()\n"
+                   "_platform_skip.skip_proof('whole', 'planted')\n" % helper)
+        self.base = self.commit('green harness')
+        self.git('update-ref', 'refs/remotes/origin/main', self.base)
+        self.write('.claude/hooks/unit.py', "VALUE = 'next'\n")
+        self.commit('outgoing unit')
+        rc, out = self.close()
+        self.assertEqual(rc, 2, out)
+        self.assertIn('harness_tests: close incomplete', out)
+        self.assertIn('harness_tests: not passed or failed: test_unit.py (platform-skip)', out.splitlines())
+
 
 def case_close_untracked_red_is_advisory_tracked_red_blocks(failures):
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(_CloseUntrackedRed)
@@ -1068,7 +1238,7 @@ def case_close_untracked_red_is_advisory_tracked_red_blocks(failures):
 
 def _run_stubbed_row(repo, path, outcomes):
     """_run_selected over `path` with run_proof stubbed and the run recorded: (printed text, the recorded row)."""
-    def stub(proof, timeout=None, root=None):
+    def stub(proof, timeout=None, root=None, **_):
         return outcomes.pop(0)
 
     real_run, saved, row = harness_tests.run_proof, dict(os.environ), {}
@@ -1123,7 +1293,157 @@ def case_the_close_time_line_states_pool_retries_and_load_against_the_fastest_hi
         failures.append("time line: %r / %r" % (line, none))
 
 
-PARTS = 3
+PARTS = 5
+
+
+def _lookup_repo(exit_code):
+    """A repo with one proof that exits `exit_code`, a private pass store, and the proof's path."""
+    repo = make_repo()
+    proof = write_proof(repo, "test_lazy.py", exit_code)
+    seed_commit(repo)
+    harness_tests.PASSES_PATH = os.path.join(repo, "passes.json")
+    harness_tests.STAMP_PATH = os.path.join(repo, "stamp.json")
+    return repo, proof
+
+
+def _reach_calls(fn):
+    """(`fn()`'s result, how many times the real `_PassCache.reach` ran meanwhile)."""
+    real, calls = harness_tests._PassCache.reach, []
+
+    def counted(self, proof):
+        calls.append(proof)
+        return real(self, proof)
+    harness_tests._PassCache.reach = counted
+    try:
+        return fn(), len(calls)
+    finally:
+        harness_tests._PassCache.reach = real
+
+
+def _both_lookups(repo, proof):
+    """Each reuse check on `proof`: the commit advisory's, then a scoped run's `attempt` (reused when its status is
+    pass, since the planted proof fails if it runs). Returns {lookup: (reused, reach calls)}."""
+    out = {}
+    held, n = _reach_calls(lambda: harness_tests._recorded_passes(
+        repo, [proof], harness_tests._pass_cache(repo, [proof])))
+    out["advisory"] = (proof in held, n)
+
+    def run():
+        statuses, details = {}, {}
+        with harness_tests.redirect_stdout(io.StringIO()):
+            harness_tests._run_selected([proof], False, statuses, details, harness_tests.RunOptions(
+                cache=harness_tests._pass_cache(repo, [proof]), root=repo, repo=repo))
+        return statuses[proof]
+    status, n = _reach_calls(run)
+    out["attempt"] = (status == "pass", n)
+    return out
+
+
+def case_a_row_with_an_observed_key_is_reused_without_the_static_reach(failures):
+    """A reuse check judges a row that carries `okey` by it alone, so it never builds the static key: `reach` is
+    what costs seconds. A row with no `okey` is still judged by the static key, which is computed and compared."""
+    saved = harness_tests.PASSES_PATH, harness_tests.STAMP_PATH
+    try:
+        repo, proof = _lookup_repo(1)
+        rel = os.path.relpath(proof, repo).replace(os.sep, "/")
+        recorder = harness_tests._PassCache(repo)
+        recorder.snapshot_git()
+        manifest = {"files": [rel], "probes": [], "dirs": [], "static": [], "git": False, "opaque": False}
+        recorder.record(proof, key="static-key-never-compared", manifest=manifest, observable=True)
+        observed = _both_lookups(repo, proof)
+        repo, proof = _lookup_repo(1)
+        recorder = harness_tests._PassCache(repo)
+        recorder.snapshot_git()
+        recorder.record(proof, key=recorder.key(proof))
+        static = _both_lookups(repo, proof)
+        repo, proof = _lookup_repo(1)
+        recorder = harness_tests._PassCache(repo)
+        recorder.snapshot_git()
+        recorder.record(proof, key="a-key-no-input-holds")
+        stale = _both_lookups(repo, proof)
+    finally:
+        harness_tests.PASSES_PATH, harness_tests.STAMP_PATH = saved
+    ok = (observed == {"advisory": (True, 0), "attempt": (True, 0)}
+          and all(reused and n > 0 for reused, n in static.values())
+          and not any(reused for reused, _ in stale.values()))
+    print("%-4s a row with an observed key is reused without the static reach; a row without one is judged by it"
+          % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("lazy key: observed=%s static=%s stale=%s" % (observed, static, stale))
+
+
+def case_binding_parses_only_the_proofs_whose_text_holds_the_token(failures):
+    """A proof binds by a name its runnable text holds, and a comment holds none. The raw text holds every name the
+    runnable text does, so a proof whose raw text lacks it binds nothing and is never parsed for its code."""
+    repo = make_repo()
+    with open(os.path.join(repo, ".claude", "hooks", "alpha.py"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("X = 1\n")
+    bodies = {"test_runs_it.py": "NAME = 'alpha.py'\n", "test_comment_only.py": "# alpha.py\n", "test_other.py": "Y = 2\n"}
+    for name, body in bodies.items():
+        with open(os.path.join(repo, ".claude", "tests", name), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(body)
+    seed_commit(repo)
+    real, parsed = harness_tests._code_text, []
+
+    def counted(rel, text):
+        parsed.append(os.path.basename(rel))
+        return real(rel, text)
+    harness_tests._code_text = counted
+    try:
+        bound = sorted(os.path.basename(p) for p in harness_tests.select_for(repo, [".claude/hooks/alpha.py"]))
+    finally:
+        harness_tests._code_text = real
+    ok = bound == ["test_runs_it.py"] and "test_other.py" not in parsed and "test_comment_only.py" in parsed
+    print("%-4s binding parses only the proofs whose raw text holds the name" % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("binding parse: bound=%s parsed=%s" % (bound, parsed))
+
+
+def _state_ref(repo, text):
+    """Plants `text` as main_check.json on the local ref the commit advisory reads, with no fetch."""
+    def plumb(args, data=None):
+        return subprocess.run(["git", "-C", repo, *args], input=None if data is None else data.encode(),
+                              capture_output=True, check=True).stdout.decode().strip()
+    blob = plumb(["hash-object", "-w", "--stdin"], text)
+    tree = plumb(["mktree"], "100644 blob %s\tmain_check.json\n" % blob)
+    commit = plumb(["commit-tree", tree, "-m", "planted state"])
+    plumb(["update-ref", "refs/remotes/origin/main-check-state", commit])
+
+
+def case_open_main_rows_advise_bound_proofs_from_the_local_ref(failures):
+    repo = make_repo()
+    write_proof(repo, "test_alpha.py", 0)  # bound to alpha.py by name
+    write_proof(repo, "test_unbound.py", 0)
+    with open(os.path.join(repo, ".claude", "hooks", "alpha.py"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("X = 1\n")
+    seed_commit(repo)
+    harness_tests.EXCLUDED = {}
+    bound = ["test_alpha.py"]  # what run_commit reports as the bound proofs
+    rows = [{"name": "test_alpha.py", "kind": "proof", "platform": "linux", "commit": None, "session": None,
+             "firstLine": "FAIL", "firstSeen": "2026-11-18T00:00:00Z", "clearedAt": None, "clearedBy": None},
+            {"name": "test_unbound.py", "kind": "proof", "platform": "linux", "commit": None, "session": None,
+             "firstLine": "FAIL", "firstSeen": "2026-11-18T00:00:00Z", "clearedAt": None, "clearedBy": None},
+            {"name": "test_cleared.py", "kind": "proof", "platform": "linux", "commit": None, "session": None,
+             "firstLine": "FAIL", "firstSeen": "2026-11-18T00:00:00Z", "clearedAt": "2026-11-18T01:00:00Z",
+             "clearedBy": "abc"}]
+    results = {}
+    _state_ref(repo, json.dumps({"version": 1, "checkedTo": "x", "rows": rows}))
+    results["bound"] = harness_tests.open_main_lines(repo, bound)
+    subprocess.run(["git", "-C", repo, "update-ref", "-d", "refs/remotes/origin/main-check-state"], check=True)
+    results["absent"] = harness_tests.open_main_lines(repo, bound)
+    _state_ref(repo, "not json\n")
+    results["malformed"] = harness_tests.open_main_lines(repo, bound)
+    probe = subprocess.run([sys.executable, "-c",
+                            "import sys; sys.path.insert(0, %r); import harness_tests as h; "
+                            "h.open_main_lines(%r, %r); print('main_check' in sys.modules)"
+                            % (_SCRIPTS_DIR, repo, bound)], capture_output=True, text=True)
+    ok = (results["bound"] == ["[harness commit] open on main: test_alpha.py linux"]
+          and results["absent"] == [] and results["malformed"] == []
+          and probe.stdout.strip() == "False")
+    print("%-4s open on main: bound open rows print, absent and malformed refs print nothing, no main_check import"
+          % ("ok" if ok else "FAIL"))
+    if not ok:
+        failures.append("open on main: %s probe=%s %s" % (results, probe.stdout, probe.stderr[-300:]))
 
 
 def main(part=1):
@@ -1136,11 +1456,17 @@ def main(part=1):
     failures, failed_cases = [], 0
     plain = list(CASES) + [case_each_alone_retry_prints_a_progress_line_and_the_row_counts_them,
                            case_the_close_time_line_states_pool_retries_and_load_against_the_fastest_history,
-                           case_commit_budget_selection, case_commit_runner_timeout,
+                           case_commit_budget_selection,
+                           case_a_recorded_pass_is_selected_whatever_its_recorded_time, case_commit_runner_timeout,
+                           case_commit_runs_the_committed_checkouts_runner,
+                           case_the_unproven_cause_is_the_set_of_proofs_not_its_size,
                            case_a_failure_line_above_the_tail_stays_in_the_excerpt,
                            case_platform_skip_is_counted_not_passed,
                            case_a_node_proof_platform_skip_survives_the_tap_comment_prefix,
-                           case_close_untracked_red_is_advisory_tracked_red_blocks]
+                           case_close_untracked_red_is_advisory_tracked_red_blocks,
+                           case_a_row_with_an_observed_key_is_reused_without_the_static_reach,
+                           case_binding_parses_only_the_proofs_whose_text_holds_the_token,
+                           case_open_main_rows_advise_bound_proofs_from_the_local_ref]
     cases = list(HEAVY_CASES) * (part == 1) + plain[part - 1::PARTS]
     if part != 1:
         harness_tests.HEAVY = {}

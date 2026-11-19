@@ -302,6 +302,33 @@ def main():
     cases.append(("a permissionDecision deny AFTER a non-blocking sub-hook still aborts",
                   rc == 0 and decision == "deny" and "advisory-from-noisy" not in (ctx or "")))
 
+    import _hook_state
+    latch_state, latch_before = tempfile.mkdtemp(prefix="editlatch_"), os.environ.get("HARNESS_HOOK_STATE_DIR")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = latch_state
+
+    def spender(key):
+        def process(p):
+            return {"context": "once-line"} if _hook_state.fire_once_since_compaction("latch-edit", key) else None
+        return ("spender_" + key, process)
+
+    try:
+        for label, late in (("a block", blocker), ("a deny", denier)):
+            module.dispatch(payload, chain=(spender("k_" + label), late))
+            rc, out, err = module.dispatch(payload, chain=(spender("k_" + label),))
+            cases.append(("L1: a line dropped by a later %s is told again on the retry" % label,
+                          "once-line" in out))
+        rc, out, err = module.dispatch(payload, chain=(spender("k_a block"),))
+        cases.append(("L1: a delivered line is not told twice", "once-line" not in out))
+        module.dispatch(payload, chain=(spender("k_self"), ("self_denier", lambda p: (
+            _hook_state.fire_once_since_compaction("latch-edit", "k_own") and None) or {"deny": "own deny"})))
+        cases.append(("L1: a deny-once key the denying hook spent stays spent",
+                      _hook_state.fire_once_since_compaction("latch-edit", "k_own") is False))
+    finally:
+        if latch_before is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = latch_before
+
     rc, out, err = module.dispatch(payload, chain=(("pattern_enforcer", boom), noisy))
     decision, ctx = hook_output(out)
     cases.append(("S13: a non-floor runtime fault allows and names its hook in context",

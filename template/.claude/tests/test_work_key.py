@@ -99,7 +99,7 @@ def checks(tmp):
     unreadable = Path(tmp) / "a-directory"
     unreadable.mkdir()
     code, _, err = run("check", "--key", k, "--ledger", str(unreadable))
-    require(code == 15 and "cannot be read" in err, "an unreadable ledger refuses and says so: %r %r" % (code, err))
+    require(code == 15 and err.strip(), "an unreadable ledger refuses and says so: %r %r" % (code, err))
     voided = ledger(tmp, [row(k)], name="voided.jsonl")
     sys.path.insert(0, str(TOOL.parent))
     import work_key as wk

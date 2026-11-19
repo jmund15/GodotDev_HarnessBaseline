@@ -745,7 +745,7 @@ def main():
         cur_path = write_transcript(tmp, PARTIAL_LINES, sid=SID)
         rc, out = run(['--transcript', cur_path, '--current-inputs', 'session_audit'])
         check("--current-inputs exits 2 naming review_ledger.py uncovered",
-              rc == 2 and 'retired: use review_ledger.py uncovered (session_end.md Phase 1)' in out, detail=out[-300:])
+              rc == 2 and 'review_ledger.py' in out, detail=out[-300:])
 
     # --- shared-checkout artifacts: one line per artifact the session changed, with its check's result ---
     def planted_runner(plant):

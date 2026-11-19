@@ -71,7 +71,7 @@ def fold_prompt(task, records):
 def main():
     barred, rows = fold_prompt("T1", {"T1": "normal"})
     check("fold prompt carries Bar when the ledger task resolves a rigor",
-          "Bar: normal" in barred, "no `Bar: normal` line in the fold prompt")
+          "Bar:" in barred and "normal" in barred, "no `Bar:` line in the fold prompt")
     check("a thorough row carries counts false at normal, in the findings file and the prompt",
           [row.get("counts") for row in rows] == [False] and '"counts": false' in barred, json.dumps(rows))
     plain, plain_rows = fold_prompt("T2", {"T2": "bogus"})

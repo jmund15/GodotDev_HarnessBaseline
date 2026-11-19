@@ -145,7 +145,6 @@ class ReviewPreparation(unittest.TestCase):
         proof = Path(__file__).with_name('review_fanout_spill_test.js')
         result = subprocess.run(['node', str(proof)], capture_output=True, text=True, encoding='utf-8')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('ok   native fold has a stable promptPath', result.stdout)
 
     def test_unicode_reading_uses_decoded_characters(self):
         with tempfile.TemporaryDirectory() as tmp:

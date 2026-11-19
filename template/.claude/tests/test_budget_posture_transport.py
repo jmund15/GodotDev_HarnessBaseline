@@ -28,6 +28,8 @@ import time
 from _display_words import banned_in
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _hook_call  # noqa: E402
 import quota_bands  # noqa: E402
 
 # The hook's plan-usage sampler writes here, never to the real ~/.claude/usage_samples.jsonl.
@@ -116,10 +118,15 @@ def run(transport=None, session="bpt00001", used_pct=45, bands=None, five_pct=30
     if transport:
         env["CLAUDE_CODE_TRANSPORT"] = transport
     write_capture(tmp, session, used_pct, five_pct)
-    r = subprocess.run([sys.executable, HOOK],
-                       input=json.dumps(dispatched_prompt(session)),
-                       capture_output=True, text=True, timeout=90, env=env, encoding="utf-8")
-    return (r.stdout or "").strip()
+    return emit(env, dispatched_prompt(session))[1]
+
+
+def emit(env, payload):
+    """One in-process hook run: (exit code, stdout stripped). An abnormal exit or a traceback raises."""
+    code, out, err, _ = _hook_call.call(HOOK, payload, env=env)
+    if code not in (0, 2) or "Traceback" in err:
+        raise RuntimeError("budget_posture failed (exit %d): %s" % (code, (out + "\n" + err)[-1000:]))
+    return code, (out or "").strip()
 
 
 HOST = run()
@@ -157,10 +164,7 @@ def run_no_ratelimits(transport=None, session="bptnorl", bands=None):
     env.pop("ANTHROPIC_BASE_URL", None)
     if transport:
         env["CLAUDE_CODE_TRANSPORT"] = transport
-    r = subprocess.run([sys.executable, HOOK],
-                       input=json.dumps(dispatched_prompt(session)),
-                       capture_output=True, text=True, timeout=90, env=env, encoding="utf-8")
-    return (r.stdout or "").strip()
+    return emit(env, dispatched_prompt(session))[1]
 
 
 NO_RL_CODEX = run_no_ratelimits("codex", "bptnorl1", {"codex": ("Ahead", 1.31)})
@@ -198,10 +202,7 @@ def two_prompts(bands1, bands2, transport="codex", session="bptdedupe"):
                    PROVIDER_CAPACITY_CACHE=write_band_cache(tmp, bands))
         env.pop("CLAUDE_CODE_ENTRYPOINT", None)
         env.pop("ANTHROPIC_BASE_URL", None)
-        r = subprocess.run([sys.executable, HOOK],
-                           input=json.dumps(dispatched_prompt(session)),
-                           capture_output=True, text=True, timeout=90, env=env, encoding="utf-8")
-        out.append((r.stdout or "").strip())
+        out.append(emit(env, dispatched_prompt(session))[1])
     return out
 
 
@@ -297,9 +298,7 @@ def prompts(caches, session, transport=None):
             env.pop(key, None)
         if transport:
             env["CLAUDE_CODE_TRANSPORT"] = transport
-        r = subprocess.run([sys.executable, HOOK], input=json.dumps(dispatched_prompt(session)),
-                           capture_output=True, text=True, timeout=90, env=env, encoding="utf-8")
-        out.append((r.stdout or "").strip())
+        out.append(emit(env, dispatched_prompt(session))[1])
     return out
 
 
@@ -668,9 +667,7 @@ def secondary_session_line(session="bptsec01"):
                CLAUDE_CONFIG_DIR=os.path.join(os.path.expanduser("~"), ".claude-secondary"))
     for key in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_TRANSPORT", "ANTHROPIC_BASE_URL"):
         env.pop(key, None)
-    r = subprocess.run([sys.executable, HOOK], input=json.dumps(dispatched_prompt(session)),
-                       capture_output=True, text=True, timeout=90, env=env, encoding="utf-8")
-    return (r.stdout or "").strip()
+    return emit(env, dispatched_prompt(session))[1]
 
 
 def inprocess_line(bp, session, used_pct, entry="ENTRY", five_pct=30):
@@ -926,9 +923,7 @@ class SpendSession:
                    PYTHONIOENCODING="utf-8", PROVIDER_CAPACITY_CACHE=write_band_cache(tmp, {"codex": ("Ahead", 1.31)}))
         for key in ("CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_TRANSPORT", "CLAUDE_CODE_SIDECAR", "ANTHROPIC_BASE_URL"):
             env.pop(key, None)
-        r = subprocess.run([sys.executable, HOOK], input=json.dumps(dispatched_prompt(SPEND_SID)),
-                           capture_output=True, text=True, timeout=90, env=env, encoding="utf-8")
-        return r.returncode, (r.stdout or "").strip()
+        return emit(env, dispatched_prompt(SPEND_SID))
 
 
 def spend_cases():

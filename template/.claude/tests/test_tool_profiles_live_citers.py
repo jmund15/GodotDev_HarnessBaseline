@@ -14,10 +14,14 @@ _HISTORY = (".claude/auto-memory/archive/", ".claude/tests/fixtures/", ".claude/
             ".claude/orchestration_metrics.jsonl", ".claude/self_evaluate_archive.json",
             ".claude/baseline.lock.json", ".claude/tests/test_tool_profiles.py",
             ".claude/tests/test_tool_profiles_live_citers.py")
-_surf = [json.dumps({"kind": "path", "surface": ".claude/guards/%s" % o, "change": "rename", "to": ".claude/guards/%s" % n})
-         for o, n in (("any.md", "common.md"), ("any.godot.md", "common.godot.md"))]
+# `delete`, not `rename`: a rename resolves its source in history, which a fresh or shallow clone lacks.
+_surf = [json.dumps({"kind": "path", "surface": ".claude/guards/%s" % o, "change": "delete"})
+         for o in ("any.md", "any.godot.md")]
 _out = subprocess.run([sys.executable, os.path.join(ROOT, ".claude", "tools", "citers.py"), "--json", "--repo", ROOT] + _surf,
                       capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
+if _out.returncode != 0 or not _out.stdout.strip():
+    print("FAIL the citer sweep did not run: %r" % (_out.stderr or _out.stdout)[-300:])
+    sys.exit(1)
 _stale = sorted({"%s:%s" % (c["path"], c["line"]) for c in json.loads(_out.stdout or '{"citers": []}')["citers"]
                  if c["path"].startswith(".claude/") and not c["path"].startswith(_HISTORY)})
 if _stale:

@@ -1,5 +1,5 @@
 # The static guard set shared by regression_gate.ps1 (before its build) and verify.ps1 (before its suites): one table,
-# one runner, so a guard red surfaces at a Part close and not first at the drive-close gate.
+# one runner, so a guard red surfaces at a Part close and not first in the main check.
 function Get-PythonCommand {
     foreach ($c in @('python3', 'python', 'py')) {
         if (Get-Command $c -ErrorAction SilentlyContinue) { return $c }
@@ -21,7 +21,8 @@ sys.exit(entry())
 # Runs every guard against $Repo's files. Returns Results (`name=OK|FAIL|UNAVAILABLE`), Blocked (failed names),
 # Details (markdown for each failure) and Unavailable ($true stops the run at the first missing guard).
 function Invoke-StaticGuards {
-    param([Parameter(Mandatory)] [string] $Repo, [Parameter(Mandatory)] [string] $Hooks, [Parameter(Mandatory)] [string] $Py)
+    param([Parameter(Mandatory)] [string] $Repo, [Parameter(Mandatory)] [string] $Hooks, [Parameter(Mandatory)] [string] $Py,
+          [switch] $FullGate)
     $guards = [ordered]@{
         nullstrip      = 'tres_nullstrip_guard.py'
         tool_cascade   = 'tool_cascade_audit.py'
@@ -61,9 +62,10 @@ function Invoke-StaticGuards {
             $out.Details += '``````'
         }
         # The gate's own domain map: a test namespace it maps to no domain runs in no scoped gate, and the harness
-        # close does not select a proof for a Tests/ path. verify.ps1 -SelfTest owns the check.
+        # close does not select a proof for a Tests/ path. verify.ps1 -SelfTest owns the check. Only the full gate
+        # runs it: a scope run pays for nothing it can act on.
         $selfTest = Join-Path $PSScriptRoot 'verify.ps1'
-        if ((Test-Path $selfTest) -and (Test-Path (Join-Path $Repo '.claude/scripts/gate_domain_map.json'))) {
+        if ($FullGate -and (Test-Path $selfTest) -and (Test-Path (Join-Path $Repo '.claude/scripts/gate_domain_map.json'))) {
             $text = & pwsh -NoProfile -File $selfTest -SelfTest -Repo $Repo 2>&1
             if ($LASTEXITCODE -eq 0) { $out.Results += 'domain_map=OK' }
             else {

@@ -146,10 +146,9 @@ STAMP_NOW = "; importStamp = (Get-ImportStamp -Repo $repo)"
 
 def main(tmp):
     _TEMPLATE["root"] = tmp
-    idx = 0
     # Every step is a pwsh spawn, and each case or group of cases plants its own repos under its own names, so they
     # all run beside each other, as many at once as the machine pool lends.
-    groups = (cross_checkout, unimported_source_type, stage_times)
+    groups = (cross_checkout, unimported_source_type, stage_times, failed_tests_on_stdout)
     for folder in [group.__name__ for group in groups] + ["import_state"]:
         os.makedirs(os.path.join(tmp, folder))
     with _budget(_jobs(None)) as width, ThreadPoolExecutor(max_workers=width) as pool:
@@ -370,6 +369,29 @@ def unimported_source_type(tmp):
     check("S0c a checkout without the editor-written dest reuses the producer's PASS",
           rc == 0 and rc2 == 0 and "REUSE from=run_current" in out2,
           f"produce rc={rc} {out!r} {err!r} scan rc={rc2} {out2!r} {err2!r}")
+
+
+def failed_tests_on_stdout(tmp):
+    """The verdict a main check reads: stdout carries one FAILED_TEST line per id the ledger record's failedTests lists,
+    whichever suite failed it (a Logic suite's, not only an Integration batch's) and a reused run's."""
+    repo = os.path.join(tmp, "fts")
+    make_repo(repo)
+    body = "\n".join((
+        "$suiteResults['Logic'] = @{ r = [pscustomobject]@{ failedTests = @('P.Tests.Logic.Math.Add_Fails') } }",
+        "$suiteResults['Sanity'] = @{ r = [pscustomobject]@{ failedTests = $null } }",
+        "$script:ReusedFailedTests = @('P.Tests.Integration.Reused.Still_Fails')",
+        "$script:RunTree = Get-TreeDigest -Repo $repo",
+        "Complete-Gate 'FAIL' 1"))
+    rc, out, err = run_driver(tmp, "fts.ps1", driver_text(repo, body))
+    ids = sorted(ln.split("=", 1)[1].strip() for ln in out.splitlines() if ln.startswith("FAILED_TEST="))
+    check("F1 stdout lists a Logic suite's failed test and a reused run's, as the ledger does",
+          rc == 1 and ids == ["P.Tests.Integration.Reused.Still_Fails", "P.Tests.Logic.Math.Add_Fails"],
+          f"rc={rc} ids={ids} {out!r} {err!r}")
+    repo = os.path.join(tmp, "fts_pass")
+    make_repo(repo)
+    body = "$script:RunTree = Get-TreeDigest -Repo $repo" + "\n" + "Complete-Gate 'PASS' 0"
+    rc, out, err = run_driver(tmp, "fts_pass.ps1", driver_text(repo, body))
+    check("F1 a PASS prints no FAILED_TEST line", rc == 0 and "FAILED_TEST=" not in out, f"rc={rc} {out!r}")
 
 
 def stage_times(tmp):

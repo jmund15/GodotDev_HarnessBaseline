@@ -10,7 +10,7 @@ R="$HERE/.."
 D="$(mktemp -d)"
 trap 'rm -rf "$D"' EXIT
 fail=0
-eval "$(sed -n '/^OC_LITELLM_MIN_VERSION=/p;/^oc_litellm_bin() {/,/^}/p;/^oc_litellm_version_ok() {/,/^}/p;/^oc_proxy_start() {/,/^}/p' "$R/scripts/opencode_sidecar.sh")"
+eval "$(sed -n '/^OC_LITELLM_MIN_VERSION=/p;/^oc_litellm_bin() {/,/^}/p;/^oc_litellm_version() {/,/^}/p;/^oc_litellm_version_ok() {/,/^}/p;/^oc_proxy_start() {/,/^}/p' "$R/scripts/opencode_sidecar.sh")"
 OC_PROBE="$R/scripts/lib/oc_proxy_probe.py"
 OC_USER_HOME="$D"
 SC_MODEL="probe"; OC_UPSTREAM_MODEL="probe-model"; SC_API_MODE="chat"; ZEN_BASE_URL="http://127.0.0.1:9"
@@ -65,14 +65,17 @@ fi
 
 cat > "$D/litellm-hang" <<'SH'
 #!/usr/bin/env bash
-exec sleep 300
+[ "${1:-}" = "--version" ] && { echo "LiteLLM: Current Version = 1.99.0"; exit 0; }
+exec sleep 15
 SH
 chmod +x "$D/litellm-hang"
 OC_LITELLM_BIN="$D/litellm-hang"
 OC_PROXY_WAIT_MAX=5
 start=$(date +%s)
-out="$( (oc_proxy_start; r=$?; kill "$OC_PID" 2>/dev/null; exit "$r") 2>&1 )"; rc=$?
-secs=$(( $(date +%s) - start ))
+# Time the call where it returns: on Git Bash the killed stub's sleep keeps the substitution open until it ends.
+out="$( (oc_proxy_start; r=$?; echo "RETURNED_AT=$(date +%s)"; kill "$OC_PID" 2>/dev/null; exit "$r") 2>&1 )"; rc=$?
+returned="$(printf '%s' "$out" | sed -n 's/^RETURNED_AT=//p' | head -n 1)"
+secs=$(( ${returned:-$(date +%s)} - start ))
 reported="$(printf '%s' "$out" | sed -n 's/.*not healthy on :[0-9]* after \([0-9]*\)s.*/\1/p' | head -n 1)"
 if [ "$rc" = 4 ] && [ -n "$reported" ] && [ "$reported" -ge $((secs - 1)) ]; then
   echo "OK   the wait cap and its message count wall time, not a nominal 2 s per probe chunk (${reported}s of ${secs}s)"
@@ -103,6 +106,25 @@ for mode in chat responses; do
     echo "OK   $mode: the proxy config routes /v1/messages to the registry's surface"
   fi
 done
+
+# LiteLLM 1.110+ refuses to start without a master key, and older versions drop Go's chat usage: each launch writes a
+# fresh key into its config and keeps it for the child, so the proxy is never keyless.
+keys=""
+for n in 1 2; do
+  export CFG_COPY="$D/cfg-key-$n"
+  key="$( (SC_API_MODE=chat; oc_proxy_start >/dev/null 2>&1; printf '%s' "${OC_PROXY_KEY:-}") )"
+  in_cfg="$(sed -n 's/^  master_key: *//p' "$CFG_COPY" 2>/dev/null)"
+  if [ -z "$key" ] || [ "$key" != "$in_cfg" ] || [[ "$key" != sk-* ]]; then
+    echo "FAIL launch $n: the proxy key the child gets ('$key') is not the config's master_key ('$in_cfg')"; fail=1
+  fi
+  keys="$keys $key"
+done
+set -- $keys
+if [ -n "${1:-}" ] && [ "${1:-}" != "${2:-}" ]; then
+  echo "OK   each launch writes its own master key into the proxy config and keeps it for the child"
+else
+  echo "FAIL two launches did not get two distinct keys:$keys"; fail=1
+fi
 
 echo; [ "$fail" -eq 0 ] && echo "opencode proxy start: all passed" || echo "opencode proxy start: FAILED"
 exit "$fail"

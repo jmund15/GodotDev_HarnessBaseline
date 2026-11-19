@@ -1,0 +1,33 @@
+# Lands a pushed land/<name> branch on main: fetch, rebase onto a moved main, read the submodules, push main
+# (.claude/scripts/land_run.ps1). It runs no proof and no C# gate; main_check.yml proves main after the push.
+# The job runs on a GitHub-hosted runner and checks out with the LAND_TOKEN secret, not the job's own default token:
+# events caused by that token start no workflow run, and the main check starts on this job's push.
+# No concurrency group: a group keeps one pending run and cancels the rest, which drops another session's land. A push
+# that loses a race to a moved main rebases and pushes again, so the job's cap is the only end of a land that keeps
+# losing.
+name: land
+on:
+  push:
+    branches: ['land/**']
+jobs:
+  land:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      LAND_BRANCH: ${{ github.ref_name }}
+      LAND_SHA: ${{ github.sha }}
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          token: ${{ secrets.LAND_TOKEN }}
+          fetch-depth: 0
+          submodules: recursive
+      - name: Set the lock merge driver
+        run: git config merge.baseline-lock.driver "python3 .claude/tools/lock_merge.py %O %A %B"
+      - name: Land
+        run: pwsh -NoProfile -File .claude/scripts/land_run.ps1 -Sha $env:LAND_SHA -Branch $env:LAND_BRANCH

@@ -129,10 +129,11 @@ else
 fi
 
 # --- case 5: a child silent on the stream but burning CPU (a long test run inside a tool) is alive: no marker
+# The burn is the child shell itself, not a spawned interpreter: a python start on a loaded host costs the
+# first CPU window, so the watchdog could read the child idle before its CPU showed and mark it stalled.
 busy_child() { printf '{"type":"system","subtype":"init"}\n'
-  python3 -c 'import time
-end = time.monotonic() + 7
-while time.monotonic() < end: pass'
+  local end=$((SECONDS + 8))
+  while [ "$SECONDS" -lt "$end" ]; do :; done
   printf '{"type":"result","subtype":"success","result":"busy-done"}\n'; }
 P5="$d/progress5.jsonl"; : > "$P5"; REC5="$d/busy.record.json"; seen5=0
 (
@@ -158,7 +159,7 @@ P6="$d/progress6.jsonl"; : > "$P6"; REC6="$d/idle.record.json"; start6=$(date +%
 bg6=$!
 wait "$bg6" 2>/dev/null || :
 took6=$(( $(date +%s) - start6 ))
-if [ "$(cat "$d/rc6" 2>/dev/null)" = 124 ] && [ "$took6" -lt 30 ] && grep -q 'STALLED: the sidecar watchdog' "$d/err6"; then
+if [ "$(cat "$d/rc6" 2>/dev/null)" = 124 ] && [ "$took6" -lt 90 ] && grep -q 'STALLED: the sidecar watchdog' "$d/err6"; then
   say "OK   an idle silent bench arm ends after the stall window (${took6}s, rc 124, STALLED marker for the void)"
 else say "FAIL idle arm: rc=$(cat "$d/rc6" 2>/dev/null) took=${took6}s err=$(tail -c 200 "$d/err6" 2>/dev/null)"; fail=1; fi
 

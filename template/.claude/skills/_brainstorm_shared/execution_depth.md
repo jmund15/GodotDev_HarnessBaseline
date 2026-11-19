@@ -105,7 +105,7 @@ Each element runs when its row admits it, and only then. The owner column names 
 | Objective pre-screen | oracle = owner, before each owner-acceptance step | the project's agent playtest command |
 | Candidate review | read rigor through §Conditions Rigor, reach, change kind, size and gate result through §Candidate width; run only when width is not `none`, once the unit is stable at drive close or `/session_end` Phase 1. Skip mandates the review ledger covers | `/session_audit`, from `drive_close.md` §Close and `/session_end` Phase 1 |
 | Harness-quality review seat | `decision` only; read rigor through §Conditions Rigor. At `light`, only standing reach; at `normal`, standing reach and, for size ≥ milestones, reach ≥ shared; at `thorough`, every decision. Never for `mechanical` | `/session_audit` |
-| Later round after a fold | `later_rounds.md`'s **Design no reviewer saw** class | `orchestration` §2 *Later rounds* |
+| Later round after a fold | a revision that meets `later_rounds.md`'s blast-radius criterion | `orchestration` §2 *Later rounds* |
 | Premises block | the change rests on a claim (a cause, count or ruling); check at commit, not push | `reference/evidence_contract.md` §Load-bearing premises |
 | Instruction-quality load and focused audit | a `decision` edit to a rule, guard or model-facing string | `instruction_quality` §5 |
 | Owner acceptance | oracle = owner | the owner's playtest or review |

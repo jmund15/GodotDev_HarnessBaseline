@@ -16,6 +16,8 @@ TOOL = TESTS.parent / "tools" / "worker_rate.py"
 SUITE = TESTS / "test_worker_rate_difficulty.py"
 # Sibling modules the copied tool imports at module scope; without them the copy cannot import.
 DEPS = ("cli_usage.py",)
+# Modules it imports from the sibling hooks folder, which the copy must recreate at the same depth.
+HOOK_DEPS = ("_hook_state.py", "_file_lock.py")
 
 MUTATIONS = [
     ("guard removed (no verdict needs characterising)",
@@ -37,9 +39,13 @@ with tempfile.TemporaryDirectory(prefix="worker_rate_mutations_") as tmp:
     tmp_tools = pathlib.Path(tmp) / ".claude" / "tools"
     tmp_tests.mkdir(parents=True)
     tmp_tools.mkdir(parents=True)
+    tmp_hooks = pathlib.Path(tmp) / ".claude" / "hooks"
+    tmp_hooks.mkdir(parents=True)
     shutil.copyfile(SUITE, tmp_tests / SUITE.name)
     for name in DEPS:
         shutil.copyfile(TOOL.parent / name, tmp_tools / name)
+    for name in HOOK_DEPS:
+        shutil.copyfile(TOOL.parent.parent / "hooks" / name, tmp_hooks / name)
 
     def run_suite(text):
         (tmp_tools / TOOL.name).write_bytes(text.encode("utf-8"))

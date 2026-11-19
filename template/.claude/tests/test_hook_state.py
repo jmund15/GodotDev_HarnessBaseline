@@ -94,6 +94,29 @@ finally:
 check("a write onto a briefly held file waits and lands", raised is None and refusals[0] == 0
       and read_json_salvage(held) == {"held": 1}, repr(raised))
 
+
+# A read that meets another hook's rename into place gets PermissionError for a moment; read as {}, the state's
+# watcher vanished and Stop blocked on "no live watcher" while the watcher ran.
+class _RenameInFlight:
+    def __init__(self, denials):
+        self.denials = denials
+
+    def open(self, *args, **kwargs):
+        if self.denials:
+            self.denials -= 1
+            raise PermissionError(13, "Permission denied", args[0])
+        return io.open(*args, **kwargs)
+
+
+shim = _RenameInFlight(2)
+_hook_state.io = shim
+try:
+    got = read_json_salvage(held)
+finally:
+    _hook_state.io = io
+check("a read that meets a rename in flight waits and reads the state", got == {"held": 1} and shim.denials == 0,
+      repr(got))
+
 # --- locked read-modify-write -----------------------------------------------
 update_json_locked = getattr(_hook_state, "update_json_locked", None)
 check("shared state exposes one locked read-modify-write helper",
@@ -266,6 +289,46 @@ try:
 finally:
     _hook_state.update_json_locked = _real_update
 
+# --- a once-key given back: a line a dispatcher dropped can be told again ----------------------------------------
+# `fire_once` spends its key when it is asked; a dispatcher that then drops the line (a later hook denies the call)
+# gives the keys it spent back, so the retry still carries the line.
+_saved_dir = os.environ.get("HARNESS_HOOK_STATE_DIR")
+os.environ["HARNESS_HOOK_STATE_DIR"] = tempfile.mkdtemp(prefix="hookstate_unspend_")
+try:
+    _sid = "sess-unspend1"
+    _mark0 = _hook_state.spent_mark()
+    _a = _hook_state.fire_once(_sid, "a")
+    _mark1 = _hook_state.spent_mark()
+    _b = _hook_state.fire_once_since_compaction(_sid, "b")
+    _again = _hook_state.fire_once(_sid, "a")
+    check("a key already spent is not journaled again", _a is True and _again is False
+          and _hook_state.spent_mark() == _mark1 + 1)
+    _hook_state.unspend(_mark1)
+    check("unspend gives back the keys spent since the mark, in either bucket",
+          _hook_state.fire_once_since_compaction(_sid, "b") is True)
+    check("unspend leaves a key spent before the mark spent", _hook_state.fire_once(_sid, "a") is False)
+    _hook_state.fire_once(_sid, "c")
+    _stop = _hook_state.spent_mark()
+    _hook_state.fire_once(_sid, "d")
+    _hook_state.unspend(_mark0, _stop)
+    check("unspend with a stop gives back only the keys before it",
+          _hook_state.fire_once(_sid, "a") is True and _hook_state.fire_once(_sid, "d") is False)
+    _hook_state.unspend(_hook_state.spent_mark())
+    _hook_state.update_json_locked = lambda path, updater: (False, None)
+    try:
+        _hook_state.unspend(0)
+        _raised = False
+    except Exception:
+        _raised = True
+    finally:
+        _hook_state.update_json_locked = _real_update
+    check("unspend on an unwritable state never raises", not _raised)
+finally:
+    if _saved_dir is None:
+        os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+    else:
+        os.environ["HARNESS_HOOK_STATE_DIR"] = _saved_dir
+
 # --- one owner for every rename onto a file another process may hold ---------------------------
 # Windows refuses a rename onto a path another process holds open (WinError 5/32). `replace_path` waits the
 # reader out. This scan covers the class: every writer under tools/, hooks/ and scripts/ that replaces a state,
@@ -322,12 +385,12 @@ def _py_rename_sites(source):
     return sites
 
 
-def _has_reason(lines, number):
+def _has_reason(lines, number, pattern=RENAME_REASON):
     """True when 1-based line `number`, or a comment-only line directly above it, states the reason."""
-    if RENAME_REASON.search(lines[number - 1]):
+    if pattern.search(lines[number - 1]):
         return True
     above = lines[number - 2] if number >= 2 else ""
-    return above.lstrip().startswith("#") and bool(RENAME_REASON.search(above))
+    return above.lstrip().startswith("#") and bool(pattern.search(above))
 
 
 def _class_rename_sites(root):
@@ -393,6 +456,81 @@ check("the rename scan reports an unexplained site in each language and passes a
       _planted == ["hooks/b.py:6 move()", "scripts/c.sh:2 <file>()", "scripts/d.ps1:1 <file>()",
                    "scripts/d.ps1:3 <file>()", "tools/a.py:3 save()"],
       repr(_planted))
+
+
+# --- one writer per shared JSONL append, or a stated reason ------------------------------------
+# Concurrent sessions and sidecars append to the same logs. Windows emulates append mode with a seek
+# then a write, so two unlocked appenders overwrite each other's tail and tear a line. Every append
+# under tools/ goes through `_hook_state.append_jsonl_rotating`, or states on its line or the comment
+# directly above it why only one process writes that file: `# bare-append: <reason>`. A binary append
+# (a lock file, a byte log) is not a JSONL row and is out of this scan.
+BARE_APPEND = _re.compile(r"#.*\bbare-append:\s*\S")
+
+
+def _append_open_line(node):
+    """Line of an append-mode text `open()` call, else None. `open(p, "a")` and `io.open(p, "a")`
+    carry the mode second; `p.open("a")` carries it first. A mode with `b` is not a JSONL append."""
+    if not isinstance(node, ast.Call):
+        return None
+    func = node.func
+    if isinstance(func, ast.Name) and func.id == "open":
+        mode = node.args[1] if len(node.args) > 1 else next(
+            (k.value for k in node.keywords if k.arg == "mode"), None)
+    elif isinstance(func, ast.Attribute) and func.attr == "open":
+        is_io_function = isinstance(func.value, ast.Name) and func.value.id in ("io", "builtins")
+        mode = (node.args[1] if len(node.args) > 1 else None) if is_io_function else (
+            node.args[0] if node.args else None)
+    else:
+        return None
+    if not (isinstance(mode, ast.Constant) and isinstance(mode.value, str)):
+        return None
+    if "a" not in mode.value or "b" in mode.value:
+        return None
+    return node.lineno
+
+
+def _bare_appends(root):
+    """["tools/<file>:<line>", ...] for every append under `root`'s tools folder that states no reason."""
+    found = []
+    folder = os.path.join(root, "tools")
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".py"):
+            continue
+        try:
+            text = io.open(os.path.join(folder, name), encoding="utf-8").read()
+            tree = ast.parse(text)
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        lines = text.splitlines()
+        for node in ast.walk(tree):
+            line = _append_open_line(node)
+            if line and not _has_reason(lines, line, BARE_APPEND):
+                found.append("tools/%s:%d" % (name, line))
+    return sorted(found)
+
+
+_bare_appends_found = _bare_appends(CLAUDE_DIR)
+check("every tools/ append takes the file lock, or states why one writer suffices",
+      not _bare_appends_found, "; ".join(_bare_appends_found))
+
+# The scan on a planted tree: an unexplained append in each open form is reported; a marked one, a
+# binary mode and a truncating write pass.
+_append_plant = tempfile.mkdtemp(prefix="append_scan_")
+try:
+    os.makedirs(os.path.join(_append_plant, "tools"))
+    with io.open(os.path.join(_append_plant, "tools", "x.py"), "w", encoding="utf-8", newline="\n") as _fh:
+        _fh.write("import io\n"
+                  "def a(p):\n    with open(p, 'a') as fh:\n        fh.write('x')\n"
+                  "def b(p):\n    # bare-append: one watcher owns it\n"
+                  "    with open(p, 'a') as fh:\n        fh.write('x')\n"
+                  "def c(p):\n    with p.open('a') as fh:\n        fh.write('x')\n"
+                  "def d(p):\n    with io.open(p, 'a+b') as fh:\n        fh.write(b'x')\n"
+                  "def e(p):\n    with open(p, 'w') as fh:\n        fh.write('x')\n")
+    _append_planted = _bare_appends(_append_plant)
+finally:
+    shutil.rmtree(_append_plant, ignore_errors=True)
+check("the append scan reports an unexplained site in each open form and passes a marked one",
+      _append_planted == ["tools/x.py:10", "tools/x.py:3"], repr(_append_planted))
 
 
 # --- three real writers land their write on a target a reader holds open -----------------------
@@ -480,6 +618,45 @@ _probe = (
 _run = subprocess.run([sys.executable, "-c", _probe], capture_output=True, text=True)
 check("importing _hook_state and composed_output_guard lists no `.claude` directory",
       _run.returncode == 0 and _claude not in eval(_run.stdout or "[None]"), (_run.stdout + _run.stderr)[-300:])
+
+# Concurrent JSONL appends: Windows' CRT emulates O_APPEND with a seek then a write, so two hooks appending
+# at once overwrite each other's tail and leave a torn row that makes the whole log unreadable.
+_append_dir = tempfile.mkdtemp()
+_append_log = os.path.join(_append_dir, "race.jsonl")
+_writer = (
+    "import sys\n"
+    "sys.path.insert(0, %r)\n"
+    "import _hook_state\n"
+    "for i in range(120):\n"
+    "    _hook_state.append_jsonl_rotating(%r, [{'w': sys.argv[1], 'i': i, 'pad': 'x' * (2500 + (i * 37) %% 900)}],\n"
+    "                                      max_bytes=None)\n" % (os.path.abspath(_hooks), _append_log)
+)
+_writers = [subprocess.Popen([sys.executable, "-c", _writer, str(n)]) for n in range(8)]
+for _proc in _writers:
+    _proc.wait()
+_rows, _torn = 0, 0
+with io.open(_append_log, encoding="utf-8") as _fh:
+    for _line in _fh:
+        _rows += 1
+        try:
+            json.loads(_line)
+        except ValueError:
+            _torn += 1
+check("eight concurrent appenders leave every row whole", _rows == 960 and _torn == 0,
+      "rows %d of 960, torn %d" % (_rows, _torn))
+
+# The append takes the file's lock itself, which is not re-entrant: a caller holding that lock around it waits
+# out the lock timeout and drops its rows. Drive the real caller that once did.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+import review_ledger  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+_ledger = Path(tempfile.mkdtemp()) / "review_ledger.jsonl"
+_started = time.time()
+_landed = review_ledger._append_rows(_ledger, [{"id": "r1"}])
+check("the review ledger's append lands its row without waiting out a lock",
+      _landed is True and time.time() - _started < 1.0 and _ledger.read_text(encoding="utf-8").count("\n") == 1,
+      "returned %r after %.1fs" % (_landed, time.time() - _started))
 
 print("\n%d/%d checks pass" % (ran - len(failures), ran))
 for f in failures:

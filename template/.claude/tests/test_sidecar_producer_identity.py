@@ -238,7 +238,7 @@ sc_write_record "$RAW" "$RC"
             home=Path(temp); script=home/'direct.sh'
             script.write_text('''set -euo pipefail
 source "$COMMON"
-sc_check_launch_memory() { :; }
+sc_check_launch_memory() { :; }; sc_check_quota_fit() { :; }
 SC_RECORD="$FIXTURE/job.record.json"
 SC_LABEL="job"
 SC_STALL_SEC=0
@@ -277,7 +277,7 @@ printf '%s' "$SC_LAUNCH_ID" > "$FIXTURE/id.txt"
                 script = home / 'refused.sh'
                 script.write_text('''set -euo pipefail
 source "$COMMON"
-sc_check_launch_memory() { :; }
+sc_check_launch_memory() { :; }; sc_check_quota_fit() { :; }
 SC_RECORD="$RECORD"
 SC_LABEL="fixture"
 SC_STALL_SEC=0

@@ -118,6 +118,14 @@ fan-out <id> (SIDECAR_FANOUT_ID; siblings share a brief by design). The record e
 wrappers, never launcher or seat processes: a second launch reusing -R must still refuse.
 Exit 0 none, 3 at least one, 4 process table unreadable (a warning; the caller launches), 2 bad usage.
 
+    python3 .claude/tools/reap.py end-seat <launch id>
+
+A launcher's own stop of its ended seat (scripts/lib/sidecar_common.sh, after the terminal-result grace): every
+process carrying SIDECAR_SEAT_LAUNCH_ID=<launch id> dies, with a ledger row; never-kill members, dispatch servers
+and a nested launch's launcher (its own job) are spared with their subtrees. It finds the seat by tag, not by tree: a seat process whose Windows parent exited (claude.exe after
+the subshell that ran env) is outside every tree walk. Exit 0 none left, 1 a kill failed or the table is
+unreadable, 2 bad usage.
+
 The kill is `taskkill /PID <root> /T /F` — the whole tree. A launcher detaches its headless claude seat
 outside that tree, so killing a process whose tree carries launch X also kills each owned process carrying
 SIDECAR_SEAT_LAUNCH_ID=X (its never-kill members spared), printed `KILLED <pid> ... (seat of launch X)`.
@@ -1259,13 +1267,7 @@ def kill_subtree_sparing_infra(table, root, never_pids):
 
 def record(entry):
     """Append one ledger row; False when it cannot be written. The kill path refuses on False."""
-    try:
-        LEDGER.parent.mkdir(parents=True, exist_ok=True)
-        with open(LEDGER, "a", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        return True
-    except OSError:
-        return False
+    return _hook_state.append_jsonl_rotating(str(LEDGER), [entry], max_bytes=None)
 
 
 def remember_stop(sid, launch):
@@ -1890,11 +1892,45 @@ def leftovers_main(argv, env=None):
     return 0
 
 
+def end_seat_main(argv):
+    """`end-seat <launch>` (module docstring): stop every process carrying SIDECAR_SEAT_LAUNCH_ID=<launch>."""
+    if len(argv) != 1 or not argv[0]:
+        print("usage: reap.py end-seat <launch id>", file=sys.stderr)
+        return 2
+    launch = argv[0]
+    table = process_table()
+    if not table:
+        print("end-seat: the process table is unreadable", file=sys.stderr)
+        return 1
+    seat = {p for p in table if _env_value(launch_block(p), SEAT_ENV) == launch}
+    killed, failed, spared = [], [], []
+    def kept(row):  # shared infra, a dispatch server, or a nested launch (its own job, ended by its own launcher)
+        return bool(never_reason(row, table)) or is_server_image(row) or is_launcher(row)
+
+    for root in sorted(p for p in seat if table[p].get("ppid") not in seat):
+        if kept(table[root]):
+            spared.append(root)
+            continue
+        never = [m for m in descendants(table, root) if kept(table[m])]
+        k, f, s = kill_subtree_sparing_infra(table, root, never)
+        killed += k
+        failed += f
+        spared += s
+    if seat:
+        record({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(), "reason": "end-seat",
+                "launch": launch, "result": "kill-failed" if failed else "killed",
+                "killed": sorted(killed), "spared": sorted(spared)})
+    print("end-seat %s: killed %s; failed %s; spared %s" % (launch, sorted(killed), sorted(failed), sorted(spared)))
+    return 1 if failed else 0
+
+
 def _main(argv=None, env=None):
     env = os.environ if env is None else env
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "live-launch":
         return live_launch_main(argv[1:])
+    if argv and argv[0] == "end-seat":
+        return end_seat_main(argv[1:])
     if argv and argv[0] == "inspect":
         return inspect_main(argv[1:], env)
     if argv and argv[0] == "leftovers":

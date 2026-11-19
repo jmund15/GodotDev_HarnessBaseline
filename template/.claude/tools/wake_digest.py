@@ -72,11 +72,7 @@ def _amend_line(brief, label, record, fanout_dir):
     paths = dispatch_result._sidecar_source(fanout_dir or record, label)
     if not brief or paths is None:
         return []
-    try:
-        with open(paths[1], encoding="utf-8", errors="replace") as fh:
-            unread = dispatch_result.amend_unread(brief, fh.read())
-    except OSError:
-        return []
+    unread = dispatch_result.amend_unread(brief, paths[1])
     return ["  AMEND UNREAD %s: the job never read this amendment; its work follows the brief alone" % unread] if unread else []
 
 

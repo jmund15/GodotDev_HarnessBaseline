@@ -2,7 +2,7 @@
 """Proof that the lenses reading the instruction_quality skill name every moved reference file.
 
 The plan-check instruction-quality lens preloads SKILL.md and each moved file; the session-audit
-harness-quality seat names each moved file in its read-first line. Both registries ship in the
+harness-quality seat's section names each moved file's basename. Both registries ship in the
 coding layer, so this proof ships there; the skill's split itself is proved in
 test_instruction_quality_split.py.
 
@@ -28,9 +28,12 @@ def main():
 
     audit = read(CLAUDE, "commands", "agents", "session_audit_agents.md")
     start = audit.index("You are sa-harness-quality")
-    seat = audit[start:start + 600]
-    check("the session-audit harness-quality lens names every moved file in its read-first line",
-          all(os.path.basename(r) in seat for r in REFS), seat[:300])
+    end = audit.find("\nYou are sa-", start + 1)
+    section = audit[start:end if end != -1 else len(audit)]
+    check("the session-audit harness-quality section names every moved file",
+          all(os.path.basename(r) in section for r in REFS), [r for r in REFS if os.path.basename(r) not in section])
+    check("mutant: a section with one basename removed fails the check",
+          not all(os.path.basename(r) in section.replace(os.path.basename(next(iter(REFS))), "") for r in REFS))
 
     print("\n%d failed" % len(FAILURES) if FAILURES else "\nall passed")
     for f in FAILURES:

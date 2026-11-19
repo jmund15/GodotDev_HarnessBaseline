@@ -28,7 +28,7 @@ const PROXY = process.env.SEMANTIC_SEARCH_IDLE_TEST_PROXY
 // Under the OS temp root: a fixture nested in a deep checkout passes Windows' path limit and git cannot stat it.
 const SCRATCH = path.join(tmpdir(), 'semantic_search_idle', `run-${process.pid}-${Date.now()}`)
 const BACKEND_FIRST_SEEN = new Map()
-const REGISTRY = path.join(homedir(), '.claude', 'plugins', 'installed_plugins.json')
+const REGISTRY = path.join(process.env.HARNESS_CALLER_HOME || homedir(), '.claude', 'plugins', 'installed_plugins.json')
 if (!process.env.SEMANTIC_SEARCH_IDLE_TEST_PLUGIN_ROOT && !existsSync(REGISTRY)) {
 	console.log('PLATFORM-SKIP-PROOF test_semantic_search_idle_proxy.mjs: no semantic-search plugin is installed on this machine')
 	process.exit(0)
