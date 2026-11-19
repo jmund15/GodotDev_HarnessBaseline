@@ -6,7 +6,8 @@ An executing git/gh segment with a ref:path operand whose text before the colon 
 (measured 2026-11-15) turns only such an operand into a path list (`origin\main;f`); `HEAD:f`, `main:f`
 and `:f` arrive intact and are left alone, because each rewrite costs a turn under auto mode, whose
 classifier gives no verdict on a call a hook changed. Windows drive paths, URLs and quoted mentions are
-excluded. This repair does not depend on the client-version record.
+excluded. This repair does not depend on the client-version record and says nothing: the rewrite is
+already applied, so a note would change no action.
 
 Measured on Claude Code 2.1.270, Git Bash, win32 (2026-09-14 and 2026-09-15), inside single quotes,
 double quotes and quoted heredocs alike:
@@ -285,8 +286,6 @@ def evaluate(payload):
         return out
     out = out or {'hookEventName': 'PreToolUse'}
     out.setdefault('updatedInput', dict(tool_input, command=command))
-    note = '[bash-fidelity] Added MSYS_NO_PATHCONV=1 for git/gh ref:path operands.'
-    out['additionalContext'] = (out.get('additionalContext', '') + '\n' + note).strip()
     return out
 
 

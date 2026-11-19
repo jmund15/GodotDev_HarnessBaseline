@@ -4,3 +4,7 @@
 .claude/cloud-setup.sh
 .claude/reference/project_stack.md
 .claude/skills/project_subsystems/adaptation.json
+.github/workflows/land.yml
+.github/workflows/land-retry.yml
+.github/workflows/main_check.yml
+.github/workflows/census.yml

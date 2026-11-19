@@ -459,6 +459,13 @@ def a_bigger_forecast_job_is_priced_bigger_under_the_same_observed_rate():
             and verdicts == ("wait", "launch"))
 
 
+def a_first_job_on_a_plan_that_cannot_hold_its_drain_stays_on_the_picked_plan():
+    both = (PA, PB)
+    waves, _ = waves_over({"x": slot(PA, candidates=both)}, {PA: 97, PB: 40}, both)
+    waves.pace()
+    return waves.decide("x").kind == "launch" and waves.plan_of("x") == PA
+
+
 def a_spent_plan_moves_a_job_to_a_route_sibling_with_room_at_its_decision():
     both = (PA, PB)
     waves, said = waves_over({"x": slot(PA, candidates=both), "y": slot(PA, candidates=both)},
@@ -1036,6 +1043,7 @@ for fn in (incident_goes_to_the_plan_that_holds_it, incident_alone_is_admitted_w
            each_plan_gets_its_own_first_wave_from_its_own_rate,
            a_plan_with_nothing_in_flight_launches_even_when_its_headroom_is_under_one_forecast,
            a_bigger_forecast_job_is_priced_bigger_under_the_same_observed_rate,
+           a_first_job_on_a_plan_that_cannot_hold_its_drain_stays_on_the_picked_plan,
            a_spent_plan_moves_a_job_to_a_route_sibling_with_room_at_its_decision,
            a_short_window_blocked_plan_waits_at_its_decision_instead_of_moving_to_the_drained_plan,
            a_short_window_blocked_plan_moves_its_job_when_the_sibling_long_window_is_at_even_pace,

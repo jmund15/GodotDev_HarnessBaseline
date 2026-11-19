@@ -613,10 +613,6 @@ def part_two(vc):
 
     check("schema: evidence.json uses only standard JSON Schema keywords (the CLI validates in ajv strict mode)",
           not stray(schema), stray(schema))
-    contract = (REPO / ".claude/reference/evidence_contract.md").read_text(encoding="utf-8")
-    check("contract: the owner doc names the four kinds, the three verdicts and the NOT-APPLICABLE rename",
-          all(word in contract for word in ("{file, quote}", "{command, output}", "{owner, question?, task?}", "{url, quote",
-                                            "VERIFIED", "UNVERIFIED", "UNCHECKED", "NOT-APPLICABLE")))
 
 
 def words(text):

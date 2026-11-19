@@ -99,7 +99,6 @@ OPTIONAL_DATA = {
     ".claude/tools/semantic_search_idle_install.py": ("package.json",),
     ".claude/hooks/harness_edit_skill_reminder.py": ("commands/agents/session_audit_agents.md",),
     ".claude/hooks/semantic_search_scope_guard.py": ("reference/semantic_search.md",),
-    ".claude/hooks/skill_dispatch_gate.py": ("hooks/skill_dispatch.project.json",),
     ".claude/scripts/sync_plan_config.py": ("user_scope/*",),
     ".claude/tools/restate_scan.py": ("tests/fixtures/*",),
     ".claude/tools/vault_sync.py": ("tools/vault_sync.project.json",),

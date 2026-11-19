@@ -111,6 +111,78 @@ def test_nonfloor_fault_reaches_model_and_preserves_later_checks(monkeypatch):
     assert code == 2 and out == '' and 'floor guard' in err
 
 
+def _spender(key, text='advisory line'):
+    """A sub-hook that tells `text` once per session, the way every advisory hook does."""
+    import _hook_state
+
+    def main():
+        if _hook_state.fire_once_since_compaction('latch-session', key):
+            print(json.dumps({'hookSpecificOutput': {'additionalContext': text}}))
+    return SimpleNamespace(__name__='spender_' + key, __file__='spender.py', main=main)
+
+
+def _late(code, stdout=''):
+    def main():
+        sys.stdout.write(stdout)
+        sys.stderr.write('late says no' + chr(10))
+        return code
+    return SimpleNamespace(__name__='late_hook', __file__='late_hook.py', main=main)
+
+
+def test_a_line_dropped_by_a_later_block_is_told_again(monkeypatch, tmp_path):
+    """An exit-2 block drops every earlier hook's context, so a once-key they spent is given back: the retry
+    carries the line. A line that was delivered (the call went through) stays spent."""
+    import _hook_state
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path))
+    monkeypatch.setattr(pre_bash_dispatch.run_call_router, 'route', lambda _: ({}, []))
+    call = payload('Bash', 'git status --short')
+    code, out, _err = pre_bash_dispatch.dispatch(call, ((_spender('k1'), ()), (_late(2), ())))
+    assert code == 2 and out == ''
+    code, out, _err = pre_bash_dispatch.dispatch(call, ((_spender('k1'), ()), (_late(0), ())))
+    assert code == 0 and 'advisory line' in out, 'the retry after a block lost the line'
+    code, out, _err = pre_bash_dispatch.dispatch(call, ((_spender('k1'), ()), (_late(0), ())))
+    assert 'advisory line' not in out, 'a delivered line was told twice'
+
+
+def test_a_floor_failure_after_a_line_gives_its_key_back(monkeypatch, tmp_path):
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path))
+    monkeypatch.setattr(pre_bash_dispatch.run_call_router, 'route', lambda _: ({}, []))
+    call = payload('Bash', 'git status --short')
+    floor = _late(1)
+    floor.FAIL_CLOSED = True
+    code, out, _err = pre_bash_dispatch.dispatch(call, ((_spender('k2'), ()), (floor, ())))
+    assert code == 2
+    code, out, _err = pre_bash_dispatch.dispatch(call, ((_spender('k2'), ()),))
+    assert 'advisory line' in out
+
+
+def test_a_router_line_dropped_by_a_block_is_told_again(monkeypatch, tmp_path):
+    """The call router runs before the chain and spends its own once-key; a block drops its line too."""
+    import _hook_state
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path))
+
+    def route(_payload):
+        first = _hook_state.fire_once_since_compaction('latch-session', 'router-key')
+        return ({'command': 'git status --short'}, ['router line'] if first else [])
+    monkeypatch.setattr(pre_bash_dispatch.run_call_router, 'route', route)
+    call = payload('Bash', 'git status --short')
+    pre_bash_dispatch.dispatch(call, ((_late(2), ()),))
+    code, out, _err = pre_bash_dispatch.dispatch(call, ((_late(0), ()),))
+    assert code == 0 and 'router line' in out
+
+
+def test_a_json_deny_keeps_the_lines_it_carries(monkeypatch, tmp_path):
+    """A JSON deny still carries the earlier contexts, so their keys stay spent."""
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path))
+    monkeypatch.setattr(pre_bash_dispatch.run_call_router, 'route', lambda _: ({}, []))
+    call = payload('Bash', 'git status --short')
+    deny = json.dumps({'hookSpecificOutput': {'permissionDecision': 'deny', 'permissionDecisionReason': 'no'}})
+    code, out, _err = pre_bash_dispatch.dispatch(call, ((_spender('k3'), ()), (_late(0, deny), ())))
+    assert 'advisory line' in out
+    code, out, _err = pre_bash_dispatch.dispatch(call, ((_spender('k3'), ()),))
+    assert 'advisory line' not in out
+
+
 import pytest
 
 
@@ -160,8 +232,7 @@ def test_each_actual_advisory_import_fault_preserves_git_floor(tmp_path):
                     'commit', '-qm', 'base'], check=True, capture_output=True)
     (tmp_path / 'file').write_text('peer edit\n', encoding='utf-8')
     names = [member.__name__ for member, _ in pre_bash_dispatch.HOOKS] + ['run_call_router']
-    names = [n for n in names if n not in ('_git_commit', 'git_guardrails', 'baseline_classification_guard',
-                                           'dangerous_shell_guard', 'editor_live_build_guard')]
+    names = [n for n in names if n != '_git_commit' and n not in pre_bash_dispatch._FLOOR_MEMBERS]
 
     def one(name):
         script = (
@@ -595,3 +666,19 @@ if __name__ == "__main__":
     main()
     import pytest
     sys.exit(pytest.main([__file__, '-q', '-s']))
+
+
+def test_sidecar_doctrine_fault_denies_only_a_launch(monkeypatch):
+    # The sidecar gate stands in front of paid spend: its fault denies a launch, never an unrelated command.
+    monkeypatch.setattr(pre_bash_dispatch.run_call_router, 'route', lambda _: ({}, []))
+    def boom():
+        raise ModuleNotFoundError("No module named 'planted_gone'")
+    member = SimpleNamespace(__name__='sidecar_dispatch_context', __file__='sidecar_dispatch_context.py', main=boom)
+    launch = 'bash .claude/scripts/codex_sidecar.sh -m sol "do x"'
+    code, out, err = pre_bash_dispatch.dispatch(payload('Bash', launch), ((member, ()),))
+    assert code == 2 and 'planted_gone' in err, (code, out, err)
+    code, out, err = pre_bash_dispatch.dispatch(payload('Bash', 'git status --short'), ((member, ()),))
+    assert code == 0 and 'planted_gone' in json.loads(out)['hookSpecificOutput']['additionalContext'], (code, out, err)
+    stub = pre_bash_dispatch._failed_import('sidecar_dispatch_context', ImportError('planted import'))
+    code, _, err = pre_bash_dispatch.dispatch(payload('Bash', launch), ((stub, ()),))
+    assert code == 2 and 'planted import' in err, (code, err)

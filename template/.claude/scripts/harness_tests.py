@@ -2,6 +2,7 @@
 """Run harness proofs; --close proves committed HEAD before push; commits only receive budgeted advice.
 
     python3 .claude/scripts/harness_tests.py --close [--now] [--base REV] [--repo PATH]
+    python3 .claude/scripts/harness_tests.py --close --range-start REV [--also PROOF ...] [--now] [--repo PATH]
     python3 .claude/scripts/harness_tests.py --for PATH [PATH ...]
     python3 .claude/scripts/harness_tests.py --proofs-for PATH [PATH ...]
     python3 .claude/scripts/harness_tests.py --all
@@ -11,7 +12,11 @@ Close selects proofs bound to every harness path the outgoing commits change tha
 default branch does not already carry (`push_destination`, `close_paths`). It runs on a
 private committed-HEAD checkout, compares reds at the base, and bisects each new red through that
 proof's input-changing commits. Its close {head, base, verdict, red} record gates the push of that
-head. Close waits for this session's author/fold dispatches writing in its checkout unless --now, then proves the HEAD of that
+head. `--range-start REV` closes the commits from REV to HEAD that the default branch already holds (the main check): REV is the base,
+ahead of the upstream and default-branch lookups, and nothing the default branch carries is subtracted. A ranged
+close runs every proof: a red stops no other retry, and a proof whose timeout repeats alone is a red no bisect
+runs on. `--also PROOF` adds a proof to a ranged close's selection and runs it once, with no retry. Close waits for
+this session's author/fold dispatches writing in its checkout unless --now, then proves the HEAD of that
 moment once; a later commit never restarts it, and a newer close supersedes it.
 Never-committed proofs absent at the compared revision run their
 working copy against that revision's inputs; tracked proofs absent there are not excused.
@@ -177,23 +182,61 @@ _PROOF_TIMEOUTS = {}
 _LOAD_FACTOR = 3
 
 
+def _recorded_time(path, known):
+    """A proof's recorded seconds: its last whole pass (`known`, the durations file's `__last_passes__` receipt),
+    else its fastest pass; None when it has neither. The last pass carries the load the proof meets; the
+    fastest, which growth reads, carries none."""
+    name = os.path.basename(path)
+    receipts = known.get("__last_passes__")
+    receipt = receipts.get(name) if isinstance(receipts, dict) else None
+    for recorded in (receipt.get("run_s") if isinstance(receipt, dict) else None, known.get(name)):
+        if isinstance(recorded, (int, float)) and not isinstance(recorded, bool) and recorded > 0:
+            return float(recorded)
+    return None
+
+
 def _timeout_for(path, known):
-    """A proof's timeout: its `proof_timeouts` cap, else the cap of the proof it is a part of (`_part_main`),
-    else `_LOAD_FACTOR` times its last whole pass (`known`, the durations file's `__last_passes__` receipt;
-    its fastest pass when it has none) when that beats `_TIMEOUT_SEC`, else `_TIMEOUT_SEC`. The last pass
-    carries the load the proof meets; the fastest, which growth reads, carries none."""
+    """A proof's timeout at recorded pace: its `proof_timeouts` cap, else the cap of the proof it is a part of
+    (`_part_main`), else `_LOAD_FACTOR` times its `_recorded_time` when that beats `_TIMEOUT_SEC`, else
+    `_TIMEOUT_SEC`. While the proof runs, the run's `_PACE` stretches it."""
     name = os.path.basename(path)
     if name in _PROOF_TIMEOUTS:
         return _PROOF_TIMEOUTS[name]
     main = _part_main(path)
     if main and os.path.basename(main) in _PROOF_TIMEOUTS:
         return _PROOF_TIMEOUTS[os.path.basename(main)]
-    receipts = known.get("__last_passes__")
-    receipt = receipts.get(name) if isinstance(receipts, dict) else None
-    for recorded in (receipt.get("run_s") if isinstance(receipt, dict) else None, known.get(name)):
-        if isinstance(recorded, (int, float)) and not isinstance(recorded, bool) and recorded > 0:
-            return max(_TIMEOUT_SEC, _LOAD_FACTOR * recorded)
-    return _TIMEOUT_SEC
+    recorded = _recorded_time(path, known)
+    return max(_TIMEOUT_SEC, _LOAD_FACTOR * recorded) if recorded else _TIMEOUT_SEC
+
+
+class _LivePace:
+    """How much slower than recorded this run's passing proofs ran: the median of elapsed over recorded seconds,
+    never below 1. A proof's deadline stretches by it while the proof runs, so load every proof on the machine
+    shares never times one out, and a proof slower than its peers still does."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._ratios = []
+
+    def reset(self):
+        with self._lock:
+            self._ratios = []
+
+    def observe(self, elapsed, recorded):
+        if recorded and recorded > 0 and elapsed > 0:
+            with self._lock:
+                self._ratios.append(elapsed / recorded)
+
+    def factor(self):
+        with self._lock:
+            ratios = sorted(self._ratios)
+        if not ratios:
+            return 1.0
+        mid = len(ratios) // 2
+        return max(1.0, ratios[mid] if len(ratios) % 2 else (ratios[mid - 1] + ratios[mid]) / 2)
+
+
+_PACE = _LivePace()
 
 
 def _retry_timeout(path, known, timed_out):
@@ -418,6 +461,11 @@ def git_local_env_vars():
 
 
 GIT_REPO_ENV = git_local_env_vars()
+# The local variables whose value is no path: command-scope config (the runner's core.fscache comes as
+# GIT_CONFIG_COUNT=1 on every Windows proof), switches and a ref prefix. Only a path names a repository; a name
+# git adds later is read as one.
+_GIT_NON_PATH_ENV = frozenset({"GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_IMPLICIT_WORK_TREE",
+                               "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX"})
 STAMP_INDEX_ENV = "HARNESS_STAMP_INDEX"
 
 
@@ -426,13 +474,11 @@ _TEMP_ENV = ("TMP", "TEMP", "TMPDIR")
 _CALLER_IDENTITY_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_SIDECAR_PROMPT_FILE",
                         "CLAUDE_CODE_SIDECAR_LABEL", "SIDECAR_PARENT_SESSION_ID")
 _CALLER_RUN_ENV = ("HARNESS_DEADLINE", "HARNESS_NO_PASS_CACHE", "HARNESS_REUSE_PASSES", "HARNESS_TEST_JOBS",
-                   "HARNESS_MACHINE_SLOTS", "HARNESS_RUNNER_ENV", "HARNESS_CALLER_HOME")
-# Runner-env mode (`--runner-env`, or `HARNESS_RUNNER_ENV=1`, which the land runner and the publish battery set): each
-# proof runs with what a clean runner has and a session does not, so a proof that reads the ambient environment
-# undeclared goes red here, not first on the land runner or CI. A dict, so the pass key reads its run-time value: a
-# pass recorded without the mode never answers a run with it. `_RUNNER_CLAUDE_DECLARED` is every `CLAUDE_*` name a
-# proof may rely on; `_CALLER_IDENTITY_ENV` names drop in every mode.
-_RUNNER_ENV = {"scrub": bool(os.environ.get("HARNESS_RUNNER_ENV"))}
+                   "HARNESS_MACHINE_SLOTS", "HARNESS_CALLER_HOME")
+# Every run, local or land, gives each proof what a clean runner has and a session does not, so a proof that reads
+# the ambient environment undeclared goes red at its writer's run, and a local pass answers the land's run of the
+# same inputs. `_RUNNER_CLAUDE_DECLARED` is every `CLAUDE_*` name a proof may rely on, beside
+# `CLAUDE_CODE_EXECPATH`, which `run_proof` sets where the machine has the binary.
 _RUNNER_CLAUDE_DECLARED = ("CLAUDE_PROJECT_DIR",)
 _RUNNER_HOME_ENV = ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME")
 
@@ -477,18 +523,32 @@ def _remove_temp_root(root):
             time.sleep(0.5)
 
 
-def _run_child(cmd, env, timeout, out_path, cwd=None):
+_STRETCH_RECHECK_S = 5  # how stale a stretched deadline may get; proofs run for seconds to minutes
+
+
+def _run_child(cmd, env, timeout, out_path, cwd=None, stretch=None):
     """(returncode, output), returncode None on timeout. Output goes to a file, never a pipe: a
     grandchild that outlives the proof keeps a pipe open past the timeout. Every process the proof
-    started ends with it, on timeout or not, so none keeps writing into the next proof's world."""
+    started ends with it, on timeout or not, so none keeps writing into the next proof's world.
+    `stretch()`, read again while the child runs, multiplies `timeout`: a proof's deadline follows the load
+    the run measures (`_LivePace`), while a fixed budget passes none."""
     with open(out_path, "wb") as sink:
         proc = subprocess.Popen(cmd, stdout=sink, stderr=subprocess.STDOUT, env=env, cwd=cwd,
                                 start_new_session=(os.name != "nt"))
         tree = ProcessTree(proc)
+        began = time.monotonic()
         try:
-            returncode = proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            returncode = None
+            while True:
+                left = None if timeout is None else began + timeout * (stretch() if stretch else 1) - time.monotonic()
+                if left is not None and left <= 0:
+                    returncode = None
+                    break
+                try:
+                    returncode = proc.wait(timeout=left if left is None or not stretch
+                                           else min(left, _STRETCH_RECHECK_S))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
         finally:
             tree.end()
     with open(out_path, "rb") as fh:
@@ -534,9 +594,14 @@ def _case_receipts(path, descriptors, output, file_status):
 
 
 def _read_events(log_dir):
-    """The recorder's events from every process that logged directly into `log_dir`, in no order; an
-    unreadable line is dropped, and a process that never wrote one left no events."""
+    """The recorder's events from every process that logged directly into `log_dir`, and from every runner those
+    processes ran (`_nested_log`), in no order; an unreadable line is dropped, and a process that never wrote one
+    left no events."""
     events = []
+    nested = os.path.join(log_dir, "nested")
+    for name in os.listdir(nested) if os.path.isdir(nested) else []:
+        inner = os.path.join(nested, name)
+        events += _read_events(inner) + [e for case in _case_events(inner).values() for e in case]
     for name in os.listdir(log_dir) if os.path.isdir(log_dir) else []:
         if not os.path.isfile(os.path.join(log_dir, name)):
             continue
@@ -552,6 +617,20 @@ def _read_events(log_dir):
     return events
 
 
+def _nested_log(temp_root):
+    """(read log folder, recorder folder) for a proof's processes. A runner that is itself a proof's child logs under
+    the read log this process records into and puts the outer recorder (`HARNESS_READ_RECORDER`) on the proof's
+    path: the outer recorder then follows the nested run's processes (it counts a child as followed by its recorder's
+    folder, and the close runs the proof's runner from another checkout than the outer runner), and `_read_events`
+    returns their events with the outer proof's. Otherwise: the proof's own temp root and this runner's recorder."""
+    outer, recorder = os.environ.get("HARNESS_READ_LOG"), os.environ.get("HARNESS_READ_RECORDER")
+    if not outer:
+        return os.path.join(temp_root, "reads"), _RECORDER_DIR
+    if not (recorder and os.path.isfile(os.path.join(recorder, "sitecustomize.py"))):
+        recorder = _RECORDER_DIR
+    return os.path.join(outer, "nested", os.path.basename(temp_root)), recorder
+
+
 def _case_events(log_dir):
     """{case name: events} from the folders `tests/_case_pool.case_log_dir` gives each case under `log_dir`."""
     folder = os.path.join(log_dir, "cases")
@@ -560,14 +639,15 @@ def _case_events(log_dir):
 
 
 def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sink=None, reads_sink=None,
-              reuse_cases=None):
+              reuse_cases=None, stretch=None):
     """(status, seconds, detail) — status is "pass", "cannot-run", "platform-skip" or "fail".
 
     A `reads_sink` dict turns on `scripts/_read_recorder` for a Python or JS proof and its inheriting Python and
     node children, and receives `events` (what they read, probed, listed and spawned), `cases` ({case name:
     events} of each `_case_pool` case that ran), `base` (the events outside every case) and `temp` (the
     proof's temp root) for the pass cache's observed keys. `reuse_cases` names the `_case_pool` cases the proof
-    skips because their recorded passes hold (`HARNESS_CASES_REUSED`).
+    skips because their recorded passes hold (`HARNESS_CASES_REUSED`). `stretch()` multiplies `timeout` while the
+    proof runs (`_run_child`); the scheduler passes the run's live pace, a run-time measure kept out of the pass key.
 
     Each proof runs with TMP, TEMP and TMPDIR pointed at its own temp root, deleted when the
     proof ends on every exit path, so fixture folders a proof never removes do not pile up in
@@ -626,35 +706,40 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
         env.pop(name, None)
     if root:
         env["CLAUDE_PROJECT_DIR"] = root
-    if _RUNNER_ENV["scrub"]:
-        home = os.path.join(temp_root, "home")
-        os.makedirs(home, exist_ok=True)
-        # HARNESS_CALLER_HOME: a proof whose subject is this machine's live state (its session registry beside the
-        # real process table) reads the caller's home through this name, so such a read is declared, never ambient.
-        env["HARNESS_CALLER_HOME"] = os.path.expanduser("~")
-        env.update({name: home for name in _RUNNER_HOME_ENV})
-        env["GIT_CONFIG_GLOBAL"] = os.devnull
-        env["GIT_CONFIG_NOSYSTEM"] = "1"
-        for name in [k for k in env if k.startswith("CLAUDE_") and k not in _RUNNER_CLAUDE_DECLARED]:
-            del env[name]
-        # The installed Claude Code binary is a tool, found by the caller's own home before this one replaces it, so
-        # a proof that runs its embedded `rg` or `claude -p` finds it as it would on a machine that has it.
-        for exe in (os.environ.get("CLAUDE_CODE_EXECPATH"), os.path.expanduser("~/.local/bin/claude.exe"),
-                    os.path.expanduser("~/.local/bin/claude")):
-            if exe and os.path.isfile(exe):
-                env["CLAUDE_CODE_EXECPATH"] = exe
-                break
+    home = os.path.join(temp_root, "home")
+    os.makedirs(home, exist_ok=True)
+    # HARNESS_CALLER_HOME: a proof whose subject is this machine's live state (its session registry beside the
+    # real process table) reads the caller's home through this name, so such a read is declared, never ambient.
+    env["HARNESS_CALLER_HOME"] = os.path.expanduser("~")
+    env.update({name: home for name in _RUNNER_HOME_ENV})
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    if os.name == "nt":
+        # Git for Windows' system config also holds core.fscache, a speed-only cache; without it a git call runs
+        # about four times slower than the runner's own git, so it alone comes back as command-scope config.
+        count = int(env.get("GIT_CONFIG_COUNT") or 0)
+        env.update({"GIT_CONFIG_COUNT": str(count + 1), "GIT_CONFIG_KEY_%d" % count: "core.fscache",
+                    "GIT_CONFIG_VALUE_%d" % count: "true"})
+    for name in [k for k in env if k.startswith("CLAUDE_") and k not in _RUNNER_CLAUDE_DECLARED]:
+        del env[name]
+    # The installed Claude Code binary is a tool, found by the caller's own home before this one replaces it, so
+    # a proof that runs its embedded `rg` or `claude -p` finds it as it would on a machine that has it.
+    for exe in (os.environ.get("CLAUDE_CODE_EXECPATH"), os.path.expanduser("~/.local/bin/claude.exe"),
+                os.path.expanduser("~/.local/bin/claude")):
+        if exe and os.path.isfile(exe):
+            env["CLAUDE_CODE_EXECPATH"] = exe
+            break
     log_dir = None
     if reads_sink is not None and path.endswith((".py", ".js")):
-        log_dir = os.path.join(temp_root, "reads")
+        log_dir, recorder = _nested_log(temp_root)
         env["HARNESS_READ_LOG"] = log_dir
-        env["HARNESS_READ_RECORDER"] = _RECORDER_DIR
+        env["HARNESS_READ_RECORDER"] = recorder
         # A runner this proof runs inherits an outer runner's recorder, from a folder that may be another path
         # than `_RECORDER_DIR`: two recorders on the path run the shadowed one as a second recorder that
         # `retarget` never reaches, so every read also lands in the proof's base log.
         kept = [e for e in env.get("PYTHONPATH", "").split(os.pathsep)
                 if e and os.path.basename(os.path.normpath(e)) != os.path.basename(_RECORDER_DIR)]
-        env["PYTHONPATH"] = os.pathsep.join([_RECORDER_DIR] + kept)
+        env["PYTHONPATH"] = os.pathsep.join([recorder] + kept)
         outer = re.sub(r'--require\s+(?:"(?:[^"\\]|\\.)*node_recorder\.js"|\S*node_recorder\.js)', "", env.get("NODE_OPTIONS", ""))
         env["NODE_OPTIONS"] = " ".join(outer.split() + ["--require " + json.dumps(_NODE_RECORDER)])
     start = time.time()
@@ -665,7 +750,7 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
             pytest_run = command[1:3] == ["-m", "pytest"]
             # A proof resolves `.claude/` paths from its working directory: run it from its checkout, never the caller's.
             returncode, part = _run_child(command, env, timeout, os.path.join(temp_root, "proof_output.txt"),
-                                          cwd=root or REPO_ROOT)
+                                          cwd=root or REPO_ROOT, stretch=stretch)
             out += part
             if returncode != 0:
                 break
@@ -674,7 +759,7 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
             reads_sink.update(events=base + [e for case in per_case.values() for e in case], base=base,
                               cases=per_case, temp=temp_root)
         if returncode is None:
-            status, detail = "fail", "TIMEOUT after %ds" % timeout
+            status, detail = "fail", "TIMEOUT after %ds" % (time.time() - start)
         elif returncode == 0 and _PLATFORM_SKIP_RE.search(out):
             status, detail = "platform-skip", out
         elif returncode == 0:
@@ -980,7 +1065,7 @@ def bindings(repo_root, touched, include_excluded=False, proofs=None):
             name in _DIR_SCANNING or name in declared
             or any(t.startswith(folder.rstrip("/") + "/") for folder in _corpus_dirs(name))
             or _named_for(name, stem)
-            or (token is not None and token in code_of(path)) or loads(path, t, stem)))
+            or (token is not None and token in text_of(path) and token in code_of(path)) or loads(path, t, stem)))
 
     result = {t: [] for t in rules}
     for path in discovered:
@@ -1030,42 +1115,78 @@ def select_for(repo_root, touched, include_excluded=False, proofs=None):
     return [p for p in (discover(tests_dir) if proofs is None else list(proofs)) if p in bound]
 
 
-def select_for_commit(repo_root, touched):
-    """(selected, left to close), in binding order. Unknown times exceed the inner budget;
-    after the first eligible proof would exceed the total budget, no later proof is added."""
+def _recorded_passes(repo_root, bound, cache):
+    """The members of `bound` whose recorded pass still holds under `cache`: reusing one costs no run."""
+    if cache is None or not bound:
+        return set()
+    rels = {p: _norm(os.path.relpath(p, repo_root)) for p in bound}
+    cases = _behavior_plan(repo_root, list(rels.values())).get("cases", {})
+    cache.snapshot_git()
+    held = set()
+    for proof, rel in rels.items():
+        try:
+            key = cache.lazy_key(proof)
+            if key and (cache.hit(proof, key, cases[rel]) if cases.get(rel) else cache.hit(proof, key)):
+                held.add(proof)
+        except Exception:  # noqa: BLE001 - a cache fault leaves the proof to the budgets
+            continue
+    return held
+
+
+def select_for_commit(repo_root, touched, cache=None):
+    """(selected, how many are left to close), in binding order; `_commit_selection` names the ones left."""
+    selected, left = _commit_selection(repo_root, touched, cache)
+    return selected, len(left)
+
+
+def _commit_selection(repo_root, touched, cache=None):
+    """(selected, left to close), each a list of proofs in binding order. A proof with a recorded pass under
+    `cache` is always selected. Another proof's unknown time exceeds the inner budget; after the first eligible
+    proof would exceed the total budget, no later proof is added."""
     if not touched:
-        return [], 0
+        return [], []
     bound = select_for(repo_root, touched)
+    held = _recorded_passes(repo_root, bound, cache)
     known = read_json_salvage(durations_path()) if os.path.exists(durations_path()) else {}
-    selected, total = [], 0.0
+    chosen, total, full = set(held), 0.0, False
     for proof in bound:
         seconds = known.get(os.path.basename(proof))
+        if proof in held or full:
+            continue
         if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
                 or not math.isfinite(seconds) or seconds < 0 or seconds > _PROOF_BUDGET_S):
             continue
         if total + seconds > COMMIT_BUDGET_S:
-            break
-        selected.append(proof)
+            full = True
+            continue
+        chosen.add(proof)
         total += seconds
-    return selected, len(bound) - len(selected)
+    return [p for p in bound if p in chosen], [p for p in bound if p not in chosen]
 
 
-def unproven_note(touched):
-    """The clause every commit advisory about an unrun or unfinished proof ends with: the commit is
-    unproven, and the command that proves it now."""
-    return ("unproven, not passed: `python3 .claude/scripts/harness_tests.py --proofs-for %s` runs them now, "
-            "and the close runs them before push." % " ".join(touched))
+def unproven_command(touched):
+    """The one command that proves a commit's paths now."""
+    return "python3 .claude/scripts/harness_tests.py --proofs-for %s" % " ".join(touched)
+
+
+def _unproven(touched, why, signature):
+    """The one advisory for a commit whose bound proofs did not all pass here: why, and the command that
+    proves it now. `signature` names the cause, so a repeat of the same cause in a session is one line."""
+    line = "[harness commit] unproven, not passed: %s; `%s` runs them." % (why, unproven_command(touched))
+    return {"signature": json.dumps(signature), "line": line}
 
 
 def run_commit(repo_root, touched):
     """Select and run cheap bound proofs with the scoped pass cache; return facts and advisories,
     never a commit verdict or stamp. The caller bounds this whole run, including cache/slot waits."""
     with _policy_from(os.path.join(repo_root, ".claude")), redirect_stdout(io.StringIO()):
-        selected, left = select_for_commit(repo_root, touched)
+        cache = _pass_cache(repo_root, list(touched))
+        selected, left_proofs = _commit_selection(repo_root, touched, cache=cache)
+        left = len(left_proofs)
         statuses, details = {}, {}
         if selected:
             _run_selected(selected, False, statuses, details,
-                          RunOptions(cache=_pass_cache(repo_root, selected), root=repo_root, repo=repo_root))
+                          RunOptions(cache=cache, root=repo_root, repo=repo_root))
     advisories = []
     for proof in selected:
         if statuses[proof] != "fail":
@@ -1073,46 +1194,88 @@ def run_commit(repo_root, touched):
         lines = [line.strip() for line in details[proof].splitlines()]
         first = next((line for line in lines if (FAILURE_LINE.search(line) or _FAILURE_MARK_RE.search(line))
                       and not _UNITTEST_SUMMARY_RE.match(line)), _last_line(details[proof]))
-        advisories.append("[harness commit] %s: %s; must be fixed before the close."
+        advisories.append("[harness commit] %s: %s; the main check proves it on main after a push."
                           % (os.path.basename(proof), first or "failed without a failure-marked line"))
     unavailable = [p for p in selected if statuses[p] in ("cannot-run", "skipped")]
+    why = []
     if unavailable:
-        proof = unavailable[0]
-        advisories.append("[harness commit] proof run incomplete (%d proof(s)): %s: %s; %s"
-                          % (len(unavailable), os.path.basename(proof), _last_line(details[proof]),
-                             unproven_note(touched)))
+        why.append("%d could not run (%s: %s)" % (len(unavailable), os.path.basename(unavailable[0]),
+                                                   _last_line(details[unavailable[0]])))
     if left:
-        advisories.append("[harness commit] %d bound proof(s) left to the close (recorded proof/commit budgets); %s"
-                          % (left, unproven_note(touched)))
+        why.append("%d over the commit budget" % left)
+    unproven = _unproven(touched, "; ".join(why),
+                         [sorted(os.path.basename(p) for p in unavailable),
+                          sorted(os.path.basename(p) for p in left_proofs)]) if why else None
+    if unproven:
+        advisories.append(unproven["line"])
     advisories += _growth_advisories(touched)
     return {"selected": [_norm(os.path.relpath(p, repo_root)) for p in selected],
-            "left": left, "advisories": advisories}
+            "left": left, "advisories": advisories, "unproven": unproven,
+            "bound": sorted(os.path.basename(p) for p in selected + left_proofs)}
 
 
-def commit_advisories(repo_root, touched, git_env=None):
+MAIN_CHECK_REF = "refs/remotes/origin/main-check-state"
+
+
+def open_main_lines(repo_root, bound):
+    """One `open on main` line per open main-check proof row named by `bound`, the basenames of the proofs the
+    commit's paths bind. Reads the local state ref only: no fetch, and no import of main_check.py, so an edit to
+    that script never reaches a commit. An absent or malformed state prints nothing. Takes names, not paths: the
+    runner's launch key reaches what this function's callers reach, and binding costs its module values there."""
+    try:
+        shown = subprocess.run(["git", "-C", repo_root, "show", MAIN_CHECK_REF + ":main_check.json"],
+                               capture_output=True, text=True, timeout=10)
+        if shown.returncode != 0:
+            return []
+        rows = json.loads(shown.stdout)["rows"]
+    except Exception:  # noqa: BLE001 - an advisory fault never costs the commit
+        return []
+    lines = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or row.get("clearedAt") is not None:
+            continue
+        name = row.get("name")
+        if isinstance(name, str) and os.path.basename(name) in bound:
+            lines.append("[harness commit] open on main: %s %s" % (os.path.basename(name), row.get("platform") or "unknown"))
+    return lines
+
+
+def commit_advisories(repo_root, touched, git_env=None, session_id=""):
     """Hard-bound advisory run, including imports and selection. Leave cleanup headroom under the
-    hook timeout; child proofs still use the runner's shared slots, deadlines and pass cache."""
+    hook timeout; child proofs still use the runner's shared slots, deadlines and pass cache. An unproven
+    line whose cause this session already saw since its last compaction is not printed again. The committed
+    checkout's own runner runs, when it has one: its close uses that runner, and the launch code keys every pass."""
     if not touched:
         return []
     env = dict(os.environ)
     env.update(git_env or {})
     env.setdefault("HARNESS_TEST_STAMP", os.path.join(repo_root, ".claude", "logs", "harness_tests_stamp.json"))
     env["HARNESS_DEADLINE"] = str(time.time() + max(0, COMMIT_BUDGET_S - 3))
+    own = os.path.join(repo_root, ".claude", "scripts", "harness_tests.py")
     temp_root = tempfile.mkdtemp(prefix="harness_commit_")
     try:
-        code, output = _run_child([sys.executable, os.path.abspath(__file__), "--repo", repo_root,
+        code, output = _run_child([sys.executable, own if os.path.isfile(own) else os.path.abspath(__file__),
+                                   "--repo", repo_root,
                                    "--commit"] + list(touched), env, COMMIT_BUDGET_S,
                                   os.path.join(temp_root, "result.json"), cwd=repo_root)
         if code is None:
             raise TimeoutError("timeout after %ds" % COMMIT_BUDGET_S)
         if code != 0:
             raise RuntimeError(_last_line(output) or "runner exit %s" % code)
-        return json.loads(output)["advisories"]
+        result = json.loads(output)
+        unproven = result.get("unproven")
     except Exception as exc:
-        return ["[harness commit] bound proofs could not run: %s: %s; %s"
-                % (type(exc).__name__, exc, unproven_note(touched))]
+        unproven = _unproven(touched, "the bound-proof run failed (%s: %s)" % (type(exc).__name__, exc),
+                             type(exc).__name__)
+        result = {"advisories": [unproven["line"]]}
     finally:
         _remove_temp_root(temp_root)
+    advisories = open_main_lines(repo_root, result.get("bound", [])) + result["advisories"]
+    if unproven and session_id:
+        from _hook_state import fire_once_since_compaction
+        if not fire_once_since_compaction(session_id, "harness-unproven:" + unproven["signature"]):
+            advisories = [a for a in advisories if a != unproven["line"]]
+    return advisories
 
 
 def _budget_tier(seconds):
@@ -1168,7 +1331,8 @@ def format_tiers(rows):
 def _jobs():
     """Pool width: `HARNESS_TEST_JOBS` when a positive int, else the machine's own recorded width,
     else 4. A runner started outside the client that sets the variable (the land runner service)
-    then pools as wide as the slot store records."""
+    then pools as wide as the slot store records. A runner inside an inherited lane (`HARNESS_SLOT_BUDGET=1`)
+    runs one proof at a time whatever `HARNESS_TEST_JOBS` says."""
     if _slot_pool.inherited():
         return 1
     try:
@@ -1183,6 +1347,16 @@ def _jobs():
 
 def _timed_out(result):
     return result[0] == "fail" and str(result[2] or "").startswith("TIMEOUT")
+
+
+def _timeout_detail(detail):
+    """True when a red's detail is a timeout: the runner's own `TIMEOUT after Ns`, or a proof's captured
+    traceback whose last line is the `subprocess.TimeoutExpired` its own call raised."""
+    text = (detail or "").strip()
+    if text.startswith("TIMEOUT"):
+        return True
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return bool(lines) and lines[-1].startswith("subprocess.TimeoutExpired")
 
 
 def _deadline():
@@ -1213,8 +1387,10 @@ def _claim_width(folder, count):
 
 
 def _take_slots(exclusive, count=1):
-    """Admission shared with publish, case pools, runtime work and WSL's Windows broker."""
-    return _slot_pool.take(exclusive, count, folder=_slot_dir(), width=_machine_slots(), deadline=_deadline())
+    """Admission shared with publish, case pools, runtime work and WSL's Windows broker. An exclusive take waits
+    for every proof on the machine to end, so while it waits it prints a queued line naming the holders."""
+    return _slot_pool.take(exclusive, count, folder=_slot_dir(), width=_machine_slots(), deadline=_deadline(),
+                           notice=exclusive)
 
 
 @contextmanager
@@ -1276,14 +1452,15 @@ def _launch(path, timeout=None, exclusive=False, root=None, recheck=None, timing
         return _SKIPPED
     try:
         return _admitted_run(path, timeout, root, recheck, behavior_cases=behavior_cases, receipt_sink=receipt_sink,
-                             reads_sink=reads_sink, reuse_cases=reuse_cases)
+                             reads_sink=reads_sink, reuse_cases=reuse_cases, stretch=_PACE.factor)
     finally:
         _slot_pool.release_all(handles)
 
 
-def _admitted_run(path, timeout, root, recheck, *, behavior_cases, receipt_sink, reads_sink, reuse_cases):
+def _admitted_run(path, timeout, root, recheck, *, behavior_cases, receipt_sink, reads_sink, reuse_cases,
+                  stretch=None):
     """`_launch`'s run once its slot is held: `recheck()` may answer from the pass cache, the deadline caps the
-    timeout or refuses the run, and `run_proof` runs with the keywords given. A run the cap cut short is `_SKIPPED`."""
+    timeout and its live-pace stretch or refuses the run, and `run_proof` runs with the keywords given. A run the cap cut short is `_SKIPPED`."""
     answer = recheck() if recheck else None
     if answer:
         return answer
@@ -1296,6 +1473,11 @@ def _admitted_run(path, timeout, root, recheck, *, behavior_cases, receipt_sink,
             timeout = _PROOF_TIMEOUTS.get(os.path.basename(path), _TIMEOUT_SEC)
         cut, timeout = left < timeout, min(timeout, left)
     extra = {"reads_sink": reads_sink} if reads_sink is not None else {}
+    if stretch is not None:
+        if deadline is not None:
+            pace, ceiling = stretch, max(1.0, left / timeout)
+            stretch = lambda: min(pace(), ceiling)  # noqa: E731
+        extra["stretch"] = stretch
     if reuse_cases:
         extra["reuse_cases"] = reuse_cases()
     if behavior_cases:
@@ -1326,6 +1508,10 @@ _GIT_LOCATION_ARGS = frozenset({"--local-env-vars", "--git-dir", "--git-common-d
 _GIT_TRACKED_ARGS = frozenset({"-z", "--error-unmatch", "-c", "--cached", "--full-name", "--"})
 # `repo` plus `untracked`: the scope of a git whose commands are unknown, so what it can see is all of it.
 _GIT_WHOLE = "repo+untracked"
+# `git show <id>:<path>` and `git cat-file -p|-t|-s|-e <id>` with a full object id print bytes the id fixes, whatever
+# the worktree, refs or config say: the key holds the object's presence (`_objects_state`), never a repository's state.
+_GIT_OBJECT_ID_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?(?::.+)?\Z")
+_GIT_OBJECT_FLAGS = {"show": frozenset(), "cat-file": frozenset({"-p", "-t", "-s", "-e"})}
 # Commands that read objects, refs and the tracked files and never list an untracked file: an untracked file cannot
 # change what they print. Any other command (status, clean, add, ls-files -o, checkout) can, and keys `untracked`.
 _GIT_UNTRACKED_BLIND = frozenset({"log", "show", "rev-parse", "rev-list", "cat-file", "diff", "diff-tree", "diff-index",
@@ -1464,10 +1650,11 @@ def _file_digests(keyed):
 def _merge_manifests(manifests):
     """One manifest holding every read of `manifests`; opaque when any is. Each `why` cause is the first
     manifest's that names one."""
-    merged = {"files": set(), "probes": set(), "dirs": set(), "static": set(), "git": set(), "opaque": False}
+    merged = {"files": set(), "probes": set(), "dirs": set(), "static": set(), "objects": set(), "git": set(),
+              "opaque": False}
     why = {}
     for manifest in manifests:
-        for field in ("files", "probes", "dirs", "static"):
+        for field in ("files", "probes", "dirs", "static", "objects"):
             merged[field].update(manifest.get(field) or ())
         scopes = manifest.get("git")
         merged["git"].update({"repo"} if scopes is True else scopes or ())
@@ -1594,7 +1781,8 @@ _RUNNER_SOURCE = os.path.abspath(__file__)
 # The runner code a proof's verdict rests on: what fixes the process a proof runs as (command, environment, working
 # directory, read recorder, skipped cases), the timeout that bounds it and the reading of its exit, and the code that
 # takes this key. `_launch_code` adds every module name they reach. Scheduling (slots, order, width, progress, whether
-# a failed run is retried alone) and the pass store's bookkeeping stay out: neither changes what a proof's run returns.
+# a failed run is retried alone, the live pace `_launch` hands in as `stretch`) and the pass store's bookkeeping stay
+# out: neither changes what a passing proof's run returns.
 _LAUNCH_ROOTS = ("run_proof", "_timeout_for", "_retry_timeout", "_launch_options", "_admitted_run",
                  "_launch_digest", "_launch_code", "_runner_launch_digest")
 _MUTATING_METHODS = frozenset({"append", "extend", "insert", "update", "setdefault", "pop", "popitem", "clear",
@@ -2056,7 +2244,8 @@ class _PassCache:
         """What a Python proof's pass used, from its recorder events, relative to this cache's root:
         `files` it read (an imported module's `.pyc` counts as its source), `probes` it tested for
         existence, `dirs` it listed, `static` scripts of children the recorder could not follow (keyed by
-        their static reach), and `git`, the repository state its git use can observe (`_git_scope`: `tracked`
+        their static reach), `objects` the git objects it printed by full id (`_pinned_objects`: keyed by their
+        presence), and `git`, the repository state its git use can observe (`_git_scope`: `tracked`
         or `repo`; empty when git ran on no state of this checkout). `opaque` marks reads the cache cannot
         trust: a write into the checkout outside caches, logs and scratch, or a child it cannot resolve. `why` names,
         per git scope and for `opaque`, the first event that set it (`_cause`); no key reads it."""
@@ -2065,7 +2254,8 @@ class _PassCache:
             # A recorded Python process opens at least its own script; no events means the recorder
             # never loaded, and a manifest built from nothing would reuse the pass forever.
             return None
-        found = {"files": set(), "probes": set(), "dirs": set(), "static": set(), "git": set(), "opaque": False}
+        found = {"files": set(), "probes": set(), "dirs": set(), "static": set(), "objects": set(), "git": set(),
+                 "opaque": False}
         written = set()
 
         def inside(path):
@@ -2150,7 +2340,8 @@ class _PassCache:
             return
         # A git variable that names the repository steers any child that runs git, whatever its cwd or its program.
         reached = {self._locate(os.path.join(cwd, p), resolved) for k, v in (spawn.get("genv") or {}).items()
-                   if k in GIT_REPO_ENV and isinstance(v, str) for p in v.split(os.pathsep) if p}
+                   if k in GIT_REPO_ENV and k not in _GIT_NON_PATH_ENV and isinstance(v, str)
+                   for p in v.split(os.pathsep) if p}
         if "sibling" in reached:
             found["git"].add("sibling")
         elif reached & {"checkout", "repository"}:
@@ -2176,7 +2367,10 @@ class _PassCache:
         tokens = []
         for arg in argv:
             tokens += arg.split() if any(ch.isspace() for ch in arg) else [arg]
-        if prog in ("git", "git.exe") or _GIT_WORD_RE.search(" ".join(argv[1:])):
+        pinned = self._pinned_objects(argv, cwd, spawn.get("genv")) if prog in ("git", "git.exe") else None
+        if pinned is not None:
+            found["objects"] |= pinned
+        elif prog in ("git", "git.exe") or _GIT_WORD_RE.search(" ".join(argv[1:])):
             scope = self._git_scope(argv if prog in ("git", "git.exe") else None,
                                     tokens if prog in ("git", "git.exe") else [t for t in _SHELL_SPLIT_RE.split(" ".join(argv)) if t],
                                     cwd, inside, resolved)
@@ -2187,6 +2381,51 @@ class _PassCache:
             # No recorder follows a non-Python child, and a temp copy sits outside the static reach.
             found["opaque"] = True
         found["static"] |= self._repo_files(tokens, cwd, inside)
+
+    @staticmethod
+    def _pinned_objects(argv, cwd, genv):
+        """The `"<id> <repository folder>"` entries of a git run that only prints objects by full id (`_GIT_OBJECT_ID_RE`,
+        no flag outside `_GIT_OBJECT_FLAGS`), else None. A git steered by a repository variable reads another
+        repository than the folder names, so it is no pinned read."""
+        if any(k in GIT_REPO_ENV and k not in _GIT_NON_PATH_ENV for k in genv or ()):
+            return None
+        rest, folder = argv[1:], cwd
+        while rest and rest[0] in ("-C", "--no-pager", "--no-optional-locks", "-P"):
+            if rest[0] != "-C":
+                rest = rest[1:]
+            elif len(rest) > 2:
+                folder, rest = os.path.join(folder, rest[1]), rest[2:]
+            else:
+                return None
+        if not rest or rest[0] not in _GIT_OBJECT_FLAGS:
+            return None
+        ids = [a for a in rest[1:] if a not in _GIT_OBJECT_FLAGS[rest[0]]]
+        if not ids or not all(_GIT_OBJECT_ID_RE.match(a) for a in ids):
+            return None
+        return {"%s %s" % (a.partition(":")[0], os.path.normpath(folder)) for a in ids}
+
+    def _objects_state(self, objects, memo):
+        """What a key holds of the pinned `objects` (`_pinned_objects`): each id's `cat-file --batch-check` line, or
+        None when its repository cannot be opened. An id fixes what git prints of it, so only an object that has
+        gone changes the answer."""
+        wanted = tuple(sorted(objects))
+        if ("objects", wanted) not in memo:
+            by_folder, state = {}, []
+            for entry in wanted:
+                sha, _, folder = entry.partition(" ")
+                by_folder.setdefault(folder, []).append(sha)
+            env = {k: v for k, v in os.environ.items() if k not in GIT_REPO_ENV}
+            for folder, ids in sorted(by_folder.items()):
+                try:
+                    result = subprocess.run(["git", "-C", folder, "cat-file", "--batch-check"],
+                                            input="\n".join(ids) + "\n", capture_output=True, text=True,
+                                            encoding="utf-8", errors="replace", env=env)
+                    lines = result.stdout.splitlines() if result.returncode == 0 else []
+                except OSError:
+                    lines = []
+                state += [[sha, lines[i] if i < len(lines) else None] for i, sha in enumerate(ids)]
+            memo["objects", wanted] = state
+        return memo["objects", wanted]
 
     def _git_scope(self, argv, tokens, cwd, inside, resolved=None):
         """What one git process can observe of this checkout's repository: None when it runs elsewhere, `""`
@@ -2488,7 +2727,8 @@ class _PassCache:
         each path it probed, as absent, a file, a directory or a link; each directory it listed; and the repository state its git use
         can observe (`_git_scope`): `repo` is the commit, every ref, the config and the tracked files' changes
         (`_repo_state`), `tracked` the names the index holds, `untracked` the unignored untracked names; a
-        script child whose text runs git has `repo` and `untracked`; `sibling` (another worktree) never reuses. A close's exhaust counts as absent in the probes, files and listings (`_ignored`).
+        script child whose text runs git has `repo` and `untracked`; each object printed by full id is its presence
+        (`_objects_state`); `sibling` (another worktree) never reuses. A close's exhaust counts as absent in the probes, files and listings (`_ignored`).
         What a path is on disk is looked up once per `memo` (the run's own when not `fresh`): a case pool's
         cases share thousands of import probes, and each case's key asks about all of them. A `files` list receives
         the keyed file rows ([path, digest, tracked]) the files part hashes."""
@@ -2563,6 +2803,8 @@ class _PassCache:
             "dirs": [[r, listing(r)] for r in manifest.get("dirs", [])],
             "state": state, "tracked": names, "untracked": loose,
             "behavior": [behavior.get("inputKey"), behavior.get("bindingHash")]}
+        if manifest.get("objects"):
+            parts["objects"] = self._objects_state(manifest["objects"], memo)
         return {k: hashlib.sha256(json.dumps(v).encode("utf-8")).hexdigest()[:12] for k, v in parts.items()}
 
     @staticmethod
@@ -2576,6 +2818,20 @@ class _PassCache:
         its reads are opaque: `observed_parts` combined."""
         parts = self.observed_parts(proof, manifest, fresh)
         return None if parts is None else self._combine(parts)
+
+    def lazy_key(self, proof):
+        """`key(proof)` as a callable that computes it on first call, or None when the proof has no static key. A
+        reuse check passes it to `hit`, which calls it only for a row the observed key cannot judge."""
+        name = os.path.basename(proof)
+        if name in _DIR_SCANNING and not _corpus_dirs(name):
+            return None
+        memo = []
+
+        def key():
+            if not memo:
+                memo.append(self.key(proof))
+            return memo[0]
+        return key
 
     def key(self, proof, fresh=False):
         """The proof's reuse key. `fresh` rereads every input instead of the run's memoized digests:
@@ -2650,15 +2906,19 @@ class _PassCache:
         return [row for row in entry if isinstance(row, dict)] if isinstance(entry, list) else []
 
     def _matched(self, proof, key):
-        """The proof's row when its key still holds, else None. A row with an observed key is judged by it
+        """The proof's row when its key still holds, else None. `key` is the static key or a callable giving it
+        (`lazy_key`), which only a row with no observed key calls. A row with an observed key is judged by it
         alone: the static reach cannot see a listed directory gain an entry or git state move, so a static
         match there would reuse a stale pass. A row without one is judged by the static key, unless the
         observable run recorded no manifest (`observed` is False): its reads are unknown, so no key proves it.
         A miss is explained by this checkout's own newest row (`_checkout_name`): the parts that moved, and for a
-        files part the files (`miss_files`) when the row packs their digests. A checkout that holds rows of other
-        checkouts only misses as `no-row-for-checkout`: their rows differ by whatever their inputs held, and no
-        input of this one moved. The newest observed row's files count toward `readers`."""
-        rel, diff, mine, judged = _norm(os.path.relpath(proof, self.root)), None, self._checkout_name(), False
+        files part the files (`miss_files`) when the row packs their digests; an own pass whose reads could not be
+        keyed is `unobserved`. A checkout with no row of its own is explained by the newest row of another checkout,
+        each cause marked `other:` (`other:scheme` for a row recorded under an earlier key scheme, `other:static` for
+        one with no observed key): the other checkout's inputs differ by whatever they held, so no file is charged
+        to this one. The newest observed row's files count toward `readers`."""
+        rel, diff, mine = _norm(os.path.relpath(proof, self.root)), None, self._checkout_name()
+        elsewhere = None
         for row in self.variants(proof):
             own = row.get("checkout") in (mine, None)
             okey = row.get("okey")
@@ -2671,30 +2931,42 @@ class _PassCache:
                     self.misses.pop(rel, None)
                     self.miss_files.pop(rel, None)
                     return row
-                judged = True
                 if diff is None and own:
-                    then = row.get("parts")
-                    diff = ["unrecorded"] if parts is None or not then else [
-                        k for k in sorted(set(parts) | set(then)) if parts.get(k) != then.get(k)] or ["scheme"]
+                    diff = self._moved(row, parts)
                     digests = manifest.get("digests") if "files" in diff and isinstance(manifest, dict) else None
                     if isinstance(digests, dict):
                         now = _file_digests(keyed)
                         self.miss_files[rel] = sorted(f for f in set(digests) | set(now) if digests.get(f) != now.get(f))
+                elif elsewhere is None and not own:
+                    elsewhere = ["other:" + name for name in self._moved(row, parts)]
             elif row.get("observed") is False:
-                continue
-            elif key and row.get("key") == key:
+                if diff is None and own:
+                    diff = ["unobserved"]
+            elif (static := key() if callable(key) else key) and row.get("key") == static:
                 self.misses.pop(rel, None)
                 self.miss_files.pop(rel, None)
                 return row
             else:
-                judged = True
                 if diff is None and own:
                     diff = ["static"]  # the static key keeps no parts, so which input moved is unknown
-        if diff is None and judged:
-            diff = ["no-row-for-checkout"]
+                elif elsewhere is None and not own:
+                    elsewhere = ["other:static"]
+        diff = diff or elsewhere
         if diff:
             self.misses[rel] = diff
         return None
+
+    def _moved(self, row, parts):
+        """The names of what moved between `row`, an observed row recorded earlier, and the `parts` this checkout
+        takes now: `unrecorded` when this checkout cannot take its key now, `scheme` when the row's key was taken
+        under another key scheme (its parts, when it kept any, no longer combine to it, so no part names the miss)
+        or every part holds, else the parts that differ."""
+        if parts is None:
+            return ["unrecorded"]
+        then = row.get("parts") or {}
+        if self._combine(then) != row.get("okey"):
+            return ["scheme"]
+        return [k for k in sorted(set(parts) | set(then)) if parts.get(k) != then.get(k)] or ["scheme"]
 
     def readers(self, files):
         """{file: how many of the proofs this cache judged read it}, for each of `files`."""
@@ -3054,7 +3326,9 @@ class RunOptions(NamedTuple):
     it; `row`, when given, also receives the recorded row. `stop` latches a newer close superseding this
     one: queued proofs and retries skip while already running proofs drain and cache their passes. `red`
     judges the proofs that failed again alone ({path: detail}): True when they make the run red, so its
-    timeout retries are not run. None counts every such proof."""
+    timeout retries are not run. None counts every such proof. `no_retry` names proofs that run once,
+    in the pool, with no timeout or alone retry: the close's `--also` proofs, whose hangs would
+    otherwise cost a serial timeout each."""
     cache: object = None
     root: object = None
     mode: object = None
@@ -3065,6 +3339,7 @@ class RunOptions(NamedTuple):
     behavior_out: object = None
     repo: object = None
     red: object = None
+    no_retry: object = ()
 
 
 def _run_selected(selected, verbose, statuses=None, details=None, options=RunOptions()):
@@ -3076,16 +3351,17 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     unless a reached input moved since its key was taken. A Python proof the cache cannot reuse whole
     skips the `_case_pool` cases whose own pass rows hold; its pass then rests on their recorded reads
     too, and its time, which covers only some cases, is not recorded as the proof's duration.
-    A failing proof with a recorded pass is re-run once alone, holding every machine slot: a pass
-    there is reported FLAKY and logged, not red, because contention (a timeout under load, a shared
-    temp race) is a runner condition; a second failure is red. A timeout is re-run alone even with no
-    recorded pass, at `_LOAD_FACTOR` times its timeout, or at its `proof_timeouts` cap, which already holds
-    that headroom, and its pass there is not flaky: the first timeout came from a missing duration; an assertion failure with no recorded pass is
-    not re-run, because a known red would only repeat. The run takes the machine once for all its alone work
-    (`_machine_hold`). Assertion failures retry first, shortest recorded first; once one fails alone and
+    Each passing proof feeds the run's live pace (`_LivePace`), which stretches every running proof's deadline.
+    An assertion failure with a recorded pass is re-run once alone, holding every machine slot: a pass
+    there is reported FLAKY and logged, not red, because a shared temp race is a runner condition; a second
+    failure is red. A timeout is re-run once on one slot, even with no recorded pass, at `_LOAD_FACTOR` times
+    its timeout, or at its `proof_timeouts` cap, which already holds that headroom; its pass is FLAKY unless the
+    proof had no recorded duration. An assertion failure with no recorded pass is
+    not re-run, because a known red would only repeat. The run takes the machine once for its serial proofs and
+    assertion retries together (`_machine_hold`). Assertion failures retry first, shortest recorded first; once one fails alone and
     `options.red` agrees it makes the run red, no later retry runs: each could only tell flaky from red in a run
     that cannot pass. A timeout is then `skipped`; an assertion failure stays red with its pool output and a note
-    that it was not retried alone. Past `HARNESS_DEADLINE` no proof starts or
+    that it was not retried alone. A proof in `options.no_retry` never retries. Past `HARNESS_DEADLINE` no proof starts or
     retries, and one the deadline cuts short is `skipped`, counted with the indeterminate ones.
     Returns (passed, failed, indeterminate, wall seconds); a `statuses` dict
     receives each proof's final status and a `details` dict its final detail. A run with an `options.mode`
@@ -3093,6 +3369,7 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     it was reused) and the row is appended to `harness_runs.json`."""
     start = time.time()
     phases = {}
+    _PACE.reset()
     cache, root, mode = options.cache, options.root, options.mode
     behavior_root = options.repo or root or getattr(cache, 'root', REPO_ROOT)
     plan = _behavior_plan(behavior_root, [_norm(os.path.relpath(p, behavior_root)) for p in selected])
@@ -3113,19 +3390,21 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
         return float(value) if isinstance(value, (int, float)) else 0.0
 
     stop = options.stop
+    no_retry = set(options.no_retry or ())
     moved = ("skipped", 0.0, "not run: a newer close superseded this one")
 
     def attempt(path, timeout, exclusive=False):
         if stop and stop():
             return moved
         if cache and path not in keys:
-            keys[path] = cache.key(path)
-        key = keys.get(path)
-        if key and (cache.hit(path, key, cases[path]) if cases[path] else cache.hit(path, key)):
+            keys[path] = cache.lazy_key(path)
+        lazy = keys.get(path)
+        if lazy and (cache.hit(path, lazy, cases[path]) if cases[path] else cache.hit(path, lazy)):
             reused.add(path)
             if cases[path]:
-                observations[path].extend(cache.observations(path, key, cases[path]))
+                observations[path].extend(cache.observations(path, lazy, cases[path]))
             return ("pass", 0.0, "")
+        key = lazy() if lazy else None
 
         def recheck():
             nonlocal key
@@ -3191,6 +3470,8 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
         `_PROGRESS_MIN`: a whole close otherwise prints nothing until it ends. Each line also states the
         recorded seconds the unfinished proofs need at this pool width, and the pace: elapsed over the
         recorded time of the proofs that ran, so a reader sees whether the run keeps its recorded schedule."""
+        if result[0] == "pass" and path not in reused and path not in partial:
+            _PACE.observe(result[1], _recorded_time(path, known))
         with done_lock:
             done["n"] += 1
             done["left"] -= expected(path)
@@ -3222,6 +3503,48 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
             results[futures[future]] = future.result()
     phases["pool"] = time.time() - phase_start
     flaky, alone_n, alone_s = [], 0, 0.0
+    retrying, red_alone, decided, judged = [], {}, None, 0
+
+    def retry(index, path):
+        nonlocal decided, judged, alone_n, alone_s
+        timed_out = _timed_out(results[path])
+        cold = timed_out and os.path.basename(path) not in known
+        if not decided and len(red_alone) > judged:
+            judged = len(red_alone)
+            decided = options.red(red_alone) if options.red else True
+            if decided:
+                named = ", ".join(sorted(os.path.basename(p) for p in red_alone))
+                rest = [_timed_out(results[p]) for p in retrying[index - 1:]]
+                for kind, count in (("assertion", rest.count(False)), ("timeout", rest.count(True))):
+                    if count:
+                        _progress("%d %s retr%s not run: the run is already red (%s failed alone)"
+                                  % (count, kind, "y" if count == 1 else "ies", named))
+        if decided:
+            named = ", ".join(sorted(os.path.basename(p) for p in red_alone))
+            if timed_out:
+                results[path] = ("skipped", 0.0, "not run: the run is already red (%s failed alone)" % named)
+            else:
+                status, elapsed, detail = results[path]
+                results[path] = (status, elapsed, (detail or "").rstrip("\n")
+                                 + "\n(red in the pool, not retried alone: the run is already red (%s failed alone))\n" % named)
+            return
+        _progress("%s retry %d of %d: %s; first failure: %s"
+                  % ("timeout" if timed_out else "alone", index, len(retrying), os.path.basename(path),
+                     _last_line(results[path][2])))
+        again = attempt(path, _retry_timeout(path, known, timed_out), exclusive=not timed_out)
+        if again[0] != "skipped" and not timed_out:
+            alone_n, alone_s = alone_n + 1, alone_s + again[1]
+        if again[0] == "skipped":
+            if timed_out:
+                results[path] = again
+            return
+        if again[0] == "pass" and not cold:
+            flaky.append((path, results[path][2]))
+            _record_flaky(path, results[path][2], again[1])
+        if again[0] == "fail" and not timed_out:
+            red_alone[path] = again[2]
+        results[path] = again
+
     phase_start = time.time()
     with _machine_hold() if alone else nullcontext():
         phases["serial_wait"] = time.time() - phase_start
@@ -3232,53 +3555,25 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
         pool_s = time.time() - start
         # Assertion failures first, shortest first: they are the likely reds, and once one fails alone the run
         # cannot pass, so every retry after it, which can only tell flaky from red, does not run.
-        retrying = sorted((p for p in selected if not cases[p] and results[p][0] == "fail"
-                           and (os.path.basename(p) in known or _timed_out(results[p]))),
-                          key=lambda p: (_timed_out(results[p]), expected(p)))
-        red_alone, decided = {}, None
+        retrying[:] = sorted((p for p in selected if not cases[p] and results[p][0] == "fail"
+                              and (os.path.basename(p) in known or _timed_out(results[p]))
+                              and p not in no_retry),
+                             key=lambda p: (_timed_out(results[p]), expected(p)))
+        # An assertion failure can be a race on shared state, so its retry holds the whole machine, inside the
+        # serial proofs' hold when they took one. A timeout's retry takes one slot: the live pace already
+        # stretched its deadline, and holding the machine would stall every other run there for one proof.
+        asserting = [p for p in retrying if not _timed_out(results[p])]
         phase_start = time.time()
-        with _machine_hold() if retrying else nullcontext():
+        with _machine_hold() if asserting else nullcontext():
             phases["retry_wait"] = time.time() - phase_start
             phase_start = time.time()
-            judged = 0
             for index, path in enumerate(retrying, 1):
-                timed_out = _timed_out(results[path])
-                cold = timed_out and os.path.basename(path) not in known
-                if not decided and len(red_alone) > judged:
-                    judged = len(red_alone)
-                    decided = options.red(red_alone) if options.red else True
-                    if decided:
-                        named = ", ".join(sorted(os.path.basename(p) for p in red_alone))
-                        rest = [_timed_out(results[p]) for p in retrying[index - 1:]]
-                        for kind, count in (("assertion", rest.count(False)), ("timeout", rest.count(True))):
-                            if count:
-                                _progress("%d %s retr%s not run: the run is already red (%s failed alone)"
-                                          % (count, kind, "y" if count == 1 else "ies", named))
-                if decided:
-                    named = ", ".join(sorted(os.path.basename(p) for p in red_alone))
-                    if timed_out:
-                        results[path] = ("skipped", 0.0, "not run: the run is already red (%s failed alone)" % named)
-                    else:
-                        status, elapsed, detail = results[path]
-                        results[path] = (status, elapsed, (detail or "").rstrip("\n")
-                                         + "\n(red in the pool, not retried alone: the run is already red (%s failed alone))\n" % named)
-                    continue
-                _progress("alone retry %d of %d: %s; first failure: %s"
-                          % (index, len(retrying), os.path.basename(path), _last_line(results[path][2])))
-                retry = attempt(path, _retry_timeout(path, known, timed_out), exclusive=True)
-                if retry[0] != "skipped":
-                    alone_n, alone_s = alone_n + 1, alone_s + retry[1]
-                if retry[0] == "skipped":
-                    if timed_out:
-                        results[path] = retry
-                    continue
-                if retry[0] == "pass" and not cold:
-                    flaky.append((path, results[path][2]))
-                    _record_flaky(path, results[path][2], retry[1])
-                if retry[0] == "fail" and not timed_out:
-                    red_alone[path] = retry[2]
-                results[path] = retry
-            phases["retry"] = time.time() - phase_start
+                if path in asserting:
+                    retry(index, path)
+    for index, path in enumerate(retrying, 1):
+        if path not in asserting:
+            retry(index, path)
+    phases["retry"] = time.time() - phase_start
     # A pass that skipped cases timed only some of them, and the next whole run's timeout comes from it.
     _record_durations({p: r for p, r in results.items()
                        if p not in reused and r[0] != "skipped" and not (p in partial and r[0] == "pass")})
@@ -3607,7 +3902,10 @@ def push_destination(repo_root, git_env=None):
 
 def _default_ref(repo_root, remote="origin"):
     """`remote`'s default-branch tracking ref, whose commits a branch's close leaves to the default
-    branch; None when neither `<remote>/HEAD` nor `<remote>/main` resolves."""
+    branch; None when neither `<remote>/HEAD` nor `<remote>/main` resolves, and for `remote=None`: a close of a
+    range that is already on the default branch (`--range-start`) subtracts nothing."""
+    if remote is None:
+        return None
     for ref in (remote + "/HEAD", remote + "/main"):
         if _git_soft(repo_root, ["rev-parse", "--verify", "-q", ref + "^{commit}"]):
             return ref
@@ -3848,13 +4146,15 @@ def sweep_store_temp(store_dir, max_age_s=STALE_TEMP_AGE_S):
     return removed
 
 
-def run_close(repo_root, base=None, verbose=False, behavior_out=None, now=False):
+def run_close(repo_root, base=None, verbose=False, behavior_out=None, now=False, ranged=False, also=()):
     """Wait for this session's writers in this checkout, then prove the committed HEAD of that moment, once.
 
     A later commit never restarts the run: the private checkout keeps the started commit's results
     valid, and the push publishes that commit. A newer close supersedes this one, which stops at its
     next proof without a verdict. `now` skips the wait: a mid-drive red sweep gets the same
-    pre-existing and FIRST RED classification while an author job still runs.
+    pre-existing and FIRST RED classification while an author job still runs. `ranged` closes the commits
+    from `base` to HEAD that the default branch already holds, so it subtracts nothing the default branch carries.
+    `also` names proofs a ranged close adds to its selection and runs once, with no retry.
     """
     import watch_records
     swept = sweep_stale_proof_temp(repo_root)
@@ -3895,7 +4195,8 @@ def run_close(repo_root, base=None, verbose=False, behavior_out=None, now=False)
         deadline = _deadline()
         if deadline is not None and time.time() >= deadline:
             raise RuntimeError("HARNESS_DEADLINE passed during close")
-        return _close_once(repo_root, base, verbose, token, **({"behavior_out": behavior_out} if behavior_out else {}))
+        return _close_once(repo_root, base, verbose, token, ranged=ranged, also=also,
+                           **({"behavior_out": behavior_out} if behavior_out else {}))
     except (RuntimeError, OSError, TimeoutError, ValueError) as exc:
         print("harness_tests: close INCOMPLETE: %s" % exc)
         return 2
@@ -3995,8 +4296,29 @@ def _uncommitted_inputs(repo_root, snapshot, proof, detail, here_status=None):
     return [], sorted(tried)
 
 
-def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=None):
-    """Prove the committed HEAD of this moment; 2 without a verdict when a newer close supersedes it."""
+def _also_paths(root, names):
+    """The proofs `also` names in the checkout `root`: a repo-relative path or a bare proof file name. A name
+    the revision has no file for prints one line and is skipped, so a row whose proof is gone cannot stop a close."""
+    found = []
+    for name in names:
+        rel = _norm(name)
+        if not rel.startswith(".claude/tests/"):
+            rel = ".claude/tests/" + rel.rsplit("/", 1)[-1]
+        path = os.path.join(root, *rel.split("/"))
+        if not os.path.isfile(path):
+            print("harness_tests: --also names no proof at this revision: %s" % name)
+        elif path not in found:
+            found.append(path)
+    return found
+
+
+def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=None, ranged=False, also=()):
+    """Prove the committed HEAD of this moment; 2 without a verdict when a newer close supersedes it.
+
+    `ranged` (the main check's `--range-start` mode) runs every proof: no red stops another proof's retry,
+    and a proof whose timeout repeats alone is a red no bisect runs on, since a timeout names no commit and a
+    bisect costs a run per step. `also` names proofs a ranged close adds to its selection and runs once in
+    the pool, with no timeout or alone retry."""
     stop = Event()
 
     def superseded():
@@ -4008,7 +4330,8 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
         head = _git(repo_root, ["rev-parse", "HEAD"]).strip()
         remote, target = push_destination(repo_root)
         base = close_base(repo_root, base, push_ref="refs/remotes/%s/%s" % (remote, target), remote=remote)
-        paths = close_paths(repo_root, base, head, remote)
+        outgoing_of = None if ranged else remote
+        paths = close_paths(repo_root, base, head, outgoing_of)
         update_json_locked(STAMP_PATH, lambda doc: doc.update(close={
             "head": head, "base": base, "verdict": "incomplete", "red": [], "ts": time.time()}), raising=True)
         proofs = discover(os.path.join(repo_root, ".claude", "tests"))
@@ -4018,6 +4341,8 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
             if roster_error:
                 raise RuntimeError(roster_error)
             selected = select_for(snapshot, paths)
+            also_paths = _also_paths(snapshot, also)
+            selected += [p for p in also_paths if p not in selected]
             if not selected and any(not _is_record(p) for p in paths):
                 raise RuntimeError("no proof bound to outgoing harness paths")
             statuses, details = {}, {}
@@ -4032,8 +4357,13 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
                              if not _never_committed(repo_root, _norm(os.path.relpath(p, snapshot)))}
                 return bool(committed) and (empty_base or bool(_new_reds(snapshot, base, committed, at_base)))
 
+            def stop_reds(reds):
+                """A ranged close runs every retry: its reds are classified once, after the run, against the base."""
+                return False
+
             _run_selected(selected, verbose, statuses, details,
-                          RunOptions(cache, snapshot, "close", row, superseded, paths, base, behavior_out, red=blocks))
+                          RunOptions(cache, snapshot, "close", row, superseded, paths, base, behavior_out,
+                                     red=blocks if not ranged else stop_reds, no_retry=frozenset(also_paths)))
             if superseded():
                 print("harness_tests: a newer close superseded this one; it stops without a verdict", flush=True)
                 return 2
@@ -4044,12 +4374,13 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
             failing = [p for p in failing if os.path.basename(p) not in untracked_red]
             for name in untracked_red:
                 print("UNCOMMITTED PROOF RED %s (not in this push)" % name)
+            bisectable = [p for p in failing if not _timeout_detail(details[p])]
             if not empty_base:
-                _new_reds(snapshot, base, {p: details[p] for p in failing}, at_base)
+                _new_reds(snapshot, base, {p: details[p] for p in bisectable}, at_base)
             base_reds = {p: at_base[p] for p in failing if at_base.get(p)}
-            main_base, main_reds = _default_merge_base(snapshot, head, base, remote), {}
+            main_base, main_reds = _default_merge_base(snapshot, head, base, outgoing_of), {}
             if main_base:
-                main_reds = _reds_at(snapshot, main_base, [p for p in failing if not (
+                main_reds = _reds_at(snapshot, main_base, [p for p in bisectable if not (
                     p in base_reds and _is_pre_existing(details[p], base_reds[p], snapshot, snapshot))])
             for proof, detail in main_reds.items():
                 if _is_pre_existing(details[proof], detail, snapshot, snapshot):
@@ -4061,10 +4392,13 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
             bound = bindings(snapshot, paths) if failing else {}
             uncommitted, unexplained, reach_of = {}, {}, {}
             here = _working_tree_status(repo_root, snapshot, [
-                p for p in failing if not (p in base_reds and _is_pre_existing(details[p], base_reds[p], snapshot, snapshot))])
+                p for p in failing if not (p in base_reds and _is_pre_existing(details[p], base_reds[p], snapshot, snapshot))
+                and not _timeout_detail(details[p])])
             for proof in failing:
                 if proof in base_reds and _is_pre_existing(details[proof], base_reds[proof], snapshot, snapshot):
                     continue
+                if _timeout_detail(details[proof]):
+                    continue  # a timeout names no commit, and a bisect costs a run per step
                 found = _uncommitted_inputs(repo_root, snapshot, proof, details[proof], here.get(proof))
                 if found and found[0]:
                     uncommitted[proof] = found[0]
@@ -4073,7 +4407,7 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
                     unexplained[proof] = found[1]
                 reach = _PassCache(snapshot).reach(proof) & set(paths)
                 reach |= {path for path, proofs in bound.items() if proof in proofs}
-                candidates[proof] = _input_commits(snapshot, base, head, reach, remote)
+                candidates[proof] = _input_commits(snapshot, base, head, reach, outgoing_of)
                 reach_of[proof] = reach
             if candidates:
                 _progress("bisect starts: %d new red, %d candidate commits" % (
@@ -4085,6 +4419,8 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
                     print("harness_tests: pre-existing red at base %s: %s%s" % (base[:8], name, _known_red_note(name)))
                     _record_known_red(name, base, _last_line(details[proof]), _last_line(base_reds[proof]))
                     old_red.append(name)
+                elif _timeout_detail(details[proof]):
+                    new_red.append({"proof": name, "commit": None, "detail": details[proof], "cause": "timeout"})
                 elif proof in uncommitted:
                     print("NEEDS UNCOMMITTED %s: passes in the working tree, fails at committed HEAD; needs %s; "
                           "commit them or make the proof plant them" % (name, ", ".join(uncommitted[proof])))
@@ -4130,13 +4466,17 @@ def _close_once(repo_root, base=None, verbose=False, token=None, behavior_out=No
         dirty_red = sum(1 for red in new_red if red.get("uncommittedInputs"))
         print("harness_tests: close %s: %d paths, %d proofs, %d new red, %d need uncommitted inputs, %d pre-existing red"
               % (verdict, len(paths), len(selected), len(new_red) - dirty_red, dirty_red, len(old_red)))
+        if verdict == "incomplete":
+            status = {os.path.basename(p): statuses.get(p) or "not run" for p in selected}
+            print("harness_tests: not passed or failed: " + ", ".join(
+                "%s (%s)" % (name, status[name]) if name in status else name for name in incomplete))
         runs = read_json_salvage(runs_path()).get("runs", []) if os.path.exists(runs_path()) else []
         print(_budget_line(row, runs if isinstance(runs, list) else []))
         print(_time_line(row, runs if isinstance(runs, list) else []))
         print(_phase_line(row))
         for line in _growth_lines(row, runs if isinstance(runs, list) else [], repo_root):
             print(line)
-        if verdict == "green":
+        if verdict == "green" and not ranged:
             print("harness_tests: push the commit this close proved: git push %s %s:%s" % (remote, head, target))
         return 0 if verdict == "green" else 1 if verdict == "red" else 2
     except (RuntimeError, OSError, TimeoutError, ValueError) as exc:
@@ -4430,14 +4770,16 @@ def build_parser():
                       help="run only proofs bound to these paths without reading or writing a stamp")
     parser.add_argument('--behavior-report', metavar='OUT', help='write typed claim results and named-case observations')
     parser.add_argument("--verbose", action="store_true", help="print every proof result, not only failures and summary")
-    parser.add_argument("--runner-env", action="store_true",
-                        help="run each proof with a clean runner's environment: home and git config under its temp "
-                             "root, no CLAUDE_* but CLAUDE_PROJECT_DIR (HARNESS_RUNNER_ENV=1 does the same)")
     mode.add_argument("--close", action="store_true", help="prove outgoing harness changes at committed HEAD")
     parser.add_argument("--now", action="store_true",
                         help="with --close, start without waiting for this session's author and fold dispatches")
     parser.add_argument("--base", help="upstream revision for --close; for --for, the revision before "
                                        "the change that a red must also fail at to be pre-existing")
+    parser.add_argument("--range-start", metavar="REV",
+                        help="with --close, prove the commits from REV to HEAD that origin's default branch already holds; "
+                             "REV is the close's base, ahead of its upstream and default-branch lookups")
+    parser.add_argument("--also", nargs="+", metavar="PROOF",
+                        help="with --close --range-start, add these proofs to the selection and run each once, no retry")
     parser.add_argument("--json", action="store_true", help="with --tiers, print the rows as JSON")
     return parser
 
@@ -4447,12 +4789,16 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.base and not (args.close or args.for_paths):
         parser.error("--base requires --close or --for")
+    if args.range_start and not args.close:
+        parser.error("--range-start requires --close")
+    if args.range_start and args.base:
+        parser.error("--range-start replaces --base for --close: pass one of them")
+    if args.also and not args.range_start:
+        parser.error("--also requires --close --range-start")
     if args.json and not args.tiers:
         parser.error("--json requires --tiers")
     if args.now and not args.close:
         parser.error("--now requires --close")
-    if args.runner_env:
-        _RUNNER_ENV["scrub"] = True
     if args.commit_paths:
         print(json.dumps(run_commit(args.repo, args.commit_paths)))
         return 0
@@ -4462,7 +4808,8 @@ def main(argv=None):
         return 0
     if args.close:
         extra = dict(behavior_out=args.behavior_report) if args.behavior_report else {}
-        return run_close(args.repo, args.base, args.verbose, now=args.now, **extra)
+        return run_close(args.repo, args.range_start or args.base, args.verbose, now=args.now,
+                         ranged=bool(args.range_start), also=args.also or (), **extra)
     if args.proofs_for_paths:
         selected = select_for(args.repo, args.proofs_for_paths)
         if not selected:

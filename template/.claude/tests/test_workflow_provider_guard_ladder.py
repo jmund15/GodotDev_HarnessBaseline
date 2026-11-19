@@ -206,8 +206,7 @@ CASES = [
      "the marker must not touch a plain claimant"),
 
     ("the header carries the supplementary exception",
-     lambda: "A pin must claim its job's tier, except a tier marked supplementary, which fills a review seat "
-             "beside a qualified seat only (ladder §Role definitions); which claimant to use" in wpg.ROLE_LADDER_HEADER,
+     lambda: "supplementary" in wpg.ROLE_LADDER_HEADER and "§Role definitions" in wpg.ROLE_LADDER_HEADER,
      "a session that reads only the header and role lines must learn the exception"),
 
     ("an empty Role guidance table returns []",

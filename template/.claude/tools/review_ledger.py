@@ -1032,16 +1032,11 @@ def read_rows(path: Path):
 
 
 def _append_rows(path: Path, rows: list) -> bool:
-    """Append `rows` under the ledger's lock, so a rotation in one worktree never replaces the file under another's
-    append. False when the lock cannot be taken or the write fails."""
+    """Append `rows` under the ledger's lock, which `append_jsonl_rotating` holds across its rotation and append,
+    so a rotation in one worktree never replaces the file under another's append. False when the lock cannot be
+    taken or the write fails."""
     state = _import("_hook_state", CLAUDE_DIR / "hooks")
-    handle = state._acquire_json_lock(str(path))
-    if handle is None:
-        return False
-    try:
-        return state.append_jsonl_rotating(str(path), rows, max_bytes=MAX_BYTES, keep_lines=KEEP_LINES)
-    finally:
-        state._release_json_lock(handle)
+    return state.append_jsonl_rotating(str(path), rows, max_bytes=MAX_BYTES, keep_lines=KEEP_LINES)
 
 
 # ---- git facts for coverage -------------------------------------------------------------------------------
@@ -1180,14 +1175,14 @@ class Ctx:
     def _unmatched_by_subject(self, sha: str) -> dict:
         """{subject: commit} for HEAD's commits with no patch-equivalent on `sha`'s line; a subject two of them
         share maps to None, so neither pairs."""
-        cherry = _git(self.repo, ["cherry", sha, "HEAD"])
+        cherry = _git(self.repo, ["cherry", "-v", sha, "HEAD"])
         found: dict = {}
         if cherry.returncode != 0:
             return found
-        for line in cherry.stdout.decode("ascii", errors="replace").splitlines():
+        for line in cherry.stdout.decode("utf-8", errors="replace").splitlines():
             if line.startswith("+"):
-                commit = line[2:].strip()
-                subject = _git_text(self.repo, ["log", "-1", "--format=%s", commit]).strip()
+                commit, _, subject = line[2:].partition(" ")
+                subject = subject.strip()
                 found[subject] = None if subject in found else commit
         return found
 

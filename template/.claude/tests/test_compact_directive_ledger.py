@@ -209,7 +209,7 @@ def summary_fidelity_cases():
 
 def heavy_rows(count=30):
     """Mid-length owner messages: the anchor prints its ends whole and clips or omits the middle."""
-    return [user(f"Heavy owner message {n}. " + "detail " * 35 + f"END{n}") for n in range(count)]
+    return [user(f"Heavy owner message {n}. " + "detail " * 60 + f"END{n}") for n in range(count)]
 
 
 def whole_in_anchor(tmp, transcript, session):

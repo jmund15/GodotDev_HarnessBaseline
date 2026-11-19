@@ -33,7 +33,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks"))
 import spend_ledger  # noqa: E402
+import _hook_state  # noqa: E402
 
 REPAID = 15
 KEY_ENV = "SIDECAR_WORK_KEY"
@@ -86,8 +88,7 @@ def void(key, launch_id, reason, ledger):
     """Append the row that cancels one launch's finished row: its caller saw the launch return no deliverable."""
     row = {"timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "workKey": key, "voids": launch_id, "reason": reason}
-    with open(ledger, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row) + "\n")
+    _hook_state.append_jsonl_rotating(str(ledger), [row], max_bytes=None)
 
 
 def main(argv=None):

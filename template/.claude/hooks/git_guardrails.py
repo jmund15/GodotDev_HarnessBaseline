@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
 Hook: PreToolUse on Bash|PowerShell — block git operations that destroy local state, and
-require a green harness close before push (floor guard), and advise a harness commit authored without
+require a green harness close before push where the project declares no main check (floor guard), and advise a harness commit authored without
 `instruction_quality` loaded (`_skill_verdict`; retire-when review-by 2027-03-15), name a staged skill or
 command body past the client's re-attach cap (`_reattach_cap_verdict`), report cheap bound
-proofs at commit that failed, ran incomplete, could not run or were left to the close (process
-advisory), name a tool whose every tracked proof `adaptation.json` `proof_excluded` keeps from running
+proofs at commit that failed or did not pass (one `unproven` line, said once per cause per context window;
+process advisory), name a tool whose every tracked proof `adaptation.json` `proof_excluded` keeps from running
 (`_excluded_proof_note`; process advisory), report `layer_closure` findings over the touched tracked
-lock rows (`_layer_closure_note`; process advisory, local cache clone only), and deny a commit
+lock rows (`_layer_closure_note`; process advisory, local cache clone only), deny a commit of a path whose
+`baseline_sync.py pull` proof is pending or red while its bytes are the pulled bytes, or while the pull record is
+unreadable (`_pull_proof.blocked`; floor guard), deny `git commit --amend` of a HEAD that is neither this
+session's nor a lane's own commit (`amend_verdict`; floor guard), and deny a commit
 that a git index write (`add`, `rm`, `reset`, `stash`, ...; `_commit_scope.writes_index`) precedes in the
 same command: every commit guard reads the index before the command runs, so it would judge the commit
 without that write. A repo the same command creates with `git init` is exempt.
@@ -38,12 +41,14 @@ Wired in: settings.json hooks.PreToolUse with matcher "Bash|PowerShell".
 """
 
 import ast
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
@@ -53,21 +58,43 @@ sys.path.insert(0, _HOOKS_DIR)
 # commits; runner failure denies pushes and only advises local commits.
 try:
     from _hook_state import read_json_salvage, state_path, SETUP_SURFACE_FILES as SURFACES, \
-        in_harness_dirs  # noqa: E402
+        in_harness_dirs, spent_mark, unspend  # noqa: E402
     _STATE_IMPORT_ERROR = None
 except Exception as _exc:
     read_json_salvage, state_path, SURFACES, in_harness_dirs = None, None, None, (lambda _rel: False)
+    spent_mark, unspend = (lambda: 0), (lambda _start, _stop=None: None)
     _STATE_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
-try:
-    from harness_edit_skill_reminder import is_harness_file  # noqa: E402
-except Exception:
-    is_harness_file = None
-try:
-    from harness_tests import close_base, close_paths, commit_advisories, default_base_covers, push_destination, unproven_note  # noqa: E402
-    _HARNESS_IMPORT_ERROR = None
-except Exception as _exc:
-    close_base = close_paths = commit_advisories = default_base_covers = push_destination = unproven_note = None
-    _HARNESS_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
+_LAZY = {}
+
+
+def _harness_file_check():
+    """`harness_edit_skill_reminder.is_harness_file`, or None when the helper cannot import. Imported at the first
+    commit that needs it: a module-level import puts the file in the read set of every proof that imports this hook."""
+    if "is_harness_file" not in _LAZY:
+        try:
+            from harness_edit_skill_reminder import is_harness_file
+        except Exception:
+            is_harness_file = None
+        _LAZY["is_harness_file"] = is_harness_file
+    return _LAZY["is_harness_file"]
+
+
+def _runner():
+    """The runner's close helpers (`close_base`, `close_paths`, `commit_advisories`, `default_base_covers`,
+    `push_destination`, `unproven_command`) and `error`, the import failure text or None. Imported at the first harness
+    commit or push that needs them, not on every git call: the runner pulls in the whole of `harness_tests.py` and the
+    adaptation data it loads. A runner that cannot import leaves every helper None."""
+    if "runner" not in _LAZY:
+        try:
+            from harness_tests import close_base, close_paths, commit_advisories, default_base_covers, push_destination, unproven_command
+            _LAZY["runner"] = SimpleNamespace(error=None, close_base=close_base, close_paths=close_paths,
+                                              commit_advisories=commit_advisories, default_base_covers=default_base_covers,
+                                              push_destination=push_destination, unproven_command=unproven_command)
+        except Exception as _exc:
+            _LAZY["runner"] = SimpleNamespace(error="%s: %s" % (type(_exc).__name__, _exc), close_base=None,
+                                              close_paths=None, commit_advisories=None, default_base_covers=None,
+                                              push_destination=None, unproven_command=None)
+    return _LAZY["runner"]
 # Which paths a merge commit authors, shared with `baseline_classification_guard.py`. Guarded like
 # the two above: a missing helper must deny commit-like invocations, never crash the other git guards.
 try:
@@ -473,11 +500,13 @@ def _stamp_path(repo_root):
         repo_root, ".claude", "logs", "harness_tests_stamp.json")
 
 
-def _md_density_verdict(repo_root, touched, git_env=None):
+def _md_density_verdict(repo_root, touched, git_env=None, session_id=""):
     """The advisory for a commit whose staged `.claude/**.md` ADDS units denser than the §5 audit trigger.
 
     Judges the DELTA, never the whole file: a surface that was already dense is not this commit's
-    doing. Reuses
+    doing. A unit an earlier commit advisory in this session already listed (same file, same text) is not
+    listed again; a unit grown since is, and so is every unit after a compaction, which dropped the line. The key
+    is spent here, so the caller that denies the commit afterwards gives it back (`main`). Reuses
     harness_growth_guard's own UNIT regex and EXCLUDED list so there is one definition of a
     "rule-unit", not a second that drifts.
     """
@@ -525,13 +554,16 @@ def _md_density_verdict(repo_root, touched, git_env=None):
             prev = was_size.get(key(ln))
             if prev is not None and n <= prev:
                 continue
-            over.append((norm, n, ln.strip()[:90]))
+            over.append((norm, n, ln.strip()[:90], hashlib.sha1(ln.encode("utf-8")).hexdigest()[:12]))
 
+    if session_id and over:
+        from _hook_state import fire_once_since_compaction
+        over = [o for o in over if fire_once_since_compaction(session_id, "md_density:%s:%s" % (o[0], o[3]))]
     if not over:
         return None
     lines = ["[harness commit] a staged .md adds a rule-unit over the %d B/unit audit trigger "
              "(instruction_quality §5; a review trigger, never a cap):" % hg.DENSITY_AUDIT]
-    for norm, n, head in over:
+    for norm, n, head, _sig in over:
         lines.append("  %s: %d B — %s…" % (norm, n, head))
     lines.append("Apply §5's split test and §6's cuts; leave a unit whose every sentence is needed.")
     return "\n".join(lines)
@@ -684,6 +716,7 @@ def _skill_verdict(session_id, touched):
         return None
     # The skill governs what the Write|Edit reminder classifies plus the harness code set; a plan,
     # a memory or the worklog mirror has its own owner.
+    is_harness_file = _harness_file_check()
     surfaces = [p for p in touched if is_harness_file is None or is_harness_file(p)
                 or in_harness_dirs(p)]
     if not surfaces:
@@ -828,6 +861,30 @@ def _own_trailer(session_id):
     return None
 
 
+def amend_verdict(rest, cwd, git_env=None, session_id=None):
+    """Deny `git commit --amend` unless HEAD is this session's own commit (its trailer, `_own_trailer`) or a linked
+    worktree's own commit (`_lane_commits`): in a shared checkout HEAD may be a peer's or the owner's commit,
+    and an amend rewrites it. Floor guard: an unreadable HEAD or trailer denies."""
+    if not parse_commit_args(rest)[1]:
+        return None
+    root = (run_git(["rev-parse", "--show-toplevel"], cwd, git_env) or cwd).strip()
+    sha = (run_git(["rev-parse", "HEAD"], root, git_env) or "").strip()
+    if sha and sha in _lane_commits(root):
+        return None
+    trailer = _own_trailer(session_id)
+    body = run_git(["log", "-1", "--format=%B", "HEAD"], root, git_env) if sha else None
+    if trailer and body is not None and trailer in body:
+        return None
+    if body is None:
+        why = "HEAD cannot be read"
+    elif not trailer:
+        why = "this session's commit trailer cannot be resolved, so HEAD %s has no known author" % sha[:9]
+    else:
+        why = "HEAD %s carries no `%s` trailer, so another author made it" % (sha[:9], trailer)
+    return ("BLOCKED git commit --amend (CLAUDE.core.md §Core Principles: preserve peer work) — %s, and the amend "
+            "would rewrite it. Commit the change as a new commit." % why)
+
+
 def _replaced_by(root, revs):
     """{path: {blob}} each commit in `revs` replaced (modifications only)."""
     out = run_git(["show", "--raw", "-z", "--no-abbrev", "--no-renames", "--format="] + revs, root) if revs else ""
@@ -965,7 +1022,7 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
     if skill:
         ADVISORIES.append(skill)
 
-    dense = _md_density_verdict(repo_root, changed, git_env)
+    dense = _md_density_verdict(repo_root, changed, git_env, session_id)
     if dense:
         ADVISORIES.append(dense)
 
@@ -994,6 +1051,8 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
                         and norm in changed):
                     if note:
                         ADVISORIES.append(note)
+                    elif prefix != ".claude/hooks/":
+                        pass
                     elif _behavior_unchanged(repo_root, norm, git_env, ignore_strings=True):
                         ADVISORIES.append("[harness commit] no proof for %s: if a changed string is a pattern "
                                           "it matches or a value it decides on, add the proof "
@@ -1009,16 +1068,17 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
         return "\n".join(lines)
 
     if changed:
-        if _HARNESS_IMPORT_ERROR:
-            ADVISORIES.append("[harness commit] bound proofs could not run: runner import error: %s; "
-                              "unproven, not passed, and the close cannot prove it until the runner imports."
-                              % _HARNESS_IMPORT_ERROR)
+        runner = _runner()
+        if runner.error:
+            ADVISORIES.append("[harness commit] unproven, not passed: the runner does not import (%s), so the "
+                              "close cannot prove it either." % runner.error)
         else:
             try:
-                ADVISORIES.extend(commit_advisories(repo_root, changed, git_environ(git_env)))
+                ADVISORIES.extend(runner.commit_advisories(repo_root, changed, git_environ(git_env),
+                                                           session_id=session_id))
             except Exception as exc:
-                ADVISORIES.append("[harness commit] bound proofs could not run: %s: %s; %s"
-                                  % (type(exc).__name__, exc, unproven_note(changed)))
+                ADVISORIES.append("[harness commit] unproven, not passed: the bound-proof run failed (%s: %s); "
+                                  "`%s` runs them." % (type(exc).__name__, exc, runner.unproven_command(changed)))
     return None
 
 
@@ -1043,7 +1103,7 @@ def _push_ranges(rest, root, git_env=None, targets=None):
     def config(key):
         return (run_git(["config", "--get", key], root, git_env) or "").strip()
     if remote is None:
-        remote = operands.pop(0) if operands else push_destination(root, git_env)[0]
+        remote = operands.pop(0) if operands else _runner().push_destination(root, git_env)[0]
     specs, args = [], iter(operands)
     for arg in args:
         if arg == "tag":
@@ -1089,7 +1149,7 @@ def _push_ranges(rest, root, git_env=None, targets=None):
         if target == "HEAD":
             target = (run_git(["branch", "--show-current"], root, git_env) or "").strip()
         ref = "refs/remotes/" + remote + "/" + target
-        base = close_base(root, push_ref=ref, head=rev.strip(), git_env=git_env, remote=remote)
+        base = _runner().close_base(root, push_ref=ref, head=rev.strip(), git_env=git_env, remote=remote)
         ranges.append((base, rev.strip()))
         if targets is not None:
             targets.append((remote, target))
@@ -1099,38 +1159,56 @@ def _push_ranges(rest, root, git_env=None, targets=None):
 _ADAPTATION_DIR = _CLAUDE_DIR
 
 
-def _land_prefix():
-    """`adaptation.json` `land_prefix`: the branch prefix the project's land runner proves and lands; empty when
-    the project has none."""
+def _adaptation_str(key):
+    """`adaptation.json` string `key`; empty when it is absent or not a string."""
     sys.path.insert(0, os.path.join(_CLAUDE_DIR, "tools"))
     try:
         import adaptation
     finally:
         sys.path.pop(0)
-    prefix = adaptation.load(_ADAPTATION_DIR).get("land_prefix")
-    return prefix if isinstance(prefix, str) else ""
+    value = adaptation.load(_ADAPTATION_DIR).get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _land_prefix():
+    """`adaptation.json` `land_prefix`: the branch prefix whose pushes the project's land runner integrates onto
+    the default branch; empty when the project has none."""
+    return _adaptation_str("land_prefix")
+
+
+def _main_check():
+    """`adaptation.json` `main_check`: the workflow that proves the default branch after every push; empty when
+    the project declares none."""
+    return _adaptation_str("main_check")
 
 
 def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
-    """Floor guard: each outgoing harness ref must be the commit a green close proved, with its base
-    and paths. A commit landed after the close stays local: the push names the proven commit. A push to a
-    branch under `adaptation.json` `land_prefix` passes: the project's land runner runs the close itself
-    before the default branch moves."""
+    """Floor guard: where the project declares no `adaptation.json` `main_check`, each outgoing harness ref must be
+    the commit a green close proved, with its base and paths; a commit landed after the close stays local, and the
+    push names the proven commit. A push to a branch under `land_prefix` passes: the land runner integrates it and
+    the close is not its job. Where `main_check` is declared the default branch is proved after the push, so no close
+    is required; a push source the guard cannot resolve is still denied. `approving_gates.py` still approves only a
+    push of a stored green close's commit."""
     if bypass_declared(inline_env, BYPASS_VAR):
         return None
     try:
         land = _land_prefix()
     except Exception:
         land = ""
+    try:
+        declared = bool(_main_check())
+    except Exception:
+        declared = False
     if land:
         next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %%s; this project has a land runner: "
                      "`git push --recurse-submodules=check origin HEAD:%s<session id's first 8 chars>`; the runner "
-                     "runs the close and lands the branch."
+                     "lands the branch."
                      % land)
     else:
         next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %s; run `python3 "
                      ".claude/scripts/harness_tests.py --close` in the background, then push the commit it proves.")
-    if _STATE_IMPORT_ERROR or _HARNESS_IMPORT_ERROR:
+    runner = _runner()
+    if _STATE_IMPORT_ERROR or runner.error:
         return next_step % "close machinery unavailable"
     root = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
     if not root:
@@ -1139,17 +1217,18 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
     targets = []
     try:
         ranges = _push_ranges(rest, root, git_env, targets)
-        outgoing = [(base, rev, close_paths(root, base, rev, remote))
+        outgoing = [(base, rev, runner.close_paths(root, base, rev, remote))
                     for (base, rev), (remote, _target) in zip(ranges, targets)]
     except RuntimeError as exc:
         source = str(exc).removeprefix("cannot resolve push source ")
         if source != str(exc):
             return ("BLOCKED harness push (rules/harness_tooling.md) — cannot resolve push source `%s`; the guard "
-                    "does not expand shell variables, so push the commit by its literal hash or ref (a green close "
-                    "prints the exact command)." % source)
+                    "does not expand shell variables, so push the commit by its literal hash or ref." % source)
         return next_step % "cannot resolve the outgoing harness range"
     except (OSError, ValueError):
         return next_step % "cannot resolve the outgoing harness range"
+    if declared:
+        return None
     harness = [(base, rev, paths, dest) for (base, rev, paths), dest in zip(outgoing, targets)
                if paths and not (land and dest[1].removeprefix("refs/heads/").startswith(land))]
     if not harness:
@@ -1163,7 +1242,7 @@ def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
                     "%s; push the proven commit: `git push %s %s:%s`, or check that ref out and run `python3 "
                     ".claude/scripts/harness_tests.py --close` in the background there."
                     % (proven[:12], rev[:12], remote, proven, target))
-        if rev != proven or not (close.get("base") == base or default_base_covers(root, close.get("base"), rev, remote)) \
+        if rev != proven or not (close.get("base") == base or runner.default_base_covers(root, close.get("base"), rev, remote)) \
                 or not set(paths) <= set(close.get("paths") or []):
             return next_step % ("no green close result covers %s, its outgoing base and paths" % rev[:12])
     return None
@@ -1257,6 +1336,7 @@ def main() -> None:
             sys.exit(1)
         sys.exit(0)
     ADVISORIES.clear()
+    spent_from = spent_mark()
     try:
         input_data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
@@ -1317,6 +1397,7 @@ def main() -> None:
                 message = "BLOCKED commit (memory gotcha_concurrent_session_hazards #16) — %s." % problem
             elif args[0] == "commit":
                 message = (base_verdict(target, git_env)
+                           or amend_verdict(args[1:], target, git_env, input_data.get("session_id"))
                            or revert_verdict(args[1:], target, git_env, input_data.get("session_id")))
             if not message:
                 message = harness_verdict(args[0], args[1:], target, inline_env, git_env,
@@ -1324,6 +1405,7 @@ def main() -> None:
         if args and args[0] in REF_MAKERS:
             ref_makers.setdefault(key, set()).update(refs_created(args[0], args[1:]))
         if message:
+            unspend(spent_from)  # a denied call prints no advisory: the once-keys built for it go back
             print(message, file=sys.stderr)
             sys.exit(2)
 

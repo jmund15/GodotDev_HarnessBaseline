@@ -43,6 +43,17 @@ def reference_line(name, prefix):
         return next((line.strip() for line in fh if line.startswith(prefix)), "")
 
 
+def owner_lines(rel, heading):
+    """The non-empty lines of one `## ` section of an owner file under .claude/, cut here independently of the
+    hook, so a case asserts the edit receives the owner's whole rule as it stands on disk."""
+    with open(os.path.join(HERE, "..", *rel.split("/")), encoding="utf-8") as fh:
+        text = fh.read()
+    body = text.split("\n## " + heading + "\n", 1)[1].split("\n## ", 1)[0]
+    return [line.strip() for line in body.splitlines() if line.strip()]
+
+
+LADDER_RULE_LINES = owner_lines("commands/ladder_ingest.md", "What lands on the ladder")
+assert LADDER_RULE_LINES
 HOOKS_REF_LINE = reference_line("hooks.md", "Read in full when the edit changes a hook")
 CMDS_REF_LINE = reference_line("skills_and_commands.md", "Read in full when the edit changes a skill")
 assert HOOKS_REF_LINE and CMDS_REF_LINE, (HOOKS_REF_LINE, CMDS_REF_LINE)
@@ -122,15 +133,13 @@ def main():
     got, reason = edit(HARNESS, env)
     cases.append(("a harness edit before the skill is in context is denied, naming its one load route and the re-check",
                   got == DENY and "skills/instruction_quality/SKILL.md" in reason
-                  and 'Skill(skill="instruction_quality")' in reason and "with no Skill tool" not in reason
+                  and 'Skill(skill="instruction_quality")' in reason
                   and "re-issue" in reason))
     got, reason = edit(HOOKPY, env)
     cases.append(("a hook edit's deny embeds reference/hooks.md in full and names no other class file",
                   got == DENY and HOOKS_REF_LINE in reason
                   and all(f not in reason for f in (
-                      "skills_and_commands.md", "orchestration.md", "claims_and_wording.md"))
-                  and "against the sections you read" in reason
-                  and "sections for its file class" not in reason))
+                      "skills_and_commands.md", "orchestration.md", "claims_and_wording.md"))))
     got, reason = edit(COMMAND, env)
     cases.append(("a command edit's deny embeds reference/skills_and_commands.md and keeps the requirement and next step",
                   got == DENY and CMDS_REF_LINE in reason and HOOKS_REF_LINE not in reason
@@ -177,29 +186,16 @@ def main():
     got, reason = edit(LADDER, env)
     cases.append(("a ladder edit gets its maintaining command's rules after the reminder latched",
                   got == NUDGE and "/ladder_ingest" in reason))
-    # The owner command does not load on a direct edit, so the note carries the cell rule itself
-    # (/codify Step 0), held word for word to its owner so the copy cannot drift.
-    with open(os.path.join(HERE, "..", "commands", "ladder_ingest.md"), encoding="utf-8") as fh:
-        owner = fh.read()
-    rule = "A cell states whatever decides a pin within the tiers the row claims"
-    note = reason[reason.find(rule):] if rule in reason else ""
-    note = note[:note.find("`/ladder_ingest`")].strip() if "`/ladder_ingest`" in note else note.strip()
-    flat = lambda text: " ".join(text.split())
-    cases.append(("the ladder note carries the cell rule, word for word as /ladder_ingest states it",
-                  bool(note) and flat(note) in flat(owner)))
-    # The cell-scope bullets live in the owner's list, so each is held to the note on its own.
-    scope_keys = ("`effort` owns every effort level", "An `effort` cell gives the starting effort", "A clause is as wide as the evidence",
-                  "An effort level earns a place", "A cell is read mid-dispatch",
-                  "Every shape term", "Version takeover audits")
-    bullets = [line[2:].replace("**", "") for line in owner.splitlines()
-               if line.startswith("- **") and any(key in line for key in scope_keys)]
-    cases.append(("the ladder note carries each cell-scope bullet, word for word as /ladder_ingest states it",
-                  len(bullets) == len(scope_keys) and all(flat(b) in flat(reason) for b in bullets)))
-    cases.append(("the ladder note carries the routing-verdict rule too, through its last sentence",
-                  "cells cover every work shape of every tier its registry rows claim" in note
-                  and "fails a name no ladder row covers." in note))
+    missing = [line for line in LADDER_RULE_LINES if line not in reason]
+    cases.append(("the ladder note is the owner's whole section as it stands on disk (missing: %d, first: %r)"
+                  % (len(missing), (missing or [""])[0][:80]), got == NUDGE and not missing))
     got, reason = edit(LADDER, env)
-    cases.append(("and on every later ladder edit", got == NUDGE and "/ladder_ingest" in reason))
+    cases.append(("a later ladder edit in the same context window repeats no note", got == ALLOW))
+    precompact(env)
+    mark_skill_loaded(tmp, SID)
+    got, reason = edit(LADDER, env)
+    cases.append(("a compaction drops the note from context, so the next ladder edit carries it again",
+                  got == NUDGE and "/ladder_ingest" in reason))
     mark_skill_loaded(tmp, "hesr0007")
     got, reason = edit(HARNESS, env, session="hesr0007")
     cases.append(("another harness file gets no ladder note",
@@ -294,6 +290,50 @@ def main():
     mark_skill_loaded(tmp, WT_LOADED2)
     got, reason = edit(WT + "/.claude/CLAUDE.md", env, session=WT_LOADED2)
     cases.append(("and so is its CLAUDE.md", got == NUDGE))
+
+    # An owned note falls back to its home line, never a clipped section, when the section cannot reach the agent.
+    import harness_edit_skill_reminder as hook  # noqa: E402
+    root = tempfile.mkdtemp(prefix="hesrowner_", dir=tmp)
+    os.makedirs(os.path.join(root, "commands"))
+    with open(os.path.join(root, "commands", "own.md"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# Own\n\n## Rule\n\nPLANTED-RULE line.\n\n## Next\n\nOTHER-SECTION line.\n")
+    fits = hook.owned_note("Own edit", "commands/own.md", "Rule", room=1000, root=root)
+    cases.append(("an owned note carries its section and stops at the next heading",
+                  "PLANTED-RULE" in fits and "OTHER-SECTION" not in fits))
+    tight = hook.owned_note("Own edit", "commands/own.md", "Rule", room=len(fits) - 1, root=root)
+    cases.append(("a section past the room left under the client's cap becomes the home line",
+                  "PLANTED-RULE" not in tight and "commands/own.md" in tight))
+    gone = hook.owned_note("Own edit", "commands/absent.md", "Rule", room=1000, root=root)
+    cases.append(("an unreadable owner becomes the home line", "commands/absent.md" in gone))
+
+    # An owned note the first edit's shared room cut to its home line is not spent: the next edit of the path, with
+    # the whole cap to itself, still carries the section. One that never fits a whole cap is told once as its home line.
+    latch_env = os.environ.get("HARNESS_HOOK_STATE_DIR")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = tempfile.mkdtemp(prefix="hesrlatch_", dir=tmp)
+    real_cap, real_in_context = hook.HOOK_TEXT_CAP, hook.skill_in_context
+    hook.skill_in_context = lambda *args, **kwargs: True
+    try:
+        full = hook.owned_note(*hook.OWNED_NOTES["reference/model_ladder_evidence.md"])
+        general = hook.build_reminder(LADDER)
+        hook.HOOK_TEXT_CAP = len(general) + 1 + len(full) - 1
+        call = lambda session: (hook.process({"tool_name": "Edit", "session_id": session,
+                                              "tool_input": {"file_path": LADDER}}) or {}).get("context", "")
+        first, second, third = call("latch-note"), call("latch-note"), call("latch-note")
+        home = hook.OWNED_NOTES["reference/model_ladder_evidence.md"][1]
+        cases.append(("L2: a note cut to its home line by the shared room is not spent",
+                      home in first and full not in first))
+        cases.append(("L2: the next edit of that path, with the whole cap, carries the whole note", full in second))
+        cases.append(("L2: the delivered whole note is spent", third == ""))
+        hook.HOOK_TEXT_CAP = len(full) - 1
+        tight = [call("latch-tight"), call("latch-tight")]
+        cases.append(("L2: a note that never fits a whole cap is told once as its home line",
+                      home in tight[0] and tight[1] == ""))
+    finally:
+        hook.HOOK_TEXT_CAP, hook.skill_in_context = real_cap, real_in_context
+        if latch_env is None:
+            os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
+        else:
+            os.environ["HARNESS_HOOK_STATE_DIR"] = latch_env
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

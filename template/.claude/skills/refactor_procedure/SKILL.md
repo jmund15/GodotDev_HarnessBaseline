@@ -22,7 +22,7 @@ description: >-
     *   Ensure legacy `[Export]` fields still function (not just present in code)
     *   Test with existing data files to catch silent breaking changes
     *   Parity can preserve defects: read each relocation destination as well as its source, and verify deletion and migration coverage
-7.  **Regression gate:** each slice runs its items' targeted tests, the refactor's close runs `verify -Scope` once, and the drive's close gate backs the commits (`change_control` §Gate cadence).
+7.  **Regression gate:** each slice runs its items' targeted tests, the refactor's close runs `verify -Scope` once, and the full gate runs in the main check after the land (`change_control` §Gate cadence).
 
 ## Cross-references
 

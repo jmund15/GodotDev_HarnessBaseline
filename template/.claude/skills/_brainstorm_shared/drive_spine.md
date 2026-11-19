@@ -94,8 +94,9 @@ that patch as its resume point. A red test left in the tree fails every other se
   to open a gate. For an inconclusive result, recover the missing artifact or rerun only the uncovered check when its
   cause is understood. A baseline drop that the work's test arithmetic accounts for exactly (N retired, M added) is
   not unaccounted; the report and the commit message disclose it.
-- **H5: non-convergence.** The same critical recurs, revisions stop adding evidence, a supported critical in an applied remedy has no answer in the existing design
-  (`skills/orchestration/reference/later_rounds.md`), or the executor is stuck with no new information. Annotating a disposition and proceeding is never the exit. Never present a known-critical plan for
+- **H5: non-convergence.** A unit that stopped converging (`skills/orchestration/reference/later_rounds.md`) reaches a
+  dead end on its return to the stage that designed it, revisions stop adding evidence, or the executor is stuck with no
+  new information. Annotating a disposition and proceeding is never the exit. Never present a known-critical plan for
   approval. A dead-end verdict from an adversarial panel is H5.
 - **H6: prior-art conflict with a verified existing owner.** An `exp-prior-art` claim naming an owner whose concern
   the plan would duplicate halts before drafting, for an ownership decision. Another session's in-flight plan over the

@@ -27,6 +27,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _hook_state import append_jsonl_rotating
 from _win_path import drive_path
 
 STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
@@ -231,10 +232,10 @@ def _log(path, payload, tool, reason):
     if not path:
         return
     try:
-        with open(path, "a", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps({"t": round(time.time(), 3), "agent_id": payload.get("agent_id"),
-                                 "agent_type": payload.get("agent_type"), "tool": tool,
-                                 "decision": "deny" if reason else "allow", "reason": reason}) + "\n")
+        append_jsonl_rotating(path, [{"t": round(time.time(), 3), "agent_id": payload.get("agent_id"),
+                                      "agent_type": payload.get("agent_type"), "tool": tool,
+                                      "decision": "deny" if reason else "allow", "reason": reason}],
+                              max_bytes=None)
     except Exception:
         pass
 

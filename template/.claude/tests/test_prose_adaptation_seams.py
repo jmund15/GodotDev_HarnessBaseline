@@ -1,25 +1,24 @@
-"""Re-runnable proof for the 8 `adaptation.json` prose seams (Design Doc §8): each seam file
-names `adaptation.json` and its own key, so the reader loads project values at run time, and
-none of the file's own text hardcodes a project value for that key.
-
-The "supplied consumer seed" is a fixture this proof builds itself -- structurally realistic
-planted values, assembled from fragments and written to a temp JSON file, then read back from
-that file at runtime for the absence check. This proof never embeds a planted token as one
-contiguous literal (this is a public repo), and it never checks a real consumer project's file
-by path, so the mechanism proven here is project-agnostic, matching what the template ships.
+#!/usr/bin/env python3
+"""Re-runnable proof for the 8 `adaptation.json` prose seams: each seam file names `adaptation.json` and
+its own key, so the reader loads project values at run time. A shared seam file also holds no string value
+of the real `adaptation.json[key]` (a hardcoded project value would drift from the file); a `forked` or
+`local` file belongs to this project and may name its own values.
 
     python3 .claude/tests/test_prose_adaptation_seams.py
 """
 import json
 import os
+import re
 import sys
-import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLAUDE_DIR = os.path.join(HERE, "..")
+sys.path.insert(0, HERE)
+from _lock_rows import project_owned  # noqa: E402
 
-# file (relative to CLAUDE_DIR) -> (the adaptation.json key its prose sentence must name, the layer
-# that ships the file). A consumer that did not adopt the layer holds no `CLAUDE.<layer>.md` and no file.
+ADAPTATION = os.path.join(CLAUDE_DIR, "skills", "project_subsystems", "adaptation.json")
+
+# file (relative to CLAUDE_DIR) -> (the adaptation.json key it names, the layer that ships the file).
 SEAMS = {
     "commands/clean_pull.md": ("paired_repos", "pure"),
     "commands/clean_push.md": ("paired_repos", "pure"),
@@ -32,97 +31,63 @@ SEAMS = {
 }
 
 
-def _layer_adopted(layer):
-    return layer == "pure" or os.path.exists(os.path.join(CLAUDE_DIR, f"CLAUDE.{layer}.md"))
+def strings_of(value):
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in strings_of(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in strings_of(v)]
+    return []
 
 
-def _fragment_join(*parts):
-    return "".join(parts)
-
-
-def _build_fixture_seed():
-    """Structurally realistic planted values per key, built from fragments so no token is one
-    contiguous literal anywhere in this file's source."""
-    sub_name = _fragment_join("Zq", "Planted", "Sub", "module")
-    domain_name = _fragment_join("Zq", "Planted", "Domain")
-    scope_name = _fragment_join("zq", "planted", "scope")
-    section_name = _fragment_join("Zq", "Planted", "Section")
-    exception_path = _fragment_join("Zq", "Planted", "Folder") + "/"
-    exception_reason = _fragment_join("Zq", "planted", "reason", "-", "text")
-    pr_domain = _fragment_join("Zq", "Planted", "PrDomain")
-    pr_path = _fragment_join("Zq", "Planted", "Src") + "/"
-
-    return {
-        "paired_repos": [sub_name],
-        "content_domains": [{"name": domain_name, "description": "planted"}],
-        "content_scopes": [{"scope": scope_name, "paths": [], "checklist_section": section_name}],
-        "structure_exceptions": [{"path": exception_path, "reason": exception_reason}],
-        "pr_domains": [{"domain": pr_domain, "paths": [pr_path]}],
-    }
-
-
-def _values_for_key(fixture, key):
-    """Flat list of every planted string this key's fixture rows carry -- the tokens that must
-    never appear, verbatim, in the seam file's own text."""
-    values = []
-    for row in fixture.get(key, []):
-        if isinstance(row, str):
-            values.append(row)
-        elif isinstance(row, dict):
-            for v in row.values():
-                if isinstance(v, str):
-                    values.append(v)
-                elif isinstance(v, list):
-                    values.extend(x for x in v if isinstance(x, str))
-    return values
+def seam_errors(rel, text, key, values):
+    errors = []
+    if "adaptation.json" not in text:
+        errors.append("%s does not name adaptation.json" % rel)
+    if key not in text:
+        errors.append("%s does not name its key %s" % (rel, key))
+    # A value counts as a whole word: a short one (`UI`) inside a longer word (`BUILD`) is not that value, and a
+    # consuming project's own values meet this check on prose it never wrote.
+    errors += ["%s hardcodes the %s value %r" % (rel, key, v) for v in values
+               if v and re.search(r"(?<![\w-])%s(?![\w-])" % re.escape(v), text)]
+    return errors
 
 
 def main():
+    with open(ADAPTATION, encoding="utf-8") as fh:
+        adaptation = json.load(fh)
     cases = []
-    failures = []
+    for rel, (key, layer) in SEAMS.items():
+        if layer != "pure" and not os.path.exists(os.path.join(CLAUDE_DIR, "CLAUDE.%s.md" % layer)):
+            print("skip %s: the %s layer is not adopted here" % (rel, layer))
+            continue
+        path = os.path.join(CLAUDE_DIR, *rel.split("/"))
+        if not os.path.exists(path):
+            cases.append(("%s: exists in an adopted %s layer" % (rel, layer), False))
+            continue
+        text = open(path, encoding="utf-8").read()
+        values = [] if project_owned(".claude/" + rel) else strings_of(adaptation.get(key))
+        cases.append(("%s: names adaptation.json and %s, and a shared copy hardcodes no value of it" % (rel, key),
+                      seam_errors(rel, text, key, values) == []))
 
-    fixture = _build_fixture_seed()
-    tmp = tempfile.mkdtemp(prefix="prose_seam_fixture_")
-    fixture_path = os.path.join(tmp, "adaptation.json")
-    with open(fixture_path, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(fixture, fh)
+    planted = seam_errors("x.md", "reads adaptation.json paired_repos", "paired_repos", ["Zq-planted"])
+    cases.append(("a doc naming both tokens and no value is clean", planted == []))
+    cases.append(("mutant: a doc without adaptation.json fails",
+                  seam_errors("x.md", "paired_repos", "paired_repos", []) != []))
+    cases.append(("mutant: a doc without its key fails",
+                  seam_errors("x.md", "adaptation.json", "paired_repos", []) != []))
+    cases.append(("mutant: a doc holding a value of the key fails",
+                  seam_errors("x.md", "adaptation.json paired_repos Zq-planted", "paired_repos", ["Zq-planted"]) != []))
+    cases.append(("a short value inside a longer word is not that value",
+                  seam_errors("x.md", "adaptation.json paired_repos: BUILD the GUI", "paired_repos", ["UI"]) == []))
+    cases.append(("mutant: the same short value as a whole word fails",
+                  seam_errors("x.md", "adaptation.json paired_repos: the UI scope", "paired_repos", ["UI"]) != []))
 
-    try:
-        # Read the fixture BACK from disk -- the absence check below is derived from this
-        # read, not from the in-memory dict literal above.
-        with open(fixture_path, encoding="utf-8") as fh:
-            read_back = json.load(fh)
-
-        for rel, (key, layer) in SEAMS.items():
-            if not _layer_adopted(layer):
-                print(f"skip {rel}: the {layer} layer is not adopted here")
-                continue
-            path = os.path.join(CLAUDE_DIR, *rel.split("/"))
-            if not os.path.exists(path):
-                cases.append((f"{rel}: exists in an adopted {layer} layer", False))
-                continue
-            text = open(path, encoding="utf-8").read()
-
-            cases.append((f"{rel}: names adaptation.json", "adaptation.json" in text))
-            cases.append((f"{rel}: names its key '{key}'", key in text))
-
-            planted = _values_for_key(read_back, key)
-            cases.append((
-                f"{rel}: holds none of the fixture's planted '{key}' values",
-                all(v not in text for v in planted) and len(planted) > 0,
-            ))
-    finally:
-        import shutil
-        shutil.rmtree(tmp, ignore_errors=True)
-
+    failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))
-        if not ok:
-            failures.append(label)
-
     print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    for f in failures:
-        print("  FAIL " + f)
     return 1 if failures else 0
 
 

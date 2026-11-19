@@ -119,9 +119,22 @@ oc_litellm_bin() {
 # 2026-09-03: two sequential Read calls in one turn, correct file content both times).
 # One LiteLLM install serves every proxied row, so --check holds any non-messages row to this floor.
 OC_LITELLM_MIN_VERSION="1.81.10"
+# The installed version, read from the uv tool's dist-info folder name: `litellm --version` imports all of
+# LiteLLM (13 s measured on 2026-11-18), which every proxied launch would pay. An override or PATH binary
+# has no known tool dir and is asked directly.
+oc_litellm_version() {
+  local bin="$1" tooldir info
+  if [ "$bin" = "$OC_USER_HOME/.local/bin/litellm.exe" ] && tooldir="$(uv tool dir 2>/dev/null)"; then
+    tooldir="$(cygpath -u "$tooldir" 2>/dev/null || printf '%s' "$tooldir")"
+    for info in "$tooldir"/litellm/Lib/site-packages/litellm-*.dist-info "$tooldir"/litellm/lib/python*/site-packages/litellm-*.dist-info; do
+      [ -d "$info" ] && { basename "$info" .dist-info | sed 's/^litellm-//'; return 0; }
+    done
+  fi
+  "$bin" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1
+}
 oc_litellm_version_ok() {
   local bin="$1" ver
-  ver="$("$bin" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  ver="$(oc_litellm_version "$bin")"
   [ -z "$ver" ] && return 0   # can't determine -- fail open rather than block on a parse miss
   python3 -c "
 import sys
@@ -223,6 +236,7 @@ oc_proxy_start() {
   local bin cfg port_log
   bin="$(oc_litellm_bin)" || { echo "litellm not found (uv tool install 'litellm[proxy]'; set OC_LITELLM_BIN)" >&2; return 4; }
   [ "$SC_API_MODE" = "responses" ] && { oc_litellm_version_ok "$bin" || return 4; }
+  SC_PROXY_VERSION="$(oc_litellm_version "$bin")"   # the run record names it; the registry decides what it measures
   OC_PORT="$(python3 "$OC_PROBE" freeport)"
   mkdir -p "$(dirname "$OC_LOG")"
 
@@ -242,6 +256,7 @@ oc_proxy_start() {
   # Messages surface this launcher's child speaks — not just the SDK.
   OC_LLM_MODEL="$OC_UPSTREAM_MODEL"
   [ "$SC_API_MODE" = "responses" ] && OC_LLM_MODEL="responses/$OC_UPSTREAM_MODEL"
+  OC_PROXY_KEY="sk-$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
 
   # Go uses this launch's stable session id and the sidecar's own User-Agent.
   { printf 'model_list:\n  - model_name: %s\n    litellm_params:\n      model: openai/%s\n      api_base: %s\n      api_key: %s\n' \
@@ -249,6 +264,8 @@ oc_proxy_start() {
     if [ "$SC_TRANSPORT" = "go" ]; then
       printf '      extra_headers:\n        User-Agent: "harness-sidecar/1.0"\n        x-opencode-session: "%s"\n' "$OC_SESSION_ID"
     fi
+    # Never keyless: LiteLLM 1.110+ refuses to start without a master key. Each launch keys its own proxy.
+    printf '\ngeneral_settings:\n  master_key: %s\n' "$OC_PROXY_KEY"
     printf '\nlitellm_settings:\n  drop_params: true\n'
     # litellm bridges /v1/messages for openai/* models to /responses unless told otherwise;
     # a chat-only Zen model rejects that with ModelProtocolUnsupported.
@@ -335,9 +352,9 @@ sc_parse_flags "$@"
 shift "$SC_SHIFT"
 [ "${1:-}" = "--" ] && shift
 sc_read_prompt "$@"
-# Before any process starts: a low-memory launch refuses here (exit 12) instead of holding a litellm
-# proxy while it waits.
-sc_check_launch_memory
+# Before any process starts: a low-memory launch refuses here (exit 12), and a job its quota window cannot
+# hold waits or warns (sc_check_quota_fit), instead of holding a litellm proxy while it waits.
+sc_admit_launch
 
 SC_CLAUDE="$(oc_claude_bin)" || sc_die 4 "claude CLI not found (set CLAUDE_BIN)"
 
@@ -392,7 +409,7 @@ if [ "$SC_API_MODE" = "messages" ]; then
 else
   oc_proxy_start || sc_die 4 "[opencode-sidecar] the litellm proxy did not start (its output above)"
   OC_CHILD_BASE="http://127.0.0.1:$OC_PORT"
-  OC_CHILD_TOKEN=unused
+  OC_CHILD_TOKEN="$OC_PROXY_KEY"
   OC_CHILD_API_KEY=""
   OC_CHILD_MODEL="$SC_MODEL"
 fi

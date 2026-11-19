@@ -15,8 +15,9 @@ configuration error, never a fake healthy sample.
 The floors follow the job, never a field the dispatcher fills in. `--brief <file> --shape <shape>`
 (read from the launcher's own `-f`/`-G`) lets `classify_job` read the brief's declared operations:
 
-    light   kind author/reviewer/lens/scout and the brief names no Playwright, vitest, npm/npx
-            or tsc command: commit 6.5 GiB, physical 3.25 GiB free
+    light   `--builtins` (the launcher's resolved built-ins) holds no Bash or PowerShell, so no test
+            tree can start, whatever the kind; or kind author/reviewer/lens/scout and the brief names
+            no Playwright, vitest, npm/npx or tsc command: commit 6.5 GiB, physical 3.25 GiB free
     heavy   everything else, including a missing, unreadable or empty brief and any other shape:
             commit 12 GiB, physical 6 GiB free (the floors before classes existed)
 
@@ -56,6 +57,7 @@ HEAVY = "heavy"
 LIGHT = "light"
 CLASS_FLOORS = {HEAVY: (12.0, 6.0), LIGHT: (6.5, 3.25)}
 LIGHT_SHAPES = frozenset({"author", "reviewer", "lens", "scout"})
+SHELL_TOOLS = frozenset({"Bash", "PowerShell"})
 HEAVY_OPERATION = re.compile(
     r"\bnpm\s+(?:run|test|ci|exec|install|i)\b|\bnpx\b|\bplaywright\b"
     r"|\bvitest\b|\btsc\b", re.IGNORECASE)
@@ -138,8 +140,11 @@ def floors_for(job_class: str) -> Floors:
     return Floors(commit, physical, DEFAULT_POLL_SEC, job_class)
 
 
-def classify_job(brief, shape) -> str:
-    """LIGHT only for a brief that declares no heavy operation under a shape that runs none."""
+def classify_job(brief, shape, builtins=None) -> str:
+    """LIGHT for a job whose resolved built-ins hold no shell (it cannot start a test tree), else only for a
+    brief that declares no heavy operation under a shape that runs none. `builtins` None means unknown."""
+    if builtins is not None and not SHELL_TOOLS & {t.strip() for t in str(builtins).split(",")}:
+        return LIGHT
     if shape not in LIGHT_SHAPES or not isinstance(brief, str) or not brief.strip():
         return HEAVY
     return HEAVY if HEAVY_OPERATION.search(brief) else LIGHT
@@ -153,13 +158,13 @@ def launch_class_args(argv) -> "list[str]":
     return ["--brief", flags["-f"]] + (["--shape", flags["-G"]] if "-G" in flags else [])
 
 
-def job_class_of(brief_path, shape) -> str:
-    """classify_job over a brief file; an absent or unreadable one is heavy."""
+def job_class_of(brief_path, shape, builtins=None) -> str:
+    """classify_job over a brief file; an absent or unreadable one is heavy unless the built-ins hold no shell."""
     if not brief_path:
-        return HEAVY
+        return classify_job("", shape, builtins)
     try:
         with open(brief_path, encoding="utf-8", errors="replace") as fh:
-            return classify_job(fh.read(), shape)
+            return classify_job(fh.read(), shape, builtins)
     except OSError:
         return HEAVY
 
@@ -304,9 +309,11 @@ def main(argv=None) -> int:
     for command in (wait, check):
         command.add_argument("--brief", default="", help="the job's brief file; its declared operations pick the floors")
         command.add_argument("--shape", default="", help="the job's launcher kind (author, reviewer, lens, scout ...)")
+        command.add_argument("--builtins", default=None,
+                             help="the job's resolved built-in tools, comma-separated; none of Bash/PowerShell = light")
     args = parser.parse_args(argv)
     try:
-        floors = floors_from_env(job_class_of(args.brief, args.shape))
+        floors = floors_from_env(job_class_of(args.brief, args.shape, args.builtins))
     except ConfigError as exc:
         print("launch_memory: invalid configuration: %s" % exc, file=sys.stderr)
         return 2

@@ -159,7 +159,9 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
     || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
   const quoteArg = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'"
-  const identity = JSON.stringify([mode, items.map(keyOf)])
+  // The verifier finds its journal by this label, and every review numbers its findings F1..Fn: the run's own report
+  // path keeps two runs with the same ids apart, and a resumed run keeps its label.
+  const identity = JSON.stringify([mode, out, items.map(keyOf)])
   let hash = 2166136261
   for (let i = 0; i < identity.length; i++) hash = Math.imul(hash ^ identity.charCodeAt(i), 16777619)
   const label = 'verify-' + (hash >>> 0).toString(36)
@@ -387,7 +389,12 @@ log('CHAINS ' + JSON.stringify(Object.fromEntries(chains.map(c => [c.name, c.job
 // ENGINE-BLOCK-BEGIN pinBasis
 const pinBasis = (j) => (j.pick !== undefined ? ' pick:' + j.pick : '') + (j.spec !== undefined ? ' spec:' + j.spec : '')
 // ENGINE-BLOCK-END pinBasis
-log('PINS ' + JSON.stringify(Object.fromEntries(allJobs.map(([, j]) => [j.label, PIN(j.model) + '/' + EFF(j.effort) + '/' + profileOf(j).agentType + ' tier:' + tierOfJob(j) + pinBasis(j)]))))
+// ENGINE-BLOCK-BEGIN effortRecord
+const effortRecord = (j) => { const ec = (j.effortCases || {})[j.model] || {}; return ' req:' + (ec.requestedEffort || '-') + ' case:' + (ec.effortCase || '-') }
+// ENGINE-BLOCK-END effortRecord
+log('PINS ' + JSON.stringify(Object.fromEntries(allJobs.map(([, j]) => [j.label, PIN(j.model) + '/' + EFF(j.effort) + '/' + profileOf(j).agentType + ' tier:' + tierOfJob(j) + pinBasis(j) + effortRecord(j)]))))
+const justified = Object.fromEntries(allJobs.filter(([, j]) => j.justification).map(([, j]) => [j.label, j.justification]))
+if (Object.keys(justified).length) log('JUSTIFICATION ' + JSON.stringify(justified))
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
 // The concurrency contract this engine exists to express. Contention scope is NOT one boolean:

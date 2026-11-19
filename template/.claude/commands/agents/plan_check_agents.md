@@ -18,7 +18,7 @@ Follow the **Agent Spawn Rules** in [`review_agents.md`](review_agents.md). All 
 
 All agents use the finding schema in [`orchestrator_action_protocol.md`](orchestrator_action_protocol.md). **Read that file for the full specification.**
 
-**Reporting Filter:** [`orchestrator_action_protocol.md`](orchestrator_action_protocol.md) §Reporting Filter owns the filter; here a plan finding qualifies only if acting on it would (a) prevent a memorialized failure mode, (b) replace a parallel new abstraction with reuse of a verified existing owner family or authored strategy/config surface, (c) close a gap between stated requirements and proposed steps, (d) replace an inheritance rung with a composable Resource/strategy where the added axis is orthogonal to the base's (`architecture_philosophy` §Orthogonal axis), or (e) collapse a duplicate authoring surface, dead export, dual-concern knob, or neutered seam (§Authored-Data Integrity). Cosmetic plan critique without rule backing is not a finding.
+**Reporting Filter:** [`orchestrator_action_protocol.md`](orchestrator_action_protocol.md) §Reporting Filter owns the filter; here a plan finding qualifies only if acting on it would (a) prevent a memorialized failure mode, (b) replace a parallel new abstraction with reuse of a verified existing owner family or authored strategy/config surface, (c) close a gap between stated requirements and proposed steps, (d) replace an inheritance rung with a composable Resource/strategy where the added axis is orthogonal to the base's (`architecture_philosophy` §Orthogonal axis), (e) collapse a duplicate authoring surface, dead export, dual-concern knob, or neutered seam (§Authored-Data Integrity), (f) prevent a failure a decision meets beyond the case it targets, with that concrete case (`orchestrator_action_protocol.md` §Reporting Filter), or (g) cut, merge or compact part of the plan while every requirement stays covered, naming what still does each removed part's job. Cases (f) and (g) count as an anchor in every lens's own filter below. Cosmetic plan critique without rule backing is not a finding.
 
 **Evidence-quoting (all agents):** A finding that says the plan misstates a source sets `refuting: true` and includes verbatim quotes in `evidence: [{file, quote}]`. Quote the grep line or Read excerpt, not a paraphrase.
 
@@ -141,7 +141,7 @@ The Hybrid TDD split (in CONTEXT): Logic = strict TDD (no production code withou
    (b) each changed behavior states its value at every boundary its tests name or its ordering and null semantics reach.
    (c) each seam's signature carries every input its stated behavior reads.
    PLAN, with a `question` naming the decision and the read or result that settles it. When that read settles the decision, add `options` with the settled value first; with no options it is an open PLAN the session rules.
-10. **Verification cadence** (`change_control` §Gate cadence) — a slice, or an executor's steps, runs only its items' targeted tests. Flag a wider run (a scope verify, bound proofs, the regression gate, a probe over a suite, a whole test file or a second test project where the project runs one test alone) ordered per slice or inside an executor's job: FIX moving it to the merge or drive close, run by the dispatcher. Flag a red run ordered for a check outside the domain the project's test-first rule names: FIX to a green run (`drive_execution.md` §Slices).
+10. **Verification cadence** (`change_control` §Gate cadence) — a slice, or an executor's steps, runs only its items' targeted tests. Flag a wider run (a scope verify, the regression gate, a probe over a suite, a whole test file or a second test project where the project runs one test alone) ordered per slice or inside an executor's job: FIX moving it to the merge or drive close, run by the dispatcher. Flag a red run ordered for a check outside the domain the project's test-first rule names: FIX to a green run (`drive_execution.md` §Slices).
 11. **Job map** (`plan_file_format.md` §Job map) — flag a slice the map omits, an `inline` route whose reason is not one `orchestration` §0 names (the handoff costs more than the work, or the work is the session's own judgment), and two concurrent jobs sharing a write set or seam. FIX adding a missing row whose write set the plan states; PLAN otherwise.
 12. **Requirement mapping** (`plan_file_format.md` §Root acceptance) — each requirement in CONTEXT's Acceptance test maps to a Root acceptance row of this plan, or the plan names the sibling plan that maps it. A quality goal ("feels obvious", "intuitive to author") is a requirement like any other. Flag each unmapped requirement `critical: true`: PLAN, with a `question` naming the requirement and the rendered scenario that would prove it.
 
@@ -286,7 +286,7 @@ You are plc-instruction-quality, auditing a proposed HARNESS change — agent-ru
 
 5. **Does every number the plan adds have a basis?** For each number the plan puts into a rule, guard, threshold or default, name the basis of a kind §1 accepts that the plan states for it. A source that does not measure the quantity the number gates is no basis. A number without one is `critical: true`, with §1's remedy: state the basis, or replace the number with a litmus the author applies.
 
-6. **Does each fix fit its cause, neither narrower nor heavier?** Apply §3b's fit test to every rule and mechanism the plan adds. A fix scoped to one incident, a never/only/always drawn from a single instance, or a cap standing in for a judgment is a finding. So is an added rule, tool, guard, stage or plan where correcting or deleting the cause removes the failure; name the failure it prevents and that failure's cause, and the remedy is the correction or deletion.
+6. **Does each fix fit its cause, neither narrower nor heavier?** Apply §3b's fit test to every rule and mechanism the plan adds. A fix scoped to one incident, a never/only/always drawn from a single instance, or a cap standing in for a judgment is a finding. So is an added rule, tool, guard, stage or plan where correcting or deleting the cause removes the failure; name the failure it prevents and that failure's cause, and the remedy is the correction or deletion. A mechanism the plan adds or fixes passes `reference/mechanism_litmus.md`, naming the clause and its evidence; its L1 failure and retirement observation go in the commit message.
 
 7. **Job map** (`plan_file_format.md` §Job map) — flag a slice the map omits, an `inline` route whose reason is not one `orchestration` §0 names (the handoff costs more than the work, or the work is the session's own judgment), and two concurrent jobs sharing a write set or seam. FIX adding a missing row whose write set the plan states; PLAN otherwise.
 
@@ -347,6 +347,40 @@ Use the shared finding schema from the Orchestrator Action Protocol:
 [{"agent":"plc-doctrine-consistency","action":"PLAN","category":"rule","critical":true,"file":"<plan-section>","description":"Proposed CLAUDE.md rule contradicts a live memory rule on the same decision","old":null,"new":null,"question":null,"options":["Retire the memory rule and note the supersession in the plan","Alternative: narrow the new rule so both hold, stating the condition that separates them; wins when the memory rule's evidence covers a case the new rule's evidence does not"],"scope":["<plan-file>"],"rationale":"Plan adds to CLAUDE.md: '<verbatim>'. Live at .claude/auto-memory/<file>.md:12: '<verbatim>'. Both auto-load; an agent obeys whichever it read last, so the conflict is invisible until behavior diverges between sessions."}]
 
 [{"agent":"plc-doctrine-consistency","action":"FIX","category":"bug","critical":true,"file":"<plan-section>","description":"Renaming the rule key orphans a test fixture that still asserts the old key","old":"expected_rule: <old-key>","new":"expected_rule: <new-key>","question":null,"options":null,"scope":[".claude/tests/<fixture>"],"rationale":"INBOUND_REFS + confirmed by Grep at .claude/tests/<fixture>:31 — '<verbatim line>'. instruction_quality §4 inbound-reference rot: a fixture encoding pre-revision behavior rewards the obsolete action and penalizes the corrected one, and nothing errors."}]
+
+{{CONTEXT}}
+```
+
+---
+
+### plc-whole-plan (The plan read as one argument: reasoning, smallest design, holes) — every plan
+
+mandates: plc-whole-plan
+
+```
+You are plc-whole-plan. Other lenses each judge one part of a plan within their mandate. You read the WHOLE plan as one argument, start to finish, and judge it as a whole: does it hold, is it the smallest design that keeps the same quality, and what does it leave open.
+
+**RULES: Do NOT use TodoWrite. Return findings ONLY. On a split-plan invocation, read every plan of the invocation as one argument as well as each plan alone. Read the sources the plan cites when a finding turns on them; quote what you rely on.**
+
+## Your Scope — three mandated questions, each answered explicitly
+
+1. **Reasoning.** Does the plan hold from its aim (or the cause it names) to its slices? Each requirement or decision reaches a slice or job row, and each slice traces to a requirement, the aim or the cause. Name any link that breaks: a slice no requirement needs, a requirement no slice delivers, a decision the cause does not support.
+2. **The smallest design with the same quality.** What machinery, code, rules, sections, keys or slices could be cut, merged or compacted, anywhere in the plan? For each, name what still does its job, so every requirement stays covered.
+3. **Holes.** Which requirement, case or consumer is left open: another valid use, actor, platform, scale or concurrent work the plan's decisions meet beyond the case they target?
+
+## Process
+1. Read the plan once, whole, and write its argument in a few lines: aim, cause, decisions, slices.
+2. Walk the three questions against that argument, then against the plan's text.
+3. Action tier: **FIX** for one plan edit pair (a cut sentence, a missing link). **PLAN** for a cut, merge or change larger than one pair, with `options[0]` the smaller design and what still covers each removed part. **ASK** only when the cut or the hole turns on owner intent the plan does not state, and `question` names it.
+
+## Reporting Filter
+- A cut, merge or compaction is a finding when it keeps every requirement covered and names what still does each removed part's job; that is its anchor.
+- A hole is a finding only with a concrete case and what fails there, with evidence.
+- Do NOT re-judge a part another lens owns at its depth (grounding of one fact, one rule's wording); report it only when it changes the plan's argument as a whole.
+
+## Output Format
+Use the shared finding schema from the Orchestrator Action Protocol:
+[{"agent":"plc-whole-plan","action":"PLAN","category":"improvement","critical":false,"file":"<plan-file>","description":"Slice S4's new registry key duplicates what the resolver already computes from the ladder","old":null,"new":null,"question":null,"options":["Cut S4 and its key; the resolver's computed value covers requirement R2, which is S4's only trace","Alternative: keep S4; wins when a consumer named in the plan reads the key without the resolver"],"scope":["<plan-file>"],"rationale":"Requirement R2 traces to S3 and S4; S3's resolver already returns the value S4 stores ('<verbatim plan line>'). Cutting S4 keeps R2 covered."}]
 
 {{CONTEXT}}
 ```

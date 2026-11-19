@@ -183,7 +183,8 @@ def route(payload):
         if rewrite:
             replacement, target = rewrite
             edits.append((lo + tokens[index].start(), lo + tokens[index].end(), replacement))
-            contexts.append('[run] Use main\'s test tools with -Repo ' + target + '; branch data stays in the target checkout.')
+            if fire_once_since_compaction(payload.get('session_id') or '', 'run_call_router:redirect'):
+                contexts.append('[run] Ran main\'s copy with -Repo ' + target + '; branch data stays in the target checkout.')
     for start, end, replacement in sorted(edits, reverse=True):
         command = command[:start] + replacement + command[end:]
     updated = dict(original, command=command)

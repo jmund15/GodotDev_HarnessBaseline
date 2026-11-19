@@ -258,6 +258,15 @@ def main():
                       result["land_prefix"] == "" and "adaptation.coding.defaults.json" in err))
         cases.append(("index_prebuild defaults to []", adaptation.DEFAULTS.get("index_prebuild") == []
                       and adaptation.get(_claude_dir_with(os.path.join(tmp, "bare"), None), "index_prebuild") == []))
+        main_dir = _claude_dir_with(os.path.join(tmp, "main_check"), json.dumps({"main_check": ".github/workflows/m.yml"}))
+        cases.append(("main_check defaults to the empty string: no main check declared",
+                      adaptation.DEFAULTS.get("main_check") == ""
+                      and adaptation.get(_claude_dir_with(os.path.join(tmp, "bare2"), None), "main_check") == ""))
+        cases.append(("a main_check string loads", adaptation.get(main_dir, "main_check") == ".github/workflows/m.yml"))
+        bad_main = _claude_dir_with(os.path.join(tmp, "main_check_bad"), json.dumps({"main_check": ["x"]}))
+        result, err = _capture_stderr(lambda: adaptation.load(bad_main))
+        cases.append(("a wrong-typed main_check keeps the default and names the file",
+                      result["main_check"] == "" and "adaptation.json" in err))
 
         # --- CLI verbs -----------------------------------------------------------
         import subprocess

@@ -324,8 +324,8 @@ def test_unread_ladder_is_unmet_on_every_dispatch_until_a_compaction_clears_it(t
     hooks_state.clear_compaction_keys('cadence1')
     reason, _ = gate.doctrine_check(payload)
     assert 'Skill(skill="orchestration")' in reason and 'model_ladder_evidence.md' in reason
-    # One load route per document, and the step after the load is a re-check, never an unchanged retry.
-    assert 'SKILL.md' not in reason and 're-issue' in reason and 'unchanged' not in reason, reason
+    # One load route per document: the Skill call, never a SKILL.md Read.
+    assert 'SKILL.md' not in reason, reason
 
 
 def test_bounded_full_read_meets_the_ladder_precondition(tmp_path, monkeypatch):
@@ -396,7 +396,6 @@ def test_a_slice_missing_a_pinned_tier_denies_naming_the_command_for_that_tier(t
     reason, fault = gate.doctrine_check(payload, tiers=lambda: ['architect', 'executor'], embed_slice=False)
     assert fault is None and '%s executor' % SLICE_CMD in reason, reason
     assert 'architect' not in reason.split(SLICE_CMD)[1].split('.')[0], reason
-    assert 're-issue' in reason
 
 
 def test_a_full_read_still_passes_whatever_tiers_the_call_implies(tmp_path, monkeypatch):
@@ -425,7 +424,7 @@ def test_one_deny_names_the_skill_and_the_slice_together(tmp_path, monkeypatch):
     gate, _, payload = _sliced_session(tmp_path, monkeypatch, 'slice007', [], skill=False)
     reason, _ = gate.doctrine_check(payload, tiers=lambda: ['architect'], embed_slice=True)
     assert 'Skill(skill="orchestration")' in reason and 'read the ladder slice for architect below' in reason, reason
-    assert reason.index('## Role definitions') > reason.index('re-issue')
+    assert reason.index('## Role definitions') > reason.index('Skill(skill="orchestration")')
 
 
 def test_the_slice_record_is_per_session(tmp_path, monkeypatch):
@@ -453,7 +452,6 @@ def test_the_deny_names_the_missing_tier_and_embeds_every_claimed_tier(tmp_path,
     assert fault is None and ladder_error is None and reason.endswith(text), reason[-300:]
     assert gate.SLICE_BELOW_STEP.format(which="executor") in reason, reason
     assert gate.SLICE_STEP.format(which="executor", tiers="executor") not in reason, reason
-    assert 're-issue' in reason and 'DENIED' in reason, reason
     assert hooks_state.ladder_slice_tiers('embed001') == sorted(claimed)
 
 

@@ -13,7 +13,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const TOOLS = path.resolve(HERE, '..', 'tools')
 const HOOK = path.join(TOOLS, 'semantic_search_csharp_hook.mjs')
 
-const REGISTRY = path.join(homedir(), '.claude', 'plugins', 'installed_plugins.json')
+const REGISTRY = path.join(process.env.HARNESS_CALLER_HOME || homedir(), '.claude', 'plugins', 'installed_plugins.json')
 if (!process.env.SEMANTIC_SEARCH_IDLE_TEST_PLUGIN_ROOT && !existsSync(REGISTRY)) {
 	console.log('PLATFORM-SKIP-PROOF test_semantic_search_csharp_hook.mjs: no semantic-search plugin is installed on this machine')
 	process.exit(0)

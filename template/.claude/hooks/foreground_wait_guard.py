@@ -115,7 +115,7 @@ _LOOP_SLEEP = re.compile(
 # A heredoc body is stdin for the program before `<<`; only a shell runs it as code.
 _HEREDOC = re.compile(r"(?P<head>[^\n]*?)<<-?\s*(?P<q>['\"]?)(?P<tag>\w+)(?P=q)[^\n]*\n(?P<body>.*?)^[ \t]*(?P=tag)[ \t]*$",
                       re.DOTALL | re.MULTILINE)
-_SHELL_WORDS = frozenset(("bash", "sh", "zsh", "dash", "pwsh", "powershell"))
+_SHELL_WORDS = frozenset(("bash", "sh", "zsh", "dash", "pwsh", "powershell", "su", "flock", "script"))
 # A quoted `-c`/`-e`/`-p` program is code for the program before it; only a shell runs it as shell code.
 _INLINE_PROGRAM = re.compile(
     r"""(?P<head>(?:^|(?<=[\s;&|(]))(?P<prog>[\w./\\:-]+)(?:\s+-[\w-]+)*?\s+-[cep]\s+)(?P<body>"(?:\\.|[^"\\])*"|'[^']*')""",
@@ -190,6 +190,7 @@ NO_WAKE_ADVICE = (
     "[wait] No completion notification reaches this session for a backgrounded job. To wait for this "
     "one, keep working, then %s; never re-check it call after call." % _WAIT_RECIPE
 )
+NO_WAKE_SHORT = "[wait] No wake reaches this session: wait on this job in foreground calls, as before."
 
 
 WATCH_REASON = (
@@ -208,8 +209,8 @@ BATCH_ADVICE = (
     "which costs no wake (CLAUDE.core.md §Shell Discipline)."
 )
 RAISED_NOTE = (
-    "[wait] Backgrounded this foreground call: its %d ms timeout says it may run long, and no recorded time says it "
-    "fits. Keep working and act on its one wake (CLAUDE.core.md §Shell Discipline)."
+    "[wait] Backgrounded this call: its %d ms timeout says it may run long. Act on its one wake "
+    "(CLAUDE.core.md §Shell Discipline)."
 )
 DETACHED_ADVICE = (
     "[wait] A trailing `&` detaches this job outside the run_in_background wake (CLAUDE.core.md §Shell Discipline). "
@@ -769,10 +770,19 @@ def _deny(reason):
 
 
 def _advise(text, updated=None):
-    out = {"hookEventName": "PreToolUse", "additionalContext": text}
+    out = {"hookEventName": "PreToolUse"}
+    if text:
+        out["additionalContext"] = text
     if updated:
         out["updatedInput"] = updated
-    print(json.dumps({"hookSpecificOutput": out}))
+    if len(out) > 1:
+        print(json.dumps({"hookSpecificOutput": out}))
+
+
+def _first_in_window(payload, key):
+    """True the first time `key` is asked since the session started or compacted: a note on a call the guard
+    already rewrote tells the caller once, because the rewrite itself repeats on every call."""
+    return _hook_state.fire_once_since_compaction(payload.get("session_id") or "", "wait:" + key)
 
 
 def _check_in(payload, command, tool_input, note, bounded=False):
@@ -791,17 +801,14 @@ def _check_in(payload, command, tool_input, note, bounded=False):
     if note is None:
         return 0
     _count_poll(payload, command)
-    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-          'updatedInput': tool_input, 'additionalContext': note}}))
+    _advise(note, tool_input)
     return 0
 
 
 BLIND_REASON = (
-    "[wait] DENIED: this backgrounded %s pipes its output into `%s` where this guard cannot drop the stage for you "
-    "(mid-pipeline, inside a `()` or `$()`, or followed by a command, a redirection or an operator the pipe would "
-    "change), and it holds every line until the job exits and drops the lines past its count (CLAUDE.core.md §Shell "
-    "Discipline). Drop the `| %s` yourself: the background task's output file keeps every line, and a bounded Read of "
-    "it after the wake takes the part you need."
+    "[wait] DENIED: this backgrounded %s pipes its output into `%s`, which holds every line until the job exits and "
+    "drops the rest (CLAUDE.core.md §Shell Discipline), and this shape is one the guard cannot edit for you. "
+    "Re-issue it without `| %s`; after the wake, Read the task's output file for the part you need."
 )
 BLIND_NOTE = (
     "[wait] Dropped the trailing `| %s` from this background call: the task's output file keeps every line, so a "
@@ -975,26 +982,28 @@ def main():
         return _deny(BACKGROUND_LOOP_REASON % _WAIT_RECIPE)
     if tool_input.get("run_in_background"):
         blind = blind_pipe(command)
-        note = None
+        note, dropped = None, False
         if blind:
             rewritten = blind_rewrite(command)
             if rewritten is None:
                 return _deny(BLIND_REASON % (blind[0], blind[1], blind[1]))
             command = rewritten
             tool_input = dict(tool_input, command=command)
-            note = BLIND_NOTE % blind[1]
+            dropped = True
+            note = BLIND_NOTE % blind[1] if _first_in_window(payload, "blind") else None
         if not (unwoken or _caller(payload)) and foreground_watch_arm(command) and _watcher_live(payload):
             return _deny(COVERED_REASON)
         if unwoken:
-            _advise(" ".join(n for n in (note, NO_WAKE_ADVICE) if n), tool_input if note else None)
+            wake = NO_WAKE_ADVICE if _first_in_window(payload, "nowake:" + str(payload.get("agent_id") or "")) else NO_WAKE_SHORT
+            _advise(" ".join(n for n in (note, wake) if n), tool_input if dropped else None)
         elif _LOOP_SLEEP.search(shell_code(command)):
             bench = _bench_wait(command)
             if bench:
                 _check_in(payload, bench[0], dict(tool_input, command=bench[0]),
                           " ".join(n for n in (note, BENCH_NOTE % bench[1]) if n), bounded=True)
             else:
-                _check_in(payload, command, tool_input, note)
-        elif note:
+                _check_in(payload, command, tool_input, note if note or not dropped else "")
+        elif dropped:
             _advise(note, tool_input)
         return 0
     if not (unwoken or _caller(payload)) and foreground_watch_arm(command):
@@ -1036,8 +1045,8 @@ def main():
         except (TypeError, ValueError):
             budget = BASH_DEFAULT_MS
         if budget > BASH_DEFAULT_MS and not _timed_fit(command, budget):
-            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse',
-                  'updatedInput': dict(tool_input, run_in_background=True), 'additionalContext': RAISED_NOTE % budget}}))
+            _advise(RAISED_NOTE % budget if _first_in_window(payload, "raised") else None,
+                    dict(tool_input, run_in_background=True))
             return 0
     count = _count_poll(payload, command)
     if count >= POLL_LIMIT:

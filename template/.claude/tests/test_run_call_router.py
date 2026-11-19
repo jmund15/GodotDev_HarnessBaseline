@@ -58,7 +58,7 @@ def plant_agent_tool(session, agent):
 
 
 def call(command, tool="Bash", cwd=REPO, agent="", agent_type="workflow-subagent", entrypoint="cli",
-         background=None, transcript=""):
+         background=None, transcript="", state=None):
     tool_input = {"command": command}
     if background is not None:
         tool_input["run_in_background"] = background
@@ -68,7 +68,7 @@ def call(command, tool="Bash", cwd=REPO, agent="", agent_type="workflow-subagent
         payload.update(agent_id=agent, agent_type=agent_type)
     if transcript:
         payload["transcript_path"] = transcript
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", HARNESS_HOOK_STATE_DIR=os.path.join(TMP, uuid.uuid4().hex),
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", HARNESS_HOOK_STATE_DIR=os.path.join(TMP, state or uuid.uuid4().hex),
                CLAUDE_CODE_ENTRYPOINT=entrypoint, CLAUDE_PROJECT_DIR=REPO)
     if GATE_SCRIPT in command:
         tool_input['command'] += ' # gate: final'
@@ -120,8 +120,11 @@ def main():
               out)
         check("...only a non-detached gate is backgrounded in the orchestrator",
               backgrounded(out) == (name == GATE), out)
-    out = call("pwsh -NoProfile -File %s/.claude/scripts/verify.ps1 -Scope AI" % WT)
-    check("the redirect names what it did in additionalContext", "-Repo" in (out.get("additionalContext") or ""), out)
+    redirect = "pwsh -NoProfile -File %s/.claude/scripts/verify.ps1 -Scope AI" % WT
+    first, again = call(redirect, state="redirect-once"), call(redirect, state="redirect-once")
+    check("the redirect is explained once per window and applied every time",
+          bool(first.get("additionalContext")) and not again.get("additionalContext")
+          and rewritten(first) == rewritten(again) != "", (first, again))
 
     cmd = "cd %s && pwsh -NoProfile -ExecutionPolicy Bypass -File .claude/scripts/verify.ps1 -Scope AI" % WT
     out = call(cmd)
@@ -180,7 +183,7 @@ def main():
                transcript=plant_agent_tool("rcr00001", "agent-tool"))
     ctx = out.get("additionalContext") or ""
     check("an Agent-tool subagent's dotnet build starts in the background, told its exit wakes it",
-          backgrounded(out) and "wakes you" in ctx and "until" not in ctx, out)
+          backgrounded(out) and ctx and "until" not in ctx, out)
     cmd = "pwsh -NoProfile -File %s/.claude/scripts/run_test_suite.ps1 -Filter X" % WT
     out = call(cmd, agent="agent-wf")
     check("a subagent's worktree run is both redirected to main and backgrounded",

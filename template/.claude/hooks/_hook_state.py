@@ -27,7 +27,8 @@ Also here: the two cadence gates every advisory hook shares. `fire_once` deliver
 once per session; `fire_once_since_compaction` re-arms when `transcript_backup.py` calls
 `clear_compaction_keys` on PreCompact, because a compacted session lost the first delivery from
 its context. Both replace turn-count heartbeats and wall-clock re-fire windows, neither of which
-tracks whether the model still has the text.
+tracks whether the model still has the text. A key is spent when asked, so a line a dispatcher then
+drops (a later hook blocks the call) gives its keys back with `unspend`: told means delivered.
 
 Fail posture: every function is best-effort and total. A read never raises — it returns
 `{}` when there is nothing recoverable. A write never raises — it returns False. State
@@ -60,6 +61,8 @@ __all__ = [
     "fire_once",
     "fire_once_machine",
     "fire_once_since_compaction",
+    "spent_mark",
+    "unspend",
     "mark_ladder_slice",
     "ladder_slice_tiers",
     "stage_ladder_receipt",
@@ -223,7 +226,46 @@ def _fire_once_under(session_id, key, bucket, on_failure=True):
         return True
 
     written, first = update_json_locked(path, update)
+    if written and first:
+        _SPENT.append((session_id, key, bucket))
     return bool(first) if written else on_failure
+
+
+# Every key this process newly spent, in order: a dispatcher that drops a hook's line reads it to give the keys back.
+_SPENT = []
+
+
+def spent_mark():
+    """The journal position now: keys spent after it are the ones a later `unspend(mark)` gives back."""
+    return len(_SPENT)
+
+
+def unspend(start, stop=None):
+    """Give back the once-keys spent between journal positions `start` and `stop` (default: now), so a line that
+    never reached the agent is told again on the retry. Best-effort: an unwritable state leaves the keys spent."""
+    spent = _SPENT[start:stop]
+    del _SPENT[start:stop]
+    by_session = {}
+    for session_id, key, bucket in spent:
+        by_session.setdefault(session_id, []).append((key, bucket))
+    for session_id, keys in by_session.items():
+        def update(state, keys=keys):
+            for key, bucket in keys:
+                fired = state.get(bucket)
+                if isinstance(fired, dict):
+                    fired.pop(key, None)
+            return True
+        update_json_locked(state_path(session_id), update)
+
+
+def give_back(start, stop):
+    """A dispatcher's block or deny drops the context of every hook that ran before the blocker, so the once-keys those
+    hooks spent between `start` and `stop` go back and the retry carries their lines. The blocker's own keys, spent
+    after `stop`, stay. A lost give-back costs a repeated line, never a wrong verdict, so it never raises."""
+    try:
+        unspend(start, stop)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def fire_once(session_id, key, on_failure=True):
@@ -572,13 +614,22 @@ def clear_compaction_keys(session_id):
     return bool(written and changed)
 
 
-def read_json_salvage(path):
-    """Return the dict at `path`. Salvages a torn file; returns {} when unrecoverable."""
-    try:
-        with io.open(path, encoding="utf-8") as fh:
-            raw = fh.read()
-    except (OSError, ValueError):
-        return {}
+def read_json_salvage(path, wait_s=1.0):
+    """Return the dict at `path`. Salvages a torn file; returns {} when unrecoverable. A PermissionError (Windows,
+    while another writer renames the file into place) is retried until `wait_s` passes: read as {}, live state such
+    as an armed watcher vanished from the check that read it."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            with io.open(path, encoding="utf-8") as fh:
+                raw = fh.read()
+            break
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                return {}
+            time.sleep(0.02)
+        except (OSError, ValueError):
+            return {}
 
     if not raw.strip():
         return {}
@@ -623,15 +674,23 @@ def replace_path(source, target, wait_s=10.0):
 
 
 def append_jsonl_rotating(path, records, max_bytes=2_000_000, keep_lines=500):
-    """Append one JSON line per record; once the file passes `max_bytes`, keep the newest
-    `keep_lines` first (tail rotation via tempfile + rename). Best-effort: returns False on
-    any failure, never raises — every caller is an observer hook."""
+    """Append one JSON line per record under the file's lock; once the file passes `max_bytes`
+    (None: never), keep the newest `keep_lines` first (tail rotation via tempfile + rename).
+    The lock is load-bearing: Windows emulates append mode with a seek then a write, so two
+    unlocked appenders overwrite each other's tail and tear a row. Best-effort: returns False
+    on any failure or a lock timeout, never raises — every caller is an observer hook."""
     if not records:
         return True
     try:
         directory = os.path.dirname(path) or "."
         os.makedirs(directory, exist_ok=True)
-        if os.path.exists(path) and os.path.getsize(path) > max_bytes:
+    except OSError:
+        return False
+    lock = _acquire_json_lock(path)
+    if lock is None and _file_lock is not None:
+        return False
+    try:
+        if max_bytes is not None and os.path.exists(path) and os.path.getsize(path) > max_bytes:
             with io.open(path, encoding="utf-8", errors="replace") as fh:
                 tail = fh.readlines()[-keep_lines:]
             fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".jsonl", dir=directory)
@@ -644,6 +703,8 @@ def append_jsonl_rotating(path, records, max_bytes=2_000_000, keep_lines=500):
         return True
     except (OSError, ValueError, TypeError):
         return False
+    finally:
+        _release_json_lock(lock)
 
 
 def _acquire_json_lock(path):

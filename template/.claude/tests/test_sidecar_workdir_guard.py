@@ -131,6 +131,11 @@ def main():
         bash('deny git -C main checkout', 2, 'git -C %s checkout -- a.py' % M)
         bash('deny git -C main commit', 2, 'git -C %s commit -m x' % M)
         bash('deny python -c writing a main path', 2, "python3 -c \"open('%s/a.py','w').write('x')\"" % M)
+        bash('deny python Path write_text into main', 2,
+             "python3 -c \"from pathlib import Path; Path('%s/a.py').write_text('x')\"" % M)
+        bash('deny python shutil.copy into main', 2, "python3 -c \"import shutil; shutil.copy('a.py','%s/a.py')\"" % M)
+        bash('deny python os.remove of a main file', 2, "python3 -c \"import os; os.remove('%s/a.py')\"" % M)
+        bash('deny python open append keyword into main', 2, "python3 -c \"open('%s/a.py', mode='a')\"" % M)
         bash('deny a python heredoc writing a main path', 2,
              "python3 - <<'EOF'\nfrom pathlib import Path\nPath('%s/a.py').write_text('x')\nEOF" % M)
         bash('deny a write after cd into main', 2, 'cd %s && echo x > a.py' % M)
@@ -157,6 +162,36 @@ def main():
         bash('allow a heredoc body mentioning a main redirect', 0, "cat > %s/n.txt <<'EOF'\necho x > %s/a.py\nEOF" % (W, M))
         bash('allow a python read of main', 0, "python3 -c \"print(open('%s/a.py').read())\"" % M)
         bash('allow a python write to the workdir', 0, "python3 -c \"open('%s/a.py','w').write('x')\"" % W)
+        bash('allow python reads of two main literals beside a workdir write', 0,
+             "python3 -c \"print(open('%s/a.py').read()); print(open('%s/b.py').read()); open('%s/o.txt','w').write('x')\"" % (M, M, W))
+        bash('deny python open of a name bound to a main literal', 2,
+             "python3 -c \"P = '%s/a.py'; open(P, 'w').write('x')\"" % M)
+        bash('deny python write_text on a Path bound to a main literal', 2,
+             "python3 -c \"from pathlib import Path; p = Path('%s/a.py'); p.write_text('x')\"" % M)
+        bash('deny python Path open for write into main', 2,
+             "python3 -c \"from pathlib import Path; Path('%s/a.py').open('w').write('x')\"" % M)
+        bash('deny python Path unlink of a main file', 2,
+             "python3 -c \"from pathlib import Path; Path('%s/a.py').unlink()\"" % M)
+        bash('allow python read of a name bound to a main literal', 0,
+             "python3 -c \"P = '%s/a.py'; print(open(P).read())\"" % M)
+        bash('allow python shutil.copy from main into the workdir', 0,
+             "python3 -c \"import shutil; shutil.copy('%s/a.py','%s/b.py')\"" % (M, W))
+        bash('deny a write through the second binding of a ; chain', 2,
+             "python3 -c \"import os; A = '%s/x.py'; B = '%s/a.py'; open(B, 'w').write('x')\"" % (W, M))
+        bash('allow a write through the workdir binding of a ; chain', 0,
+             "python3 -c \"import os; A = '%s/x.py'; B = '%s/a.py'; open(A, 'w').write('x')\"" % (W, M))
+        bash('deny python os.remove of a name bound to a main literal', 2,
+             "python3 -c \"import os; P = '%s/a.py'; os.remove(P)\"" % M)
+        bash('deny python Path rename of a main source', 2,
+             "python3 -c \"from pathlib import Path; Path('%s/a.py').rename('%s/b.py')\"" % (M, W))
+        bash('deny python os.rmdir of a main path', 2, "python3 -c \"import os; os.rmdir('%s/d')\"" % M)
+        bash('deny python Path rmdir of a bound main path', 2,
+             "python3 -c \"from pathlib import Path; p = Path('%s/d'); p.rmdir()\"" % M)
+        bash('allow python os.remove inside the workdir', 0, "python3 -c \"import os; os.remove('%s/a.py')\"" % W)
+        bash('allow python os.remove of a workdir name beside a main binding', 0,
+             "python3 -c \"import os; Q = '%s/a.py'; P = '%s/a.py'; os.remove(P)\"" % (M, W))
+        bash('allow python read of a bound main path beside a delete in the workdir', 0,
+             "python3 -c \"import os; P = '%s/a.py'; print(open(P).read()); os.remove('%s/b.py')\"" % (M, W))
         rc, err = run_bash(main_root, main_root, spill, 'echo x > %s/a.py' % M)
         ck('allow a Bash write in a main-checkout job', rc == 0, (rc, err))
 

@@ -62,6 +62,16 @@ class Recovery(unittest.TestCase):
         history=[row(1,20),row(2,20),row(5,15)]
         self.assertEqual(g.reconcile(str(self.store),{},history),{})
 
+    def test_a_loaded_later_pass_back_in_normalized_range_recovers_as_the_close_does(self):
+        # A close at twice the load runs a.py at 18 s raw, 9 s normalized: `_fold` closes the entry (inside before_s
+        # 10), so the listing must too, though the raw time stays above raw_before_s.
+        self.store.write_text(json.dumps({'a.py':dict(self.entry,raw_before_s=10.0)}))
+        history=[row(1,10,20,30),row(2,10,20,30),row(5,18,40,60)]
+        self.assertEqual(g.reconcile(str(self.store),{},history),{})
+        slow=[row(1,10,20,30),row(2,10,20,30),row(5,30,40,60)]
+        self.store.write_text(json.dumps({'a.py':dict(self.entry,raw_before_s=10.0)}))
+        self.assertIn('a.py',g.reconcile(str(self.store),{},slow))
+
     def test_partial_reused_and_failed_rows_cannot_claim_recovery(self):
         for fields in [{'cases_reused':1},{'reused':True},{'status':'fail'}]:
             observation=row(5,1)
@@ -70,6 +80,28 @@ class Recovery(unittest.TestCase):
         for receipt in [{'ts':5,'run_s':float('nan')},{'ts':5,'run_s':True},{'ts':False,'run_s':1},
                         {'ts':5,'run_s':90}]:
             self.assertIn('a.py',g.reconcile(str(self.store),{'__last_passes__':{'a.py':receipt}}))
+
+    def test_an_entry_whose_closes_above_outnumber_the_passes_that_set_its_range_leaves_the_listing(self):
+        # Two whole passes (ts 1, 2) set the range before the entry opened at ts 3; three later closes ran above it.
+        history=[row(1,10),row(2,10),row(3,30),row(4,30),row(5,30)]
+        self.store.write_text(json.dumps({'a.py':dict(self.entry,closes=3,last=5)}))
+        self.assertEqual(g.reconcile(str(self.store),{},history),{})
+        self.assertEqual(json.loads(self.store.read_text()),{})
+        self.store.write_text(json.dumps({'a.py':dict(self.entry,closes=2,last=5)}))
+        self.assertIn('a.py',g.reconcile(str(self.store),{},history))
+
+    def test_an_entry_from_before_samples_with_no_range_passes_in_the_log_is_judged_on_two(self):
+        self.store.write_text(json.dumps({'a.py':dict(self.entry,closes=3,last=5)}))
+        self.assertEqual(g.reconcile(str(self.store),{},[]),{})
+        self.store.write_text(json.dumps({'a.py':dict(self.entry,closes=2,last=5)}))
+        self.assertIn('a.py',g.reconcile(str(self.store),{},[]))
+
+    def test_stored_samples_set_how_long_an_entry_holds(self):
+        history=[row(1,10),row(2,10),row(3,30),row(4,30),row(5,30)]
+        self.store.write_text(json.dumps({'a.py':dict(self.entry,closes=6,last=5,samples=9)}))
+        self.assertIn('a.py',g.reconcile(str(self.store),{},history))
+        self.store.write_text(json.dumps({'a.py':dict(self.entry,closes=6,last=5,samples=5)}))
+        self.assertEqual(g.reconcile(str(self.store),{},history),{})
 
     def test_listing_and_commit_advisory_share_the_reconciled_entries(self):
         self.durations.write_text(json.dumps({'__last_passes__':{'a.py':{'ts':5,'run_s':9.0}}}))

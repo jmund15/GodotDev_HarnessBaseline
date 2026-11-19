@@ -1694,6 +1694,90 @@ def test_nothing_running_prints_no_context_line():
     assert e.run(stop_payload(), "--complete") == ""
 
 
+# Rows cut from live output (2026-11-18), trimmed: a child's stream `init` row and its proxied zero-usage reply, a
+# transcript reply's usage, and a transcript's compaction boundary.
+def _init_row(sid, cwd):
+    return {"type": "system", "subtype": "init", "cwd": cwd, "session_id": sid, "tools": ["Read"]}
+
+
+def _usage_row(tokens, uid):
+    return {"type": "assistant", "timestamp": "2026-11-18T17:43:00.000Z", "uuid": uid,
+            "message": {"id": "msg_" + uid, "type": "message", "role": "assistant", "model": "probe-model",
+                        "usage": {"input_tokens": tokens, "cache_creation_input_tokens": 0,
+                                  "cache_read_input_tokens": 0, "output_tokens": 175}, "content": []}}
+
+
+def _boundary_row(uid):
+    return {"type": "system", "subtype": "compact_boundary", "content": "Conversation compacted",
+            "timestamp": "2026-11-02T04:29:55.810Z", "uuid": uid,
+            "compactMetadata": {"trigger": "auto", "preTokens": 218812, "durationMs": 29778}}
+
+
+def _write_rows(path, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.writelines(json.dumps(r) + "\n" for r in rows)
+
+
+def _sidecar_line(e, stream_rows, transcript_rows=None):
+    """The running line of a planted sidecar on an `anthropic` row: its -P stream holds `stream_rows`, and its
+    child transcript (under a planted home, the folder named for the stream's cwd) holds `transcript_rows`."""
+    from unittest.mock import patch
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "hooks"))
+    import dispatch_table
+    alias = next(m["alias"] for m in model_registry.load()["models"]
+                 if m.get("transport") == "anthropic" and m.get("lifecycle") == "current")
+    record = os.path.join(e.root, "out", "probe.record.json")
+    _write_rows(record + ".stream", stream_rows)
+    home = os.path.join(e.root, "home")
+    if transcript_rows is not None:
+        init = next(r for r in stream_rows if r.get("subtype") == "init")
+        folder = "".join(c if c.isalnum() else "-" for c in init["cwd"])
+        _write_rows(os.path.join(home, ".claude", "projects", folder, init["session_id"] + ".jsonl"), transcript_rows)
+    entry = {"kind": "sidecar", "id": record, "record": record, "launched_at": time.time(),
+             "jobs": [{"label": "probe", "model": alias, "effort": "high", "launcher": "anthropic"}]}
+    with patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
+        return dispatch_table._running_line(entry, time.time())
+
+
+def test_running_sidecar_shows_its_childs_context_and_compactions_from_its_transcript():
+    e = Env()
+    init = _init_row("c0ffee00-0000-0000-0000-000000000001", "C:\\Proof\\Project")
+    line = _sidecar_line(e, [init, _usage_row(0, "s1")],
+                         [_usage_row(300000, "t1"), _boundary_row("b1"), _usage_row(90000, "t2"),
+                          _boundary_row("b2"), _usage_row(376015, "t3")])
+    assert line.endswith(" · ctx 376k · 2 compactions"), line
+
+
+def test_running_sidecar_omits_compactions_at_zero_and_reads_its_stream_without_a_transcript():
+    e = Env()
+    init = _init_row("c0ffee00-0000-0000-0000-000000000002", "C:\\Proof\\Project")
+    line = _sidecar_line(e, [init, _usage_row(182000, "s1")])
+    assert line.endswith(" · ctx 182k"), line
+    assert "compaction" not in line, line
+
+
+def test_running_sidecar_with_no_readable_gauge_keeps_its_line():
+    e = Env()
+    line = _sidecar_line(e, [{"type": "system", "subtype": "hook_started"}])
+    assert "ctx" not in line and "compaction" not in line and line.strip().endswith("<1m"), line
+
+
+def test_running_workflow_shows_its_agents_context_and_compactions():
+    e = Env()
+    e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
+                            "args": {"jobs": [{"label": "j1", "model": "haiku45", "effort": "low"},
+                                              {"label": "j2", "model": "haiku45", "effort": "low"}]}}), "--launch")
+    e.plant_run("wf_proof-1", "running", [("j1", "ag1", "haiku", "claude-haiku-4-5", "low"),
+                                          ("j2", "ag2", "haiku", "claude-haiku-4-5", "low")])
+    run_dir = os.path.join(e.session, "subagents", "workflows", "wf_proof-1")
+    _write_rows(os.path.join(run_dir, "agent-ag1.jsonl"), [_usage_row(120000, "a1"), _boundary_row("b1")])
+    _write_rows(os.path.join(run_dir, "agent-ag2.jsonl"), [_usage_row(210000, "a2")])
+    msg = e.run(stop_payload([{"id": "t-wf_proof-1", "type": "workflow", "status": "running"}]), "--complete")
+    line = next(l for l in msg.splitlines() if "agents" in l)
+    assert line.endswith(" · ctx up to 210k · 1 compaction"), line
+
+
 def test_fanout_inventory_is_bounded_by_its_calls_issue_time_alone():
     """An inventory written at or after the call's issue time is the call's, however long before
     the hook's own `launched_at` stamp; one written before the call is an earlier launch's."""

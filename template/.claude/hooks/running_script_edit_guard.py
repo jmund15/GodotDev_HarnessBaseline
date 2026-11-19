@@ -265,6 +265,10 @@ def process(input_data, scan=None, alive=None):
     if not is_guarded_script(file_path):
         return None
 
+    # A script that does not exist yet has no running instance: skip the process-table query (about 1 s on Windows).
+    if not os.path.isfile(os.path.join(str(input_data.get("cwd") or ""), file_path)):
+        return None
+
     basename = file_path.replace("\\", "/").rsplit("/", 1)[-1]
     hits = find_live_instances(basename, scan=scan, alive=alive)
     if not hits:

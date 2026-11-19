@@ -173,6 +173,49 @@ def s1_drift_row_prints_adopt_and_copy_commands():
         sb.close()
 
 
+def commit_template(sb, src, data):
+    git = ["git", "-C", str(sb.scope), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false"]
+    if not (sb.scope / ".git").exists():
+        subprocess.run(git + ["init", "-q"], check=True, timeout=60)
+    sb.template(src, data)
+    subprocess.run(git + ["add", src], check=True, timeout=60)
+    subprocess.run(git + ["commit", "-q", "-m", "t"], check=True, timeout=60)
+
+
+@case
+def s1_home_copy_of_an_earlier_template_commit_is_stale_and_install_updates_it():
+    sb = default_sandbox()
+    try:
+        commit_template(sb, "a.txt", b"alpha old\n")
+        commit_template(sb, "a.txt", b"alpha\n")
+        (sb.home / ".claude").mkdir(parents=True)
+        (sb.home / ".claude" / "a.txt").write_bytes(b"alpha old\r\n")
+        done = sb.run("check")
+        expect(sb.statuses()["tool-a"] == "stale", f"status {sb.statuses()}")
+        expect(done.code == 1, f"check exit {done.code}, want 1 for a stale home copy")
+        expect("adopt tool-a" not in done.out, f"a stale row offers adopt, which reverts the template: {done.out!r}")
+        expect(sb.run("install").code == 0, "install did not exit 0")
+        expect((sb.home / ".claude" / "a.txt").read_bytes() == b"alpha\n", "install left the stale home copy")
+        expect(sb.statuses()["tool-a"] == "same", f"status after install {sb.statuses()}")
+    finally:
+        sb.close()
+
+
+@case
+def s1_home_edit_beside_template_history_stays_drift():
+    sb = default_sandbox()
+    try:
+        commit_template(sb, "a.txt", b"alpha old\n")
+        commit_template(sb, "a.txt", b"alpha\n")
+        (sb.home / ".claude").mkdir(parents=True)
+        (sb.home / ".claude" / "a.txt").write_bytes(b"owner edit\n")
+        expect(sb.statuses()["tool-a"] == "drift", f"status {sb.statuses()}")
+        expect(sb.run("install").code == 0, "install did not exit 0")
+        expect((sb.home / ".claude" / "a.txt").read_bytes() == b"owner edit\n", "install overwrote a home edit")
+    finally:
+        sb.close()
+
+
 @case
 def s1_manifest_unknown_kind_exits_2():
     sb = Sandbox()

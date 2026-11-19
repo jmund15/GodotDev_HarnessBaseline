@@ -289,7 +289,7 @@ def test_unavailable_verifier_is_named_as_the_cause_not_as_mismatches():
     assert e.body.get('decision') == 'block', 'a missing verifier is still a block'
     reason = e.body['reason']
     assert 'did not run' in reason and cause in reason, reason
-    assert 'post_check.py claims --workflow-dir' in reason and 'Step 1.5' in reason, reason
+    assert 'post_check.py' not in reason and 'Step 1.5' in reason, 'the clean recompute is the rerun: ' + reason
     assert 'mismatch' not in reason and 'applied' not in reason, 'no verdict was applied, so none can mismatch: ' + reason
     audit = json.loads(reports(e)[0].read_text())
     assert audit['mismatches'] == [] and audit['outcome'] == 'block', audit
@@ -302,7 +302,29 @@ def test_absent_verification_block_names_the_missing_verifier():
     reason = e.body['reason']
     assert 'did not run' in reason and 'no verification block' in reason, reason
     assert 'mismatch' not in reason, reason
+    assert 'post_check.py' not in reason, 'a clean recompute is the rerun; ordering another repeats it: ' + reason
     assert json.loads(reports(e)[0].read_text())['mismatches'] == []
+
+
+def test_a_stopped_run_writes_its_audit_without_deferring_stop():
+    # A stopped run never reaches its verifier by construction; the audit's own recompute is its verdict record.
+    for status in ('killed', 'cancelled', 'stopped'):
+        e, _, _ = plant()
+        host = Path(e.session) / 'workflows/audit-run.json'
+        record = json.loads(host.read_text())
+        record.update(status=status, result=None)
+        host.write_text(json.dumps(record), encoding='utf-8')
+        e.run(stop_payload(), '--complete')
+        assert not e.body, (status, e.body)
+        audit = json.loads(reports(e)[0].read_text())
+        assert audit['outcome'] == 'stopped' and audit['counts']['VERIFIED'] == 1, (status, audit)
+    e, _, _ = plant()
+    host = Path(e.session) / 'workflows/audit-run.json'
+    record = json.loads(host.read_text())
+    record.update(status='failed', result=None)
+    host.write_text(json.dumps(record), encoding='utf-8')
+    e.run(stop_payload(), '--complete')
+    assert e.body.get('decision') == 'block', 'a run that failed on its own still names the missing verifier'
 
 
 def test_unavailable_verifier_with_unreadable_report_names_the_path():
@@ -773,8 +795,9 @@ NATIVE_FOLD_JOURNAL = HERE / 'fixtures/stop_audit/review_fold_native/journal.jso
 REJECTED_JOURNAL = HERE / 'fixtures/evidence/review_rejected/journal.jsonl'
 
 
-def native_fold_run(snapshot_text, live_text, *, relative=False, repo_root=False):
-    """The captured native review whose fold already edited its subject: seats read `snapshot_text`, disk holds `live_text`."""
+def native_fold_run(snapshot_text, live_text, *, relative=False, repo_root=False, args_file=False):
+    """The captured native review whose fold already edited its subject: seats read `snapshot_text`, disk holds `live_text`.
+    `args_file` launches it as `lens_briefs.py prepare` does: the call's args name only the file holding them."""
     import fold_check
     fixture = HERE / 'fixtures/stop_audit/review_fold_native'
     root = Path(tempfile.mkdtemp(prefix='fold_native_'))
@@ -787,9 +810,16 @@ def native_fold_run(snapshot_text, live_text, *, relative=False, repo_root=False
     plan.write_text(live_text, encoding='utf-8', newline='\n')
     subject = dict(root='.' if relative else str(root), snapshot='snapshot.json' if relative else str(manifest),
                    files=[PLAN_REL])
+    args = {'spillDir': str(root / 'spill'),
+            'fold': dict(subjects=[subject], **({'repoRoot': str(root)} if repo_root else {}))}
+    if args_file:
+        named = Path('.claude/scratch') / root.name / 'args.json'
+        target = Path(test_dispatch_table.PROJECT) / named
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(args), encoding='utf-8')
+        args = {'argsFile': named.as_posix()}
     e, run_dir = plant_review_run(
-        'review_fanout', 'wf_fold-native', args={'spillDir': str(root / 'spill'),
-                                                 'fold': dict(subjects=[subject], **({'repoRoot': str(root)} if repo_root else {}))},
+        'review_fanout', 'wf_fold-native', args=args,
         result=json.loads((fixture / 'result.json').read_text(encoding='utf-8')),
         report=json.loads((fixture / 'in_run_report.json').read_text(encoding='utf-8')))
     (run_dir / 'journal.jsonl').write_bytes((fixture / 'journal.jsonl').read_bytes())
@@ -828,6 +858,20 @@ def test_native_fold_audit_resolves_relative_subject_against_the_fold_repo_root(
         return
     e, run_dir, root = native_fold_run('before the fold: ' + QUOTE + '\n', 'after the fold: rewritten\n',
                                        relative=True, repo_root=True)
+    elsewhere = root / 'sub' / 'dir'
+    elsewhere.mkdir(parents=True)
+    e.run(stop_in(elsewhere), '--complete')
+    audit = json.loads((run_dir / 'verification_audit.json').read_text())
+    assert audit['verdicts']['F1']['verdict'] == 'VERIFIED', (audit['verdicts']['F1'], audit['errors'])
+
+
+def test_native_fold_audit_reads_the_root_from_the_args_file_the_call_names():
+    """`lens_briefs.py prepare` launches a review as `args: {argsFile}`; the root, spill folder and fold live in that
+    file, so a Stop fired from a subdirectory must still resolve relative evidence against them."""
+    if not NATIVE_FOLD_JOURNAL.exists():
+        return
+    e, run_dir, root = native_fold_run('before the fold: ' + QUOTE + '\n', 'after the fold: rewritten\n',
+                                       relative=True, repo_root=True, args_file=True)
     elsewhere = root / 'sub' / 'dir'
     elsewhere.mkdir(parents=True)
     e.run(stop_in(elsewhere), '--complete')
@@ -878,3 +922,29 @@ if __name__ == '__main__':
         measure()
     else:
         sys.exit(run_tests())
+
+
+def _merged_view_compare(applied_verdict, members):
+    """Recompute a review run whose bounded preview shows one merged view `M1` over source ids `members`."""
+    import dispatch_table as dt
+    verdicts = {key: dict(verdict=value, items=[]) for key, value in members.items()}
+    counts = {v: list(members.values()).count(v) for v in ('VERIFIED', 'UNVERIFIED', 'UNCHECKED')}
+    report = dict(verdicts=verdicts, counts=dict(counts), mismatches=[], unattempted=[], drift=[])
+    applied = [dict(id='M1', merged_from=list(members), verdict=applied_verdict,
+                    confidence='verified' if applied_verdict == 'VERIFIED' else 'unverified')]
+    verification = dict(status='pass' if counts['VERIFIED'] == len(members) else 'fail', counts=counts,
+                        verdicts=dict(members), __previewIncomplete=True)
+    dt._compare_applied(report, applied, verification, {})
+    return report['mismatches']
+
+
+def test_review_merged_view_is_audited_by_its_member_ids():
+    """A merged review finding shows as `M<n>` with `merged_from` naming its source ids and carries the worst of
+    their verdicts; the audit keys it by those ids, never as an unknown applied key."""
+    assert _merged_view_compare('VERIFIED', {'F1': 'VERIFIED', 'F5': 'VERIFIED'}) == []
+    assert _merged_view_compare('UNVERIFIED', {'F1': 'VERIFIED', 'F5': 'UNVERIFIED'}) == []
+
+
+def test_review_merged_view_must_carry_its_worst_member_verdict():
+    mismatches = _merged_view_compare('VERIFIED', {'F1': 'VERIFIED', 'F5': 'UNVERIFIED'})
+    assert 'F5: verdict/confidence not applied' in mismatches, mismatches

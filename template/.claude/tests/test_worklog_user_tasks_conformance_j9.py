@@ -29,8 +29,8 @@ class Contracts(unittest.TestCase):
             reminder.process(event)
             for path, note in [('rules/noted.md', 'NOTE-secret'), ('data.json', 'DATA-note')]:
                 event['tool_input']['file_path'] = 'C:/repo/.claude/' + path
-                for _ in range(2):
-                    self.assertIn(note, (reminder.process(event) or {}).get('context', ''))
+                self.assertIn(note, (reminder.process(event) or {}).get('context', ''))
+                self.assertNotIn(note, (reminder.process(event) or {}).get('context', ''))
             event['tool_input']['file_path'] = 'C:/repo/Game/data.json'
             self.assertIn('GAME-note', (reminder.process(event) or {}).get('context', ''))
 

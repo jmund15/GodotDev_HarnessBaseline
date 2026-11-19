@@ -267,6 +267,7 @@ def _append(target, record):
         directory = os.path.dirname(target)
         if directory:
             os.makedirs(directory, exist_ok=True)
+        # bare-append: both callers hold this target's _hook_state file lock around the append.
         with io.open(target, "a", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError as exc:

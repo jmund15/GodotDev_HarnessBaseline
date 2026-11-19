@@ -198,6 +198,7 @@ def _spill_closed(task_id, working):
     if "active_jobs" in working:
         working["active_jobs"] = [j for j in jobs if j.get("state") not in FINISHED_JOB_STATES]
     if rows:
+        # bare-append: runs inside _mutate's record lock, so one writer is here at a time.
         with open(archive_path(task_id), "a", encoding="utf-8", newline="\n") as fh:
             for row in rows:
                 fh.write(json.dumps(row, ensure_ascii=True) + "\n")
@@ -669,6 +670,7 @@ def record_admission(task_id, row):
 
     def mutation(state):
         _require(state, task_id)
+        # bare-append: runs inside _mutate's record lock, so one writer is here at a time.
         with open(admissions_path(task_id), "a", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps(full, ensure_ascii=True) + "\n")
         rows = state.setdefault("admissions", [])

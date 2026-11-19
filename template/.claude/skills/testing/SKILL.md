@@ -60,12 +60,13 @@ Identify the domain before writing tests. The **Logic vs Gameplay split** lives 
 
 ## Verification rules
 
+- A test added in any project meets `reference/mechanism_litmus.md`'s litmus and cites the file: it names the failure it targets (L1) and why nothing cheaper catches it (L3).
 - A new integration test that drives engine lifecycle (frames, spawns, scene-tree entry and exit, awaited signals), or a change that can affect its lifecycle timing, ordering or isolation, passes twice on the same tree digest before its pass counts. A mechanical edit that changes none of these needs no second pass. Two agreeing runs are the smallest sample that can show nondeterminism; a disagreeing pair is the defect (the `debugging` skill's reproduce phase).
 - An owner-reported number (an authored value, an observed value or a verdict: a distance, a timing, a curve point) becomes a regression test of the behaviour that value produces, never an assertion of the literal authored value (`rules/test_authoring.md` #12); an observed value or verdict may be asserted. The test's `<summary>` names where the owner said it (worklog item, checklist or task record). An agent never invents the number; without one, ask, or the behaviour stays owner-checked.
 
 ## Pre-Commit Regression Gate
 
-Run `/regression_gate` before committing code changes. It owns applicability, suite coverage, the verdict and the exemptions.
+A drive closes with the scope run; the full `/regression_gate` runs in the main check after the land (`change_control` §Gate cadence). The gate owns applicability, suite coverage, the verdict and the exemptions.
 
 ## See Also
 

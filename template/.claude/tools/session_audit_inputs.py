@@ -134,8 +134,12 @@ def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=Fa
     base_ref = base_ref or "origin/main"
     base = upstream.strip() if upstream else git(root, "rev-parse", base_ref).strip()
     commits = doctrine_commits(root, base, head)
-    doctrine_files = sorted({path for commit in commits for path in commit["files"]})
     files_in = ledger.normalize_files(root, list(files or []))
+    if files_in and not widen:
+        # A batch reviews the doctrine commits of its own files; another batch's files carry the rest.
+        named = set(files_in)
+        commits = [c for c in (dict(c, files=[p for p in c["files"] if p in named]) for c in commits) if c["files"]]
+    doctrine_files = sorted({path for commit in commits for path in commit["files"]})
     files = sorted(set(files_in) | set(doctrine_files)) if widen else files_in
     catalog = ledger.load_catalog()
     roster = ledger._load_roster(roster, catalog)

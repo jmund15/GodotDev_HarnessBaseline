@@ -155,6 +155,7 @@ def test_s9_colon_operands(tmp_path):
         p, out, crashed = run(HOOK, payload(command, ''), env)
         assert not crashed and p.returncode == 0
         assert out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 ' + command
+        assert 'additionalContext' not in out, (command, out)  # the rewrite is already applied: a note changes no action
         p, again, crashed = run(HOOK, payload(out['updatedInput']['command'], ''), env)
         assert not crashed and 'updatedInput' not in again
     command = 'cd /repo && git show origin/main:README.md'

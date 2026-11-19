@@ -175,30 +175,28 @@ def main():
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=tmp, PYTHONIOENCODING="utf-8")
     cases = []
 
-    out = scan(UNBOUNDED, env)
+    # Cadence: each axis delivers its full text once, a shorter line that keeps the action tokens after,
+    # and a compaction re-arms the full text. The proof asserts the order of lengths and the tokens a reader acts on.
+    full = scan(UNBOUNDED, env)
     cases.append(("first unbounded scan gets the full advisory",
-                  "output size is unknown" in out and "--max-count N" in out and "head_limit" in out))
+                  "--max-count" in full and "head_limit" in full))
 
     out = scan(UNBOUNDED, env)
-    cases.append(("the repeat drops to the one-line form",
-                  out.startswith("\u26a0 UNBOUNDED RECURSIVE SCAN")
-                  and "output size is unknown" not in out))
+    cases.append(("the repeat drops to a shorter line that still names the bound",
+                  0 < len(out) < len(full) and "--max-count" in out))
 
-    out = scan(BLIND, env)
+    full_both = scan(BLIND, env)
     cases.append(("the scope axis carries its own first-fire, still full",
-                  "capping output does not fix" in out and "-path ./.claude -prune" in out
-                  and "\u26a0 UNBOUNDED RECURSIVE SCAN \u2014 cap it" in out))
+                  "-path ./.claude -prune" in full_both and len(full_both) > len(out)))
 
     out = scan(BLIND, env)
     cases.append(("both axes are short on the repeat",
-                  "capping output does not fix" not in out and "Use the Grep tool" in out
-                  and "-path ./.claude -prune" in out))
+                  0 < len(out) < len(full_both) and "-path ./.claude -prune" in out and "--max-count" in out))
 
     run(PRECOMPACT, {"session_id": SID, "trigger": "auto"},
         dict(env, CLAUDE_PROJECT_DIR=env["HARNESS_HOOK_STATE_DIR"]))
     out = scan(UNBOUNDED, env)
-    cases.append(("a compaction re-arms the full advisory",
-                  "output size is unknown" in out))
+    cases.append(("a compaction re-arms the full advisory", out == full))
 
     # Negatives — a cadence change must not widen or narrow what fires.
     cases.append(("a bounded scan is silent", scan(BOUNDED, env) == ""))
@@ -277,6 +275,25 @@ def main():
                   'GITIGNORE-BLIND SCAN' in scan('ls | xargs find . -name "*.md"', env, session=SID + '-xargs')))
     cases.append(('a find inside a command substitution still warns on the scope axis',
                   'GITIGNORE-BLIND SCAN' in scan('f=$(find . -name "*.md")', env, session=SID + '-subst')))
+
+    # The volume axis judges the command word, never a flag spelling or a word in prose.
+    UNB = "UNBOUNDED RECURSIVE SCAN"
+    for label, command in (
+            ("ls with the reverse-sort flag (-ltr), which is not -R",
+             "ls -ltr .claude/scratch/x; cat .claude/scratch/x/a.md"),
+            ("a shell function body, a one-directory ls and a one-file cat",
+             'mk(){ for f in "$@"; do echo "$f"; done; }; mk a b; ls -la .claude/scratch/x; cat x/a.md'),
+            ("the word find as an unquoted echo argument", "echo then find the file; ls d"),
+            ("the word rg as a grep pattern", "cat notes.md | grep rg "),
+            ("a quoted string holding a semicolon and find", 'echo "step one; find the file"; ls d')):
+        cases.append(("volume axis silent: " + label, UNB not in scan(command, env, session=SID + "-n-" + label[:12])))
+    for label, command in (
+            ("ls -R", "ls -R .claude"),
+            ("ls -a -R", "ls -a -R .claude"),
+            ("ls --recursive", "ls --recursive .claude"),
+            ("rg behind time", "time rg -n foo src/"),
+            ("find behind xargs", "ls | xargs find . -name x")):
+        cases.append(("volume axis advises: " + label, UNB in scan(command, env, session=SID + "-p-" + label[:12])))
 
     cases += deny_cases(env)
     cases += tracked_ignored_deny_cases(env)

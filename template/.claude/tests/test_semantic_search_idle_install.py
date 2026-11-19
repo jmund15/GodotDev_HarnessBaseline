@@ -23,7 +23,8 @@ sys.path.insert(0, str(REPO / ".claude" / "tools"))
 
 import semantic_search_idle_install as inst  # noqa: E402
 
-REGISTRY_SOURCE = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+REGISTRY_SOURCE = (Path(os.environ.get("HARNESS_CALLER_HOME") or Path.home())
+                   / ".claude" / "plugins" / "installed_plugins.json")
 if not REGISTRY_SOURCE.exists():
     print("PLATFORM-SKIP-PROOF test_semantic_search_idle_install: no semantic-search plugin is installed on this machine")
     sys.exit(0)
@@ -166,8 +167,10 @@ class InstallerProof(unittest.TestCase):
                 try:
                     proc = self.check()
                     self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-                    self.assertIn("result format drift", proc.stdout)
                     self.assertIn(name, proc.stdout)
+                    self.assertIn("RESULT_MODULE_HASHES", proc.stdout)
+                    self.assertIn("--install", proc.stdout)
+                    self.assertEqual(proc.stdout.count("\n"), 1, "one line, not the shim's wrapper plus a cut copy")
                 finally:
                     module.write_bytes(original)
 

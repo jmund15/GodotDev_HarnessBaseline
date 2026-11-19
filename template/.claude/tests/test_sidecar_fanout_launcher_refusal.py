@@ -27,6 +27,8 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLAUDE = os.path.dirname(HERE)
+# The refusal cases plant no owner text: a caller's session id would make them read its owner turns.
+os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
 sys.path.insert(0, os.path.join(CLAUDE, "hooks"))
 sys.path.insert(0, os.path.join(CLAUDE, "tools"))
 import _dispatch_checks as dc  # noqa: E402
@@ -89,6 +91,13 @@ def job(label, alias, kind="scout", **extra):
                  "plan": "anthropic"}, **extra)
 
 
+def refusal_block(text):
+    """The refusal and what follows it. Per-job effort lines (`job X: runs effort ...`) print before it for every job."""
+    lines = text.splitlines()
+    starts = [i for i, line in enumerate(lines) if "Launch refused" in line or REFUSAL_HEAD in line]
+    return "\n".join(lines[starts[0]:]) if starts else ""
+
+
 def run(jobs, *flags):
     """(exit code, stdout, stderr, detach calls, run calls, out dir) for one `main` call over `jobs`."""
     work = tempfile.mkdtemp(dir=TMP)
@@ -131,7 +140,7 @@ for mode in ("--detach", "--dry-run", None):
 
     def names_each(flags=flags):
         _code, out, err, *_ = run(mixed, *flags)
-        text = out + err
+        text = refusal_block(out + err)
         return (REFUSAL_HEAD in text and "unfit-a" in text and "unfit-c" in text and "fit-b" not in text.replace("unfit-", ""))
 
     case("%s: a job set holding unfit pins exits 2 and starts nothing" % shown, refused)
@@ -242,8 +251,10 @@ with open(BIG, "w", encoding="utf-8") as fh:
     fh.write("x" * int((WINDOW + 30000) * dispatch_size.CHARS_PER_TOKEN))
 
 
-def over_job(label="too-big"):
-    return job(label, OVER_ALIAS, promptFile=BIG)
+def over_job(label="too-big", kind="reviewer"):
+    """A review seat must keep its subject resident, so reading past its window refuses it; any other kind compacts
+    and carries on (`dispatch_size.RESIDENT_KINDS`)."""
+    return job(label, OVER_ALIAS, kind=kind, promptFile=BIG)
 
 
 for mode in ("--detach", "--dry-run", None):
@@ -262,7 +273,7 @@ for mode in ("--detach", "--dry-run", None):
 
     def only_the_over_job_is_refused_and_a_fitting_one_still_launches(flags=flags):
         code, out, err, *_ = run([over_job(), job("fits-b", FIT[0])], *flags)
-        text = out + err
+        text = refusal_block(out + err)
         return code == 2 and "`too-big`" in text and "fits-b" not in text
 
     case("%s: a job reading past its window exits 2 and starts nothing" % shown, over_is_refused)
@@ -282,6 +293,15 @@ def the_refusal_uses_the_seat_measure():
 
 
 case("the over-window refusal's overage is the review seat's own measure", the_refusal_uses_the_seat_measure)
+
+
+def a_non_resident_kind_past_its_window_launches_with_its_overage_stated():
+    code, out, err, *_ = run([over_job("big-scout", kind="scout")], "--dry-run")
+    text = out + err
+    return code == 0 and "Launch refused" not in text and "big-scout" in text and "fit: " in text
+
+
+case("an over-window scout launches, its fit line stating the reading", a_non_resident_kind_past_its_window_launches_with_its_overage_stated)
 
 
 def receipted_job_is_not_checked_twice():

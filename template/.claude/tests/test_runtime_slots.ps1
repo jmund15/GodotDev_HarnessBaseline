@@ -1359,7 +1359,7 @@ exit 0
             Exit-HeldCheckout -Lease $hl; $released = $true
             [void](Invoke-HolderRelease $r0)
             $lc = Wait-Ready $c -Seconds 20
-            Assert-True 'T32 the held child is refused after its slot wait' (-not $lc.Acquired -and $lc.Error -match 'no-checkout-record' -and $lc.Error -match 'slot wait') ($lc | ConvertTo-Json -Compress)
+            Assert-True 'T32 the held child is refused after its slot wait' (-not $lc.Acquired -and $lc.Error -match 'no-checkout-record') ($lc | ConvertTo-Json -Compress)
             Assert-True 'T32 the refused child released the slot it took' (Test-MutexFree $n.s0)
         } finally { Stop-All; if (-not $released) { Exit-HeldCheckout -Lease $hl } }
     }

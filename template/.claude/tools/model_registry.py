@@ -1153,13 +1153,14 @@ def _validate_driver_notes(notes, where):
                 f"cannot be scoped or retired")
 
 
-def row_for_model(model, data=None):
+def row_for_model(model, data=None, *, prefix=True):
     """The registry row a session payload's model string names, or None.
 
     Payload strings are not registry ids: they carry a context suffix (`[1m]`) and may name a
     longer, unregistered version of a registered id. Match an alias, id or `servedIds` spelling
     exactly, else the longest id the string starts with. Unknown stays None; callers treat that as
-    strict. Record identity uses `row_by_id`, which never takes the prefix step.
+    strict. Record identity uses `row_by_id`, which never takes the prefix step. A price passes
+    `prefix=False`: a longer id is another version, and its price is its own.
     """
     name = str(model or "").strip().lower()
     if "[" in name:
@@ -1174,6 +1175,8 @@ def row_for_model(model, data=None):
         names = [m.get("id", ""), m.get("alias", ""), *(m.get("servedIds") or [])]
         if name in (str(n).lower() for n in names):
             return m
+    if not prefix:
+        return None
     prefixed = [m for m in rows if m.get("id") and name.startswith(str(m["id"]).lower())]
     return max(prefixed, key=lambda m: len(m["id"])) if prefixed else None
 
@@ -2049,6 +2052,150 @@ def ladder_cost(entry, data=None, costs=None):
     return (costs if costs is not None else ladder_costs(data)).get(entry["id"])
 
 
+# A job's reading, as the ladder's `effort` cell spells the work shape it names. Matched case- and
+# hyphen-insensitively against each ` · ` segment; no cell is reworded to fit.
+_FANOUT_TERMS = ("mechanical fan-out", "locate", "enumerate", "extract", "copyable extraction", "rubric")
+_EFFORT_TERMS = {
+    ("author", "tight"): ("tight-spec", "converged"),
+    ("author", "judged"): ("ambiguous execution",),
+    ("scout", "tight"): _FANOUT_TERMS,
+    ("lens", "tight"): _FANOUT_TERMS,
+}
+_READING_TERMS = {
+    "checklist": ("checklist audit", "anchored", "rubric"),
+    "review": ("plan review", "plan-review seat", "plan-check seat", "design-review", "review seat"),
+}
+
+
+def _effort_terms(kind, reading):
+    """The ladder terms a job's reading names; () when the reading names none (open-ended work)."""
+    if reading in _READING_TERMS:
+        return _READING_TERMS[reading]
+    return _EFFORT_TERMS.get((kind, reading), ())
+
+
+def _words(text):
+    return " ".join(re.sub(r"[-_]", " ", text.lower()).split())
+
+
+def _names_term(segment, terms):
+    text = _words(segment)
+    return any(re.search(r"(?<![a-z])" + re.escape(_words(t)) + r"s?(?![a-z])", text) for t in terms)
+
+
+def effort_for(alias, kind, reading, data=None, path=None):
+    """(effort, status) a job runs at: the rung the ladder's `effort` cell computes for its reading.
+
+    The cell's ` · ` segment that names the reading's work shape gives the rung (a range's low end, its first
+    backticked level). status is `computed`, or `unchecked` with no effort when the reading names no shape,
+    the row's cell names none or several rungs, or the rung is outside the row's legal levels or its
+    `effort.avoid`. The ladder is the only source."""
+    data = data if data is not None else load()
+    terms = _effort_terms(kind, reading)
+    if not terms:
+        return None, "unchecked"
+    entry = resolve(alias, data)
+    try:
+        with open(path or ladder_path(), encoding="utf-8") as fh:
+            rows = parse_ladder_rows(fh, ("model", "effort"))
+    except OSError:
+        return None, "unchecked"
+    cell = next((r["effort"] for r in rows
+                 if any(m["id"] == entry["id"] for m in ladder_rows(r["model"], data))), None)
+    if cell is None:
+        return None, "unchecked"
+    rungs = set()
+    for segment in cell.split(" · "):
+        level = re.search(r"`([^`]+)`", segment)
+        if level and _names_term(segment, terms):
+            rungs.add(level.group(1))
+    if len(rungs) != 1:
+        return None, "unchecked"
+    (rung,) = rungs
+    legal = effort_values(entry, data)
+    if rung in avoided_rungs(entry) or (legal and rung not in legal):
+        return None, "unchecked"
+    return rung, "computed"
+
+
+RUNG_ORDER = ("none", "low", "medium", "high", "xhigh", "max", "ultra")
+
+
+def pin_effort(alias, kind, reading, explicit=None, owner=False, measured=False, data=None, path=None):
+    """(effort, status) a job runs at, from its computed effort and its explicit one.
+
+    status: `computed` (no explicit effort: the computed rung runs); `capped` (an explicit rung above the computed
+    one, in a run that is neither owner-pinned nor measured: the computed rung runs instead); `pinned` (the explicit
+    rung runs: at or below the computed one, owner-named, or measured); `unchecked` (the reading names no ladder
+    segment: the explicit rung runs, or None when the job gave none). A justification never enters this decision."""
+    computed, status = effort_for(alias, kind, reading, data=data, path=path)
+    if status != "computed":
+        return explicit, "unchecked"
+    if explicit is None:
+        return computed, "computed"
+    above = explicit in RUNG_ORDER and RUNG_ORDER.index(explicit) > RUNG_ORDER.index(computed)
+    if not above:
+        return explicit, "pinned"
+    if owner:
+        return explicit, "owner"
+    if measured:
+        return explicit, "measurement"
+    return computed, "capped"
+
+
+def fill_job_efforts(jobs, data, measured=False):
+    """Each job's effort from its reading and ladder cell (`model_registry.pin_effort`), before placement.
+
+    A job with a reading (`spec`) and no effort runs the computed rung; an explicit rung above the computed one is
+    capped unless the job is owner-pinned (`pick: owner`) or the run measures (`measured`). A job the ladder names no
+    segment for keeps its own effort. Each job or row returns one stderr line naming its case; a job that takes a
+    computed effort records `pick: cell` when it named no pick. Each job's requested effort and case are kept under
+    `effortCases` by alias (`effort_record` reads them)."""
+    lines = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        label, kind, reading = job.get("label"), job.get("kind"), job.get("spec")
+        owner = job.get("pick") == "owner"
+        computed_any = False
+        cases = {}
+        if isinstance(job.get("rows"), dict):
+            rows = {}
+            for alias, asked in job["rows"].items():
+                effort, status = pin_effort(alias, kind, reading, asked, owner, measured, data)
+                rows[alias] = effort
+                cases[alias] = {"requestedEffort": asked, "effortCase": status}
+                computed_any = computed_any or status in ("computed", "capped")
+                lines.append(f"job {label}: row {alias} runs effort {effort} ({status}, reading {reading})")
+            job["rows"] = rows
+        elif job.get("alias") or job.get("model"):
+            alias = job.get("alias") or job.get("model")
+            asked = job.get("effort")
+            effort, status = pin_effort(alias, kind, reading, asked, owner, measured, data)
+            if effort is not None:
+                job["effort"] = effort
+            cases[alias] = {"requestedEffort": asked, "effortCase": status}
+            computed_any = computed_any or status in ("computed", "capped")
+            lines.append(f"job {label}: runs effort {effort} ({status}, reading {reading})")
+        if cases:
+            job["effortCases"] = {**(job.get("effortCases") or {}), **cases}
+        if computed_any and reading and not job.get("pick"):
+            job["pick"] = "cell"
+    return lines
+
+
+def effort_record(job, alias=None):
+    """The run record's effort fields for one job (and, for a rows job, one row alias): the effort the job asked
+    for, the effort that ran, the case that decided it, and the job's justification and pick. `justification`
+    is recorded only; no decision reads it."""
+    alias = alias or job.get("alias") or job.get("model")
+    case = (job.get("effortCases") or {}).get(alias) or {}
+    ran = job["rows"].get(alias) if isinstance(job.get("rows"), dict) else job.get("effort")
+    return {"requestedEffort": case.get("requestedEffort"), "effort": ran,
+            "effortCase": case.get("effortCase"), "justification": job.get("justification") or None,
+            "pick": job.get("pick") or None}
+
+
 def cheapest_first(rows, data=None, costs=None):
     """`rows` ordered by ladder cost, cheapest first; an unknown cost goes last; ties keep their order.
 
@@ -2638,6 +2785,40 @@ def _missed_final_requests(driver_requests, remainder):
     return 0
 
 
+# LiteLLM below this drops the usage chunk a Go chat-completions stream puts on its finish_reason chunk and
+# reports its own estimate instead (measured 2026-11-18: 1.99.0 dropped it, 1.110.0 kept it; the versions
+# between were not run). The estimate is the whole prompt as fresh input, cache read 0 and output without reasoning.
+LITELLM_CHAT_USAGE_FLOOR = '1.110.0'
+
+
+def _version_tuple(text):
+    match = re.search(r'\d+(?:\.\d+)+', str(text or ''))
+    return tuple(int(n) for n in match.group(0).split('.')) if match else None
+
+
+def usage_unmeasured(record, data=None):
+    """Why this sidecar record's token counts are not the provider's, else None.
+
+    A chat-mode row on a transport launched through the per-dispatch LiteLLM proxy reports the proxy's
+    estimate unless the proxy that served the run (`proxyVersion`) is at the floor. A record that never
+    named its proxy predates the field, so its version is unknown, not good.
+    """
+    data = data if data is not None else load()
+    transport = record.get('transport')
+    model = record.get('servedModel') or record.get('requestedModel')
+    if not transport or not isinstance(model, str):
+        return None
+    launcher = ((data.get('transports') or {}).get(transport) or {}).get('launcher') or ''
+    row = row_by_id(model, data, transport=route_of(transport, data))
+    if not launcher.endswith('opencode_sidecar.sh') or not row or row.get('apiMode') != 'chat':
+        return None
+    have, need = _version_tuple(record.get('proxyVersion')), _version_tuple(LITELLM_CHAT_USAGE_FLOOR)
+    if have is not None and have >= need:
+        return None
+    return (f"usage unmeasured: LiteLLM {record.get('proxyVersion') or 'version unrecorded'} reports its own estimate on "
+            f"chat-mode rows (needs >= {LITELLM_CHAT_USAGE_FLOOR}); input, cache and output tokens are unknown")
+
+
 def record_requests(record, path, data=None, events=None, settled_by=None):
     """Final client requests plus the aggregate remainder, with explicit estimate labels.
 
@@ -2646,6 +2827,9 @@ def record_requests(record, path, data=None, events=None, settled_by=None):
     Mixed/unknown compaction tiers use a labelled base-rate estimate, never a guessed tier.
     """
     data = data if data is not None else load()
+    reason = usage_unmeasured(record, data)
+    if reason:
+        raise RegistryError(reason)
     streams, stream_source = _stream_events(path, events)
     transcript = session_transcript(record.get('sessionId'), record.get('transport'), data=data, settled_by=settled_by)
     requests = request_usage(usage_events(transcript.read_text(encoding='utf-8'))) if transcript else []
@@ -2785,6 +2969,11 @@ def reprice_record(record, path, data=None, events=None, settled=False):
 def _reprice_record(record, path, data, events, settled_by=None):
     rec = dict(record)
     rec.setdefault('costTierBasis', 'untiered')
+    reason = usage_unmeasured(record, data)
+    if reason:
+        rec.update(inputTokens=None, cacheReadTokens=None, cacheWriteTokens=None, outputTokens=None,
+                   costUSD=None, costTierBasis='invalid', costPricingProblem=reason)
+        return rec
     try:
         view = record_requests(record, path, data=data, events=events, settled_by=settled_by)
         requests = view.pop('requests')
@@ -2808,10 +2997,10 @@ def _reprice_record(record, path, data, events, settled_by=None):
 
 def list_price(model, fresh=0, cache_read=0, output=0, cache_write=0, cache_write_1h=0,
                multiplier=None, data=None, requests=None, request_input=None, part=None):
-    """(usd, None) for a payload model string `row_for_model` resolves, priced by `price_run`; else
-    (None, the reason it cannot be priced)."""
+    """(usd, None) for a payload model string `row_for_model` resolves without the prefix step,
+    priced by `price_run`; else (None, the reason it cannot be priced)."""
     data = data if data is not None else load()
-    row = row_for_model(model, data)
+    row = row_for_model(model, data, prefix=False)
     if row is None:
         return None, f"model {model!r} is not in the registry"
     try:

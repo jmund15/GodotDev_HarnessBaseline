@@ -21,18 +21,17 @@ Read at `/workstation_setup` Phase 8 when the godot layer is installed; Phases T
 
 A missing required item → BLOCKED-ON-USER row with its install link; continue with the other phases.
 
-## T2 — Three Godot pins: one version, three homes
+## T2 — Two Godot pins: one version, two homes
 
-The engine version lives in three independent places; all three must match the project-stack pin:
+The engine version lives in two independent places; both must match the project-stack pin:
 
 1. **`.runsettings` `<GODOT_BIN>`** (gitignored, per machine). The SessionStart hook generates it from
    `.runsettings.template` only when it is missing. A wrong value → delete the file and start a new
-   session after pin 3 is set. Never copy it from another machine or edit the template.
-2. **`~/.claude.json` `mcpServers.godot.env.GODOT_PATH`** (user-owned). Missing → §T6 registers it.
-   Wrong → BLOCKED-ON-USER naming the exact expected path.
-3. **User env `GODOT_BIN`** — read back `[Environment]::GetEnvironmentVariable('GODOT_BIN','User')`.
+   session after pin 2 is set. Never copy it from another machine or edit the template.
+2. **User env `GODOT_BIN`** — read back `[Environment]::GetEnvironmentVariable('GODOT_BIN','User')`.
    Absent → set it to the pinned mono exe with `SetEnvironmentVariable(..., 'User')`; new terminals
-   see it. Without it, every `[RequireGodotRuntime]` test passes without running.
+   see it. Without it, every `[RequireGodotRuntime]` test passes without running, and the Godot MCP
+   (which reads `${GODOT_BIN}` from `.mcp.json`) refuses to start the engine.
 
 ## T3 — Engine runtimeconfig pin: machine-local, re-applied per engine upgrade
 
@@ -72,13 +71,16 @@ Local only; cloud sessions disable it:
 
 ## T6 — Godot MCP and docs cache
 
-1. `mcp__godot__get_godot_version` returns the project-stack version. A response alone proves
-   nothing: the server launches its own `GODOT_PATH` engine, and a stale pin silently downgrades
+1. `mcp__godot__check_project {projectPath: <repo>}` reports the project-stack Godot version. A response
+   alone proves nothing: the server launches the `GODOT_PATH` engine, and a stale pin silently downgrades
    `project.godot` and the csproj SDK on contact.
-2. Absent: godot-mcp is a separate Node project. Clone it, run `npm install && npm run build`, and
-   register it at user scope: `"godot": {"command": "node", "args": ["<clone>/build/index.js"],
-   "env": {"GODOT_PATH": "<mono exe>"}}` under `mcpServers` in `~/.claude.json`. Restart Claude Code.
-   The repo `.mcp.json` stays empty.
+2. Absent: the `godot` server comes from the repo `.mcp.json`, whose entry runs
+   `node ${CLAUDE_PROJECT_DIR:-.}/.claude/tools/godot_mcp_launch.cjs godot-mcp-runtime@<pin>` — so it
+   needs `node` on PATH (§T1), at the pin `reference/project_stack.md` carries — and
+   `settings.json` `enabledMcpjsonServers` approves that entry. The launcher resolves the engine
+   from `GODOT_PATH` and refuses a bare `godot` name from PATH. Set user env `GODOT_BIN` (§T2
+   pin 2) before Claude Code starts, then restart it. `claude mcp get godot` must show project
+   scope; a local-scope `godot` entry overrides the project one, so remove it.
 3. `bash .claude/scripts/godot_docs_cache.sh` builds the gitignored `.claude/cache/godot-docs/`.
    Done when SessionStart no longer reports the cache stale.
 

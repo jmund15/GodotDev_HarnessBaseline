@@ -10,6 +10,8 @@ description: Resolve open overnight questions
 
 None required. Text after the command is the owner's notes and requests: carry them out beside Steps 1–5, and ask no question an answer in them already settles.
 
+Running this command ends an armed `/overnight` run: the guard removes the marker, as `/overnight off` does, so live questions are allowed again.
+
 ## Step 1 — Collect
 
 The Overnight dir is `<VAULT_ROOT>/DevProjects/<PROJECT_NAME>/Claude/TODO/Overnight`, from `.claude/baseline.lock.json` substitutions. Vault files can be cloud placeholders, so read each `*.md` there once through the shell (`Get-Content` on Windows) before the scan, then run:
@@ -22,7 +24,7 @@ It prints `{docs_scanned, open, malformed, resolved, unreadable}`. Report every 
 
 ## Step 2 — Close lapsed rows
 
-For each `open` and `malformed` row, check the premise it cites against live state: the branch, commit, file, worktree or PR it names. A premise that no longer holds, or a decision already carried out, gets `Resolved: <YYYY-MM-DD> — obsolete — <current evidence>` directly under the row, at its indentation. Ask no question for it.
+For each `open` and `malformed` row, check the premise it cites against live state: the branch, commit, file, worktree or PR it names. A premise that no longer holds, or a decision already carried out, gets `Resolved: <YYYY-MM-DD> — obsolete — <current evidence>` directly under the row (below its `Evidence:` line when it has one), at its indentation. Ask no question for it.
 
 ## Step 3 — Ask
 
@@ -31,12 +33,12 @@ Ask the remaining rows in batched `AskUserQuestion` calls, 4 per call, one quest
 - Options come from the row's `Options:` text. Split on `O<n>` or `(a)` markers, else on ` / ` or `;`.
 - More than 4 options: quote the full row and offer its first 4.
 - A `malformed` row, or fewer than 2 parsed options: quote the raw line and offer `Still open` / `Obsolete`. The tool's free-text answer carries any other decision.
-- The row's Recommendation goes first, marked "(Recommended)". `Recommendation: none` marks nothing. A recommendation matching no option is quoted in the question.
+- The row's Recommendation goes first, marked "(Recommended)". A recommendation matching no option is quoted in the question.
 - A compound row is asked as its first decision, with the rest quoted.
 
 ## Step 4 — Apply
 
-Re-verify each answer's target, then carry it out in this session; the owner's answer is the authorization. After it succeeds, write `Resolved: <YYYY-MM-DD> — <answer> — <outcome or commit>` directly under the row, then run `/worklog unblock <sid8> Q<n>` so the work the doc's Left undone rows parked on it becomes ready. A failed apply leaves the row open and is reported with its error. `Still open` writes nothing.
+Re-verify each answer's target, then carry it out in this session; the owner's answer is the authorization. After it succeeds, write `Resolved: <YYYY-MM-DD> — <answer> — <outcome or commit>` directly under the row (below its `Evidence:` line when it has one), then run `/worklog unblock <sid8> Q<n>` so the work the doc's Left undone rows parked on it becomes ready. A failed apply leaves the row open and is reported with its error. `Still open` writes nothing.
 
 ## Step 5 — Archive
 

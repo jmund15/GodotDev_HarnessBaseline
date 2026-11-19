@@ -21,7 +21,8 @@ A finding's optional `minRigor` is the lowest level whose row admits it, and it 
 ## Every panel
 
 - Width: the size rule of [`review_width.md`](review_width.md) (thorough seats every admitted mandate; below it, merge what one reader can judge at the bar), never below the stage's own floor.
-- Seats are told the bar and report every finding the Reporting Filter admits, tagged `minRigor`.- A later round is owed only by units that answer counting findings, since a below-bar finding applied verbatim keeps its reviewer's coverage. Its seat is told the same bar.
+- Seats are told the bar and report every finding the Reporting Filter admits, tagged `minRigor`.
+- A later round is owed only by units that answer counting findings, since a below-bar finding applied verbatim keeps its reviewer's coverage. Its seat is told the same bar.
 - Stop when coverage is complete, every counting finding has a disposition and no supported critical stands. No count of rounds stops it.
 - The report opens `rigor <level>` and closes `below bar: <N> noted` with one offer to apply them. That close is the Do-now gate's "declined with a reason and an offer", so a below-bar finding needs no defer reason. The caller applies offered ids per `orchestrator_action_protocol.md` Step 4; an offer-apply fold carries no `Bar:` line.
 
@@ -30,7 +31,7 @@ A finding's optional `minRigor` is the lowest level whose row admits it, and it 
 | Stage | Owner file | What rigor changes |
 |---|---|---|
 | Model and effort selection | `skills/orchestration/SKILL.md` §5, `reference/model_ladder_evidence.md` selection line | Rigor is one of the bars the ladder's selection line buys quality against. It never lowers a row below the tier's floor. |
-| Later rounds | `skills/orchestration/reference/later_rounds.md` | Seat only units answering counting findings; the session's own design edits keep their seat. |
+| Later rounds | `skills/orchestration/reference/later_rounds.md` | Only units answering counting findings owe a round; which of them get a seat is `later_rounds.md`'s criterion, at every rigor. |
 | Fold and protocol | `commands/agents/review_fold.md`, `commands/agents/orchestrator_action_protocol.md` | The disposition set gains `below bar: noted`; APPROVE needs no counting actionable finding. |
 | Review engines | `skills/orchestration/SKILL.md` | `review_fanout.js`, `review_result.py` and `post_check.py` carry `minRigor` through merges. Every fold route states the bar in a `Bar:` line and stamps each finding's `counts` at it (`finding_bar.counts`), except the offer-apply fold in the bullet above, which omits it. `post_check.py` reports `rigor` and `belowBar`. |
 | `/session_end` Phase 1 | `commands/session_end.md` | Candidate width and the harness seat read rigor through the project's admission rules; the audit applies the bar. |

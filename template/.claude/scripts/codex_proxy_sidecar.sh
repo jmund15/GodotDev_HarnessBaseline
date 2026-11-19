@@ -37,7 +37,9 @@
 # Attestation is scoped to the CLI result's session ID and this launch time. Proxy captures
 # record serialized upstream requests, not model self-reports or proof of generation acceptance.
 # CCP_TRAFFIC_LOG stays on; captures contain prompts under
-# ~/.local/state/claude-code-proxy/traffic and must be deleted periodically.
+# ~/.local/state/claude-code-proxy/traffic, and each launch deletes the folders of sessions idle for
+# 2 days (`ccp_probe.py prune`): attestation reads only captures written since its own launch, and an
+# active session touches its folder with every request.
 #
 # DELEGATE RAILS + DRIVER NOTES. `-G <kind>` (a launcher kind in guards/tool_profiles.json:
 # scout|lens|reviewer|author|judge, plus the internal arm|bench-score|bench-review) is required and
@@ -119,6 +121,7 @@ ccp_start() {
       nohup "$ccp" serve --no-monitor --port "$CCP_PORT" >>"$CCP_LOG" 2>&1 &
   CCP_PID=$!
   sc_on_exit 'kill "$CCP_PID" 2>/dev/null || :'
+  python3 "$CCP_PROBE" prune 2 >/dev/null 2>&1 &
   python3 "$CCP_PROBE" wait "$CCP_PORT" 25 || {
     { echo "[proxy-sidecar] proxy did not become healthy on :$CCP_PORT within 25s."
       echo "  Last lines of $CCP_LOG:"
@@ -178,9 +181,9 @@ sc_parse_flags "$@"
 shift "$SC_SHIFT"
 [ "${1:-}" = "--" ] && shift
 sc_read_prompt "$@"
-# Before any process starts: a low-memory launch refuses here (exit 12) instead of holding a proxy
-# and a shim while it waits.
-sc_check_launch_memory
+# Before any process starts: a low-memory launch refuses here (exit 12), and a job its quota window cannot
+# hold waits or warns (sc_check_quota_fit), instead of holding a proxy and a shim while it waits.
+sc_admit_launch
 
 SC_CLAUDE="$(sc_claude_bin)" || sc_die 4 "claude CLI not found (set CLAUDE_BIN)"
 

@@ -751,6 +751,20 @@ else:
         ok("a kind outside author/reviewer/lens/scout, an empty shape and an empty or missing brief classify heavy")
     else:
         bad("unknown shape, empty and missing brief classify heavy", repr(odd))
+    # A job whose resolved built-ins hold no shell cannot start a test tree, whatever its kind
+    # (a read-only bench-score judge driver); a shell keeps the brief rule; unknown built-ins keep it too.
+    try:
+        shell_free = [mod.classify_job(LIGHT_BRIEF, "bench-score", builtins="Read,Grep,Glob,Workflow"),
+                      mod.classify_job("", "arm", builtins="Read,Write")]
+        shelled = [mod.classify_job(LIGHT_BRIEF, "bench-score", builtins="Read,Bash,Workflow"),
+                   mod.classify_job(HEAVY_BRIEFS["playwright"], "author", builtins="Read,PowerShell"),
+                   mod.classify_job(LIGHT_BRIEF, "bench-score", builtins=None)]
+    except TypeError as exc:
+        shell_free, shelled = repr(exc), None
+    if shell_free == ["light", "light"] and shelled == ["heavy", "heavy", "heavy"]:
+        ok("a job with no shell built-in classifies light; a shell or unknown built-ins keep the brief rule")
+    else:
+        bad("shell-free built-ins classify light", repr((shell_free, shelled)))
     light, heavy = mod.floors_for("light"), mod.floors_for("heavy")
     if (heavy.commit_gib, heavy.physical_gib) == (12.0, 6.0) and mod.floors_for("anything else") == heavy:
         ok("the heavy floors are today's 12 / 6 GiB and an unrecognized class falls back to them")
@@ -823,7 +837,8 @@ class_tmp = Path(tempfile.mkdtemp(prefix="lm_class_"))
 (class_tmp / "light.md").write_text(LIGHT_BRIEF, encoding="utf-8", newline="\n")
 (class_tmp / "heavy.md").write_text(HEAVY_BRIEFS["deploy script"], encoding="utf-8", newline="\n")
 (class_tmp / "reading.txt").write_text("8 4", encoding="utf-8")
-plant_env = {"PYTHONPATH": str(class_tmp / "plant"), "PROOF_MEMORY_FILE": str(class_tmp / "reading.txt")}
+plant_env = {"PYTHONPATH": os.pathsep.join(([os.environ['HARNESS_READ_RECORDER']] if os.environ.get('HARNESS_READ_LOG') and os.environ.get('HARNESS_READ_RECORDER') else []) + [str(class_tmp / "plant")]),
+             "PROOF_MEMORY_FILE": str(class_tmp / "reading.txt")}
 cases = [("light author brief", ["--brief", str(class_tmp / "light.md"), "--shape", "author"], 0),
          ("heavy author brief", ["--brief", str(class_tmp / "heavy.md"), "--shape", "author"], 3),
          ("no brief", [], 3),

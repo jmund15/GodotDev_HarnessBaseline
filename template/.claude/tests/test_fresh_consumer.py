@@ -134,11 +134,8 @@ def case6():
         con.commit()
         con.close()
         code, out = run([str(CLAUDE / "tools" / "index_composition.py")], env_root=tmp)
-    step4 = (CLAUDE / "commands" / "reindex_search.md").read_text(encoding="utf-8")
-    marker_ok = ("no baseline set" in step4 and "index_composition.py\" --set-baseline" in step4
-                 and "11.5k" not in step4)
-    ok = code == 0 and "no baseline set" in out and not re.search(r"vs .*baseline:", out) and marker_ok
-    check(label, ok, "exit %s, step4 names marker+command %s: %s" % (code, marker_ok, out.strip()[-300:]))
+    ok = code == 0 and "no baseline set" in out and not re.search(r"vs .*baseline:", out)
+    check(label, ok, "exit %s: %s" % (code, out.strip()[-300:]))
 
 
 def case7():

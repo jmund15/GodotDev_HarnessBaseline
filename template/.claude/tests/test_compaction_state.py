@@ -363,7 +363,7 @@ class ReattachTest(unittest.TestCase):
                 for target in (
                         patch.object(dispatch_table, "sidecar_entries", lambda payload: ([{"id": "x"}], [])),
                         patch.object(dispatch_table, "register_sidecars", lambda *args, **kwargs: None),
-                        patch.object(sidecar, "dispatch_checks", lambda jobs, kinds=None: None),
+                        patch.object(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None),
                         patch.object(sidecar, "take_checks", lambda *args: (False, True))):
                     target.start()
                     self.addCleanup(target.stop)

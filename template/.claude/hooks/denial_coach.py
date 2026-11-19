@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Hook: an auto-mode classifier denial teaches the next move instead of ending the turn.
+"""Hook: an auto-mode classifier denial the session left unresolved teaches the next move before the turn ends.
 
-`--record` (PermissionDenied): files `{tag, tool}` in the session state. A PermissionDenied hook can
-only return `retry`, so it cannot speak to the model itself.
-`--coach` (Stop): if denials were filed since the last coaching, blocks the stop once with each tag's
-guidance, then clears them. `stop_hook_active` clears without blocking, so it never loops. No-verdict
-denials are skipped: Claude Code's own message already says retry later or move on.
+`--record` (PermissionDenied): files `{tag, tool, id, command, paths}` in the session state. A PermissionDenied
+hook can only return `retry`, so it cannot speak to the model itself.
+`--coach` (Stop): clears the filed denials and blocks the stop once with each unresolved denial's move. A denial
+is resolved when the transcript shows a later successful call on its target: the same file for an edit, a file
+the denied command names, or the same command. An unreadable transcript resolves nothing. `stop_hook_active`
+clears without blocking, so it never loops. No-verdict denials are skipped: Claude Code's own message already
+says retry later or move on.
 
-Wired in: settings.project.json hooks.PermissionDenied and hooks.Stop (composed into settings.json).
+Class: process advisory (it blocks a stop once, never a tool call).
+Wired in: settings.base.json hooks.PermissionDenied and hooks.Stop (composed into settings.json).
 """
 import json
 import os
@@ -27,8 +30,8 @@ except Exception:
 
 KEY = "classifier_denials"
 _TAG = re.compile(r"\[([^\]]+)\]")
-PARK = ("If a question above is off the critical path, park it: keep working, and put it in the "
-        "AskUserQuestion packet you send at the end. Ask now only when nothing else can advance without it.")
+_PATHISH = re.compile(r"[\w.:\\/-]*[\\/][\w.\\/-]*\.\w{1,8}\b")
+EDITS = frozenset(("Edit", "Write", "MultiEdit", "NotebookEdit"))
 MOVES = {
     "Self-Modification": "the classifier reads the user's messages and CLAUDE.md, not your findings. If this "
                          "edit does what the user asked, the user's answer to a question naming the exact change "
@@ -38,10 +41,8 @@ MOVES = {
     "Irreversible Local Destruction": "name the exact path, or copy it aside first; never a glob or variable.",
     "Auto-Mode Bypass": "do not retry it another way: drop it, or ask the user one question naming the action.",
 }
-ASKS = frozenset(("Self-Modification", "Security Test Removal", "Auto-Mode Bypass"))
-GENERIC = ("If the user asked for this action, it is still needed: never replace it with other work. "
-           "Ask the user one question naming it exactly.")
-CLOSE = "Finish the rest of the task first; do not end the turn idle."
+GENERIC = ("if the owner asked for this action, ask them one question naming it and re-issue it on their yes; "
+           "otherwise drop it (CLAUDE.core.md §Shell Discipline, Processes and permissions).")
 OVERNIGHT = ("/overnight is armed, so no one can answer: follow commands/overnight.md §Step 2 "
              "to decide or park with the actual blocker and default; the classifier denial still "
              "stands. Record the exact denied command in the Q row evidence; do not ask or bypass it.")
@@ -51,11 +52,13 @@ def _record(payload):
     match = _TAG.search(payload.get("reason") or "")
     if not match or not payload.get("session_id"):
         return
-    entry = {"tag": match.group(1), "tool": payload.get("tool_name") or "tool"}
-    tool_input = payload.get("tool_input")
-    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    entry = {"tag": match.group(1), "tool": payload.get("tool_name") or "tool", "id": payload.get("tool_use_id")}
+    tool_input = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    command = tool_input.get("command")
     if isinstance(command, str):
         entry["command"] = command
+    target = tool_input.get("file_path") or tool_input.get("notebook_path")
+    entry["paths"] = [target] if isinstance(target, str) else _PATHISH.findall(command or "")
     try:
         entry["gate"] = approving_gates.explain(payload) if approving_gates is not None else None
     except Exception:
@@ -75,14 +78,90 @@ def _overnight_armed(payload):
         return False
 
 
+def _norm(path):
+    path = str(path).replace("\\", "/").lower().strip("\"'")
+    return path[2:] if path.startswith("./") else path
+
+
+def _same_file(a, b):
+    a, b = _norm(a), _norm(b)
+    return bool(a and b) and (a == b or a.endswith("/" + b) or b.endswith("/" + a))
+
+
+def _rows_since(transcript_path, tool_use_id):
+    """The transcript rows after the call `tool_use_id`, read backward in doubling chunks so the cost follows the
+    distance to the denial, not the transcript's size; None when the file or the call cannot be read. The call is
+    found by its unescaped `"id":"<id>"` field: a later output that quotes the id carries it escaped."""
+    try:
+        marker = ('"id":"%s"' % tool_use_id).encode("utf-8")
+        size = os.path.getsize(transcript_path)
+        chunk = 1 << 20
+        with open(transcript_path, "rb") as fh:
+            while True:
+                start = max(0, size - chunk)
+                fh.seek(start)
+                data = fh.read()
+                at = data.find(marker)
+                if at >= 0:
+                    break
+                if start == 0:
+                    return None
+                chunk *= 2
+    except (OSError, TypeError, AttributeError):
+        return None
+    rows = []
+    for line in data[data.find(b"\n", at) + 1:].splitlines():
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            continue
+    return rows
+
+
+def _later_successes(rows):
+    """(name, input) of each tool call in `rows` whose result is not an error."""
+    calls, failed = {}, set()
+    for row in rows:
+        content = (row.get("message") or {}).get("content")
+        for part in content if isinstance(content, list) else []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "tool_use":
+                calls[part.get("id")] = (part.get("name"), part.get("input") or {})
+            elif part.get("type") == "tool_result" and part.get("is_error"):
+                failed.add(part.get("tool_use_id"))
+    return [call for tid, call in calls.items() if tid not in failed]
+
+
+def _resolved(entry, transcript_path):
+    rows = _rows_since(transcript_path, entry.get("id")) if transcript_path and entry.get("id") else None
+    if rows is None:
+        return False
+    for name, tool_input in _later_successes(rows):
+        if name in EDITS and any(_same_file(tool_input.get("file_path") or tool_input.get("notebook_path") or "", p)
+                                 for p in entry.get("paths") or ()):
+            return True
+        if entry.get("command") is not None and tool_input.get("command") == entry["command"]:
+            return True
+    return False
+
+
+def _shown(command):
+    first = command.strip().splitlines()[0] if command.strip() else ""
+    return first[:120] + ("…" if len(first) > 120 or "\n" in command.strip() else "")
+
+
 def _coach(payload):
     if not payload.get("session_id"):
         return None
     _, pending = update_json_locked(state_path(payload["session_id"]), lambda s: s.pop(KEY, None))
     if not pending or payload.get("stop_hook_active"):
         return None
+    pending = [entry for entry in pending if not _resolved(entry, payload.get("transcript_path"))]
+    if not pending:
+        return None
     unattended = _overnight_armed(payload)
-    seen, lines, asks = set(), [], False
+    seen, lines = set(), []
     for entry in pending:
         tag = entry.get("tag") or "?"
         gate = entry.get("gate")
@@ -91,11 +170,9 @@ def _coach(payload):
         if key not in seen:
             seen.add(key)
             move = OVERNIGHT if unattended else gate or MOVES.get(tag, GENERIC)
-            asks = asks or move is GENERIC or (tag in ASKS and move is MOVES[tag])
-            denied = " Denied command: %s." % json.dumps(command, ensure_ascii=False) if command is not None else ""
-            lines.append("[%s] on %s: %s%s" % (tag, entry.get("tool"), move, denied))
-    tail = PARK + " " + CLOSE if asks else CLOSE
-    return {"decision": "block", "reason": "Auto mode denied: " + " ".join(lines) + " " + tail}
+            denied = " Denied: `%s`." % _shown(command) if command is not None else ""
+            lines.append("[%s] on %s:%s %s" % (tag, entry.get("tool"), denied, move))
+    return {"decision": "block", "reason": "Auto mode denied, and nothing since resolved it: " + " ".join(lines)}
 
 
 def main():

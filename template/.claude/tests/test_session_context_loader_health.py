@@ -289,7 +289,7 @@ class HealthTests(unittest.TestCase):
             stack.enter_context(patch.object(scl, "_STEP_MODULES", (scg,)))
             build = stack.enter_context(patch.object(scg, "verify_build"))
             imports = stack.enter_context(patch.object(scg, "setup_import_cache", return_value="FIXED"))
-            stack.enter_context(patch.object(sys, "stdin", io.StringIO(json.dumps({"source": "startup"}))))
+            stack.enter_context(patch.object(sys, "stdin", io.StringIO(json.dumps({"source": "compact"}))))
             out = stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             with self.assertRaises(SystemExit) as exited:
                 scl.main()

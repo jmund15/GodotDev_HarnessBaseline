@@ -138,6 +138,55 @@ def c_launcher():
     return "BLOCKED" in (v("taskkill /PID 53236 /T /F") or "")
 
 
+@case("a kill written inside a heredoc fed to a non-shell program is data: allowed")
+def c_heredoc_data():
+    body = "kill 21764\ntaskkill /PID 21764 /T /F\npkill -f sidecar_fanout"
+    return all(not v(head + "\n" + body + "\nEOF")
+               for head in ("python3 - <<'EOF'", "cat > notes.md <<'EOF'", "python3 -c \"print(1)\" <<'EOF'"))
+
+
+@case("a kill inside a heredoc fed to a shell is code: still blocked")
+def c_heredoc_shell_code():
+    return all("BLOCKED" in (v(head + "\nkill 21764\nEOF") or "") for head in ("bash <<'EOF'", "sh - <<EOF"))
+
+
+@case("a kill inside an inline python program is data: allowed")
+def c_inline_data():
+    return not v("python3 -c 'import os; print(\"kill 21764\")'")
+
+
+@case("a kill inside an inline bash program is code: still blocked")
+def c_inline_shell_code():
+    return "BLOCKED" in (v("bash -c 'kill 21764'") or "")
+
+
+@case("kill -0 sends no signal: a liveness check of a protected pid is allowed, a real kill beside it is not")
+def c_kill_zero():
+    return (not v("kill -0 21764") and not v("bash -lc 'kill -0 21764 2>/dev/null'")
+            and "BLOCKED" in (v("kill -0 21764 || kill 21764") or ""))
+
+
+@case("a kill right after a quote, a backtick or an opening paren is still a kill")
+def c_kill_after_quote():
+    return all("BLOCKED" in (v(cmd) or "") for cmd in
+               ('sh -c "kill 21764"', "echo `kill 21764`", "x=$(kill 21764)", "(kill -9 21764)",
+                'echo "$(kill 21764)"', "bash -lc 'sleep 1; kill 21764'"))
+
+
+@case("a quoted kill a shell-code reader runs is a kill: eval, watch, su -c, flock -c, script -c")
+def c_quoted_code_readers():
+    return all("BLOCKED" in (v(cmd) or "") for cmd in
+               ('eval "kill 21764"', "eval 'sleep 1; kill 21764'", 'watch -n 5 "kill 21764"',
+                'su -c "kill 21764"', 'su root -c "kill 21764"', 'flock /tmp/x.lock -c "kill 21764"',
+                "script -q -c 'kill 21764' /dev/null"))
+
+
+@case("a kill only named inside a quoted argument is a mention: allowed")
+def c_quoted_mention():
+    return not any(v(cmd) for cmd in ('echo "kill 21764"', "echo 'kill 21764 now'",
+                                      'git commit -q -m "kill 21764 left a seat running"'))
+
+
 @case("a plain python shell that only mentions sidecar_launch.py is not a launcher child")
 def c_launcher_mention():
     return "BLOCKED" not in (v("taskkill /PID 9006 /F") or "")
@@ -237,9 +286,9 @@ def c_multi():
     return "21764" in r and "9001" not in r
 
 
-# ---- TaskStop decides on facts only: ended, or launched by this session ----------------------------
-# Rule owner: kill_guard.py module docstring. Whether stopping a running task is wanted is the auto-mode
-# classifier's to judge; the guard reads no owner word, stop verb, keep word or answer.
+# ---- TaskStop decides on facts only: ended, launched by this session, paid ---------------------------
+# Rule owner: kill_guard.py module docstring. The guard reads no owner word, stop verb, keep word or answer;
+# running paid work asks the owner directly.
 
 def _text_row(message):
     return {"type": "user", "message": {"role": "user", "content": message}}
@@ -305,22 +354,50 @@ RUNNING_LAUNCHES = {
 }
 
 
-@case("a running task this session launched passes whatever it runs: the classifier judges whether to stop it")
+PAID_LAUNCHES = {"a billed sidecar launch", "an Agent"}
+
+
+def taskstop_decision(rows, task_id):
+    with tempfile.TemporaryDirectory(prefix="taskstop_guard_") as tmp:
+        path = os.path.join(tmp, "session.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.writelines(json.dumps(row) + "\n" for row in rows)
+        result = subprocess.run([sys.executable, HOOK], input=json.dumps({
+            "tool_name": "TaskStop", "transcript_path": path, "tool_input": {"task_id": task_id}}),
+            capture_output=True, text=True, timeout=60, env=dict(os.environ, KILL_GUARD_PROCESS_TABLE=EMPTY_TABLE))
+    if result.returncode != 0 or "Traceback" in (result.stderr or ""):
+        raise RuntimeError(result.stderr or "kill_guard crashed")
+    out = (result.stdout or "").strip()
+    return ((json.loads(out).get("hookSpecificOutput") or {}).get("permissionDecision")) if out else None
+
+
+@case("a running unpaid task this session launched passes; running paid work (an Agent, a sidecar launch) asks the owner")
 def c_taskstop_own_running_passes():
-    bad = [label for label, (command, tool) in RUNNING_LAUNCHES.items()
-           if taskstop(rows=_launch_rows("own%d" % len(label), command, name=tool),
-                       task_id="own%d" % len(label)) is not None]
-    assert not bad, "denied: %s" % bad
+    got = {label: taskstop_decision(_launch_rows("own%d" % len(label), command, name=tool), "own%d" % len(label))
+           for label, (command, tool) in RUNNING_LAUNCHES.items()}
+    want = {label: ("ask" if label in PAID_LAUNCHES else None) for label in RUNNING_LAUNCHES}
+    assert got == want, got
     return True
 
 
-@case("a background Agent, recorded by agentId and isAsync alone, passes; a foreground Agent's agentId does not")
+@case("a running Workflow this session launched asks the owner; the same Workflow after its completion notice passes")
+def c_taskstop_running_workflow_asks():
+    rows = _launch_rows("wfrun01", "unused", name="Workflow")
+    rows[1]["message"]["content"][0]["input"] = {"script": "export const meta = {}"}
+    rows[2]["toolUseResult"] = {"taskId": "wfrun01"}
+    running = taskstop_decision(rows, "wfrun01")
+    ended = rows + [_ended_row("wfrun01")]
+    assert running == "ask", running
+    return taskstop_decision(ended, "wfrun01") is None
+
+
+@case("a background Agent, recorded by agentId and isAsync alone, is this session's launch (asks); a foreground Agent's agentId is not")
 def c_taskstop_async_agent_launch():
     rows = _launch_rows("aasync01", "sleep 60", name="Agent")
     rows[2]["toolUseResult"] = {"agentId": "aasync01", "isAsync": True}
     foreground = _launch_rows("afore001", "sleep 60", name="Agent")
     foreground[2]["toolUseResult"] = {"agentId": "afore001", "isAsync": False}
-    return (taskstop(rows=rows, task_id="aasync01") is None
+    return (taskstop_decision(rows, "aasync01") == "ask"
             and "no launch of task" in (taskstop(rows=foreground, task_id="afore001") or ""))
 
 
@@ -333,8 +410,7 @@ def c_taskstop_own_timed_out_shell():
 
 @case("owner wording decides nothing for a task this session launched: a keep-running message does not deny it")
 def c_taskstop_keep_words_grant_no_deny():
-    rows = _launch_rows("bgkeep1", "bash .claude/scripts/deepseek_sidecar.sh -m flash -f brief.txt",
-                        owner="No, don't stop it. Let it finish.")
+    rows = _launch_rows("bgkeep1", "sleep 600", owner="No, don't stop it. Let it finish.")
     return taskstop(rows=rows, task_id="bgkeep1") is None
 
 
@@ -357,7 +433,7 @@ def _padding(megabytes):
 
 @case("a task launched early in a long transcript still passes: the launch fact is not a tail read")
 def c_taskstop_launch_beyond_a_tail_window():
-    rows = _launch_rows("bgearly1", "bash .claude/scripts/deepseek_sidecar.sh -m flash -f brief.txt")
+    rows = _launch_rows("bgearly1", "sleep 600")
     rows += _padding(10)
     return taskstop(rows=rows, task_id="bgearly1") is None
 

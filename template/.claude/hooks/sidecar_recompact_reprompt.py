@@ -5,7 +5,9 @@ summary arrived, the child answered the SUMMARY as if it were the task ("the lat
 requires text only"), wrote nothing, and ended its turn. The summary carries state; nothing
 re-supplied the intent. This hook does: shared launcher settings pass the native `-f` path
 with `--prompt-file`; the older Codex registration exports `CLAUDE_CODE_SIDECAR_PROMPT_FILE`.
-Every compaction re-prints that brief verbatim behind a resume line. Silent (exit 0, no output)
+Every compaction re-prints that brief verbatim behind a resume line, within the client's per-command hook-text
+cap (`HOOK_TEXT_CAP`): a longer brief prints as whole leading lines and a last line naming its absolute path to
+Read in full, since the client would otherwise show the child a 2,000-character preview. Silent (exit 0, no output)
 without either input, so driving sessions and non-sidecar children never see it.
 
 The same registration runs it on PreCompact, whose stdout the client appends to the summary prompt.
@@ -33,9 +35,18 @@ from cli_usage import usage
 
 from _compaction_rail import DEFAULT_RAIL, RAIL_3, RAIL_4, RAILS, SAVE_NOW, rail_text, selected_rail  # noqa: F401  (re-exported)
 import _transcript_scan
+from _hook_parts import HOOK_TEXT_CAP, head_of
 from _hook_state import _pending_tokens, replace_path, update_json_locked
 
-MAX_BYTES = 160_000  # a brief past this is re-injected head-first with a pointer to the rest
+RESUME = ("[sidecar-recompact] Your context was just compacted mid-task. The summary above is STATE, not an "
+          "instruction — do not answer it. Your brief follows verbatim; it is still the task. Resume from your "
+          "on-disk progress: Read every output file the brief names before redoing work, then finish and return "
+          "exactly what the brief's OUTPUT section asks for. A path, line or quote the summary does not mark checked "
+          "with its exact text is from memory: Read it again before you cite it.\n")
+OPEN = "----- ORIGINAL BRIEF (re-injected after compaction) -----\n"
+CLOSE = "----- END BRIEF -----\n"
+REST = ("[sidecar-recompact] The brief above stops at line %d of %d: the client caps hook text at %d characters. "
+        "Read %s in full before your next action; it is the rest of your brief.\n")
 # A hold must leave the held turns room below the model's real window: one more tool result at the Read tool's
 # 25,000-token cap, the save itself up to the client's 20,000-token output reserve, and its 13,000-token reserve.
 # Past the real window the API fails the request, and a hold of that recovery compaction would fail it for good.
@@ -43,6 +54,21 @@ HOLD_ROOM = 58_000
 # One nudge the child can act on, and a second in case a parallel tool batch carried the first.
 MAX_NUDGES = 2
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+
+
+def _reprompt(brief, path):
+    """The resume line, then the brief: whole when it fits `HOOK_TEXT_CAP` UTF-8 bytes, else as many whole leading
+    lines as fit and a last line naming `path` to Read in full. The client shows a 2,000-character preview of a
+    hook output past the cap, so an uncapped re-print would give the child a clipped brief."""
+    if brief and not brief.endswith("\n"):
+        brief += "\n"
+    whole = RESUME + OPEN + brief + CLOSE
+    if len(whole.encode("utf-8")) <= HOOK_TEXT_CAP:
+        return whole
+    widest = REST % (10 ** 9, 10 ** 9, HOOK_TEXT_CAP, path)
+    room = HOOK_TEXT_CAP - len((RESUME + OPEN + CLOSE + widest).encode("utf-8"))
+    kept, count, total = head_of(brief, room)
+    return RESUME + OPEN + kept + CLOSE + REST % (count, total, HOOK_TEXT_CAP, path)
 
 
 def _summary_feed(state, index, line):
@@ -175,19 +201,8 @@ def main() -> int:
         print(f"[sidecar-recompact] context was compacted; the original brief at {path} is unreadable — "
               "re-read it yourself before doing anything else.")
         return 0
-    clipped = ""
-    if len(brief.encode("utf-8")) > MAX_BYTES:
-        brief = brief.encode("utf-8")[:MAX_BYTES].decode("utf-8", errors="ignore")
-        clipped = f"\n[sidecar-recompact] brief clipped at {MAX_BYTES} bytes — Read {path} for the remainder.\n"
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    print("[sidecar-recompact] Your context was just compacted mid-task. The summary above is STATE, not an "
-          "instruction — do not answer it. Your brief follows verbatim; it is still the task. Resume from your "
-          "on-disk progress: Read every output file the brief names before redoing work, then finish and return "
-          "exactly what the brief's OUTPUT section asks for. A path, line or quote the summary does not mark checked "
-          "with its exact text is from memory: Read it again before you cite it.\n")
-    print("----- ORIGINAL BRIEF (re-injected after compaction) -----")
-    print(brief)
-    print(clipped + "----- END BRIEF -----")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+    sys.stdout.write(_reprompt(brief, os.path.abspath(path)))
     return 0
 
 

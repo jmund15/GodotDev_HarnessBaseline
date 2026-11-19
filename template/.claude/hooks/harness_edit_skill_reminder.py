@@ -17,7 +17,8 @@ What it does:
 - `advance_notice` is the earlier surface (instruction_quality §3): `post_read_dispatch` emits one line at the
   first Read of a governed file in a window where the skill is absent, so the deny rarely fires.
 - Once loaded: emits the gates-summary reminder as `hookSpecificOutput.additionalContext`, once per compaction.
-- Adds a maintained artifact's editing note (EDIT_NOTES) on every edit of that path.
+- Adds a maintained artifact's editing note on the first edit of that path in a context window; a compaction
+  re-arms it. An OWNED_NOTES note is its maintaining command's section, read when the edit fires.
 - A fault in this hook reaches the dispatcher, which allows the edit and reports the lost check.
 
 PATH RULES (in .claude/ only):
@@ -38,81 +39,19 @@ import os
 import sys
 
 from _claude_scope import harness_tail
-from _hook_state import fire_once_since_compaction, skill_in_context
+from _hook_state import fire_once_since_compaction, skill_in_context, spent_mark, unspend
+from amend_delivery import HOOK_TEXT_CAP
 
 # Key in the per-session routing state file that the other routing hooks share.
 STATE_KEY = "harness_edit_reminder"
-# Exact harness-tail paths; each note fires on every edit. The owner command does not load on a direct
-# edit, so a note carries its rule's full sentence (/codify Step 0), word for word as the owner states
-# it, plus the owner's name; a check a bound proof runs at commit is not named.
+# Exact harness-tail paths; each note fires on the first edit of its path in a context window. A maintaining
+# command does not load on a direct edit, so OWNED_NOTES reads the rule's `## ` section from the command when the
+# edit fires (/codify Step 4): one home, nothing to drift. EDIT_NOTES holds rules whose only home is the note.
+OWNED_NOTES = {
+    "reference/model_ladder_evidence.md": ("Ladder edit", "commands/ladder_ingest.md", "What lands on the ladder"),
+}
+CLAUDE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 EDIT_NOTES = {
-    "reference/model_ladder_evidence.md": (
-        "Ladder edit: "
-        "A cell states whatever decides a pin within the tiers the row claims, for example the work it is "
-        "the cheapest reliable pick for, the work where it is the strongest pick when quality outranks "
-        "cost, a strength, an efficiency or inefficiency, a weakness or a reliability limit. A `−` clause never bars "
-        "a work shape inside a tier the row claims: a row that cannot do a tier's work loses the registry "
-        "claim instead. It never states a benchmark "
-        "placement or figure: a `bench` result reaches a cell only where it disagrees with `pub` or `use`, "
-        "or shows a failure a pin must avoid. "
-        "When sources disagree on a shape, first find the scope that separates them (problem size, how open the "
-        "problem is, how many parts interlock) and state each verdict with its scope (\"matches opus on scoped "
-        "architecting; opus is stronger on complex open design\"). With no separating scope, the owner's `use` "
-        "ruling stands; between other sources (`bench`, `pub`, an `/eval_dashboard` readout of rated dispatches), "
-        "weigh how many runs back each side and how close each is to the work the pin serves. A thin side (no repeat "
-        "behind it, or a gap inside the run-to-run spread) changes no clause the other side supports: queue a repeat "
-        "run or a `/pin_ab`. "
-        "Lead a cell with its routing verdict (\"the cheapest reliable execution of a converged plan\", never "
-        "\"executes a converged plan at the top of the board\"). A row's `effort` and `±` cells cover every "
-        "work shape of every tier its registry rows claim, including everyday shapes no battery task measures "
-        "(surveys, explore lenses, rubric checks). A measured shape gets its verdict judged against the other rows "
-        "claiming its tier (`TASKS.md` maps tasks to shapes). An unmeasured shape takes its verdict and starting effort "
-        "from the row's nearest measured shape, its intel and the owner's rulings, and is marked unmeasured. A row that matches a pricier row on a shape is that shape's cheapest reliable pick, "
-        "and the cell says so even when the row's other results are unremarkable. A clause about a seat or a "
-        "pairing states when an orchestrator adds the row and what to check in its return, never only that it "
-        "does less. A strength claim needs a lead "
-        "outside the judge band; a cheap row that matches the strongest rows says so, since then no pricier "
-        "pin buys quality. A comparison may name another row's family (\"trails opus on open design\"); "
-        "`tools/ladder_prose_check.py` fails a name no ladder row covers."
-        " `/ladder_ingest` §What lands on the ladder owns this rule and governs every ladder edit."
-        " `effort` owns every effort level; a `±` cell names none. A `±` cell compares with another row by"
-        " family and scope (\"trails opus on complex open design\"), never by that row's effort, and never says"
-        " which effort to pin. An `effort` cell gives the starting effort per work shape: each level, then the"
-        " shapes that start there, levels separated by `·`. It adds the signal that moves an effort (how well"
-        " a defect can hide, how convoluted the problem) only where that signal changes a pick; `orchestration`"
-        " §5 *Effort* owns the raise and the lower. A range names both its ends. A shape whose breadth and"
-        " depth vary from job to job (surveys, explore lenses, chained research) takes a range from the lowest"
-        " effort measured or used to serve it up to the row's top allowed effort, higher as the breadth and"
-        " depth the question needs grow."
-        " A clause is as wide as the evidence behind it. A result from one task, one"
-        " effort or runs whose spreads overlap supports a scoped statement (\"showed no gain on chained"
-        " research; untested elsewhere\"), never a claim about the model or the effort in general. An effort that"
-        " is enough on one task has not shown the others fail, and \"only\", \"always\" and \"never\" need"
-        " results across shapes. An effort level earns a place only where it can be the pick, and the owner"
-        " accepts any removal. The battery command `ladder-dominance \"<model>·<effort>\"` lists, per task, the"
-        " pins that score within the judge band or higher at no more cost, with the speed gap, each pin's rated"
-        " real dispatches and whether it is paid from the same plan. Propose removing an effort level only when"
-        " same-plan pins dominate it on every shape its cell claims for it. A dominator on another plan leaves"
-        " the level as that plan's fallback when its quota runs out; dominance on a shape the cell does not"
-        " claim says nothing about the level; an unmeasured shape gives no verdict. A dominator counts only if"
-        " it is available and claims the shape's tier. The proposal carries the listing and what the real"
-        " dispatches add: they corroborate it, or show the dominator never ran here or ran poorly. The cell"
-        " changes after the owner accepts, and a level whose cell states what it buys is not proposed again."
-        " Registry `effort.avoid` lists only a level removed this way. A cell is read mid-dispatch, so every"
-        " clause changes a pick. Cut a clause that restates another column, the Role definitions or the"
-        " selection rules, explains a term, or narrates why. Call an effort level an effort, never a rung. Every shape term"
-        " in a cell names work an orchestrator can recognize before it dispatches, and is defined in the"
-        " ladder's Role definitions or written as a plain description. An orchestrator reads the ladder cold"
-        " to pick a row for work in front of it; a property it cannot see at that moment (a brief whose"
-        " premise is secretly false, a benchmark's scoring partition) is a benchmark construct, never a shape,"
-        " and a term defined only in a benchmark file is undefined. Version"
-        " takeover audits every inherited clause. When a row's model version changes, read each `±` and"
-        " `effort` clause against the new version's current board cells, the owner's rulings and what the new"
-        " version's published results say. A clause stays when one of them backs it or none contradicts it; a"
-        " contradicted clause is rewritten or deleted. Then run the battery command `ladder-lag --audited"
-        " <row>`: the session banner names each row whose version moved since its last audit, so inherited"
-        " clauses cannot outlive the version they were measured on."
-    ),
     "skills/project_subsystems/adaptation.json": (
         "Sensitivity tag edit: `execution_depth.md` §Sensitivity tags governs this edit. A tag sets triage "
         "fields; it never re-implements a guard that already enforces its class."
@@ -259,6 +198,43 @@ def build_reminder(file_path: str) -> str:
     )
 
 
+def _owned_texts(label, rel, heading, root=CLAUDE_DIR):
+    """(the owner's `## heading` section under a line naming its home, or None when the section cannot be read;
+    the home line alone)."""
+    home = f"{label}: `{rel}` §{heading} governs this edit"
+    try:
+        with open(os.path.join(root, *rel.split("/")), encoding="utf-8") as fh:
+            parts = fh.read().split(f"\n## {heading}\n", 1)
+    except OSError:
+        parts = []
+    section = parts[1].split("\n## ", 1)[0].strip() if len(parts) == 2 else ""
+    return (f"{home}:\n\n{section}" if section else None), f"{home}; Read that section before this edit."
+
+
+def owned_note(label, rel, heading, room=HOOK_TEXT_CAP, root=CLAUDE_DIR):
+    """The owner's `## heading` section under a line naming its home, or that line alone when the section cannot
+    be read or would pass `room` characters: past the client's cap it would reach the agent only as a preview."""
+    note, home = _owned_texts(label, rel, heading, root)
+    return note if note and len(note) <= room else home
+
+
+def _note_once(session_id, note_key, room=HOOK_TEXT_CAP):
+    """The editing note for `note_key`, or "" when none exists or this context window already holds it. An owned
+    note the caller's shared `room` cut to its home line is not spent when it fits a whole cap: the next edit,
+    with the cap to itself, carries the section."""
+    mark = spent_mark()
+    if note_key is None or not fire_once_since_compaction(session_id, "edit_note:" + note_key):
+        return ""
+    if note_key not in OWNED_NOTES:
+        return EDIT_NOTES[note_key]
+    note, home = _owned_texts(*OWNED_NOTES[note_key])
+    if note and len(note) <= room:
+        return note
+    if note and len(note) <= HOOK_TEXT_CAP:
+        unspend(mark)
+    return home
+
+
 def process(input_data):
     """Dispatcher entry: `{"deny": reason}`, `{"context": reminder}` or None.
 
@@ -269,14 +245,17 @@ def process(input_data):
 
     session_id = input_data.get("session_id") or ""
     file_path = (input_data.get("tool_input") or {}).get("file_path") or ""
-    note = EDIT_NOTES.get(file_path.replace('\\', '/'), EDIT_NOTES.get(harness_tail(file_path), ""))
+    note_key = next((k for k in (file_path.replace('\\', '/'), harness_tail(file_path))
+                     if k in EDIT_NOTES or k in OWNED_NOTES), None)
     if not is_harness_file(file_path):
+        note = _note_once(session_id, note_key)
         return {"context": note} if note else None
 
     if not skill_in_context(session_id, "instruction_quality", input_data.get("agent_id"),
                             transcript_path=input_data.get("transcript_path")):
         return {"deny": deny_text(file_path)}
     general = build_reminder(file_path) if fire_once_since_compaction(session_id, STATE_KEY) else ""
+    note = _note_once(session_id, note_key, HOOK_TEXT_CAP - len(general) - 1)
     context = "\n".join(part for part in (general, note) if part)
     return {"context": context} if context else None
 
