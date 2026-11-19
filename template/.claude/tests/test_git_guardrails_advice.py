@@ -7,6 +7,9 @@ out in place, `reset --hard` advises `git reset --keep`, and no block recommends
 `git show`. Real PreToolUse payloads; deny is stderr + exit 2.
 
     python3 .claude/tests/test_git_guardrails_advice.py
+
+Decision cases call the hook in process (`_hook_call`); two cases spawn it. The four sections each own their
+fixtures and run in separate pooled children, so a case's `os.environ` or cwd change reaches no other.
 """
 import json
 import os
@@ -15,17 +18,30 @@ import sys
 import tempfile
 
 _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _TESTS_DIR)
+import _hook_call  # noqa: E402
+import _case_pool  # noqa: E402
+from _case_pool import run_sections  # noqa: E402
 HOOK = os.path.join(os.path.dirname(_TESTS_DIR), "hooks", "git_guardrails.py")
 FAILURES = []
 
 
+
+def _payload(command, repo):
+    return {"tool_name": "Bash", "session_id": "s1", "cwd": repo, "tool_input": {"command": command}}
+
+
 def run_hook(command, repo):
-    payload = {"tool_name": "Bash", "session_id": "s1", "cwd": repo, "tool_input": {"command": command}}
-    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
+    code, out, err, _ = _hook_call.call(HOOK, _payload(command, repo), env=dict(os.environ, PYTHONUTF8="1"),
+                                        cwd=repo)
+    return code, err + out, code not in (0, 2) or "Traceback" in err
+
+
+def run_spawned(command, repo):
+    r = subprocess.run([sys.executable, HOOK], input=json.dumps(_payload(command, repo)), capture_output=True,
                        text=True, encoding="utf-8", timeout=30, cwd=repo,
                        env=dict(os.environ, PYTHONUTF8="1"))
-    crashed = r.returncode not in (0, 2) or "Traceback" in r.stderr
-    return r.returncode, r.stderr + r.stdout, crashed
+    return r.returncode, r.stderr + r.stdout, r.returncode not in (0, 2) or "Traceback" in r.stderr
 
 
 def check(label, ok, detail=""):
@@ -129,9 +145,16 @@ def recommends_stash(message):
     return "git stash" in message
 
 
-def main():
+def sec0():
+    template = tempfile.mkdtemp(prefix="ggtemplate_")
+    _init_repo(template)
     repo = tempfile.mkdtemp(prefix="ggadvice_")
-    _init_repo(repo)
+    _hook_call.copy_repo(template, repo)
+    rc, msg, crashed = run_spawned("git checkout -- f.txt", repo)
+    check("the spawned hook imports, runs from its command and denies with exit 2",
+          not crashed and rc == 2, msg)
+    rc, msg, crashed = run_spawned("git status", repo)
+    check("the spawned hook allows a read-only command with exit 0", not crashed and rc == 0, msg)
 
     for command in ("git checkout -- f.txt", "git restore f.txt"):
         rc, msg, crashed = run_hook(command, repo)
@@ -152,42 +175,6 @@ def main():
 
     rc, msg, crashed = run_hook("git stash drop", repo)
     check("git stash drop is still blocked", not crashed and rc == 2, msg)
-
-    # A drop loses nothing when another ref still holds the stash commit: the block's stated
-    # reason ("unreferenced once dropped") is then false, so the drop passes. Unpreserved stashes,
-    # an unresolvable target and `clear` stay blocked.
-    stashed = tempfile.mkdtemp(prefix="ggstash_")
-    git(stashed, "init", "-q")
-    write(stashed, "a.txt", "base\n")
-    git(stashed, "add", "a.txt")
-    git(stashed, "commit", "-q", "-m", "base")
-    write(stashed, "a.txt", "kept\n")
-    git(stashed, "stash", "-q")
-    write(stashed, "a.txt", "loose\n")
-    git(stashed, "stash", "-q")
-    kept = subprocess.run(["git", "rev-parse", "stash@{1}"], cwd=stashed, capture_output=True,
-                          text=True, check=True).stdout.strip()
-    git(stashed, "update-ref", "refs/preserve/kept", kept)
-    rc, msg, crashed = run_hook("git stash drop stash@{1}", stashed)
-    check("drop of a stash another ref preserves passes", not crashed and rc == 0, msg)
-    rc, msg, crashed = run_hook("git stash drop 'stash@{1}'", stashed)
-    check("quoted preserved target passes", not crashed and rc == 0, msg)
-    rc, msg, crashed = run_hook("git stash drop -q stash@{1}", stashed)
-    check("a quiet drop of a preserved stash passes", not crashed and rc == 0, msg)
-    rc, msg, crashed = run_hook("git stash drop --quiet stash@{0}", stashed)
-    check("a quiet drop of an unpreserved stash is still blocked", not crashed and rc == 2, msg)
-    rc, msg, crashed = run_hook("git stash drop --index stash@{1}", stashed)
-    check("an unknown drop flag fails closed", not crashed and rc == 2, msg)
-    rc, msg, crashed = run_hook("git stash drop stash@{0}", stashed)
-    check("drop of an unpreserved stash is blocked", not crashed and rc == 2, msg)
-    check("the drop block names the preserve-then-drop retry",
-          "git update-ref refs/preserve/" in msg and "stash@{0}" in msg, msg)
-    rc, msg, crashed = run_hook("git stash drop", stashed)
-    check("implicit drop of an unpreserved stash@{0} is blocked", not crashed and rc == 2, msg)
-    rc, msg, crashed = run_hook("git stash drop stash@{9}", stashed)
-    check("drop of a missing stash is blocked", not crashed and rc == 2, msg)
-    rc, msg, crashed = run_hook("git stash clear", stashed)
-    check("git stash clear stays blocked with a preserved entry", not crashed and rc == 2, msg)
 
     cite = "CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first"
     loss_cite = "CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost"
@@ -259,10 +246,53 @@ def main():
         rc, msg, crashed = run_hook(command, ref)
         check("%s is blocked (an edit or an untracked file would be lost)" % command, not crashed and rc == 2, msg)
 
+
+
+def sec1():
+    template = tempfile.mkdtemp(prefix="ggtemplate_")
+    _init_repo(template)
+    repo = tempfile.mkdtemp(prefix="ggadvice_")
+    _hook_call.copy_repo(template, repo)
+    # A drop loses nothing when another ref still holds the stash commit: the block's stated
+    # reason ("unreferenced once dropped") is then false, so the drop passes. Unpreserved stashes,
+    # an unresolvable target and `clear` stay blocked.
+    stashed = tempfile.mkdtemp(prefix="ggstash_")
+    git(stashed, "init", "-q")
+    write(stashed, "a.txt", "base\n")
+    git(stashed, "add", "a.txt")
+    git(stashed, "commit", "-q", "-m", "base")
+    write(stashed, "a.txt", "kept\n")
+    git(stashed, "stash", "-q")
+    write(stashed, "a.txt", "loose\n")
+    git(stashed, "stash", "-q")
+    kept = subprocess.run(["git", "rev-parse", "stash@{1}"], cwd=stashed, capture_output=True,
+                          text=True, check=True).stdout.strip()
+    git(stashed, "update-ref", "refs/preserve/kept", kept)
+    rc, msg, crashed = run_hook("git stash drop stash@{1}", stashed)
+    check("drop of a stash another ref preserves passes", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git stash drop 'stash@{1}'", stashed)
+    check("quoted preserved target passes", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git stash drop -q stash@{1}", stashed)
+    check("a quiet drop of a preserved stash passes", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git stash drop --quiet stash@{0}", stashed)
+    check("a quiet drop of an unpreserved stash is still blocked", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash drop --index stash@{1}", stashed)
+    check("an unknown drop flag fails closed", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash drop stash@{0}", stashed)
+    check("drop of an unpreserved stash is blocked", not crashed and rc == 2, msg)
+    check("the drop block names the preserve-then-drop retry",
+          "git update-ref refs/preserve/" in msg and "stash@{0}" in msg, msg)
+    rc, msg, crashed = run_hook("git stash drop", stashed)
+    check("implicit drop of an unpreserved stash@{0} is blocked", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash drop stash@{9}", stashed)
+    check("drop of a missing stash is blocked", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash clear", stashed)
+    check("git stash clear stays blocked with a preserved entry", not crashed and rc == 2, msg)
+
     # Python's bytecode cache is regenerated by the next import, so restoring a tracked one discards nothing
     # worth keeping; a `.pyc` outside `__pycache__`, or any other dirty path beside it, still counts.
     cache = tempfile.mkdtemp(prefix="ggpyc_")
-    _init_repo(cache)
+    _hook_call.copy_repo(template, cache)
     os.makedirs(os.path.join(cache, "pkg", "__pycache__"))
     write(cache, "pkg/__pycache__/m.cpython-314.pyc", "old\n")
     write(cache, "pkg/m.cpython-314.pyc", "old\n")
@@ -305,10 +335,17 @@ def main():
     check("branch --delete --force takes the same pass", not crashed and rc == 0, msg)
 
 
+
+
+def sec2():
+    template = tempfile.mkdtemp(prefix="ggtemplate_")
+    _init_repo(template)
+    repo = tempfile.mkdtemp(prefix="ggadvice_")
+    _hook_call.copy_repo(template, repo)
     # An edit whose bytes git's object store already holds is lost to no one: a discard of it passes, and the
     # deny names how to get there. A second edit that is not stored keeps the whole command blocked.
     saved = tempfile.mkdtemp(prefix="ggsaved_")
-    _init_repo(saved)
+    _hook_call.copy_repo(template, saved)
     write(saved, "g.txt", "two\nmore\n")
     git(saved, "add", "g.txt")
     git(saved, "commit", "-q", "-m", "g")
@@ -348,6 +385,13 @@ def main():
               not crashed and rc == 2 and "then the same command passes" not in msg
               and ("name each file" in msg or "without `--worktree`" in msg or "--source=<ref>" in msg), msg)
 
+
+
+def sec3():
+    template = tempfile.mkdtemp(prefix="ggtemplate_")
+    _init_repo(template)
+    repo = tempfile.mkdtemp(prefix="ggadvice_")
+    _hook_call.copy_repo(template, repo)
     # `branch -D` loses no commit when a ref outside the deleted set holds every one: a remote-tracking
     # ref, a tag, or refs/preserve. Otherwise the deny names each unmet branch and the preserve step.
     held = squashed_branch_repo()
@@ -383,10 +427,24 @@ def main():
     rc, msg, crashed = run_hook("git branch -D -r origin/main", held)
     check("branch -D of a remote-tracking name stays blocked", not crashed and rc == 2, msg)
 
-    print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
-    for f in FAILURES:
+
+
+SECTIONS = (sec0, sec1, sec2, sec3)
+
+
+def main():
+    if "--section" in sys.argv:
+        SECTIONS[int(sys.argv[sys.argv.index("--section") + 1])]()
+        _case_pool.emit_section([(f, False, f) for f in FAILURES])
+        return 0
+    results = run_sections(os.path.abspath(__file__), "--section", len(SECTIONS))
+    failed = [case[2] for _, cases in results for case in cases]
+    for text, _ in results:
+        print(text, end="")
+    print("%d failure(s)" % len(failed) if failed else "all ok")
+    for f in failed:
         print("  " + f)
-    return 1 if FAILURES else 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

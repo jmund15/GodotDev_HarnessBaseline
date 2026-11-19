@@ -148,7 +148,7 @@ fields this route has no use for (`readOnly`) are ignored; `agentType` refuses, 
                           when a job ends cleanly unless another job of the same group in this fan-out still
                           runs; `reference/sidecar_dispatch.md` step 6 says when to group. Without one, a
                           job of a file with a top-level `measurement` joins group `measurement`, and a lens
-                          or reviewer joins `lenses`; any other job joins group `call`, shared by every job
+                          or reviewer joins `lenses`, and an author is `alone`; any other job joins group `call`, shared by every job
                           launched together, so the call wakes the session once. `alone` is a group of
                           one: that job wakes the session on its own end. A failure wakes at once
 
@@ -663,6 +663,9 @@ FALLBACKS = {}
 PLACED = {}
 # label -> the plan that pays it, for the inventory; `main` clears it with FALLBACKS.
 PAID_BY = {}
+# label -> the effort fields of the run record (`model_registry.effort_record`) for the row the job runs on.
+EFFORT_FACTS = {}
+_EFFORT_RECORD_FIELDS = ("requestedEffort", "effort", "effortCase", "justification", "pick")
 FULL_WINDOW = set()  # labels of jobs that opt out of the login's compaction cap (`window: "full"`)
 _LIVE = {}  # {"load": plan -> live launchers}: read once per process, so a 13-job pass costs one table read
 # label -> the `Slot` `plan_job` placed the job in; `main` clears it with FALLBACKS and hands the planned jobs' slots to `Waves`.
@@ -1419,11 +1422,11 @@ class Waves:
                 forecast = self._charged(plan, drains)
                 if state.holds(forecast, state.reserve()):
                     return self._start(label, state, forecast, drains)
+                if not state.flying:
+                    return self._start(label, state, forecast, drains)
                 tried.add(plan)
                 if self._move(label, slot, tried, holds=True):
                     continue
-                if not state.flying:
-                    return self._start(label, state, forecast, drains)
                 return Verdict("wait")
             tried.add(plan)
             # A plan its short window blocks is waited for when no sibling is a better spend (`worth_waiting`).
@@ -1528,7 +1531,11 @@ def check_row(job, label, alias, effort, data):
             tier, source = checks.job_tier(job.get("kind"), job.get("tier"))
         except ValueError as err:
             raise JobError(f"job {label}: {err}")
-        why = checks.tier_fit(alias, tier, transport, data)
+        notes = []
+        why = checks.tier_fit(alias, tier, transport, data, owner_texts=checks.OwnerTexts(checks.session_transcript_path),
+                              notes=notes)
+        for line in notes:
+            print(line)
         if why:
             raise JobError(f"job {label}: row {alias} is outside tier `{tier}` (from {source}): {why}")
     return transport
@@ -1623,6 +1630,7 @@ def plan_job(job, data, out_dir, authorize, stage=None):
     PLACED.setdefault(plan, []).append(signature)
     SLOTS[label] = Slot(plan, signature, () if job.get("plan") else tuple(plans), picks)
     PAID_BY[label] = plan
+    EFFORT_FACTS[label] = model_registry.effort_record(job, alias)
     FALLBACKS.pop(label, None)
     spare = []
     for name in rest:
@@ -2258,6 +2266,8 @@ def _inventory_job(label, argv, launch_id, record_path, wake_with=None, call=Non
         job.update(workdir=os.path.abspath(workdir_of(argv)), startHead=_head_of(workdir_of(argv)))
     if brief_of(argv):
         job["brief"] = os.path.abspath(brief_of(argv))
+    facts = EFFORT_FACTS.get(label) or {}
+    job.update({field: facts.get(field) for field in _EFFORT_RECORD_FIELDS})
     return job
 
 
@@ -2926,7 +2936,8 @@ def print_status(out_dir):
         state, detail = _attempt_state(record)
         waiting = memory_wait(record) if record is not None and state in ('pending', 'running') else None
         if waiting:
-            state, detail = 'waiting-memory', f'{waiting}  {detail}'
+            state = 'waiting-quota' if waiting.startswith('waiting-quota: ') else 'waiting-memory'
+            detail = f'{waiting}  {detail}'
         stream = out_dir / f"{label}.stream"
         lingering = result_lingering(record, now) if state == "running" else None
         if lingering is not None:
@@ -3541,7 +3552,11 @@ def launcher_fit_refusal(argv):
         return ("Sidecar launch not checked: the tier check could not load (sidecar_dispatch_context: "
                 f"{type(err).__name__}: {err}). Fix the import before launching.")
     try:
-        return sidecar_dispatch_context.fanout_fit_refusal([a for a in argv if a != "--detach"], os.getcwd())
+        notes = []
+        refusal = sidecar_dispatch_context.fanout_fit_refusal([a for a in argv if a != "--detach"], os.getcwd(), notes)
+        for line in notes:
+            print(line)
+        return refusal
     except Exception:
         return None  # the check could not run; each launcher still runs its own
 
@@ -3580,10 +3595,11 @@ def fit_facts(jobs, size=None):
 
 
 def over_window_refusal(size):
-    """The refusal text for every job whose reading is past the point it compacts at, else None: the job, its
-    reading and its window. A job that reads more than it can hold compacts away part of what it was told to
-    read, so the run pays for a report that did not read its brief. `dispatch_size.over_window_lines` owns the
-    measure, the one `lens_briefs.seat_overage` refuses a review seat on."""
+    """The refusal text for every resident seat (`dispatch_size.RESIDENT_KINDS`) whose reading is past the point it
+    compacts at, else None: the job, its reading and its window. A seat that reads more than it can hold compacts
+    away the subject it must keep, so the run pays for a review that did not read its brief. Other kinds compact and
+    carry on; their overage is a fact on the fit line. `dispatch_size.over_window_lines` owns the measure, the one
+    `lens_briefs.seat_overage` refuses a review seat on."""
     if size is None:
         return None
     try:
@@ -3593,8 +3609,8 @@ def over_window_refusal(size):
         return None
     if not lines:
         return None
-    return ("Launch refused: a job reads more than its window holds. Split its reading across jobs, drop a "
-            "named file, or pin a row whose window holds it. Nothing dispatched.\n  " + "\n  ".join(lines))
+    return ("Launch refused: a review seat reads more than its window holds. Split its reading across jobs. "
+            "Nothing dispatched.\n  " + "\n  ".join(lines))
 
 
 def spare_facts(jobs, data, now=None, read=None):
@@ -3723,16 +3739,16 @@ def await_admission(driver, out_dir, planned, fallbacks, max_parallel, since, wa
     def held_by(label, memory, busy):
         """What a queued job waits on: the memory gate when its launcher stands in the WAIT marker (it has no claimed
         record yet), else its transport's cap when that many admitted jobs still run on the transport, else
-        --max-parallel when `busy` workers (admitted jobs and memory waiters) fill it, else its plan's room (`Waves`),
-        the only other gate before a claim."""
+        --max-parallel when `busy` workers (admitted jobs and memory waiters) fill it. Otherwise no gate is observed:
+        a launcher still starting and a plan wave holding it look the same from here, so the line names neither."""
         if memory:
-            return f"memory headroom ({memory})"
+            return f"quota headroom ({memory})" if memory.startswith("waiting-quota: ") else f"memory headroom ({memory})"
         name, cap = transport_of(argvs[label], registry)
         if cap and sum(1 for other in running if transport_of(argvs[other], registry)[0] == name) >= cap[0]:
             return f"the {name} cap of {cap[0]} concurrent children (registry maxChildren)"
         if max_parallel is not None and busy >= max_parallel:
             return f"--max-parallel {max_parallel}"
-        return "its plan's room"
+        return "no observed gate: its launcher has not claimed a record yet; the driver log's `wave` lines say whether its plan holds it"
     deadline, idle_since = time.time() + wait, None
 
     def plan_of(label):
@@ -4014,6 +4030,9 @@ def _main(argv):
                 if not isinstance(selection, dict):
                     raise JobError("jobs reviewerSelection must be an object")
         data = model_registry.load()
+        measured = bool(os.environ.get("SC_COMPARISON")) or bool(jobs_measurement(args.jobs))
+        for line in model_registry.fill_job_efforts(jobs, data, measured):
+            print(line, file=sys.stderr)
         if spill_dir:
             spill_dir = Path(spill_dir) if Path(spill_dir).is_absolute() else REPO / spill_dir
             if args.out_dir and Path(args.out_dir).resolve() != spill_dir.resolve():
@@ -4076,6 +4095,7 @@ def _main(argv):
         FALLBACKS.clear()
         PLACED.clear()
         PAID_BY.clear()
+        EFFORT_FACTS.clear()
         FULL_WINDOW.clear()
         SLOTS.clear()
         _LIVE.clear()

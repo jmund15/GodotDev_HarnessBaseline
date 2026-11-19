@@ -64,6 +64,21 @@ def main():
     cases.append(("no candidates -> the liveness probe is never spawned", probe_calls == []))
     cases.append(("a scan failure stays silent", g.find_live_instances("x.sh", scan=lambda: (_ for _ in ()).throw(OSError("boom"))) == []))
 
+    # A file that does not exist yet has no running instance, so the process-table query (about a second on
+    # Windows) is never paid for it; an existing script is still scanned.
+    import tempfile
+    scans = []
+    scan = lambda: scans.append(1) or TABLE  # noqa: E731
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, ".claude", "scripts"))
+        absent = os.path.join(tmp, ".claude", "scripts", "opencode_sidecar.sh")
+        g.process({"tool_name": "Write", "tool_input": {"file_path": absent}}, scan=scan, alive=lambda p: set(p))
+        cases.append(("a script that does not exist yet is never scanned for", scans == [], scans))
+        with open(absent, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/bash\n")
+        out = g.process({"tool_name": "Edit", "tool_input": {"file_path": absent}}, scan=scan, alive=lambda p: set(p))
+        cases.append(("an existing script is scanned and its live instances reported", scans == [1] and bool(out), scans))
+
     # End to end through stdin: a non-guarded path exits 0 with no output; a guarded path whose
     # script nothing runs also stays silent. Any other exit code is a CRASH, never a pass.
     def run(payload):

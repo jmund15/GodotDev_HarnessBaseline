@@ -96,10 +96,8 @@ def nudge_lines(setup_results: dict[str, str], cloud: bool) -> list[str]:
     return [
         "",
         "<lsp-early-load>",
-        "csharp-lsp installed. Load the LSP tool schema as one of your first actions: "
-        "ToolSearch(query=\"select:LSP\", max_results=1); then default to LSP for C# "
-        "symbol/caller/type questions: workspaceSymbol with a query finds a declaration, then "
-        "findReferences or goToImplementation from it. The first call pays a ~30 s solution load. "
-        "rules/csharp_lsp.md, which auto-loads on the first .cs read, holds the rest.",
+        "csharp-lsp installed. Load its schema early: ToolSearch(query=\"select:LSP\", max_results=1). "
+        "Then use LSP for C# symbol, caller and type questions: workspaceSymbol finds a declaration, "
+        "findReferences or goToImplementation follow from it. The first call pays a ~30 s solution load.",
         "</lsp-early-load>",
     ]

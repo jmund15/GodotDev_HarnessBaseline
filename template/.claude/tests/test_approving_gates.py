@@ -1,4 +1,7 @@
-"""Proof for hooks/approving_gates.py. Runs gate shape checks in a planted Git project."""
+"""Proof for hooks/approving_gates.py. Runs gate shape checks in a planted Git project.
+
+The gate cases call the hook's `main()` in process (`_hook_call`); one case spawns it from its
+registered command, proving import and exit 0."""
 import json
 import os
 import subprocess
@@ -9,7 +12,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 HOOKS = HERE.parent / "hooks"
 sys.path.insert(0, str(HOOKS))
+sys.path.insert(0, str(HERE))
 import approving_gates
+import _hook_call
 
 
 def main():
@@ -47,15 +52,14 @@ def main():
         env.pop("CLAUDE_PROJECT_DIR", None)
         if project != "unset":
             env["CLAUDE_PROJECT_DIR"] = str(project or root)
-        result = subprocess.run([sys.executable, str(HOOKS / "approving_gates.py")],
-                                input=json.dumps(payload), capture_output=True, text=True,
-                                encoding="utf-8", timeout=30, env=env, cwd=shell_cwd)
-        text = result.stdout.strip()
-        try:
-            hso = json.loads(text).get("hookSpecificOutput", {}) if text else {}
-        except ValueError:
+        code, out, err, hso = _hook_call.call(HOOKS / "approving_gates.py", payload,
+                                              env=env, cwd=str(shell_cwd))
+        text = out.strip()
+        if not hso and text:
             hso = {"unparseable": text}
-        return result.returncode, hso
+        if "Traceback" in err:
+            raise AssertionError("approving_gates crashed: " + err[-800:])
+        return code, hso
 
     good = "bash .claude/scripts/codex_proxy_sidecar.sh -G scout -f .claude/reference/prompt.md"
     cases = []
@@ -600,6 +604,11 @@ def main():
     parser_options = set(re.findall(r'add_argument\(["\'](--[a-z0-9-]+)', parser_source))
     cases.append(("reviewed digest options exactly match the parser",
                   parser_options == set(approving_gates._DIGEST_OPTIONS)))
+
+    spawned = subprocess.run([sys.executable, str(HOOKS / "approving_gates.py")], input="{}",
+                             capture_output=True, text=True, encoding="utf-8", cwd=root)
+    cases.append(("the hook imports and exits 0 from its registered command",
+                  spawned.returncode == 0 and not spawned.stderr.strip()))
 
     failures = [label for label, passed in cases if not passed]
     for label, passed in cases:

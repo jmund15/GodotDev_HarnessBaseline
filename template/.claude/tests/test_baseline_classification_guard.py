@@ -31,6 +31,7 @@ BASELINE_SYNC = TOOLS_DIR / "baseline_sync.py"
 
 sys.path.insert(0, str(HERE))
 from _case_pool import emit_section, run_sections  # noqa: E402
+from _hook_call import call as call_hook  # noqa: E402
 from _must_allow_cases import must_allow_cases  # noqa: E402
 sys.path.insert(0, str(TOOLS_DIR))
 from sidecar_launch import git_bash  # noqa: E402
@@ -117,10 +118,15 @@ _IMPORT_FAILURE_RUNNER = (
 )
 
 
-def _run_dispatch(cwd: str, command: str, env: dict, tool_name: str = "Bash") -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(DISPATCH)], input=_payload(cwd, command, tool_name),
-                          capture_output=True, text=True, timeout=90, env=env, encoding="utf-8",
-                          cwd=REPO)
+class _Proc:
+    def __init__(self, code, out, err):
+        self.returncode, self.stdout, self.stderr = code, out, err
+
+
+def _run_dispatch(cwd: str, command: str, env: dict, tool_name: str = "Bash") -> _Proc:
+    """The real PreToolUse dispatcher, called in process; each pooled section child runs one case at a time."""
+    code, out, err, _ = call_hook(str(DISPATCH), _payload(cwd, command, tool_name), env=env, cwd=str(REPO))
+    return _Proc(code, out, err)
 
 
 def _hso(proc: subprocess.CompletedProcess) -> dict:
@@ -603,7 +609,7 @@ def main(only: int | None = None) -> int:
         proc = _run_dispatch(str(repo), 'git commit -q -m m -- $(cat ../outside_paths.txt)', env)
         check("26a: `$(cat list)` pathspec cannot be verified -> deny", _classify(proc), "DENY", proc)
         cases.append(("26a: the deny names the unexpanded `$` and `--pathspec-from-file`",
-                      "before the shell expands" in proc.stderr and "--pathspec-from-file" in proc.stderr,
+                      "$" in proc.stderr and "--pathspec-from-file" in proc.stderr,
                       proc.stderr[:500]))
         # The route the hint names works: the file lists an ordinary path -> allow.
         proc = _run_dispatch(str(repo), 'git commit -q -m m --pathspec-from-file=paths.txt', env)

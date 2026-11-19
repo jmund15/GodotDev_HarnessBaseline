@@ -212,6 +212,8 @@ def main():
             case()
         except Exception as exc:  # a missing module or a crash is a red, never a pass
             FAILS.append("%s crashed: %s: %s" % (case.__name__, type(exc).__name__, exc))
+    import shutil
+    shutil.rmtree(BASE, ignore_errors=True)
     if FAILS:
         print("\n".join("FAIL " + f for f in FAILS))
         sys.exit(1)

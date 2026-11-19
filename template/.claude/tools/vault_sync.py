@@ -19,11 +19,19 @@
 
   sync [--worktree DIR] [--git-dir DIR] [--allow-deletions N] [--first-push]
       Under a lock (taken over after LOCK_STALE_S), fetch origin/vault, point the branch at it,
-      add -A (working tree wins), precommit, commit, push fast-forward. Exit 0 pushed, no change,
-      or busy; 1 refused (including missing remote branch without --first-push); 3 git/network failure.
+      add -A (working tree wins), precommit, commit, push fast-forward. A refusal tied to one path
+      (a secret hit, a forbidden or unlisted path) unstages that path and commits and pushes the rest;
+      the refusals stay in the report and sync_status.json. Refusals that judge the whole change
+      (deletions over the cap, an existing path deleted, an unreadable blob, a missing remote branch
+      without --first-push) commit nothing. Exit 0 pushed (held paths included), no change, or busy;
+      1 refused with nothing pushed; 3 git/network failure.
       Reading with add and scan hydrates OneDrive placeholders. Each locked run writes
       <git-dir>/sync_status.json; pushes and failures append sync_log.jsonl (newest LOG_ROWS kept).
       Neither holds matched text.
+
+  mask [--root DIR] PATH...
+      Rewrite each PATH (relative to DIR, default the local vault) with every key-shape match replaced
+      by `[MASKED:<pattern>]`. Prints `<path>: <count> masked`, never matched text.
 
   mirror [--target DIR]
       Fetch origin/vault in the current clone; replace only the configured folders beneath DIR
@@ -75,6 +83,7 @@ except ImportError:
 
 DEFAULT_ROOT = vault_read.DEFAULT_VAULT / 'DevProjects'
 DELETION_CAP = 10
+PATH_REFUSALS = frozenset({'secret', 'forbidden'})
 BRANCH = 'vault'
 SYNC_INTERVAL_MIN = 15
 LOCK_STALE_S = 600
@@ -156,6 +165,20 @@ _load_config()
 def scan_bytes(data: bytes) -> list[str]:
     """Names of key shapes present in data, in PATTERNS order."""
     return [name for name, rx in _COMPILED.items() if rx.search(data)]
+
+
+# A private key's secret is its body, which `scan_bytes` finds by its header alone: mask the block through its END line.
+_MASKED = dict(_COMPILED, **{'private-key': re.compile(
+    PATTERNS['private-key'] + rb'.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)', re.S)})
+
+
+def mask_bytes(data: bytes) -> tuple[bytes, int]:
+    """data with every key-shape match replaced by `[MASKED:<pattern>]`, and the number replaced."""
+    total = 0
+    for name, rx in _MASKED.items():
+        data, count = rx.subn(b'[MASKED:' + name.encode() + b']', data)
+        total += count
+    return data, total
 
 
 def _excluded(parts) -> bool:
@@ -377,7 +400,16 @@ def _sync(worktree, git_dir, allow_deletions, first_push, report) -> int:
     report.update({k: judged[k] for k in ('deletions', 'caseRenames', 'conflictCopies')})
     report['refusals'] += judged['refusals']
     if verdict:
-        return 1
+        if any(r['kind'] not in PATH_REFUSALS for r in judged['refusals']):
+            return 1
+        held = {r['path'] for r in judged['refusals']}
+        held |= {c['old'] for c in staged_changes(worktree, git_dir) if c['path'] in held and 'old' in c}
+        reset = _git_run(worktree, git_dir, 'reset', '-q', '--', *sorted(held))
+        if reset.returncode:
+            report['error'] = _first_line(reset)
+            return 3
+        if _git_run(worktree, git_dir, 'diff', '--cached', '--quiet').returncode == 0:
+            return 1
     env = dict(os.environ)
     if allow_deletions is not None:
         env['VAULT_SYNC_ALLOW_DELETIONS'] = str(allow_deletions)
@@ -588,9 +620,30 @@ def _scan(args) -> int:
     return 2 if report['unreadable'] else 0
 
 
+def _mask(args) -> int:
+    root = Path(args.root)
+    code = 0
+    for rel in args.paths:
+        target = root / rel
+        try:
+            masked, count = mask_bytes(target.read_bytes())
+            if count:
+                target.write_bytes(masked)
+        except OSError as exc:
+            print(f'{rel}: unreadable ({type(exc).__name__})')
+            code = 2
+            continue
+        print(f'{rel}: {count} masked')
+    return code
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest='cmd', required=True)
+    mask = sub.add_parser('mask')
+    mask.add_argument('--root', default=str(DEFAULT_ROOT))
+    mask.add_argument('paths', nargs='+')
+    mask.set_defaults(func=_mask)
     scan = sub.add_parser('scan')
     scan.add_argument('--tree', action='store_true', required=True)
     scan.add_argument('--root', default=str(DEFAULT_ROOT))

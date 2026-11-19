@@ -1,0 +1,45 @@
+# Proves each range landed on main, after the land: the harness close over the commits from checkedTo to the tip, the
+# regression gate when the range owes it, then the verdict as rows on the main-check-state branch (main_check.py).
+# One run goes at a time and only the newest pending one waits: a range always runs from checkedTo to the tip, so a
+# dropped run's commits are proved at the newer tip. The job timeout (780) is the two 360-minute stages plus finalize;
+# main_check.py reads it to set the run's liveUntil. The runner and the main-check worktree come from the repository
+# variables MAIN_CHECK_RUNNER (a JSON label array) and MAIN_CHECK_DIR (an absolute path).
+name: main-check
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: main-check
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ${{ fromJSON(vars.MAIN_CHECK_RUNNER) }}
+    timeout-minutes: 780
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: ${{ vars.MAIN_CHECK_DIR }}
+    env:
+      RUN_KEY: ${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out the tip, so the script that runs is the tip's
+        run: |
+          foreach ($try in 1..3) {
+            git fetch -q origin main
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($try -eq 3) { exit 1 }
+            Start-Sleep -Seconds 5
+          }
+          git checkout -q --force --detach origin/main
+      - name: Close
+        timeout-minutes: 360
+        run: python3 .claude/scripts/main_check.py close --run-id $env:RUN_KEY --cap-minutes 360 ${{ github.event_name == 'workflow_dispatch' && '--dispatched' || '' }}
+      - name: Gate
+        if: always()
+        timeout-minutes: 360
+        run: python3 .claude/scripts/main_check.py gate --run-id $env:RUN_KEY --cap-minutes 360
+      - name: Finalize
+        if: always()
+        timeout-minutes: 30
+        run: python3 .claude/scripts/main_check.py finalize --run-id $env:RUN_KEY

@@ -21,7 +21,8 @@ Bash-only hooks and they exit 0 silently, exactly as they did on their own match
 Fail posture per sub-hook: an exception or a non-2 non-zero exit is reported on stderr and in
 `additionalContext`, naming the lost check and repair; the next hook runs. Floor metadata is
 available before member imports; import faults use independent stubs. A floor member's fault
-blocks the call. Bootstrap import faults deny every Bash/PowerShell call and stay silent for
+blocks a call its `_FLOOR_MEMBERS` matcher selects (sidecar_dispatch_context's: a sidecar launch, since its
+doctrine and pin checks stand in front of paid spend). Bootstrap import faults deny every Bash/PowerShell call and stay silent for
 other tools. dangerous_shell_guard is the one destructive-command check and a floor member in every
 profile, loaded outside `_optional_hooks`; its import fault denies through `_floor_stub`.
 
@@ -66,6 +67,20 @@ except Exception as exc:
              'tools' if _bootstrap == 'sidecar_argv' else 'hooks', _bootstrap))
         sys.exit(2)
     sys.exit(0)
+
+
+try:
+    import _hook_state
+    from _hook_state import give_back
+except Exception:  # noqa: BLE001 - without it a dropped line keeps its once-key spent; no guard depends on it
+    _hook_state = None
+
+    def give_back(start, stop):
+        return None
+
+
+def _spent_mark():
+    return _hook_state.spent_mark() if _hook_state else 0
 
 
 class _ImportStub:
@@ -134,8 +149,20 @@ _FLOOR_MEMBERS = {
     'dangerous_shell_guard': (lambda _command, _cwd: True, 'destructive-command check'),
     'editor_live_build_guard': (lambda command, _cwd: 'dotnet' in command or '-ignoreeditor' in command.lower(),
                                 'build into a checkout'),
+    # Paid spend: the dispatch-doctrine and pin checks stand in front of every sidecar launch.
+    'sidecar_dispatch_context': (lambda command, _cwd: bool(sidecar_argv.launcher_invocations(command)),
+                                 'sidecar launch'),
 }
 _IMPORT_ERRORS = {}
+
+
+def _floor_matches(name, payload):
+    """True when a floor member's fault covers this call: its matcher selects the command, or the matcher raises."""
+    matches, _action = _FLOOR_MEMBERS[name]
+    try:
+        return bool(matches((payload.get('tool_input') or {}).get('command') or '', payload.get('cwd') or '.'))
+    except Exception:  # noqa: BLE001 - an unparseable command denies
+        return True
 
 
 def _failed_import(name, exc):
@@ -177,7 +204,7 @@ triage_commit_check = _load('triage_commit_check')
 duplicate_commit_check = _load('duplicate_commit_check')
 baseline_classification_guard = _load('baseline_classification_guard')
 rule_number_guard = _load('rule_number_guard')
-heredoc_quoting_advisory = _load('heredoc_quoting_advisory')
+bash_length_guard = _load('bash_length_guard')
 routing_audit = _load('routing_audit')
 _APPROVING_GATES_IMPORT_ERROR = _IMPORT_ERRORS.get('approving_gates')
 _TRIAGE_CHECK_IMPORT_ERROR = _IMPORT_ERRORS.get('triage_commit_check')
@@ -203,6 +230,7 @@ HOOKS += (
     (gate_cadence_guard, ()),
     (compound_cd_approver, ()),
     (unbounded_scan_guard, ()),
+    (bash_length_guard, ()),
     (harness_shell_write_guard, ()),
     (triage_commit_check, ()),
     (duplicate_commit_check, ()),
@@ -210,7 +238,6 @@ HOOKS += (
     (hand_pricing_advisory, ()),
     (sidecar_dispatch_context, ()),
     (approving_gates, ()),
-    (heredoc_quoting_advisory, ()),
     # Last: it rewrites the command through updatedInput, so every deny above must win first.
     (bash_backslash_fidelity, ()),
 )
@@ -277,6 +304,7 @@ def dispatch(raw_payload, hooks=HOOKS):
 
 def _dispatch(raw_payload, hooks):
     decision, reason, contexts, extra, user_stderr = None, None, [], {}, []
+    started = _spent_mark()  # before the router: its once-lines drop with every other hook's on a block
     payload = json.loads(raw_payload)
     try:
         updated, routing_context = run_call_router.route(payload) if run_call_router is not None else ({}, [])
@@ -294,13 +322,17 @@ def _dispatch(raw_payload, hooks):
         extra['updatedInput'] = updated
         contexts.extend(routing_context)
     for module, argv_tail in hooks:
+        before = _spent_mark()
         code, out, err = run_hook(module, argv_tail, raw_payload)
         if code == 2:
             block = err.rstrip() if err.strip() else "%s blocked the call." % module.__name__
+            give_back(started, before)
             return 2, "", _denied(block)
         floor = getattr(module, 'FAIL_CLOSED', False) or (
-            module.__name__ in _FLOOR_MEMBERS and payload.get('tool_name') in ('Bash', 'PowerShell'))
+            module.__name__ in _FLOOR_MEMBERS and payload.get('tool_name') in ('Bash', 'PowerShell')
+            and _floor_matches(module.__name__, payload))
         if code != 0 and floor:
+            give_back(started, before)
             return 2, "", _denied("%s is a floor guard and failed (exit %s), so the call is blocked until it runs "
                                   "cleanly. Fix the guard; its error:\n%s"
                                   % (module.__name__, code, err.strip()[-1500:]))

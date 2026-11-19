@@ -174,8 +174,10 @@ class RowTests(unittest.TestCase):
         for row in rows:
             self.assertIn("ladder", row)
             line = [line for line in text.splitlines() if line.strip().startswith(row["alias"] + " ")][0]
-            for cell in ("| cost ", "| speed ", "| intel ", "| ± ", "| effort "):
+            for cell in ("| cost ", "| speed ", "| intel ", "| ± "):
                 self.assertNotIn(cell, line)
+            # The row's only effort text is the computed rung per reading, not the ladder cell.
+            self.assertRegex(line, r"lens review (-|none|low|medium|high|xhigh|max|ultra)$")
 
     def test_a_dropped_plan_carries_no_draw_cell(self):
         got, text = self.table({"anthropic": reading("anthropic", status="exhausted"),

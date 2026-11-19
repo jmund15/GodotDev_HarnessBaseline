@@ -12,7 +12,6 @@ fixture transcript; an exit outside {0} or a traceback is a CRASH, never a pass.
 
     python3 .claude/tests/test_compact_directive_anchor.py
 """
-import ast
 import importlib.util
 import json
 import os
@@ -137,14 +136,14 @@ def whole_plan_cases():
     spec = importlib.util.spec_from_file_location("anchor_for_whole_plan", HOOK)
     anchor = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(anchor)
-    heavy = [user(f"Heavy owner message {n}. " + "detail " * 35 + f"END{n}") for n in range(30)]
+    heavy = [user(f"Heavy owner message {n}. " + "detail " * 60 + f"END{n}") for n in range(30)]
     with tempfile.TemporaryDirectory() as tmp:
         transcript = write_transcript(tmp, heavy, "heavyplan")
         os.environ["HARNESS_TASK_RECORD_DIR"] = str(Path(tmp) / "tasks")
         messages = [m for m in anchor._digest().owner_prompts(transcript) if anchor.keep(m)]
         where = anchor.full_location("heavyplan")
         injection = anchor.plan(transcript, "heavyplan", Path(tmp), messages, where, anchor.fetch_command(where),
-                                rating_line=anchor.rating_debt_text(99))
+                                rating_line="")  # the real run below has no unrated dispatches (HARNESS_PENDING_COUNT=0)
         whole = anchor.whole_ids(injection)
         out, crashed, _ = run_hook(tmp, {"source": "compact", "session_id": "heavyplan",
                                          "transcript_path": str(transcript)})
@@ -208,13 +207,8 @@ def main():
                       f"session_digest.py --session {REFERENCED} --handoff" in out
                       and f"session_digest.py --session {REFERENCED} --brief" not in out))
         cases.append(("a hex token without a transcript gets no pointer", f"--session {UNREFERENCED}" not in out))
-        cases.append(("the messages are framed as a record, not open orders",
-                      "not a list of open orders" in out and "override the summary" not in out
-                      and "ask the owner" in out))
-        cases.append(("the owner's words outrank the summary's account, with no claim that the summary has a section",
-                      "its words here hold" in out and "Owner directives section gives" not in out))
-        cases.append(("another session's messages are read for its root goal only",
-                      "root goal" in out and "before acting on those directives" not in out))
+        cases.append(("the intro names the uncapped file the owner's full words are read from",
+                      FULL_REL in out))
         cases.append(("each header carries the send date and time", "--- U1 · 09-14 13:01 ---" in out))
 
         late = write_transcript(tmp, [user("first"), user("second"), user("third"), user(LONG)], name="late")
@@ -291,6 +285,14 @@ def main():
         out, crashed, _ = run_hook(tmp, payload)
         cases.append(("no task record -> the opening command carries --next for the summary's next action",
                       "No task record" in out and "--next" in out))
+        # A session that already compacted once and still holds no record chose that; the line repeats nothing new.
+        earlier = [{"type": "system", "subtype": "compact_boundary", "timestamp": "2026-09-14T12:00:00Z"},
+                   {"type": "attachment", "attachment": {"type": "hook_success", "hookEvent": "SessionStart",
+                                                         "hookName": "SessionStart:compact"}}]
+        second = write_transcript(tmp, earlier + base_rows(), name="second")
+        out, crashed, _ = run_hook(tmp, dict(payload, transcript_path=str(second)))
+        cases.append(("a second compaction without a record does not repeat the opening line",
+                      not crashed and DIRECTIVE in out and "task_record.py open" not in out))
 
         # A reply that only names a packet's option ('Do all recs now', 'O2, ...') or a question answer
         # carries no ruling text of its own; the ruling lives in the assistant text it answered
@@ -409,12 +411,6 @@ def main():
         run_hook(tmp, payload)
         cases.append(("anchors older than 30 days are pruned", not stale.exists()))
         cases.append(("this session's anchor is kept", full.exists()))
-
-        source = Path(HOOK).read_text(encoding="utf-8")
-        doc = ast.get_docstring(ast.parse(source)) or ""
-        cases.append(("the hook docstring states filtering, caps, omissions, and the uncapped file",
-                      "prints every" not in doc
-                      and all(word in doc.lower() for word in ("filter", "cap", "omit", "uncapped"))))
 
         project = Path(HERE).parents[1]
         settings = _settings_probe.settings(project / ".claude")

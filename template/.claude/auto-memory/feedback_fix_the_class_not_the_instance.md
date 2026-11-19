@@ -22,7 +22,8 @@ Measured in one session, three times:
 - One behaviour-selecting export's wrong default corrected while a sibling export in the same
   config kept the same defect.
 
-**How to apply:** when a fix lands, state the cause in one sentence, then grep for the cause rather
-than the symptom — the old predicate, the sibling call site, the same-provenance constant, the other
-members of the config — and either fix or explicitly record each hit. "The reported case is fixed"
+**How to apply:** when a fix lands, state the cause in one sentence, then search for the cause rather
+than the symptom — by what the code does (semantic search) and by its known names (grep): the old
+predicate, the sibling call site, the same-provenance constant, the other members of the config, and a
+second mechanism doing the same job — and either fix or explicitly record each hit. "The reported case is fixed"
 is not a completion claim; "every site sharing this cause is fixed or listed" is.

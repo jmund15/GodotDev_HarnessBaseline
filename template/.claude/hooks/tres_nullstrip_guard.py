@@ -38,15 +38,19 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _git_commit import commit_invocations, bypass_declared, git_environ, run_git  # noqa: E402
 from _commit_scope import authored_paths, incoming_heads, publishes_index  # noqa: E402
 from _checkout_root import repo_arg  # noqa: E402
+from _hook_parts import bounded_decision, bounded_report  # noqa: E402
 
 # Windows pipes default to cp1252 through Python 3.14; git diff text now decodes as real
 # UTF-8, so a non-ASCII .tres string payload or path would raise UnicodeEncodeError on write.
-sys.stdout.reconfigure(encoding="utf-8")
+# LF-only: Windows text mode adds a CR per line, which the cap's byte count does not see.
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+sys.stderr.reconfigure(encoding="utf-8", newline="\n")
 
 # An added scene line `+Field = null` -- Field is a leading-Uppercase Export or a
 # leading-underscore private Export (this project's `[Export] private _field` form).
@@ -345,46 +349,59 @@ def find_strips(range_arg, worktree=False):
     return null_strips, lost, unverified
 
 
-def report(null_strips, lost, unverified):
+SCRATCH_DIR = Path(__file__).resolve().parents[1] / "scratch"
+
+
+def scratch_list(session_id=""):
+    """The whole-list file for this caller: one per session, so a peer session's rerun replaces only its own.
+    A caller with no session id (the CLI scan) names its process instead of sharing one list."""
+    stem = "".join(c if c.isalnum() or c in "-_." else "_" for c in (session_id or "pid%d" % os.getpid()))
+    return str(Path(SCRATCH_DIR) / ("tres_nullstrip_findings.%s.txt" % stem))
+NULL_INSTRUCTION = (
+    "Each of these Exports has a MEANINGFUL C# default (non-null/zero/false) that "
+    "`= null` throws away -- the scene loads the type-zero / empty value instead "
+    "(gotcha_godot_editor_resave_hazards). Set the explicit intended "
+    "value (e.g. `MaxSlots = 24`, `ArtFacesRight = true`) -- do NOT delete the line, "
+    "the editor re-strips it. If the field was genuinely made nullable (C# default "
+    "now null), set HARNESS_ALLOW_TRES_NULLSTRIP=1."
+)
+LOST_INSTRUCTION = (
+    "Re-add the line with its authored value (the editor keeps non-default values). "
+    "If the C# default was deliberately changed to this value, set HARNESS_ALLOW_TRES_NULLSTRIP=1."
+)
+
+
+def report_parts(null_strips, lost, unverified):
+    """`(lead, rows)` of the report, the verdict and instruction lines apart from the finding rows."""
+    leads, rows = [], []
     if null_strips:
-        print(
+        leads.append(
             "[tres-nullstrip-guard] Suspected value-type Export null-strip "
-            f"({len(null_strips)} line(s)):",
-            file=sys.stderr,
+            f"({len(null_strips)} line(s)):\n" + NULL_INSTRUCTION + "\n"
         )
-        for path, field in null_strips:
-            print(f"  {path}: {field} = null", file=sys.stderr)
-        print(
-            "\nEach of these Exports has a MEANINGFUL C# default (non-null/zero/false) that "
-            "`= null` throws away -- the scene loads the type-zero / empty value instead "
-            "(gotcha_godot_editor_resave_hazards). Set the explicit intended "
-            "value (e.g. `MaxSlots = 24`, `ArtFacesRight = true`) -- do NOT delete the line, "
-            "the editor re-strips it. If the field was genuinely made nullable (C# default "
-            "now null), set HARNESS_ALLOW_TRES_NULLSTRIP=1.",
-            file=sys.stderr,
-        )
+        rows += [f"  {path}: {field} = null" for path, field in null_strips]
     if lost:
-        print(
-            f"\n[tres-nullstrip-guard] Export VALUE LOST ({len(lost)} line(s)) -- the removed "
+        leads.append(
+            f"[tres-nullstrip-guard] Export VALUE LOST ({len(lost)} line(s)) -- the removed "
             "value differs from every C# default for that Export: data loss, NOT the 4.7.1 "
-            "saver omitting a default-valued property:",
-            file=sys.stderr,
+            "saver omitting a default-valued property:\n" + LOST_INSTRUCTION + "\n"
         )
-        for path, field, value, defaults in lost:
-            print(f"  {path}: -{field} = {value}   (C# default(s): {', '.join(defaults)})", file=sys.stderr)
-        print(
-            "\nRe-add the line with its authored value (the editor keeps non-default values). "
-            "If the C# default was deliberately changed to this value, set HARNESS_ALLOW_TRES_NULLSTRIP=1.",
-            file=sys.stderr,
-        )
+        rows += [f"  {path}: -{field} = {value}   (C# default(s): {', '.join(defaults)})"
+                 for path, field, value, defaults in lost]
     if unverified:
-        print(
-            f"\n[tres-nullstrip-guard] {len(unverified)} vanished line(s) could not be compared to a "
-            "C# default (enum / struct / expression initializer) -- verify by hand:",
-            file=sys.stderr,
+        leads.append(
+            f"[tres-nullstrip-guard] {len(unverified)} vanished line(s) could not be compared to a "
+            "C# default (enum / struct / expression initializer) -- verify by hand:\n"
         )
-        for path, field, value in unverified:
-            print(f"  {path}: -{field} = {value}", file=sys.stderr)
+        rows += [f"  {path}: -{field} = {value}" for path, field, value in unverified]
+    return "".join(leads), rows
+
+
+def report(null_strips, lost, unverified, session_id=""):
+    """The `--worktree` and CLI report, for the human or Bash call that reads stderr."""
+    lead, rows = report_parts(null_strips, lost, unverified)
+    if lead:
+        sys.stderr.write(bounded_report(lead, rows, scratch_list(session_id)))
 
 
 def standalone(range_arg, worktree=False):
@@ -431,11 +448,15 @@ def hook():
     unverified = _authored(unverified, commit.cwd, commit.git_env, blobs)
     if not null_strips and not lost:
         if unverified:
-            report([], [], unverified)  # advisory only
+            lead, rows = report_parts([], [], unverified)
+            sys.stdout.write(bounded_decision(lambda text: json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": text,
+            }}) + "\n", lead, rows, scratch_list(data.get("session_id") or "")))
+            return 0
         print("{}")
         return 0
 
-    report(null_strips, lost, unverified)  # surfaced in the transcript alongside the deny
     parts = []
     if null_strips:
         parts.append(f"{len(null_strips)} staged scene line(s) null-strip a value-type Export "
@@ -447,11 +468,12 @@ def hook():
     reason = ("Blocked (rules/godot_files.md): " + "; ".join(parts) +
               ". Set the explicit value, or set HARNESS_ALLOW_TRES_NULLSTRIP=1 if the C# default "
               "genuinely changed.")
-    print(json.dumps({"hookSpecificOutput": {
+    lead, rows = report_parts(null_strips, lost, unverified)
+    sys.stdout.write(bounded_decision(lambda text: json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
-        "permissionDecisionReason": reason,
-    }}))
+        "permissionDecisionReason": reason + "\n" + text,
+    }}) + "\n", lead, rows, scratch_list(data.get("session_id") or "")))
     return 0
 
 

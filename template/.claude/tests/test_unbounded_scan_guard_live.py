@@ -34,6 +34,8 @@ def main():
         else:
             _platform_skip.skip("the deny's -uu form reaches the real tracked-ignored tree",
                                 "no ripgrep on PATH and no embedded rg")
+    if not rows:
+        _platform_skip.skip("the real checkout's tracked-ignored plans are behind the same deny", "no tracked-ignored file under .claude/plans")
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))

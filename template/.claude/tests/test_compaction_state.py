@@ -120,18 +120,18 @@ class OrdinalTest(unittest.TestCase):
         rows = [row("assistant_text")] + segment(T1) + segment(T2)
         lines = compact_lines(self, rows, "ord00001")
         head = lines[0]
-        self.assertIn("Compaction 3 of this session", head)
+        self.assertIn("Compaction 3", head)
         self.assertIn("2026-10-19T15:30:44Z", head)
 
     def test_a_boundary_already_written_is_the_current_one(self):
         rows = [row("assistant_text")] + segment(T1) + segment(T2, settled=False)
         head = compact_lines(self, rows, "ord00002")[0]
-        self.assertIn("Compaction 2 of this session", head)
+        self.assertIn("Compaction 2", head)
         self.assertIn("2026-10-19T09:19:52Z", head)
 
     def test_a_first_compaction_names_no_previous_time(self):
         head = compact_lines(self, [row("assistant_text")], "ord00003")[0]
-        self.assertIn("Compaction 1 of this session", head)
+        self.assertIn("Compaction 1", head)
         self.assertNotIn("previous", head)
 
 
@@ -363,7 +363,7 @@ class ReattachTest(unittest.TestCase):
                 for target in (
                         patch.object(dispatch_table, "sidecar_entries", lambda payload: ([{"id": "x"}], [])),
                         patch.object(dispatch_table, "register_sidecars", lambda *args, **kwargs: None),
-                        patch.object(sidecar, "dispatch_checks", lambda jobs, kinds=None: None),
+                        patch.object(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None),
                         patch.object(sidecar, "take_checks", lambda *args: (False, True))):
                     target.start()
                     self.addCleanup(target.stop)

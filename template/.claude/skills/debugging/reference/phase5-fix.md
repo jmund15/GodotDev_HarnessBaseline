@@ -37,7 +37,7 @@ For a "shallow module / leaky abstraction" smell, the **Deletion Test** in `arch
 - The failing test now passes.
 - The original symptom is gone (manual repro or a post-run runtime-log check).
 - No error-level log lines in the run output.
-- Verify at scope size for a slice; the full gate runs once at drive close (`change_control` §Gate cadence). *"Should work now"* is not evidence.
+- Verify at scope size for a slice; the drive closes with the scope run, and the full gate runs in the main check after the land (`change_control` §Gate cadence). *"Should work now"* is not evidence.
 
 ## After one plausibility fix fails
 

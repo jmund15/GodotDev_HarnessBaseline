@@ -13,6 +13,8 @@ Members, in order (each keeps its own `main()` and CLI contract, so its own proo
   0. expand_args_file           `args: {argsFile: <path>}` expands from a repo-relative JSON file under the
                                session's own `.claude/scratch/`, so every later member reads the real args. A
                                Workflow script has no filesystem, so the hook, not the engine, reads it.
+  0b. fill_efforts             fills each job's effort in `args.jobs` and every `args.chains[].jobs` from its reading and
+                               the ladder cell, the same fill the fan-out runs; its lines return as additionalContext.
   1. subagent_dispatch_guard   a delegate or sidecar child may not dispatch. A deny here ends the chain: the
                                orchestrator's preconditions below are not the delegate's to meet.
   2. workflow_script_lf_guard  rewrites a harness script's CRLF to LF before the permission handler reads it.
@@ -34,10 +36,12 @@ Merge:
                   `tool_input` keys. A denied call carries none.
 
 Fail posture: a member exception, import fault or exit outside {0, 2} is reported on stderr and in
-`additionalContext`, naming the lost check and repair; the next member runs. The exception is
-`workflow_provider_guard` on a Workflow call: without its `args.__transport` injection every engine refuses
-to run, so its fault denies with the error, as the guard's own `_unchecked` does. An Agent call keeps the
-advisory. A member's exit 2 joins the deny with its stderr as the reason.
+`additionalContext`, naming the lost check and repair; the next member runs. The exceptions, on a Workflow
+call, are `_FAIL_CLOSED_ON_WORKFLOW`: `dispatch_mechanism_guard`, whose doctrine check stands in front of paid
+spend, and `workflow_provider_guard`, without whose `args.__transport` every engine refuses to run. Their fault
+denies with the error. An Agent call keeps the advisory. A fault reaches the model as the traceback's exception line
+and innermost frame (`_fault`); the whole traceback goes to stderr. A member's exit 2 joins the deny with its stderr as
+the reason.
 
 Wired in: settings.json hooks.PreToolUse, matcher "Workflow|Agent"; timeout covers the members run in
 sequence (the provider guard bounds its own work at DEADLINE_SECONDS).
@@ -55,14 +59,24 @@ from _inprocess_hook import hook_output, run_hook  # noqa: E402
 
 _ROLE_GATE = "subagent_dispatch_guard"
 _RUNS_WHEN_ALLOWED = "readonly_marker_arm"
-_FAIL_CLOSED_ON_WORKFLOW = "workflow_provider_guard"
+# Members whose fault denies a Workflow call (instruction_quality section 16): the doctrine check stands in front of
+# paid spend, and the provider guard injects the vocabulary every engine needs. Names, so an import stub keeps it.
+_FAIL_CLOSED_ON_WORKFLOW = {
+    "dispatch_mechanism_guard": "it checks the dispatch doctrine and pins before a paid run starts",
+    "workflow_provider_guard": "it could not inject `args.__transport`, the model vocabulary every engine refuses "
+                               "to run without",
+}
 _DECISION_RANK = {"deny": 3, "ask": 2, "allow": 1}
 _ARGS_FILE_NEXT = ("write the run's args with `python3 .claude/tools/lens_briefs.py prepare --spec <spec.json> "
                    "--out <run dir>`, then pass only `{argsFile: \"<run dir>/args.json\"}`")
 
 
 def _session_root(payload):
-    """The checkout the session runs in: its own `cwd` first, so a lane worktree reads its own scratch."""
+    """The checkout the session runs in: the one its `cwd` lies in first, so a lane worktree reads its own scratch."""
+    from _checkout_root import session_checkout
+    root = session_checkout(payload)
+    if root:
+        return Path(root).resolve()
     cwd = payload.get("cwd")
     if isinstance(cwd, str) and cwd.strip():
         return Path(cwd).resolve()
@@ -147,6 +161,66 @@ class _ExpandArgsFile:
 EXPAND_ARGS_MEMBER = _ExpandArgsFile()
 
 
+def fill_efforts(payload):
+    """Fill each job's effort in `args.jobs` and every `args.chains[].jobs` from its reading and the ladder cell
+    (`model_registry.fill_job_efforts`, the same fill the fan-out runs), or None when nothing changes.
+
+    The changed `args` returns through `updatedInput`; each line naming a computed or capped effort returns as
+    `additionalContext`, so the call's record names the effort that runs."""
+    if payload.get("tool_name") != "Workflow":
+        return None
+    args = (payload.get("tool_input") or {}).get("args")
+    as_text = isinstance(args, str)
+    if as_text:
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return None
+    if not isinstance(args, dict):
+        return None
+    groups = [args.get("jobs") or []] + [c.get("jobs") or [] for c in (args.get("chains") or []) if isinstance(c, dict)]
+    if not any(groups):
+        return None
+    tools = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import model_registry
+    data = model_registry.load()
+    measured = bool(args.get("measurement"))
+    justification = args.get("justification")
+    for jobs in groups:
+        for job in jobs:
+            if isinstance(job, dict) and isinstance(justification, str) and justification and not job.get("justification"):
+                job["justification"] = justification
+    lines = [line for jobs in groups for line in model_registry.fill_job_efforts(jobs, data, measured)]
+    if not lines:
+        return None
+    return {"updatedInput": {"args": json.dumps(args) if as_text else args},
+            "additionalContext": "\n".join(lines)}
+
+
+class _FillEfforts:
+    """The second member: a job with a reading and no effort gets the computed one before any later member reads it."""
+
+    __name__ = "fill_efforts"
+    __file__ = "pre_workflow_dispatch.py"
+
+    def main(self):
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+        except ValueError:
+            return 0
+        if not isinstance(payload, dict):
+            return 0
+        result = fill_efforts(payload)
+        if result:
+            sys.stdout.write(json.dumps({"hookSpecificOutput": dict(result, hookEventName="PreToolUse")}))
+        return 0
+
+
+FILL_EFFORTS_MEMBER = _FillEfforts()
+
+
 
 class _ImportStub:
     """Stands in for a member that failed to import, so the others still run and the fault reaches the caller."""
@@ -181,6 +255,7 @@ readonly_marker_arm = _load("readonly_marker_arm")
 
 HOOKS = (
     (EXPAND_ARGS_MEMBER, ()),
+    (FILL_EFFORTS_MEMBER, ()),
     (subagent_dispatch_guard, ()),
     (workflow_script_lf_guard, ()),
     (dispatch_mechanism_guard, ()),
@@ -198,11 +273,23 @@ def _once(items):
     return kept
 
 
+def _fault(err):
+    """The exception line of a member's traceback and the innermost frame inside this harness (else the innermost
+    frame): what a repair starts from. The whole traceback goes to the user's stderr."""
+    lines = [line.strip() for line in err.strip().splitlines() if line.strip()]
+    if not lines:
+        return "no error text"
+    frames = [line for line in lines if line.startswith("File ")]
+    own = [line for line in frames if ".claude" in line.replace("\\", "/")]
+    frame = (own or frames or [""])[-1]
+    return lines[-1][-300:] + (" (%s)" % frame[-200:] if frame else "")
+
+
 def _fail_closed_reason(name, code, err):
-    return ("%s failed (exit %s), so it could not inject `args.__transport`, the model vocabulary every engine "
-            "refuses to run without. Nothing was dispatched. Re-issue the same call once; if it fails again, "
-            "run `python3 .claude/tests/test_%s.py` and read logs/%s.jsonl (orchestration section 5). "
-            "Its error:\n%s" % (name, code, name, name, err.strip()[-1500:]))
+    return ("%s failed (exit %s); %s, so nothing was dispatched. Repair .claude/hooks/%s.py or the module its "
+            "error names (`git status --short .claude/hooks` shows whether a peer's edit is mid-flight; re-issue "
+            "once it lands), then re-issue the call. Its error: %s"
+            % (name, code, _FAIL_CLOSED_ON_WORKFLOW[name], name, _fault(err)))
 
 
 def _joined(reasons):
@@ -251,11 +338,11 @@ def dispatch(raw_payload, hooks=HOOKS):
             reasons.append(err.strip() or "%s blocked the call." % name)
         elif code != 0:
             user_stderr.append("[pre_workflow_dispatch] %s exited %s: %s" % (name, code, err.strip()[-1500:]))
-            if name == _FAIL_CLOSED_ON_WORKFLOW and payload.get("tool_name") == "Workflow":
+            if name in _FAIL_CLOSED_ON_WORKFLOW and payload.get("tool_name") == "Workflow":
                 reasons.append(_fail_closed_reason(name, code, err))
             else:
                 contexts.append("[pre_workflow_dispatch] %s exited %s: %s; its checks did not run. "
-                                "Repair .claude/hooks/%s.py." % (name, code, err.strip()[-1500:], name))
+                                "Repair .claude/hooks/%s.py." % (name, code, _fault(err), name))
         else:
             hso = hook_output(out)
             note = hso.get("additionalContext")

@@ -18,6 +18,9 @@ _surf = [json.dumps({"kind": "path", "surface": ".claude/guards/%s" % o, "change
          for o, n in (("any.md", "common.md"), ("any.godot.md", "common.godot.md"))]
 _out = subprocess.run([sys.executable, os.path.join(ROOT, ".claude", "tools", "citers.py"), "--json", "--repo", ROOT] + _surf,
                       capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
+if _out.returncode != 0 or not _out.stdout.strip():
+    print("FAIL the citer sweep did not run: %r" % (_out.stderr or _out.stdout)[-300:])
+    sys.exit(1)
 _stale = sorted({"%s:%s" % (c["path"], c["line"]) for c in json.loads(_out.stdout or '{"citers": []}')["citers"]
                  if c["path"].startswith(".claude/") and not c["path"].startswith(_HISTORY)})
 if _stale:

@@ -23,6 +23,8 @@ import time
 os.environ["HARNESS_CAPACITY_WARM"] = "0"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 HOOKS = os.path.join(HERE, "..", "hooks")
 HOOK = os.path.join(HOOKS, "budget_posture.py")
 PRECOMPACT = os.path.join(HOOKS, "transcript_backup.py")
@@ -163,23 +165,32 @@ def checked_run(args, **kwargs):
     return result
 
 
+def hook_run(env, payload):
+    """The hook's stdout for one payload, called in process; an abnormal exit or a traceback raises."""
+    code, out, err, _ = _hook_call.call(HOOK, payload, env=env)
+    if code not in (0, 2) or "Traceback" in err:
+        raise RuntimeError("budget_posture failed (exit %d): %s" % (code, (out + "\n" + err)[-1000:]))
+    return out
+
+
+def cli_run(env, argv):
+    """The `--band` CLI, whose argv branch lives in the module's `__main__`: (exit code, stdout)."""
+    r = subprocess.run([sys.executable, HOOK] + argv, capture_output=True, text=True, env=env, timeout=60)
+    return r.returncode, r.stdout or ""
+
+
 def prompt(env, session=SID):
     transcript = os.path.join(env['HARNESS_HOOK_STATE_DIR'], 'dispatch.jsonl')
     with open(transcript, 'w', encoding='utf-8', newline='\n') as fh:
         fh.write(json.dumps({'type': 'assistant', 'message': {'content': [
             {'type': 'tool_use', 'name': 'Agent', 'input': {'prompt': 'review'}}]}}) + '\n')
-    r = checked_run([sys.executable, HOOK],
-                    input=json.dumps({"session_id": session, "prompt": "next slice", 'transcript_path': transcript}),
-                    capture_output=True, text=True, timeout=60, env=env,
-                    encoding="utf-8")   # the hook prints §; locale decode mangles it
-    return (r.stdout or "").strip()
+    out = hook_run(env, {"session_id": session, "prompt": "next slice", 'transcript_path': transcript})
+    return (out or "").strip()
 
 
 def prompt_bare(env, session):
     """One prompt of a session with no transcript and no dispatch in it."""
-    r = checked_run([sys.executable, HOOK], input=json.dumps({"session_id": session, "prompt": "next slice"}),
-                    capture_output=True, text=True, timeout=60, env=env, encoding="utf-8")
-    return (r.stdout or "").strip()
+    return (hook_run(env, {"session_id": session, "prompt": "next slice"}) or "").strip()
 
 
 def precompact(env, session=SID):
@@ -257,10 +268,9 @@ def main():
     cases.append(("a 100%-used week reads Exhausted, never a pace band",
                   "(this session) Exhausted:" in out and "(this session) On pace" not in out and "(this session) Surplus" not in out))
 
-    cli = subprocess.run([sys.executable, HOOK, "--band", "--pressure", "--five-hour",
-                          "--session", "bpc00005"], capture_output=True, text=True, env=env, timeout=60)
+    cli_rc, cli_out = cli_run(env, ["--band", "--pressure", "--five-hour", "--session", "bpc00005"])
     cases.append(("the CLI agrees with the spent-week posture instead of reporting On pace",
-                  cli.returncode == 0 and cli.stdout.startswith("Exhausted\t")))
+                  cli_rc == 0 and cli_out.startswith("Exhausted\t")))
 
     with open(os.path.join(tmp, "cc-cachestat-bpc00006.json"), "w", encoding="utf-8") as fh:
         json.dump({"rate_limits": {"captured_at": now,
@@ -269,15 +279,14 @@ def main():
     out = prompt(env, session="bpc00006")
     cases.append(("99% used with 22 hours left warns Hot before the live refusal",
                   "(this session) Hot: 7d 1% left" in out and "99.0% used" in out))
-    cli = subprocess.run([sys.executable, HOOK, "--band", "--pressure", "--five-hour",
-                          "--session", "bpc00006"], capture_output=True, text=True, env=env, timeout=60)
-    parts = cli.stdout.strip().split("\t")
+    cli_rc, cli_out = cli_run(env, ["--band", "--pressure", "--five-hour", "--session", "bpc00006"])
+    parts = cli_out.strip().split("\t")
     try:
         ratio = float(parts[4])
     except (IndexError, ValueError):
         ratio = None
     cases.append(("band CLI keeps four fields and appends weekly run-out for the native guard",
-                  cli.returncode == 0 and len(parts) == 5 and parts[0] == "Hot"
+                  cli_rc == 0 and len(parts) == 5 and parts[0] == "Hot"
                   and ratio is not None and 0.065 <= ratio <= 0.070))
 
     with open(os.path.join(tmp, "cc-cachestat-bpc00007.json"), "w", encoding="utf-8") as fh:
@@ -286,11 +295,10 @@ def main():
                                    "five_hour": {"used_percentage": 10.0,
                                                  "resets_at": now + 3600}}}, fh)
     stale = prompt(env, session="bpc00007")
-    cli = subprocess.run([sys.executable, HOOK, "--band", "--session", "bpc00007"],
-                         capture_output=True, text=True, env=env, timeout=60)
+    cli_rc, cli_out = cli_run(env, ["--band", "--session", "bpc00007"])
     cases.append(("a stale spent week cannot claim Exhausted while the short window is valid",
-                  "(this session) Exhausted" not in stale and cli.returncode == 3
-                  and cli.stdout.strip() == "unknown"))
+                  "(this session) Exhausted" not in stale and cli_rc == 3
+                  and cli_out.strip() == "unknown"))
 
     session = "bpc00008"
     path = os.path.join(tmp, "cc-cachestat-%s.json" % session)
@@ -315,8 +323,13 @@ def main():
                   prompt(bare, session="bpc00002") == ""))
 
     sampler_cases(cases, home)
-    cases.append(("no spawn fell back to the default path: the planted ~/.claude/usage_samples.jsonl is unwritten",
+    cases.append(("no run fell back to the default path: the planted ~/.claude/usage_samples.jsonl is unwritten",
                   default_samples_size(home) == default_before))
+
+    spawned = subprocess.run([sys.executable, HOOK], input=json.dumps({"session_id": "bpcspawn", "prompt": "x"}),
+                             capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+    cases.append(("the hook imports and exits 0 from its registered command",
+                  spawned.returncode == 0 and "Traceback" not in spawned.stderr))
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

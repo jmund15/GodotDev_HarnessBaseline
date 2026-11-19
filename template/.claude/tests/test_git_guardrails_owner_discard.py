@@ -4,15 +4,24 @@ The guard denies only a loss it observes and reads no reply (CLAUDE.core.md §Sh
 owner asked is the auto-mode classifier's to judge. A path-scoped restore or a checkout from the index now qualifies when the
 object store holds the worktree bytes, a `__pycache__` path is regenerable, and a checkout from another ref
 still judges the index it overwrites.
+
+Decision cases call the hook in process (`_hook_call`); one case spawns it, proving it imports and runs from its
+registered command. The repository is built once per class and each case resets it by copy, so no case's commit,
+ref or store write reaches another.
 """
+import atexit
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _hook_call  # noqa: E402
 
 HOOK = Path(os.environ.get('GUARD_HOOK_UNDER_TEST') or Path(__file__).resolve().parents[1] / 'hooks/git_guardrails.py')
 ROW = json.loads((Path(__file__).parent / 'fixtures/owner_discard_answer_row.json').read_text(encoding='utf-8'))
@@ -42,20 +51,31 @@ def prompt(text):
     return {'type': 'user', 'message': {'role': 'user', 'content': text}, 'uuid': 'later-prompt'}
 
 
+def build_repo(root):
+    """A committed tree, then an edit on every path a case discards."""
+    (root / 'Tests').mkdir(parents=True)
+    git(root, 'init', '-q', '-b', 'main')
+    for path in EXTRA:
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+    for path in (A, B, 'Tests/other.json', *EXTRA):
+        (root / path).write_text('{}\n', encoding='utf-8')
+    git(root, 'add', '.')
+    git(root, 'commit', '-qm', 'init')
+    for path in (A, B, 'Tests/other.json', *EXTRA):
+        (root / path).write_text('{"dirty": 1}\n', encoding='utf-8')
+
+
 class DiscardLosesNothing(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.template = tempfile.mkdtemp(prefix='owner_discard_tpl_')
+        build_repo(Path(cls.template))
+        atexit.register(shutil.rmtree, cls.template, True)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='owner_discard_')
         self.root = Path(self.tmp.name) / 'repo'
-        (self.root / 'Tests').mkdir(parents=True)
-        git(self.root, 'init', '-q', '-b', 'main')
-        for path in EXTRA:
-            (self.root / path).parent.mkdir(parents=True, exist_ok=True)
-        for path in (A, B, 'Tests/other.json', *EXTRA):
-            (self.root / path).write_text('{}\n', encoding='utf-8')
-        git(self.root, 'add', '.')
-        git(self.root, 'commit', '-qm', 'init')
-        for path in (A, B, 'Tests/other.json', *EXTRA):
-            (self.root / path).write_text('{"dirty": 1}\n', encoding='utf-8')
+        _hook_call.copy_repo(self.template, str(self.root))
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -70,19 +90,28 @@ class DiscardLosesNothing(unittest.TestCase):
             question = question.replace(path, self.at(path) if path in paths else path)
         return answer(label, question)
 
-    def run_hook(self, command, rows):
+    def payload(self, command, rows):
         transcript = Path(self.tmp.name) / 'transcript.jsonl'
         transcript.write_text('\n'.join(json.dumps(r) for r in rows), encoding='utf-8')
-        payload = {'tool_name': 'Bash', 'cwd': str(self.root), 'session_id': 'owner-discard',
-                   'transcript_path': str(transcript), 'tool_input': {'command': command}}
+        return {'tool_name': 'Bash', 'cwd': str(self.root), 'session_id': 'owner-discard',
+                'transcript_path': str(transcript), 'tool_input': {'command': command}}
+
+    def env(self):
         # The repository-local GIT_* variables stay out; GIT_CONFIG_* stays in, so the hook hashes under the config
         # this proof's own `git` calls ran under (a runner has no system `core.autocrlf`; a session may).
-        env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_') or k.startswith('GIT_CONFIG_')}
-        p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
-                           capture_output=True, text=True, env=env, timeout=90)
-        self.assertIn(p.returncode, (0, 2), p.stderr)
-        self.assertNotIn('Traceback', p.stderr)
-        return p.returncode, p.stderr
+        return {k: v for k, v in os.environ.items() if not k.startswith('GIT_') or k.startswith('GIT_CONFIG_')}
+
+    def run_hook(self, command, rows):
+        code, out, err, _ = _hook_call.call(str(HOOK), self.payload(command, rows), env=self.env(),
+                                            cwd=str(self.root))
+        self.assertIn(code, (0, 2), err)
+        self.assertNotIn('Traceback', err)
+        return code, err
+
+    def test_spawned_hook_imports_and_runs_from_its_command(self):
+        p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(self.payload('git status', [])),
+                           capture_output=True, text=True, env=self.env(), cwd=str(self.root), timeout=90)
+        self.assertEqual(0, p.returncode, p.stderr)
 
     def test_restore_of_stored_bytes_allows(self):
         git(self.root, 'hash-object', '-w', A)

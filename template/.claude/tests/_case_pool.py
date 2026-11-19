@@ -184,8 +184,9 @@ def unittest_cases(*classes):
     return [_Method(cls, name) for cls in classes for name in unittest.TestLoader().getTestCaseNames(cls)]
 
 
-def run_sharded(path):
-    """Run a pytest file as `HARNESS_CASE_JOBS` shard processes of round-robin node ids. 0 when all pass."""
+def run_sharded(path, part=0, parts=1, jobs=None):
+    """Run a pytest file as `jobs` shard processes (default `HARNESS_CASE_JOBS`) of round-robin node ids, or only
+    the `part`-th of `parts` shares of them for a `_part<N>` file. 0 when all pass."""
     base = [sys.executable, "-m", "pytest", "-p", "no:cacheprovider"]
     listing = subprocess.run(base + ["--collect-only", "-q", path], stdin=subprocess.DEVNULL,
                              capture_output=True, text=True, encoding="utf-8")
@@ -194,7 +195,12 @@ def run_sharded(path):
     if listing.returncode != 0 or not ids:
         sys.stdout.write(listing.stdout + listing.stderr)
         return listing.returncode or 1
-    shards = [ids[i::_jobs(None)] for i in range(_jobs(None))]
+    if parts > 1:
+        ids = ids[part::parts]
+        if not ids:
+            print("run_sharded: part %d of %d names no case" % (part, parts))
+            return 1
+    shards = [ids[i::(jobs or _jobs(None))] for i in range(jobs or _jobs(None))]
     shards = [shard for shard in shards if shard]
 
     def run(shard):

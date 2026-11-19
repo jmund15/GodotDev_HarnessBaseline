@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """SessionStart hook: probe Ollama and report models.yaml aliases that do not resolve.
 
-Warn-and-continue semantics. Never blocks session start. Output goes to stdout in
+Warn-and-continue semantics. Never blocks session start. Silent when every alias resolves: a
+healthy status changes no decision, and `ToolSearch` shows whether the ai-worker tools are live. Output goes to stdout in
 additional-context format; Claude Code surfaces it via the SessionStart hook channel. Skips
 silently on cloud sessions (CLAUDE_CODE_REMOTE=true).
 
@@ -110,7 +111,6 @@ def main() -> int:
         return 0
 
     dead = sorted(a for a, tag in aliases.items() if tag not in installed)
-    live = len(aliases) - len(dead)
 
     # Name the role bindings: a default pointing at a cloud alias is not a fault, but it is the
     # thing a reader of this line most often wants to know and cannot see from the alias list.
@@ -122,8 +122,6 @@ def main() -> int:
         print(f"[ai-worker] Ollama OK ({len(installed)} installed). "
               f"{len(dead)} of {len(aliases)} local alias(es) DEAD: {detail}. "
               f"Pull the tag or repoint the alias in {MODELS_YAML.name}. Roles: {roles}")
-    else:
-        print(f"[ai-worker] Ollama OK -- all {live} local alias(es) resolve. Roles: {roles}")
     return 0
 
 

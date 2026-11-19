@@ -2,6 +2,8 @@
 """Proof for tools/citers.py: every inbound citer and normative duty of a changed surface, with typed coverage.
 
 Every case runs against a planted git repository under this proof's own temp root, never the live checkout.
+The decision cases call `citers.main()` in process (`_hook_call`); one case spawns the tool from its
+registered command.
 
     python3 .claude/tests/test_citers.py
 """
@@ -13,10 +15,12 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 ROOT = Path(__file__).resolve().parents[2]
 CITERS = ROOT / ".claude" / "tools" / "citers.py"
 TMP = Path(tempfile.mkdtemp(prefix="citers_proof_"))
 FAILURES = []
+import _hook_call  # noqa: E402
 
 
 def check(label, ok, detail=""):
@@ -53,11 +57,19 @@ def plant(name, tracked, ignored=None, ignore_tests=True):
     return repo
 
 
+class _Proc:
+    def __init__(self, code, out, err):
+        self.returncode, self.stdout, self.stderr = code, out, err
+
+
 def run(repo, *args, vault=None):
-    argv = [sys.executable, str(CITERS), "--repo", str(repo), "--vault", str(vault or TMP / "no_vault"), "--json", *args]
-    proc = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8")
+    argv = ["--repo", str(repo), "--vault", str(vault or TMP / "no_vault"), "--json", *args]
+    code, out, err, _ = _hook_call.call(CITERS, "", argv=argv)
+    if "Traceback" in err:
+        raise AssertionError("citers crashed: " + err[-800:])
+    proc = _Proc(code, out, err)
     try:
-        data = json.loads(proc.stdout) if proc.stdout.strip() else None
+        data = json.loads(out) if out.strip() else None
     except ValueError:
         data = None
     return proc, data
@@ -508,6 +520,10 @@ def main():
     after_checks()
     deleted_checks()
     renamed_checks()
+    spawned = subprocess.run([sys.executable, str(CITERS), "--help"], capture_output=True, text=True,
+                             encoding="utf-8")
+    check("the tool imports and exits 0 from its registered command",
+          spawned.returncode == 0 and "Traceback" not in spawned.stderr, spawned.stderr[-300:])
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")
         return 1

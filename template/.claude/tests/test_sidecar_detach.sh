@@ -79,7 +79,7 @@ SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd
 # shellcheck disable=SC1090
 . "${SC_LIB_UNDER_TEST:?SC_LIB_UNDER_TEST must point at the lib to test}"
 sc_reexec_snapshot "$@"
-sc_check_launch_memory() { :; }
+sc_check_launch_memory() { :; }; sc_check_quota_fit() { :; }
 
 sc_parse_flags "$@"
 shift "$SC_SHIFT"
@@ -221,15 +221,15 @@ T0=$(date +%s)
 run_launcher out5 err5 rc5 -A -X -R "$REC5" -P "$PROG5" -l case5label
 T1=$(date +%s)
 ELAPSED5=$((T1 - T0))
-if [ "$rc5" = "0" ] && [ "$ELAPSED5" -lt 5 ] \
+if [ "$rc5" = "0" ] && [ "$ELAPSED5" -lt 30 ] \
    && [[ "$out5" == *"DETACHED pid="* ]] && [[ "$out5" == *"OUT=${REC5}.out"* ]] \
    && [[ "$out5" == *"ERR=${REC5}.err"* ]] && [[ "$out5" == *"EXIT=${REC5}.exit"* ]] \
    && [[ "$out5" == *"WAIT="* ]]; then
-  if poll_until 5 "${REC5}.exit"; then
+  if poll_until 30 "${REC5}.exit"; then
     child_out5="$(cat "${REC5}.out" 2>/dev/null)"
     if [[ "$child_out5" == *"PARSED_AUTHORIZED=1"* ]] && [[ "$child_out5" == *"PARSED_LABEL=case5label"* ]] \
        && [[ "$child_out5" == *"PARSED_RECORD=$REC5"* ]] && [[ "$child_out5" == *"PARSED_PROGRESS=$PROG5"* ]]; then
-      pass "5 detach returns in <5s, prints the 4 paths, child's echoed fields match every flag"
+      pass "5 detach returns without waiting on the child, prints the 4 paths, child's echoed fields match every flag"
     else
       fail "5 detach child fields" "out=$child_out5"
     fi
@@ -257,16 +257,21 @@ else
   SNAPDIR="${TEMP:-${TMPDIR:-/tmp}}/sidecar-snapshots"
   CLAIM_FILE="$SNAPDIR/$(basename "$LAUNCHER").claim-${PARENT67_PID}.sh"
   LIVE_SNAP="$SNAPDIR/$(basename "$LAUNCHER").${CHILD_PID}.sh"
-  sleep 1   # let the job rename its claim before looking — case 7 checks it WHILE still sleeping
+  # Wait for the job's own rename mark, not a fixed second: case 7 checks it WHILE still sleeping.
+  renamed=0; for _ in $(seq 1 150); do
+    [ -e "$LIVE_SNAP" ] && [ ! -e "$CLAIM_FILE" ] && { renamed=1; break; }
+    sleep 0.2
+  done
   if [ -e "$LIVE_SNAP" ] && kill -0 "$CHILD_PID" 2>/dev/null && [ ! -e "$CLAIM_FILE" ]; then
     pass "7 live snapshot names the running job's pid (kill -0 OK), and its claim copy is gone"
   else
     fail "7 live snapshot pid" \
+      "renamed=$renamed" \
       "live_snap_exists=$([ -e "$LIVE_SNAP" ] && echo yes || echo no)" \
       "kill0=$(kill -0 "$CHILD_PID" 2>/dev/null && echo alive || echo dead)" \
       "claim_left=$([ -e "$CLAIM_FILE" ] && echo yes || echo no)"
   fi
-  if poll_until 8 "${REC67}.exit"; then
+  if poll_until 30 "${REC67}.exit"; then
     ex="$(cat "${REC67}.exit")"; outj="$(cat "${REC67}.out" 2>/dev/null)"
     if [ "$ex" = "3" ] && [[ "$outj" == *'{"case":"six-seven"}'* ]]; then
       pass "6 detached child: exit file holds 3, out file holds the JSON line"
@@ -274,7 +279,7 @@ else
       fail "6 detached child result" "exit=$ex out=$outj"
     fi
   else
-    fail "6 detached child never finished (no ${REC67}.exit within 8s)"
+    fail "6 detached child never finished (no ${REC67}.exit within 30s)"
   fi
 fi
 

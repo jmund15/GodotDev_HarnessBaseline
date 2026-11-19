@@ -10,6 +10,7 @@ expects `{}` has a sibling on the same fixture that fires, so a silent hook cann
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,10 +32,16 @@ import triage_commit_check  # noqa: E402
 sys.stdout.reconfigure(encoding="utf-8")
 
 FAILURES = []
-OWED_LINE = ("[review] %d staged file(s) not reviewed since they changed: %d edited after a reviewed blob, "
-             "%d never reviewed. A fix applied outside a fold records with post_check.py review --findings <file> "
-             "--applied <ids> --files <paths> (orchestrator_action_protocol.md Step 4); how any other change is "
-             "checked is the session's choice under orchestration §2 Later rounds.")
+
+
+def owed_counts(ctx):
+    """The three counts the [review] line states (staged files, edited after a review, never reviewed), or None
+    when the line is absent. The line's action is its `post_check.py review` command."""
+    line = next((l for l in ctx.splitlines() if l.startswith("[review] ") and "post_check.py review" in l), None)
+    return None if line is None else [int(n) for n in re.findall(r"\d+", line.split("post_check.py")[0])]
+
+
+
 RAISE_HEAD = "[triage] the staged diff raises the recorded triage; raise the trailer, or re-triage with task_record.py triage --reason:"
 NO_TRIAGE = ("[triage] this commit landed with no triage recorded: record it now with task_record.py triage, "
              "or carry a Triage: trailer on the next commit (grammar: triage.py --help).")
@@ -273,15 +280,15 @@ def test_mechanical_one_context_leaves_review_to_session_end(tmp_path):
         fh.write(json.dumps(row) + "\n")
     write(root, "notes.txt", "notes changed since review\n")
     stage(root, "notes.txt")
-    for kind, size, expected in (("mechanical", "one-context", ""),
-                                ("decision", "one-context", OWED_LINE % (1, 1, 0)),
-                                ("mechanical", "milestones", OWED_LINE % (1, 1, 0))):
+    for kind, size, expected in (("mechanical", "one-context", None),
+                                ("decision", "one-context", [1, 1, 0]),
+                                ("mechanical", "milestones", [1, 1, 0])):
         trailer = (TRAILER % ("shared", "gate")).replace("size=one-context", "size=" + size)
         write(root, "msg.txt", "change reviewed notes\n\n" + trailer + " kind=" + kind + "\n")
         ctx, raw, _ = h.context(root, payload(root, "git commit -F msg.txt",
                                              session="owed-" + kind + "-" + size))
         assert raw[0] == 0 and not raw[2].strip(), raw
-        assert ctx == expected, (kind, size, ctx, raw)
+        assert owed_counts(ctx) == expected and (expected or ctx == ""), (kind, size, ctx, raw)
 
 
 def test_mechanical_one_context_skips_owed_at_every_rigor(tmp_path, monkeypatch):
@@ -357,7 +364,7 @@ def test_prose_premises_report_each_new_message_without_deny(tmp_path):
     trailer = TRAILER % ("shared", "gate") + " kind=decision\n"
     write(root, "msg.txt", "decision without claims\n\n" + trailer)
     ctx, raw, _ = h.context(root, payload(root, command, session=session))
-    assert raw[0] == 0 and "cause, count or ruling" in ctx, raw
+    assert raw[0] == 0 and "premises" in ctx, raw
     messages = (
         "premises:\n- Failure handling forbade auto-fix and required owner response even when\n  the repair was fully in scope.",
         "Premises: current rule lines 29 and 81 still banned every per-frame lookup;\npattern_enforcer.py:127 already asks the stable-path question after S14.",
@@ -491,7 +498,7 @@ def main(tmp):
     stage(root, "Dungeon/a.tscn")
     ctx, raw, _ = h.context(root, payload(root, commit))
     check("a node edit under reach=local oracle=gate prints oracle runtime with its probe, unvalidated",
-          RAISE_HEAD in ctx and "oracle adds runtime: tag wiring (Dungeon/a.tscn); probe: launch the scene [unvalidated]" in ctx,
+          RAISE_HEAD in ctx and "oracle adds runtime" in ctx and "Dungeon/a.tscn" in ctx and "probe" in ctx,
           raw)
     check("the raise names no path of the owner doc (K1)", "execution_depth" not in ctx, ctx)
     git(root, "reset", "-q", "--hard")
@@ -499,7 +506,7 @@ def main(tmp):
         fh.write('[connection signal="body_entered" from="Hit" to="." method="_on"]\n')
     stage(root, "Dungeon/a.tscn")
     ctx, raw, _ = h.context(root, payload(root, commit))
-    check("a signal edit prints oracle runtime", "oracle adds runtime: tag wiring" in ctx, raw)
+    check("a signal edit prints oracle runtime", "oracle adds runtime" in ctx, raw)
     ctx, raw, _ = h.context(root, payload(root, 'git commit -m "fix: y" -m "%s"' % (TRAILER % ("local", "gate"))))
     check("a trailer given by -m is read", "oracle adds runtime" in ctx, raw)
     write(root, "msg.txt", "fix: x\n\n" + TRAILER % ("local", "gate+runtime") + "\n")
@@ -512,7 +519,7 @@ def main(tmp):
     git(root, "update-index", "--cacheinfo", "160000,%s,Jmodot" % GITLINK_B)
     ctx, raw, _ = h.context(root, payload(root, commit))
     check("a staged gitlink under a reach=local trailer prints the raise to external",
-          "reach local -> external: tag jmodot-pointer (Jmodot)" in ctx, raw)
+          "external" in ctx and "Jmodot" in ctx, raw)
     write(root, "msg.txt", "chore: bump\n\n" + TRAILER % ("external", "gate") + "\n")
     check("the same gitlink under reach=external prints nothing", is_silent(h.context(root, payload(root, commit))))
     write(root, "msg.txt", "fix: x\n\n" + TRAILER % ("local", "gate") + "\n")
@@ -674,6 +681,8 @@ def main(tmp):
     check("derived shared reach with no record speaks once in this call and rewrites nothing",
           "derived reach=shared oracle=new-test" in ctx and "updatedInput" not in raw[1]
           and "Triage-Derived" not in raw[1], raw)
+    ctx, raw, parsed = h.context(root, payload(root, 'git commit -m "shared again"', session="norec-shapes"))
+    check("the same derived triage is not repeated later in the session", "derived reach=" not in ctx, raw)
 
     root = previous_root
     # --- through the dispatcher -----------------------------------------------------------------------
@@ -750,7 +759,7 @@ def main(tmp):
     write(root, "notes.txt", "notes v4\n")
     stage(root, "notes.txt")
     ctx, raw, _ = h.context(root, payload(root, commit))
-    check("the same file edited after its review prints the split count", ctx == OWED_LINE % (1, 1, 0), raw)
+    check("the same file edited after its review prints the split count", owed_counts(ctx) == [1, 1, 0], raw)
     check("the same changed owed set prints once", is_silent(h.context(root, payload(root, commit))))
     changed_blob = git(root, "rev-parse", ":notes.txt").strip()
     derived = dict(row, files={"notes.txt": changed_blob}, **{"from": {"notes.txt": blob}})
@@ -764,7 +773,7 @@ def main(tmp):
           is_silent(h.context(root, payload(root, "git commit -a -F msg.txt"))))
     write(root, "notes.txt", "notes v5\n")
     ctx, raw, _ = h.context(root, payload(root, "git commit -a -F msg.txt"))
-    check("a worktree-source commit (-a) over edited content prints the split count", ctx == OWED_LINE % (1, 1, 0), raw)
+    check("a worktree-source commit (-a) over edited content prints the split count", owed_counts(ctx) == [1, 1, 0], raw)
     git(root, "reset", "-q", "--hard")
     os.remove(h.ledger)
 

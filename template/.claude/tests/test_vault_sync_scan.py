@@ -49,6 +49,30 @@ class ScanBytes(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(vs.scan_bytes(f'note\nthe key is {token} end\n'.encode()), [name])
 
+    def test_mask_replaces_every_key_shape_with_a_marker_naming_it_and_counts(self):
+        text = ' and '.join(f'{name}={token}' for name, token in SAMPLES.items()).encode()
+        masked, count = vs.mask_bytes(text)
+        self.assertEqual(count, len(SAMPLES))
+        self.assertEqual(vs.scan_bytes(masked), [])
+        for name, token in SAMPLES.items():
+            with self.subTest(name):
+                self.assertNotIn(token.encode(), masked)
+                self.assertIn(f'[MASKED:{name}]'.encode(), masked)
+
+    def test_mask_removes_a_private_key_body_not_only_its_header(self):
+        body = ('QUJD' * 16 + '\n') * 3
+        block = '-----BEGIN ' + 'RSA PRIVATE KEY-----\n' + body + '-----END ' + 'RSA PRIVATE KEY-----'
+        masked, count = vs.mask_bytes(f'before\n{block}\nafter\n'.encode())
+        self.assertEqual(count, 1)
+        self.assertNotIn(b'QUJD', masked)
+        self.assertTrue(masked.startswith(b'before\n') and masked.endswith(b'\nafter\n'))
+        unended = vs.mask_bytes(('-----BEGIN ' + 'PRIVATE KEY-----\n' + body).encode())[0]
+        self.assertNotIn(b'QUJD', unended)
+
+    def test_mask_leaves_clean_bytes_identical_and_counts_zero(self):
+        data = b'\xff\x00 risk-free sk- prefix prose\n'
+        self.assertEqual(vs.mask_bytes(data), (data, 0))
+
     def test_prose_that_only_names_a_prefix_is_clean(self):
         prose = ('ghp tokens, the sk- prefix, risk-free, task-based, hf_ scheme and AKIA keys are discussed here. '
                  'ANTHROPIC_API_KEY=sk-ant-placeholder is a documented placeholder.')
@@ -137,6 +161,22 @@ class Cli(unittest.TestCase):
             self.assertEqual(hit.returncode, 1, hit.stderr)
             self.assertNotIn(SAMPLES['sk-ant'], hit.stdout + hit.stderr)
             self.assertEqual(json.loads(hit.stdout)['hits'], [{'path': 'Proj/b.md', 'pattern': 'sk-ant'}])
+
+    def test_mask_command_rewrites_a_file_in_place_and_prints_only_counts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.check_mask(Path(tmp))
+
+    def check_mask(self, root):
+        target = root / 'Proj' / 'k.md'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(('before ' + SAMPLES['ghp'] + ' after\n').encode())
+        result = subprocess.run([sys.executable, str(STAGED), 'mask', '--root', str(root), 'Proj/k.md'],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(SAMPLES['ghp'], result.stdout + result.stderr)
+        self.assertIn('1', result.stdout)
+        self.assertEqual(vs.scan_bytes(target.read_bytes()), [])
+        self.assertIn(b'before ', target.read_bytes())
 
     def test_missing_root_is_an_error_not_a_clean_scan(self):
         result = self.run_scan(Path(tempfile.gettempdir()) / 'vault_sync_no_such_root_xyz')

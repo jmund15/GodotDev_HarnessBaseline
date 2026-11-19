@@ -21,6 +21,7 @@
     "plc-evidence-grounding": {"home": "commands/agents/plan_check_agents.md#plc-evidence-grounding", "interaction": false},
     "plc-instruction-quality": {"home": "commands/agents/plan_check_agents.md#plc-instruction-quality", "interaction": false},
     "plc-doctrine-consistency": {"home": "commands/agents/plan_check_agents.md#plc-doctrine-consistency", "interaction": false},
+    "plc-whole-plan": {"home": "commands/agents/plan_check_agents.md#plc-whole-plan", "interaction": false},
     "rt-systemic": {"home": "commands/agents/redteam_agents.md#rt-systemic", "interaction": false},
     "rt-vision": {"home": "commands/agents/redteam_agents.md#rt-vision", "interaction": false},
     "rt-boundary": {"home": "commands/agents/redteam_agents.md#rt-boundary", "interaction": false},

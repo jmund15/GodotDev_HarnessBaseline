@@ -126,8 +126,9 @@ function Get-FilterSelectedClasses {
 # headless unless -Windowed or every class the filter selects is renderer-tagged. A mixed filter runs headless and returns the
 # tagged classes it will not render in .skipped; an unreadable filter or one selecting no class fails closed to headless.
 # -Declared is a mode the caller already decided (the pool's planner); it skips the derivation. .engineArgs are the engine flags
-# for the mode: headless implies the Dummy audio driver, and a windowed run names it, so no test run plays through the
-# machine's speakers.
+# for the mode. Headless runs with the Dummy audio driver implied and a fixed 60 fps step: physics-paced tests run faster
+# than real time, so a headless test costs its game time, not the wall clock. A windowed run names the Dummy audio driver,
+# so no test run plays through the machine's speakers.
 function Resolve-RunMode {
     param([Parameter(Mandatory)] [string] $Repo, [Parameter(Mandatory)] [string] $Filter, [switch] $Windowed,
           [ValidateSet('', 'headless', 'windowed')] [string] $Declared = '')
@@ -141,7 +142,7 @@ function Resolve-RunMode {
             elseif ($tagged.Count -lt $selected.Count) { $skipped = [string[]]@($tagged | ForEach-Object { $_.fqn }) }
         }
     }
-    $engineArgs = if ($mode -eq 'headless') { '--headless' } else { '--audio-driver Dummy' }
+    $engineArgs = if ($mode -eq 'headless') { '--headless --fixed-fps 60' } else { '--audio-driver Dummy' }
     [pscustomobject]@{ mode = $mode; skipped = $skipped; engineArgs = $engineArgs }
 }
 

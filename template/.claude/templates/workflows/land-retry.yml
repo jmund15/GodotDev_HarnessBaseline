@@ -1,0 +1,29 @@
+# Re-runs a land job the runner lost before land_run.ps1 judged it (the worker never started, or the checkout
+# failed), so a land finishes with no session awake. A red from land_run.ps1 is never re-run; re-runs stop after
+# land_watch.py MAX_ATTEMPTS. Runs on a GitHub-hosted runner, with the default branch's land_watch.py.
+name: land-retry
+on:
+  workflow_run:
+    workflows: [land]
+    types: [completed]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  retry:
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out the default branch's land_watch.py
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .claude/tools
+      - name: Re-run a lost land job
+        run: python3 .claude/tools/land_watch.py retry --run ${{ github.event.workflow_run.id }} --attempt ${{ github.event.workflow_run.run_attempt }}

@@ -29,8 +29,8 @@ class Contracts(unittest.TestCase):
             reminder.process(event)
             for path, note in [('rules/noted.md', 'NOTE-secret'), ('data.json', 'DATA-note')]:
                 event['tool_input']['file_path'] = 'C:/repo/.claude/' + path
-                for _ in range(2):
-                    self.assertIn(note, (reminder.process(event) or {}).get('context', ''))
+                self.assertIn(note, (reminder.process(event) or {}).get('context', ''))
+                self.assertNotIn(note, (reminder.process(event) or {}).get('context', ''))
             event['tool_input']['file_path'] = 'C:/repo/Game/data.json'
             self.assertIn('GAME-note', (reminder.process(event) or {}).get('context', ''))
 
@@ -167,10 +167,10 @@ class Contracts(unittest.TestCase):
             base = git(root, 'rev-parse', 'HEAD').strip()
             with patch.object(runner, 'STAMP_PATH', str(Path(root)/'.claude/logs/stamp.json')), patch.dict(os.environ, HARNESS_MACHINE_SLOTS='0', HARNESS_NO_PASS_CACHE='1'), contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(0, runner.run_scoped(root, [proof], base=base))
-                self.assertIn('pre-existing red', output.getvalue())
+                self.assertIn('pre-existing', output.getvalue())
                 write(root, proof, source.replace('evidence.json', 'different.json'))
                 self.assertEqual(1, runner.run_scoped(root, [proof], base=base))
-                self.assertIn('fails differently', output.getvalue())
+                self.assertIn('differently', output.getvalue())
         finally:
             _rm(tmp)
 

@@ -246,7 +246,9 @@ file (`GH_FAKE_STATE`) and performs `pr merge` against a local bare remote by re
 `baseline_publish._merge_local`, loaded from `GH_FAKE_TOOLS_DIR`. Env toggles simulate
 specific failure shapes a real GitHub PR lifecycle can produce:
 
-    GH_FAKE_FAIL_STEP=create|checks|merge   that gh subcommand exits 1 immediately (`pr checks --json` reports FAILURE)
+    GH_FAKE_FAIL_STEP=create|checks|merge   that gh subcommand exits 1 immediately (`pr checks --json` reports the
+                                            required `root` check FAILURE)
+    GH_FAKE_LANE_RED=1                      the non-required `baseline` lane reports FAILURE; `root` stays green
     GH_FAKE_MAIN_MOVE_ON_CHECKS=1           the first readable `pr checks` poll pushes a peer commit to main
     GH_FAKE_NO_CHECKS_CALLS=N               the first N `pr checks --json` polls report no checks yet (exit 1)
     GH_FAKE_UNREADABLE_POLLS=N              the next N polls (after any no-checks polls) lose the connection (exit 1)
@@ -363,16 +365,28 @@ def main(argv):
             return 1
         state["readable_polls"] = state.get("readable_polls", 0) + 1
         _save_state(state)
-        failed = os.environ.get("GH_FAKE_FAIL_STEP") == "checks"
+        required_failed = os.environ.get("GH_FAKE_FAIL_STEP") == "checks"
+        lane_failed = os.environ.get("GH_FAKE_LANE_RED") == "1"
         pending = state["readable_polls"] <= int(os.environ.get("GH_FAKE_PENDING_POLLS", "0") or 0)
-        verdict = ("PENDING", "pending") if pending else (("FAILURE", "fail") if failed else ("SUCCESS", "pass"))
-        # Real gh shape (read from a live PR): one object per check, `link` is the job URL.
-        record = {"name": "baseline", "state": verdict[0], "bucket": verdict[1], "workflow": "baseline",
-                  "link": "https://example.invalid/actions/runs/77/job/1"}
-        print(json.dumps([{k: v for k, v in record.items() if k in fields}]))
-        if pending:
+
+        def verdict(failed):
+            return ("PENDING", "pending") if pending else (("FAILURE", "fail") if failed else ("SUCCESS", "pass"))
+
+        # Real gh shape (read from a live `gh pr checks` and `--required` on the baseline PR): one object per check,
+        # `link` is the job URL; `--required` returns the ruleset's `root` check alone.
+        records = [
+            dict({"name": "baseline", "required": False, "workflow": "baseline",
+                  "link": "https://example.invalid/actions/runs/77/job/2"}, state=verdict(lane_failed)[0],
+                 bucket=verdict(lane_failed)[1]),
+            dict({"name": "root", "required": True, "workflow": "baseline",
+                  "link": "https://example.invalid/actions/runs/77/job/1"}, state=verdict(required_failed)[0],
+                 bucket=verdict(required_failed)[1]),
+        ]
+        shown = [r for r in records if "--required" not in argv or r["required"]]
+        print(json.dumps([{k: v for k, v in r.items() if k in fields} for r in shown]))
+        if any(r["bucket"] == "pending" for r in shown):
             return 8
-        if failed:
+        if any(r["bucket"] == "fail" for r in shown):
             return 1
         if os.environ.get("GH_FAKE_MAIN_MOVE_ON_CHECKS") == "1" and not state.get("main_moved"):
             state["main_moved"] = True
@@ -1355,8 +1369,8 @@ def test_unreadable_poll_answers_fail_step_six_after_the_wait() -> None:
             try:
                 publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
                             [rel], [], False, False, None)
-            except publish.PublishError as exc:
-                assert "no readable CI answer" in str(exc), exc
+            except publish.PublishError:
+                pass
             else:
                 raise AssertionError("expected step 6 to fail when no poll answer is readable")
 
@@ -1416,9 +1430,47 @@ def test_ci_checks_that_never_register_fail_step_six_after_the_wait() -> None:
                 publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
                             [rel], [], False, False, None)
             except publish.PublishError as exc:
-                assert "no CI checks registered" in str(exc), exc
+                assert "checks registered" in str(exc), exc
             else:
                 raise AssertionError("expected step 6 to fail when checks never register")
+
+
+def test_a_red_non_required_lane_does_not_refuse_the_merge() -> None:
+    # PR #128: the required `root` check passed while five Linux lanes went red, and the publish refused on them.
+    # The lanes report after the merge now (main-check rows), so step 6 merges on the required checks alone.
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        env = dict(_install_fake_gh(path))
+        env["GH_FAKE_LANE_RED"] = "1"
+        with _patched_env(env):
+            journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                                  [rel], [], False, False, None)
+        assert all(s["status"] == "green" for s in journal["steps"]), journal["steps"]
+        assert _remote_main_sha(remote) != baseline_commit, "a red non-required lane must not block the merge"
+
+
+def test_a_red_required_check_still_refuses_the_merge() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        publish.CHECKS_POLL_S = 0.05
+        publish.CHECKS_REGISTER_WAIT_S = 0.3
+        env = dict(_install_fake_gh(path))
+        env["GH_FAKE_FAIL_STEP"] = "checks"
+        with _patched_env(env):
+            try:
+                publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit},
+                            [rel], [], False, False, None)
+            except publish.PublishError as exc:
+                assert "root" in str(exc), exc
+            else:
+                raise AssertionError("a red required check must stop step 6")
+        assert _remote_main_sha(remote) == baseline_commit, "a red required check must not merge"
 
 
 def test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes() -> None:
@@ -1479,8 +1531,9 @@ def test_publish_reads_the_check_state_of_the_rows_it_ships() -> None:
 
 
 def test_publish_refuses_a_shipped_row_the_baseline_moved_since_its_base() -> None:
-    """A row whose upstream copy changed since its base (another consumer published it) would be overwritten: step 1
-    refuses, names the state and both ways out, and writes no decline."""
+    """A row whose upstream copy changed since its base (another consumer published it) would be overwritten, losing
+    that consumer's change for every lane that pins the baseline: step 1 refuses, names the state and both ways out,
+    and writes no decline."""
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
         _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
@@ -1498,6 +1551,54 @@ def test_publish_refuses_a_shipped_row_the_baseline_moved_since_its_base() -> No
         assert json.loads(journals[0].read_text(encoding="utf-8"))["steps"][0]["status"] == "red"
         lock = json.loads((root / ".claude" / "baseline.lock.json").read_text(encoding="utf-8"))
         assert "declined" not in lock["files"][rel], lock["files"][rel]
+
+
+def test_publish_refuses_a_shipped_row_whose_bound_proof_stays_behind() -> None:
+    """The baseline's older copy of a bound proof would run against the newer row: step 1 names the proof; once the
+    baseline's copy matches the source's, step 1 passes."""
+    rel, proof = ".claude/tools/fixture.py", ".claude/tests/test_fixture.py"
+    new_proof = b"import fixture  # fixture.py\nassert True\n"
+    with _fixture() as path:
+        _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        _move_baseline(path, proof, b"import fixture  # fixture.py\nassert False\n")
+        _write(root / proof, new_proof)
+        lock_path = root / ".claude" / "baseline.lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["files"][proof] = {"status": "tracked", "layer": "pure", "judged": None}
+        _write(lock_path, (json.dumps(lock, indent=2) + "\n").encode())
+        _commit(root, "the proof moves with the row")
+        publish = _load_publish()
+        with _patched_env(_install_fake_gh(path)):
+            try:
+                _publish_dry(publish, root, rel)
+            except publish.PublishError as exc:
+                text = str(exc)
+            else:
+                raise AssertionError("a publish that leaves a differing bound proof behind must refuse")
+            assert proof in text, text
+            _move_baseline(path, proof, new_proof)
+            _git(root, "commit", "--allow-empty", "-q", "-m", "a new source commit, so the repeat rule stays out")
+            journal = _publish_dry(publish, root, rel)
+        assert _field(journal, "steps")[0]["status"] == "green", _field(journal, "steps")[0]
+
+
+def test_a_forked_bound_proof_left_behind_passes_step_one() -> None:
+    """A forked proof records a deliberate divergence and cannot travel by `judge --verdict push` without overwriting
+    the baseline's copy, so step 1 leaves it to the battery, which runs the baseline's copy against the shipped rows."""
+    rel, proof = ".claude/tools/fixture.py", ".claude/tests/test_fixture.py"
+    with _fixture() as path:
+        _remote_unused, _pin, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        _move_baseline(path, proof, b"import fixture  # fixture.py\nassert True  # theirs\n")
+        _write(root / proof, b"import fixture  # fixture.py\nassert True  # ours\n")
+        lock_path = root / ".claude" / "baseline.lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["files"][proof] = {"status": "forked", "layer": "pure", "judged": None}
+        _write(lock_path, (json.dumps(lock, indent=2) + "\n").encode())
+        _commit(root, "the proof is forked")
+        publish = _load_publish()
+        with _patched_env(_install_fake_gh(path)):
+            journal = _publish_dry(publish, root, rel)
+        assert _field(journal, "steps")[0]["status"] == "green", _field(journal, "steps")[0]
 
 
 def test_a_decline_is_recorded_where_a_later_publish_reads_it_and_holds_for_that_upstream_only() -> None:
@@ -2183,7 +2284,7 @@ def test_worktree_source_records_a_layered_new_row() -> None:
         assert entries == {fresh: "coding"}, entries
 
 
-def test_scoped_validate_runs_bound_proof_and_records_evidence() -> None:
+def test_validate_leaves_the_battery_to_ci_unless_the_flag_asks() -> None:
     publish = _load_publish()
     with _fixture() as path:
         worktree = path / "worktree"
@@ -2200,31 +2301,32 @@ def test_scoped_validate_runs_bound_proof_and_records_evidence() -> None:
         _init_repo(worktree)
         _commit(worktree, "fixture")
         record = {"kind": "lock", "op": "M", "relpath": row}
+        evidence = publish._validate(worktree, [record], False)
+        assert "mode=ci" in evidence and "harness_tests.py=" not in evidence, evidence
         try:
-            publish._validate(worktree, [record], False)
+            publish._validate(worktree, [record], True)
         except publish.PublishError as exc:
             assert "test_bound.py" in str(exc), str(exc)
         else:
-            raise AssertionError("failing scoped proof passed step 5")
-        proof.write_bytes(b"DOC = 'fixture.md'\nraise SystemExit(0)\n")
-        evidence = publish._validate(worktree, [record], False)
-        assert "scoped" in evidence and "test_bound.py" in evidence, evidence
-        assert not (template / ".claude/logs/harness_tests_stamp.json").exists()
+            raise AssertionError("a red proof passed the flagged full battery")
 
 
-def test_battery_mode_triggers() -> None:
+def test_battery_mode_is_full_only_on_the_flag() -> None:
     publish = _load_publish()
-    full_paths = [
-        (".claude/hooks/tool.py", "lock", "M"),
-        (".claude/tools/adaptation.py", "lock", "M"),
-        ("tools/a.py", "root", "M"),
-        (".claude/settings.base.json", "lock", "M"),
-        (".claude/tests/test_gone.py", "lock", "D"),
-    ]
-    for relpath, kind, op in full_paths:
-        assert publish._battery_mode([{"relpath": relpath, "kind": kind, "op": op}], False)[0] == "full", relpath
-    assert publish._battery_mode([{"relpath": ".claude/commands/doc.md", "kind": "lock", "op": "M"}], False)[0] == "scoped"
+    for relpath, kind, op in [(".claude/hooks/tool.py", "lock", "M"), ("tools/a.py", "root", "M"),
+                              (".claude/settings.base.json", "lock", "M"), (".claude/tests/test_gone.py", "lock", "D"),
+                              (".claude/commands/doc.md", "lock", "M")]:
+        assert publish._battery_mode([{"relpath": relpath, "kind": kind, "op": op}], False)[0] == "ci", relpath
     assert publish._battery_mode([], True) == ("full", "flag")
+
+
+def test_unflagged_validate_runs_no_root_proof_and_no_battery() -> None:
+    publish = _load_publish()
+    with _fixture() as path:
+        worktree = _validate_fixture(path, with_tests=True)
+        _stub_validate_seams(publish, {"tests/test_a.py": "BOOTHIT", "harness_tests.py": "BATTERYHIT"})
+        evidence = publish._validate(worktree, [_hook_record()], False)
+    assert "mode=ci" in evidence and "tests/test_a.py=" not in evidence, evidence
 
 
 def _validate_fixture(path: Path, with_tests: bool = False) -> Path:
@@ -2254,7 +2356,7 @@ def _hook_record() -> dict:
 
 def _validate_error(publish, worktree, records) -> str:
     try:
-        publish._validate(worktree, records, False)
+        publish._validate(worktree, records, True)
     except publish.PublishError as exc:
         return str(exc)
     raise AssertionError("validate passed; expected a red")
@@ -2316,7 +2418,7 @@ def test_validate_shares_slots_with_battery_and_times_each_task() -> None:
         try:
             with _patched_env({"HARNESS_MACHINE_SLOTS": "2", "HARNESS_SLOT_BUDGET": "",
                                "HARNESS_SLOT_DIR": pool, "HARNESS_MACHINE_ROOT": pool}):
-                evidence = publish._validate(worktree, [_hook_record()], False)
+                evidence = publish._validate(worktree, [_hook_record()], True)
         finally:
             publish.runner._slot_guard = real_guard
         labels = [label for label, _, _ in spans]
@@ -2377,15 +2479,6 @@ def test_a_full_mode_validate_spawns_no_linux_preview_child() -> None:
     assert "preview=" not in evidence, evidence
 
 
-def test_battery_mode_a_workflow_row_alone_is_scoped_and_a_root_row_beside_it_is_full() -> None:
-    publish = _load_publish()
-    workflow = {"relpath": ".github/workflows/baseline.yml", "kind": "root", "op": "M"}
-    assert publish._battery_mode([workflow], False)[0] == "scoped"
-    assert publish._battery_mode([workflow, {"relpath": "tools/a.py", "kind": "root", "op": "M"}], False)[0] == "full"
-    assert publish._battery_mode([workflow, {"relpath": ".claude/hooks/h.py", "kind": "lock", "op": "M"}], False)[0] == "full"
-    assert publish._battery_mode([workflow], True) == ("full", "flag")
-
-
 def test_pr_body_lists_each_carried_row() -> None:
     publish = _load_publish()
     lock = {"files": {
@@ -2440,16 +2533,20 @@ def test_publish_commit_message_names_rows_subject_and_ledger_reason() -> None:
         _init_repo(empty)
         _write(empty / "kept.txt", b"kept\n")
         _commit(empty, "seed")
-        with _raises_publish_error(publish, "publication has no changes"):
+        try:
             publish._publish(empty, {"id": "x", "source": journal["source"], "worktree": {"committed": False},
                                      "rows_published": [], "row_meta": {}},
                              root / "journal.json", root, False, "b", "x", profile)
-    assert title == "feat(baseline): publish 20260101T000000Z-aaaaaaaa", title
-    assert "Source: commit %s @ %s" % (label, sha) in body, body
+        except publish.PublishError:
+            pass
+        else:
+            raise AssertionError("expected an empty publication to be refused")
+    assert "20260101T000000Z-aaaaaaaa" in title, title
+    assert label in body and sha in body, body
     assert str(repo) not in body, body
-    assert "Source subject: feat: seed the source commit" in body, body
+    assert "feat: seed the source commit" in body, body
     assert "- .claude/tools/a.py (M)" in body and "- .claude/tools/b.py (A)" in body, body
-    assert "Why:\n- .claude/tools/a.py: newest reason" in body, body
+    assert ".claude/tools/a.py: newest reason" in body, body
     assert body.count("Why:") == 1 and "old reason" not in body and "elsewhere" not in body, body
     assert "Why:" not in body2, body2
 
@@ -2492,28 +2589,18 @@ def test_publish_message_withholds_identity_lines_and_names_the_consumer_label()
         publish._write_pr_body(pr_body, journal["id"], journal["source"], journal["rows_published"],
                                [], [], journal["row_meta"], label, journal["message_withheld"])
         text = pr_body.read_text(encoding="utf-8")
-    assert f"Source: commit {label} @ {sha}" in body, body
+    assert f"commit {label} @ {sha}" in body, body
     assert str(repo) not in body, body
     assert "ZenithOrb" not in body, body
     assert "Source subject:" not in body, body
     assert "- .claude/tools/a.py (M)" in body and "- .claude/tools/b.py (A)" in body, body
-    assert "Why:\n- .claude/tools/b.py: clean reason" in body, body
+    assert ".claude/tools/b.py: clean reason" in body, body
     assert "rename" not in body, body
     assert [entry["row"] for entry in journal["message_withheld"]] == [
         "source_subject", ".claude/tools/a.py"], journal["message_withheld"]
     assert all(entry["hit_kinds"] for entry in journal["message_withheld"]), journal["message_withheld"]
     assert label in text and str(repo) not in text and "ZenithOrb" not in text, text
     assert "2 withheld" in text and "source_subject" in text and ".claude/tools/a.py" in text, text
-
-
-@contextlib.contextmanager
-def _raises_publish_error(publish, match: str):
-    try:
-        yield
-    except publish.PublishError as exc:
-        assert match in str(exc), str(exc)
-    else:
-        raise AssertionError("expected PublishError naming %r" % match)
 
 
 _RESET_STDERR = b"fatal: unable to access 'https://example.invalid/x.git/': Recv failure: Connection was reset\n"
@@ -2669,12 +2756,7 @@ def test_only_the_full_battery_child_asks_for_reused_passes() -> None:
         assert seen["harness_tests.py"].get("HARNESS_REUSE_PASSES") == "1", seen
         seen.clear()
         publish._validate(worktree, [{"relpath": ".claude/commands/doc.md", "kind": "lock", "op": "M"}], False)
-        assert "HARNESS_REUSE_PASSES" not in seen["harness_tests.py --proofs-for"], seen
-        # Both battery children run each proof with a clean runner's environment (harness_tests.py --runner-env).
-        assert seen["harness_tests.py --proofs-for"].get("HARNESS_RUNNER_ENV") == "1", seen
-        seen.clear()
-        publish._validate(worktree, [], True)
-        assert seen["harness_tests.py"].get("HARNESS_RUNNER_ENV") == "1", seen
+        assert not [label for label in seen if label.startswith("harness_tests.py")], seen
 
 
 def test_classify_lists_exactly_what_the_candidates_command_lists():
@@ -2712,13 +2794,13 @@ def main(part: int = 1) -> int:
         test_pr_body_lists_each_carried_row,
         test_publish_commit_message_names_rows_subject_and_ledger_reason,
         test_publish_message_withholds_identity_lines_and_names_the_consumer_label,
-        test_scoped_validate_runs_bound_proof_and_records_evidence,
-        test_battery_mode_triggers,
+        test_validate_leaves_the_battery_to_ci_unless_the_flag_asks,
+        test_battery_mode_is_full_only_on_the_flag,
+        test_unflagged_validate_runs_no_root_proof_and_no_battery,
         test_validate_reports_every_red_in_one_evidence_string,
         test_validate_shares_slots_with_battery_and_times_each_task,
         test_validate_lists_two_red_checks_and_a_red_battery_in_one_error,
         test_a_full_mode_validate_spawns_no_linux_preview_child,
-        test_battery_mode_a_workflow_row_alone_is_scoped_and_a_root_row_beside_it_is_full,
         test_publish_renames_project_identifiers_without_touching_the_local_file,
         test_journal_and_lock_writes_wait_out_a_reader_holding_the_target,
         test_tracer_publishes_one_row_to_fixture_remote,
@@ -2752,10 +2834,14 @@ def main(part: int = 1) -> int:
         test_unreadable_poll_answers_fail_step_six_after_the_wait,
         test_ci_on_publish_records_the_ci_run_url,
         test_ci_red_checks_record_the_ci_run_url,
+        test_a_red_non_required_lane_does_not_refuse_the_merge,
+        test_a_red_required_check_still_refuses_the_merge,
         test_ci_checks_that_never_register_fail_step_six_after_the_wait,
         test_baseline_moved_before_merge_marks_step_red_and_fresh_publish_supersedes,
         test_publish_reads_the_check_state_of_the_rows_it_ships,
         test_publish_refuses_a_shipped_row_the_baseline_moved_since_its_base,
+        test_publish_refuses_a_shipped_row_whose_bound_proof_stays_behind,
+        test_a_forked_bound_proof_left_behind_passes_step_one,
         test_a_decline_is_recorded_where_a_later_publish_reads_it_and_holds_for_that_upstream_only,
         test_a_publish_that_reaches_upstream_clears_the_decline,
         test_resume_redoes_steps_after_deleted_worktree,

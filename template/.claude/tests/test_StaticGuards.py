@@ -53,6 +53,23 @@ def plant(tmp, code_for):
                 f.write(f"def main():\n    return {code}\n")
 
 
+def domain_map_cases(tmp):
+    """The gate's own domain map is the full gate's check: a scope run leaves it out, the full gate runs it."""
+    map_path = os.path.join(tmp, ".claude", "scripts", "gate_domain_map.json")
+    os.makedirs(os.path.dirname(map_path), exist_ok=True)
+    with open(map_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write('{"domains": {}, "excluded_namespaces": {}}')
+    plant(tmp, lambda name: 0)
+    env = {"PROOF_PY": sys.executable}
+    results = ("$r = Invoke-StaticGuards -Repo $env:PROOF_TMP -Hooks (Join-Path $env:PROOF_TMP 'hooks') "
+               "-Py $env:PROOF_PY%s; \"results=$($r.Results -join ',')\"")
+    rc, out, _ = drive(results % "", tmp, env)
+    check("a scope run leaves the domain map check out", rc == 0 and "results=" in out
+          and "domain_map" not in out, f"rc={rc} {out!r}")
+    rc, out, _ = drive(results % " -FullGate", tmp, env)
+    check("the full gate runs the domain map check", "domain_map=" in out, f"rc={rc} {out!r}")
+
+
 def main(tmp):
     env = {"PROOF_PY": sys.executable}
     plant(tmp, lambda name: None)
@@ -67,6 +84,7 @@ def main(tmp):
     plant(tmp, lambda name: "(0 if __import__('sys').argv[1:3] == ['--repo', __import__('os').environ['PROOF_TMP']] else 4)")
     rc, out, _ = drive(RUN, tmp, env)
     check("every guard receives the target as --repo", rc == 0 and out.count("=OK") == 6, f"rc={rc} {out!r}")
+    domain_map_cases(tmp)
 
 
 if __name__ == "__main__":

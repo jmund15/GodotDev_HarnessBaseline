@@ -202,10 +202,11 @@ def _same_file(a, b):
     return norm(a) == norm(b)
 
 
-def amend_unread(brief, stdout_text):
+def amend_unread(brief, stdout_path):
     """The amend file's path when `<brief>.amend.md` exists, no job holds a `hooks/amend_delivery.py` receipt for
-    its current text, and the stream holds no successful Read of it, else None: an amendment the job never saw
-    (`orchestration` reference `integration.md`). A Read that errored ran before the file existed."""
+    its current text, and the stream at `stdout_path` holds no successful Read of it, else None: an amendment the
+    job never saw (`orchestration` reference `integration.md`). A Read that errored ran before the file existed.
+    The stream, often megabytes, is read only once an amendment exists."""
     amend = Path(str(brief) + ".amend.md")
     if not amend.is_file():
         return None
@@ -217,6 +218,10 @@ def amend_unread(brief, stdout_text):
             return None
     except (ImportError, OSError):
         pass
+    try:
+        stdout_text = Path(stdout_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
     reads, ok = set(), set()
     for event in _stream_events(stdout_text):
         for block in _blocks(event):
@@ -788,10 +793,7 @@ def _judge(root, label, origin, check_timeout, result):
         if trailing:
             result["delivery_flag"] = "the final message answered a later turn after an earlier reply and no report file was kept"
     if origin.get("stdout"):
-        try:
-            result["amend_unread"] = amend_unread(origin["brief"], Path(origin["stdout"]).read_text(encoding="utf-8", errors="replace"))
-        except OSError:
-            pass
+        result["amend_unread"] = amend_unread(origin["brief"], origin["stdout"])
     work = origin.get("workdir") or root
     base = "HEAD"
     if origin.get("workdir"):

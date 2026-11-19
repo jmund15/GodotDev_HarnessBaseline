@@ -13,7 +13,9 @@ Two subjects, one file, both on the real watcher:
    the watcher must end instead of polling forever. It must NOT end when the host cannot be observed (a
    proof fixture, or an old client that writes no session registry row).
 
-Waits for an event are for observable events (a line in the watcher's output, an exit); the two stay-armed cases read silence for a fixed 1.0 s, ten host checks at HOST_SEC.
+Waits for an event are for observable events (a line in the watcher's output, an exit); the two stay-armed
+cases wait for the ten host-check windows (twenty polls at the proof's poll interval) the watcher records in
+WATCH_RECORDS_POLL_MARK, so no case decides on elapsed time.
 """
 import json
 import os
@@ -57,6 +59,14 @@ def until(predicate, seconds=HANG_BOUND, step=0.02):
             return True
         time.sleep(step)
     return predicate()
+
+
+def mark_lines(path):
+    """The polls a watcher has finished, from the line `_mark_poll` appends to WATCH_RECORDS_POLL_MARK."""
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").count("\n")
+    except OSError:
+        return 0
 
 
 LEDGER = BASE / "ledger.jsonl"
@@ -123,15 +133,16 @@ def lifetime_cases():
         return root
 
     def arm(root, *, sid=SID, extra=None):
+        mark = root / "polls"
         env = dict(os.environ, CLAUDE_CODE_SESSION_ID=sid, HARNESS_HOOK_STATE_DIR=str(root / "state"),
                    WATCH_RECORDS_POLL_SEC="0.05", WATCH_RECORDS_HOST_SEC=HOST_SEC,
-                   CLAUDE_PROJECT_DIR=str(root),
+                   WATCH_RECORDS_POLL_MARK=str(mark), CLAUDE_PROJECT_DIR=str(root),
                    BENCH_ROOTS=json.dumps({"BenchmarkArms": str(root / "no_arms")}))
         env.update(extra or {})
         out = root / "watcher.out"
         return subprocess.Popen([sys.executable, str(WATCH), "--session", "--wake"],
                                 stdout=open(out, "w"), stderr=open(root / "watcher.err", "w"),
-                                text=True, env=env), out
+                                text=True, env=env), out, mark
 
 
     def sleeper():
@@ -160,12 +171,14 @@ def lifetime_cases():
         process.wait()
 
 
-    # A host row naming a live process keeps the watcher armed: two polls with no decision event prove it.
+    # A host row naming a live process keeps the watcher armed: ten host-check windows of polls with no
+    # decision event prove it, read from the poll mark the watcher writes rather than from a sleep.
     host = sleeper()
     plant_host(host.pid)
     root = session_root("live")
-    proc, out = arm(root)
-    time.sleep(1.0)
+    proc, out, mark = arm(root)
+    check(until(lambda: mark_lines(mark) >= 20 or proc.poll() is not None),
+          "the watcher finished ten host-check windows of polls", "%d polls" % mark_lines(mark))
     check(proc.poll() is None, "a watcher whose session host is alive stays armed")
     check("HOST GONE" not in text_of(out), "a live host prints no HOST GONE line", text_of(out)[-200:])
 
@@ -179,8 +192,9 @@ def lifetime_cases():
     # No registry row at all (an old client, or a proof fixture): the host cannot be observed, so the watcher
     # keeps the old behavior. Ending here would kill a live session's watcher on any client that writes none.
     root = session_root("unknown")
-    proc, out = arm(root)
-    time.sleep(1.0)
+    proc, out, mark = arm(root)
+    check(until(lambda: mark_lines(mark) >= 20 or proc.poll() is not None),
+          "the watcher finished ten host-check windows of polls", "%d polls" % mark_lines(mark))
     check(proc.poll() is None, "a watcher whose host cannot be observed stays armed")
     killed(proc)
 

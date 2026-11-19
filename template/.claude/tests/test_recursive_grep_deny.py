@@ -7,7 +7,9 @@ Every recursive grep is denied; there is no rewrite. The deny names the bounded 
 the parse must reach: plain tracked-directory greps, ignored trees, indirect runs (find, xargs, a
 shell -c, PowerShell), unknown flags, GNU-only regex escapes. Allow arms mention a recursive grep
 without running one, or name only files.
-A dispatcher exit outside {0, 2}, or a traceback on stderr, is CRASH, never allow.
+A dispatcher exit outside {0, 2}, or a traceback on stderr, is CRASH, never allow. The cases call
+the dispatcher and the guard in process (`_hook_call`); one case spawns the dispatcher, proving it
+imports and exits 0 from its registered command.
 
     python3 .claude/tests/test_recursive_grep_deny.py
 """
@@ -22,6 +24,9 @@ import uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 DISPATCH = os.path.join(REPO, ".claude", "hooks", "pre_bash_dispatch.py")
+GUARD = os.path.join(REPO, ".claude", "hooks", "unbounded_scan_guard.py")
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 
 # Commands the retired rewrite converted to `git grep --untracked` or a bounded `rg -uu`. The
 # second is a real logged call from the replay; each must deny now.
@@ -90,16 +95,18 @@ def dispatch(tool, command, env):
     payload = json.dumps({"tool_name": tool, "session_id": "rgd" + uuid.uuid4().hex[:8],
                           "hook_event_name": "PreToolUse", "cwd": REPO,
                           "tool_input": {"command": command}})
-    p = subprocess.run([sys.executable, DISPATCH], input=payload, capture_output=True, text=True,
-                       encoding="utf-8", timeout=90, env=env, cwd=REPO)
-    if p.returncode not in (0, 2) or "Traceback" in (p.stderr or ""):
-        return "CRASH", "exit %s: %s" % (p.returncode, (p.stderr or "")[-300:])
-    if p.returncode == 2:
-        return "deny", p.stderr
+    return classify(*_hook_call.call(DISPATCH, payload, env=env, cwd=REPO)[:3], command)
+
+
+def classify(code, out, err, command):
+    if code not in (0, 2) or "Traceback" in err:
+        return "CRASH", "exit %s: %s" % (code, err[-300:])
+    if code == 2:
+        return "deny", err
     try:
-        hso = (json.loads(p.stdout) if p.stdout.strip() else {}).get("hookSpecificOutput") or {}
+        hso = (json.loads(out) if out.strip() else {}).get("hookSpecificOutput") or {}
     except ValueError:
-        return "CRASH", "unparseable stdout: " + p.stdout[:200]
+        return "CRASH", "unparseable stdout: " + out[:200]
     if hso.get("permissionDecision") == "deny":
         return "deny", hso.get("permissionDecisionReason") or ""
     if (hso.get("updatedInput") or {}).get("command") not in (None, command):
@@ -143,6 +150,12 @@ def main():
         check("allow %-10s %r carries no `| head` advice" % (tool, command),
               "| head" not in text and "head -" not in text, text)
 
+    spawned = subprocess.run([sys.executable, DISPATCH], input=json.dumps(
+        {"tool_name": "Bash", "hook_event_name": "PreToolUse", "cwd": REPO,
+         "tool_input": {"command": "ls"}}), capture_output=True, text=True, encoding="utf-8", env=env)
+    check("the dispatcher imports and exits 0 from its registered command",
+          spawned.returncode == 0 and "Traceback" not in (spawned.stderr or ""), spawned.stderr[-300:])
+
     print("\n%d failure(s)" % len(failures) if failures else "\nall ok")
     for f in failures:
         print("  " + f)
@@ -181,12 +194,10 @@ def run_rg(*args, cwd=None):
 
 
 def hook_verdict(command, cwd):
-    hook = os.path.join(REPO, '.claude', 'hooks', 'unbounded_scan_guard.py')
     payload = {'tool_name': 'Bash', 'cwd': str(cwd), 'tool_input': {'command': command}}
-    p = subprocess.run([sys.executable, hook], input=json.dumps(payload), capture_output=True,
-                       text=True, encoding='utf-8', timeout=30)
-    assert p.returncode == 0 and 'Traceback' not in p.stderr, p.stderr
-    return json.loads(p.stdout)['hookSpecificOutput']
+    code, out, err, _ = _hook_call.call(GUARD, payload, cwd=str(cwd))
+    assert code == 0 and 'Traceback' not in err, err
+    return json.loads(out)['hookSpecificOutput']
 
 
 import pytest

@@ -28,8 +28,10 @@ folder, and the returned paths name it. The caller forwards head, blobs and prem
 unchanged through its review route.
 """
 import argparse
+import bisect
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -51,8 +53,8 @@ def source_required(mandate: str) -> bool:
     return SOURCE_REQUIRED.get(mandate, True)
 
 
-def git(root, *args, optional=False):
-    result = subprocess.run(["git", "-C", str(root), *args], capture_output=True)
+def git(root, *args, optional=False, stdin=None):
+    result = subprocess.run(["git", "-C", str(root), *args], input=stdin, capture_output=True)
     if result.returncode:
         if optional:
             return None
@@ -66,18 +68,151 @@ def doctrine_commits(root, base, head):
     return [commit for commit in commits if commit["files"]]
 
 
-def commit_diff_text(root, commit, limit=24000):
-    """One commit's header and diff over its paths, in `git show` calls that each fit a Windows command line."""
-    chunks, chunk, size = [], [], 0
-    for path in commit["files"]:
+ARG_CHUNK = 24000
+PLAIN_PATH = re.compile(r"[ -~]+")
+PATHSPEC_CHARS = frozenset("*?[]\\\"")
+
+
+def git_bytes(root, args, stdin=None):
+    result = subprocess.run(["git", "-C", str(root), *args], input=stdin, capture_output=True)
+    if result.returncode:
+        raise ledger.ToolError(result.stderr.decode("utf-8", errors="replace").strip())
+    return result.stdout
+
+
+def chunked(paths, limit=ARG_CHUNK):
+    """Runs of `paths` whose argument list fits one Windows command line."""
+    chunk, size = [], 0
+    for path in paths:
         if chunk and size + len(path) + 3 > limit:
-            chunks.append(chunk)
+            yield chunk
             chunk, size = [], 0
         chunk.append(path)
         size += len(path) + 3
-    chunks.append(chunk)
+    if chunk:
+        yield chunk
+
+
+def plain_path(path):
+    """Printable ASCII with no pathspec or quoting character: git reads it as typed, so a shared call carries it."""
+    return bool(PLAIN_PATH.fullmatch(path)) and not PATHSPEC_CHARS.intersection(path) and not path.startswith(":")
+
+
+def cat_file(root, specs, content=False):
+    """`git cat-file` on each spec (`rev:path` or an object id) in one call: (id, type, body), or None when absent."""
+    if not specs:
+        return []
+    data = git_bytes(root, ["cat-file", "--batch" if content else "--batch-check"],
+                     stdin=("\n".join(specs) + "\n").encode("utf-8"))
+    found, pos = [], 0
+    for _ in specs:
+        end = data.index(b"\n", pos)
+        line, pos = data[pos:end], end + 1
+        if line.endswith((b" missing", b" ambiguous")):
+            found.append(None)
+            continue
+        oid, kind, size = line.split()
+        body = None
+        if content:
+            body = data[pos:pos + int(size)]
+            pos += int(size) + 1
+        found.append((oid.decode("ascii"), kind.decode("ascii"), body))
+    return found
+
+
+def hash_paths(root, paths, write=False):
+    """`git hash-object` id of each worktree file in one call; `write` stores the blobs as well as hashing them."""
+    if not paths:
+        return {}
+    stdin = ("\n".join(paths) + "\n").encode("utf-8")
+    if write:
+        ids = git(root, "hash-object", "-w", "--stdin-paths", stdin=stdin).split()
+    else:
+        ids = git(root, "hash-object", "--stdin-paths", stdin=stdin).split()
+    if len(ids) != len(paths):
+        raise ledger.ToolError(f"hash-object gave {len(ids)} ids for {len(paths)} files")
+    return dict(zip(paths, ids))
+
+
+def tracked_entries(root):
+    return sorted(entry for entry in git(root, "ls-files", "-z").split("\0") if entry)
+
+
+def tracked_path(entries, path):
+    """Whether `git ls-files -- <path>` lists anything: an index entry at `path`, or one beneath it."""
+    at = bisect.bisect_left(entries, path)
+    if at < len(entries) and entries[at] == path:
+        return True
+    below = bisect.bisect_left(entries, path + "/")
+    return below < len(entries) and entries[below].startswith(path + "/")
+
+
+def diff_block_path(block):
+    """The path a block's `diff --git a/<p> b/<p>` header names; None for any other header, quoted names included."""
+    header = block.split("\n", 1)[0]
+    prefix = "diff --git a/"
+    if not header.startswith(prefix):
+        return None
+    body = header[len(prefix):]
+    name = body[:(len(body) - 3) // 2]
+    return name if body == f"{name} b/{name}" else None
+
+
+def per_path_diffs(root, args, paths):
+    """`git diff <args> -- <path>` text for each path. Plain paths share one call per argument chunk; each patch
+    block goes to every subject its pathspec would have matched (the file itself, or a directory above it).
+    Any other path keeps its own call, since git reads its pathspec or quoting differently."""
+    texts = {path: git(root, "diff", *args, "--", path) for path in paths if not plain_path(path)}
+    for chunk in chunked([path for path in paths if plain_path(path)]):
+        owned = {path: [] for path in chunk}
+        patch = git(root, "diff", *args, "--", *chunk)
+        for block in re.split(r"(?m)^(?=diff --git )", patch):
+            if not block:
+                continue
+            name = diff_block_path(block)
+            if name is None:
+                raise ledger.ToolError(f"cannot attribute a diff block: {block.splitlines()[0]}")
+            owners = [name] + [name[:at] for at, char in enumerate(name) if char == "/"]
+            matched = [owner for owner in owners if owner in owned]
+            if not matched:
+                raise ledger.ToolError(f"diff block {name} matches no subject")
+            for owner in matched:
+                owned[owner].append(block)
+        texts.update({path: "".join(blocks) for path, blocks in owned.items()})
+    return texts
+
+
+def committed_objects(root, head, paths):
+    """{path: (blob id, `git show` text)} for each path `head` holds, as `rev-parse --verify head:path` answers.
+    Plain paths share one `ls-tree` per chunk and one `cat-file` for their blobs."""
+    entries = {}
+    for chunk in chunked([path for path in paths if plain_path(path)]):
+        for record in git(root, "ls-tree", "-z", head, "--", *chunk).split("\0"):
+            if record:
+                meta, _, path = record.partition("\t")
+                entries[path] = tuple(meta.split()[1:])
+    blob_ids = [oid for kind, oid in entries.values() if kind == "blob"]
+    bodies = {}
+    for oid, entry in zip(blob_ids, cat_file(root, blob_ids, content=True)):
+        if entry is None:
+            raise ledger.ToolError(f"blob {oid} is missing from the object store")
+        bodies[oid] = entry[2]
+    found = {}
+    for path, (kind, oid) in entries.items():
+        text = bodies[oid].decode("utf-8", errors="replace") if kind == "blob" else git(root, "show", f"{head}:{path}")
+        found[path] = (oid, text)
+    for path in paths:
+        if not plain_path(path):
+            oid = git(root, "rev-parse", "--verify", f"{head}:{path}", optional=True)
+            if oid:
+                found[path] = (oid.strip(), git(root, "show", f"{head}:{path}"))
+    return found
+
+
+def commit_diff_text(root, commit, limit=ARG_CHUNK):
+    """One commit's header and diff over its paths, in `git show` calls that each fit a Windows command line."""
     return "".join(git(root, "show", "--format=fuller" if index == 0 else "--format=", "--cc", "--no-renames",
-                       commit["sha"], "--", *paths) for index, paths in enumerate(chunks))
+                       commit["sha"], "--", *paths) for index, paths in enumerate(chunked(commit["files"], limit)))
 
 
 def restate_groups(root, session_base, files):
@@ -134,30 +269,34 @@ def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=Fa
     base_ref = base_ref or "origin/main"
     base = upstream.strip() if upstream else git(root, "rev-parse", base_ref).strip()
     commits = doctrine_commits(root, base, head)
-    doctrine_files = sorted({path for commit in commits for path in commit["files"]})
     files_in = ledger.normalize_files(root, list(files or []))
+    if files_in and not widen:
+        # A batch reviews the doctrine commits of its own files; another batch's files carry the rest.
+        named = set(files_in)
+        commits = [c for c in (dict(c, files=[p for p in c["files"] if p in named]) for c in commits) if c["files"]]
+    doctrine_files = sorted({path for commit in commits for path in commit["files"]})
     files = sorted(set(files_in) | set(doctrine_files)) if widen else files_in
     catalog = ledger.load_catalog()
     roster = ledger._load_roster(roster, catalog)
     ctx = ledger.Ctx(root, base_ref, snapshot=head)
     blobs = {}
     committed_only = set(ledger.normalize_files(root, list(committed_only or [])))
+    committed_objs = committed_objects(root, head, [path for path in files if path in committed_only])
+    # -w stores the frozen bytes: the recorder resolves this id after later edits move the file on.
+    stored = hash_paths(root, [path for path in files if path not in committed_only and (root / path).is_file()],
+                        write=True)
     for path in files:
-        source = root / path
         if path in committed_only:
-            blob = git(root, "rev-parse", "--verify", f"{head}:{path}", optional=True)
-            if blob:
-                blobs[path] = blob.strip()
-                ctx.overrides[path] = blob.strip()
+            if path in committed_objs:
+                blobs[path] = committed_objs[path][0]
+                ctx.overrides[path] = committed_objs[path][0]
             else:
                 state = ctx.deleted_hash(path)
                 if state:
                     ctx.overrides[path] = state
-        elif source.is_file():
-            # -w stores the frozen bytes: the recorder resolves this id after later edits move the file on.
-            blob = git(root, "hash-object", "-w", "--", path).strip()
-            blobs[path] = blob
-            ctx.overrides[path] = blob
+        elif path in stored:
+            blobs[path] = stored[path]
+            ctx.overrides[path] = stored[path]
         else:
             state = ctx.deleted_hash(path)
             if state:
@@ -196,30 +335,38 @@ def freeze(*, root, out, roster, session_base, base_ref=None, files=(), widen=Fa
     for commit in commits:
         messages.append(git(root, "show", "-s", "--format=%H%n%s%n%b", commit["sha"]))
         commit_diffs.append((commit, commit_diff_text(root, commit)))
+    committed_text = per_path_diffs(root, ["--no-renames", f"{session_base}..{head}"], files)
+    dirty_text = per_path_diffs(root, ["--no-renames", "HEAD"], [path for path in files if path not in committed_only])
+    base_state = cat_file(root, [f"{session_base}:{path}" for path in files])
+    head_state = cat_file(root, [f"{head}:{path}" for path in files])
+    index_paths = tracked_entries(root)
     subjects = []
     changed = []
     for index, path in enumerate(files):
-        committed = git(root, "diff", "--no-renames", f"{session_base}..{head}", "--", path)
-        dirty = "" if path in committed_only else git(root, "diff", "HEAD", "--", path)
-        deleted = git(root, "cat-file", "-e", f"{session_base}:{path}", optional=True) is not None and \
-            git(root, "cat-file", "-e", f"{head}:{path}", optional=True) is None
-        if (path not in committed_only and not deleted and not git(root, "ls-files", "--", path).strip()
-                and (root / path).is_file()):
+        committed_diff = committed_text[path]
+        dirty = "" if path in committed_only else dirty_text[path]
+        deleted = base_state[index] is not None and head_state[index] is None
+        if plain_path(path):
+            tracked = tracked_path(index_paths, path)
+        else:
+            tracked = bool(git(root, "ls-files", "--", path).strip())
+        if path not in committed_only and not deleted and not tracked and (root / path).is_file():
             dirty = (root / path).read_text(encoding="utf-8", errors="replace")
         content = None
         if path in blobs:
-            content = (git(root, "show", f"{head}:{path}") if path in committed_only
+            content = (committed_objs[path][1] if path in committed_only
                        else (root / path).read_text(encoding="utf-8", errors="replace"))
-        subjects.append((index, path, f"{path}\n{committed}\n{dirty}", content))
-        if committed.strip() or dirty.strip() or deleted or path in doctrine_files:
+        subjects.append((index, path, f"{path}\n{committed_diff}\n{dirty}", content))
+        if committed_diff.strip() or dirty.strip() or deleted or path in doctrine_files:
             changed.append(path)
     if files and not changed:
         raise ledger.ToolError(
             f"no change to review: every subject file is identical at {session_base}, {head} and in the working "
             f"tree ({', '.join(files[:5])}{', ...' if len(files) > 5 else ''}); a seat over empty diffs cannot "
             "cover anything. Freeze after the range has landed, or name the range's head as --base-ref's partner")
+    worktree_now = hash_paths(root, [path for path in blobs if path not in committed_only])
     for path, blob in blobs.items():
-        if path not in committed_only and git(root, "hash-object", "--", path).strip() != blob:
+        if path not in committed_only and worktree_now[path] != blob:
             raise ledger.ToolError(f"{path} changed while freezing inputs; retry with a fresh run path")
     if git(root, "rev-parse", "HEAD").strip() != head:
         raise ledger.ToolError("HEAD changed while freezing inputs; retry with a fresh run path")

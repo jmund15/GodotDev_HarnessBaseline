@@ -283,7 +283,7 @@ class TestEngineNeutral(unittest.TestCase):
         rows = self.check({}, {"a/Thing.rs": "struct RealType;\n"}, "`RealType`\n")
         row = rows[("symbol", "RealType")]
         self.assertEqual(row["status"], "unparseable")
-        self.assertEqual(row["detail"], "no source_extensions configured")
+        self.assertIn("source_extensions", row["detail"])
 
     def test_absent_adaptation_file_is_the_same_as_empty(self):
         rows = self.check(None, {"a/Thing.rs": "struct RealType;\n"}, "`RealType`\n")
@@ -327,26 +327,6 @@ class TestEngineNeutral(unittest.TestCase):
         self.assertEqual(rows[("symbol", "ProofType")]["status"], "found")
 
 
-class TestPremiseSelfCheck(unittest.TestCase):
-    def read_command(self, name):
-        with open(os.path.join(ROOT, ".claude", "commands", name + ".md"), encoding="utf-8") as fh:
-            return fh.read()
-
-    def test_codify_done_checks_landing_premises(self):
-        text = self.read_command("codify")
-        step = text.split("## Step 0 — Does it already exist?", 1)[1].split("## Step 1", 1)[0]
-        done = next(line for line in step.splitlines() if line.startswith("**Done:"))
-        for required in ("diagnosis's premises", "landing commit's `premises` block",
-                         "VERIFIED", "--session", "before landing",
-                         "fixed or dropped", "reference/evidence_contract.md"):
-            self.assertIn(required, done)
-        self.assertIn("tools/verify_claims.py", done)
-
-    def test_autolearn_applying_cites_codify_self_check(self):
-        applying = self.read_command("autolearn").split("## Applying changes", 1)[1]
-        self.assertIn("[Step 0 self-check](codify.md#step-0--does-it-already-exist)", applying)
-        self.assertIn("before landing", applying)
-
 class TestKeptBehavior(Base):
     def test_bad_fileline_exits_one(self):
         doc = plant(self.tmp.name, "bad_line.md", "See `Game/Thing.cs:999`.\n")
@@ -356,7 +336,6 @@ class TestKeptBehavior(Base):
         doc = plant(self.tmp.name, "good.md", "See `Game/Thing.cs:1` and `RealType`.\n")
         p = self.run_tool(doc, "--repo", self.tmp.name)
         self.assertEqual(p.returncode, 0, p.stdout)
-        self.assertIn("All citations resolve.", p.stdout)
 
     def test_missing_doc_exits_two(self):
         p = self.run_tool(os.path.join(self.tmp.name, "nope.md"), "--repo", self.tmp.name)

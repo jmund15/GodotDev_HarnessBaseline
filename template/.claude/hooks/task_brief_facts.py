@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Sub-hook of post_edit_dispatch.py: the facts a `task` brief carries, at the brief write.
 
-Class: advisory. It never denies, and a malformed `task` block is named in its context line.
+Class: advisory. It never denies. A malformed `task` block is named in its context line once per brief and defect,
+since the session started or last compacted.
 
 At the first brief write of a window while the orchestration skill or the ladder is not in context, one extra
 line (`NOTICE_TAG`) names both loads and that a launch is denied until they are met, so a deny never announces
@@ -52,6 +53,8 @@ NOTICE_ONCE = "task_brief_facts:dispatch_prep"
 SKILL_LOAD = 'invoke Skill(skill="orchestration")'
 LADDER_LOAD = ('run `python3 .claude/tools/model_registry.py for-role <tier>` bare (no pipe or filter) '
                'for each tier the jobs pin')
+# One malformed-block line per (brief, defect) per window: a repeat of what the session already holds changes nothing.
+MALFORMED_ONCE = "task_brief_facts:malformed:"
 
 
 def _owners():
@@ -280,7 +283,18 @@ def _dispatch_prep_notice(payload):
     missing = [step for step, met in ((SKILL_LOAD, skill), (LADDER_LOAD, ladder)) if not met]
     if not _hook_state.fire_once_since_compaction(session_id, NOTICE_ONCE):
         return ""
-    return "%s before your first dispatch, a launch is DENIED until %s." % (NOTICE_TAG, " and ".join(missing))
+    return "%s a dispatch is denied until you %s." % (NOTICE_TAG, " and ".join(missing))
+
+
+def _malformed_is_news(session_id, path, exc):
+    """True the first time this session, since its last compaction, sees `exc` on the brief at `path`."""
+    import hashlib
+    import _hook_state
+    key = MALFORMED_ONCE + hashlib.sha1(("%s\n%s" % (path, exc)).encode("utf-8", "replace")).hexdigest()[:16]
+    try:
+        return _hook_state.fire_once_since_compaction(session_id, key)
+    except Exception:
+        return True
 
 
 def _with_notice(result, notice):
@@ -312,8 +326,9 @@ def process(payload):
     try:
         block = dispatch_result.task_block(text)
     except ValueError as exc:
-        return _with_notice({"context": "%s the task block is malformed: %s; fix it before the brief is "
-                                       "dispatched." % (TAG, exc)}, notice)
+        if not _malformed_is_news(data_in.get("session_id") or "default", path, exc):
+            return _with_notice(None, notice)
+        return _with_notice({"context": "%s %s; fix it before dispatch." % (TAG, exc)}, notice)
     if block is None:
         return _with_notice(None, notice)
     session = provider_bands.session_plan()

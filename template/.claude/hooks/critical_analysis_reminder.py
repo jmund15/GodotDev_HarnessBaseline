@@ -125,9 +125,8 @@ def main() -> None:
 
     if prompt and _is_challenge(prompt):
         print("<user-prompt-submit-hook>\n"
-              "Challenge-shape prompt (a decision or result is being questioned). Before agreeing or "
-              "defending, run the check that settles it: the tool's own output, the registry row, the "
-              "log. Agree only with what it shows, and say plainly when the decision held.\n"
+              "Challenge-shape prompt: run the check that settles it (tool output, registry row, log) "
+              "before agreeing or defending (CLAUDE.core.md Preferences, no performative agreement).\n"
               "</user-prompt-submit-hook>")
         sys.exit(0)
 
@@ -139,12 +138,9 @@ def main() -> None:
         print("{}")
         sys.exit(0)
 
-    # Compressed reminder — model has the full rubric in training; this is
-    # the in-session anchor, not the explainer.
     print("<user-prompt-submit-hook>\n"
-          "Suggestion-shape prompt detected. Critically analyze before agreeing — "
-          "verify against codebase, point out issues exhaustively, then act. "
-          "Agreement is fine when earned.\n"
+          "Suggestion-shape prompt: verify it against the codebase and name the issues you find "
+          "before agreeing. Agreement is fine when earned.\n"
           "</user-prompt-submit-hook>")
     _mark_fired(session_id)
     sys.exit(0)

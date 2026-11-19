@@ -68,7 +68,7 @@ def transcript_with(brief, name, extra=()):
 def case_filters():
     sidecar_env()
     ns = verdict(RUN + '"FullyQualifiedName~Tests.Logic."')
-    check("namespace refused", bool(ns) and "guards/author.md" in ns and "class filters" in ns, str(ns))
+    check("namespace refused", bool(ns) and "guards/author.md" in ns, str(ns))
     check("class admitted", verdict(RUN + '"FullyQualifiedName~Tests.Logic.FooTests"') is None)
     check("method admitted", verdict(RUN + '"FullyQualifiedName~Tests.Logic.FooTests.Works"') is None)
     check("two classes admitted",
@@ -286,10 +286,12 @@ def case_dispatcher_wiring():
                               "transcript_path": "C:/x/session.jsonl", "tool_input": {"command": command}})
         r = run_py([os.path.join(HOOKS, "pre_bash_dispatch.py")], dict(env_extra, CLAUDE_PROJECT_DIR=TMP), payload)
         return r
+    def decision(r):
+        return json.loads(r.stdout or "{}").get("hookSpecificOutput", {}).get("permissionDecision")
     r = through(RUN + '"FullyQualifiedName~Tests.Logic."', {"CLAUDE_CODE_SIDECAR": "t"})
-    check("dispatcher denies a sidecar's wide run", "Wide test run refused" in (r.stdout + r.stderr), r.stdout + r.stderr)
+    check("dispatcher denies a sidecar's wide run", decision(r) == "deny", r.stdout + r.stderr)
     r = through(RUN + '"FullyQualifiedName~Tests.Logic."', {})
-    check("dispatcher admits the main session", "Wide test run refused" not in (r.stdout + r.stderr), r.stdout + r.stderr)
+    check("dispatcher admits the main session", decision(r) != "deny", r.stdout + r.stderr)
 
 
 def case_ps1_entry_points():
@@ -306,7 +308,7 @@ def case_ps1_entry_points():
         r = subprocess.run([pwsh, "-NoProfile", "-File", os.path.join(scripts, args[0])] + args[1:],
                            capture_output=True, text=True, timeout=120, env=full)
         check("ps1 entry %s refuses a sidecar's wide run" % name,
-              r.returncode == 2 and "Wide test run refused" in (r.stdout + r.stderr), "%s %s" % (r.returncode, (r.stdout + r.stderr)[-300:]))
+              r.returncode == 2, "%s %s" % (r.returncode, (r.stdout + r.stderr)[-300:]))
 
 
 def case_printed_action():

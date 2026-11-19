@@ -24,7 +24,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='harness-integrity-') as tmp:
             stamp = Path(tmp) / 'stamp.json'
             state = {'.claude/tools/subject.py': 'tested-version'}
-            def proof(_path, _timeout=None):
+            def proof(_path, _timeout=None, **_):
                 if mutate:
                     state['.claude/tools/subject.py'] = 'untested-version'
                 return status, 0.0, 'unavailable target' if status == 'cannot-run' else ''
@@ -113,7 +113,7 @@ class HarnessIntegrityTests(unittest.TestCase):
     def test_cold_timed_out_proof_reruns_alone_at_three_times_the_default_red(self):
         # Real input: a checkout with no durations record, publish times out at its first attempt.
         seen = []
-        def proof(_path, _timeout=None):
+        def proof(_path, _timeout=None, **_):
             seen.append(_timeout)
             if len(seen) == 1:
                 return 'fail', 0.0, 'TIMEOUT after %ss' % _timeout
@@ -150,7 +150,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         barrier = threading.Barrier(2, timeout=5)
         inherited = str(ROOT / '.claude/scratch/unrelated-slots')
         seen = []
-        def proof(_path, _timeout=None):
+        def proof(_path, _timeout=None, **_):
             seen.append(Path(runner._slot_dir()))
             barrier.wait()
             return 'pass', 0.0, ''
@@ -165,7 +165,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_serial_proof_never_overlaps_another(self):
         live, peak, lock = [0], {}, threading.Lock()
-        def proof(path, _timeout=None):
+        def proof(path, _timeout=None, **_):
             with lock:
                 live[0] += 1
                 peak[path] = live[0]
@@ -180,7 +180,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_a_failure_that_passes_alone_is_flaky_not_red(self):
         calls = {}
-        def proof(path, _timeout=None):
+        def proof(path, _timeout=None, **_):
             calls[path] = calls.get(path, 0) + 1
             if path == 'test_flaky.py' and calls[path] == 1:
                 return 'fail', 0.0, 'TIMEOUT after 120s'
@@ -196,7 +196,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_a_cold_timeout_that_passes_on_retry_is_not_flaky(self):
         calls = {}
-        def proof(path, _timeout=None):
+        def proof(path, _timeout=None, **_):
             calls[path] = calls.get(path, 0) + 1
             if path == 'test_slow.py' and calls[path] == 1:
                 return 'fail', 0.0, 'TIMEOUT after 120s'
@@ -210,7 +210,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_a_failure_that_repeats_alone_is_red_and_loses_its_pass_record(self):
         calls = {}
-        def proof(path, _timeout=None):
+        def proof(path, _timeout=None, **_):
             calls[path] = calls.get(path, 0) + 1
             return ('fail', 0.0, 'assertion') if path == 'test_red.py' else ('pass', 0.0, '')
         code, stamped, output, flaky_rows, timing = self.run_pool(
@@ -245,7 +245,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         self.assertEqual(row.get('failures'), ['FAIL  E4 refuses before the probe', 'AssertionError: boom'])
 
     def test_full_battery_names_proofs_with_flaky_history(self):
-        def proof(_path, _timeout=None):
+        def proof(_path, _timeout=None, **_):
             return 'pass', 0.0, ''
         now = time.time()
         seed = [{'ts': ts, 'proof': name} for ts, name in
@@ -257,7 +257,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_an_assertion_failure_with_no_recorded_pass_is_not_retried(self):
         calls = {}
-        def proof(path, _timeout=None):
+        def proof(path, _timeout=None, **_):
             calls[path] = calls.get(path, 0) + 1
             return ('fail', 0.0, 'FAIL: case') if path == 'test_known_red.py' else ('pass', 0.0, '')
         code, _, _, _ = self.run_pool(proof, ['test_ok.py', 'test_known_red.py'])
@@ -266,7 +266,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_a_timeout_with_no_recorded_pass_is_retried_once_with_a_longer_timeout(self):
         calls = {}
-        def proof(path, timeout=None):
+        def proof(path, timeout=None, **_):
             calls.setdefault(path, []).append(timeout)
             return ('fail', 0.0, 'TIMEOUT after 120s') if path == 'test_slow.py' else ('pass', 0.0, '')
         code, _, _, _ = self.run_pool(proof, ['test_ok.py', 'test_slow.py'])
@@ -276,7 +276,7 @@ class HarnessIntegrityTests(unittest.TestCase):
 
     def test_slowest_recorded_proof_starts_first(self):
         order = []
-        def proof(path, _timeout=None):
+        def proof(path, _timeout=None, **_):
             order.append(path)
             return 'pass', 0.0, ''
         self.run_pool(proof, ['test_a.py', 'test_slow.py', 'test_b.py'], jobs=1,
@@ -373,7 +373,7 @@ class HarnessIntegrityTests(unittest.TestCase):
         # that change every few minutes, and a sibling's rewrite could land mid-read.
         seen = {}
 
-        def child(cmd, env, timeout, out_path, cwd=None):
+        def child(cmd, env, timeout, out_path, cwd=None, stretch=None):
             path = env.get('PROVIDER_CAPACITY_CACHE')
             seen.update(path=path, warm=env.get('HARNESS_CAPACITY_WARM'), temp=env.get('TMP'),
                         text=Path(path).read_text(encoding='utf-8') if path and os.path.exists(path) else None)

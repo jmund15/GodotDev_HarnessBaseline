@@ -471,12 +471,11 @@ def persist_env(root: Path, cloud: bool) -> None:
 
 
 def env_lines(root: Path, cloud: bool) -> list[str]:
-    """GODOT_BIN for test commands (Bash sessions don't inherit setx env vars)."""
+    """Silent when the engine resolves: CLAUDE.godot.md has the session run it through godot_bin.sh."""
     if not godot_project(root):
         return []
-    godot_bin = get_godot_bin()
-    if godot_bin:
-        return [f"  GODOT_BIN: {godot_bin}"]
+    if get_godot_bin():
+        return []
     return ["  GODOT_BIN: NOT FOUND (tests requiring Godot runtime will fail)"]
 
 

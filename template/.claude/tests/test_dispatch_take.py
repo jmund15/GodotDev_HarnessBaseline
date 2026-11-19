@@ -147,7 +147,8 @@ class Take(unittest.TestCase):
         for sha in self.shas:
             self.assertIn(sha, out)
         self.assertLess(out.index(self.shas[0]), out.index(self.shas[1]), "oldest first")
-        self.assertIn("git cherry-pick " + " ".join(self.shas), out)
+        for sha in self.shas:
+            self.assertIn("new " + sha, out)
 
     def test_removed_assert_is_kept_when_moved_and_missing_when_dropped(self):
         code, out, _ = self.run_take()
@@ -167,12 +168,12 @@ class Take(unittest.TestCase):
         self.assertIn("lock=local", rows[".claude/tools/new_tool.py"])
         self.assertIn("lock=none", rows[".claude/tools/second.py"])
 
-    def test_landed_commits_are_named_and_left_out_of_the_cherry_pick(self):
+    def test_landed_commits_are_named_landed_and_the_rest_new(self):
         self.land(self.shas[0])
         _, out, _ = self.run_take()
         self.assertIn("landed " + self.shas[0], out)
-        self.assertIn("git cherry-pick " + self.shas[1], out)
-        self.assertNotIn("cherry-pick " + self.shas[0], out)
+        self.assertIn("new " + self.shas[1], out)
+        self.assertNotIn("new " + self.shas[0], out)
 
     def test_proofs_run_only_on_request_and_report_each_verdict(self):
         put(self.wt, ".claude/tests/test_bad.py", TEST_BAD)
@@ -222,10 +223,12 @@ class Take(unittest.TestCase):
         self.assertRegex(after, r"RETIRE .*blocked")
         self.assertNotIn("CHERRY-PICK", after)
 
-    def test_the_rate_line_closes_the_output_with_the_outcome_left_open(self):
+    def test_no_ready_cherry_pick_or_rate_command_is_printed(self):
+        """Which commits land and the rating stay the session's judgment: take prints the new shas as facts."""
         _, out, _ = self.run_take()
-        tail = out.rstrip().splitlines()[-1]
-        self.assertTrue(tail.startswith("RATE python3 .claude/tools/orchestration_metrics.py --rate job "), tail)
+        self.assertIn("new ", out)
+        self.assertNotIn("git cherry-pick", out)
+        self.assertNotIn("orchestration_metrics.py --rate", out)
 
     def test_a_relaunched_job_reads_its_latest_attempt_and_is_not_its_own_peer(self):
         stopped = [{"type": "result", "result": "Stopped: the plan's usage limit."}]

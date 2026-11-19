@@ -301,7 +301,7 @@ def _missing_ladder_cli():
     finally:
         mr.ladder_slice = original
     ok = rc == 0 and "flash" in stream.getvalue() and "ladder row(s)" not in stream.getvalue()
-    if not ok:  # red twice in a publish battery, green on every rerun: the output names the cause next time
+    if not ok:  # the printed output names the cause on a red
         sys.stderr.write("T1 for-role rc=%r printed: %r\n" % (rc, stream.getvalue()[:1500]))
     return ok
 
@@ -1004,6 +1004,12 @@ def _schedule_cases(live):
         ("list_price names an unregistered model instead of pricing it",
          lambda: mr.list_price("zz-unregistered", 1, 0, 1, data=planted())
                  == (None, "model 'zz-unregistered' is not in the registry")),
+        ("list_price leaves a longer unregistered version unpriced, not at its prefix row's rate",
+         lambda: mr.list_price(deepseek_row(planted())["id"] + "-9", 1, 0, 1, data=planted())
+                 == (None, "model %r is not in the registry" % (deepseek_row(planted())["id"] + "-9"))),
+        ("list_price still prices a context-suffixed payload string at its own row",
+         lambda: mr.list_price(deepseek_row(planted())["id"] + "[1m]", 1, 0, 1, multiplier=1.0, data=planted())
+                 == mr.list_price(deepseek_row(planted())["id"], 1, 0, 1, multiplier=1.0, data=planted())),
         ("list_price names a row with no list price as UNPRICED",
          lambda: unpriced_problem().startswith("UNPRICED: ")),
         ("the shipped schedule shape validates",
@@ -1276,14 +1282,15 @@ def _identity_cases(live):
         ("takes_effort: an unknown name, `inherit` or `?` takes an effort",
          lambda: all(mr.takes_effort(n, live) is True for n in ("no-such-model", "inherit", "?", None))),
         # ---- O-alias: the bare alias names the CURRENT version on every route ----
-        ("`opus` resolves to claude-opus-5-5", lambda: rid("opus") == "claude-opus-5-5"),
-        ("`opus5` resolves to claude-opus-5", lambda: rid("opus5") == "claude-opus-5"),
-        ("`sol` resolves to gpt-6.1-sol and `sol56` to gpt-5.6-sol",
-         lambda: rid("sol") == "gpt-6.1-sol" and rid("sol56") == "gpt-5.6-sol"),
-        ("`luna` resolves to gpt-6-luna and `luna56` to gpt-5.6-luna",
-         lambda: rid("luna") == "gpt-6-luna" and rid("luna56") == "gpt-5.6-luna"),
-        ("`resolve gpt-6-sol` succeeds by exact id", lambda: rid("gpt-6-sol") == "gpt-6-sol"),
-        ("`claude-opus-5-5` resolves by exact id", lambda: rid("claude-opus-5-5") == "claude-opus-5-5"),
+        ("a bare alias names a current row",
+         lambda: all(mr.resolve(a, live)["lifecycle"] == "current" for a in ("opus", "sol", "luna"))),
+        ("a versioned alias names its own superseded row, a different id from the bare alias",
+         lambda: all(mr.resolve(v, live)["lifecycle"] == "superseded"
+                     and rid(v) != rid(bare)
+                     for bare, v in (("opus", "opus5"), ("sol", "sol61"), ("sol", "sol56"),
+                                     ("luna", "luna56")))),
+        ("every registered id resolves to its own row",
+         lambda: all(rid(i) == i for i in {m["id"] for m in live["models"]})),
 
         # ---- owner ruling 2026-09-22: a new version takes over its family ----
         # REWRITTEN for the one-effort-home slice: the ruling is about WHICH version's cells stand
@@ -1359,9 +1366,9 @@ def _identity_cases(live):
         ("family groups the versions of one line",
          lambda: mr.family("claude-opus-5-5", live) == mr.family("claude-opus-5", live) == "opus"
                  and mr.family("gpt-6-sol", live) == mr.family("gpt-5.6-sol", live)),
-        ("rows(lifecycle='current') holds each current row and no superseded one",
-         lambda: {"claude-opus-5-5", "gpt-6.1-sol", "gpt-6-luna"} <= {m["id"] for m in mr.rows("current", live)}
-                 and not {"claude-opus-5", "gpt-5.6-sol", "gpt-6-sol"} & {m["id"] for m in mr.rows("current", live)}),
+        ("rows(lifecycle='current') holds exactly the rows whose lifecycle is current",
+         lambda: {m["id"] for m in mr.rows("current", live)}
+                 == {m["id"] for m in live["models"] if m.get("lifecycle") == "current"}),
         ("anthropic_ids lists the dispatchable Anthropic rows only",
          lambda: {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5"} <= set(mr.anthropic_ids(live))
                  and not any(i.startswith("gpt-") for i in mr.anthropic_ids(live))
@@ -1377,10 +1384,9 @@ def _identity_cases(live):
         ("a row declaring an empty effortValues list is refused, never all rungs",
          lambda: raises_registry(lambda: mr.effort_values(
              dict(mr.resolve("sol", live), effortValues=[]), live))),
-        ("`available` names both versions of each moved alias",
-         lambda: all(s in cli(["available"])[1] for s in (
-             "opus     claude-opus-5-5", "opus5    claude-opus-5", "sol      gpt-6.1-sol",
-             "sol56    gpt-5.6-sol", "luna     gpt-6-luna", "luna56   gpt-5.6-luna"))),
+        ("`available` names each alias beside the row it resolves to",
+         lambda: (lambda pairs: bool(pairs) and all(mr.resolve(a, live)["id"] == i for a, i in pairs))(
+             re.findall(r"^  (\S+)\s+(\S+)\s+roles=", cli(["available"])[1], re.M))),
         ("every anthropic row carries its first-party list price: input, output, cache read, 5m and 1h writes",
          lambda: all(isinstance(m.get("price"), dict)
                      and all(isinstance(m["price"].get(k), (int, float)) for k in (
@@ -1453,10 +1459,12 @@ def _identity_cases(live):
         ("a codex row takes `see-ladder`: the ladder cell owns a non-host row's rung too",
          lambda: mr.resolve("sol", live)["effort"].get("evidence") == "see-ladder"
                  and mr.resolve("flash", live)["effort"].get("evidence") == "see-ladder"),
-        ("`for-role` prints each effort cell once, in the ladder table, and no row line repeats it",
+        ("`for-role` prints each effort cell once, in the ladder table; a row line carries only computed rungs",
          lambda: (lambda text: "| effort |" in text and bool(
              [l for l in text.split("for-role: tiers", 1)[1].splitlines() if ":qualified" in l])
-                  and "| effort " not in text.split("for-role: tiers", 1)[1])(
+                  and " · " not in text.split("for-role: tiers", 1)[1]
+                  and all(l.endswith(("-", "none", "low", "medium", "high", "xhigh", "max", "ultra"))
+                          for l in text.split("for-role: tiers", 1)[1].splitlines() if ":qualified" in l))(
              cli(["for-role", "executor", "--from", "codex"])[1])),
         ("`see-ladder` validates on a non-host transport: the rung home is not host-only",
          lambda: accepts(lambda d: row(d, "sol").update(effort={"evidence": "see-ladder"}))),

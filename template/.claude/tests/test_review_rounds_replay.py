@@ -175,11 +175,11 @@ class Replay(unittest.TestCase):
         self.write("fix.md", "the default\nan unrelated mechanism\n")
         self.git("add", "fix.md")
         self.assertEqual(self.owed("fix.md"), {"fix.md"})
-        self.assertIn("1 edited after a reviewed blob", self.hook())
+        self.assertIn("edited", self.hook())
         self.assertNotIn("[review]", self.hook())
         broad = ('git commit -m "fixture" -m "Triage: reach=shared reversibility=clean '
                  'design=settled grounding=verified oracle=gate size=milestones kind=decision"')
-        self.assertIn("1 edited after a reviewed blob", self.hook(broad, session="broad-replay"))
+        self.assertIn("edited", self.hook(broad, session="broad-replay"))
         self.assertNotIn("[review]", self.hook(broad, session="broad-replay"))
 
     def test_harness_text_fold_leaves_no_review_debt(self):

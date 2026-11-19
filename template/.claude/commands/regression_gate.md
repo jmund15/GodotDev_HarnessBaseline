@@ -5,18 +5,18 @@ allowed-tools: Bash, Monitor
 
 ## Purpose
 
-Single source of truth for regression verification. Called by `/session_end`, `/commit_push`, `/review_pr`; also standalone. Rationale and non-negotiables: `change_control`. All mechanics live in `.claude/scripts/regression_gate.ps1`, whose header documents each invariant. **This file owns judgment only:** when the gate applies, failure adjudication, verdict rendering.
+Single source of truth for regression verification. Called by the main check and `/review_pr`; also standalone. Rationale and non-negotiables: `change_control`. All mechanics live in `.claude/scripts/regression_gate.ps1`, whose header documents each invariant. **This file owns judgment only:** when the gate applies, failure adjudication, verdict rendering.
 
 **Phase order:** the gate holds the checkout through build and tests. After the build, a headless `--import` refreshes the cache (`IMPORT_GATE`). Sanity runs first, alone, as the GdUnit4 recompile pass; a red Sanity ends the gate `FAIL` before the pool. Logic and pending Integration batches then run in one held pool, headless. Logic runs as units (`LOGIC units=<n>`): `regression_gate.ps1` owns the partition (`$script:LogicGroups` plus `Logic_rest` for every test no group names). The gate prints one summed `SUITE Logic` line. A unit that ran no tests or hit the silent-skip signature makes Logic `INVALID`, and the sum is tiered against the baseline, so a test no unit ran cannot `PASS`; `[RequiresRenderer]` classes run windowed as `Render`, the one unit a locked desktop (`SESSION=LOCKED`) slows. §Retry policy owns retry eligibility. Every run writes its TRX under `TestResults/runs/gate-<runId>/`, printed as `TRX_DIR=<path>`; `python3 .claude/tools/test_profile.py <TRX_DIR>` lists the slowest tests.
 
 ## When Required
 
-- **Code commits:** any commit touching `.cs` (Logic, Gameplay, Tests, Jmodot), including comment- or whitespace-only edits.
+- **Code commits:** any commit touching `.cs` (Logic, Gameplay, Tests, Jmodot), including comment- or whitespace-only edits. The cadence is `change_control` §Gate cadence's.
 - **Data commits with code coupling:** `.tres`/`.tscn` changes affecting Logic Domain behavior.
 
 ## When Exempt
 
-- Pure meta commits (`.claude/`, `skills/`, `CLAUDE.md`, docs) — harness pushes use the close gate in `rules/harness_tooling.md`.
+- Pure meta commits (`.claude/`, `skills/`, `CLAUDE.md`, docs) — harness pushes follow `rules/harness_tooling.md` §Land and main check.
 - Pure configuration/asset commits with no code coupling
 
 A cloud session runs this gate too: start `pwsh -NoProfile -File .claude/scripts/regression_gate.ps1` as a detached job (`rules/cloud_dev.md` §Works).
@@ -31,8 +31,8 @@ pwsh -NoProfile -File .claude/scripts/regression_gate.ps1 -Detach  # gate: final
 
 | Marker | Cap | Means |
 |---|---|---|
-| `# gate: final` | — | Drive close, before commits. |
-| `# gate: prepush` | — | Before push/PR. |
+| `# gate: final` | — | A drive's one full-gate run, when it makes one. |
+| `# gate: prepush` | — | Before a push no main check proves. |
 | `# gate: checkpoint` | Long-drive exception; full gate; no numerical cap. |
 
 There are no tiers to choose: the script picks the route. A run whose C# differs from the last full-green snapshot only in comments or whitespace, with every other build input identical, ends `PASS route=comment-only` after the build and `DOCS`; any other tree, an absent or unreadable snapshot, or a lexer failure runs the full gate. The route ignores line numbers: a comment edit above a `[CallerLineNumber]` call (a logger or a guard helper) shifts the line it logs. `change_control` §Gate cadence owns slice/lane verification, Part/drive close and fix re-verification. The hook never blocks `verify.ps1` or raw `-Filter` runs.
@@ -166,4 +166,4 @@ Verdict: APPROVE | APPROVE WITH NOTES | REVISE
 ## Rules
 
 - If called from another command, the caller decides whether to proceed or block on the verdict.
-- Code-commit messages include `Verified: Logic N/0, Integration N/0, Sanity N/0`, plus a baseline note if it moved (e.g. `baseline: Logic +3`).
+- When a full gate ran over the tree, the code-commit messages include `Verified: Logic N/0, Integration N/0, Sanity N/0`, plus a baseline note if it moved (e.g. `baseline: Logic +3`).

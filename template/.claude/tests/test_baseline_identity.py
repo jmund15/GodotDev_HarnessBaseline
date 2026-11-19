@@ -510,6 +510,47 @@ def test_build_profile_for_repo_raises_on_zero_row_subsystems_file() -> None:
             raise AssertionError("build_profile_for_repo accepted a zero-row subsystems file")
 
 
+def test_pinned_template_tokens_reads_the_source_it_is_given_and_opens_no_other() -> None:
+    class _Source:
+        def __init__(self, path: Path, sha: str) -> None:
+            self.path, self.sha, self.closed = path, sha, False
+
+        def read(self, relpath: str) -> bytes | None:
+            return _git(self.path, "show", f"{self.sha}:template/{relpath}")
+
+        def close(self) -> None:
+            self.closed = True
+
+    class _NoOpenBaselineSync:
+        class BaselineError(Exception):
+            pass
+
+        @staticmethod
+        def ensure_baseline(*_args, **_kwargs):
+            raise AssertionError("a source the caller holds was opened again")
+
+    with _fixture() as path:
+        base = path / "base"
+        _init_repo(base)
+        (base / "template").mkdir()
+        (base / "template" / "tool.md").write_text("PlantedTemplateToken\n", encoding="utf-8", newline="\n")
+        _git(base, "add", "-A")
+        _git(base, "commit", "-q", "-m", "template")
+        sha = _git(base, "rev-parse", "HEAD").decode("utf-8").strip()
+        consumer = path / "consumer"
+        (consumer / identity._BASELINE_CACHE_RELPATH).mkdir(parents=True)
+        lock = {"baseline_repo": "https://example.invalid/baseline.git", "substitutions": {}}
+        source = _Source(base, sha)
+        original = identity._load_baseline_sync
+        identity._load_baseline_sync = lambda: _NoOpenBaselineSync
+        try:
+            tokens = identity._pinned_template_tokens(consumer, lock, source=source)
+        finally:
+            identity._load_baseline_sync = original
+        assert "PlantedTemplateToken" in tokens, tokens
+        assert not source.closed, "the caller's source was closed by the reader"
+
+
 # ---------------------------------------------------------------------------
 # fix 5 — `--abbrev <csv>` on `digest`, only when the lock has no abbreviations
 # ---------------------------------------------------------------------------
@@ -608,6 +649,7 @@ def main() -> int:
         test_digest_command_lock_abbreviations_win_over_abbrev_flag,
         test_parse_subsystems_yaml_reads_id_and_paths,
         test_collect_type_names_reads_record_struct_name_and_skips_comment_lines,
+        test_pinned_template_tokens_reads_the_source_it_is_given_and_opens_no_other,
     ]
     failures = []
     for case in cases:

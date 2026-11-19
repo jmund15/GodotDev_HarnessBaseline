@@ -1,0 +1,29 @@
+# source: gh run view --log-failed for PR #128's run 43975263475 on jmund15/GodotDev_HarnessBaseline,
+# captured live to .claude/scratch/f5/failed.log; lines 246-272 (the `template` job) only, verbatim.
+template	UNKNOWN STEP	2026-11-16T23:13:04.2889443Z FAIL 1.3s /home/runner/work/GodotDev_HarnessBaseline/GodotDev_HarnessBaseline/template/.claude/tests/test_baseline_linux_preview.py
+template	UNKNOWN STEP	2026-11-16T23:13:04.2890878Z     | FAIL the snapshot lives under $HOME, never /tmp (delete guards admit temp paths)
+template	UNKNOWN STEP	2026-11-16T23:13:04.2892000Z     | ok   a green run removes its own tree and the trees of runs that ended, so none is left
+template	UNKNOWN STEP	2026-11-16T23:13:04.2892931Z     | ok   a real all-green preview log summarizes green with five lanes and their seconds
+template	UNKNOWN STEP	2026-11-16T23:13:04.2893959Z     | ok   a real red preview log names each red lane, its failed step and its failed proof
+template	UNKNOWN STEP	2026-11-16T23:13:04.2894953Z     | ok   a lane the workflow declares but the log never closes is incomplete, never green
+template	UNKNOWN STEP	2026-11-16T23:13:04.2896109Z     | ok   recorded green output exits 0 and prints one ::result line with status green
+template	UNKNOWN STEP	2026-11-16T23:13:04.2897247Z     | ok   --lanes runs only the named lanes: no other lane is copied or run
+template	UNKNOWN STEP	2026-11-16T23:13:04.2898068Z     | ok   --lanes naming a lane the workflow lacks exits 3
+template	UNKNOWN STEP	2026-11-16T23:13:04.2898918Z     | ok   recorded red output exits 1 and its ::result names the red lanes
+template	UNKNOWN STEP	2026-11-16T23:13:04.2899904Z     | ok   a nonzero exit with no ::fail line is a preview that could not run: exit 3, never a red verdict
+template	UNKNOWN STEP	2026-11-16T23:13:04.2900894Z     | ok   no WSL exits 4 and ::result says unavailable with the reason
+template	UNKNOWN STEP	2026-11-16T23:13:04.2901726Z     | ok   --help prints usage and exits 0; it is never read as a journal id
+template	UNKNOWN STEP	2026-11-16T23:13:04.2902547Z     | ok   an unknown flag exits 2 with usage, never read as a journal id
+template	UNKNOWN STEP	2026-11-16T23:13:04.2903402Z     | ok   each run owns its WSL directory: two previews never share one
+template	UNKNOWN STEP	2026-11-16T23:13:04.2904289Z     | ok   a green run removes its own directory; a red one keeps it for inspection
+template	UNKNOWN STEP	2026-11-16T23:13:04.2905481Z     | ok   a tree whose run ended is swept while a live peer's is kept, and the shared slot dir is not
+template	UNKNOWN STEP	2026-11-16T23:13:04.2906377Z     | ok   preflight names the tool a machine lacks and exits 4, before any copy
+template	UNKNOWN STEP	2026-11-16T23:13:04.2907501Z     | ok   run for real in a HOME with no ci-tools, preflight exits 4 and prints ::unavailable
+template	UNKNOWN STEP	2026-11-16T23:13:04.2908737Z     | ok   without preflight the script carries no tool check
+template	UNKNOWN STEP	2026-11-16T23:13:04.2909560Z     | 
+template	UNKNOWN STEP	2026-11-16T23:13:04.2910073Z     | 56/57 cases pass
+template	UNKNOWN STEP	2026-11-16T23:13:04.2911512Z FAIL 6.8s /home/runner/work/GodotDev_HarnessBaseline/GodotDev_HarnessBaseline/template/.claude/tests/test_case_pool.py
+template	UNKNOWN STEP	2026-11-16T23:13:04.2912893Z     | FAIL case_slow_a: KeyError: 'POOL_SPANS'
+template	UNKNOWN STEP	2026-11-16T23:13:04.2913769Z     | FAIL case_slow_b: KeyError: 'POOL_SPANS'
+template	UNKNOWN STEP	2026-11-16T23:13:04.2914625Z     | FAIL case_slow_c: KeyError: 'POOL_SPANS'
+template	UNKNOWN STEP	2026-11-16T23:13:04.2915655Z     | FAIL case_slow_d: KeyError: 'POOL_SPANS'

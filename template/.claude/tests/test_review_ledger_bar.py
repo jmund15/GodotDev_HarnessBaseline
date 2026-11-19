@@ -1,4 +1,4 @@
-"""Coverage clause 10: a row covers a request only at the rigor it was recorded at or above it."""
+"""Coverage clause 10: a row covers a request only at the rigor it was recorded at or above."""
 import contextlib
 import json
 import os
@@ -7,30 +7,58 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+TESTS_DIR = Path(__file__).resolve().parent
+ROOT = TESTS_DIR.parent.parent
+sys.path.insert(0, str(TESTS_DIR))
 sys.path.insert(0, str(ROOT / ".claude" / "tools"))
 
+import _hook_call  # noqa: E402
 import review_ledger  # noqa: E402
 
 PATH, MANDATE = "a.py", "bar.plain"
 CATALOG = {MANDATE: {"home": "tools/review_ledger.py", "interaction": False}}
 review_ledger.load_catalog = lambda claude_dir=None: CATALOG
 
+TEMPLATE = None
+BASE = None
+_HOLDER = []
+
 
 def git(repo, *args):
     return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
-def make_repo(tmp):
-    repo = Path(tmp) / "repo"
-    repo.mkdir()
+def build_template(repo):
+    """The one repository every case is a copy of: an empty base commit, then `PATH` committed on top."""
+    repo.mkdir(parents=True)
     git(repo, "init", "-q")
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "base")
     base = git(repo, "rev-parse", "HEAD")
     (repo / PATH).write_text("a\n", encoding="utf-8")
     git(repo, "add", PATH)
     git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "file")
-    return repo, base
+    return base
+
+
+def setUpModule():
+    global TEMPLATE, BASE
+    holder = tempfile.mkdtemp(prefix="ledger_bar_template_")
+    _HOLDER.append(holder)
+    TEMPLATE = Path(holder) / "repo"
+    BASE = build_template(TEMPLATE)
+
+
+def tearDownModule():
+    import shutil
+    for holder in _HOLDER:
+        shutil.rmtree(holder, ignore_errors=True)
+
+
+def clone(tmp):
+    """A fresh copy of the template repository, with no commit, ref or index state from another case."""
+    repo = Path(tmp) / "repo"
+    _hook_call.copy_repo(str(TEMPLATE), str(repo))
+    return repo, BASE
 
 
 @contextlib.contextmanager
@@ -82,39 +110,39 @@ def covers(tmp, repo, base, row_rigor, request_rigor):
 
 def test_light_row_does_not_cover_a_thorough_request():
     with tempfile.TemporaryDirectory() as tmp:
-        repo, base = make_repo(tmp)
+        repo, base = clone(tmp)
         assert covers(tmp, repo, base, "light", "thorough") is False
 
 
 def test_thorough_row_covers_a_light_request():
     with tempfile.TemporaryDirectory() as tmp:
-        repo, base = make_repo(tmp)
+        repo, base = clone(tmp)
         assert covers(tmp, repo, base, "thorough", "light") is True
 
 
 def test_row_without_rigor_covers_every_request():
     with tempfile.TemporaryDirectory() as tmp:
-        repo, base = make_repo(tmp)
+        repo, base = clone(tmp)
         for request in ("light", "normal", "thorough", None):
             assert covers(tmp, repo, base, None, request) is True, request
 
 
 def test_request_without_rigor_needs_a_thorough_or_legacy_row():
     with tempfile.TemporaryDirectory() as tmp:
-        repo, base = make_repo(tmp)
+        repo, base = clone(tmp)
         assert covers(tmp, repo, base, "normal", None) is False
         assert covers(tmp, repo, base, "thorough", None) is True
 
 
 def test_light_row_does_not_cover_an_unrated_request():
     with tempfile.TemporaryDirectory() as tmp:
-        repo, base = make_repo(tmp)
+        repo, base = clone(tmp)
         assert covers(tmp, repo, base, "light", None) is False
 
 
 def test_owed_range_reads_the_named_tasks_rigor():
     with tempfile.TemporaryDirectory() as tmp:
-        repo, base = make_repo(tmp)
+        repo, base = clone(tmp)
         records = Path(tmp) / "records"
         records.mkdir()
         plant(records, "thorough-task", "thorough")
@@ -131,7 +159,7 @@ def test_owed_range_reads_the_named_tasks_rigor():
 
 def test_normal_row_covers_normal_request_through_owed_range():
     with tempfile.TemporaryDirectory() as tmp:
-        repo, base = make_repo(tmp)
+        repo, base = clone(tmp)
         records = Path(tmp) / "records"
         records.mkdir()
         session = "sess0000-normal"
@@ -156,14 +184,18 @@ TESTS = (
 
 
 def main():
+    setUpModule()
     failures = []
-    for test in TESTS:
-        try:
-            test()
-            print("PASS", test.__name__)
-        except Exception as exc:
-            failures.append(test.__name__)
-            print("FAIL", test.__name__, repr(exc))
+    try:
+        for test in TESTS:
+            try:
+                test()
+                print("PASS", test.__name__)
+            except Exception as exc:
+                failures.append(test.__name__)
+                print("FAIL", test.__name__, repr(exc))
+    finally:
+        tearDownModule()
     print(f"{'FAIL' if failures else 'PASS'} test_review_ledger_bar ({len(TESTS) - len(failures)}/{len(TESTS)})")
     return 1 if failures else 0
 

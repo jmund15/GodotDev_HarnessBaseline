@@ -119,14 +119,21 @@ def main():
                   bool(named) and not unregistered, repr(unregistered)))
 
     # reap: a malformed call refuses with its shape; a refusal on an observed fact (a pid already gone) states only
-    # its verdict. The help states each reason's evidence example.
+    # its verdict. The help carries a row for every reason reap declares, and every flag it names is one the parser
+    # registers: a reason retired or renamed moves reap's own table, never a copy kept here.
     refusal_cases(cases, "reap", call("reap.py", "--no-such-flag"), parser_for("reap"))
     posted = "".join([call("reap.py", "--help").stdout, call("reap.py", "--help").stderr])
-    cases.append(("reap: --help pairs each reason with its evidence flag",
-                  all(re.search(pattern, posted) for pattern in
-                      (r"duplicate\s+--twin", r"stalled\s+--log",
-                       r"superseded\s+--artifact")),
-                  posted[-400:]))
+    reap_mod = load("reap")
+    with open(os.path.join(TOOLS, "reap.py"), encoding="utf-8") as fh:
+        reap_source = fh.read()
+    labelled = {m.group(1) for m in re.finditer(r"^\s{2}([a-z][a-z-]+)\s{2,}", reap_mod.REASON_EVIDENCE, re.M)}
+    named = set(re.findall(r"(?<![\w-])--[a-z][a-z-]+", reap_mod.REASON_EVIDENCE)) - {"--help"}
+    unregistered = sorted(flag for flag in named if 'add_argument("%s"' % flag not in reap_source)
+    cases.append(("reap: --help states a row for every declared reason, naming only registered flags",
+                  bool(named) and set(reap_mod.REASONS) <= labelled
+                  and not unregistered and not set(reap_mod.RETIRED_REASONS) & labelled
+                  and all(reason in posted for reason in reap_mod.REASONS),
+                  repr((sorted(labelled), unregistered))))
 
     # orchestration_metrics: a short --rate refuses; a flat mandates names the object shape.
     refusal_cases(cases, "orchestration_metrics",

@@ -95,7 +95,7 @@ names** rather than borrowing a neighbour's.
   record alone sets a rung's standing at the task's current instrument version: more ADMIT than KEEP
   admits it (promote it, climb no further), more KEEP than ADMIT rejects it (the ladder climbs), and
   **one ADMIT plus one KEEP is a tie: run one more `--new` study at that rung, and the ladder climbs only
-  if that study rejects it.** Probes flake on identical pins, so a split pair is evidence in dispute,
+  if that study rejects it.** A split pair is evidence in dispute,
   never an admission and never a rejection. A study that changed both seats, or ran at an older instrument
   version, is listed and decides nothing. A recognition task starts at the fan-out tier;
   an architect-tier judge keeps a panel only after the cheaper row fails Admit at the descriptor's effort
@@ -117,8 +117,8 @@ names** rather than borrowing a neighbour's.
     one. A task that fails Admit keeps its incumbent.
   - **Pool — do stored records still rank beside new ones?** Item disagreement at or below the
     incumbent's within-panel floor reads POOL, and the cross-panel band is published. Above it reads SPLIT:
-    no band, the board ranks the two panels' records apart, and a comparator is re-judged at the new panel
-    before any comparison with it is published. A one-seat panel takes its floor from the incumbent's stored
+    no band, and the promotion itself re-judges every current record the old panel scored, so the board
+    ranks one panel again; until that re-judge finishes, the board ranks the two panels' records apart. A one-seat panel takes its floor from the incumbent's stored
     multi-seat records at the latest generation that has them; with none it is SPLIT by rule.
 - **A confidence threshold, vote weight or headline-credit policy change is a correctness question, so it
   takes Admit's test, never Pool's agreement figure alone.** Reliability across stored confidence tags is

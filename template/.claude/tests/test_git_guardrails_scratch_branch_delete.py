@@ -2,15 +2,25 @@
 a non-scratch unapplied branch stays denied with or without `-q` until a preserve ref holds its tip.
 
 The guard reads no reply, so a transcript
-answer is not an unlock; preserving the tip is."""
+answer is not an unlock; preserving the tip is.
+
+Decision cases call the hook in process (`_hook_call`); one case spawns it, proving it imports and runs from its
+registered command. The repository is built once per class and each case resets it by copy, so a deleted branch or a
+preserve ref reaches no other case.
+"""
+import atexit
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _hook_call  # noqa: E402
 
 HOOK = Path(os.environ.get('GUARD_HOOK_UNDER_TEST') or Path(__file__).resolve().parents[1] / 'hooks/git_guardrails.py')
 ROW = json.loads((Path(__file__).parent / 'fixtures/owner_discard_answer_row.json').read_text(encoding='utf-8'))
@@ -30,38 +40,59 @@ def answer(question, label='Delete the branch (Recommended)'):
     return row
 
 
+def build_repo(root):
+    """A clean `main` at HEAD, a scratch branch at it, and two branches holding unapplied commits."""
+    root.mkdir()
+    git(root, 'init', '-q', '-b', 'main')
+    (root / 'a.txt').write_text('a\n', encoding='utf-8')
+    git(root, 'add', '.')
+    git(root, 'commit', '-qm', 'init')
+    git(root, 'branch', SCRATCH_HEAD)
+    git(root, 'checkout', '-q', '-b', SCRATCH_WORK, 'main')
+    (root / 'a.txt').write_text('work\n', encoding='utf-8')
+    git(root, 'commit', '-qam', 'unapplied scratch work')
+    git(root, 'checkout', '-q', '-b', FEATURE, 'main')
+    (root / 'a.txt').write_text('feature\n', encoding='utf-8')
+    git(root, 'commit', '-qam', 'unapplied feature')
+    git(root, 'checkout', '-q', 'main')
+
+
 class ScratchBranchDelete(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.template = tempfile.mkdtemp(prefix='scratch_branch_tpl_')
+        build_repo(Path(cls.template) / 'repo')
+        atexit.register(shutil.rmtree, cls.template, True)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='scratch_branch_')
         self.root = Path(self.tmp.name) / 'repo'
-        self.root.mkdir()
-        git(self.root, 'init', '-q', '-b', 'main')
-        (self.root / 'a.txt').write_text('a\n', encoding='utf-8')
-        git(self.root, 'add', '.')
-        git(self.root, 'commit', '-qm', 'init')
-        git(self.root, 'branch', SCRATCH_HEAD)
-        git(self.root, 'checkout', '-q', '-b', SCRATCH_WORK, 'main')
-        (self.root / 'a.txt').write_text('work\n', encoding='utf-8')
-        git(self.root, 'commit', '-qam', 'unapplied scratch work')
-        git(self.root, 'checkout', '-q', '-b', FEATURE, 'main')
-        (self.root / 'a.txt').write_text('feature\n', encoding='utf-8')
-        git(self.root, 'commit', '-qam', 'unapplied feature')
-        git(self.root, 'checkout', '-q', 'main')
+        _hook_call.copy_repo(str(Path(self.template) / 'repo'), str(self.root))
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_hook(self, command, rows=()):
+    def payload(self, command, rows):
         transcript = Path(self.tmp.name) / 'transcript.jsonl'
         transcript.write_text('\n'.join(json.dumps(r) for r in rows), encoding='utf-8')
-        payload = {'tool_name': 'Bash', 'cwd': str(self.root), 'session_id': 'scratch-branch',
-                   'transcript_path': str(transcript), 'tool_input': {'command': command}}
-        env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
-        p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(payload),
-                           capture_output=True, text=True, env=env, timeout=90)
-        self.assertIn(p.returncode, (0, 2), p.stderr)
-        self.assertNotIn('Traceback', p.stderr)
-        return p.returncode, p.stderr
+        return {'tool_name': 'Bash', 'cwd': str(self.root), 'session_id': 'scratch-branch',
+                'transcript_path': str(transcript), 'tool_input': {'command': command}}
+
+    @staticmethod
+    def env():
+        return {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+
+    def run_hook(self, command, rows=()):
+        code, out, err, _ = _hook_call.call(str(HOOK), self.payload(command, rows), env=self.env(),
+                                            cwd=str(self.root))
+        self.assertIn(code, (0, 2), err)
+        self.assertNotIn('Traceback', err)
+        return code, err
+
+    def test_spawned_hook_imports_and_runs_from_its_command(self):
+        p = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(self.payload('git status', [])),
+                           capture_output=True, text=True, env=self.env(), cwd=str(self.root), timeout=90)
+        self.assertEqual(0, p.returncode, p.stderr)
 
     def test_scratch_branch_at_head_allows(self):
         rc, err = self.run_hook(f'git branch -D {SCRATCH_HEAD}')

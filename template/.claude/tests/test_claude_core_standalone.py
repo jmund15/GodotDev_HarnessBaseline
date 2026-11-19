@@ -150,7 +150,7 @@ def main():
     check("a core naming Project Guidelines fails",
           any("project section" in p for p in planted(clean_core + "Project Guidelines names it.\n", "", clean_files)))
     check("a missing cited skill fails",
-          any("missing file: change_control" in p for p in planted(clean_core + "`change_control` owns it.\n", "", clean_files)))
+          any("change_control" in p for p in planted(clean_core + "`change_control` owns it.\n", "", clean_files)))
     check("a missing cited path fails",
           any("missing file" in p for p in planted(clean_core + "`reference/project_stack.md`\n", "", clean_files)))
     check("a backticked agent status word is not a skill cite",

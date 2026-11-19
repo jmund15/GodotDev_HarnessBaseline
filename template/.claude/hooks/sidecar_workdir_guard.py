@@ -5,7 +5,9 @@ Usage: sidecar_workdir_guard.py <workdir> <main-checkout> [<spill-dir>] [<brief>
 Denies Write, Edit and NotebookEdit whose resolved path is inside the main checkout and outside the child's
 workdir and the brief's declared writeSet, and a Bash command with a clear write there: any form `_shell_writes` extracts (a redirect, tee, a
 cp/mv/install destination, dd of=, a sed -i or perl -i file, an interpreter's inline write), a mutating
-`git -C <main>`, or a python command holding a main-checkout path literal beside a write call.
+`git -C <main>`, or a python call that deletes a main-checkout path, literal or bound to a name (`_shell_writes`
+`deleted_targets`: os remove, unlink, rmdir, removedirs, a rename's or replace's source; shutil move's source and
+rmtree; Path unlink, rmdir, a rename's or replace's source).
 The spill dir (where the launcher's -R/-P files and the job's `<label>.md` report live), each path the
 brief's `task` block writeSet names (a glob allows the directory before its first wildcard segment), and any
 path outside the main checkout stay allowed. A brief that is absent, unreadable or declares no writeSet adds nothing. The brief itself is never writable,
@@ -23,7 +25,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _git_commit import resolve_cd
-from _shell_writes import segment_states, written_targets
+from _shell_writes import deleted_targets, segment_states, written_targets
 from _win_path import drive_path
 
 WRITE_TOOLS = ("Write", "Edit", "NotebookEdit")
@@ -31,8 +33,6 @@ PATH_FIELDS = ("file_path", "notebook_path")
 GIT_WRITES = {"add", "rm", "mv", "commit", "reset", "checkout", "restore", "stash", "apply", "merge", "rebase",
               "cherry-pick", "revert", "am", "clean", "switch", "pull", "tag", "branch", "update-index"}
 _UNRESOLVED = re.compile(r"[$`*?\[\]{}()~]")
-_PY_WRITE = re.compile(r"""write_text|write_bytes|\.write\(|shutil\.|os\.(?:rename|replace|remove)|open\([^)]*,\s*[rb]*['"][wax+]""")
-_PY_PATH = re.compile(r"""['"]((?:[A-Za-z]:)?[\\/][^'"\s]+)['"]""")
 
 
 BRIEF_DENY = ("Denied: %s is this job's brief, whose writeSet this guard enforces; a job never edits it "
@@ -100,7 +100,7 @@ def bash_violation(command, cwd, work, main_root, spill, declared=(), brief=()):
             return path, "brief"
         return (path, "main") if inside(p, main_root) and not allowed(p, work, spill, declared) else None
 
-    for write in written_targets(command, "Bash", cwd):
+    for write in written_targets(command, "Bash", cwd) + deleted_targets(command, cwd):
         hit = bad(write.path, write.base)
         if hit:
             return hit
@@ -109,8 +109,6 @@ def bash_violation(command, cwd, work, main_root, spill, declared=(), brief=()):
         where = _git_target(words)
         if where:
             targets.append(where)
-        if words and re.match(r"python[\d.]*(\.exe)?$", posixpath.basename(words[0])) and _PY_WRITE.search(command):
-            targets += _PY_PATH.findall(command)
         for target in targets:
             hit = bad(target, base)
             if hit:

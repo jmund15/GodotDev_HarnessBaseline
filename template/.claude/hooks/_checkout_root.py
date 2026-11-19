@@ -4,9 +4,11 @@
 `main_checkout_root(start)` is the directory holding the repository's `.git` directory, whichever
 checkout `start` lies in; `start` itself when git cannot answer or the common dir is not a `.git`
 directory (a submodule's gitdir). `linked_main_root(start)` is that root only when `start` is in a linked
-worktree, else "". `repo_arg(argv)` pops a `--repo <path>` pair from an argv list and returns that checkout
-resolved, or None. CLI: `_checkout_root.py <dir>` prints `linked_main_root` in posix form.
+worktree, else "". `session_checkout(payload)` is the checkout a hook payload's `cwd` lies in, the root that
+repository-relative paths resolve against. `repo_arg(argv)` pops a `--repo <path>` pair from an argv list and returns
+that checkout resolved, or None. CLI: `_checkout_root.py <dir>` prints `linked_main_root` in posix form.
 """
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +35,35 @@ def main_checkout_root(start):
 def linked_main_root(start):
     dirs = git_dirs(start)
     return str(dirs[1].parent) if dirs and dirs[0] != dirs[1] and dirs[1].name == ".git" else ""
+
+
+def payload_cwd(payload):
+    """The hook payload's working directory as an absolute forward-slash path, or "" when it is missing,
+    relative or holds a `..` segment (review_fanout.js refuses such a `fold.repoRoot`)."""
+    cwd = payload.get("cwd")
+    root = cwd.strip().replace("\\", "/").rstrip("/") if isinstance(cwd, str) else ""
+    if not re.match(r"^([A-Za-z]:)?/", root) or re.search(r"(^|/)\.\.(/|$)", root):
+        return ""
+    return root
+
+
+def _git_line(cwd, *argv):
+    try:
+        done = subprocess.run(["git", "-C", cwd, *argv], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip().replace("\\", "/").rstrip("/") if done.returncode == 0 else ""
+
+
+def session_checkout(payload):
+    """The checkout the payload cwd belongs to, absolute with forward slashes: the superproject working tree
+    when the cwd sits inside a submodule, else the cwd's own top level (a linked worktree is its own root).
+    "" when git cannot answer. Repository-relative paths resolve against this, never the raw cwd: the session's
+    shell drifts into subdirectories."""
+    cwd = payload_cwd(payload)
+    if not cwd:
+        return ""
+    return _git_line(cwd, "rev-parse", "--show-superproject-working-tree") or _git_line(cwd, "rev-parse", "--show-toplevel")
 
 
 def repo_arg(argv):

@@ -76,6 +76,16 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
     state_file.write_text(json.dumps({"dispatch_table_pending": [entry], "sidecar_watchers": [session_wide]}))
     check("watch_records.py" not in run_hook("stopped"), "a live session watcher covers the record")
 
+    # A session watcher that exited to deliver a wake leaves an in-flight mark. The wake's delivery runs
+    # this hook at the turn boundary: the mark is cleared, and the advisory still asks for the re-arm.
+    state_file.write_text(json.dumps({"dispatch_table_pending": [entry],
+                                      "sidecar_wake_inflight": {"at": time.time()}}))
+    delivered = run_hook("completed")
+    check(str(record) in delivered.split(GROUP, 1)[-1],
+          "a delivered wake still lists the uncovered record and asks for the arm", delivered)
+    check("sidecar_wake_inflight" not in json.loads(state_file.read_text()),
+          "a delivered wake clears the in-flight mark")
+
     finished = root / "finished.record.json"
     (root / "finished.record.json.exit").write_text("3")
     dead = root / "dead.record.json"
@@ -99,6 +109,15 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
     group = output.split(GROUP, 1)[-1]
     check(str(queued) in group and str(never) not in group,
           "only running and queued records enter the uncovered group", output)
+    again = run_hook("killed")
+    check(str(queued) in again and all(str(path) not in again for path in (finished, dead, never, unknown)),
+          "an ended record already delivered is not listed again; an uncovered one still is", again)
+    subprocess.run([sys.executable, "-c",
+                    "import sys; sys.path.insert(0, %r); import _hook_state as h; h.clear_compaction_keys(%r)"
+                    % (str(ROOT / "hooks"), SID)], check=True, env=env, timeout=30)
+    after_compaction = run_hook("killed")
+    check(all(str(path) in after_compaction for path in (finished, dead, never, unknown)),
+          "a compaction dropped the earlier delivery, so the ended records are listed once more", after_compaction)
     earlier = root / "retry.record.json"
     later = root / "retry.attempt2.record.json"
     (root / "retry.record.json.exit").write_text("0")
@@ -198,5 +217,21 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
     (session_dir / "workflows").mkdir()
     (session_dir / "workflows" / (run_id + ".json")).write_text(json.dumps({"status": "completed"}))
     check("watch_records.py" not in run_hook("killed"), "a workflow with a terminal host record is silent")
+
+with tempfile.TemporaryDirectory(prefix="rearm_journal_") as temp:
+    sys.path.insert(0, str(ROOT / "hooks"))
+    sys.path.insert(0, str(ROOT / "tools"))
+    import sidecar_watch_rearm
+    captured = ROOT / "tests" / "fixtures" / "sidecar_journal" / "foreground_launch" / "journaled.record.json.journal.jsonl"
+    # The capture of a real launch's journal, verbatim. A lane that does not ship the fixture file still
+    # needs the row this case decides on, so the bytes are planted here too.
+    CAPTURED = ('{"ts": "2026-11-06T06:01:51Z", "schema": 1, "event": "started", "launchId": "7f9fa0c1-5432-44ba-b6d2-341bb40d8860", "record": "journaled.record.json", "session": "80576cc1-7e71-485a-8448-66e81bb842d1", "label": "journaled", "call": null, "pid": 609157, "winpid": 25504}\n'
+                '{"ts": "2026-11-06T06:02:06Z", "schema": 1, "event": "ended", "launchId": "7f9fa0c1-5432-44ba-b6d2-341bb40d8860", "record": "journaled.record.json", "session": "80576cc1-7e71-485a-8448-66e81bb842d1", "label": "journaled", "call": null, "code": 0}\n')
+    finished = Path(temp) / "journaled.record.json"
+    (Path(temp) / "journaled.record.json.journal.jsonl").write_bytes(
+        captured.read_bytes() if captured.is_file() else CAPTURED.encode("utf-8"))
+    category, code = sidecar_watch_rearm.classify(str(finished))
+    check(category == "finished" and str(code) == "0",
+          "a real launch's ended journal row with no .exit reads finished, never unknown", (category, code))
 
 print("test_sidecar_watch_rearm: %d passed, 0 failed" % passed)

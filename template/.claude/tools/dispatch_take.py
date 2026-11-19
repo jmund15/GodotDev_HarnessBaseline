@@ -13,7 +13,7 @@ the rating and whether to retire stay the session's judgment (`instruction_quali
     REPORT/REPLY each turn's answer (its result event, else its last text-only assistant message): the report,
                  then each answer to a later turn
     BASE/COMMITS the merge-base with --base (default `main`), then each commit oldest first, `new` or `landed`
-                 (`git cherry`), and the `git cherry-pick` line over the new ones, full shas
+                 (`git cherry`), full shas
     DIRTY        uncommitted paths the job left in its worktree
     ASSERTS      removed `.claude/tests` assert lines; each is `kept` when an added line of the diff holds the same
                  text at least as many times, else `MISSING` (an edited or dropped assert reads MISSING)
@@ -23,7 +23,6 @@ the rating and whether to retire stay the session's judgment (`instruction_quali
                  (with the re-arm call when it is not and a job runs)
     RETIRE       the delete guard's verdict for the worktree (`hooks/_regenerable_clone.py --retire-check`), asked once
                  every commit is on --base; before that, how many are not
-    RATE         the rating call with the outcome and note left to the session
 
 EXIT 0 facts printed; 1 a removed assert is MISSING, a proof failed or timed out, or the worktree holds
 uncommitted work; 2 refused (the job has not ended, or its record is unreadable).
@@ -174,8 +173,6 @@ def _git_facts(work, base_ref, out, run_proofs, proof_timeout):
     for sha, subject in commits:
         out.append(f"  {'landed' if sha in landed else 'new'} {sha} {subject}")
     new = [sha for sha, _ in commits if sha not in landed]
-    if new:
-        out.append("CHERRY-PICK git cherry-pick " + " ".join(new))
     _, dirty = _git(work, "status", "--short", "--ignore-submodules=all")
     rows = [row for row in dirty.splitlines() if row]
     if rows:
@@ -273,8 +270,6 @@ def take(source, label, root, base_ref="main", workdir=None, run_proofs=False,
         why = "; ".join(reasons)
         out.append(f"RETIRE {work}: " + ("retired: safe to delete" if retired else
                                          "blocked: " + (why if len(why) <= RETIRE_CHARS else why[:RETIRE_CHARS] + " ...")))
-    out.append(f"RATE python3 .claude/tools/orchestration_metrics.py --rate {label} <clean|defects|rework|discarded> "
-               f"--shape <right|over|under> --note \"<what the work needed>\"")
     return out, finding
 
 

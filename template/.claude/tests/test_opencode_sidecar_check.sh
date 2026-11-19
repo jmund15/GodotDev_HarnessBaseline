@@ -102,6 +102,24 @@ out="$(CURL_HTTP=401 run_check probe-messages)"; rc=$?
   && ok "a refused probe (HTTP 401) keeps exit 3, credential, and does not move" \
   || bad "a refused probe (HTTP 401) keeps exit 3, credential, and does not move" "$rc" "$out"
 
+# The shipped registry's own messages-mode Go row. Git Bash puts its own curl ahead of PATH, so the live probe
+# is a shell function loaded through BASH_ENV; a host session's launcher variables must not steer the launch.
+shipped="$(python3 -c 'import json,sys; print(next(m["id"] for m in json.load(open(sys.argv[1], encoding="utf-8"))["models"] if m.get("transport") == "go" and m.get("apiMode") == "messages"))' "$R/reference/external_models.json")"
+python3 -c 'import json,sys; sys.path.insert(0, sys.argv[1]); from _sidecar_launch import planted_reading as p; json.dump({"go": p("go", "plan-quota"), "anthropic": p("anthropic", "plan-quota")}, open(sys.argv[2], "w", encoding="utf-8"))' "$HERE" "$TMPD/capacity.json"
+cat > "$TMPD/stub_curl.sh" <<'SH'
+curl() { echo "$*" >> "$STUB_CURL_CALLS"; printf '%s\n%s' '{"ok":true}' 200; }
+SH
+rm -f "$TMPD/curl.calls"
+host_vars=(); while IFS= read -r v; do host_vars+=(-u "$v"); done < <(compgen -e | grep -E '^(CLAUDE|ANTHROPIC|SC_|SIDECAR|DEEPSEEK|OPENCODE|CODEX|PROVIDER_CAPACITY)')
+out="$(env "${host_vars[@]}" -u OC_LITELLM_BIN HOME="$TMPD/home" USERPROFILE="$TMPD/home" PATH="$CLEAN_PATH" \
+    TEMP="$TMPD/tmp" TMPDIR="$TMPD/tmp" SIDECAR_EXHAUSTED_DIR="$TMPD/markers" SC_PRICE_AT="2026-10-18T12:00:00Z" \
+    PROVIDER_CAPACITY_CACHE="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$TMPD/capacity.json")" HARNESS_MODEL_REGISTRY="$R/reference/external_models.json" \
+    CLAUDE_BIN="$TMPD/stubs/claude" STUB_CURL_CALLS="$TMPD/curl.calls" BASH_ENV="$TMPD/stub_curl.sh" \
+    bash "$LAUNCHER" --check -m "$shipped" 2>/dev/null)"; rc=$?
+[ "$rc" = 0 ] && grep -q "/v1/messages" "$TMPD/curl.calls" \
+  && ok "the shipped registry's messages-mode Go row passes --check against a 200 probe" \
+  || bad "the shipped registry's messages-mode Go row passes --check against a 200 probe" "$rc" "$out"
+
 out="$(run_check no-such-model-xyz)"; rc=$?
 [ "$rc" = 2 ] && [ ! -f "$TMPD/curl.calls" ] \
   && ok "an unknown -m exits 2 (resolution failure)" \

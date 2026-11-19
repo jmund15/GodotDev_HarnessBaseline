@@ -33,10 +33,11 @@ _harness_proof_call() {
         command "$exe" "$@"
     fi
 }
-python3() { _harness_proof_call python3 "$@"; }
-python() { _harness_proof_call python "$@"; }
-node() { _harness_proof_call node "$@"; }
-pwsh() { _harness_proof_call pwsh "$@"; }
+# A function the shell already holds (one a caller exported, such as a proof's planted missing python3) keeps its name.
+declare -F python3 >/dev/null || python3() { _harness_proof_call python3 "$@"; }
+declare -F python >/dev/null || python() { _harness_proof_call python "$@"; }
+declare -F node >/dev/null || node() { _harness_proof_call node "$@"; }
+declare -F pwsh >/dev/null || pwsh() { _harness_proof_call pwsh "$@"; }
 
 if [[ ${HARNESS_SLOT_BUDGET:-} != 1 ]]; then
     _harness_script=${0//\\//}

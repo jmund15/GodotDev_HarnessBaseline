@@ -35,6 +35,11 @@ archive_hook_gotchas.md). The `model` field is optional in SessionStart input
 (absent after /clear and on conversation recovery) — absence fails TOWARD
 injection: rails when in doubt.
 
+Output: the client caps each hook command's output (`HOOK_TEXT_CAP`) and shows a 2,000-character preview past it, and
+a delegate's rails exceed it. The hook is registered as `--part 1` .. `--part PARTS`; each part computes the same
+whole text and prints its whole-line slice (`_hook_parts`). Only part 1 caches the session tier. A text that outgrows
+PARTS ends its last part with an overflow note naming what is missing. With no `--part` it prints the whole text.
+
 Fail posture: advisory context hook — fail open (exit 0, silent) on any error.
 """
 import json
@@ -43,7 +48,7 @@ import sys
 import tempfile
 
 # Windows consoles default stdout to cp1252; rails text carries em-dashes.
-sys.stdout.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")  # LF only: a part's bytes are what the cap counts
 
 # The guard tier parse and the machine-aware clause rendering live once, in tools/guard_text.py,
 # because the sidecar bash lib calls that same module as a CLI on -D bare/pointer, where no hook
@@ -55,6 +60,7 @@ except Exception:  # advisory hook: a broken import must not brick a delegate ch
     guard_text = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _hook_parts
 import _model_tier
 try:
     import _session_transport  # noqa: E402
@@ -96,10 +102,9 @@ DELEGATE_TOOL_GRANT_HEAD = """\
 """
 DELEGATE_AI_WORKER_GRANT = (
     "- ai-worker IS available too (mcp__ai-worker__read_files / write_doc), though it can connect "
-    "a turn or two after init — a short dispatch may not see it yet. Route to it exactly as the "
-    "global ~/.claude/CLAUDE.md §Worker Model Delegation directs. Only if a call fails with "
-    "tool-not-found: substitute bounded Read (offset/limit) of the named files and say so in your "
-    "deliverable.\n"
+    "a turn or two after init. Route to it as `~/.claude/CLAUDE.md` §Local worker directs. Only if a "
+    "call fails with tool-not-found: use bounded Read (offset/limit) of the named files and say so "
+    "in your deliverable.\n"
 )
 DELEGATE_AI_WORKER_ABSENT = (
     "- ai-worker is NOT registered on this machine, so nothing here routes to it: substitute "
@@ -353,10 +358,9 @@ def effort_line(payload: dict, delegate: bool = False) -> str:
     to pin fan-outs invites it to attempt a spawn it cannot make."""
     if delegate:
         return (
-            "[session] You are a DELEGATE executing a brief, not an orchestrator. Your effort "
-            "was chosen by the dispatcher — do not reason about it, and do not try to fan out: "
-            "subagent spawning is outside your tool grant. Execute the brief yourself and close "
-            "by naming what you could not satisfy (orchestration §11)."
+            "[session] You are a DELEGATE executing a brief, not an orchestrator. Subagent spawning "
+            "is outside your tool grant, so execute the brief yourself and close by naming what you "
+            "could not satisfy (orchestration §11)."
         )
     effort = None
     for key in ("effort", "reasoningEffort", "reasoning_effort"):
@@ -366,18 +370,11 @@ def effort_line(payload: dict, delegate: bool = False) -> str:
             break
     if not effort:
         effort = _effort_from_status_line(payload.get("session_id"))
+    pins = ("A dispatch pins its own model and effort, chosen by the model ladder's selection line "
+            "(§0 dispatch shape, §5 pins).")
     if effort:
-        return (
-            f"[session] Your session effort is '{effort}'. Delegates never inherit it: "
-            "fan-outs and judgment stages dispatch with explicit model+effort pins on the "
-            "route you choose by the model ladder's selection line (§0 dispatch shape, §5 pins)."
-        )
-    return (
-        "[session] Your session effort is not visible to you — assume nothing about it. "
-        "Fan-outs and judgment stages dispatch with explicit model+effort pins on the route "
-        "you choose by the model ladder's selection line; never let a dispatch inherit session effort "
-        "(§0 dispatch shape, §5 pins)."
-    )
+        return f"[session] Your session effort is '{effort}'. {pins}"
+    return f"[session] Your session effort is not visible to you; assume nothing about it. {pins}"
 
 
 def compaction_lines(payload):
@@ -398,10 +395,9 @@ def compaction_lines(payload):
                      "ordinal and the session's dispatch history are unknown." % type(exc).__name__)
     # The edit guard (harness_edit_skill_reminder.py) and the dispatch gate deny on a skill not in context; this
     # line is the earlier surface those denies back up (instruction_quality §3).
-    lines.append("[compaction] An invoked skill the client re-attached whole and still matching its `SKILL.md` on "
-                 "disk after this compaction is still loaded; a copy marked truncated for compaction, or one that "
-                 "no longer matches the file on disk, is not, so invoke that skill again before an action that "
-                 "needs it (an edit of a `.claude/` file needs instruction_quality).")
+    lines.append("[compaction] A skill the client re-attached whole and unchanged on disk is still loaded; a "
+                 "truncated or changed copy is not. Invoke that skill again before an action that needs it "
+                 "(editing a `.claude/` file needs instruction_quality).")
     if dispatches != 0:
         try:
             import model_ladder_gate
@@ -411,25 +407,29 @@ def compaction_lines(payload):
     return lines
 
 
-def main() -> None:
-    try:
-        payload = json.load(sys.stdin)
-    except Exception:
-        payload = {}
+# The commands this hook is registered as in settings.base.json: `--part 1` .. `--part PARTS`. The client caps each
+# command's output at HOOK_TEXT_CAP, so `_hook_parts` slices the one whole text across them.
+PARTS = 2
+
+
+def build_text(payload: dict, write_tier: bool = True) -> str:
+    """The whole text this hook prints, the same for every part. Only part 1 caches the session tier."""
+    out = []
     shape = sidecar_delegate_shape()
-    print(effort_line(payload, delegate=bool(shape)))
+    out.append(effort_line(payload, delegate=bool(shape)))
     if shape:
         tier = _DELEGATE_SESSION_TIER.get(sidecar_delegate_tier(), "detailed")
-    else:
+    elif write_tier:
         tier = _model_tier.write_session_tier(payload.get("session_id"), payload.get("model"))
-    print(tier_line(tier))
+    else:
+        tier = _model_tier.tier_of(payload.get("model"))
+    out.append(tier_line(tier))
     if not shape:
         notes = driver_notes_block(payload.get("model"))
         if notes:
-            print(notes)
+            out.append(notes)
         if payload.get("source") == "compact":
-            for line in compaction_lines(payload):
-                print(line)
+            out.extend(compaction_lines(payload))
     if shape:
         # DELEGATE, not orchestrator: DEEPSEEK_RAILS opens "You ARE the orchestrator
         # this session", which is actively wrong for a child that cannot even spawn
@@ -437,29 +437,56 @@ def main() -> None:
         try:
             rails = guard_text(shape, sidecar_delegate_tier()) if guard_text else ""
             if rails:
-                print(rails)
+                out.append(rails)
         except Exception:
             pass  # advisory hook — a missing/malformed guard file must not brick the child
         # Unconditional for a delegate: it corrects CLAUDE.core.md §9 as much as RAILS, so it
         # must survive the lean-model early return below.
-        print(delegate_tool_grant())
+        out.append(delegate_tool_grant())
         # A delegate's corrections are keyed to the CHILD's model, not the parent's: a dispatched
         # luna lane needs the luna notes, and the payload of its own session start carries them.
         # Printed here rather than in the `not shape` branch above, so the delegate gets its rails
         # and grant first and one notes block, not two.
         notes = driver_notes_block(payload.get("model"))
         if notes:
-            print(notes)
+            out.append(notes)
     elif _session_transport is None:
-        print(ANTHROPIC_RAILS)  # resolver unavailable: the host transport is the safe rails to emit
+        out.append(ANTHROPIC_RAILS)  # resolver unavailable: the host transport is the safe rails to emit
     else:
         transport, source = _session_transport.resolve()
         if transport == _session_transport.UNKNOWN:
-            print(UNKNOWN_RAILS)
+            out.append(UNKNOWN_RAILS)
         elif transport == _session_transport.HOST_TRANSPORT:
-            print(ANTHROPIC_RAILS)
+            out.append(ANTHROPIC_RAILS)
         else:
-            print(provider_rails(transport, source, payload))
+            out.append(provider_rails(transport, source, payload))
+    return "".join(piece + "\n" for piece in out)
+
+
+def _overflow_note(dropped: int) -> str:
+    """The line that ends the last part when the text outgrew PARTS: what is missing and where to read it."""
+    shape = sidecar_delegate_shape()
+    where = (" Read the whole rails: `python3 .claude/tools/guard_text.py %s %s`." % (shape, sidecar_delegate_tier())
+             if shape else " Raise PARTS in hooks/session_model_rails.py and register the added parts.")
+    return "[rails overflow] The last %d lines of this session-start text did not fit the registered parts.%s\n" % (
+        dropped, where)
+
+
+def part_text(text: str, n: int) -> str:
+    """Part `n` of `text` across PARTS registered commands, ending with the overflow note when it outgrew them."""
+    return _hook_parts.part_of(text, n, PARTS, overflow=_overflow_note)
+
+
+def main(argv=None) -> None:
+    """`--part N` prints part N of the whole text; no argument prints the whole text (a proof or a read by hand)."""
+    argv = sys.argv[1:] if argv is None else argv
+    part = int(argv[argv.index("--part") + 1]) if "--part" in argv else None
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        payload = {}
+    text = build_text(payload, write_tier=part in (None, 1))
+    sys.stdout.write(text if part is None else part_text(text, part))
 
 
 if __name__ == "__main__":

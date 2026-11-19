@@ -43,13 +43,15 @@ class GoRosterTests(unittest.TestCase):
                 else:
                     self.assertNotEqual(state, "unavailable")
 
-    def test_go_calls_v4_1_flash_since_the_bare_flash_id_was_retired(self):
-        row = self.go["deepseek-v4.1-flash"]
-        self.assertEqual(row["id"], "go/deepseek-flash")
-        self.assertEqual(row["upstreamId"], "deepseek-v4.1-flash")
-        self.assertNotIn("state", row.get("status") or {})
-        self.assertEqual(self.go["deepseek-flash"]["id"], "go/deepseek-flash-v4.1")
-        self.assertEqual(self.go["deepseek-flash"]["status"]["state"], "unavailable")
+    def test_go_calls_a_live_catalog_id_since_the_bare_flash_id_was_retired(self):
+        live = next(row for row in self.data["models"] if row["id"] == "go/deepseek-flash")
+        self.assertIn("deepseek-flash", CATALOG)
+        self.assertIn(live["upstreamId"], CATALOG)
+        self.assertNotIn(live["upstreamId"], LEFT_CATALOG)
+        self.assertNotIn("state", live.get("status") or {})
+        retired = self.go["deepseek-flash"]
+        self.assertEqual(retired["upstreamId"], "deepseek-flash")
+        self.assertEqual(retired["status"]["state"], "unavailable")
 
     def test_parallel_product_lines_do_not_borrow_superseded_lifecycle(self):
         for left, right in (("qwen3.8-max", "qwen3.8-flash"),

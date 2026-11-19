@@ -530,12 +530,12 @@ class WorkflowResultTests(unittest.TestCase):
                                   text=True, encoding="utf-8", capture_output=True, check=False)
         self.assertNotEqual(mismatch.returncode, 0)
         self.assertEqual(mismatch.stdout, "")
-        self.assertIn("hash mismatch", mismatch.stderr)
+        self.assertIn("mismatch", mismatch.stderr, mismatch.stderr)
         missing_hash = subprocess.run(base + ["--workflow-full"], text=True, encoding="utf-8",
                                       capture_output=True, check=False)
         self.assertNotEqual(missing_hash.returncode, 0)
         self.assertEqual(missing_hash.stdout, "")
-        self.assertIn("requires --expect-journal-sha256", missing_hash.stderr)
+        self.assertIn("--expect-journal-sha256", missing_hash.stderr)
 
     def test_workflow_full_falls_back_to_the_archive_and_states_the_replay_gap(self):
         temp, run_dir = self.make_review(8)

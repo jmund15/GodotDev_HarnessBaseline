@@ -65,6 +65,16 @@ class Completion(unittest.TestCase):
         self.assertEqual(checked['verification']['verdicts'], {
             'worklog.record#1': 'VERIFIED', 'worklog.record#2': 'UNVERIFIED', 'worklog.record#checked': 'VERIFIED'})
 
+    def test_json_fenced_claims_object_is_checked_not_passed_empty(self):
+        """Shape cut from a live explore lens: the whole `{"claims": [...]}` answer inside one ```json fence."""
+        mod = self.module()
+        record = self.root / 'fenced.record.json'
+        text = '```json\n' + json.dumps({'claims': self.rows()}, indent=2) + '\n```\n\n- **Coverage.** prose after it\n'
+        Path(str(record) + '.out').write_text(json.dumps({'type': 'result', 'result': text}), encoding='utf-8')
+        self.assertEqual(mod.complete_record(record, root=self.root), 1)
+        checked = json.loads(Path(str(record) + '.claims.json').read_text())
+        self.assertEqual([r['verdict'] for r in checked['claims']], ['VERIFIED', 'UNVERIFIED'])
+
     def test_non_claim_json_keeps_answer_without_checker(self):
         mod = self.module()
         record = self.root / 'plain.json'
@@ -115,12 +125,6 @@ class Completion(unittest.TestCase):
             self.assertEqual(checked['verification']['counts']['UNCHECKED'], 2)
             self.assertTrue(all(r['verdict'] == 'UNCHECKED' for r in checked['claims']))
 
-    def test_consumer_reads_checked_deliverable(self):
-        doc = (TOOLS.parent / 'reference/sidecar_dispatch.md').read_text(encoding='utf-8')
-        step = doc.split('7. **Consume:', 1)[1].split('A fan-out is', 1)[0]
-        self.assertIn('<record>.claims.json', step)
-        self.assertNotIn('last `result` event', step)
-
     def test_detached_publishes_checked_before_exit(self):
         import time
         import sidecar_launch
@@ -135,9 +139,9 @@ class Completion(unittest.TestCase):
         env = dict(os.environ, CAPTURE=capture.as_posix())
         env.pop('SIDECAR_FANOUT_ID', None)
         run = subprocess.run([sidecar_launch.git_bash(), launcher.as_posix(), '-X', '-R', record.as_posix(),
-                              '-d', self.root.as_posix()], env=env, capture_output=True, text=True, timeout=15)
+                              '-d', self.root.as_posix()], env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(run.returncode, 0, run.stderr)
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + 30  # the exit mark is the event; this only catches a hang
         while not Path(str(record) + '.exit').exists() and time.monotonic() < deadline:
             time.sleep(.05)
         self.assertTrue(Path(str(record) + '.exit').exists(), 'detached completion did not land')

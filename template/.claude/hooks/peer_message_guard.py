@@ -125,11 +125,16 @@ def subagent_idle_seconds(parent_session, agent_id):
     return time.time() - max(stamps) if stamps else None
 
 
+def is_warm(row, idle):
+    """The one warmth decision: the peer is `busy`, or its last stamped entry is under WARM_SEC old."""
+    return row.get("status") == "busy" or (idle is not None and idle < WARM_SEC)
+
+
 def ages():
     """One line per local peer: name, status, minutes since its last turn, warm or cold."""
     for row in sorted(_registry(), key=lambda r: str(r.get("name"))):
         idle = idle_seconds(str(row.get("sessionId") or ""))
-        warm = row.get("status") == "busy" or (idle is not None and idle < WARM_SEC)
+        warm = is_warm(row, idle)
         minutes = "?" if idle is None else str(int(idle // 60))
         print(f"{row['name']}  {row.get('status') or '?'}  last turn {minutes} min ago  {'warm' if warm else 'cold'}")
     return 0
@@ -152,10 +157,8 @@ def main():
                     "permissionDecision": "deny",
                     "permissionDecisionReason": SUBAGENT_REASON.format(agent=to, age=int(idle // 60))}}))
             return 0
-        if peer.get("status") == "busy":
-            return 0
-        idle = idle_seconds(str(peer.get("sessionId") or ""))
-        if idle is not None and idle < WARM_SEC:
+        idle = None if peer.get("status") == "busy" else idle_seconds(str(peer.get("sessionId") or ""))
+        if is_warm(peer, idle):
             return 0
         age = "at an unknown time" if idle is None else f"{int(idle // 60)} min ago"
         print(json.dumps({"hookSpecificOutput": {

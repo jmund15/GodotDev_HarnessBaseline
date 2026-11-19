@@ -290,15 +290,17 @@ def main():
                   and "harness_growth_guard" in err))
 
     def slow(payload):
-        time.sleep(0.2)
+        time.sleep(2.0)
         return {"context": "too-late"}
 
     module.SUBHOOK_TIMEOUT = 0.05
     started = time.monotonic()
     rc, out, err = module.dispatch(payload, chain=(noisy, ("slow_advisory", slow)))
     elapsed = time.monotonic() - started
+    # The subhook sleeps 2 s; returning inside 1 s is the decision (the timeout, not the sleep, ended
+    # it). A tighter bound tested the host's scheduler, not the timeout.
     cases.append(("E8: a hung late check times out without losing prior warnings",
-                  elapsed < 0.15 and "advisory-from-noisy" in context(out)
+                  elapsed < 1.0 and "advisory-from-noisy" in context(out)
                   and "slow_advisory" in err and "timeout" in err))
 
     huge = ("huge_advisory", lambda payload: {"context": "x" * 1_000_000})

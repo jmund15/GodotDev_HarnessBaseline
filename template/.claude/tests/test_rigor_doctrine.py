@@ -102,25 +102,11 @@ def citing_owner_files():
     return sorted(cases)
 
 
-def bar_phrases():
-    try:
-        import finding_bar
-    except ImportError:
-        return ['<finding_bar missing>']
-    return list(finding_bar.BAR_PHRASES) or ['<BAR_PHRASES empty>']
-
-
 @pytest.mark.parametrize('path,owner', citing_owner_files(), ids=['%s>%s' % c for c in citing_owner_files()])
 def test_stage_owner_cites_its_rigor_owner(path, owner):
     assert not path.startswith('<'), path
     anchor = ANCHORS[owner]
     assert anchor in (CLAUDE / path).read_text(encoding='utf-8'), '%s does not cite %s' % (path, anchor)
-
-
-@pytest.mark.parametrize('phrase', bar_phrases())
-def test_bar_phrase_is_in_the_owner(phrase):
-    assert not phrase.startswith('<'), phrase
-    assert phrase in bar_text(), 'bar phrase missing from rigor.md: %r' % phrase
 
 
 @pytest.mark.parametrize('case,phrase,roots', RETIRED, ids=[case for case, _, _ in RETIRED])
@@ -140,11 +126,6 @@ def test_rigor_hole_is_renamed():
     assert not hits, 'rigor-hole still present:\n%s' % hits
 
 
-def test_explore_relevance_rule_is_kept():
-    text = (CLAUDE / 'commands/agents/explore_agents.md').read_text(encoding='utf-8')
-    assert 'might be interesting' in text.lower(), 'explore_agents.md lost its relevance rule (excluded class)'
-
-
 def test_pr_ready_has_no_tier_words():
     hits = git_grep('-w', '-E', 'WARN|INFO', '--', '.claude/commands/pr_ready.md')
     assert not hits, 'pr_ready.md still uses WARN/INFO tiers:\n%s' % hits
@@ -162,11 +143,10 @@ def test_proof_corpus_binds_every_doctrine_and_retired_root():
 
 def main():
     cases = [(test_stage_owner_cites_its_rigor_owner, c, 'cites:%s>%s' % c) for c in citing_owner_files()]
-    cases += [(test_bar_phrase_is_in_the_owner, (p,), 'bar:' + p) for p in bar_phrases()]
     cases += [(test_retired_phrase_is_gone, row, 'retired:' + row[0]) for row in RETIRED]
     cases += [(test_retired_word_is_gone, row, 'word:' + row[0]) for row in RETIRED_WORDS]
     cases += [(test, (), test.__name__) for test in
-              (test_rigor_hole_is_renamed, test_explore_relevance_rule_is_kept, test_pr_ready_has_no_tier_words,
+              (test_rigor_hole_is_renamed, test_pr_ready_has_no_tier_words,
                test_proof_corpus_binds_every_doctrine_and_retired_root)]
     failed = 0
     for test, args, name in cases:

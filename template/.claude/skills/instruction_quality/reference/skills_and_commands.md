@@ -5,7 +5,7 @@ Read in full when the edit changes a skill or a command. `SKILL.md` §1–§6b a
 ## Skill-specific
 
 ### 7. Description-as-trigger discipline
-Descriptions state when and why to load the skill: trigger first, then every real competing non-use. Cut any clause a fresh agent does not need to choose it, including a sibling that names no real competitor. Broad names need clear preconditions. A case the body handles belongs in positive scope, not SKIP. `python3 .claude/tools/load_census.py --budgets --caps` reports description length as an audit signal.
+Descriptions state when and why to load the skill: trigger first, then every real competing non-use. Cut any clause a fresh agent does not need to choose it, including a sibling that names no real competitor. Broad names need clear preconditions. A case the body handles belongs in positive scope, not SKIP. `python3 .claude/tools/load_census.py --budgets` reports description length as an audit signal.
 
 ### 8. Frontmatter convention
 Skills use `description: >-`; commands use one action-first `description:` line, pure literal. Workflows set `meta.description` plus ` - ` plus `meta.whenToUse` when present, both pure literals. A description's content follows §7's litmus. Missing command descriptions expose the first body line in the catalog. Commands and skills can both be model-invocable; inspect registration and `disable-model-invocation` before calling either deferred. A skill's `paths:` surfaces its description, never its body.

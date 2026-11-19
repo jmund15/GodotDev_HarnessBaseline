@@ -120,7 +120,7 @@ SESSION_PROC_NAMES = ("node.exe", "node", "claude.exe", "claude")
 OWNER_WALK_LIMIT = 12
 
 
-def _proc_table_windows():
+def proc_table_windows():
     """{pid: (ppid, exe_name_lower)} from one CreateToolhelp32Snapshot.
 
     Stdlib-only on purpose: **psutil is not installed on this machine** (verified
@@ -223,7 +223,7 @@ def session_root(pid: int):
     if platform.system() != "Windows":
         return _session_root_proc(pid) if os.path.isdir("/proc") else None
     try:
-        table = _proc_table_windows()
+        table = proc_table_windows()
         cur = pid
         for _ in range(OWNER_WALK_LIMIT):
             row = table.get(cur)

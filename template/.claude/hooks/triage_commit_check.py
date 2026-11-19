@@ -10,7 +10,8 @@ harness-quality-seat admission, not a declaration. A commit with no trailer unde
 `--trailer "Triage: <recorded fields>"` through `updatedInput`, so `review_ledger.py owed` and the escape log
 read the triage this check used. A commit with neither is not rewritten: no reader parses a derived trailer
 (`triage.py rederive` and `escape_log.py` recompute from the diff), and a rewritten call costs a turn under auto
-mode, whose classifier gives no verdict on a call a hook changed. It speaks only above local reach.
+mode, whose classifier gives no verdict on a call a hook changed. It speaks only above local reach, and its
+derived-fields line speaks once per distinct text per session.
 Derived fields are not a judged triage. This hook never denies. An exception, a read error or an
 import failure exits non-zero; the dispatcher reports the unavailable check on stderr and in context.
 
@@ -45,10 +46,9 @@ from _git_commit import (commit_invocations, commit_message, commit_source, comm
                          in_project, run_git, staged_paths)
 import triage  # noqa: E402
 
-OWED = ("[review] %d staged file(s) not reviewed since they changed: %d edited after a reviewed blob, "
-        "%d never reviewed. A fix applied outside a fold records with post_check.py review --findings <file> "
-        "--applied <ids> --files <paths> (orchestrator_action_protocol.md Step 4); how any other change is "
-        "checked is the session's choice under orchestration §2 Later rounds.")
+OWED = ("[review] %d staged file(s) changed since their last review (%d edited after a reviewed blob, "
+        "%d never reviewed). Record a fix applied outside a fold with post_check.py review --findings <file> "
+        "--applied <ids> --files <paths> (orchestrator_action_protocol.md Step 4).")
 OWED_FAILED = "[review] owed check did not run: %s; run review_ledger.py uncovered"
 
 RAISE_HEAD = "[triage] the staged diff raises the recorded triage; raise the trailer, or re-triage with task_record.py triage --reason:"
@@ -208,8 +208,11 @@ def _triage_block(invocation, session_id, tags, paths):
     if message is None:
         message = "\n".join(commit_trailer_lines(invocation.rest)) or None
     fields, error, from_record = _recorded(message, session_id, with_source=True)
-    return triage_verdict(result, fields, error, message, invocation.sub,
-                          lambda: _standing_state(invocation), from_record)
+    advice, trailer = triage_verdict(result, fields, error, message, invocation.sub,
+                                     lambda: _standing_state(invocation), from_record)
+    if advice and fields is None and not error:
+        advice = _once(session_id, "triage-derived", advice)  # the derived fields repeat until the session records its triage
+    return advice, trailer
 
 
 def _standing_state(invocation):

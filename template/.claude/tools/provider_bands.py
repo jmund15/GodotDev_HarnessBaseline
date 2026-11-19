@@ -1072,6 +1072,23 @@ def _image_text(row):
     return "%s (%s probe)" % (state, route["row"]) if state == "verified" and route.get("row") else state
 
 
+COMPUTED_EFFORT_READINGS = (("author", "tight"), ("author", "judged"), ("scout", "tight"), ("lens", "checklist"),
+                            ("lens", "review"))
+
+
+def _computed_efforts(alias):
+    """Each reading's computed rung for a row (`model_registry.effort_for`), `-` where the ladder computes none."""
+    import model_registry                                                # noqa: E402
+    cells = []
+    for kind, reading in COMPUTED_EFFORT_READINGS:
+        try:
+            effort, status = model_registry.effort_for(alias, kind, reading)
+        except (model_registry.RegistryError, model_registry.UnknownModel):
+            effort, status = None, "unchecked"
+        cells.append("%s %s %s" % (kind, reading, effort if status == "computed" else "-"))
+    return ", ".join(cells)
+
+
 def render_tier_table(got):
     """The `for-role` text: ladder doctrine is printed ahead of it; every line here is a pick fact, and no
     dropped plan, hop recipe, transport label or pin spelling appears."""
@@ -1098,12 +1115,13 @@ def render_tier_table(got):
             # Its cost, speed, intel, ± and effort cells print once, in the ladder table above, under `ladder`.
             name = row.get("alias") or row["id"]
             ladder = row.get("ladder")
-            lines.append("  %s%s %s%s%s%s" % (
+            lines.append("  %s%s %s%s%s%s%s" % (
                 name, "" if ladder == name else " (ladder %s)" % (ladder or "none"),
                 ", ".join("%s:%s" % (tier, kind) for tier, kind in row["standing"].items()),
                 " | input %s | image route %s" % (_input_text(row), _image_text(row)),
                 " | draw %s" % draw if draw else "",
-                ' | probation "%s"' % row["probation"] if row.get("probation") else ""))
+                ' | probation "%s"' % row["probation"] if row.get("probation") else "",
+                " | effort %s" % _computed_efforts(row.get("alias") or row["id"])))
     for plan in got.get("warming") or []:
         lines.append("  %s warming" % plan)
     for option in got.get("payOptions") or []:

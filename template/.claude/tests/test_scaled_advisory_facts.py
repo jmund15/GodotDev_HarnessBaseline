@@ -128,7 +128,7 @@ def test_number_fact_once_but_new_number_fires(tmp_path, monkeypatch):
         monkeypatch.setattr(sys, 'stdout', capture)
         assert numbers.main() == 0
         return capture.getvalue()
-    assert 'does this number bound agent behavior?' in call()
+    assert 'extract_numbers.py stub' in call()
     assert call() == ''
     fixture.write(repo, '.claude/rules/x.md', '# X\n\nUse two seats. Use three rounds.\n')
     fixture.git(repo, 'add', '.claude/rules/x.md')

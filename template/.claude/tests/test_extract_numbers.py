@@ -22,6 +22,8 @@ REPO = os.path.abspath(os.path.join(CLAUDE, ".."))
 TOOLS = os.path.join(CLAUDE, "tools")
 TOOL = os.path.join(TOOLS, "extract_numbers.py")
 sys.path.insert(0, TOOLS)
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
 
 SCOPE = {"paths": [".claude/rules/*.md", ".claude/workflows/*.js"], "rows_dir": ".claude/instruction_rows"}
 RECON = re.compile(r"scope files \d+, changed files \d+, changed lines \d+, flagged tokens \d+, with rows \d+")
@@ -63,8 +65,10 @@ def mkrepo(tmp, name, files, scope=SCOPE, rows=None):
 
 
 def run(repo, *args):
-    p = subprocess.run([sys.executable, TOOL, "--repo", repo, *args], capture_output=True, text=True, encoding="utf-8")
-    return p.returncode, p.stdout, p.stderr
+    code, out, err, _ = _hook_call.call(TOOL, {}, argv=["--repo", repo, *args])
+    if "Traceback" in err:
+        raise AssertionError("extract_numbers crashed: " + err[-800:])
+    return code, out, err
 
 
 def row(en, path, sentence, token, **kw):
@@ -435,6 +439,26 @@ def main():
         rc, out, _ = run(r11, "list", "outside.md")
         case("list ignores the scope paths", rc == 0 and "55" in out)
 
+        # ---- a row whose sentence is gone ------------------------------------------
+        # The author rewords a sentence: its old rows key to a hash no line holds. `add` for that file drops them; a
+        # dead row of another file stays until `prune`, which drops every dead row and keeps every live one.
+        r14 = mkrepo(tmp, "c14", {".claude/rules/a.md": "Cap is 500 lines. See the basis.\n",
+                                  ".claude/rules/b.md": "Keep 7 here.\n"},
+                     rows=[row(en, ".claude/rules/a.md", "Cap is 400 lines.", "400"),
+                           row(en, ".claude/rules/b.md", "Keep 6 here.", "6"),
+                           row(en, ".claude/rules/b.md", "Keep 7 here.", "7")])
+        rows14 = os.path.join(r14, ".claude", "instruction_rows", "numbers.jsonl")
+        tokens14 = lambda: sorted(json.loads(l)["token"] for l in open(rows14, encoding="utf-8") if l.strip())
+        write(tmp, "new14.jsonl", json.dumps(row(en, ".claude/rules/a.md", "Cap is 500 lines.", "500")) + "\n")
+        rc, out, err = run(r14, "add", os.path.join(tmp, "new14.jsonl"))
+        case("add drops the dead rows of the file it adds rows for, and only that file",
+             rc == 0 and tokens14() == ["500", "6", "7"] and "dropped 1" in out)
+        rc, out, err = run(r14, "prune")
+        case("prune drops every row whose sentence and token no live line holds",
+             rc == 0 and tokens14() == ["500", "7"] and "dropped 1" in out)
+        rc, out, err = run(r14, "prune")
+        case("prune on a clean store changes nothing", rc == 0 and tokens14() == ["500", "7"] and "dropped 0" in out)
+
         # ---- changed_lines directly --------------------------------------------------
         r13 = mkrepo(tmp, "c13", base)
         write(r13, ".claude/rules/a.md", "Intro line.\n\nAdded.\n")
@@ -465,6 +489,10 @@ def main():
             print("  uncovered: " + ", ".join(missing[:5]))
         for label, ok in _parity_cases(en):
             case(label, ok)
+
+    spawned = subprocess.run([sys.executable, TOOL, "--help"], capture_output=True, text=True, encoding="utf-8")
+    case("the tool imports and exits 0 from its registered command",
+         spawned.returncode == 0 and "Traceback" not in spawned.stderr)
 
     failures = []
     for label, ok in cases:

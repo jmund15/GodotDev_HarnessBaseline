@@ -99,7 +99,6 @@ OPTIONAL_DATA = {
     ".claude/tools/semantic_search_idle_install.py": ("package.json",),
     ".claude/hooks/harness_edit_skill_reminder.py": ("commands/agents/session_audit_agents.md",),
     ".claude/hooks/semantic_search_scope_guard.py": ("reference/semantic_search.md",),
-    ".claude/hooks/skill_dispatch_gate.py": ("hooks/skill_dispatch.project.json",),
     ".claude/scripts/sync_plan_config.py": ("user_scope/*",),
     ".claude/tools/restate_scan.py": ("tests/fixtures/*",),
     ".claude/tools/vault_sync.py": ("tools/vault_sync.project.json",),
@@ -111,6 +110,12 @@ OPTIONAL_DATA = {
 OPTIONAL_LOADER = "_optional_hooks"
 PLACEHOLDERS = {"foo", "bar", "baz", "example", "slug", "name", "x", "y"}
 FIXTURE_TREE = "/tests/fixtures/"
+
+
+def _fixture(rel: str) -> bool:
+    return FIXTURE_TREE in "/" + rel
+
+
 SKIP_WALK = {".cache", "cache", "logs", "scratch", "worktrees", "sessions", "__pycache__", "plans"}
 
 
@@ -200,7 +205,7 @@ class Tree:
         self.deps: set[str] = set()
         self.by_base: dict[str, list[str]] = {}
         for rel in layers:
-            if FIXTURE_TREE in rel:
+            if _fixture(rel):
                 continue
             self.by_base.setdefault(posixpath.basename(rel), []).append(rel)
 
@@ -221,7 +226,7 @@ class Tree:
                     rel = Path(dirpath, name).relative_to(self.root).as_posix()
                     if rel not in self.layers:
                         self._local.append(rel)
-        return [rel for rel in self._local if rel.endswith(suffix) and FIXTURE_TREE not in rel]
+        return [rel for rel in self._local if rel.endswith(suffix) and not _fixture(rel)]
 
     def memories(self) -> dict[str, list[str]]:
         """Memory slug -> its files, shipped or local, from the memory store and its archive."""
@@ -297,7 +302,7 @@ def _expand(tree: Tree, cands):
             out.append(c)
     if suffix and not any(c in tree.layers or tree.on_disk(c) for c in out):
         # A fixture tree holds copies of real files; a suffix citation never means the copy.
-        out.extend(rel for rel in tree.layers if rel.endswith(suffix) and FIXTURE_TREE not in rel)
+        out.extend(rel for rel in tree.layers if rel.endswith(suffix) and not _fixture(rel))
         out.extend(tree.local_with_suffix(suffix))
     return out
 
@@ -758,7 +763,7 @@ def registration_findings(tree: Tree, check: set[str] | None = None) -> list[Fin
     hooks = {}
     for rel in tree.layers:
         match = re.fullmatch(r"\.claude/hooks/([A-Za-z0-9][\w-]*)\.py", rel)
-        if match and FIXTURE_TREE not in rel:
+        if match and not _fixture(rel):
             hooks[match.group(1)] = rel
     if check is not None and not any(rel in check for rel in hooks.values()):
         return []
@@ -815,7 +820,7 @@ def scan(root: Path, layers: dict[str, str], check: set[str] | None = None) -> l
     tree = Tree(Path(root), layers)
     findings = []
     for source in sorted(check if check is not None else layers):
-        if source not in layers or FIXTURE_TREE in source:
+        if source not in layers or _fixture(source):
             continue
         path = tree.root / source
         try:
@@ -832,7 +837,7 @@ def row_dependencies(root: Path, relpath: str, layers: dict[str, str] | None = N
     """Every file `relpath` imports, runs or cites, shipped or local: what `scan` resolves for it, whatever its
     layer. `layers` defaults to the consumer view of the root's lock; `text` to the file on disk. A fixture-tree copy
     is test data, never a citer, so it depends on nothing."""
-    if FIXTURE_TREE in "/" + relpath:
+    if _fixture(relpath):
         return []
     root = Path(root)
     if layers is None:
@@ -858,7 +863,7 @@ def dependents(root: Path, layers: dict[str, str], texts: dict[str, str], target
     tree = Tree(Path(root), layers)
     found: dict[str, list[str]] = {target: [] for target in targets}
     for source in sorted(texts):
-        if source not in layers or FIXTURE_TREE in "/" + source:
+        if source not in layers or _fixture(source):
             continue
         tree.deps = set()
         for _ in _scan_text(tree, source, texts[source]):
@@ -871,6 +876,51 @@ def dependents(root: Path, layers: dict[str, str], texts: dict[str, str], target
 def lock_findings(root: Path, lock: dict, manifest: dict | None) -> list[Finding]:
     """Findings for a consumer's tracked lock rows over what its consumers receive: `consumer_layers(lock, manifest)`."""
     return scan(Path(root), consumer_layers(lock, manifest), lock_checked(lock))
+
+
+def _citer_names(rel: str) -> set[str]:
+    """Substrings a citing text holds when it resolves to `rel`: its basename, its stem and its folder names.
+    Every lookup names a file by one of these, so a text holding none of them cannot resolve to `rel`."""
+    base = posixpath.basename(rel)
+    folders = set(rel.split("/")[:-1]) - {".claude"}
+    return {base, base.rsplit(".", 1)[0], *folders} - {""}
+
+
+def added_findings(root: Path, before: dict, after: dict, manifest: dict | None) -> set[str]:
+    """Rendered findings `after` holds and `before` does not, the same set as `lock_findings` on both locks
+    differenced. A source's findings depend on its own text, its own layer and the layers of the files its text
+    names. So only the sources a changed row can reach are scanned: a source that names no name of a changed row
+    keeps the same findings in both states and cancels out."""
+    root = Path(root)
+    layers_before, layers_after = consumer_layers(before, manifest), consumer_layers(after, manifest)
+    check_before, check_after = lock_checked(before), lock_checked(after)
+    touched = {rel for rel in layers_before.keys() | layers_after.keys()
+               if layers_before.get(rel) != layers_after.get(rel)}
+    touched |= check_before ^ check_after
+    if not touched:
+        return set()
+    names = set().union(*(_citer_names(rel) for rel in touched))
+    texts: dict[str, str] = {}
+    for source in sorted(check_before | check_after):
+        if _fixture(source):
+            continue
+        try:
+            text = (root / source).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if source in touched or any(name in text for name in names):
+            texts[source] = text
+
+    def findings(layers: dict[str, str], check: set[str]) -> set[str]:
+        tree = Tree(root, layers)
+        found = []
+        for source in sorted(texts):
+            if source in check and source in layers:
+                found.extend(_scan_text(tree, source, texts[source]))
+        found.extend(registration_findings(tree, check))
+        return {finding.render() for finding in found}
+
+    return findings(layers_after, check_after) - findings(layers_before, check_before)
 
 
 def main(argv=None) -> int:

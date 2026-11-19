@@ -531,7 +531,7 @@ def _load_baseline_sync():
 
 
 def _pinned_template_tokens(
-    repo_root: Path, lock: dict, baseline_dir: str | None = None,
+    repo_root: Path, lock: dict, baseline_dir: str | None = None, source=None,
 ) -> set[str]:
     """The whole exact-case candidate vocabulary (`_WORD_RE`) of the pinned
     baseline `template/` tree, read through git's object store via
@@ -552,10 +552,12 @@ def _pinned_template_tokens(
     if not baseline_dir and not (repo_root / _BASELINE_CACHE_RELPATH).is_dir():
         return set()
     baseline_sync = _load_baseline_sync()
-    try:
-        source = baseline_sync.ensure_baseline(lock, repo_root, baseline_dir)
-    except baseline_sync.BaselineError as exc:
-        raise IdentityError(f"could not resolve pinned template tree: {exc}") from exc
+    owned = source is None
+    if owned:
+        try:
+            source = baseline_sync.ensure_baseline(lock, repo_root, baseline_dir)
+        except baseline_sync.BaselineError as exc:
+            raise IdentityError(f"could not resolve pinned template tree: {exc}") from exc
     try:
         listing = subprocess.run(
             ["git", "-C", str(source.path), "ls-tree", "-r", "--name-only",
@@ -573,12 +575,13 @@ def _pinned_template_tokens(
             tokens.update(_WORD_RE.findall(blob.decode("utf-8", errors="ignore")))
         return tokens
     finally:
-        source.close()
+        if owned:
+            source.close()
 
 
 def build_profile_for_repo(
     repo_root: Path, subsystems_rel_path: str | None = None, abbrev_csv: str | None = None,
-    template_tokens: set | frozenset | None = None, baseline_dir: str | None = None,
+    template_tokens: set | frozenset | None = None, baseline_dir: str | None = None, source=None,
 ) -> dict:
     """Build the real profile for the consumer rooted at `repo_root`.
 
@@ -627,7 +630,7 @@ def build_profile_for_repo(
     type_names = _collect_type_names(repo_root, subsystem_paths)
 
     if template_tokens is None:
-        template_tokens = _pinned_template_tokens(repo_root, lock, baseline_dir)
+        template_tokens = _pinned_template_tokens(repo_root, lock, baseline_dir, source)
 
     return build_profile(
         substitutions=substitutions, abbreviations=abbreviations,

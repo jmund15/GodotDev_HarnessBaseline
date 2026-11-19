@@ -162,7 +162,10 @@ def main():
     check("the first Read of a governed hook names the edit gate and reference/hooks.md",
           r.returncode == 0 and len(notes) == 1 and "instruction_quality" in notes[0]
           and "hooks.md" in notes[0] and "denies any edit" in notes[0], repr(notes))
-    check("the notice stays within its one-line budget", bool(notes) and len(notes[0]) <= 330,
+    check("the notice is one line", bool(notes) and "\n" not in notes[0], repr(notes))
+    r, notes = read_ctx("prd0017", os.path.join(tmp, ".claude", "CLAUDE.md"))
+    check("an unmapped class's notice names the reference directory",
+          r.returncode == 0 and len(notes) == 1 and "instruction_quality/reference/" in notes[0],
           repr(notes))
     r, notes = read_ctx("prd0010", os.path.join(tmp, ".claude", "commands", "practice.md"))
     check("a second governed Read in the same window is silent", r.returncode == 0 and not notes,

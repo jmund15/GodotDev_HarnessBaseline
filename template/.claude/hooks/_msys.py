@@ -7,6 +7,7 @@ usr\\bin\\bash.exe does not add /usr/bin to PATH, so a `bash -c` command names i
 """
 import os
 import shutil
+import subprocess
 
 _GIT_ROOTS = (r"C:\Program Files\Git", r"C:\Program Files (x86)\Git")
 
@@ -29,3 +30,13 @@ def tool(name):
         if os.path.isfile(cand):
             return cand
     return shutil.which(name) or name
+
+
+def ps_pid_alive(pid, timeout=10):
+    """True or False for an MSYS pid through Git's `ps -p`, None when ps answered nothing (it complained, or printed
+    no header line). Raises OSError or SubprocessError when ps cannot run, so a caller picks its own fallback."""
+    r = subprocess.run([tool("ps"), "-p", str(pid)], capture_output=True, text=True, timeout=timeout)
+    lines = r.stdout.splitlines()
+    if (r.returncode != 0 and r.stderr.strip()) or not lines:
+        return None
+    return any(ln.split()[:1] == [str(pid)] for ln in lines[1:])

@@ -104,7 +104,8 @@ try:
     os.remove(store)
     open(os.path.join(tests, "a.py"), "w").close()
     stayed = [run(3, dict(BASE, **{"a.py": 30})), run(4, dict(BASE, **{"a.py": 30}))]
-    seen = gate_growth.update_store(store, run(5, dict(BASE, **{"a.py": 30})), history + stayed, tests)
+    early = [run(t / 10, BASE) for t in range(1, 6)]
+    seen = gate_growth.update_store(store, run(5, dict(BASE, **{"a.py": 30})), early + history + stayed, tests)
     check("a new store is seeded from the recorded closes, so growth older than it still shows",
           seen.get("a.py", {}).get("closes") == 3 and seen["a.py"]["before_s"] == 10.0, seen)
     os.remove(store)
@@ -222,6 +223,86 @@ try:
           lines[0].startswith("harness_tests: close growth: a.py 30.0s"), lines)
 finally:
     shutil.rmtree(lroot, ignore_errors=True)
+
+# Chance: a close tests every proof against its own range, so a proof with few earlier passes tops two of them by chance
+# alone. With n earlier passes the chance that a proof's last two are the top two of n+2 is 1/C(n+2, 2); the close
+# names a proof only when that chance is under one in the number of proofs it tested (under one false name expected).
+def crowd(ts, p0, others=30, jitter=0):
+    """`others` steady proofs with a deterministic wobble of `jitter` seconds, plus p0 at `p0` seconds."""
+    times = {"p%d.py" % i: 20 + jitter * ((i + ts) % 3 - 1) for i in range(1, others + 1)}
+    return run(ts, dict(times, **{"p0.py": p0}))
+
+
+thin_history = [crowd(t, 10) for t in range(1, 4)] + [crowd(4, 30)]
+thin = gate_growth.grown(crowd(5, 30), thin_history, lasting=True)
+check("lasting: a proof with 3 earlier passes among 31 tested is not named, though both recent passes top its range",
+      thin == [], thin)
+shallow = gate_growth.grown(run(5, dict(BASE, **{"a.py": 30})), [run(t, BASE) for t in range(1, 4)]
+                            + [run(4, dict(BASE, **{"a.py": 30}))], lasting=True)
+check("lasting: the same 3 earlier passes among 4 tested name the proof", [g["proof"] for g in shallow] == ["a.py"],
+      shallow)
+
+# A real slowdown at steady load: p0 holds near 10 s over many closes, then rises, and the other proofs do not move.
+steady_p0 = [10.0, 10.2, 9.9, 10.1, 10.0, 10.3, 9.8, 10.1, 10.0, 10.2]
+rise_history = [crowd(t + 1, s, jitter=1) for t, s in enumerate(steady_p0)] + [crowd(11, 14, jitter=1)]
+risen = gate_growth.grown(crowd(12, 20, jitter=1), rise_history, lasting=True)
+check("lasting: a proof that rises over two closes at steady load is named among 31 tested",
+      [g["proof"] for g in risen] == ["p0.py"] and risen[0]["samples"] == 10 and risen[0]["before_s"] < 11, risen)
+check("lasting: the same rise held to one close is not named",
+      gate_growth.grown(crowd(11, 14, jitter=1), rise_history[:-1], lasting=True) == [])
+
+# A stale entry: the entry holds while its range is the better evidence. Once the closes that saw the proof above it
+# outnumber the passes that set it, the range was the exception and the entry leaves.
+sroot = tempfile.mkdtemp(prefix="gate_growth_stale_")
+try:
+    stests = os.path.join(sroot, "tests")
+    os.makedirs(stests)
+    for name in BASE:
+        open(os.path.join(stests, name), "w").close()
+    slow = dict(BASE, **{"a.py": 30})
+
+    def fold_slow(early_passes, slow_closes):
+        """Open an entry on `early_passes` earlier passes, then fold `slow_closes` more slow closes; return the store."""
+        path = os.path.join(sroot, "store_%d_%d.json" % (early_passes, slow_closes))
+        past = [run(t, BASE) for t in range(1, early_passes + 1)]
+        first = early_passes + 1
+        past.append(run(first, slow))
+        gate_growth.update_store(path, run(first + 1, slow), past, stests, lasting=True)
+        for k in range(slow_closes):
+            past.append(run(first + 1 + k, slow))
+            gate_growth.update_store(path, run(first + 2 + k, slow), past, stests, lasting=True)
+        return json.load(open(path, encoding="utf-8"))
+
+    opened = fold_slow(3, 0)
+    check("an entry stores the earlier passes that set its range", opened.get("a.py", {}).get("samples") == 3, opened)
+    held = fold_slow(3, 2)
+    check("an entry stays while the closes above its range do not outnumber the passes that set it",
+          held.get("a.py", {}).get("closes") == 3, held)
+    gone = fold_slow(3, 3)
+    check("an entry leaves when the closes above its range outnumber the passes that set it", "a.py" not in gone, gone)
+    deep = fold_slow(8, 3)
+    check("an entry resting on more earlier passes outlasts those closes", deep.get("a.py", {}).get("closes") == 4, deep)
+
+    def legacy(early_passes, closes):
+        """An entry written before `samples` was stored: only the run log says how many passes set its range."""
+        path = os.path.join(sroot, "legacy_%d_%d.json" % (early_passes, closes))
+        past = [run(t, BASE) for t in range(1, early_passes + 1)]
+        since = early_passes + 1
+        past += [run(since + k, slow) for k in range(closes)]
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"a.py": {"before_s": 10.0, "now_s": 30.0, "raw_before_s": 10.0, "closes": closes,
+                                "since": since, "last": since + closes - 1}}, handle)
+        gate_growth.update_store(path, run(since + closes, slow), past, stests, lasting=True)
+        return json.load(open(path, encoding="utf-8"))
+
+    check("an entry without stored samples counts the passes the run log holds before it opened",
+          "a.py" not in legacy(3, 5), legacy(3, 5))
+    check("an entry whose range passes the log no longer holds is judged on the two any range needs",
+          "a.py" not in legacy(0, 4) and legacy(0, 1).get("a.py", {}).get("closes") == 2, (legacy(0, 4), legacy(0, 1)))
+    check("an entry without stored samples stays while the log's earlier passes outnumber its closes",
+          legacy(12, 5).get("a.py", {}).get("closes") == 6, legacy(12, 5))
+finally:
+    shutil.rmtree(sroot, ignore_errors=True)
 
 if FAILURES:
     print("\n%d failure(s):" % len(FAILURES))

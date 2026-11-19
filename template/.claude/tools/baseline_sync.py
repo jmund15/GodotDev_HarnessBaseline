@@ -60,7 +60,7 @@ OPS = ("check", "diff", "pull", "update-lock", "resolve", "migrate", "upgrade",
 ROOT_ACCEPTS = "<op> [relpaths] [flags]; ops: " + "|".join(OPS)
 ROOT_EXAMPLE = "python3 .claude/tools/baseline_sync.py judge .claude/tools/reap.py --verdict push"
 JUDGE_ACCEPTS = ("judge RELPATH [RELPATH ...] --verdict push|keep-local|fork [--accept-hit PATH] "
-                 "[--borderline] [--confirm] [--carry BASE..HEAD] [--commit REV] [--json] [--baseline-dir DIR]")
+                 "[--borderline] [--confirm] [--carry BASE..HEAD] [--commit REV] [--run-proofs] [--json] [--baseline-dir DIR]")
 JUDGE_EXAMPLE = "python3 .claude/tools/baseline_sync.py judge .claude/tools/reap.py --verdict push"
 JUDGE_HELP = """\
 usage: baseline_sync.py judge RELPATH [RELPATH ...] --verdict push|keep-local|fork [options]
@@ -72,6 +72,7 @@ Record a verdict on each relpath's current bytes:
   --borderline                    mark the verdict borderline
   --confirm                       confirm a push judge
   --commit REV                    judge the blob at REV, not the working copy
+  --run-proofs                    run proof rows in the shipped set here, not on the publish PR's CI
   --json                          machine-readable result
   --baseline-dir DIR              the baseline checkout
 
@@ -1699,11 +1700,14 @@ def _refuse_unproven_new_tool(root: Path, files: dict, relpath: str, shas: dict[
         f"test_{os.path.splitext(relpath.rsplit('/', 1)[1])[0]}* with it")
 
 
+def _closure_manifest(source: BaselineSource | Path) -> dict:
+    return {"files": list(_manifest_items_v2(source).values())}
+
+
 def layer_closure_findings(root: Path, lock: dict, source: BaselineSource | Path) -> list[str]:
     """Each tracked row's citation of a file its consumers lack: the fetched manifest overlaid by this
     project's shipped rows, the view publish's `audit_baseline.py` closure step refuses."""
-    manifest = {"files": list(_manifest_items_v2(source).values())}
-    return [f.render() for f in layer_closure.lock_findings(root, lock, manifest)]
+    return [f.render() for f in layer_closure.lock_findings(root, lock, _closure_manifest(source))]
 
 
 def layer_drift(lock: dict, source: BaselineSource | Path) -> list[tuple[str, str, str]]:
@@ -1728,11 +1732,13 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
     findings += [(line, "layer-closure") for line in closure]
     unproven = unproven_tools(root, lock.get("files", {}), list(results)) if strict or not as_json else []
     findings += [(rel, "unproven") for rel in unproven]
-    try:
-        unresolved_pull = _pull_proof.open_paths(root) if _pull_proof else []
-    except _pull_proof.Unreadable:
+    if not _pull_proof:
+        unresolved_pull = []
+    else:
+        state, rows = _pull_proof.record_state(root)
         # Unknown rows stay named: the record itself is the open row.
-        unresolved_pull = [_pull_proof.RECORD]
+        unresolved_pull = ([_pull_proof.RECORD] if state == _pull_proof.UNREADABLE
+                           else _pull_proof.open_paths(root, rows))
     findings += [(rel, "unresolved-pull") for rel in unresolved_pull]
     if as_json:
         payload = {
@@ -1783,7 +1789,7 @@ def v2_check(root: Path, lock: dict, source: BaselineSource, as_json: bool,
             print("unresolved-pull (an earlier pull wrote these paths; their proof is red or pending and they are uncommitted):")
             for relpath in unresolved_pull:
                 print("  " + relpath)
-            print("  rerun: python3 .claude/scripts/harness_tests.py --for " + " ".join(unresolved_pull))
+            print("  rerun: python3 .claude/tools/baseline_sync.py pull (it proves these again and releases their commit)")
         for relpath, was, now in drift:
             print(f"layer-drift: {relpath} (lock {was}, manifest {now})")
         for relpath, state in findings:
@@ -1856,8 +1862,7 @@ def _print_closure_delta(root: Path, before: dict | None, after: dict | None,
     if source is None:
         print(f"layer-closure: not checked ({source_error})")
         return
-    added = sorted(set(layer_closure_findings(root, after, source))
-                   - set(layer_closure_findings(root, before, source)))
+    added = sorted(layer_closure.added_findings(root, before, after, _closure_manifest(source)))
     if not added:
         print("layer-closure: no new findings")
         return
@@ -1910,7 +1915,7 @@ def v2_classify(root: Path, relpaths: list[str], status: str, source_relpath: st
                     f"classify requires an index or HEAD path, or a local row for a path upstream carries: {relpath}")
             if status == "tracked":
                 if profile is None:
-                    profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
+                    profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir, source=source)
                 hit = _classify_identity_hit(root, relpath, profile, committed[relpath],
                                              lock.get("substitutions", {}))
                 if hit is not None:
@@ -2289,6 +2294,19 @@ def _consumer_checkout(tree: Path) -> None:
         subprocess.run(["git", "-C", str(tree), *argv], env=env, capture_output=True, check=True)
 
 
+@contextlib.contextmanager
+def _shipped_checkout(root: Path, relpath: str, data: bytes | None, lock: dict, source: BaselineSource,
+                      pushing: dict[str, str], commit: str | None):
+    """The shipped set of `relpath`'s layer as a committed checkout in a scratch tree under `_shipped_root`, removed
+    on exit; Windows refuses to remove a tree a scanner or a lingering child still holds, so a failed removal is
+    ignored."""
+    with tempfile.TemporaryDirectory(prefix="shipped_set_", dir=_shipped_root(), ignore_cleanup_errors=True) as tmp:
+        tree = Path(tmp)
+        _shipped_tree(root, relpath, data, lock, source, pushing, commit, tree)
+        _consumer_checkout(tree)
+        yield tree
+
+
 def _run_in_tree(relpath: str, tree: Path) -> list[str] | None:
     """The proof's last failing lines when it is red run in `tree` (CLAUDE_PROJECT_DIR and cwd), else None."""
     runner = _PROOF_RUNNERS[os.path.splitext(relpath)[1]]
@@ -2317,6 +2335,25 @@ def _is_shipped_proof(relpath: str) -> bool:
 
 # One judge call's shipped-set proof results run side by side: {relpath: red lines or None}.
 _SHIPPED_RUNS: dict[str, list[str] | None] = {}
+# One judge call's choice: run proof rows here (`--run-proofs`, or a baseline with no CI workflow), and whether the
+# hand-off to CI was printed.
+_PROOF_RUN = {"here": False, "noted": False}
+_BASELINE_CI = ".github/workflows/baseline.yml"
+
+
+def _proofs_left_to_ci(lock: dict, source: BaselineSource | None) -> bool:
+    """A baseline that carries its CI workflow runs every shipped proof on the publish PR, on hosted machines, so a
+    judge running them here first spends this machine's slots on a check the PR repeats; a red there leaves the
+    PR open and names the proof."""
+    if _PROOF_RUN["here"] or not isinstance(source, BaselineSource):
+        return False
+    if _git(source.path, ["cat-file", "-e", f"{source.sha}:{_BASELINE_CI}"], check=False).returncode != 0:
+        return False
+    if not _PROOF_RUN["noted"]:
+        _PROOF_RUN["noted"] = True
+        print(f"judge: proof rows are left to the publish PR's CI ({_BASELINE_CI}); --run-proofs runs them here",
+              file=sys.stderr, flush=True)
+    return True
 
 
 def _prerun_shipped_proofs(root: Path, relpaths: list[str], lock: dict, source: BaselineSource | None,
@@ -2328,7 +2365,7 @@ def _prerun_shipped_proofs(root: Path, relpaths: list[str], lock: dict, source: 
     fresh tree, ran 115 proof rows for over an hour with no line printed."""
     _SHIPPED_RUNS.clear()
     proofs = [rel for rel in relpaths if _is_shipped_proof(rel)]
-    if source is None or not proofs:
+    if source is None or not proofs or _proofs_left_to_ci(lock, source):
         return
     data = _row_bytes(root, commit, pushing)
     files = lock.get("files", {})
@@ -2347,10 +2384,7 @@ def _prerun_shipped_proofs(root: Path, relpaths: list[str], lock: dict, source: 
     with contextlib.ExitStack() as stack:
         trees = {}
         for layer, rels in groups.items():
-            tree = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="shipped_set_", dir=_shipped_root(),
-                                                                           ignore_cleanup_errors=True)))
-            _shipped_tree(root, rels[0], data[rels[0]], lock, source, pushing, commit, tree)
-            _consumer_checkout(tree)
+            tree = stack.enter_context(_shipped_checkout(root, rels[0], data[rels[0]], lock, source, pushing, commit))
             trees.update((rel, tree) for rel in rels)
 
         def run(rel: str) -> tuple[str, list[str] | None]:
@@ -2371,17 +2405,14 @@ def _refuse_proof_red_in_shipped_set(root: Path, relpath: str, data: bytes | Non
     import) that consumers lack; no static scan sees it. Run the proof in the shipped set and refuse on red,
     naming its last failing lines: green side by side (`_prerun_shipped_proofs`) stands, and a proof red there or
     not yet run runs alone. Python and Node proofs run; any other proof is not run."""
-    if source is None or not _is_shipped_proof(relpath) or data is None:
+    if source is None or not _is_shipped_proof(relpath) or data is None or _proofs_left_to_ci(lock, source):
         return
     if relpath in _SHIPPED_RUNS and _SHIPPED_RUNS[relpath] is None:
         return
     if relpath in _SHIPPED_RUNS:
         print(f"judge: shipped-set proof red side by side, rerun alone: {relpath}", file=sys.stderr, flush=True)
     # Windows refuses to remove a tree a scanner or a lingering child still holds; it is regenerable scratch.
-    with tempfile.TemporaryDirectory(prefix="shipped_set_", dir=_shipped_root(), ignore_cleanup_errors=True) as tmp:
-        tree = Path(tmp)
-        _shipped_tree(root, relpath, data, lock, source, pushing, commit, tree)
-        _consumer_checkout(tree)
+    with _shipped_checkout(root, relpath, data, lock, source, pushing, commit) as tree:
         # Alone means the whole machine, as the runner's alone retries: beside other work, two proofs that pass in
         # 30 s timed out at 120 s here and were refused.
         sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -2473,7 +2504,8 @@ def _diff_stat(before: bytes, after: bytes) -> tuple[int, int]:
 
 
 def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | None = None,
-             accept_hits: list[str] | None = None) -> int:
+             accept_hits: list[str] | None = None, run_proofs: bool = False) -> int:
+    _PROOF_RUN.update(here=run_proofs, noted=False)
     _validate_relpaths(relpaths)
     base, head = carry.split("..", 1)
     for rev in (base, head):
@@ -2517,7 +2549,7 @@ def v2_carry(root: Path, relpaths: list[str], carry: str, baseline_dir: str | No
             entry = files[relpath]
             old = entry.get("judged") or {}
             if profile is None:
-                profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
+                profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir, source=source)
             try:
                 accepted = _push_preflight(root, relpath, entry, final, profile, subs, source, source_error,
                                            [*(accept_hits or []), *old.get("accepted_hits", [])], lock, carrying)
@@ -2563,7 +2595,8 @@ def _committed_deletion(root: Path, commit: str | None, relpath: str, source, lo
 
 def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
               confirm: bool, force: bool, commit: str | None = None,
-              baseline_dir: str | None = None, accept_hits: list[str] | None = None) -> int:
+              baseline_dir: str | None = None, accept_hits: list[str] | None = None, run_proofs: bool = False) -> int:
+    _PROOF_RUN.update(here=run_proofs, noted=False)
     if verdict not in VERDICTS:
         raise UsageError("--verdict must be push, keep-local or fork")
     if borderline and confirm:
@@ -2626,7 +2659,7 @@ def v2_judge(root: Path, relpaths: list[str], verdict: str, borderline: bool,
             accepted = []
             if verdict == "push":
                 if profile is None:
-                    profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir)
+                    profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir, source=source)
                 data = _commit_blob(root, commit, relpath) if commit else _content_bytes(root, relpath)
                 try:
                     accepted = _push_preflight(root, relpath, entry, data, profile, subs, source, source_error,
@@ -2695,7 +2728,7 @@ def v2_triage(root: Path, lock: dict, source: BaselineSource, batch: int, as_jso
         if len(selected) >= batch:
             break
     rows = []
-    profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir) if selected else None
+    profile = baseline_identity.build_profile_for_repo(root, baseline_dir=baseline_dir, source=source) if selected else None
     subs = lock.get("substitutions", {})
     for relpath, entry in selected:
         judged = entry.get("judged") or {}
@@ -3133,15 +3166,17 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
     # A path whose proof is still pending or red is proved again, so a rerun of this pull releases its commit.
     unresolved, earlier = [], []
     if _pull_proof:
-        try:
-            unresolved = _pull_proof.unresolved(root)
-        except _pull_proof.Unreadable as exc:
+        state, rows = _pull_proof.record_state(root)
+        if state == _pull_proof.UNREADABLE:
             # The lost rows held only paths a pull wrote, and a path committed since left the journal anyway,
             # so every lock row still uncommitted is proved again: none commits unproven.
             aside = _pull_proof.quarantine(root)
             unresolved = _uncommitted_lock_paths(root)
-            print(f"journal: unreadable, {exc}; kept as {aside}; proving {len(unresolved)} uncommitted lock path(s)")
-        earlier = [relpath for relpath in _pull_proof.open_paths(root) if relpath not in written]
+            print(f"journal: unreadable; kept as {aside}; proving {len(unresolved)} uncommitted lock path(s)")
+            rows = {}
+        elif state == _pull_proof.VALID:
+            unresolved = _pull_proof.unresolved(root, rows)
+        earlier = [relpath for relpath in _pull_proof.open_paths(root, rows) if relpath not in written]
     if earlier:
         print(f"journal: an earlier pull left {len(earlier)} path(s) uncommitted with a red or pending proof, "
               f"proved again now: {', '.join(earlier)}")
@@ -3200,7 +3235,7 @@ def _prove_pulled(root: Path, written: list[str], pin: str | None = None) -> int
     names = ", ".join(sorted(set(blocked + failed))) or "see output below"
     print(f"red proof(s) after pull (exit {result.returncode}): {names}")
     print(result.stdout[-2000:])
-    print("rerun: python3 .claude/scripts/harness_tests.py --for " + " ".join(paths))
+    print("rerun: python3 .claude/tools/baseline_sync.py pull (it proves these again and releases their commit)")
     return 1
 
 
@@ -4386,6 +4421,8 @@ def build_parser():
     ap.add_argument("--unshipped", action="store_true")
     ap.add_argument("--commit")
     ap.add_argument("--carry", metavar="BASE..HEAD")
+    ap.add_argument("--run-proofs", action="store_true",
+                    help="judge push: run proof rows in the shipped set here even when the baseline's CI runs them")
     ap.add_argument("--repo")
     ap.add_argument("--ref", default="main")
     ap.add_argument("--sub", action="append", default=[], metavar="PLACEHOLDER=VALUE")
@@ -4489,10 +4526,10 @@ def main(argv=None) -> int:
         if args.op == "ignore":
             return v2_classify(root, args.relpaths, "local", None, None, args.force, args.baseline_dir)
         if args.op == "judge" and args.carry:
-            return v2_carry(root, args.relpaths, args.carry, args.baseline_dir, args.accept_hit)
+            return v2_carry(root, args.relpaths, args.carry, args.baseline_dir, args.accept_hit, args.run_proofs)
         if args.op == "judge":
             return v2_judge(root, args.relpaths, args.verdict, args.borderline, args.confirm, args.force,
-                            args.commit, args.baseline_dir, args.accept_hit)
+                            args.commit, args.baseline_dir, args.accept_hit, args.run_proofs)
         if args.op == "sub":
             return v2_sub(root, args.sub, args.unset)
         if args.op == "candidates":

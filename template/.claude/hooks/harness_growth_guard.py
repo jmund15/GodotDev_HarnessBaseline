@@ -13,10 +13,11 @@ not caps (`instruction_quality` §5). Never blocks.
 
 Removed sentences: the file's sentences (split on `. `, `; ` and line ends) are compared with
 `HEAD:<path>`. A sentence whose words mostly reappear in one sentence the edit added to the same
-file prints `reworded`. A sentence another `.claude/**/*.md` outside EXCLUDED carries, found by an
-8-word fragment, prints `moved → <path>`. Any other prints `removed`, and a report with a `removed`
-line ends with the re-home line. The report speaks again whenever the removed set changed since this
-file's last report in the turn; an unchanged set runs no home search.
+file is reworded, and a sentence another `.claude/**/*.md` outside EXCLUDED carries, found by an
+8-word fragment, is moved: neither is reported, since each still has a home. Every other sentence is
+listed, and the report ends with the re-home line; with none left the report is silent. It speaks again
+whenever the set of non-reworded sentences changed since this file's last report in the turn; an
+unchanged set runs no home search.
 
 Home search cost: the normalized corpus is cached in the hook state directory per file
 (mtime_ns, size), so a turn of edits reads each unchanged file once. Reading stops at
@@ -224,26 +225,25 @@ def _clip(sentence):
 
 
 def removal_report(root, rel, removed):
-    """The removed-sentence lines: `removed` first, then `reworded`, then `moved → <path>`."""
+    """The lines for sentences present at HEAD that this file and every other in-scope file now lack, or ""
+    when each is reworded here or carried elsewhere: a sentence that still has a home asks nothing of the editor."""
     gone = [s for s, reworded in removed if not reworded]
     try:
         homes, complete = find_homes(root, rel, gone) if gone else ({}, True)
     except Exception:
         homes, complete = {}, False
-    marks = [(s, "reworded" if reworded else (f"moved → {homes[s]}" if s in homes else "removed"))
-             for s, reworded in removed]
-    rank = {"removed": 0, "reworded": 1}
-    ordered = sorted(marks, key=lambda m: rank.get(m[1], 2))
-    lines = [f"[harness-growth] {rel}: {len(removed)} sentence(s) present at HEAD are absent now:"]
-    for sentence, mark in ordered[:REPORT_SENTENCES]:
-        lines.append(f'- {mark}: "{_clip(sentence)}"')
-    if len(ordered) > REPORT_SENTENCES:
-        lines.append(f"+{len(ordered) - REPORT_SENTENCES} more")
-    if any(mark == "removed" for _, mark in marks):
-        if not complete:
-            lines.append(f"The home search stopped at its {HOME_SEARCH_SECONDS:g} s budget, so a sentence "
-                         "marked removed may live in an unread file.")
-        lines.append(RE_HOME)
+    lost = [s for s in gone if s not in homes]
+    if not lost:
+        return ""
+    lines = [f"[harness-growth] {rel}: {len(lost)} sentence(s) present at HEAD are in no in-scope file now:"]
+    for sentence in lost[:REPORT_SENTENCES]:
+        lines.append(f'- "{_clip(sentence)}"')
+    if len(lost) > REPORT_SENTENCES:
+        lines.append(f"+{len(lost) - REPORT_SENTENCES} more")
+    if not complete:
+        lines.append(f"The home search stopped at its {HOME_SEARCH_SECONDS:g} s budget, so a sentence "
+                     "listed here may live in an unread file.")
+    lines.append(RE_HOME)
     return "\n".join(lines)
 
 
@@ -358,7 +358,7 @@ def process(data):
     # or `scratch/pin_ab/parity.jsonl` is doctrine's OWN prescribed form ("cited by name") and must
     # not itself trip the check meant to catch narrative living OUTSIDE a citation, in plain prose.
     narrative_hit = next((ln for ln in touched if NARRATIVE.search(BACKTICKED.sub("", ln))), None)
-    removed = removed_sentences(root, rel, text)
+    removed = [(s, reworded) for s, reworded in removed_sentences(root, rel, text) if not reworded]
     base = head_size(root, rel)
     delta = now - base
     pct = (delta / base * 100.0) if base else 100.0
@@ -407,8 +407,10 @@ def process(data):
         parts.append(f"[harness-growth] {rel}: {now:,} B ({delta:+,} vs HEAD, {pct:+.0f}%), "
                      f"{units} rule-units, {density} B/unit{tail} (instruction_quality §5).")
     if removal_new:
-        parts.append(removal_report(root, rel, removed))
-    return {"context": "\n".join(parts)}
+        report = removal_report(root, rel, removed)
+        if report:
+            parts.append(report)
+    return {"context": "\n".join(parts)} if parts else None
 
 
 if __name__ == "__main__":

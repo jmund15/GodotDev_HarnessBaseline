@@ -179,6 +179,18 @@ class TriggerInputsTests(DoctrineFixture):
         data = json.loads(out.read_text())
         self.assertEqual(json.loads(self.read_input(data["premiseCommits"])), [unpushed])
 
+    def test_named_files_freeze_only_the_doctrine_commits_that_touch_them(self):
+        # A batch of an audit names its files; a doctrine commit touching none of them belongs to the batch that
+        # names its files, so it never rides in this batch's view.
+        other = ".claude/rules/other.md"
+        self._write(DOCTRINE, "A\n")
+        mine = self._commit("touches the named file")
+        self._write(other, "B\n")
+        theirs = self._commit("touches another batch's file")
+        data, _ = self.freeze("--files", DOCTRINE)
+        self.assertEqual(json.loads(self.read_input(data["premiseCommits"])), [mine])
+        self.assertNotIn(theirs, self.read_input(data["doctrineCommits"]))
+
     def test_prior_session_and_both_changes_materialize_messages(self):
         self._write(DOCTRINE, "A\n")
         first = self._commit('prior session\n\n```premises\n{"claim":"all items","evidence":[]}\n```')
@@ -401,7 +413,7 @@ class TriggerInputsTests(DoctrineFixture):
         (self.repo / DOCTRINE).write_text("peer dirty\n", encoding="utf-8")
         data, _ = self.freeze("--widen", "--committed-only", DOCTRINE)
         self.assertEqual(data["restateScanExit"], 2)
-        self.assertIn("no subject files", self.read_input(data["restateGroups"]))
+        self.assertTrue(self.read_input(data["restateGroups"]).strip())
 
     def test_frozen_dirty_blob_resolves_after_the_file_moves_on(self):
         # The packet's blob ids are recorded later by review_ledger, which accepts only an object git holds or

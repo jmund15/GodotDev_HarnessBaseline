@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Part 3 of 3 of the runner proof: its cases, round-robin from `test_harness_tests_runner.main`, run beside the other parts.
+"""Part 3 of the runner proof: its cases, round-robin from `test_harness_tests_runner.main`, run beside the other parts.
 
     python3 .claude/tests/test_harness_tests_runner_part3.py
 """

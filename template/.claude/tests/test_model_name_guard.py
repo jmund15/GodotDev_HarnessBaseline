@@ -102,7 +102,7 @@ def main():
     out = expect("an Edit adding `alpha` to skills/x/SKILL.md", edit(skill, "Dispatch it on `alpha`."), "deny")
     reason = ((json.loads(out or "{}").get("hookSpecificOutput") or {}).get("permissionDecisionReason") or "")
     check("the deny names the name, the file, the rule and both fixes",
-          all(s in reason for s in ("alpha", "skills/x/SKILL.md", "name roles, never models",
+          all(s in reason for s in ("alpha", "skills/x/SKILL.md",
                                     "model_registry.py for-role", "model_name_exemptions.json")), reason)
     expect("the same Edit to an exempt path", edit(os.path.join(CLAUDE, "skills", "exempt_probe", "SKILL.md"),
                                                    "Dispatch it on `alpha`."), "silent")

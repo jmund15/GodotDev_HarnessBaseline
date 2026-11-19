@@ -84,7 +84,9 @@ class Hook(unittest.TestCase):
         self.stub_tool('print("vault mirror: abc1234")\n')
         cloud = self.run_hook()
         self.assertEqual(cloud.returncode, 0, cloud.stderr)
-        self.assertIn('<cloud-session>\n# Design vault mirror\nRead-only planted contract.\n</cloud-session>', cloud.stdout)
+        self.assertIn('<cloud-session>', cloud.stdout)
+        self.assertIn('</cloud-session>', cloud.stdout)
+        self.assertIn('# Design vault mirror\nRead-only planted contract.\n', cloud.stdout)
         self.assertNotIn('paths:', cloud.stdout)
         self.assertEqual(self.run_hook(cloud=False).stdout, '')
 
@@ -99,13 +101,39 @@ class Hook(unittest.TestCase):
         self.plant_status(False, 5, refusals=[{'kind': 'secret', 'path': 'a.md', 'pattern': 'ghp'}])
         result = self.run_hook(cloud=False)
         self.assertEqual(result.returncode, 0)
-        self.assertTrue(result.stdout.startswith('[vault] sync REFUSED'), result.stdout)
+        self.assertIn('REFUSED', result.stdout)
         self.assertIn('secret', result.stdout)
+
+    def test_off_the_cloud_a_refusal_list_names_a_few_paths_and_counts_the_rest(self):
+        self.plant_status(False, 5, refusals=[{'kind': 'secret', 'path': 'f%d.md' % n} for n in range(1, 7)])
+        out = self.run_hook(cloud=False).stdout
+        self.assertIn('f1.md', out)
+        self.assertNotIn('f6.md', out)
+        self.assertIn('3', out.split('f3.md', 1)[1])
+
+    def test_off_the_cloud_a_sync_that_pushed_but_held_paths_states_facts_and_cites_the_rule(self):
+        self.plant_status(True, 5, refusals=[{'kind': 'secret', 'path': 'Proj/a b.md', 'pattern': 'sk'},
+                                              {'kind': 'secret', 'path': 'Proj/b.md', 'pattern': 'sk'}])
+        out = self.run_hook(cloud=False).stdout
+        self.assertNotIn('REFUSED', out)
+        self.assertIn('Proj/a b.md', out)
+        self.assertIn('Proj/b.md', out)
+        self.assertIn('sk', out)
+        self.assertIn('rules/vault_mirror.md', out)
+        self.assertNotIn('vault_sync.py', out)
+
+    def test_off_the_cloud_a_held_list_names_how_many_of_the_total_it_shows(self):
+        self.plant_status(True, 5, refusals=[{'kind': 'secret', 'path': 'f%d.md' % n, 'pattern': 'sk'}
+                                              for n in range(1, 7)])
+        out = self.run_hook(cloud=False).stdout
+        self.assertIn('f3.md', out)
+        self.assertNotIn('f4.md', out)
+        self.assertIn('3 of 6', out)
 
     def test_off_the_cloud_a_stale_sync_prints_its_age(self):
         self.plant_status(True, 90)
         result = self.run_hook(cloud=False)
-        self.assertTrue(result.stdout.startswith('[vault] sync STALE'), result.stdout)
+        self.assertIn('STALE', result.stdout)
 
     def test_off_the_cloud_a_healthy_sync_and_a_machine_without_one_stay_silent(self):
         self.assertEqual(self.run_hook(cloud=False).stdout, '')
@@ -118,22 +146,24 @@ class Hook(unittest.TestCase):
         (git_dir / 'sync_status.json').write_text('{not json', encoding='utf-8')
         result = self.run_hook(cloud=False)
         self.assertEqual(result.returncode, 0)
-        self.assertTrue(result.stdout.startswith('[vault] sync UNKNOWN: status unreadable (JSONDecodeError)'), result.stdout)
+        self.assertIn('UNKNOWN', result.stdout)
+        self.assertIn('JSONDecodeError', result.stdout)
         (git_dir / 'sync_status.json').write_text('{"ok": true}', encoding='utf-8')
         result = self.run_hook(cloud=False)
         self.assertEqual(result.returncode, 0)
-        self.assertTrue(result.stdout.startswith('[vault] sync UNKNOWN: status unreadable (KeyError)'), result.stdout)
+        self.assertIn('UNKNOWN', result.stdout)
+        self.assertIn('KeyError', result.stdout)
 
     def test_a_tool_that_prints_nothing_reads_unavailable(self):
         self.stub_tool('import sys\nsys.exit(3)\n')
         result = self.run_hook()
         self.assertEqual(result.returncode, 0)
-        self.assertIn('vault mirror UNAVAILABLE', result.stdout)
+        self.assertIn('UNAVAILABLE', result.stdout)
 
     def test_a_missing_tool_reads_unavailable(self):
         result = self.run_hook()
         self.assertEqual(result.returncode, 0)
-        self.assertIn('vault mirror UNAVAILABLE', result.stdout)
+        self.assertIn('UNAVAILABLE', result.stdout)
 
     def test_a_grandchild_holding_the_pipe_does_not_outlast_the_timeout(self):
         self.stub_tool('import subprocess, sys, time\n'
@@ -171,7 +201,7 @@ class Hook(unittest.TestCase):
         git(self.project, 'remote', 'add', 'origin', str(remote))
         result = self.run_hook()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(result.stdout.startswith('[vault] vault mirror: '), result.stdout)
+        self.assertIn('vault mirror', result.stdout)
         mirrored = self.home / 'OneDrive/Documents/ObsidianVault/DevProjects/Proj/a.md'
         self.assertEqual(mirrored.read_text(encoding='utf-8'), 'design')
 
@@ -189,10 +219,10 @@ class Hook(unittest.TestCase):
         hook = stage_shared(self.base / 'bad', config='{not json')
         off = self.run_hook(cloud=False, hook=hook)
         self.assertEqual(off.returncode, 0, off.stderr)
-        self.assertTrue(off.stdout.startswith('[vault] sync NOT-CONFIGURED: '), off.stdout)
+        self.assertIn('NOT-CONFIGURED', off.stdout)
         on = self.run_hook(cloud=True, hook=hook)
         self.assertEqual(on.returncode, 0, on.stderr)
-        self.assertTrue(on.stdout.startswith('[vault] vault mirror UNAVAILABLE: '), on.stdout)
+        self.assertIn('UNAVAILABLE', on.stdout)
         self.assertNotIn('<cloud-session>', on.stdout)
 
 

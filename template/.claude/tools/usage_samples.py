@@ -95,6 +95,7 @@ def record(samples, now=None, path=None):
         if state.get("pruned_day") != today:
             _prune(path, now - RETENTION_DAYS * 86400)
             state["pruned_day"] = today
+        # bare-append: runs inside update_json_locked on the same store's state file, one writer at a time.
         with io.open(path, "a", encoding="utf-8", newline="\n") as fh:
             for s in kept:
                 fh.write(json.dumps(s, ensure_ascii=False) + "\n")

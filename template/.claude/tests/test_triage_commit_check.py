@@ -1,6 +1,7 @@
 """Proof for hooks/triage_commit_check.py: an unreadable Triage trailer is advised; a commit with no trailer gets a derived one; other commands pass silently.
 
-A planted git repo in a temp root is the project. Real PreToolUse payloads on stdin. 
+A planted git repo in a temp root is the project. Each decision case calls the hook's `main()` in this
+process through `_hook_call`; one spawned case proves the registered command still runs and exits 0.
     python3 .claude/tests/test_triage_commit_check.py
 """
 import json
@@ -9,11 +10,16 @@ import subprocess
 import sys
 import tempfile
 
-HOOK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks", "triage_commit_check.py")
+HERE = os.path.dirname(os.path.abspath(__file__))
+HOOK = os.path.join(os.path.dirname(HERE), "hooks", "triage_commit_check.py")
+sys.path.insert(0, HERE)
+import _hook_call  # noqa: E402
+
 FAILURES = []
 PROJECT = tempfile.mkdtemp(prefix="triage_commit_proof_")
 STATE = tempfile.mkdtemp(prefix="triage_commit_state_")
 RECORDS = tempfile.mkdtemp(prefix="triage_commit_records_")
+ENV = dict(os.environ, CLAUDE_PROJECT_DIR=PROJECT, HARNESS_HOOK_STATE_DIR=STATE, HARNESS_TASK_RECORD_DIR=RECORDS)
 
 
 def git(*args):
@@ -21,10 +27,16 @@ def git(*args):
 
 
 def run(command, tool="Bash"):
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=PROJECT, HARNESS_HOOK_STATE_DIR=STATE, HARNESS_TASK_RECORD_DIR=RECORDS)
     payload = {"tool_name": tool, "tool_input": {"command": command}, "cwd": PROJECT, "session_id": "proof-triage-1"}
+    code, out, err, _ = _hook_call.call(HOOK, payload, env=ENV, cwd=PROJECT)
+    return code, out, err
+
+
+def spawned(command):
+    """The registered command: one spawned run proves the hook imports and exits 0 from settings.json."""
+    payload = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": PROJECT, "session_id": "proof-triage-1"}
     r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
-                       text=True, encoding="utf-8", timeout=120, env=env)
+                       text=True, encoding="utf-8", timeout=120, env=ENV)
     return r.returncode, r.stdout, r.stderr
 
 
@@ -53,6 +65,9 @@ check("an unreadable Triage trailer is advised as unreadable",
 
 rc, out, err = run("ls -la")
 check("a non-commit command passes silently", rc == 0 and out.strip() == "{}", out + err)
+
+rc, out, err = spawned("ls -la")
+check("the registered command runs and exits 0", rc == 0 and out.strip() == "{}" and err == "", out + err)
 
 
 sys.path[:0] = [os.path.dirname(HOOK), os.path.join(os.path.dirname(os.path.dirname(HOOK)), "tools")]

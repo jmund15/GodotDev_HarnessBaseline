@@ -34,8 +34,9 @@ def check(name, ok, detail=''):
 
 
 def ps(code, cwd=None):
+    # A fresh pwsh costs seconds on a loaded host; the timeout only catches a hung child.
     return subprocess.run(['pwsh', '-NoProfile', '-Command', code], cwd=cwd or ROOT,
-                          capture_output=True, text=True, encoding='utf-8', timeout=30)
+                          capture_output=True, text=True, encoding='utf-8', timeout=120)
 
 
 def q(path):
@@ -67,12 +68,12 @@ with tempfile.TemporaryDirectory(prefix='target_tools_') as temp:
     r = ps(lib + 'Resolve-TestRepo -ScriptsRoot ' + q(SCRIPTS), cwd=temp)
     check('non-git cwd falls back to the script checkout', r.returncode == 0 and Path(r.stdout.strip()) == ROOT, r.stderr)
     r = subprocess.run(['pwsh', '-NoProfile', '-File', str(SCRIPTS / 'verify.ps1'), '-Repo', str(target), '-SelfTest'],
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=120)
     check('verify reads the target map and target test folders', r.returncode == 0 and "domain 'BranchOnly'" in r.stdout,
           r.stdout + r.stderr)
     if FORK:
         r = subprocess.run(['pwsh', '-NoProfile', '-File', str(SCRIPTS / 'regression_gate.ps1'), '-Repo', str(target)],
-                           capture_output=True, text=True, timeout=30)
+                           capture_output=True, text=True, timeout=120)
         check('gate refuses the low pin before locks/build with merge main first',
               r.returncode == 4 and 'merge main first' in r.stdout, r.stdout + r.stderr)
     else:
@@ -91,7 +92,7 @@ with tempfile.TemporaryDirectory(prefix='target_tools_') as temp:
             if name == 'regression_gate' and label == 'low':
                 continue
             r = subprocess.run(['pwsh', '-NoProfile', '-File', str(SCRIPTS / (name + '.ps1')), '-Repo', str(repo_dir), '-RouteOnly'] + extra,
-                               capture_output=True, text=True, timeout=60)
+                               capture_output=True, text=True, timeout=120)
             got = [l[6:].strip() for l in r.stdout.splitlines() if l.startswith('ROUTE=')]
             check(name + ' routes a ' + label + ' -Repo target from the script root, not main',
                   r.returncode == 0 and len(got) == 1 and Path(got[0]) == repo_dir, r.stdout + r.stderr)
@@ -117,7 +118,7 @@ with tempfile.TemporaryDirectory(prefix='target_tools_') as temp:
     runner = r.returncode == 0 and runner_file.exists()
     if runner:
         r = subprocess.run([sys.executable, '-c', runner_file.read_text(), str(guard), str(target)],
-                           cwd=target, capture_output=True, text=True, timeout=30)
+                           cwd=target, capture_output=True, text=True, timeout=120)
         check('main fixed-root guard runs against target files', r.returncode == 0 and
               'GUARD_REPO=' + str(target) in r.stdout and 'GUARD_TESTS=' + str(target / 'Tests') in r.stdout,
               r.stdout + r.stderr)

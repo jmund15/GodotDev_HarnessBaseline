@@ -5,6 +5,7 @@ haiku driver whose Workflow ran two sonnet judges. Only message content was remo
 record's token totals are the ledger row's, which come from the result event's modelUsage and so
 already include the judges; the transcript of the driver alone covers 3 of the 7 requests.
 """
+import contextlib
 import copy
 import json
 import os
@@ -30,6 +31,43 @@ SID = '61a50469-e2df-4f40-a2dc-abaa08dc2480'
 
 def requests_of(path):
     return mr.request_usage(mr.usage_events(Path(path).read_text()))
+
+
+@contextlib.contextmanager
+def counted_probes(root):
+    """`(kind, path)` for every filesystem probe under `root` while the block runs. `stat` and `isfile`
+    called from inside the patched `isfile` are the same lookup, so they count once; the flag is
+    per-thread, so one thread's nesting never hides another thread's probe."""
+    seen = []
+    real_scandir, real_stat, real_isfile = mr.os.scandir, mr.os.stat, mr.os.path.isfile
+    nested = threading.local()
+
+    def under(path):
+        return str(root) in str(path)
+
+    def scandir(path='.', *args, **kwargs):
+        if under(path):
+            seen.append(('scandir', str(path)))
+        return real_scandir(path, *args, **kwargs)
+
+    def stat(path, *args, **kwargs):
+        if under(path) and not getattr(nested, 'on', False):
+            seen.append(('stat', str(path)))
+        return real_stat(path, *args, **kwargs)
+
+    def isfile(path):
+        outer = getattr(nested, 'on', False)
+        if under(path) and not outer:
+            seen.append(('isfile', str(path)))
+        nested.on = True
+        try:
+            return real_isfile(path)
+        finally:
+            nested.on = outer
+
+    with patch.object(mr.os, 'scandir', scandir), patch.object(mr.os, 'stat', stat), \
+            patch.object(mr.os.path, 'isfile', isfile):
+        yield seen
 
 
 class WorkflowAgentPricingTests(unittest.TestCase):
@@ -84,79 +122,38 @@ class WorkflowAgentPricingTests(unittest.TestCase):
 
     def test_repeated_misses_on_an_unchanged_root_scan_the_session_files_once(self):
         """bench doctor looked up hundreds of absent sessions and rescanned every project per miss (>10 min)."""
-        files_scanned = []
-        real = mr.os.scandir
-
-        def counting(path='.'):
-            if Path(path).parent.name == 'projects':
-                files_scanned.append(str(path))
-            return real(path)
-
-        with patch.object(mr.os, 'scandir', counting):
+        projects = self.root / 'login/projects'
+        with counted_probes(projects) as seen:
             for n in range(5):
                 self.assertIsNone(mr.session_transcript('absent-%d' % n, 'anthropic-secondary', data=self.data))
-        self.assertEqual(len(files_scanned), 1)
+        scans = [p for kind, p in seen if kind == 'scandir' and Path(p).parent.name == 'projects']
+        self.assertEqual(len(scans), 1, scans)
 
     def test_a_miss_probes_each_project_directory_once(self):
-        """Proving a session absent costs one probe per project directory: with 3,836 directories, a stat of each
-        and then a probe of each was 3-4 s per miss, and bench doctor asks for hundreds."""
+        """Proving a session absent costs one probe per project directory, not a stat of each and then a probe
+        of each."""
         projects = self.root / 'login/projects'
         for n in range(40):
             (projects / ('extra-%d' % n)).mkdir()
         self.assertEqual(mr.session_transcript(SID, 'anthropic-secondary', data=self.data).name, SID + '.jsonl')
-        probes = []
-        real_stat, real_isfile = mr.os.stat, mr.os.path.isfile
-        probing = threading.local()
-
-        def stat(path, *args, **kwargs):
-            if str(projects) in str(path) and not getattr(probing, 'active', False):
-                probes.append(('stat', str(path)))
-            return real_stat(path, *args, **kwargs)
-
-        def isfile(path):
-            if str(projects) in str(path):
-                probes.append(('isfile', str(path)))
-            probing.active = True
-            try:
-                return real_isfile(path)
-            finally:
-                probing.active = False
-
-        with patch.object(mr.os, 'stat', stat), patch.object(mr.os.path, 'isfile', isfile):
+        with counted_probes(projects) as probes:
             self.assertIsNone(mr.session_transcript('absent-probe', 'anthropic-secondary', data=self.data))
-        self.assertLessEqual(len(probes), 41, probes[:3])
+        lookups = [probe for probe in probes if probe[0] in ('stat', 'isfile')]
+        self.assertLessEqual(len(lookups), 41, lookups[:3])
 
     def test_a_finished_sessions_miss_costs_no_probe_once_the_root_was_scanned_after_it_finished(self):
-        """bench doctor made about 2,000 lookups for 343 benchmark sessions: a record's session had finished before
-        its record was written, so a root scanned after that moment holds its transcript or never will."""
+        """A record's session had finished before its record was written, so a root scanned after that moment
+        holds its transcript or never will, and the lookup costs no probe once the root was scanned."""
         projects = self.root / 'login/projects'
         for n in range(40):
             (projects / ('extra-%d' % n)).mkdir()
         self.assertEqual(mr.session_transcript(SID, 'anthropic-secondary', data=self.data).name, SID + '.jsonl')
-        probes = []
-        real_stat, real_isfile = mr.os.stat, mr.os.path.isfile
-        probing = threading.local()
-
-        def stat(path, *args, **kwargs):
-            if str(projects) in str(path) and not getattr(probing, 'active', False):
-                probes.append(('stat', str(path)))
-            return real_stat(path, *args, **kwargs)
-
-        def isfile(path):
-            if str(projects) in str(path):
-                probes.append(('isfile', str(path)))
-            probing.active = True
-            try:
-                return real_isfile(path)
-            finally:
-                probing.active = False
-
         finished = time.time() - 60
-        with patch.object(mr.os, 'stat', stat), patch.object(mr.os.path, 'isfile', isfile):
+        with counted_probes(projects) as probes:
             for n in range(30):
                 self.assertIsNone(mr.session_transcript('absent-%d' % n, 'anthropic-secondary', data=self.data,
                                                         settled_by=finished))
-        self.assertEqual(probes, [])
+        self.assertEqual([probe for probe in probes if probe[0] in ('stat', 'isfile')], [])
         self.assertEqual(mr.session_transcript(SID, 'anthropic-secondary', data=self.data,
                                                settled_by=finished).name, SID + '.jsonl')
 

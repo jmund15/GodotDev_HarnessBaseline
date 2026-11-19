@@ -23,6 +23,8 @@ _TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_TESTS_DIR)
 HOOK = os.path.join(_CLAUDE_DIR, "hooks", "git_guardrails.py")
 RUNNER = os.path.join(_CLAUDE_DIR, "scripts", "harness_tests.py")
+sys.path.insert(0, _TESTS_DIR)
+import _hook_call  # noqa: E402
 
 ALLOW, DENY, CRASH = "allow", "deny", "crash"
 
@@ -66,11 +68,10 @@ def run_hook(command, repo):
     env["HARNESS_TEST_STAMP"] = os.path.join(repo, "stamp.json")
     env["HARNESS_HOOK_STATE_DIR"] = os.path.join(repo, "hookstate")
     env["HARNESS_NO_PASS_CACHE"] = "1"
-    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
-                       text=True, timeout=120, env=env, cwd=repo)
-    if r.returncode not in (0, 2) or "Traceback (most recent call last)" in r.stderr:
-        return CRASH, (r.stderr or r.stdout)[:400]
-    return (DENY, r.stderr) if r.returncode == 2 else (ALLOW, r.stdout)
+    code, out, err, _ = _hook_call.call(HOOK, payload, env=env, cwd=repo)
+    if code not in (0, 2) or "Traceback" in err:
+        return CRASH, (err or out)[:400]
+    return (DENY, err) if code == 2 else (ALLOW, out)
 
 
 def scoped_run(repo):
@@ -358,6 +359,12 @@ def main():
         run_hook("git merge --continue", repo), ALLOW))
 
     unit_cases(failures)
+
+    spawned = subprocess.run([sys.executable, HOOK], input="{}", capture_output=True, text=True,
+                             encoding="utf-8", cwd=repo)
+    failures.append(case("the hook imports and exits 0 from its registered command",
+                         (ALLOW if spawned.returncode == 0 and "Traceback" not in spawned.stderr else DENY,
+                          spawned.stderr[-300:]), ALLOW))
 
     total = len(failures)
     failures = [f for f in failures if f]

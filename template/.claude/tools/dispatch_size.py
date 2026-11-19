@@ -388,17 +388,30 @@ def fit_tokens(model, tokens: int, data=None, job=None) -> dict:
     return fit
 
 
+def _effort_that_runs(alias, explicit, job, data=None):
+    """The effort the launch runs `alias` at: the same `pin_effort` decision the fan-out makes before placement."""
+    if model_registry is None:
+        return explicit
+    try:
+        effort, _status = model_registry.pin_effort(alias, job.get("kind"), job.get("spec"), explicit,
+                                                    job.get("pick") == "owner", False, data)
+    except model_registry.UnknownModel:
+        return explicit
+    return effort
+
+
 def _pin_of(job, data=None):
     """(model, effort) a job's window is judged on: its pin, else (a fan-out job listing `rows`) the listed row with
-    the tightest window, since a reading that fits that row fits every row the job may run on."""
+    the tightest window, since a reading that fits that row fits every row the job may run on. The effort is the one
+    the launch runs: the computed rung when the job names none, else the explicit rung as `pin_effort` decides."""
     pin = job.get("model") or job.get("alias")
     rows = job.get("rows")
     if pin or not isinstance(rows, dict) or not rows:
-        return pin, job.get("effort")
+        return pin, _effort_that_runs(pin, job.get("effort"), job, data) if pin else job.get("effort")
     usable = {alias: fit_tokens(alias, 0, data, job)["usable"] for alias in rows}
     known = {alias: window for alias, window in usable.items() if window}
     alias = min(known, key=known.get) if known else next(iter(rows))
-    return alias, rows[alias]
+    return alias, _effort_that_runs(alias, rows[alias], job, data)
 
 
 def dispatch_size(jobs, root=None, data=None) -> dict:
@@ -470,6 +483,7 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
                         "namedKb": named_kb, "bytes": total, "characters": total_characters,
                         "namedCharacters": named_characters, "tokens": fit["tokens"], "usable": fit["usable"],
                         "pointSource": fit["source"], "over": fit["over"], "fitError": fit["error"],
+                        "kind": job.get("kind"), "window": job.get("window"),
                         "unresolved": len(missing), "lowerTokens": fit["tokens"], "upperTokens": upper,
                         "ceilingOver": bool(fit["usable"]) and not fit["over"] and upper > fit["usable"],
                         "searchSources": searched, "largest": counted[:LARGEST_SHOWN],
@@ -585,13 +599,18 @@ def fit_lines(size: dict) -> list:
     return out
 
 
+RESIDENT_KINDS = ("lens", "reviewer")  # a seat that must keep one subject resident; any other kind compacts and carries on
+
+
 def over_window_lines(size: dict) -> list:
-    """One line per pinned job whose reading is past the point it compacts at: the job, its reading and its window.
-    The measure is `perJob[].over`, the number `lens_briefs.seat_overage` refuses a review seat on, so the fan-out's
-    launch refusal and the panel's agree. A job whose pin cannot be sized is not named here (`fit_lines` says so)."""
+    """One line per job the launch refuses for reading past the point it compacts at: a resident seat (`RESIDENT_KINDS`)
+    not sized `window: "full"`. The measure is `perJob[].over`, the number `lens_briefs.seat_overage` refuses a review
+    seat on, so the fan-out's launch refusal and the panel's agree. Other over-window jobs are facts on `fit_lines`.
+    A job whose pin cannot be sized is not named here (`fit_lines` says so)."""
     return ["`%s` (%s): reading %d tokens, past its usable window of %d tokens (%s); over by %d"
             % (job["label"], job["model"], job["tokens"], job["usable"], job["pointSource"], job["over"])
-            for job in size["perJob"] if job["model"] and job["usable"] and job["over"] > 0]
+            for job in size["perJob"] if job["model"] and job["usable"] and job["over"] > 0
+            and job.get("kind") in RESIDENT_KINDS and job.get("window") != "full"]
 
 
 def denied_lines(size: dict) -> list:
@@ -628,31 +647,8 @@ def _over_window_unmet(spec, root: Path) -> list:
         lines = over_window_lines(dispatch_size(spec, root))
     except Exception as exc:
         return ["preflight: not checked: job reading against its window (%s)" % exc]
-    return ["preflight: unmet: job %s; the launch refuses it (split its reading, drop a named file, or pin a row "
-            "with a larger window)" % line for line in lines]
-
-
-_WIDER_RUN = re.compile(r"harness_tests\.py\s+--(?:proofs-for|for|close|all)\b|regression_gate\.ps1\s+-\w")
-
-
-def _wider_run_lines(jobs: list, root: Path) -> list:
-    """One line per job whose brief invokes a run wider than its edited units' proof files (the runner's bound,
-    close or whole-suite modes, the C# gate): the dispatcher runs those once at its merge or close."""
-    out = []
-    for index, job in enumerate(jobs):
-        texts = [job["prompt"]] if isinstance(job.get("prompt"), str) else []
-        for key in ("promptPath", "promptFile"):
-            if isinstance(job.get(key), str):
-                try:
-                    texts.append((root / job[key]).read_text(encoding="utf-8", errors="replace"))
-                except OSError:
-                    pass
-        found = next((m.group(0) for text in texts for m in [_WIDER_RUN.search(text)] if m), None)
-        if found:
-            out.append("preflight: unmet: job %s: its brief orders a wider run (`%s`); a brief names its edited units' "
-                       "proof files and the dispatcher runs the wider run once at its merge or close "
-                       "(orchestration reference brief_checks.md)" % (job.get("label") or "job%d" % (index + 1), found))
-    return out
+    return ["preflight: unmet: job %s; the launch refuses it (split its reading across jobs)" % line
+            for line in lines]
 
 
 def _session_transcript(session_id: str):
@@ -665,8 +661,8 @@ def _session_transcript(session_id: str):
 
 
 def _credit_lines(spec, root: Path, session_id: str, transcript_path) -> list:
-    """One line per pinned tier with no ladder slice in this context, and per governing skill the briefs need
-    that is not in context. Each names the load step only; the ladder itself is not printed."""
+    """One line per pinned tier with no ladder slice in this context, and one when the orchestration skill is not
+    in context. Each names the load step only; the ladder itself is not printed."""
     out = []
     jobs = _jobs_of(spec)
     tiers = {}
@@ -689,36 +685,23 @@ def _credit_lines(spec, root: Path, session_id: str, transcript_path) -> list:
                 out.append("preflight: unmet: tier `%s` (%s) has no ladder slice in this context: %s" % (
                     tier, ", ".join(tiers[tier]),
                     model_ladder_gate.SLICE_STEP.format(which=tier, tiers=tier)))
-    try:
-        import skill_dispatch_gate
-        required, faults = skill_dispatch_gate.required_skills(
-            {"tool_name": "Workflow", "tool_input": {"args": spec}, "cwd": str(root),
-             "session_id": session_id, "transcript_path": transcript_path})
-    except Exception as exc:
-        return out + ["preflight: not checked: governing skills (%s)" % exc]
-    for fault in faults:
-        out.append("preflight: not checked: governing skills (%s)" % fault)
     if model_ladder_gate is None:
         out.append("preflight: not checked: skill credit (the gate reader did not import)")
         return out
-    for name in sorted(set(required) | {"orchestration"}):
-        try:
-            credited = model_ladder_gate.skill_in_context(
-                session_id, name, transcript_path=transcript_path, root=str(root))
-        except Exception:
-            credited = None
-        if credited is False:
-            step = (model_ladder_gate.SKILL_STEP if name == "orchestration"
-                    else 'invoke Skill(skill="%s") (orchestration §0 Governing skills)' % name)
-            out.append("preflight: unmet: skill `%s` is not in this context: %s" % (name, step))
+    try:
+        credited = model_ladder_gate.skill_in_context(
+            session_id, "orchestration", transcript_path=transcript_path, root=str(root))
+    except Exception:
+        credited = None
+    if credited is False:
+        out.append("preflight: unmet: skill `orchestration` is not in this context: %s" % model_ladder_gate.SKILL_STEP)
     return out
 
 
 def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> list:
     """Every unmet launch precondition, as facts, in the output `/delegate` already reads before a launch: each
-    job the fan-out would refuse by `kind`, each brief that orders a run wider than its edited units' proof
-    files, each pinned tier with no ladder slice in this context, and each
-    governing skill the briefs need that is not in context. One `preflight: clean: ...` line means every check
+    job the fan-out would refuse by `kind`, each job whose reading passes its window, each pinned tier with no
+    ladder slice in this context, and the orchestration skill when it is not in context. One `preflight: clean: ...` line means every check
     ran and passed, so a clean preflight is the launch's go. A check that cannot run prints `preflight: not
     checked: ...`, never a pass. Facts only; no check denies on these lines."""
     root = Path(root) if root else Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
@@ -726,7 +709,7 @@ def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> l
         jobs = _jobs_of(spec)
     except ValueError:
         return ["preflight: not checked: launch preconditions (the spec holds no job list)"]
-    out = _kind_refusals(jobs) + _wider_run_lines(jobs, root) + _over_window_unmet(spec, root)
+    out = _kind_refusals(jobs) + _over_window_unmet(spec, root)
     session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session_id:
         return out + ["preflight: not checked: ladder and skill credit (CLAUDE_CODE_SESSION_ID is unset)"]
