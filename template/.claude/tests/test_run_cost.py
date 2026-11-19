@@ -4,6 +4,7 @@ Fixtures plant explicit rates through test_model_pricing.planted(), so no expect
 moves a price. Run: python3 .claude/tests/test_run_cost.py
 """
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -156,7 +157,7 @@ class RunCostTests(unittest.TestCase):
     def test_damaged_records_recover_live_requests_for_every_entry_path(self):
         # Captured r7-e2e-a.stream request; message content and unrelated metadata removed.
         event = {"type": "assistant", "message": {
-            "model": "claude-sonnet-5-5", "id": "msg_011CgfEDqeo84maNAcbgMtQ8",
+            "model": SONNET, "id": "msg_011CgfEDqeo84maNAcbgMtQ8",
             "type": "message", "role": "assistant", "content": [],
             "usage": {"input_tokens": 2, "cache_creation_input_tokens": 30997,
                       "cache_read_input_tokens": 0,
@@ -351,6 +352,67 @@ class RunCostTests(unittest.TestCase):
         self.assertGreater(tier["multipliers"]["output"], 1.0)
         self.assertAlmostEqual(run["usd"], below + above)
         self.assertEqual(run["tier_basis"], "per-request")
+
+    def chat_go_row(self):
+        row = copy.deepcopy(next(m for m in self.data["models"] if m["transport"] == "go" and m.get("apiMode") == "chat"))
+        row.update(id="zz-chat-go", alias="zz-chat-go-alias", version="zz-chat-go", family="zz-chat-go")
+        row.pop("servedIds", None)
+        row.pop("upstreamId", None)
+        row["price"] = dict(cacheMissPer1M=1, cacheHitPer1M=0.1, outputPer1M=4, currency="USD", asOf="2026-09-30",
+                            source="https://example.test/pricing")
+        row.pop("priceGap", None)
+        self.data["models"].append(row)
+
+    def glm_record(self, **extra):
+        # Usage block cut from the captured glm-5.3 Go child result (.claude/scratch/loops_review2/out/
+        # loops-pair-glm.out.json, 2026-11-18, LiteLLM 1.99.0), trimmed to the counts: 51 turns.
+        usage = {"input_tokens": 3971660, "cache_read_input_tokens": 0, "output_tokens": 9875}
+        return dict({"label": "glm-run", "servedModel": "zz-chat-go", "transport": "go", "costModel": "plan-quota",
+                     "inputTokens": usage["input_tokens"], "cacheReadTokens": usage["cache_read_input_tokens"],
+                     "outputTokens": usage["output_tokens"], "numTurns": 51, "durationMs": 1715904}, **extra)
+
+    def test_a_chat_go_record_without_a_good_litellm_prices_as_unmeasured_never_as_zero_cache(self):
+        self.chat_go_row()
+        _, out = self.run_tool("--json", self.put("glm-old.record.json", self.glm_record()))
+        run = json.loads(out)["runs"][0]
+        self.assertIsNone(run["usd"])
+        self.assertIn("unmeasured", run["problem"])
+        for part in ("fresh", "cache_read", "output"):
+            self.assertIsNone(run[part])
+
+    def test_a_chat_go_record_on_a_good_litellm_and_a_messages_record_keep_their_counts(self):
+        self.chat_go_row()
+        _, out = self.run_tool("--json", self.put("glm-new.record.json", self.glm_record(proxyVersion="1.110.0")))
+        run = json.loads(out)["runs"][0]
+        self.assertEqual((run["fresh"], run["cache_read"], run["output"]), (3971660, 0, 9875))
+        self.assertIsNotNone(run["usd"])
+        messages = next(m for m in self.data["models"] if m["transport"] == "go" and m.get("apiMode") == "messages")
+        messages = copy.deepcopy(messages)
+        messages.update(id="zz-messages-go", alias="zz-messages-go-alias", version="zz-messages-go", family="zz-messages-go")
+        messages.pop("servedIds", None)
+        messages.pop("upstreamId", None)
+        messages["price"] = dict(cacheMissPer1M=1, cacheHitPer1M=0.1, outputPer1M=4, currency="USD", asOf="2026-09-30",
+                                 source="https://example.test/pricing")
+        messages.pop("priceGap", None)
+        self.data["models"].append(messages)
+        _, out = self.run_tool("--json", self.put("deepseek.record.json", self.glm_record(servedModel="zz-messages-go")))
+        self.assertEqual(json.loads(out)["runs"][0]["fresh"], 3971660)
+
+    def test_usage_unmeasured_names_only_chat_rows_on_a_litellm_launcher_below_the_floor(self):
+        import model_registry
+        self.chat_go_row()
+        base = {"transport": "go", "servedModel": "zz-chat-go"}
+        floor = model_registry.LITELLM_CHAT_USAGE_FLOOR
+        above = floor.rsplit(".", 1)[0] + ".99"
+        self.assertIn("unrecorded", model_registry.usage_unmeasured(base, self.data))
+        self.assertIn("1.99.0", model_registry.usage_unmeasured(dict(base, proxyVersion="1.99.0"), self.data))
+        for good in (floor, above, "litellm v" + floor):
+            self.assertIsNone(model_registry.usage_unmeasured(dict(base, proxyVersion=good), self.data), good)
+        cli = next(m for m in self.data["models"] if m["transport"] == "opencode-cli")
+        cli["apiMode"] = "chat"
+        self.assertIsNone(model_registry.usage_unmeasured(
+            {"transport": "opencode-cli", "servedModel": cli["id"]}, self.data))
+        self.assertIsNone(model_registry.usage_unmeasured({"servedModel": "zz-chat-go"}, self.data))
 
 
 if __name__ == "__main__":

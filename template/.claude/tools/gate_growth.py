@@ -13,11 +13,23 @@ of its reuse key that changed). At the close's end `harness_tests.py` calls `clo
   the median proof) and chance lift single runs of one proof, and growth lifts all of them. A partial pass (a
   proof that reused some of its own cases) is no time and joins no range or load. Both recent raw times must also
   exceed its earlier fastest whole pass: the other proofs' pace cannot make a faster proof into growth.
+  Lasting growth also needs enough earlier passes that chance alone cannot name the proof. The close tests every
+  proof against its own range, and a proof whose last two passes are exchangeable with its n earlier ones tops them
+  all with chance 1 in C(n + 2, 2). The close names a proof only when C(n + 2, 2) exceeds the number of proofs it
+  tested, so chance alone expects under one false name. The median load cannot divide out a proof that spawns or
+  case-pools: it slows several times between two closes at one load, and a thin range reads that as growth. Such a
+  proof stays unjudged until its history is deep enough.
 - keeps one open entry per grown proof in the shared store (`harness_tests.growth_path()`): the top of the range it
-  had before (`before_s`), its latest normalized time (`now_s`) and the closes that saw it above that range. A close
-  that runs the proof inside `before_s` closes the entry; an entry whose proof file is gone leaves. Listing and
-  commit advisories also reconcile later full passes from the run log or shared duration receipts. A scalar fastest
-  time has no date and never closes newer growth. The store holds at most one row per proof.
+  had before (`before_s`), the passes that set that range (`samples`), its latest normalized time (`now_s`) and the
+  closes that saw it above that range. A close that runs the proof inside `before_s` closes the entry; an entry
+  whose proof file is gone leaves. An entry also leaves when the closes that saw the proof above its range outnumber
+  `samples`: no pass came back inside the range, and the passes since outweigh the ones that set it, so the range was
+  the exception (a quiet-machine pass, a thin history) and no pass under normal load will reach it. An entry from
+  before `samples` counts the proof's whole passes in the run log before it opened, and at least the two any range
+  needs, since the log keeps only its newest rows. A range built on more passes holds its entry for that many
+  closes. Listing and commit advisories also reconcile later full passes from the run log or shared duration
+  receipts. A scalar fastest time has no date and never closes newer growth. The store holds at most one row per
+  proof.
 - groups the proofs the close reran by the one reuse-key part whose change made each rerun (`reuse_lost`), and names
   the input files behind them with their rerun seconds and readers (`reuse_inputs`, from the row's `inputs`).
 - keeps per-input rerun totals across closes beside the store (`inputs_path`). An input that led the reruns of two
@@ -105,18 +117,24 @@ def grown(row, runs, floor_s=0.0, beyond_spread=lambda proof: False, lasting=Fal
     bottom): it is one of many units that move with a repack, so by chance alone one of them tops its range on most runs.
     `lasting` (the close's setting) asks for a level shift instead of a slow run: the proof's last two normalized
     times must both top the range before them by its width. Load and chance lift one run of a proof and leave its
-    fastest runs where they were; growth lifts every run, so one slow pass among faster ones names nothing."""
+    fastest runs where they were; growth lifts every run, so one slow pass among faster ones names nothing.
+    `lasting` also asks that chance alone cannot name the proof: its n earlier passes must make C(n + 2, 2) exceed
+    the proofs this close tests, so the close expects under one false name."""
     earlier = _earlier(row, runs)
     ranges, fastest = _ranges(earlier)
     now = _normalized(row, fastest)
     current = _timed(row)
-    out = []
+    tested = []
     for proof, value in now.items():
         past = ranges.get(proof, [])
         recent = [value]
         if lasting:
             past, recent = past[:-1], past[-1:] + recent
-        if len(past) < 2 or proof not in fastest:
+        if len(past) >= 2 and proof in fastest:
+            tested.append((proof, value, past, recent))
+    out = []
+    for proof, value, past, recent in tested:
+        if lasting and math.comb(len(past) + len(recent), len(recent)) <= len(tested):
             continue
         bar = max(past) + (max(past) - min(past) if lasting or beyond_spread(proof) else 0.0)
         if min(recent) > bar and value > floor_s and current[proof] > fastest[proof]:
@@ -137,9 +155,25 @@ def _proof_names(tests_dir):
     return names
 
 
+def _outnumbered(entry, proof, runs):
+    """Whether the closes that saw `entry`'s proof above its range outnumber the passes that set that range: the
+    entry's stored `samples`, else (an entry from before `samples`) the proof's whole passes in `runs` before `since`,
+    and at least the two passes any range needs: the log keeps only its newest rows, so an old entry's range passes
+    may be gone, and its evidence is then the least it opened on.
+    No later pass came back inside the range, and the passes since now outweigh the ones it was judged by, so the
+    range was the exception and no pass under normal load will reach it."""
+    samples = entry.get("samples")
+    if isinstance(samples, bool) or not isinstance(samples, (int, float)):
+        since = entry.get("since") or 0
+        samples = max(2, sum(1 for r in runs if isinstance(r, dict) and (r.get("ts") or 0) < since
+                             and proof in _timed(r)))
+    return (entry.get("closes") or 0) > samples
+
+
 def _fold(state, row, runs, present, floor_s, lasting):
     """Fold `row` into `state` in place; return the entries this close saw above their range."""
-    _, now = _now(row, _earlier(row, runs))
+    earlier = _earlier(row, runs)
+    _, now = _now(row, earlier)
     raw = _timed(row)
     fresh = {g["proof"]: g for g in grown(row, runs, floor_s, lasting=lasting)}
     seen = {}
@@ -150,12 +184,16 @@ def _fold(state, row, runs, present, floor_s, lasting):
         if entry:
             if value > entry.get("before_s", 0) and raw[proof] > entry.get("raw_before_s", 0):
                 entry.update(now_s=round(value, 1), closes=entry.get("closes", 0) + 1, last=row.get("ts"))
-                seen[proof] = entry
+                if _outnumbered(entry, proof, earlier):
+                    state.pop(proof)
+                else:
+                    seen[proof] = entry
             else:
                 state.pop(proof)
         elif proof in fresh and proof in present:
             state[proof] = seen[proof] = {"before_s": fresh[proof]["before_s"], "now_s": fresh[proof]["now_s"],
                                           "raw_before_s": fresh[proof]["raw_before_s"],
+                                          "samples": fresh[proof]["samples"],
                                           "closes": 1, "since": row.get("ts"), "last": row.get("ts"),
                                           "head": (row.get("head") or "")[:12]}
     return seen
@@ -180,22 +218,30 @@ def update_store(store, row, runs, tests_dir, floor_s=0.0, lasting=False):
 
 
 def reconcile(store, durations, runs=()):
-    """Close entries on a later whole pass back in range. A scalar fastest time has no date:
-    it may predate the growth, so it is never recovery evidence. New duration receipts are shared
-    across checkouts; retained run rows also recover older entries whose receipt was never written."""
+    """Close entries on a later whole pass back in range, by the close's own test (`_fold`): a recorded run's
+    normalized time at or under `before_s`, or a raw time at or under the earlier fastest pass. A duration receipt
+    carries no load, so only its raw time counts. An entry whose closes above its range outnumber the passes that
+    set it also leaves (`_outnumbered`). A scalar fastest time has no date: it may predate the growth, so it
+    is never recovery evidence. New duration receipts are shared across checkouts; retained run rows also recover
+    older entries whose receipt was never written."""
     if not os.path.exists(store):
         return {}
+    state = read_json_salvage(store)
+    lasts = [e.get("last") for e in state.values() if isinstance(e, dict) and isinstance(e.get("last"), (int, float))]
 
     def positive(value):
         return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
-    observations = {}
+    observations, normalized = {}, {}
     for run in runs:
         if not isinstance(run, dict) or not positive(run.get("ts")):
             continue
         for proof, seconds in _timed(run).items():
             if positive(seconds):
                 observations.setdefault(proof, []).append((run["ts"], seconds))
+        if lasts and run["ts"] > min(lasts):
+            for proof, value in _normalized(run, _fastest(_earlier(run, runs))).items():
+                normalized.setdefault(proof, []).append((run["ts"], value))
     samples = durations.get("__last_passes__", {}) if isinstance(durations, dict) else {}
     for proof, sample in samples.items() if isinstance(samples, dict) else []:
         if isinstance(sample, dict) and positive(sample.get("ts")) and positive(sample.get("run_s")):
@@ -209,12 +255,17 @@ def reconcile(store, durations, runs=()):
             return False
         past = [seconds for ts, seconds in observations.get(proof, []) if ts < since]
         bar = entry.get("raw_before_s") or (min(past) if past else entry.get("before_s"))
-        return positive(bar) and any(ts > last and seconds <= bar for ts, seconds in observations.get(proof, []))
+        if positive(bar) and any(ts > last and seconds <= bar for ts, seconds in observations.get(proof, [])):
+            return True
+        top = entry.get("before_s")
+        return positive(top) and any(ts > last and value <= top for ts, value in normalized.get(proof, []))
 
-    state = read_json_salvage(store)
-    if any(recovered(p, e) for p, e in state.items()):
+    def leaves(proof, entry):
+        return recovered(proof, entry) or (isinstance(entry, dict) and _outnumbered(entry, proof, runs))
+
+    if any(leaves(p, e) for p, e in state.items()):
         def update(current):
-            for proof in [p for p, entry in current.items() if recovered(p, entry)]:
+            for proof in [p for p, entry in current.items() if leaves(p, entry)]:
                 current.pop(proof)
         update_json_locked(store, update)
         state = read_json_salvage(store)
@@ -231,7 +282,8 @@ def _open_entries(store, runs=None):
 
 def reuse_lost(row):
     """[(cause, proofs, seconds)] over the proofs `row` reran, largest seconds first: the one reuse-key part that
-    changed, `several` when more than one did, `no pass` when no recorded pass of the proof existed."""
+    changed (`other:<part>` when only another checkout's row was there to compare, `unobserved` when the checkout's
+    own pass kept no key), `several` when more than one did, `no pass` when no recorded pass of the proof existed."""
     groups = {}
     for p in row.get("proofs", []):
         if not isinstance(p, dict) or p.get("reused"):

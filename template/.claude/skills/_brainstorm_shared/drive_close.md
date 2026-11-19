@@ -6,11 +6,11 @@
 
 1. Verify by chain position per `change_control` §Gate cadence, which also owns fix re-verification. At each Part's
    close, run its plan's root-acceptance rows (`plan_file_format.md` §Root acceptance) on the Part's candidate through
-   the project's agent playtest command; at drive close, before the close gate, run the rows of every plan serving the goal on their
+   the project's agent playtest command; at drive close, before the drive-close scope run, run the rows of every plan serving the goal on their
    merged candidate the same way. Record each requirement met, partial, not met or owner-judges with its run
    evidence; a requirement no row maps is not met, and only taste is owner-judges (`appetite_invariant.md`
-   *Usability is analytical*). A partial or not-met row is repaired as a slice and re-run before the gate, and no
-   push precedes this verification, even after a green gate. Step 6 writes the record into the Part's roadmap row
+   *Usability is analytical*). A partial or not-met row is repaired as a slice and re-run before the scope run, and no
+   push precedes this verification, even after a green scope run. Step 6 writes the record into the Part's roadmap row
    (`roadmap_triggers_mvp.md` §6.10, the `complete` row). The owner's play checklist is built from these rows, and
    an owner-deferred, partial or unprobed row is never reported met.
 2. Candidate review (the Candidate review row), run only at the drive's close (`change_control`
@@ -35,3 +35,5 @@
    `CLAUDE.core.md` §Git, and one the Owner approval row admits waits for the owner.
 6. The adapter's write-back, which its header's owner stop or close clause names: the roadmap flip for a Part,
    `/worklog complete` with the commit ref per item in the session it lands, or none.
+7. Write the final report to the owner per `reference/deliverable_report.md`; its screenshots reuse step 1's
+   playtest frames.

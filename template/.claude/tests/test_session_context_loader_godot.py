@@ -143,10 +143,13 @@ def main():
         out = run_main(main_root, False, "startup", scg_patches={"get_jmodot_commits": lambda *_a, **_k: ["abc jm"]})
         check("a Godot project without a binary says so", "GODOT_BIN: NOT FOUND" in out, out[-600:])
         check("a Godot project lists the Jmodot commits", "Recent Jmodot commits:\n  abc jm" in out, out[-600:])
-        check("the hooks' setup statuses reach the Env: line", "import_cache OK" in out and "build OK" in out, out)
+        check("healthy setup statuses stay out of the Env: line", "import_cache" not in out and "build" not in out, out)
+        out = run_main(main_root, False, "startup", scg_patches={"setup_import_cache": lambda _r: "STALE (x)"})
+        check("a failing setup status reaches the Env: line", "import_cache: STALE (x)" in out, out)
         out = run_main(main_root, False, "startup", scg_patches={"get_godot_bin": lambda: "/opt/godot/g"})
-        check("a resolved binary prints the GODOT_BIN line",
-              "  GODOT_BIN: /opt/godot/g" in out and "Recent Jmodot commits:\n  (none)" in out, out[-600:])
+        check("a resolved binary prints no GODOT_BIN line (godot_bin.sh is the way in)",
+              "GODOT_BIN" not in out and "/opt/godot/g" not in out and "Recent Jmodot commits:\n  (none)" in out,
+              out[-600:])
         out = run_main(main_root, False, "startup", scg_patches={"godot_docs_cache_issue": lambda _r: "DOCS-ISSUE"})
         check("a docs cache issue is reported", "\nDOCS-ISSUE" in out, out[-400:])
         check("a local session gets no cloud contract", "<cloud-session>" not in out)
@@ -170,7 +173,7 @@ def main():
               and "CONTRACT-MARKER" in cloud_out, cloud_out[-800:])
         check("cloud contract drops the rule frontmatter", "paths:" not in cloud_out)
         check("cloud session still gets the memory index", "MEMORY-MARKER" in cloud_out)
-        check("cloud status key names the setup script", "cloud_setup OK" in cloud_out, cloud_out[:600])
+        check("a healthy cloud setup is silent", "cloud_setup" not in cloud_out, cloud_out[:600])
         check("cloud session persists the resolved binary", persisted == ["/opt/godot/g"], repr(persisted))
         check("no hook faulted", "Session step modules: FAILED" not in cloud_out, cloud_out[-300:])
 
@@ -194,7 +197,7 @@ def main():
             "get_godot_bin", "get_jmodot_commits", "setup_import_cache", "build_status",
             "godot_docs_cache_issue", "setup_runsettings", "run_cloud_setup", "persist_cloud_env")}
         for is_cloud_session in (False, True):
-            plain_out = run_main(plain_root, is_cloud_session, "startup",
+            plain_out = run_main(plain_root, is_cloud_session, "compact",
                                  scl_patches={"is_worktree": lambda: True}, scg_patches=planted)
             label = "cloud" if is_cloud_session else "local"
             check("non-Godot %s session: no Godot or Jmodot lines" % label,

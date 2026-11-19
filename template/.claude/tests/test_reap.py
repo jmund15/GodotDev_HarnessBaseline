@@ -1367,6 +1367,24 @@ def main():
     #     runs the real listing, and asks the OS afterwards whether both still run.
     ck_win("leftovers lists a dead session's launcher and its seat and stops neither", *leftovers_stops_nothing())
 
+    # 21. `end-seat <launch>` stops the seat by its tag, a process whose parent left the tree included; a dispatch
+    #     server and a nested launch's launcher (with its own seat below it) are spared; another launch is untouched.
+    seat_env = b"SIDECAR_SEAT_LAUNCH_ID=L1\0"
+    tbl = {p: row(p, pp, n, c) for p, pp, n, c in (
+        (7101, 4, "claude.exe", "claude.exe -p --model x"),
+        (7102, 7101, "bash.exe", "bash -c python3 .claude/scripts/harness_tests.py --proofs-for x"),
+        (7103, 7102, "python3.exe", "python3 .claude/scripts/harness_tests.py --proofs-for x"),
+        (7110, 5, "python3.exe", "python3 -c sleep"),
+        (7104, 7101, "claude-code-proxy.exe", "claude-code-proxy.exe"),
+        (7105, 7101, "bash.exe", "bash .claude/scripts/anthropic_sidecar.sh -l nested"),
+        (7106, 7105, "claude.exe", "claude.exe -p --model y"),
+        (7200, 6, "claude.exe", "claude.exe -p --model z"))}
+    envs = {7101: seat_env, 7102: seat_env, 7103: seat_env, 7110: seat_env, 7104: seat_env, 7105: seat_env,
+            7106: b"SIDECAR_SEAT_LAUNCH_ID=L3\0", 7200: b"SIDECAR_SEAT_LAUNCH_ID=L2\0"}
+    rc, killed, out = run(["end-seat", "L1"], tbl, peb=lambda pid: envs.get(pid, b""))
+    ck("end-seat stops the seat by tag, sparing a dispatch server and a nested launch, leaving another launch",
+       rc == 0 and sorted(killed) == [7101, 7102, 7103, 7110], f"rc={rc} killed={killed} out={out!r}")
+
     helped = subprocess.run([sys.executable, str(HERE.parent / "tools" / "reap.py"), "--help"],
                             capture_output=True, text=True)
     posted = helped.stdout + helped.stderr

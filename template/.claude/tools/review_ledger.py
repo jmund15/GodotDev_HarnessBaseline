@@ -1032,16 +1032,11 @@ def read_rows(path: Path):
 
 
 def _append_rows(path: Path, rows: list) -> bool:
-    """Append `rows` under the ledger's lock, so a rotation in one worktree never replaces the file under another's
-    append. False when the lock cannot be taken or the write fails."""
+    """Append `rows` under the ledger's lock, which `append_jsonl_rotating` holds across its rotation and append,
+    so a rotation in one worktree never replaces the file under another's append. False when the lock cannot be
+    taken or the write fails."""
     state = _import("_hook_state", CLAUDE_DIR / "hooks")
-    handle = state._acquire_json_lock(str(path))
-    if handle is None:
-        return False
-    try:
-        return state.append_jsonl_rotating(str(path), rows, max_bytes=MAX_BYTES, keep_lines=KEEP_LINES)
-    finally:
-        state._release_json_lock(handle)
+    return state.append_jsonl_rotating(str(path), rows, max_bytes=MAX_BYTES, keep_lines=KEEP_LINES)
 
 
 # ---- git facts for coverage -------------------------------------------------------------------------------

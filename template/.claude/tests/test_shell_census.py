@@ -43,13 +43,8 @@ procs = [{"pid": 10, "ppid": 1, "age": 60, "cmd": WRAP % "tail -f some.log"}]
 rows = shell_census.select(procs)
 case("planted 60-min shell reported", len(rows) == 1 and rows[0]["pid"] == 10 and rows[0]["tail"] == "tail -f some.log",
      repr(rows))
-case("unknown owner renders its pid and the fact reap cannot prove a dead owner",
-     "pid 10" in shell_census.render(rows) and "reap cannot prove a dead owner" in shell_census.render(rows)
-     and "leave them running" in shell_census.render(rows), shell_census.render(rows))
-case("header never claims \"this harness spawned\"", "this harness spawned" not in shell_census.render(rows),
-     shell_census.render(rows))
-case("unresolved ancestry renders as owner unknown, not this harness",
-     rows[0]["owner"] == "unknown" and "owner unknown" in shell_census.render(rows))
+case("a shell whose owner is unknown changes no action, so it renders nothing",
+     rows[0]["owner"] == "unknown" and shell_census.render(rows) == "", shell_census.render(rows))
 
 # 2. clean: young shell and a foreign process are ignored
 procs = [{"pid": 11, "ppid": 1, "age": 5, "cmd": WRAP % "sleep 1"},
@@ -72,8 +67,8 @@ with tempfile.TemporaryDirectory() as d:
     procs = [{"pid": 30, "ppid": 1, "age": 50, "cmd": "bash.exe .claude/scripts/codex_proxy_sidecar.sh -m luna -P \"%s\" -l x" % p}]
     rows = shell_census.select(procs)
     txt = shell_census.render(rows)
-    case("sidecar with a 30-min-idle -P stream flagged STALE", len(rows) == 1 and rows[0]["stream"] is not None
-         and rows[0]["stream"] >= 29 and "STALE" not in txt and "owner unknown" in txt, txt)
+    case("sidecar with a 30-min-idle -P stream reads its idle minutes", len(rows) == 1 and rows[0]["stream"] is not None
+         and rows[0]["stream"] >= 29 and txt == "", txt)
 
 # 4b. a shell running this session's live watcher renders as the wake route, never a hang candidate
 WATCH_SESSION = "probe-watcher-session"
@@ -92,9 +87,8 @@ case("a live watcher shell is silent",
      repr(_watcher_text))
 _unwatched_text = shell_census.run({"session_id": "nowatch0-0000-0000-000000000000"}, watcher_procs,
                                    own_pid=999, own_root=100)
-case("the same unresolved shell without a registered watcher is named with the proof limit",
-     "owner unknown" in _unwatched_text and "pid 35" in _unwatched_text
-     and "reap cannot prove a dead owner" in _unwatched_text, repr(_unwatched_text))
+case("the same unresolved shell without a registered watcher stays silent too",
+     _unwatched_text == "", repr(_unwatched_text))
 
 # 5. empty input renders nothing (the hook is silent, not "clean")
 case("empty process list renders empty string", shell_census.render(shell_census.select([])) == "")
@@ -118,8 +112,7 @@ procs = ancestry() + [{"pid": 40, "ppid": 100, "age": 60, "name": "bash.exe", "c
 rows = shell_census.select(procs, own_pid=999)
 case("shell sharing the hook's own root is classified own",
      len(rows) == 1 and rows[0]["owner"] == "own", repr(rows))
-case("own row renders in full without owner-unknown label",
-     "pid 40" in shell_census.render(rows) and "owner unknown" not in shell_census.render(rows))
+case("own row renders its pid", "pid 40" in shell_census.render(rows))
 
 # 7. other-session ownership: a shell whose chain reaches a DIFFERENT claude.exe root collapses
 # to one summary line, with no pid in it
@@ -133,12 +126,12 @@ case("shell reaching a different root is classified other", rows[0]["owner"] == 
 case("other-session shells are silent", txt == '', txt)
 
 # 8. unknown ancestry: a shell whose ppid chain breaks before reaching a claude.exe/node.exe
-# ancestor renders in full labeled "owner unknown", not "own" and not silently dropped
+# ancestor is classified unknown (never own) and renders nothing: no action follows from it
 procs = ancestry() + [{"pid": 42, "ppid": 9999, "age": 60, "name": "bash.exe", "cmd": WRAP % "tail -f orphan.log"}]
 rows = shell_census.select(procs, own_pid=999)
 txt = shell_census.render(rows)
 case("broken ancestry chain is owner unknown, not own",
-     rows[0]["owner"] == "unknown" and "pid 42" in txt and "owner unknown" in txt, txt)
+     rows[0]["owner"] == "unknown" and txt == "", txt)
 
 # --- emission / dedupe (drives shell_census.run(), the per-session path main() calls) ---
 
@@ -222,15 +215,14 @@ gone = [{"pid": 40, "ppid": 100, "age": 60, "name": "bash.exe", "cmd": WRAP % "t
 case("a stored root absent from the cached table is not trusted",
      shell_census.resolve_own_root(SESSION, gone, own_pid=4242, fresh=False) is None)
 via_run = shell_census.run({"session_id": SESSION + "-run"}, cached, own_pid=4242, own_root=100)
-case("run() passes the stored root through to the render", bool(via_run) and "pid 40" in via_run
-     and "owner unknown" not in via_run, repr(via_run))
+case("run() passes the stored root through to the render", bool(via_run) and "pid 40" in via_run, repr(via_run))
 
 # 13c. the same pid changing owner (own -> unknown) changes what renders, so it must re-emit
 _clear_session_state()
 owned = shell_census.run({"session_id": SESSION}, cached, own_pid=4242, own_root=100)
 unowned = shell_census.run({"session_id": SESSION}, cached, own_pid=4242, own_root=None)
-case("set up: the owned render emits", bool(owned) and "owner unknown" not in owned, repr(owned))
-case("the same pid turning owner-unknown re-emits", bool(unowned) and "owner unknown" in unowned, repr(unowned))
+case("set up: the owned render emits", bool(owned) and "pid 40" in owned, repr(owned))
+case("the same pid turning owner-unknown renders nothing", unowned == "", repr(unowned))
 
 # 13d. one unparseable process row must not fail the whole census open
 procs = [{"pid": 60, "ppid": 1, "age": 70, "cmd": WRAP % "bash roster.sh"},
@@ -281,6 +273,7 @@ import reap as _reap  # noqa: E402
 
 CENSUS_SESSION = "census-session-0001"
 DEAD = "deaddead-1111-2222-3333-444444444444"
+OTHER_PROJECT_DEAD = "99999999-1111-2222-3333-444444444444"
 SWEEP_LIVE = "11111111-2222-3333-4444-555555555555"
 PANE = ('"C:\\Program Files\\Git\\bin\\bash.exe" -c "source /c/x/.claude/shell-snapshots/snap-b.sh '
         '2>/dev/null || true && eval \'python3 .claude/tools/watch_records.py --pane\' < /dev/null"')
@@ -298,6 +291,8 @@ def _env(launch=None, session=None, parent=None):
 _census_root = _tempfile.mkdtemp(prefix="shell_census_proof_")
 _projects = _Path(_census_root) / "projects"
 (_projects / "C--x-{{PROJECT_NAME}}").mkdir(parents=True)
+(_projects / "C--y-Elsewhere").mkdir()
+(_projects / "C--y-Elsewhere" / (OTHER_PROJECT_DEAD + ".jsonl")).write_text("{}\n", encoding="utf-8")
 for _sid in (CENSUS_SESSION, DEAD):
     (_projects / "C--x-{{PROJECT_NAME}}" / (_sid + ".jsonl")).write_text("{}\n", encoding="utf-8")
 _reg = _Path(_census_root) / "sessions"
@@ -326,13 +321,13 @@ census_procs = [
 ]
 _census_text = shell_census.run({"session_id": CENSUS_SESSION}, census_procs, own_pid=999, own_root=100)
 case("a dead session's long shell renders its facts and no process is stopped",
-     _killed == [] and "pid 501" in _census_text and "session deaddead has no live host" in _census_text
+     _killed == [] and "pid 501" in _census_text and "deaddead" in _census_text
      and not _reap.LEDGER.exists(), repr(_census_text))
-case("the dead-session row carries the CPU cost that mattered and its launch membership",
-     "CPU-hours" in _census_text and "no launch id in its own environment" in _census_text, repr(_census_text))
-case("a live session's shell is silent and an untagged shell keeps the unknown-owner wording",
-     "pid 511" not in _census_text and "pid 520" in _census_text and "reap cannot prove a dead owner" in _census_text,
-     repr(_census_text))
+case("the dead-session row carries the CPU cost that mattered", "CPU-hours" in _census_text, repr(_census_text))
+_census_again = shell_census.run({"session_id": CENSUS_SESSION}, census_procs, own_pid=999, own_root=100)
+case("an identical dead-session set is delivered once, not at every prompt", _census_again == "", repr(_census_again))
+case("a live session's shell and an untagged shell are silent",
+     "pid 511" not in _census_text and "pid 520" not in _census_text, repr(_census_text))
 
 # 13g. the proof runs on a cached snapshot too: nothing about it needs a fresh CIM read, and no
 # path in the census writes a ledger row.
@@ -341,6 +336,75 @@ shell_census.prove_rows(_rows, census_procs, CENSUS_SESSION)
 case("a cached snapshot proves the same dead owner and stops nothing",
      any(r["pid"] == 501 and r.get("owner") == "dead" for r in _rows) and _killed == []
      and not _reap.LEDGER.exists(), repr(_rows))
+
+# 13h. the census names the owner the reaper's dead-session rule names: SIDECAR_PARENT_SESSION_ID first.
+# A row whose own session id is dead while its parent session is live is that live session's, never "no live host".
+_envs[530] = _env(session=DEAD, parent=SWEEP_LIVE)
+_envs[531] = _env(session=SWEEP_LIVE, parent=DEAD)
+_envs[532] = _env(session=SWEEP_LIVE, parent=OTHER_PROJECT_DEAD)
+_split = [{"pid": 100, "ppid": 1, "name": "claude.exe", "cmd": "C:/x/claude.exe --session-id " + CENSUS_SESSION},
+          {"pid": 910, "ppid": 1, "name": "claude.exe", "cmd": "C:/x/claude.exe"},
+          {"pid": 530, "ppid": 9999, "name": "bash.exe", "cmd": PANE, "age": 300},
+          {"pid": 531, "ppid": 9999, "name": "bash.exe", "cmd": PANE, "age": 300},
+          {"pid": 532, "ppid": 9999, "name": "bash.exe", "cmd": PANE, "age": 300}]
+_split_rows = shell_census.select(_split, own_pid=999, own_root=100)
+shell_census.prove_rows(_split_rows, _split, CENSUS_SESSION)
+_by_pid = {r["pid"]: r.get("owner") for r in _split_rows}
+case("a row whose own session id is dead and whose parent session is live is not labelled dead",
+     _by_pid.get(530) == "other", repr(_by_pid))
+case("a row whose parent session is dead is labelled dead although its own id is live",
+     _by_pid.get(531) == "dead", repr(_by_pid))
+case("a dead session of another project is not this session's to decide",
+     _by_pid.get(532) == "other", repr(_by_pid))
+_split_text = shell_census.render(_split_rows)
+case("the rendered census names only the dead parent's row",
+     "pid 531" in _split_text and "pid 530" not in _split_text and "pid 532" not in _split_text, repr(_split_text))
+
+# 13i. the cheap gate: a prompt pays for the full process list (one CIM query, ~1.3 s on a 930-process
+# machine) only when the set of aged bash/python processes changed, the last full scan is older than
+# RESCAN_SEC, a compaction dropped the earlier delivery, or the cheap read is unavailable.
+GATE_SESSION = "probe-gate-session"
+_own_procs = ancestry() + [{"pid": 40, "ppid": 100, "age": 60, "name": "bash.exe", "cmd": WRAP % "tail -f own.log"}]
+_loads = []
+_cands = {"value": ["40:1000"]}
+_real_load, _real_cands = shell_census.load_processes, shell_census.aged_candidates
+shell_census.load_processes = lambda session_id, now: (_loads.append(now) or (_own_procs, 100))
+shell_census.aged_candidates = lambda now: _cands["value"]
+
+
+def _gate(now):
+    return shell_census.census({"session_id": GATE_SESSION}, now=now)
+
+
+_t0 = 1_000_000.0
+_first = _gate(_t0)
+case("gate: the first prompt of a session takes the full scan and reports the shell",
+     len(_loads) == 1 and "pid 40" in _first, repr((_loads, _first)))
+case("gate: an unchanged aged set inside the rescan window skips the full scan",
+     _gate(_t0 + 60) == "" and len(_loads) == 1, repr(_loads))
+_cands["value"] = ["40:1000", "77:2000"]
+_gate(_t0 + 120)
+case("gate: a changed aged set takes the full scan", len(_loads) == 2, repr(_loads))
+_gate(_t0 + 120 + shell_census.RESCAN_SEC + 1)
+case("gate: a scan older than the rescan window is repeated", len(_loads) == 3, repr(_loads))
+_hook_state.clear_compaction_keys(GATE_SESSION)
+_after = _gate(_t0 + 120 + shell_census.RESCAN_SEC + 60)
+case("gate: a compaction forces the scan and re-delivers the unchanged set",
+     len(_loads) == 4 and "pid 40" in _after, repr((_loads, _after)))
+_cands["value"] = None
+_gate(_t0 + 2000)
+_gate(_t0 + 2001)
+case("gate: an unavailable cheap read falls back to the full scan every prompt", len(_loads) == 6, repr(_loads))
+_cands["value"] = ["1:1"]
+shell_census.load_processes = lambda session_id, now: (_loads.append(now) or ([], None))
+_gate(_t0 + 3000)
+_gate(_t0 + 3001)
+case("gate: an empty process list is never recorded as a scan", len(_loads) == 8, repr(_loads))
+shell_census.load_processes, shell_census.aged_candidates = _real_load, _real_cands
+
+_live = shell_census.aged_candidates(time.time())
+case("the cheap read answers on this machine without a PowerShell child",
+     _live is None or (isinstance(_live, list) and all(isinstance(x, str) for x in _live)), repr(_live)[:200])
 
 # 14. malformed stdin: main() exits 0 with no traceback
 import subprocess  # noqa: E402

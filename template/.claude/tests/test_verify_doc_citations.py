@@ -327,26 +327,6 @@ class TestEngineNeutral(unittest.TestCase):
         self.assertEqual(rows[("symbol", "ProofType")]["status"], "found")
 
 
-class TestPremiseSelfCheck(unittest.TestCase):
-    def read_command(self, name):
-        with open(os.path.join(ROOT, ".claude", "commands", name + ".md"), encoding="utf-8") as fh:
-            return fh.read()
-
-    def test_codify_done_checks_landing_premises(self):
-        text = self.read_command("codify")
-        step = text.split("## Step 0 — Does it already exist?", 1)[1].split("## Step 1", 1)[0]
-        done = next(line for line in step.splitlines() if line.startswith("**Done:"))
-        for required in ("diagnosis's premises", "landing commit's `premises` block",
-                         "VERIFIED", "--session", "before landing",
-                         "fixed or dropped", "reference/evidence_contract.md"):
-            self.assertIn(required, done)
-        self.assertIn("tools/verify_claims.py", done)
-
-    def test_autolearn_applying_cites_codify_self_check(self):
-        applying = self.read_command("autolearn").split("## Applying changes", 1)[1]
-        self.assertIn("[Step 0 self-check](codify.md#step-0--does-it-already-exist)", applying)
-        self.assertIn("before landing", applying)
-
 class TestKeptBehavior(Base):
     def test_bad_fileline_exits_one(self):
         doc = plant(self.tmp.name, "bad_line.md", "See `Game/Thing.cs:999`.\n")

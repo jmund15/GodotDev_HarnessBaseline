@@ -59,8 +59,10 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            Last, while any registered dispatch is unfinished: `⏳ still running · N · ctx 250k (25%)`
            (the session's context size, from the status line's `cc-cachestat-<sid>.json` in
            CC_CACHESTAT_DIR or the temp dir; omitted when that file is absent or unreadable), then one line
-           each (`name · model · effort · label · elapsed`; a Workflow shows its agent count and
-           pins ×count). Nothing unfinished, no block.
+           each (`name · model · effort · label · elapsed · ctx 376k · 2 compactions`; a Workflow shows its agent
+           count and pins ×count, and `ctx up to` its largest live agent with the agents' summed compactions). The
+           ctx and compactions come from the child's own transcript (`_dispatch_gauge`), each omitted when unread or
+           zero. Nothing unfinished, no block.
            A running sidecar that no live watcher covers ALSO blocks the Stop: nothing would wake
            this session when that sidecar needs a decision, so the reason names
            `python3 .claude/tools/watch_records.py --session --wake` to arm. Coverage is
@@ -137,22 +139,18 @@ STATE_KEY = "dispatch_table_pending"
 GONE_KEY = "dispatch_table_gone"  # expand_deferred's report lines (dropped or revived fan-outs) for complete
 ROSTER_OWNER_KEY = "dispatch_table_roster_owner"  # "<roster>:<pid>" -> whether this session started it; a pid's environment never changes
 UNKNOWN_KEY = "dispatch_table_unknown"  # deferred fan-outs expired with no checkable producer, revived if the file appears
-NO_WATCHER_REASON = (
-    "%d sidecar(s) running with no live watcher, so nothing wakes you when one needs you. "
-    "Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + " (reference/sidecar_dispatch.md "
-    "§Procedure step 6), then do the next step that needs no wake; end the turn only when none remains.")
-NO_WATCHER_ROSTER_REASON = (
-    "Bench roster(s) this session started are running with no live watcher (%s), so nothing wakes you when "
-    "one ends or fails. Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + " "
-    "(reference/sidecar_dispatch.md §Procedure step 6), then do the next step that needs no wake; end the turn "
-    "only when none remains.")
-NO_WATCHER_SHELL_REASON = (
-    "%d background shell(s) this session started are running with no live watcher, so nothing checks on them "
-    "inside your prompt cache. Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + " "
-    "(reference/sidecar_dispatch.md §Procedure step 6), then do the next step that needs no wake; end the turn "
-    "only when none remains.")
+# The step every no-watcher block ends on: arm the watcher (its one home is the sidecar_dispatch reference).
+_ARM_STEP = (" Run `" + watch_records.ARM_COMMAND + "` " + watch_records.ARM_CALL + " (reference/sidecar_dispatch.md "
+             "§Procedure step 6), then do the next step that needs no wake; end the turn only when none remains.")
+NO_WATCHER_REASON = ("%d sidecar(s) running with no live watcher, so nothing wakes you when one needs you." + _ARM_STEP)
+NO_WATCHER_ROSTER_REASON = ("Bench roster(s) this session started are running with no live watcher (%s), so nothing "
+                            "wakes you when one ends or fails." + _ARM_STEP)
+NO_WATCHER_SHELL_REASON = ("%d background shell(s) this session started are running with no live watcher, so "
+                           "nothing checks on them inside your prompt cache." + _ARM_STEP)
 STALE_SECONDS = 24 * 3600
 MAX_PENDING = 50
+# A child's stream opens with its SessionStart hook rows, then `init`: 21 rows deep in a measured opencode stream.
+INIT_SCAN_LINES = 200
 DONE_STATES = model_registry.WORKFLOW_TERMINAL_STATES
 UNKNOWN = "?"
 DEFAULT = "default"      # a sidecar flag left to the launcher
@@ -285,17 +283,30 @@ def _in_run_report(verification, payload):
         return {}
     record = Path(native_path(verification["report"]))
     if not record.is_absolute():
-        record = Path(payload.get("cwd") or os.path.dirname(os.path.dirname(HERE))) / record
+        record = Path(_session_base(payload)) / record
     return _read_json(str(record))
+
+
+_BASES = {}
+
+
+def _session_base(payload):
+    """The root a repository-relative path in a run's record resolves against when the run recorded none: the
+    checkout the payload's cwd lies in (the shell may sit in a subdirectory), else that cwd, else this checkout."""
+    cwd = payload.get("cwd")
+    if cwd not in _BASES:
+        from _checkout_root import session_checkout
+        _BASES[cwd] = session_checkout(payload) or cwd or os.path.dirname(os.path.dirname(HERE))
+    return _BASES[cwd]
 
 
 def _fold_subjects(specs, payload, repo_root=None):
     """Fold subjects from `{root, snapshot, files, newPaths?}` specs: a sidecar's fold_jobs.json or a native
     review's args.fold.subjects. A relative root or snapshot resolves against `repo_root` (a native review's
-    args.fold.repoRoot, recorded at dispatch), else the session's cwd when Stop fires."""
+    args.fold.repoRoot, recorded at dispatch), else the session's checkout when Stop fires."""
     from pathlib import Path
     import fold_check
-    base = Path(repo_root or payload.get("cwd") or os.path.dirname(os.path.dirname(HERE)))
+    base = Path(repo_root or _session_base(payload))
 
     def absolute(value):
         path = Path(str(value))
@@ -342,7 +353,7 @@ def _sidecar_fold_specs(verification, payload):
         return []
     directory = Path(flags[flags.index("--sidecar-dir") + 1])
     if not directory.is_absolute():
-        directory = Path(payload.get("cwd") or os.path.dirname(os.path.dirname(HERE))) / directory
+        directory = Path(_session_base(payload)) / directory
     jobs_path = directory / "fold_jobs.json"
     return json.loads(jobs_path.read_text(encoding="utf-8")) if jobs_path.is_file() else []
 
@@ -409,7 +420,7 @@ def _audit_source(entry, session, payload):
                 if not recorded and args.get("spillDir"):
                     spill = Path(args["spillDir"])
                     if not spill.is_absolute():
-                        spill = Path(payload.get("cwd") or os.path.dirname(os.path.dirname(HERE))) / spill
+                        spill = Path(args.get("root") or _session_base(payload)) / spill
                     flags += ["--spill-dir", str(spill)]
                 found, bad, _ = post_check.claims_rows(post_check.build_parser().parse_args([
                     "claims", *flags, "--out", str(directory / "unused.json")]))
@@ -541,8 +552,12 @@ def _compare_applied(report, applied, verification, in_run):
         if (not in_run or in_run.get('status') != verification.get('status')
                 or in_run.get('counts') != verification.get('counts') or not ids_match):
             report['mismatches'].append('bounded verification differs from complete report')
-    applied_by_key = {row["id"]: row for row in applied}
-    if len(applied_by_key) != len(applied):
+    # A merged review view (`M<n>`) names its source ids in `merged_from` and carries their worst verdict.
+    keys = [(key, row) for row in applied
+            for key in (row["merged_from"] if isinstance(row.get("merged_from"), list) and row["merged_from"]
+                        else [row["id"]])]
+    applied_by_key = dict(keys)
+    if len(applied_by_key) != len(keys):
         report["mismatches"].append("duplicate applied source keys")
     if set(supplied) != set(report["verdicts"]):
         report["mismatches"].append("verification source keys differ")
@@ -560,7 +575,11 @@ def _compare_applied(report, applied, verification, in_run):
     for key, checked in report["verdicts"].items():
         before = supplied.get(key)
         row = applied_by_key.get(key)
-        if not (partial and row is None) and (row is None or row.get("verdict") != before or row.get("confidence") != ("verified" if before == "VERIFIED" else "unverified")):
+        shown = before
+        if row is not None and isinstance(row.get("merged_from"), list) and row["merged_from"]:
+            members = [supplied.get(member) for member in row["merged_from"]]
+            shown = next((v for v in ("UNVERIFIED", "UNCHECKED", "VERIFIED") if v in members), "UNCHECKED")
+        if not (partial and row is None) and (row is None or row.get("verdict") != shown or row.get("confidence") != ("verified" if shown == "VERIFIED" else "unverified")):
             report["mismatches"].append("%s: verdict/confidence not applied" % key)
         items = checked["items"]
         if key in report["unattempted"]:
@@ -585,7 +604,7 @@ def _verifier_gap(entry, verification, in_run, report_path, payload):
     errors = [str(error) for error in in_run.get("errors") or []]
     if named and not in_run:
         errors.append("its report is unreadable at %s (resolved against %s)"
-                      % (named, payload.get("cwd") or os.path.dirname(os.path.dirname(HERE))))
+                      % (named, _session_base(payload)))
     gap = {"status": status or "absent", "errors": errors}
     if entry.get("kind") == "workflow":
         mode = "review" if (entry.get("name") or "").replace("-", "_") == "review_fanout" else "claims"
@@ -595,8 +614,20 @@ def _verifier_gap(entry, verification, in_run, report_path, payload):
     return gap
 
 
+STOPPED_STATES = ("killed", "cancelled", "stopped")
+
+
+def _stopped_run(entry, session):
+    """True when a TaskStop ended the workflow: it never reaches its verifier, so a missing one is no fault."""
+    if entry.get("kind") != "workflow":
+        return False
+    host = _read_json(os.path.join(session or "", "workflows", str(entry["id"]) + ".json"))
+    return host.get("status") in STOPPED_STATES
+
+
 def _verification_audit(entry, session, payload):
-    """Recompute, persist, then defer Stop once when D1's comparison requires it."""
+    """Recompute, persist, then defer Stop once when D1's comparison requires it. A stopped run's audit is
+    written for whoever reads its finished agents, and never defers Stop."""
     source = _audit_source(entry, session, payload)
     if source is None:
         return None
@@ -620,16 +651,20 @@ def _verification_audit(entry, session, payload):
             entry["verification_audit"] = existing[0]
         return None
     rows, applied, verification, report_path, errors = source
-    root = (entry.get("audit_args") or {}).get("root") or payload.get("cwd") or os.path.dirname(os.path.dirname(HERE))
+    root = (entry.get("audit_args") or {}).get("root") or _session_base(payload)
     report = _audit_check(rows, root, payload.get("session_id"), payload.get("_audit_deadline", _stop_deadline()))
     report["errors"].extend(errors)
     report.update(drift=[], mismatches=[], dispatchId=entry["id"])
     in_run = _in_run_report(verification, payload)
-    if not verification or verification.get("status") not in ("pass", "fail"):
+    stopped = _stopped_run(entry, session)
+    if stopped:
+        pass
+    elif not verification or verification.get("status") not in ("pass", "fail"):
         report["verifier"] = _verifier_gap(entry, verification, in_run, report_path, payload)
     else:
         _compare_applied(report, applied, verification, in_run)
-    report["outcome"] = "block" if report["mismatches"] or report["errors"] or report.get("verifier") else "match"
+    report["outcome"] = ("stopped" if stopped else
+                         "block" if report["mismatches"] or report["errors"] or report.get("verifier") else "match")
     if report["errors"] or report["counts"]["UNVERIFIED"] or report['counts']['UNCHECKED']:
         report["status"] = "fail"
     from pathlib import Path
@@ -653,7 +688,8 @@ def _verification_audit(entry, session, payload):
                 "Step 1.5). Recomputed against the current text, which a fold may have rewritten: %s.%s" % (
                     "status: " + gap["status"] if verification else "no verification block",
                     "In-run error: %s." % "; ".join(gap["errors"]) if gap["errors"] else "No error text was recorded.",
-                    " Rerun it: %s." % gap["rerun"] if gap.get("rerun") else "",
+                    # A clean recompute is the rerun; only a recompute that hit source errors gains from another.
+                    " Rerun it: %s." % gap["rerun"] if gap.get("rerun") and report["errors"] else "",
                     report_path, counts,
                     " Source errors: %s." % "; ".join(report["errors"]) if report["errors"] else ""))
     return ("Verification audit: %s. %s. Report: %s. Read the source of every non-VERIFIED claim before acting "
@@ -1229,7 +1265,16 @@ def launch(payload):
         raw_args = (payload.get("tool_input") or {}).get("args") or {}
         if isinstance(raw_args, str):
             raw_args = json.loads(raw_args)
+        if isinstance(raw_args, dict) and "argsFile" in raw_args:
+            import pre_workflow_dispatch  # the engine runs the args this expansion yields
+            raw_args = ((pre_workflow_dispatch.expand_args_file(payload) or {}).get("updatedInput") or {}).get(
+                "args") or raw_args
         audit_args = {k: raw_args[k] for k in ("root", "spillDir", "fold") if k in raw_args}
+        fold_args = raw_args.get("fold") if isinstance(raw_args.get("fold"), dict) else {}
+        # The root the run's relative paths were written against, as its args name it.
+        root = raw_args.get("root") or fold_args.get("repoRoot") or raw_args.get("__repoRoot")
+        if root:
+            audit_args["root"] = root
         entries = [{"kind": "workflow", "id": run_id, "task_id": resp.get("taskId"), "launched_at": now,
                     "name": _workflow_name(payload), "run_dir": run_dir, "reported": reported,
                     "declared": declared, "jobs": jobs, "audit_args": audit_args,
@@ -2197,7 +2242,7 @@ def complete(payload):
     running = [e for e in pending if (e.get("kind"), e.get("id")) not in done | audited]
     reason = "\n\n".join(reasons + ([FAILED_END_REASON % "\n".join(failed)] if failed else [])) or None
     if running:
-        lines.append(_running_block(running, now, payload.get("session_id")))
+        lines.append(_running_block(running, now, payload.get("session_id"), _session_dir(payload)))
         if not payload.get("stop_hook_active"):
             uncovered = _uncovered_sidecars(running, payload.get("session_id"))
             if uncovered:
@@ -2224,17 +2269,102 @@ def _awaiting_launch(entry):
                 and watch_records.ended_code(record) is None)
 
 
-def _running_line(entry, now):
-    """`name · pins · labels · elapsed` for one unfinished dispatch."""
+def _child_transcript(stream, transport):
+    """A sidecar child's own transcript, `<transport projects root>/<cwd, each non-alphanumeric as '-'>/<session
+    id>.jsonl`, named by the stream's `init` row; None when the stream names no session or the file is absent. A
+    proxied child's stream reports zero usage while its transcript holds the real counts."""
+    sid = cwd = None
+    with open(stream, encoding="utf-8", errors="replace") as fh:
+        for _ in range(INIT_SCAN_LINES):
+            line = fh.readline()
+            if not line:
+                break
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("subtype") == "init":
+                sid, cwd = row.get("session_id"), row.get("cwd")
+                break
+    if not (isinstance(sid, str) and isinstance(cwd, str)) or os.path.basename(sid) != sid:
+        return None
+    folder = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    path = os.path.join(str(model_registry.transport_projects_root(transport)), folder, sid + ".jsonl")
+    return path if os.path.isfile(path) else None
+
+
+def _gauge(path):
+    """(prompt tokens of the latest main-thread request or None, compactions) of one transcript or stream."""
+    import agent_progress
+    progress = agent_progress.read(path)
+    tokens = progress.contexts[-1][1] if progress is not None and progress.contexts else None
+    return tokens, watch_records.agent_compaction(path)["count"]
+
+
+def _dispatch_gauge(entry, session_dir):
+    """(context tokens, compactions, several) for one running dispatch, read from its child's transcript: a
+    sidecar's own transcript (`_child_transcript`), else its -P stream; an Agent's
+    `<session>/subagents/agent-<id>.jsonl`; a Workflow's live agents, the largest context and the summed
+    compactions (`several` True). (None, 0, False) when nothing is readable."""
+    kind = entry.get("kind")
+    if kind == "workflow":
+        run_dir = entry.get("run_dir") or (session_dir and os.path.join(session_dir, "subagents", "workflows",
+                                                                         str(entry.get("id"))))
+        if not run_dir:
+            return None, 0, False
+        agents = watch_records.workflow_agents(dict(entry, run_dir=run_dir))
+        gauges = [_gauge(os.path.join(run_dir, "agent-%s.jsonl" % a["agentId"])) for a in agents]
+        sizes = [t for t, _c in gauges if t]
+        return (max(sizes) if sizes else None), sum(c for _t, c in gauges), len(agents) > 1
+    if kind == "agent":
+        if not session_dir:
+            return None, 0, False
+        path = os.path.join(session_dir, "subagents", "agent-%s.jsonl" % entry.get("id"))
+        return _gauge(path) + (False,) if os.path.isfile(path) else (None, 0, False)
+    if kind == "sidecar" and entry.get("record"):
+        stream = watch_records.record_stream(entry["record"])
+        if not stream:
+            return None, 0, False
+        job = (entry.get("jobs") or [{}])[0]
+        try:
+            transport = model_registry.resolve(job.get("model"))["transport"]
+        except Exception:
+            transport = None
+        transcript = _child_transcript(stream, transport) if transport else None
+        tokens, compactions = _gauge(transcript) if transcript else (None, 0)
+        if tokens is None:
+            tokens, compactions = _gauge(stream)
+        return tokens, compactions, False
+    return None, 0, False
+
+
+def _gauge_text(entry, session_dir):
+    """[`ctx 376k`, `2 compactions`] for a running dispatch: `ctx up to` for a Workflow of several agents; a
+    clause is absent when unread or zero. An unreadable dispatch shows neither: the gauge never hides the line."""
+    try:
+        tokens, compactions, several = _dispatch_gauge(entry, session_dir)
+    except Exception:
+        return []
+    out = []
+    if tokens:
+        out.append("ctx %s%dk" % ("up to " if several else "", round(tokens / 1000)))
+    if compactions:
+        out.append("%d compaction%s" % (compactions, "" if compactions == 1 else "s"))
+    return out
+
+
+def _running_line(entry, now, session_dir=None):
+    """`name · pins · labels · elapsed · ctx · compactions` for one unfinished dispatch."""
     jobs = entry.get("jobs") or []
     kind = entry.get("kind")
     age = _elapsed(now - float(entry.get("launched_at") or now))
+    gauge = _gauge_text(entry, session_dir)
     if kind == "workflow":
         parts = [entry.get("name") or "Workflow"]
         if jobs:
             parts.append("%d agent%s" % (len(jobs), "" if len(jobs) == 1 else "s"))
             parts.append(workflow_pins(jobs))
-        return "  " + " · ".join(parts + [age])
+        return "  " + " · ".join(parts + [age] + gauge)
     if kind == "handoff":
         return "  " + " · ".join(["native hand-off", ", ".join(entry.get("labels") or []), "Workflow call not issued", age])
     job = jobs[0] if jobs else {}
@@ -2246,7 +2376,7 @@ def _running_line(entry, now):
     else:
         shown, name = _shown(job.get("model")), "Agent"
     return "  " + " · ".join([name.strip(), shown, str(job.get("effort") or UNKNOWN),
-                              str(job.get("label") or UNLABELED), age])
+                              str(job.get("label") or UNLABELED), age] + gauge)
 
 
 def _context_size(session_id):
@@ -2266,14 +2396,14 @@ def _context_size(session_id):
     return "ctx %dk" % round(tokens / 1000) + (" (%d%%)" % pct if isinstance(pct, (int, float)) else "")
 
 
-def _running_block(entries, now, session_id=None):
+def _running_block(entries, now, session_id=None, session_dir=None):
     """The Stop message's last block: every dispatch still running, one line each. The header
     carries the session's context size, so the user can judge a /compact while work runs."""
     ctx = _context_size(session_id)
     lines = ["⏳ still running · %d" % len(entries) + (" · " + ctx if ctx else "")]
     for e in entries:
         try:
-            lines.append(_running_line(e, now))
+            lines.append(_running_line(e, now, session_dir))
         except Exception as exc:  # one bad entry must not hide the others
             lines.append("  %s %s: unreadable (%s)" % (e.get("kind"), e.get("id"), type(exc).__name__))
     return "\n".join(lines)

@@ -103,7 +103,7 @@ def test_tier_alias_rewrites_once_through_the_emitted_input(monkeypatch, capsys)
         args = json.loads(args) if wire_string else args
         assert args["agents"][0]["model"] == "claude-haiku-5-5"
         assert "__transport" in args
-        assert "haiku → claude-haiku-5-5" in h["additionalContext"]
+        assert "claude-haiku-5-5" not in h.get("additionalContext", ""), h  # the rewrite is the tool's; no note follows it
     assert payload == original
     for rows in ([], [dict(data["models"][0], id="another-haiku")]):
         ambiguous = copy.deepcopy(data)

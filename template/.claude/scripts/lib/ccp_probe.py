@@ -20,6 +20,7 @@ Subcommands:
   server-compaction <proxy_exe>
                            print 1 iff that build supports tested native compaction, else 0
   user-scope-bin           print the owner's user-scope CCP_BIN (Windows); exit 1 when unset
+  prune <days>             delete the capture folders of sessions idle for <days> (prune_traffic)
   serves <proxy_exe> <model_id>
                            exit 0 iff `<proxy_exe> models` lists that id; 1 when it does not,
                            3 when the list is unreadable; the reason goes to stdout
@@ -36,6 +37,7 @@ import json
 import math
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -46,6 +48,8 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cli_envelope  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hooks"))
+import _file_lock  # noqa: E402
 
 # `/healthz`, not `/health` -- measured 2026-08-20 against v0.1.35, where `/health` returns
 # 404. A launcher polling the wrong path never sees ready and times out on a proxy that came
@@ -201,6 +205,38 @@ def _is_compaction_request(body):
     return False
 
 
+def _prune_lock_path():
+    return os.path.join(os.path.dirname(os.path.normpath(TRAFFIC_ROOT)), "traffic-prune.lock")
+
+
+def prune_traffic(days):
+    """Delete each session's capture folder no request has reached for `days`, and return how many went.
+    Captures hold prompts, and `attest` reads only those written since its own launch, so an idle session's
+    folder has no reader. A session folder's time moves when a request adds its folder. One prune runs at a
+    time: a large store takes hours, and a prune that finds another running returns 0."""
+    cutoff = time.time() - days * 86400
+    try:
+        entries = list(os.scandir(TRAFFIC_ROOT))
+    except OSError:
+        return 0
+    held = _file_lock.acquire(_prune_lock_path(), 0)
+    if held is None:
+        return 0
+    removed = 0
+    try:
+        for entry in entries:
+            try:
+                idle = entry.is_dir(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff
+            except OSError:
+                continue
+            if idle:
+                shutil.rmtree(entry.path, ignore_errors=True)
+                removed += not os.path.exists(entry.path)
+    finally:
+        _file_lock.release(held)
+    return removed
+
+
 def attest(since, session_id=None):
     """Session-scoped proxy request metadata; this does not prove generation acceptance."""
     sid = _session_id(session_id)
@@ -327,6 +363,15 @@ def main(argv):
         if not scoped:
             return 1
         print(scoped)
+        return 0
+    if cmd == "prune":
+        try:
+            days = float(argv[2])
+        except (IndexError, ValueError):
+            return 2
+        if not math.isfinite(days) or days < 0:
+            return 2
+        prune_traffic(days)
         return 0
     if cmd == "serves":
         if len(argv) != 4:

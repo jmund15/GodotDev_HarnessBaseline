@@ -16,7 +16,7 @@ Take ONE just-issued correction ("never let this happen again") or ONE procedure
 
 ## Independent derivation (an owner-requested pass)
 
-When the owner asks for the codification, two derivations of Steps 0–5 meet before Step 6, because the session that made the mistake diagnoses it under the same momentum that produced it. A `/autolearn` packet row skips this: its packet is the owner's review.
+When the owner asks for the codification, two derivations of Steps 0–5 meet before Step 6. A `/autolearn` packet row skips this: its packet is the owner's review.
 Read [`codify_derivation.md`](reference/codify_derivation.md) at this pass for its steps: brief, seal, dispatch, weigh.
 
 ## Step 0 — Does it already exist?
@@ -51,7 +51,7 @@ Apply `instruction_quality` §3b's fit test to the rule and its mechanism. Then 
 
 ## Step 3 — Mechanizable?
 
-Two mechanization surfaces, checked in order:
+Apply `reference/mechanism_litmus.md` first: a hook or gate lint lands only when L1-L4 hold, and its proof follows `rules/harness_tooling.md` §Every guard has a re-runnable proof. Then the two surfaces, checked in order:
 
 - **A tool boundary.** Can a `PreToolUse`/`PostToolUse` matcher *decide* it from a command shape, file path, tool name or live state, never from a statement the agent writes into the call? The matcher reads the call that makes Step 0's choice (the edit that writes the file, the plan or brief that orders the run), never a later call that only meets its result (the commit, the delegate's run); a later check is a backstop only when that call cannot be decided, and the report names why. Then it routes to a hook **plus one documented home** (`instruction_quality` §3) that the agent reads before the action the hook blocks. A rule that would reach the agent only through the hook's own deny makes the hook its teacher: land the home at the decision point first, or add no hook. A rule whose only home is a hook file is invisible to doctrine and exempt from `/rule_consistency`; a rule restated beyond that one home adds hesitation.
 - **A gate over an artifact.** Can a script or a read-only lens *decide* it from a diff, a plan file, a PR body, or the repo state at gate time? Then it routes to the gate that already runs there — a lint in the project's regression gate (`change_control` §Gate cadence names it), a Claude-side grep or lens in the coding layer's pre-PR battery or plan-review panel, or a registry template in `agents/*_agents.md` (via `tools/lens.py`) — and the command that runs the gate is its documented home.
@@ -65,7 +65,7 @@ Work top-down — the order is reach-reliability ÷ passive cost — over the ro
 | Fires when… | Surface | Owning home | Passive cost | Firing proof |
 |---|---|---|---|---|
 | a file of a **prefix-anchored class** (below the repo root) is touched | `rules/<name>.md` + `paths:` | `instruction_quality` §5 | zero until matched | the glob string is prefix-anchored below the repo root — decidable by reading it, no tooling |
-| an agent **edits** a specific artifact (an editing rule no user of the file needs) | the artifact's maintaining command (`/ladder_ingest`, `/worklog`, `/sync_baseline`, or the project's roadmap command); a judgment rule for the file also takes its `hooks/harness_edit_skill_reminder.py` `EDIT_NOTES` entry, which reaches an Edit/Write made outside the command: the rule's full sentence word for word as the owner states it, since the owner does not load on a direct edit, and a proof holding the two equal; with no command, a check that decides it (Step 3), else the `EDIT_NOTES` entry alone; `instruction_quality` only for a rule covering a class of files, never one file | `instruction_quality` §6 | zero until that edit | the rule appears in no file a reader loads to *use* the artifact, and an edit of the artifact receives it |
+| an agent **edits** a specific artifact (an editing rule no user of the file needs) | the artifact's maintaining command (`/ladder_ingest`, `/worklog`, `/sync_baseline`, or the project's roadmap command); a judgment rule for the file also takes an `OWNED_NOTES` entry in `hooks/harness_edit_skill_reminder.py` naming the command's `## ` section, which the hook reads into an Edit/Write made outside the command, since the command does not load on a direct edit; with no command, a check that decides it (Step 3), else the `EDIT_NOTES` entry alone; `instruction_quality` only for a rule covering a class of files, never one file | `instruction_quality` §6 | zero until that edit | the rule appears in no file a reader loads to *use* the artifact, and an edit of the artifact receives it |
 | an agent deliberately enters a domain | `auto-memory/archive/` (cold) | `instruction_quality` §5 | zero | the NL paraphrase an agent would search returns it top-ranked |
 | the user types it | `commands/` | `instruction_quality` §5 | zero until invoked | a loaded surface names it at signal-time |
 | a tool call matches a condition | `hooks/` **+ documented home** | `instruction_quality` §3 | one interpreter spawn per matched call | pass → deliberate violation → revert; the home loads before the blocked action |

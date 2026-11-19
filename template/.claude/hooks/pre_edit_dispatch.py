@@ -70,6 +70,16 @@ CHAIN += (
 CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did not adopt is absent
 
 
+try:
+    import _hook_state
+    from _hook_state import give_back
+except Exception:  # noqa: BLE001 - without it a dropped line keeps its once-key spent
+    _hook_state = None
+
+    def give_back(start, stop):
+        return None
+
+
 def _payload(**fields):
     return json.dumps({"hookSpecificOutput": dict(hookEventName="PreToolUse", **fields)})
 
@@ -91,8 +101,10 @@ def dispatch(input_data, chain=None):
     """Run the chain over one payload. Returns (exit_code, stdout_text, stderr_text)."""
     contexts, notes = [], []
     updated = None
+    started = _hook_state.spent_mark() if _hook_state else 0
     for entry in (chain if chain is not None else CHAIN):
         name, second = entry
+        before = _hook_state.spent_mark() if _hook_state else 0
         member = second if callable(second) else None
         try:
             if member is None:
@@ -101,6 +113,7 @@ def dispatch(input_data, chain=None):
         except Exception as exc:
             denied = _member_fault(name, "import", exc, getattr(member, "FAIL_CLOSED", False), contexts, notes)
             if denied:
+                give_back(started, before)
                 return denied
             continue
         fail_closed = getattr(member, "FAIL_CLOSED", False)
@@ -111,12 +124,15 @@ def dispatch(input_data, chain=None):
         except Exception as exc:
             denied = _member_fault(name, "runtime", exc, fail_closed, contexts, notes)
             if denied:
+                give_back(started, before)
                 return denied
             continue
 
         if result.get("block"):
+            give_back(started, before)
             return 2, "", "".join(notes) + result["block"] + "\n"
         if result.get("deny"):
+            give_back(started, before)
             return 0, _payload(permissionDecision="deny",
                                permissionDecisionReason=result["deny"]), "".join(notes)
         if result.get("updatedInput") is not None:

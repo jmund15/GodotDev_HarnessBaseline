@@ -135,8 +135,8 @@ function checkFallback(label, runResult, expected = ['strong source', 'weak sour
 // result carries: the fingerprint covers the result, every agent() option and every log line in full and bounded modes.
 const crypto = require('crypto')
 const NO_FOLD_FINGERPRINTS = {
-  full: '77cd7e79079b274395d273e763f682710c442794f0b7ac982be10c34d074fb12',
-  bounded: 'beaa73e5d221452607044e1846e08e662cea688bbc94e94592873baeb3d0f6fd',
+  full: '3617de32a9e827d4e2bcf73b31a5d63ab06b47ec76ff916bf9f52ba5ec21ec06',
+  bounded: '2f905e14690c3c6e551ece34bdd4ae9393e3391f178388bdf985295b7add7e54',
 }
 const fingerprint = (r) => crypto.createHash('sha256').update(JSON.stringify({
   result: r.result, opts: r.calls.map(c => c.opts), logs: r.logs,
@@ -398,6 +398,17 @@ async function foldCases() {
       && fold.prompt.includes('verify_claims.py --findings')
       && fold.prompt.includes(TEMPLATE) && !fold.prompt.includes('fold_claims.json'),
     fold && fold.prompt.slice(0, 900))
+  // The fold record is read later by another process from another cwd (the Stop-hook verifier), so under a
+  // worktree root both paths it names are absolute, and relative when the run has no root.
+  const WORKTREE = 'C:/work/checkout'
+  const rooted = await run({ ...noFoldArgs('full'), fold: FOLD, __repoRoot: WORKTREE }, foldReply())
+  const rootedFold = rooted.calls.find(c => c.opts.phase === 'Fold')
+  const foldLine = (name) => ((rootedFold && rootedFold.prompt.split('\n').find(l => l.startsWith(name + ': '))) || '').slice(name.length + 2)
+  const absolute = (p) => /^([A-Za-z]:)?\//.test(p)
+  check('under args.__repoRoot the fold prompt names the subject root and the snapshot as absolute paths',
+    absolute(foldLine('Root')) && foldLine('Root').startsWith(WORKTREE)
+      && absolute(foldLine('Snapshot')) && foldLine('Snapshot') === WORKTREE + '/' + SNAPSHOT,
+    'Root: ' + foldLine('Root') + ' | Snapshot: ' + foldLine('Snapshot'))
   const defaulted = await run({ ...noFoldArgs('full'), fold: { subjects: FOLD.subjects, tier: 'fanout' } }, foldReply())
   const defaultedFold = defaulted.calls.find(c => c.opts.phase === 'Fold')
   check('an args.fold without templatePath reads the one default fold brief',

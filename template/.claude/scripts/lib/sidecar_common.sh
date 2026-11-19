@@ -1452,6 +1452,9 @@ sc_kill_tree() {
   w="$(ps -W 2>/dev/null | awk -v p="$1" '$1==p{print $4}')"
   [ -n "$w" ] && MSYS_NO_PATHCONV=1 taskkill /PID "$w" /T /F >/dev/null 2>&1
   kill "$1" 2>/dev/null
+  # The seat and all it started carry SIDECAR_SEAT_LAUNCH_ID. One whose Windows parent exited (claude.exe once the
+  # subshell that ran env is gone) is outside the tree taskkill walks, and lives on; its tag still names it.
+  [ -n "${SC_LAUNCH_ID:-}" ] && python3 "$SC_ROOT/tools/reap.py" end-seat "$SC_LAUNCH_ID" >&2
   return 0
 }
 
@@ -1589,6 +1592,8 @@ sc_check_launch_memory() {
   SC_MEMORY_CHECKED=1
   local said mem_rc class_args=()
   [ -z "${SC_PROMPT_FILE:-}" ] || class_args=(--brief "$(sc_to_native "$SC_PROMPT_FILE")" --shape "${SC_SHAPE:-}")
+  # A resolved profile with no shell built-in takes the light floor (launch_memory.py classify_job).
+  [ -z "${SC_TOOL_PROFILE:-}" ] || class_args+=(--builtins "${SC_RESOLVED_BUILTINS:-}")
   if [ -n "${SIDECAR_DETACHED:-}" ]; then
     local lastf line _sc_mem_row=0
     lastf="$(mktemp)"  # the latest reading, for the refusal text only; the journal row is the published state
@@ -1619,6 +1624,54 @@ sc_check_launch_memory() {
     3) rc=12; sc_finish_reason_from "$said"; exit 12 ;;
     *) rc=2; sc_finish_reason_from "$said"; exit 2 ;;
   esac
+}
+
+# ------------------------------------------------------- launch quota-window fit
+# A job a usage limit would cut mid-run starts only when its plan's windows hold its expected drain
+# (tools/quota_fit.py owns the test). A caller that can wait (a detached job, or SIDECAR_CAN_WAIT=1 from an
+# unattended script such as the bench grid) sleeps toward the binding window's reset, re-asking every
+# SC_FIT_RECHECK_S since running jobs end, and records one `waiting-quota` journal row. An interactive foreground
+# call cannot wait: it prints the forecast and runs, since a forecast alone never refuses. A waiting caller whose
+# job no window holds before a long reset, or whose -T / SIDECAR_TIMEOUT bound passes, exits 10, nothing started.
+# A fit the check cannot read decides nothing: the observed-capacity gate (sc_gate_capacity) still runs.
+SC_FIT_RECHECK_S="${SC_FIT_RECHECK_S:-300}"  # a running job's end frees room well inside one window
+sc_check_quota_fit() {
+  [ "${SC_FIT_CHECKED:-0}" = 1 ] && return 0
+  SC_FIT_CHECKED=1
+  [ -n "${SC_MODEL:-}" ] || return 0
+  # The asking launcher is excluded by its -R record's file name: a process table shows the path in whichever
+  # form (Git Bash or Windows) the launch was given, and the name is the same in both.
+  local said fit_rc wait nap started _sc_fit_row=0 self="${SC_RECORD:-${SC_LABEL:-}}"
+  self="${self##*/}"; self="${self##*\\}"
+  local can_wait=0
+  { [ -n "${SIDECAR_DETACHED:-}" ] || [ "${SIDECAR_CAN_WAIT:-0}" = 1 ]; } && can_wait=1
+  started=$(date +%s)
+  while :; do
+    said="$(python3 "$SC_ROOT/tools/quota_fit.py" "$SC_MODEL" "${SC_EFFORT:--}" "${SC_SHAPE:--}" \
+      ${SC_TRANSPORT:+--plan "$SC_TRANSPORT"} ${self:+--exclude "$self"} 2>/dev/null)"
+    fit_rc=$?
+    case $fit_rc in 10|4) ;; *) return 0 ;; esac
+    if [ "$can_wait" = 0 ]; then
+      printf '[sidecar] WARN quota window: %s; running anyway (a detached launch would wait)\n' \
+        "$([ $fit_rc -eq 10 ] && printf '%s' "${said#* }" || printf '%s' "$said")" >&2
+      return 0
+    fi
+    [ $fit_rc -eq 4 ] && sc_die 10 "[sidecar] REFUSING $SC_MODEL: $said"
+    wait="${said%% *}"
+    printf 'WAIT quota window: %s, resets in %ss\n' "${said#* }" "$wait" >&2
+    if [ "$_sc_fit_row" = 0 ]; then sc_journal waiting-quota "message=${said#* }"; _sc_fit_row=1; fi
+    if [ -n "${SC_TIMEOUT:-}" ] && [ $(( $(date +%s) - started + 1 )) -gt "$SC_TIMEOUT" ]; then
+      sc_die 10 "[sidecar] REFUSING $SC_MODEL: wait bound ${SC_TIMEOUT}s reached; ${said#* }"
+    fi
+    nap=$(( wait + 60 < SC_FIT_RECHECK_S ? wait + 60 : SC_FIT_RECHECK_S ))
+    sleep "$nap"
+  done
+}
+
+# Once per launch, before any process starts: memory admission, then the quota-window fit.
+sc_admit_launch() {
+  sc_check_launch_memory
+  sc_check_quota_fit
 }
 
 # ------------------------------------------------------- duplicate launch guard
@@ -1652,7 +1705,7 @@ sc_check_duplicate_launch() { # <prompt-file> <resume-sid> [label] [record]
 }
 
 sc_run_watched() {
-  sc_check_launch_memory
+  sc_admit_launch
   sc_prepare_record || { OUTPUT=""; rc=2; return 2; }
   SC_RUN_STARTED=1
   local run_fn="$1" progress="${2:-}" tmp w now idle line _sc_off=0 _sc_run=0 _sc_last
@@ -2173,7 +2226,7 @@ sc_write_record() {
     HB_V="$hb" HS_V="$hs" DSHA_V="$dsha" REC_V="$(sc_to_native "$SC_RECORD")" \
     SCHEMA_V="$(sc_to_native "$SC_SCHEMA_FILE")" LEDGER_V="$SC_LEDGER" LABEL_V="$SC_LABEL" \
     DISCLOSURE_V="$SC_DISCLOSURE" LEDGER_DEFAULT_V="$ledger_default" \
-    TRANSPORT_V="$SC_TRANSPORT" COSTMODEL_V="$SC_COST_MODEL" \
+    TRANSPORT_V="$SC_TRANSPORT" COSTMODEL_V="$SC_COST_MODEL" PROXYVER_V="${SC_PROXY_VERSION:-}" \
     ATTEST_V="${SC_ATTESTED_MODEL:-}" PARSER_V="${SC_RECORD_PARSER:-claude}" \
     REGCLI_V="$SC_REGISTRY_CLI" PROGRESS_V="$(sc_to_native "${SC_PROGRESS:-}")" CTXWIN_V="${SC_CONTEXT_TOKENS:-}" CTXSOURCE_V="${SC_CONTEXT_WINDOW_SOURCE:-}" CTXOVERRIDE_V="${SIDECAR_COMPACT_AT_TOKENS:+${AC_AUTO_COMPACT_WINDOW:-}}" PRICE_AT_V="${SC_PRICE_AT_START:-}" \
     USAGE_LIMIT_V="${SC_USAGE_LIMITED:-0}" RESET_V="${SC_USAGE_LIMIT_RESET:-}" \
@@ -2290,7 +2343,13 @@ _route = _reg.route_of(os.environ["TRANSPORT_V"]) if os.environ.get("TRANSPORT_V
 _served_row = _reg.row_by_id(served[0], transport=_route) if len(served) == 1 else None
 _cost_model = (_served_row or {}).get("id") or os.environ["MODEL_V"]
 cost_tier_basis = 'untiered'
+_unmeasured = _reg.usage_unmeasured(dict(transport=os.environ.get("TRANSPORT_V"), servedModel=(served or [None])[0],
+                                         requestedModel=os.environ["MODEL_V"], proxyVersion=os.environ.get("PROXYVER_V") or None))
+if _unmeasured:
+    print(f'[sidecar] {_unmeasured}', file=sys.stderr)
 try:
+    if _unmeasured:
+        raise ValueError(_unmeasured)
     cost = _reg.price_run(_cost_model, fresh, cache_read, out_tok,
                           at=os.environ.get("PRICE_AT_V") or None,
                           cache_write=cache_write, cache_write_1h=cache_write_1h)
@@ -2397,11 +2456,13 @@ record = {
     # The .claude/ actually loaded, distinct from harnessBase/harnessSession (which are the
     # CODE tag) -- absent means the root's .claude/ is that tag's own frozen native copy.
     "doctrineSha": os.environ.get("DSHA_V") or None,
-    "inputTokens": fresh,
-    "cacheReadTokens": cache_read,
-    "cacheWriteTokens": cache_write + cache_write_1h,
-    "cacheWrite1hTokens": cache_write_1h,
-    "outputTokens": out_tok,
+    "proxyVersion": os.environ.get("PROXYVER_V") or None,
+    "usageUnmeasured": _unmeasured,
+    "inputTokens": None if _unmeasured else fresh,
+    "cacheReadTokens": None if _unmeasured else cache_read,
+    "cacheWriteTokens": None if _unmeasured else cache_write + cache_write_1h,
+    "cacheWrite1hTokens": None if _unmeasured else cache_write_1h,
+    "outputTokens": None if _unmeasured else out_tok,
     "costUSD": round(cost, 6) if cost is not None else None,
     "costBasis": cost_basis,
     "costTierBasis": cost_tier_basis,

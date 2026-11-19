@@ -534,7 +534,8 @@ def _write_json(path: Path, value: object) -> None:
 _MISSING = object()
 
 
-def _v2_fixture(path: Path, rows: dict[str, dict], *, manifest: bool = True):
+def _v2_fixture(path: Path, rows: dict[str, dict], *, manifest: bool = True,
+                baseline_root: dict[str, bytes] | None = None):
     remote = _remote(path)
     baseline = path / "baseline"
     _init_repo(baseline)
@@ -566,6 +567,8 @@ def _v2_fixture(path: Path, rows: dict[str, dict], *, manifest: bool = True):
                               "sync": entry.get("sync", "auto")})
     if manifest:
         _write_json(baseline / "baseline.manifest.json", {"version": 2, "files": manifest_rows})
+    for relpath, data in (baseline_root or {}).items():
+        _write(baseline / relpath, data)
     baseline_commit = _commit(baseline, "baseline")
     _push(baseline, remote)
 
@@ -2170,7 +2173,7 @@ def test_pull_runs_for_on_what_it_wrote_and_fails_on_red() -> None:
         assert green in (root / ".claude/scripts/seen.txt").read_text()
         bad = _run_baseline(root, baseline, "pull", red)
         assert bad.returncode == 1, _out(bad)
-        assert "test_red_proof.py" in _out(bad) and "harness_tests.py --for " + red in _out(bad), _out(bad)
+        assert "test_red_proof.py" in _out(bad) and "rerun: python3 .claude/tools/baseline_sync.py pull" in _out(bad), _out(bad)
         assert (root / red).read_bytes() == b"x = 1\n"
 
 
@@ -2230,7 +2233,7 @@ def test_a_red_pull_stays_in_the_journal_that_check_and_the_next_pull_read() -> 
         strict = _run_baseline(root, baseline, "check", "--strict")
         out = _out(strict)
         assert strict.returncode == 1 and "unresolved-pull" in out and red in out, out
-        assert "harness_tests.py --for " + red in out, out
+        assert "rerun: python3 .claude/tools/baseline_sync.py pull" in out, out
         assert green not in out.split("unresolved-pull", 1)[1], out
         again = _run_baseline(root, baseline, "pull")
         assert "earlier pull" in _out(again) and red in _out(again).split("earlier pull", 1)[1], _out(again)
@@ -3488,11 +3491,12 @@ _RUN_JS = (b"const fs = require('fs'), path = require('path');\n"
            b"fs.readFileSync(path.join(__dirname, %s));\n")
 
 
-def _runtime_proof_fixture(path: Path, proof: str, body: bytes, extra: dict[str, dict]):
+def _runtime_proof_fixture(path: Path, proof: str, body: bytes, extra: dict[str, dict],
+                           baseline_root: dict[str, bytes] | None = None):
     """A new proof row (no baseline copy) that reaches its dependency through a built path no static scan reads."""
     rows = {proof: {"manifest": False, "hash": None, "local": body, **extra.get(proof, {})}}
     rows.update({rel: row for rel, row in extra.items() if rel != proof})
-    return _v2_fixture(path, rows)
+    return _v2_fixture(path, rows, baseline_root=baseline_root)
 
 
 def test_judge_push_refuses_a_proof_that_is_red_in_the_shipped_set() -> None:
@@ -3511,6 +3515,24 @@ def test_judge_push_refuses_a_proof_that_is_red_in_the_shipped_set() -> None:
             assert result.returncode == 1, (proof, out)
             assert proof in out and "shipped set" in out, (proof, out)
             assert "judged" not in _load_lock(root)["files"][proof], proof
+
+
+def test_judge_push_leaves_a_proof_row_to_the_publish_ci_when_the_baseline_has_one() -> None:
+    """A baseline that carries its CI workflow runs every shipped proof on the publish PR; the judge runs none of
+    them here unless --run-proofs asks, so a judge of many proof rows costs no local proof time."""
+    proof, body = _RUN_PROOF, _RUN_PY % b'"fix" + "tures", "runtime_data.txt"'
+    ci = {".github/workflows/baseline.yml": b"name: baseline\n"}
+    with _fixture() as path:
+        root, baseline, _r, _c = _runtime_proof_fixture(path, proof, body, {}, baseline_root=ci)
+        _write(root / _RUN_FIXTURE, b"data\n")
+        _commit(root, "fixture")
+        result = _run_baseline(root, baseline, "judge", proof, "--verdict", "push", "--run-proofs")
+        assert result.returncode == 1 and "shipped set" in _out(result), _out(result)
+        result = _run_baseline(root, baseline, "judge", proof, "--verdict", "push")
+        out = _out(result)
+        assert result.returncode == 0, out
+        assert "shipped-set proof" not in out and "publish PR's CI" in out, out
+        assert _load_lock(root)["files"][proof]["judged"]["verdict"] == "push"
 
 
 def test_the_shipped_set_run_takes_its_timeout_from_the_runners_rule() -> None:
@@ -4939,6 +4961,7 @@ def main(part: int = 1) -> int:
         test_judge_push_refuses_a_row_whose_upstream_copy_changed_since_its_base,
         test_judge_push_allows_a_row_upstream_left_alone_since_its_base,
         test_judge_push_refuses_a_proof_that_is_red_in_the_shipped_set,
+        test_judge_push_leaves_a_proof_row_to_the_publish_ci_when_the_baseline_has_one,
         test_the_shipped_set_run_takes_its_timeout_from_the_runners_rule,
         test_judge_push_allows_a_proof_green_in_the_shipped_set,
         test_judge_push_records_its_verdict_when_the_shipped_set_tree_is_still_held,

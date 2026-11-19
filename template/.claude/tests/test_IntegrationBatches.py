@@ -126,10 +126,10 @@ def reader_and_mode(tmp):
     check("the Render unit's own filter (OR of tagged classes, trailing quarantine slot) runs windowed", out == "mode=windowed skipped=", f"rc={rc} {out!r}")
     rc, out, _ = mode_of(tmp, repo, "FullyQualifiedName~Tests.Integration.Visual.&" + "&".join(f"FullyQualifiedName!~{t}." for t in TAGGED))
     check("a segment filter that excludes every tagged class runs headless", out == "mode=headless skipped=", f"rc={rc} {out!r}")
-    for windowed, want in ((False, "|--headless|"), (True, "|--audio-driver Dummy|")):
+    for windowed, want in ((False, "|--headless --fixed-fps 60|"), (True, "|--audio-driver Dummy|")):
         rc, out, _ = drive(f"$m = Resolve-RunMode -Repo '{repo}' -Filter 'FullyQualifiedName~Tests.Integration.Visual.PlainTests'"
                            + (" -Windowed" if windowed else "") + "; \"|$($m.engineArgs)|\"", tmp)
-        check(f"a {'windowed' if windowed else 'headless'} run passes the engine {want.strip('|')}: no test run plays sound",
+        check(f"a {'windowed' if windowed else 'headless'} run passes the engine {want.strip('|')}: no test run plays sound, headless runs at a fixed 60 fps",
               out.strip() == want, f"rc={rc} {out!r}")
 
 

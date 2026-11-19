@@ -37,9 +37,8 @@ from _commit_scope import authored_paths, publishes_index  # noqa: E402
 from _hook_state import fire_once  # noqa: E402
 
 FIX_HINT = (
-    "instruction_quality §1: does this number bound agent behavior? if yes, give its basis or rewrite it "
-    "as a judgment. Record its class with `extract_numbers.py stub --staged` "
-    "(`--paths <files>` for a pathspec commit)."
+    "instruction_quality §1: give a number that bounds agent behavior its basis, or rewrite it as a judgment; "
+    "record any other class with `extract_numbers.py stub --staged` (`--paths <files>` for a pathspec commit)."
 )
 
 

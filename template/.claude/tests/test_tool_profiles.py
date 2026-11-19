@@ -794,8 +794,6 @@ with tempfile.TemporaryDirectory(prefix="tool_profiles_citers_") as _citer_repo:
           [".claude/plans/old.md", ".claude/reference/live.md"], _found)
     check("...and not a file that cites the replacement", False, ".claude/reference/clean.md" in _found)
 
-import re  # noqa: E402
-
 _doc = open(os.path.join(ROOT, ".claude", "reference", "sidecar_dispatch.md"), encoding="utf-8").read()
 _sect = _doc.split("## Job kind", 1)[1].split("\n## ", 1)[0]
 _doc_kinds = sorted(k for k in re.findall(r"^\| (\w[\w-]*) \|", _sect, re.M) if k != "kind")

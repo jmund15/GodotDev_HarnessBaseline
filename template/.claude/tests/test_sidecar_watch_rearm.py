@@ -99,6 +99,15 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
     group = output.split(GROUP, 1)[-1]
     check(str(queued) in group and str(never) not in group,
           "only running and queued records enter the uncovered group", output)
+    again = run_hook("killed")
+    check(str(queued) in again and all(str(path) not in again for path in (finished, dead, never, unknown)),
+          "an ended record already delivered is not listed again; an uncovered one still is", again)
+    subprocess.run([sys.executable, "-c",
+                    "import sys; sys.path.insert(0, %r); import _hook_state as h; h.clear_compaction_keys(%r)"
+                    % (str(ROOT / "hooks"), SID)], check=True, env=env, timeout=30)
+    after_compaction = run_hook("killed")
+    check(all(str(path) in after_compaction for path in (finished, dead, never, unknown)),
+          "a compaction dropped the earlier delivery, so the ended records are listed once more", after_compaction)
     earlier = root / "retry.record.json"
     later = root / "retry.attempt2.record.json"
     (root / "retry.record.json.exit").write_text("0")
@@ -198,5 +207,16 @@ with tempfile.TemporaryDirectory(prefix="rearm_test_") as temp:
     (session_dir / "workflows").mkdir()
     (session_dir / "workflows" / (run_id + ".json")).write_text(json.dumps({"status": "completed"}))
     check("watch_records.py" not in run_hook("killed"), "a workflow with a terminal host record is silent")
+
+with tempfile.TemporaryDirectory(prefix="rearm_journal_") as temp:
+    sys.path.insert(0, str(ROOT / "hooks"))
+    sys.path.insert(0, str(ROOT / "tools"))
+    import sidecar_watch_rearm
+    captured = ROOT / "tests" / "fixtures" / "sidecar_journal" / "foreground_launch" / "journaled.record.json.journal.jsonl"
+    finished = Path(temp) / "journaled.record.json"
+    (Path(temp) / "journaled.record.json.journal.jsonl").write_bytes(captured.read_bytes())
+    category, code = sidecar_watch_rearm.classify(str(finished))
+    check(category == "finished" and str(code) == "0",
+          "a real launch's ended journal row with no .exit reads finished, never unknown", (category, code))
 
 print("test_sidecar_watch_rearm: %d passed, 0 failed" % passed)

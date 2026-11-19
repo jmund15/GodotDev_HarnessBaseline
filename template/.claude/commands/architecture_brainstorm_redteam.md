@@ -106,7 +106,7 @@ DESIGN-HOLES:N   TASTE-FORKS:M   DEAD-ENDS:K   (lenses returned: X/<dispatched>)
 | Verdict | Condition | Consuming-skill action |
 |---|---|---|
 | **APPROVE** | 0 design-holes that count at the run's rigor (`orchestration` reference `rigor.md`), 0 dead-ends, X = dispatched (liveness OK); taste-forks batched | proceed to the user-review gate with the taste-batch |
-| **REVISE** | any design-hole that counts at the run's rigor, no dead-end; below-bar design-holes are listed `below bar: noted` | fold design-holes into the doc; re-review only the units holding design no reviewer saw, per `orchestration` §2 *Later rounds*; a reviewer's own fix that the post-check passes needs no re-review (`orchestration` §2 *Later rounds*) |
+| **REVISE** | any design-hole that counts at the run's rigor, no dead-end; below-bar design-holes are listed `below bar: noted` | fold design-holes into the doc; re-review per `orchestration` §2 *Later rounds* |
 | **HALT** | any dead-end | reframe constraints or a fresh `/architecture_brainstorm` pass; do not loop |
 | **INCOMPLETE** | X < dispatched (a lens didn't return) | cannot certify — re-dispatch missing lenses; never read as APPROVE |
 

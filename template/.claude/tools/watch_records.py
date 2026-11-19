@@ -491,17 +491,27 @@ def record_state(record, inventory=None):
 
 
 def memory_wait(record):
-    """The launcher's current admission-wait reading, or None when this run has none standing. The
-    launcher writes one `waiting-memory` row per launch; its own next transition (the post-spawn
-    `started`) puts that row behind the run's current slice once admission finishes."""
+    """The launcher's current admission wait, or None when this run has none standing. The launcher writes one
+    `waiting-memory` row (memory admission) or one `waiting-quota` row (quota fit) per launch; its own next
+    transition (the post-spawn `started`) puts that row behind the run's current slice once admission finishes.
+    A quota wait returns `waiting-quota: <message>`; a memory wait returns its `WAIT`/`STILL WAITING` reading."""
     for row in reversed(current_run(record)):
         event = row.get("event")
         if event in ("started", "ended"):
             return None
+        if event == "waiting-quota":
+            return "waiting-quota: " + str(row.get("message") or "")
         if event == "waiting-memory":
             message = str(row.get("message") or "")
             return message if message.startswith(('WAIT memory headroom', 'STILL WAITING')) else None
     return None
+
+
+def wait_line(label, waiting):
+    """`WAITING-QUOTA <label>: <message>` or `WAITING-MEMORY <label>: <reading>` for a `memory_wait` result."""
+    if waiting.startswith("waiting-quota: "):
+        return "WAITING-QUOTA %s: %s" % (label, waiting[len("waiting-quota: "):])
+    return "WAITING-MEMORY %s: %s" % (label, waiting)
 
 
 def _norm_record(path):
@@ -1659,8 +1669,15 @@ def live_carriers(launch):
 _ORPHANS = {}
 
 
+def _launcher_exited(record, state):
+    """True once a run has ended and its launcher is gone: a DIED run, or a DONE run whose launcher left its
+    exit trap. A process that still carries the launch id then outlived the job (a background proof run the job
+    queued, say) and holds machine time nobody will read."""
+    return state == "DIED" or (state == "DONE" and _launcher_gone(record))
+
+
 def orphan_processes(label, record, launch=None):
-    """`ORPHAN <label> launch=<id> pids=<...>` once a DIED run's launch id is still carried by a live
+    """`ORPHAN <label> launch=<id> pids=<...>` once an ended run's launch id is still carried by a live
     process that is not a dispatch server; None otherwise. Read once per record per watcher."""
     key = _norm_record(record)
     if key not in _ORPHANS:
@@ -1681,7 +1698,7 @@ def gone_fanout_orphans(unit):
     out = []
     for job in jobs:
         record = job.get("recordPath")
-        if not record or _norm_record(record) in known or record_state(str(record))[0] != "DIED":
+        if not record or _norm_record(record) in known or not _launcher_exited(str(record), record_state(str(record))[0]):
             continue
         text = orphan_processes(str(job.get("label") or os.path.basename(str(record))), str(record), job.get("launchId"))
         if text:
@@ -1817,6 +1834,7 @@ def _mark_poll(mark):
     poll's reads finished, instead of sleeping. Unset in a session; nothing the watcher prints changes."""
     if mark:
         try:
+            # bare-append: one watcher process writes this proof mark, and only proofs set it.
             with open(mark, "a", encoding="utf-8") as fh:
                 fh.write(".\n")
         except OSError:
@@ -1928,7 +1946,7 @@ def _wake(grouped, now=None):
                 alone = (state == "DONE" and not failed and not stopped and bool(unit.get("fanout_dir"))
                          and not unit.get("folding") and not group_holds(unit, label))
                 lines.append(("end", identity, text, "once" if alone else failed and not stopped and not retried))
-                orphan = orphan_processes(label, record) if state == "DIED" else None
+                orphan = orphan_processes(label, record) if _launcher_exited(record, state) else None
                 if orphan:
                     lines.append(("orphan-process", ("orphan-process", _norm_record(record)), orphan, "always"))
                 continue
@@ -1940,7 +1958,7 @@ def _wake(grouped, now=None):
             waiting = memory_wait(record)
             if waiting:
                 standing.add(('memory', record))
-                lines.append(('memory', ('memory', record), 'WAITING-MEMORY %s: %s' % (label, waiting), False))
+                lines.append(('memory', ('memory', record), wait_line(label, waiting), False))
                 continue
             idle = stall_idle(record)
             if idle is not None:
@@ -2041,7 +2059,7 @@ def checkin_lines(grouped, now=None):
                 continue
             waiting = memory_wait(record)
             if waiting:
-                out.append('WAITING-MEMORY %s: %s' % (label, waiting))
+                out.append(wait_line(label, waiting))
                 continue
             if found_by == "inventory":
                 out.append("QUEUED %s" % label)

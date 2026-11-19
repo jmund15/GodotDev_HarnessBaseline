@@ -37,7 +37,7 @@ class MachineSlots(unittest.TestCase):
             os.environ.pop('HARNESS_SLOT_DIR')
             self.assertEqual(slots.slot_dir().replace('\\', '/'), 'C:/Users/worker/.claude/.harness_slots')
 
-    def test_count_take_never_hoards_partial_capacity(self):
+    def test_a_count_take_that_misses_its_deadline_returns_its_partial_hold(self):
         first = slots.take(False)
         try:
             self.assertIsNone(slots.take(False, 2, deadline=time.time()))
@@ -86,6 +86,44 @@ class MachineSlots(unittest.TestCase):
             worker.join(10)
         self.assertFalse(worker.is_alive())
 
+    def test_an_older_harness_taker_cannot_starve_an_exclusive_head(self):
+        """A harness from before the queue (another project's, an old worktree's) shares this pool. Each of its
+        workers claims any free slot once drain.lock is free and holds it for a whole proof; its workers overlap,
+        so some slot is nearly always held. The exclusive head must still get the machine."""
+        folder, stop = Path(self.folder), threading.Event()
+        folder.mkdir(parents=True, exist_ok=True)
+
+        def older_worker(offset):
+            time.sleep(offset)
+            while not stop.is_set():
+                probe = slots._file_lock.acquire(str(folder / 'drain.lock'), 0)
+                if not probe:
+                    time.sleep(.005)
+                    continue
+                slots._file_lock.release(probe)
+                taken = None
+                for index in range(2):
+                    taken = slots._file_lock.acquire(str(folder / ('slot-%d.lock' % index)), 0)
+                    if taken:
+                        break
+                if taken:
+                    time.sleep(.04)
+                    slots._file_lock.release(taken)
+
+        workers = [threading.Thread(target=older_worker, args=(offset,)) for offset in (0, .02)]
+        for worker in workers:
+            worker.start()
+        try:
+            time.sleep(.1)
+            got = slots.take(True, deadline=time.time() + 5)
+            self.assertIsNotNone(got, 'the exclusive head never got the machine while an older taker ran')
+            self.assertEqual(len(got), 2)
+            slots.release_all(got)
+        finally:
+            stop.set()
+            for worker in workers:
+                worker.join(10)
+
     def _queued(self, deadline=10):
         """A taker that waits in its own thread; returns (thread, result dict)."""
         result = {}
@@ -133,6 +171,7 @@ class MachineSlots(unittest.TestCase):
             with patch.object(slots, 'NOTICE_AFTER', 0), patch.object(sys, 'stderr', io.StringIO()) as err:
                 self.assertIsNone(slots.take(False, deadline=time.time() + .3, notice=True))
                 self.assertIn('queued', err.getvalue())
+                self.assertIn(str(os.getpid()), err.getvalue(), 'the queued line names the pid holding the pool')
                 err.truncate(0)
                 self.assertIsNone(slots.take(False, deadline=time.time() + .3))
                 self.assertEqual(err.getvalue(), '')
@@ -246,7 +285,7 @@ class MachineSlots(unittest.TestCase):
                 labels.append(args[2])
             return 'ok'
         with patch.object(publish, '_run_python_args', run), patch.dict(os.environ, {'HARNESS_SLOT_BUDGET': '1'}):
-            publish._validate(tree, [], False)
+            publish._validate(tree, [], True)
         self.assertEqual(len(labels), 5)
         self.assertEqual(peak, 1)
 
@@ -307,6 +346,19 @@ class MachineSlots(unittest.TestCase):
             child.wait(timeout=15)
             child.stdout.close()
             thread.join(15)
+
+    def test_a_function_the_caller_exports_keeps_its_name_in_a_child_shell(self):
+        """A proof fakes a missing interpreter with `python3() { return 127; }; export -f python3`; the bootstrap
+        redefined python3 in every child shell, so under a fan-out the child ran the real Python."""
+        sys.path.insert(0, str(ROOT / '.claude/tests'))
+        from _sidecar_launch import bash_exe
+        env = slots.proof_environment(os.environ)
+        planted = "python3() { return 127; }; export -f python3; bash -c 'python3 -c pass; echo rc=$?'"
+        r = subprocess.run([bash_exe(), '-c', planted], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.stdout.strip(), 'rc=127', r.stdout + r.stderr)
+        r = subprocess.run([bash_exe(), '-c', "bash -c 'type -t python3; python3 -c pass; echo rc=$?'"], env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.stdout.split(), ['function', 'rc=0'], r.stdout + r.stderr)
 
     def test_delegate_node_proof_queues(self):
         import shutil

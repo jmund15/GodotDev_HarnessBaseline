@@ -463,6 +463,14 @@ _SAVED_COPY_SUFFIXES = (".bundle", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2
 _SAVED_COPY_LEVELS = 3
 
 
+def _save_step(repo: Path, project_root: Path | None) -> str:
+    """The deny's next step for a repository `_saved_copy_holds` judges: a tar alone never saves a commit no remote
+    holds, so the step names the bundle for its commits and the tar for its files."""
+    scratch = (project_root / ".claude" / "scratch").as_posix() if project_root else ".claude/scratch"
+    return (' (save its commits: `git -C "%s" bundle create "%s/%s.bundle" --all`; and its uncommitted files as '
+            '"%s/%s.tar"; then retry)' % (repo.as_posix(), scratch, repo.name, scratch, repo.name))
+
+
 def _saved_copies(project_root: Path, stem: str, target: Path) -> list[Path]:
     """Files under the project's `.claude/scratch` whose name carries `stem` and whose suffix is a
     saved-copy format, never inside `target` (it dies with the delete). The name narrows candidates;
@@ -859,8 +867,7 @@ def _job_scratch(entry: str, root: Path | None = None, project_root: Path | None
                 if project_root is not None and _saved_copy_holds(Path(here), project_root, root):
                     dirs[:] = []
                     continue
-                return rel + ' holds a linked worktree, not a clean pushed clone (save a copy of it under ' \
-                             '.claude/scratch named for it, then retry)'
+                return rel + ' holds a linked worktree, not a clean pushed clone' + _save_step(Path(here), project_root)
             if ".git" in dirs and _names_no_commit(Path(here) / ".git"):
                 dirs.remove(".git")
             if ".git" in dirs:
@@ -869,7 +876,7 @@ def _job_scratch(entry: str, root: Path | None = None, project_root: Path | None
                     dirs[:] = []  # a clean clone's own ignored files were judged; do not descend
                     continue
                 return rel + ' holds a git repository that loses work: ' + (why[0] if why else 'unreadable') \
-                    + ' (save a copy of it under .claude/scratch named for it, then retry)'
+                    + _save_step(Path(here), project_root)
             for name, folder in [(d, True) for d in dirs] + [(f, False) for f in files]:
                 reason = named(name, folder)
                 if reason:

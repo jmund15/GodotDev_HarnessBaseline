@@ -175,7 +175,9 @@ const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, ex
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
     || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
   const quoteArg = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'"
-  const identity = JSON.stringify([mode, items.map(keyOf)])
+  // The verifier finds its journal by this label, and every review numbers its findings F1..Fn: the run's own report
+  // path keeps two runs with the same ids apart, and a resumed run keeps its label.
+  const identity = JSON.stringify([mode, out, items.map(keyOf)])
   let hash = 2166136261
   for (let i = 0; i < identity.length; i++) hash = Math.imul(hash ^ identity.charCodeAt(i), 16777619)
   const label = 'verify-' + (hash >>> 0).toString(36)
@@ -421,7 +423,7 @@ const BASE_CONTRACT = (a) => [
   RELAY_LINE,
   readOnlyContract(a),
   CONCURRENT ? 'You are one of several agents running CONCURRENTLY: do NOT run a single-flight tool (a test runner, build, engine or language server that allows one process per machine or per checkout; your delegate rails name this project\'s) — use Grep/Read instead of a language server. Python and Node proofs under .claude/tests/ are not single-flight'
-    + (noShell(a) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file through `python3 .claude/tools/machine_slots.py run -- <proof command>`, not harness_tests.py (rules/harness_tooling.md).')
+    + (noShell(a) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file through `python3 .claude/tools/machine_slots.py run -- <proof command>` before you return (rules/harness_tooling.md).')
     + ' If your mandate requires a single-flight run, STOP and report that it needs a serialized dispatch.' : null,
   'COVERAGE: `checked.toolsUsed` lists each read/search as `tool:target`, and each Read as `Read:<path>:<first>-<last>`, the lines it returned; a Read entry with no range counts as lines 1-' + READ_WINDOW + ', the Read tool\'s default window. `checked.stoppedAt` names why you stopped; `checked.basis` says what you examined. Each `gaps` entry is `{"item": <the path you did not read>, "reason": "outside-lens" | "capability" | "missing"}`: another seat\'s lens owns the item, it needs a tool you lack (running code, a shell, the engine), or the path does not exist. Only such a gap excuses a MUST-READ entry; state any other limit (a check you could not run, a file outside the list) in `checked.basis`. Empty findings without positive checked provenance are UNCOVERED, not clean.',
   'MUST-READ: you are done only when your Read ranges in `checked.toolsUsed` together cover every line of each entry below, or a `gaps` item names the entry with a legal reason. Read a file past the default window in ranges. A shell read of the file counts whole; a search covers no line. An entry read only in part fails this seat whatever `checked.stoppedAt` says, and the panel does not re-run a failed seat. Entries: ' + (a.mustRead || []).map(entry => entry.path + ' (' + entry.lines + ' lines)').join(', '),
@@ -1376,8 +1378,8 @@ const foldSubject = async (job, jobFinal) => {
   const foldPrompt = [
     'FOLD STAGE of a review. Read ' + FOLD_PIN.templatePath + ' with the Read tool and follow it (retry a transient read error; a missing path or a denial is not retried: return every finding id in `deferred` with the path and cause as its reason).',
     'Persist this full engine brief with Write to the Prompt file before any subject action. Do not write or remove its .amend.md file; it belongs to the parent.',
-    'Root: ' + job.subject.root,
-    'Snapshot: ' + job.subject.snapshot,
+    'Root: ' + rootedPath(A, job.subject.root).replace(/\/\.$/, ''),
+    'Snapshot: ' + rootedPath(A, job.subject.snapshot),
     'Files: ' + job.subject.files.join(', '),
     job.subject.newPaths.length ? 'New paths: ' + job.subject.newPaths.join(', ') : null,
     'Findings file: ' + FOLD_FILES.findings,

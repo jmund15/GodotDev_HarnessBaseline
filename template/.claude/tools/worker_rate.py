@@ -46,6 +46,8 @@ import sys as _cli_usage_sys
 from pathlib import Path as _cli_usage_path
 _cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
 from cli_usage import usage
+_cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parents[1] / "hooks"))
+import _hook_state  # noqa: E402
 
 import argparse
 import collections
@@ -263,16 +265,14 @@ def cmd_rate(args):
         if warning:
             print(f"warning: {warning}", file=sys.stderr)
 
-    RATINGS.parent.mkdir(parents=True, exist_ok=True)
-    with RATINGS.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({
-            "ts": target.get("ts"),
-            "tool": target.get("tool"),
-            "outcome": args.outcome,
-            "derivation": args.derivation,
-            "anchor": args.anchor,
-            "note": args.note,
-        }) + "\n")
+    _hook_state.append_jsonl_rotating(str(RATINGS), [{
+        "ts": target.get("ts"),
+        "tool": target.get("tool"),
+        "outcome": args.outcome,
+        "derivation": args.derivation,
+        "anchor": args.anchor,
+        "note": args.note,
+    }], max_bytes=None)
 
     band = breadth_of(target)
     print(f"rated {target.get('ts')} {target.get('tool')} -> {args.outcome}"

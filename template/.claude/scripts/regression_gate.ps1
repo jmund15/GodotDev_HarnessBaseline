@@ -130,7 +130,7 @@ Set-StrictMode -Version Latest
 # module-missing exits print it through Exit-ModuleMissing, and -Help prints every row.
 $script:VerdictRows = [ordered]@{
     'PASS'        = @{ code = 0;   meaning = 'All tiers clear.'; next = 'Proceed. Stage any baseline diff.' }
-    'STATIC_PASS' = @{ code = 0;   meaning = 'Preflight, guards, build and DOCS passed. The .cs gate is NOT satisfied.'; next = 'Run the full gate before any .cs commit.' }
+    'STATIC_PASS' = @{ code = 0;   meaning = 'Preflight, guards, build and DOCS passed. The .cs gate is NOT satisfied.'; next = 'The main check runs the full gate after the land; run one locally only to reproduce a main-check red (change_control §Gate cadence).' }
     'FAIL'        = @{ code = 1;   meaning = 'Real test failures.'; next = 'Follow regression_gate.md §Failure handling: repair in-scope failures, then re-run the failing -Filter.' }
     'INVALID'     = @{ code = 2;   meaning = 'Silent-skip signature or below the architectural floor. Counts are untrustworthy.'; next = 'Do not read the counts. Verify the affected surface per change_control §Gate cadence, then re-run.' }
     'WARN'        = @{ code = 3;   meaning = 'Unexplained count drop. Baseline not written.'; next = 'Fix any counting or ratchet defect and re-verify. Ask the user only to accept lost coverage.' }

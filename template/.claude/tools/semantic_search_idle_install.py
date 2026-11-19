@@ -262,7 +262,13 @@ def proxy_contract(paths: Paths, plugin_root: Path) -> dict:
         capture_output=True, text=True, encoding="utf-8", timeout=120,
     )
     if out.returncode != 0:
-        raise Drift(f"installed shim failed to print its contract: {out.stderr.strip()[:200]}")
+        # The shim's own stderr line already names the cause; wrapping and cutting it hid its next step.
+        reason = out.stderr.strip().removeprefix("semantic-search-idle-proxy: ")
+        if "result format drift" in reason:
+            raise Drift(f"{reason.split('; review')[0]}. Worktree searches error until the reviewed build's sha256 "
+                        "joins RESULT_MODULE_HASHES in .claude/tools/semantic_search_idle_proxy.mjs and "
+                        "`python3 .claude/tools/semantic_search_idle_install.py --install` runs.")
+        raise Drift(f"installed shim failed to print its contract: {reason[:400]}")
     return json.loads(out.stdout)
 
 

@@ -14,8 +14,8 @@ set -u
 
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$R/scripts/lib/sidecar_common.sh"
-# This proof exercises resume policy, not launch admission; the real memory gate can wait indefinitely.
-sc_check_launch_memory() { :; }
+# This proof exercises resume policy, not launch admission; the real memory and quota gates can wait indefinitely.
+sc_check_launch_memory() { :; }; sc_check_quota_fit() { :; }
 SC_ROOT="$R"
 SC_FORMAT="stream-json"
 EXTRA_ARGS=()

@@ -225,5 +225,54 @@ class ProbeServesTests(unittest.TestCase):
         self.assertIn('CCP_BIN_SCOPE', body)
 
 
+class PruneTrafficTests(unittest.TestCase):
+    """Captures hold prompts and attestation reads only those written since its own launch, so a session's
+    captures go once no request has reached them for `days`."""
+
+    def session(self, root, sid, age_days):
+        path = Path(root) / sid / 'request'
+        path.mkdir(parents=True)
+        (path / '004-020-upstream-request.json').write_text('{}', encoding='utf-8')
+        stamp = probe.time.time() - age_days * 86400
+        os.utime(path.parent, (stamp, stamp))
+        return path.parent
+
+    def test_prune_removes_only_sessions_idle_past_the_cutoff(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(probe, 'TRAFFIC_ROOT', root):
+            old, fresh = self.session(root, PEER, 3), self.session(root, MINE, 0)
+            loose = Path(root) / 'note.txt'
+            loose.write_text('x', encoding='utf-8')
+            os.utime(loose, (0, 0))
+            self.assertEqual(probe.prune_traffic(2), 1)
+            self.assertEqual((old.exists(), fresh.exists(), loose.exists()), (False, True, True))
+
+    def test_a_prune_already_running_leaves_the_store_to_it(self):
+        """The first prune of a large store runs for hours; a second launch must not start another over it."""
+        with tempfile.TemporaryDirectory() as root:
+            store = os.path.join(root, 'traffic')
+            os.makedirs(store)
+            with patch.object(probe, 'TRAFFIC_ROOT', store):
+                old = self.session(store, PEER, 3)
+                held = probe._file_lock.acquire(probe._prune_lock_path(), 0)
+                try:
+                    self.assertEqual(probe.prune_traffic(2), 0)
+                    self.assertTrue(old.exists())
+                finally:
+                    probe._file_lock.release(held)
+                self.assertEqual(probe.prune_traffic(2), 1)
+
+    def test_prune_cli_takes_days_and_tolerates_a_missing_store(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(probe, 'TRAFFIC_ROOT', os.path.join(root, 'none')):
+            self.assertEqual(probe.main(['ccp_probe.py', 'prune', '2']), 0)
+            self.assertEqual(probe.main(['ccp_probe.py', 'prune', 'soon']), 2)
+
+    def test_the_launcher_prunes_in_the_background_when_it_starts_the_proxy(self):
+        text = (ROOT / '.claude/scripts/codex_proxy_sidecar.sh').read_text(encoding='utf-8')
+        start = text.index('CCP_TRAFFIC_LOG=1 \\')
+        prune = text.index('"$CCP_PROBE" prune')
+        self.assertLess(abs(prune - start), 1500)
+        self.assertEqual(text[prune:text.index('\n', prune)].rstrip()[-1], '&')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

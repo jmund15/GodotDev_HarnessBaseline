@@ -5,7 +5,7 @@ argument-hint: (none)
 
 # Delegation Usage
 
-Scope: every model/effort pin dispatched **out** of a session, across this project's whole history. This is not the account's global usage page — no local source covers native interactive-session tokens across every session. State this boundary first.
+Scope: every model/effort pin dispatched **out** of a session, across this project's whole history. It leaves out the parent sessions' own tokens. State this boundary first.
 
 ## Report
 

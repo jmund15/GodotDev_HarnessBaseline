@@ -10,6 +10,11 @@ launch, or not at all.
 `tier`, a registry lens, a shape row) must pin a row serving that tier on the job's OWN transport (native:
 the session's; sidecar: the alias's registry transport). None when it fits or no tier is implied.
 
+A row the owner names in the session's own turns passes `tier_fit` and `seat_fit` without holding the tier:
+`owner_named(row, texts)` matches the row's alias, id or label, or its family word beside its version number, in the
+words `OwnerTexts` reads (`_owner_text.owner_turns`); an agent's text never counts. A caller passes `owner_texts` and
+a `notes` list, and prints each `owner-named: <alias> for <tier>` line the check adds. Nothing else is lifted.
+
 `seat_fit(seats, data)` is the deny for a review panel: it keeps `tier_fit`'s line for a pin holding the
 seat's tier in neither registry `roles` nor `supplementary`, and refuses a pin holding it only in `supplementary`
 unless a qualified seat in the same panel carries every mandate the seat does (ladder Role definitions). The
@@ -45,6 +50,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+import _owner_text  # noqa: E402
 import quota_bands  # noqa: E402
 from _dispatch_pins import _tp, tier_rows  # noqa: E402
 try:
@@ -329,17 +335,107 @@ def job_tier(kind, written=None):
     return (tier, f"kind `{kind}`") if tier else (None, None)
 
 
-def tier_fit(model, tier, transport, data, pin_name=None):
+_SEPARATORS = re.compile(r"[\s_/-]+")
+_VERSION = re.compile(r"\d+(?:\.\d+)*")
+_PAREN = re.compile(r"\s*\([^)]*\)")
+
+
+def _fold(text):
+    return _SEPARATORS.sub(" ", str(text or "").lower()).strip()
+
+
+def _phrase_spans(folded, phrase):
+    """[(start, end)] of `phrase` in `folded` as whole words, not the head of a longer word or version number."""
+    pattern = r"(?<![a-z0-9.])" + re.escape(phrase) + r"(?![a-z0-9]|\.\d)"
+    return [m.span() for m in re.finditer(pattern, folded)]
+
+
+def _beside_version(folded, span):
+    """True when a version number is the word right before or after `span`."""
+    before = folded[:span[0]].split(" ")[-2:-1] if span[0] else []
+    after = folded[span[1]:].split(" ")[1:2]
+    return any(_VERSION.fullmatch(word) for word in before + after)
+
+
+def owner_named(row, texts):
+    """True when an owner text names registry `row`: its alias, id or label (parenthetical dropped) as whole words,
+    or its `family` word next to the number in its `version`, in either order. Case and `-`, `_`, `/` and space fold
+    together. A phrase without a digit (a bare family alias) does not name a row when a version number sits beside
+    it: the family-and-version rule decides then, so a text naming one version never names the row of another
+    version that owns the bare alias."""
+    phrases = {_fold(v) for v in (row.get("alias"), row.get("id"), _PAREN.sub("", str(row.get("label") or "")))}
+    phrases.discard("")
+    family = _fold(row.get("family"))
+    version = _VERSION.search(str(row.get("version") or ""))
+    paired = {f"{family} {version.group()}", f"{version.group()} {family}"} if family and version else set()
+    for text in texts:
+        folded = _fold(_owner_text.strip_pasted(text))
+        for phrase in phrases:
+            for span in _phrase_spans(folded, phrase):
+                if any(ch.isdigit() for ch in phrase) or not _beside_version(folded, span):
+                    return True
+        if any(_phrase_spans(folded, phrase) for phrase in paired):
+            return True
+    return False
+
+
+class OwnerTexts:
+    """The owner's own turn texts of one session, read on first use so a dispatch that needs no lift never reads the
+    transcript. `source` is a transcript path or a no-argument function returning one. A missing path, an
+    unreadable file and a delegate's session (`CLAUDE_CODE_SIDECAR`: its first user row is a brief an orchestrator
+    wrote) all read as no text."""
+
+    def __init__(self, source):
+        self._source, self._texts = source, None
+
+    def __iter__(self):
+        if self._texts is None:
+            self._texts = self._read()
+        return iter(self._texts)
+
+    def _read(self):
+        try:
+            if os.environ.get("CLAUDE_CODE_SIDECAR"):
+                return []
+            path = self._source() if callable(self._source) else self._source
+            return [text for _uuid, text in (_owner_text.owner_turns(str(path)) or [])] if path else []
+        except Exception:
+            return []
+
+
+def session_transcript_path():
+    """This process's session transcript (`CLAUDE_CODE_SESSION_ID`, in the store of `CLAUDE_PROJECT_DIR` or the
+    working directory), else None. A hook reads the `transcript_path` its payload carries instead."""
+    sid = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    if not sid:
+        return None
+    import session_digest
+    store = session_digest.session_store(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(), sid)
+    return str(store / (sid + ".jsonl"))
+
+
+def _named_note(entry, tier):
+    return f"owner-named: {entry.get('alias') or entry.get('id')} for {tier}"
+
+
+def tier_fit(model, tier, transport, data, pin_name=None, owner_texts=None, notes=None):
     """None when `model` is one of `tier`'s rows on `transport` (or `tier` is None), else why not.
 
     `pin_name(row)` spells the fit rows in the refusal: the native pin on a Workflow call, the
-    launcher alias (the default) on a sidecar.
+    launcher alias (the default) on a sidecar. A row an item of `owner_texts` names (`owner_named`) fits, and its
+    `owner-named` line is appended to `notes`.
     """
     if not tier:
         return None
     rows = tier_rows(tier, transport, data)
     if model in {v for r in rows for v in (r.get("id"), r.get("alias")) if v}:
         return None
+    if owner_texts is not None:
+        entry = _seat_entry(model, transport, data)
+        if entry and owner_named(entry, owner_texts):
+            if notes is not None:
+                notes.append(_named_note(entry, tier))
+            return None
     name = pin_name or (lambda r: r.get("alias") or r.get("id"))
     names = ", ".join(sorted({name(r) for r in rows})) or "none on this transport"
     return f"{model} is not among the `{tier}` rows on {transport} ({names})"
@@ -353,22 +449,31 @@ def _seat_entry(model, transport, data):
     return None
 
 
-def seat_verdicts(seats, data, pin_name=None):
+def seat_verdicts(seats, data, pin_name=None, owner_texts=None, notes=None):
     """[(seat, refusal line, is_rule)] for the seats of one review panel that do not fit.
 
     A seat is {label, model, tier, mandates, transport}. `is_rule` is False for a `tier_fit` line, returned
     unchanged and unlabelled, and True for the panel rule's line, which names its seat. A seat with no tier
     is never refused. The qualified seats are those whose pin holds the tier in `roles` and not in
     `supplementary` on the seat's own transport; their mandates, on any transport (a panel spans transports),
-    are the ones a supplementary-only seat may lean on."""
+    are the ones a supplementary-only seat may lean on. A seat whose row an item of `owner_texts` names is
+    qualified: it fits and covers its own mandates, and each lift adds its `owner-named` line to `notes`."""
     name = pin_name or (lambda r: r.get("alias") or r.get("id"))
     entries, standing, fits = [], [], []
     for seat in seats:
         tier = seat.get("tier")
         entry = _seat_entry(seat["model"], seat["transport"], data) if tier else None
+        fit = tier_fit(seat["model"], tier, seat["transport"], data, pin_name)
+        how = model_registry.seat_standing(entry, tier) if entry else None
+        short = fit or (how == "supplementary" and tier not in model_registry.entry_tiers(entry))
+        if entry and short and owner_texts is not None and owner_named(entry, owner_texts):
+            line = _named_note(entry, tier)
+            if notes is not None and line not in notes:
+                notes.append(line)
+            fit, how = None, "qualified"
         entries.append(entry)
-        fits.append(tier_fit(seat["model"], tier, seat["transport"], data, pin_name))
-        standing.append(model_registry.seat_standing(entry, tier) if entry else None)
+        fits.append(fit)
+        standing.append(how)
     covered = {}
     for seat, how, fit in zip(seats, standing, fits):
         if how == "qualified" and fit is None:
@@ -402,9 +507,9 @@ def seat_verdicts(seats, data, pin_name=None):
     return out
 
 
-def seat_fit(seats, data, pin_name=None):
+def seat_fit(seats, data, pin_name=None, owner_texts=None, notes=None):
     """The refusal lines for one review panel's seats, in seat order; [] when every seat fits."""
-    return [line for _seat, line, _rule in seat_verdicts(seats, data, pin_name)]
+    return [line for _seat, line, _rule in seat_verdicts(seats, data, pin_name, owner_texts, notes)]
 
 
 def hop_line(row, data, label, launcher=None):

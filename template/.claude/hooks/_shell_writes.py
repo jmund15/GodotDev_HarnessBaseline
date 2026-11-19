@@ -11,6 +11,9 @@ Forms read: `>`/`>>` redirects, `tee`, `sed -i`/`perl -i`, `dd of=`, `cp`/`mv`/`
 `.write_text`, `shutil`/`os` copy and move, Node `writeFile*`, `[IO.File]::Write*`, the PowerShell cmdlets), and, for the
 PowerShell tool, the same cmdlets and redirects. A path computed at run time is not decidable from the text.
 
+`deleted_targets(command, cwd)` returns the same rows for what an inline python body deletes or moves away (os, shutil
+and Path removals, a rename's or replace's source); `written_targets` never reports them.
+
 `segment_states(command, cwd)` yields `(base, segment, words)` per simple command with `cd` tracked, for a caller that
 reads a form this module does not own (a `git -C` writer).
 """
@@ -38,14 +41,23 @@ _LIT = r"(?P<p>[^'\"`\n]+)"
 _BODY_WRITES = [
     re.compile(r"open\(\s*" + _Q + _LIT + r"\1\s*,\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+]"),
     re.compile(r"Path\(\s*" + _Q + _LIT + r"\1\s*\)\s*\.write_(?:text|bytes)\("),
+    re.compile(r"Path\(\s*" + _Q + _LIT + r"\1\s*\)\s*\.open\(\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+]"),
     re.compile(r"shutil\.(?:copy\w*|move)\([^,\n]+,\s*" + _Q + _LIT + r"\1"),
     re.compile(r"os\.(?:replace|rename)\([^,\n]+,\s*" + _Q + _LIT + r"\1"),
     re.compile(r"(?:writeFileSync|appendFileSync|writeFile)\(\s*" + _Q + _LIT + r"\1"),
     re.compile(r"\[(?:System\.)?IO\.File\]::(?:Write|Append)\w*\(\s*" + _Q + _LIT + r"\1"),
 ]
-# A name bound to a path literal: the whole right-hand side is the literal, bare or in Path(...).
-_BINDING = re.compile(r"^[ \t]*(\w+)\s*=\s*(?:Path\(\s*)?r?" + _Q + r"(?P<p>[^'\"`\n]+)\2\s*\)?[ \t]*(?:;|$)",
+# A name bound to a path literal, at a line start or after `;`: the whole right-hand side is the literal, bare or in
+# Path(...).
+_BINDING = re.compile(r"(?:^|;)[ \t]*(\w+)\s*=\s*(?:Path\(\s*)?r?" + _Q + r"(?P<p>[^'\"`\n]+)\2\s*\)?[ \t]*(?=;|$)",
                       re.MULTILINE)
+_DELETE_LIT = r"(?P<p>[^'\"`\n]*\w[^'\"`\n]*)"
+_BODY_DELETES = [
+    re.compile(r"shutil\.(?:move|rmtree)\(\s*" + _Q + _DELETE_LIT + r"\1"),
+    re.compile(r"os\.(?:rename|replace|remove|unlink|rmdir|removedirs)\(\s*" + _Q + _DELETE_LIT + r"\1"),
+    re.compile(r"Path\(\s*" + _Q + _DELETE_LIT + r"\1\s*\)\s*\.\s*(?:unlink|rmdir|rename|replace)\("),
+]
+_DELETE_CALL = r"(?:os\.(?:rename|replace|remove|unlink|rmdir|removedirs)|shutil\.(?:move|rmtree))\(\s*"
 _DEF = re.compile(r"^[ \t]*def\s+(\w+)\(([^)]*)\)", re.MULTILINE)
 _PS_TOKEN = re.compile(r"""'[^']*'|"[^"]*"|[^\s'"]+""")
 _PS_CMDLETS = {"set-content", "add-content", "out-file", "new-item", "copy-item", "move-item"}
@@ -125,16 +137,31 @@ def _ps_targets(text):
     return found
 
 
-def _body_targets(body):
-    targets = [m.group("p") for rx in _BODY_WRITES for m in rx.finditer(body)]
-    bindings = [(m.start(), m.group(1), m.group("p")) for m in _BINDING.finditer(body)]
+def _bound_targets(body, use_for, path_only=False):
+    """The literal each name in `body` is bound to at one of its uses; `use_for(name)` is the regex of those uses.
+    `path_only` keeps the names bound as `Path(<literal>)`, for a method a plain string also has."""
+    targets = []
+    bindings = [(m.start(), m.group(1), m.group("p")) for m in _BINDING.finditer(body)
+                if not path_only or re.search(r"=\s*Path\(", m.group(0))]
     for name in {b[1] for b in bindings}:
-        use = re.compile(r"\b" + re.escape(name) + r"\.write_(?:text|bytes)\(|open\(\s*" + re.escape(name)
-                         + r"\s*,\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+]")
-        for write in use.finditer(body):
-            bound = [b for b in bindings if b[1] == name and b[0] < write.start()]
+        for use in use_for(re.escape(name)).finditer(body):
+            bound = [b for b in bindings if b[1] == name and b[0] < use.start()]
             if bound:
                 targets.append(bound[-1][2])
+    return targets
+
+
+def _body_deletes(body):
+    targets = [m.group("p") for rx in _BODY_DELETES for m in rx.finditer(body)]
+    targets += _bound_targets(body, lambda name: re.compile(
+        r"\b" + name + r"\.(?:unlink|rmdir|rename)\(|" + _DELETE_CALL + name + r"\s*[,)]"))
+    return targets + _bound_targets(body, lambda name: re.compile(r"\b" + name + r"\.replace\("), path_only=True)
+
+
+def _body_targets(body):
+    targets = [m.group("p") for rx in _BODY_WRITES for m in rx.finditer(body)]
+    targets += _bound_targets(body, lambda name: re.compile(
+        r"\b" + name + r"\.write_(?:text|bytes)\(|open\(\s*" + name + r"\s*,\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+]"))
     for m in _DEF.finditer(body):
         func, params = m.group(1), [p.split("=")[0].strip() for p in m.group(2).split(",")]
         for index, name in enumerate(params):
@@ -203,6 +230,19 @@ def segment_states(command, cwd=""):
                 base = resolve_cd(base, args[-1])
             continue
         yield base, segment, words
+
+
+def deleted_targets(command, cwd=""):
+    """The `Write` rows (verb = the interpreter) for each path an inline python body removes or moves away: os remove,
+    unlink, rmdir, removedirs and a rename's or replace's source; shutil move's source and rmtree; Path unlink, rmdir and
+    a rename's or replace's source. A name bound to a literal resolves as it does for `written_targets`."""
+    found = []
+    for base, _segment, words in segment_states(command, cwd):
+        verb, args = _verb(words)
+        if verb in _INTERPRETERS and (set(args) & _INLINE_FLAGS or "<<" in command):
+            inline = [args[i + 1] for i, a in enumerate(args[:-1]) if a in _INLINE_FLAGS]
+            found += [Write(p, None, base, verb) for p in _body_deletes("\n".join(inline) + "\n" + command)]
+    return found
 
 
 def written_targets(command, tool="Bash", cwd=""):

@@ -14,6 +14,11 @@ On every session start:
 4. On cloud: injects the memory index (the godot module adds the cloud contract and persists env vars)
 5. On a local machine: reports this checkout's setup stamp (workstation OK / STALE / UNAUDITED)
 6. Runs the step-module hooks of each installed layer module (toolchain, build and language-server checks)
+
+The client saves a hook command's output past `HOOK_TEXT_CAP` to a file and shows the agent a 2,000-character
+preview. The output is built once (the setup work runs once) and, past the cap, drops whole lines until it fits: the
+lines a step module or the cloud contract supplied first, last line first, then the loader's own lines from the end.
+The whole text goes to `.claude/scratch/session_context_full.md`, and a last line names that file.
 """
 
 import json
@@ -22,9 +27,11 @@ import platform
 import re
 import shutil
 import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -32,9 +39,58 @@ import _optional_hooks
 from _bounded_run import run_bounded
 from _checkout_root import linked_main_root
 from _claude_scope import is_cloud
+from _hook_parts import HOOK_TEXT_CAP
+from _hook_state import replace_path
 
-# Windows consoles default stdout to cp1252; injected text carries em-dashes.
-sys.stdout.reconfigure(encoding="utf-8")
+# Windows consoles default stdout to cp1252; injected text carries em-dashes. LF only, so a line's bytes are the
+# characters the client counts against the cap.
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+
+FULL_TEXT_FILE = Path(".claude") / "scratch" / "session_context_full.md"
+CUT_NOTE = ("[session-context] %%d lines did not fit the client's %d-character hook-text cap. Read %s for the full "
+            "text before your next action.")
+CUT_NOTE_UNSAVED = ("[session-context] %%d lines did not fit the client's %d-character hook-text cap and the full "
+                    "text could not be saved (%s); they are cut.")
+
+
+class _Bulk(str):
+    """A line a step module or the cloud contract supplied: it drops first when the output passes the cap."""
+
+
+def _bulk(items):
+    return [_Bulk(line) for item in items for line in str(item).split("\n")]
+
+
+def _within_cap(lines, root):
+    """`lines` joined, at most HOOK_TEXT_CAP UTF-8 bytes once printed. Past it, whole lines drop (bulk lines first,
+    each group from its last line) and a last line names the file that holds the full text."""
+    def size(text):
+        return len(text.encode("utf-8"))
+
+    whole = "\n".join(lines)
+    used = size(whole) + 1
+    if used <= HOOK_TEXT_CAP:
+        return whole
+    path = (root / FULL_TEXT_FILE).resolve()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".tmp_", suffix=".md", dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(whole + "\n")
+        replace_path(tmp, str(path))
+        note = CUT_NOTE % (HOOK_TEXT_CAP, str(path).replace("%", "%%"))
+    except OSError as exc:
+        note = CUT_NOTE_UNSAVED % (HOOK_TEXT_CAP, type(exc).__name__)
+    room = HOOK_TEXT_CAP - size(note % len(lines)) - 1
+    order = sorted(range(len(lines)), key=lambda i: (not isinstance(lines[i], _Bulk), -i))
+    dropped = set()
+    for i in order:
+        if used <= room:
+            break
+        used -= size(lines[i]) + 1
+        dropped.add(i)
+    kept = [line for i, line in enumerate(lines) if i not in dropped]
+    return "\n".join(kept + [note % len(dropped)])
 
 # `git submodule status` line: optional drift prefix, sha, path.
 # Empty prefix group == in sync ('-' uninit, '+' checkout != pointer, 'U' conflict).
@@ -263,6 +319,50 @@ def sidecar_launchers(registry, seat: str):
     return launchers
 
 
+HANDLE_HOARD_FLOOR = 200_000
+
+
+def process_handle_counts():
+    """(pid, image name, handle count) for every process, from one SystemProcessInformation query.
+    [] off Windows; None when the query fails."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    ntdll = ctypes.WinDLL("ntdll")
+    size = 1 << 20
+    while True:
+        buf = ctypes.create_string_buffer(size)
+        needed = ctypes.c_ulong()
+        status = ntdll.NtQuerySystemInformation(5, buf, size, ctypes.byref(needed)) & 0xFFFFFFFF
+        if status == 0xC0000004 and size < 1 << 28:
+            size = max(size * 2, needed.value + (1 << 16))
+            continue
+        if status:
+            return None
+        break
+    raw, rows, offset = buf.raw, [], 0
+    while True:
+        field = lambda at, width: int.from_bytes(raw[offset + at:offset + at + width], "little")
+        name_ptr = field(64, 8)
+        name = ctypes.wstring_at(name_ptr, field(56, 2) // 2) if name_ptr else "System Idle Process"
+        rows.append((field(80, 8), name, field(96, 4)))
+        if not field(0, 4):
+            return rows
+        offset += field(0, 4)
+
+
+def handle_hoarders(rows, floor: int = HANDLE_HOARD_FLOOR) -> str:
+    """Each process holding more than `floor` handles, with its pid and count.
+
+    Handles pin kernel pool that no process's own memory figure shows: the Settings app once held
+    3.56M token handles, 14 GB of paged pool, for 15 days unseen. The floor sits far above the
+    largest healthy holders measured on the workstation (System and services, under 50k)."""
+    if rows is None:
+        return "UNKNOWN (process table unreadable)"
+    return "; ".join(f"{name} pid {pid} holds {count:,} handles"
+                     for pid, name, count in sorted(rows, key=lambda row: -row[2]) if count > floor)
+
+
 def roster_health(root: Path) -> str:
     """Benchmark rosters that stopped writing before a terminal marker (bench_lib.roster_summary).
 
@@ -352,6 +452,79 @@ def sidecar_health(root: Path) -> dict[str, str]:
 
 # Matches the dispatch preflight's deadline; live capacity probes inside a check cap at 35 s.
 CHECK_SECONDS = 45
+
+
+def locations_line(root: Path) -> str:
+    """The project's document roots outside the repo (`adaptation.json` `doc_roots`), or '' when it names none."""
+    try:
+        tools = str(Path(__file__).resolve().parent.parent / "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import adaptation
+        roots = [r for r in adaptation.get(str(root / ".claude"), "doc_roots") or [] if isinstance(r, str)]
+    except Exception:
+        return ""
+    return locations_line_from(roots)
+
+
+def locations_line_from(roots: list[str]) -> str:
+    """One `[locations]` line; roots sharing leading directories print that prefix once."""
+    if not roots:
+        return ""
+    split = [re.split(r"(?<=[\\/])", r) for r in roots]
+    shared = 0
+    if len(roots) > 1:
+        while all(len(parts) > shared + 1 and parts[shared] == split[0][shared] for parts in split):
+            shared += 1
+    if not shared:
+        return f"[locations] document roots outside the repo: {'; '.join(roots)}"
+    prefix = "".join(split[0][:shared])
+    return (f"[locations] document roots outside the repo, under {prefix}: "
+            + "; ".join("".join(parts[shared:]) for parts in split))
+
+
+_HARNESS_FIX_SUBJECT = re.compile(r"^fix(\([^)]*\))?!?:")
+_HARNESS_ZONE = timezone(timedelta(hours=-6))
+
+
+def harness_fact_line(root: Path, now: datetime | None = None) -> str:
+    """One fact line: harness-only fix commits and the harness-only share of `origin/main` over the last 7
+    committer days, beside the Sep-Oct baseline. A harness-only commit is a non-merge, nonempty commit whose every
+    changed path starts `.claude/`. It prints no threshold and no recommendation. The line is cached for the
+    calendar day under `.claude/.cache/`; an unreadable `origin/main` prints nothing and caches nothing."""
+    try:
+        today = (now or datetime.now(_HARNESS_ZONE)).astimezone(_HARNESS_ZONE).date()
+        cache = root / ".claude" / ".cache" / "harness_fact.json"
+        try:
+            held = json.loads(cache.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            held = {}
+        if isinstance(held, dict) and held.get("day") == today.isoformat() and isinstance(held.get("line"), str):
+            return held["line"]
+        since = (today - timedelta(days=6)).isoformat() + "T00:00:00-06:00"
+        proc = run_bounded(["git", "--no-optional-locks", "log", "origin/main", "--no-merges",
+                            "--since-as-filter=" + since, "--format=@@%s", "--name-only", "--no-renames"],
+                           15, cwd=str(root))
+        if proc.returncode != 0:
+            return ""
+        commits, subject, paths = [], None, []
+        for line in proc.stdout.splitlines() + ["@@"]:
+            if line.startswith("@@"):
+                if subject is not None and paths:
+                    commits.append((subject, paths))
+                subject, paths = line[2:], []
+            elif line.strip():
+                paths.append(line.strip())
+        only = [subject for subject, files in commits if all(p.startswith(".claude/") for p in files)]
+        fixes = sum(1 for subject in only if _HARNESS_FIX_SUBJECT.match(subject))
+        share = round(100 * len(only) / len(commits)) if commits else 0
+        line = (f"harness: {fixes} harness-only fix commits in the last 7 committer days, {share}% harness-only "
+                "(Sep–Oct baseline 237/wk, 78%)")
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({"day": today.isoformat(), "line": line}), encoding="utf-8")
+        return line
+    except Exception:
+        return ""
 
 
 def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh", alias: str | None = None) -> str:
@@ -638,6 +811,7 @@ def main():
     except json.JSONDecodeError:
         input_data = {}
 
+    source = str(input_data.get("source") or "startup")
     root = get_project_root()
     worktree = is_worktree()
     cloud = is_cloud()
@@ -676,6 +850,9 @@ def main():
         rosters = roster_health(root)
         if rosters:
             setup_results["rosters"] = rosters
+        hoarders = handle_hoarders(process_handle_counts())
+        if hoarders:
+            setup_results["handles"] = hoarders
 
     # --- Git context ---
     branch = get_git_branch()
@@ -683,10 +860,12 @@ def main():
     uncommitted_str = ("working tree UNKNOWN" if uncommitted is None else
                        f"{uncommitted} uncommitted" if uncommitted > 0 else "clean")
     drift = get_upstream_drift()
+    drift_str = ""
     if drift and (drift[0] or drift[1]):
-        uncommitted_str += f" | {drift[0]} ahead, {drift[1]} behind upstream as last fetched"
+        drift_str = f"{drift[0]} ahead, {drift[1]} behind upstream as last fetched"
         if drift[0]:
-            uncommitted_str += f" (oldest unpushed {drift[2]:.0f}h)"
+            drift_str += f" (oldest unpushed {drift[2]:.0f}h)"
+        uncommitted_str += f" | {drift_str}"
 
     main_commits = get_recent_commits(1)
 
@@ -701,8 +880,6 @@ def main():
     # Worktree/cloud report
     if owner_view and worktree:
         output_lines.append(f"Worktree: YES (root: {root})")
-    elif owner_view:
-        output_lines.append("Worktree: no (main repo)")
 
     if cloud:
         output_lines.append("Environment: CLOUD (CLAUDE_CODE_REMOTE=true)")
@@ -714,14 +891,15 @@ def main():
         # its model and any fact after the detail (a pricing window) do.
         healthy_sidecar = re.match(r"(\S+): OK \([^)]*\)\s*(.*)$", status) if step.startswith("sidecar-") else None
         if status.startswith("OK"):
-            env_parts.append(f"{step} OK")
+            continue
         elif healthy_sidecar:
-            env_parts.append(" ".join(filter(None, (f"{step}: {healthy_sidecar[1]} OK", healthy_sidecar[2]))))
+            if healthy_sidecar[2]:
+                env_parts.append(f"{step}: {healthy_sidecar[1]} OK {healthy_sidecar[2]}")
         else:
             env_parts.append(f"{step}: {status}")
             if "FIXED" in status:
                 any_fixed = True
-    if owner_view:
+    if env_parts:
         output_lines.append("")
         output_lines.append("Env: " + " | ".join(env_parts))
     if not cloud:
@@ -736,13 +914,23 @@ def main():
         output_lines.append(listing_line)
 
     for lines in _step_results("env_lines", root, cloud):
-        output_lines.extend(lines)
+        output_lines.extend(_bulk(lines))
+
+    # A vault search needs an absolute searchDir, and CLAUDE.md names the roots only relatively.
+    locations = locations_line(root)
+    if locations:
+        output_lines.append(locations)
+    if owner_view and not cloud:
+        harness_line = harness_fact_line(root)
+        if harness_line:
+            output_lines.append(harness_line)
 
     if any_fixed:
         output_lines.append("  Auto-fixed the items marked FIXED; see remaining statuses above.")
 
-    # Git context
-    if owner_view:
+    # A fresh startup already carries the client's own branch and commit block, so it gets only
+    # the upstream drift that block lacks.
+    if owner_view and source != "startup":
         output_lines.append("")
         output_lines.append(f"Git: {branch} | {uncommitted_str}")
         output_lines.append("")
@@ -752,9 +940,12 @@ def main():
                 output_lines.append(f"  {commit}")
         else:
             output_lines.append("  (none)")
+    elif owner_view and drift_str:
+        output_lines.append("")
+        output_lines.append(f"Upstream: {drift_str}")
 
     for lines in _step_results("context_lines", root, get_recent_commits):
-        output_lines.extend(lines)
+        output_lines.extend(_bulk(lines))
 
     output_lines.append("</session-context>")
 
@@ -779,10 +970,7 @@ def main():
             pass
 
     for lines in _step_results("nudge_lines", setup_results, cloud):
-        output_lines.extend(lines)
-
-    if cloud:
-        output_lines.extend(cloud_session_blocks(root))
+        output_lines.extend(_bulk(lines))
 
     # Cloud-worklog replay surface (local only). When a cloud session has queued
     # worklog mutations to .claude/worklog-pending.md (Unit D), flag the live count
@@ -810,10 +998,10 @@ def main():
                 pass
 
     for lines in _step_results("report_lines", root):
-        output_lines.extend(lines)
+        output_lines.extend(_bulk(lines))
 
     # Self-improvement loop due-check — startup only, silent when nothing is due.
-    due_line = self_improvement_advisory(root, input_data.get("source"))
+    due_line = self_improvement_advisory(root, input_data.get("source")) if owner_view else ""
     if due_line:
         output_lines.append("")
         output_lines.append(due_line)
@@ -822,15 +1010,17 @@ def main():
     # /session_digest command's, whose listing reaches every session.
     if input_data.get("source") == "compact":
         output_lines.append("")
-        output_lines.append("<context-reload-reminder>")
-        output_lines.append("Resumed from compaction: search auto-memory (%s) for task-relevant gotchas."
+        output_lines.append("[compaction] Resumed: search auto-memory (%s) for task-relevant gotchas."
                             % ("Grep over .claude/auto-memory/" if cloud else "semantic-search"))
-        output_lines.append("</context-reload-reminder>")
 
     if _STEP_FAULTS:
         output_lines.extend(["", "Session step modules: FAILED (" + "; ".join(_STEP_FAULTS) + ")"])
 
-    print("\n".join(output_lines))
+    # Last, so the cap cuts the cloud contract and memory index, the largest blocks, before the lines above.
+    if cloud:
+        output_lines.extend(_bulk(cloud_session_blocks(root)))
+
+    print(_within_cap(output_lines, root))
     sys.exit(0)
 
 

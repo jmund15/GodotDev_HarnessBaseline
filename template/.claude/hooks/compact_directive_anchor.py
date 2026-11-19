@@ -44,8 +44,8 @@ the assistant's, labeled apart from the owner's words, and shares each message's
 
 After the messages, the session's active task record (`tools/task_record.py`, written by the parent at
 phase boundaries) is re-injected as one bounded block that shares TOTAL_BYTES with the messages. A
-session with no record gets one line naming the command that opens one instead: a drive long enough
-to compact is a drive that wanted the record. When this session has unrated dispatches, one
+session with no record gets, on its first compaction only, one line naming the command that opens one
+instead; a later compaction without a record is a choice already made. When this session has unrated dispatches, one
 `[rating-debt]` line follows the record and shares its budget. That line is optional: its count reads
 the session's sidecar records and launch transcript, which grows with the drive, so it runs under
 RATING_DEADLINE_SEC measured from hook start and prints nothing when it is not done by then. A client
@@ -454,9 +454,19 @@ def show(args: list) -> int:
     return 0
 
 
-def task_block(sid: str, project: Path) -> str:
+def _first_compaction(transcript: Path) -> bool:
+    """False only when the transcript shows an earlier compaction; an unreadable record counts as the first."""
+    try:
+        import _compaction_record
+        return _compaction_record.position(str(transcript))[0] <= 1
+    except Exception:
+        return True
+
+
+def task_block(sid: str, project: Path, transcript: Path = None) -> str:
     """The session's active task record (tools/task_record.py) as its bounded block; '' when none.
-    Read-only here: the parent writes the record, this hook only re-injects it after a compaction."""
+    Read-only here: the parent writes the record, this hook only re-injects it after a compaction. A session
+    with no record is told how to open one on its first compaction only: later it has already chosen."""
     try:
         tools = str(HERE.parent / "tools")
         if tools not in sys.path:
@@ -467,6 +477,8 @@ def task_block(sid: str, project: Path) -> str:
         rec = task_record.active(sid)
         if rec:
             return task_record.render_block(rec["task_id"])
+        if transcript is not None and not _first_compaction(transcript):
+            return ""
         return (f"{TAG} No task record (orchestration \u00a710). A drive that outlives one context "
                 f"window keeps its state in one: `task_record.py open <id> --session {sid} --title <t>`, "
                 f"then `task_record.py set <id> --next \"<the summary's next step>\" --files <docs it reads>`.")
@@ -551,13 +563,12 @@ def fetch_command(where: str) -> str:
 
 
 def intro_line(where: str) -> str:
-    return (f"{TAG} Context was compacted. Below are the owner's later messages from this session, oldest first, "
-            f"with send times: typed prompts, command arguments and question answers (question text shortened); "
-            f"the opening messages that set its goal are in their own {TAG} block. They are a record of what the "
-            f"owner said and when, not a list of open orders: each holds for the scope it was given, a step or "
-            f"question may be done, and on the same point a later message replaces an earlier one. Where the "
-            f"summary above words or rates a message differently, its words here hold. If you cannot tell whether "
-            f"a message still holds, ask the owner. Uncapped text: {where}")
+    return (f"{TAG} Context was compacted. The owner's later messages, oldest first with send times (prompts, "
+            f"command arguments, question answers with question text shortened). They record what the owner said "
+            f"and when, not open orders: each holds for the scope it was given, a step or question may be done, "
+            f"and a later message on the same point replaces an earlier one. Where the summary words or rates a "
+            f"message differently, its words here hold. If you cannot tell whether one still holds, ask the "
+            f"owner. Uncapped text: {where}")
 
 
 Injection = namedtuple("Injection", "lines kept omitted levels clipped record_block opening_lines opening "
@@ -589,7 +600,7 @@ def plan(transcript: Path, sid: str, project: Path, messages: list, where: str, 
     if rating_line is None:
         elapsed = time.monotonic() - started if started is not None else 0
         rating_line = rating_debt_line(sid, RATING_DEADLINE_SEC - elapsed)
-    record_block = "\n".join(b for b in (task_block(sid, project), rating_line) if b)
+    record_block = "\n".join(b for b in (task_block(sid, project, transcript), rating_line) if b)
     budget = (TOTAL_BYTES - sum(len(line.encode("utf-8")) + 1 for line in lines) - reserve
               - (len(record_block.encode("utf-8")) + 2 if record_block else 0))
     messages = [dict(m, context=contexts[m["index"]]) if m["index"] in contexts else m for m in messages]

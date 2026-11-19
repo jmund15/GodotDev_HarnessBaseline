@@ -163,15 +163,71 @@ def test_collinear_mix_prints_unidentified():
     assert "unidentified (spend share" in coef_line(out, "gamma"), out
 
 
-def test_rolling_window_voids_the_fit():
+def test_one_point_dip_inside_a_period_is_reading_noise():
+    coefs = {"alpha": 200.0, "beta": 50.0}
+    world = plant_periods(World(), coefs, 8, NOW - 20 * FIVE)
+    reset = NOW - 20 * FIVE + 3 * FIVE
+    start = reset - FIVE
+    at_2h = next(s for s in world.samples if s["ts"] == start + 2 * H)
+    at_2h["used"] = float(math.floor(at_2h["used"]))
+    world.sample(start + 2.5 * H, at_2h["used"] - 1, reset)
+    code, out = world.write().run("fit", "--window", "5h")
+    assert code == 0, out
+    assert "8 reset periods" in out and "excluded:" not in out, out
+    for fam, planted in coefs.items():
+        fitted = float(coef_line(out, fam).split()[1])
+        assert abs(fitted - planted) / planted < 0.1, (fam, fitted, planted, out)
+
+
+def test_fall_larger_than_one_point_excludes_its_period_from_fit():
     world = plant_periods(World(), {"alpha": 1.0, "beta": 1.0}, 6, NOW - 12 * FIVE)
     reset = NOW - 2 * FIVE
     world.sample(reset - 4 * H, 10.0, reset)
     world.sample(reset - 3 * H, 8.0, reset)
     code, out = world.write().run("fit")
     assert code == 0, out
-    assert "void: used fell from 10% to 8%" in out and "rolls rather than resetting" in out, out
-    assert "% per list-price dollar" not in out, out
+    assert "excluded:" in out and "6 reset periods" in out, out
+    assert "% per list-price dollar" in coef_line(out, "alpha"), out
+
+
+def test_drift_excludes_a_period_with_a_larger_fall():
+    world = World()
+    day = 86400.0
+    plant_periods(world, {"alpha": 1.0, "beta": 1.0}, 12, NOW - 27 * day, spacing=day, noise=0.02)
+    plant_periods(world, {"alpha": 2.0, "beta": 1.0}, 6, NOW - 6.5 * day, spacing=day, noise=0.02)
+    reset = NOW - 0.5 * day
+    world.sample(reset - 4 * H, 10.0, reset)
+    world.sample(reset - 3 * H, 8.0, reset)
+    world.write()
+    result = calc.drift(world.context(), "5h")
+    assert result["status"] == "ok", result
+    assert result["recent"]["periods"] == 6, result["recent"]
+    code, out = world.run("drift")
+    assert "excluded:" in out, out
+
+
+def test_default_transcripts_are_the_plan_logins_not_the_sessions():
+    coefs = {"alpha": 200.0, "beta": 50.0}
+    world = plant_periods(World(), coefs, 8, NOW - 20 * FIVE).write()
+    registry = dict(REGISTRY, transports={"anthropic": {"configDir": world.root}})
+    other_login = tempfile.mkdtemp(prefix="puc_other_")
+    os.makedirs(os.path.join(other_login, "projects"), exist_ok=True)
+    saved = os.environ.get("CLAUDE_CONFIG_DIR")
+    os.environ["CLAUDE_CONFIG_DIR"] = other_login
+    try:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = calc.main(["fit", "--window", "5h", "--ledger", world.ledger, "--now", str(NOW)],
+                             registry=registry)
+    finally:
+        if saved is None:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            os.environ["CLAUDE_CONFIG_DIR"] = saved
+    text = out.getvalue()
+    assert code == 0, text
+    fitted = float(coef_line(text, "alpha").split()[1])
+    assert abs(fitted - coefs["alpha"]) / coefs["alpha"] < 0.1, (fitted, text)
 
 
 def test_insufficient_periods_prints_no_number():

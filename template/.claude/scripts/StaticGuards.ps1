@@ -1,5 +1,5 @@
 # The static guard set shared by regression_gate.ps1 (before its build) and verify.ps1 (before its suites): one table,
-# one runner, so a guard red surfaces at a Part close and not first at the drive-close gate.
+# one runner, so a guard red surfaces at a Part close and not first in the main check.
 function Get-PythonCommand {
     foreach ($c in @('python3', 'python', 'py')) {
         if (Get-Command $c -ErrorAction SilentlyContinue) { return $c }

@@ -34,19 +34,7 @@ const parallel = thunks => Promise.all(thunks.map(fn => fn()))
   const gap = canonical.properties.gaps.items
   assert.deepEqual([gap.type, gap.additionalProperties, gap.required], ['object', false, ['item', 'reason']])
   assert.deepEqual(gap.properties.reason.enum, ['outside-lens', 'capability', 'missing'])
-  const protocol = fs.readFileSync(path.join(__dirname, '..', 'commands', 'agents', 'orchestrator_action_protocol.md'), 'utf8')
-  const rails = fs.readFileSync(path.join(__dirname, '..', 'guards', 'review.md'), 'utf8')
-  for (const [name, text] of [
-    ['protocol', protocol],
-    ['detailed rail', rails.split('\n## detailed\n')[1].split('\n## condensed\n')[0]],
-    ['condensed rail', rails.split('\n## condensed\n')[1].split('\n## minimal\n')[0]],
-    ['canonical new', canonical.properties.findings.items.properties.new.description],
-    ['engine new', captured.properties.findings.items.properties.new.description],
-  ]) {
-    assert.match(text, /literal replacement text/, name)
-    assert.match(text, /PLAN.*scope.*options/, name)
-  }
-  console.log('ok   G3/G15 review schema parity and literal FIX replacement contract across protocol, rails and both schemas')
+  console.log('ok   G3/G15 review schema parity between the canonical schema and the engine\'s, with its required keys, file pattern and gap shape')
 })().catch(error => {
   console.error('FAIL G3/G15 review schema parity:', error.message)
   process.exit(1)

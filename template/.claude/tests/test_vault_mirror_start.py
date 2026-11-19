@@ -102,6 +102,32 @@ class Hook(unittest.TestCase):
         self.assertTrue(result.stdout.startswith('[vault] sync REFUSED'), result.stdout)
         self.assertIn('secret', result.stdout)
 
+    def test_off_the_cloud_a_refusal_list_names_a_few_paths_and_counts_the_rest(self):
+        self.plant_status(False, 5, refusals=[{'kind': 'secret', 'path': 'f%d.md' % n} for n in range(1, 7)])
+        out = self.run_hook(cloud=False).stdout
+        self.assertIn('f1.md', out)
+        self.assertNotIn('f6.md', out)
+        self.assertIn('3', out.split('f3.md', 1)[1])
+
+    def test_off_the_cloud_a_sync_that_pushed_but_held_paths_states_facts_and_cites_the_rule(self):
+        self.plant_status(True, 5, refusals=[{'kind': 'secret', 'path': 'Proj/a b.md', 'pattern': 'sk'},
+                                              {'kind': 'secret', 'path': 'Proj/b.md', 'pattern': 'sk'}])
+        out = self.run_hook(cloud=False).stdout
+        self.assertNotIn('REFUSED', out)
+        self.assertIn('Proj/a b.md', out)
+        self.assertIn('Proj/b.md', out)
+        self.assertIn('sk', out)
+        self.assertIn('rules/vault_mirror.md', out)
+        self.assertNotIn('vault_sync.py', out)
+
+    def test_off_the_cloud_a_held_list_names_how_many_of_the_total_it_shows(self):
+        self.plant_status(True, 5, refusals=[{'kind': 'secret', 'path': 'f%d.md' % n, 'pattern': 'sk'}
+                                              for n in range(1, 7)])
+        out = self.run_hook(cloud=False).stdout
+        self.assertIn('f3.md', out)
+        self.assertNotIn('f4.md', out)
+        self.assertIn('3 of 6', out)
+
     def test_off_the_cloud_a_stale_sync_prints_its_age(self):
         self.plant_status(True, 90)
         result = self.run_hook(cloud=False)

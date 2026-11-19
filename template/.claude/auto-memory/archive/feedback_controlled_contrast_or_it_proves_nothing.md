@@ -1,7 +1,7 @@
 ---
 name: feedback_controlled_contrast_or_it_proves_nothing
 description: Two runs that differ in more than the named factor cannot attribute anything — hold every factor in ONE script; and a clean sheet is only evidence if that arm had exposure
-metadata: 
+metadata:
   node_type: memory
   type: feedback
 ---
@@ -40,7 +40,7 @@ the *default*, because each probe gets written to answer its own question.
   sampling for half a day; those calls generated a median of 29 tokens and could not have looped.
   Report the rate per unit of *opportunity* (per long generation, per eligible row) beside the rate
   per trial — an arm that answers briefly, skips early, or filters everything out will post a
-  perfect score while testing nothing. Same shape as [[gotcha_unit_filtered_test_run_fake_green]]
+  perfect score while testing nothing. Same shape as a filtered test run that reports green with no count check
   and [[gotcha_batch_only_failure_needs_a_control_run]].
 - **A detector reports zero for signatures it does not encode — so say what it cannot see, then go
   look.** The loop detector matched one repeated character, and 52 cap-hitting generations went

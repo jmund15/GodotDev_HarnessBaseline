@@ -418,6 +418,7 @@ def main():
          and round(sec.get("bindingRoom") or 0, 2) == 0.85, repr(got))
 
     plan_cases(case)
+    pace_cases(case)
     drain_cases(case)
     credit_cases(case)
     facts_cases(case)
@@ -547,6 +548,92 @@ def plan_cases(case):
     except Exception as exc:
         ok, detail = False, "raised %s: %s" % (type(exc).__name__, exc)
     case("`set-status anthropic-secondary unavailable` on the shipped registry removes it from the pick", ok, detail)
+
+
+# A planted day of samples for the anthropic plan's seven_day window: `used` climbs 40 to 55, falls to 41 with the
+# same reset time, then climbs to 56. The window carries 40% of the week gone, so the plan is ahead of its pace.
+SAMPLE_NOW = 1_800_000_000.0
+SAMPLE_RESET = SAMPLE_NOW + 361200.0
+ROLL_SAMPLES = ([(SAMPLE_NOW - 86400 + h * 1800, 40.0 + h) for h in range(16)]
+                + [(SAMPLE_NOW - 57600 + h * 1800, 41.0 + h) for h in range(16)])
+
+
+def pace_cases(case):
+    """A plan ahead of its pace, or a `used` that fell inside one reset period, never forecasts spare quota."""
+    def rows(pairs, reset=SAMPLE_RESET, plan="anthropic"):
+        return [{"plan": plan, "provider": plan, "window": "seven_day", "ts": float(t), "used": u,
+                 "resets_at": reset} for t, u in pairs]
+
+    week = {"name": "seven_day", "usedPercent": 70.0, "resetsAt": SAMPLE_RESET, "windowDurationMins": WEEK_MIN}
+    got = pb.unused_at_reset("anthropic", week, SAMPLE_NOW, samples=rows(ROLL_SAMPLES), windows=[week])
+    case("the planted samples (used fell 55 to 41 mid-period, plan at 70% with 40% of the week gone) project no spare",
+         got is not None and pb.spare_pct(got) is None, repr(got))
+
+    # Forty minutes later the plan reads 73% used: it is draining, and the posture line still called all of it spare.
+    later = dict(week, usedPercent=73.0)
+    drain = pb.unused_at_reset("anthropic", later, SAMPLE_NOW + 2400, samples=rows(ROLL_SAMPLES), windows=[later])
+    case("a plan that drains from 70% to 73% in forty minutes projects no spare",
+         drain is not None and pb.spare_pct(drain) is None, repr(drain))
+
+    # After a fall in one reset period only the samples from the fall on describe the plan's rate: here a day-long
+    # steady climb of 1 point an hour after a fall from 90, with 12h to go and 60% used.
+    late = {"name": "seven_day", "usedPercent": 40.0, "resetsAt": SAMPLE_NOW + 43200, "windowDurationMins": WEEK_MIN}
+    climb = [(SAMPLE_NOW - 90000, 80.0), (SAMPLE_NOW - 86000, 90.0), (SAMPLE_NOW - 82000, 20.0)] + [
+        (SAMPLE_NOW - 82000 + h * 3600, 20.0 + h * 0.5) for h in range(1, 23)]
+    after = pb.unused_at_reset("anthropic", late, SAMPLE_NOW, samples=rows(climb, late["resetsAt"]), windows=[late])
+    case("a used share that fell inside one reset period is forecast from the samples after the fall",
+         after is not None and after["basis"] == "recent" and round(after["pct"]) == 54, repr(after))
+    dip = [(SAMPLE_NOW - 82000 + h * 3600, 20.0 + h * 0.5 - (1.0 if h % 2 else 0.0)) for h in range(23)]
+    kept = pb.unused_at_reset("anthropic", late, SAMPLE_NOW, samples=rows(dip, late["resetsAt"]), windows=[late])
+    case("a one-point dip is rounding, never a fall: the whole day still forecasts",
+         kept is not None and kept["basis"] == "recent", repr(kept))
+
+    # Ahead of pace with a flat last day (a plan left idle): the rate says spare, the pace says none.
+    flat = rows([(SAMPLE_NOW - 86000 + h * 3600, 70.0) for h in range(24)])
+    idle = pb.unused_at_reset("anthropic", week, SAMPLE_NOW, samples=flat, windows=[week])
+    case("a plan ahead of its pace is never forecast to leave quota unused, however flat its last day",
+         idle is not None and pb.spare_pct(idle) is None and idle["pct"] == 0.0, repr(idle))
+    even = dict(week, usedPercent=40.0)
+    # 59.7% of the week is left: 40.7% used leaves a 0.4-point shortfall, 41.5% a 1.2-point one.
+    within, over = dict(week, usedPercent=40.7), dict(week, usedPercent=41.5)
+    case("a plan at its pace with a flat last day still forecasts the allowance it leaves",
+         pb.spare_pct(pb.unused_at_reset("anthropic", even, SAMPLE_NOW, samples=flat, windows=[even])) == 60,
+         repr(pb.unused_at_reset("anthropic", even, SAMPLE_NOW, samples=flat, windows=[even])))
+    verdict = lambda w: getattr(pb, "ahead_of_pace", lambda *_a: None)(w, SAMPLE_NOW)
+    case("a shortfall inside the reading's whole-percent resolution is not ahead of pace",
+         verdict(within) is False and verdict(over) is True and verdict(week) is True,
+         repr([verdict(w) for w in (within, over, week)]))
+
+    # Placement and every line that reports the plan.
+    saved = pb._samples
+    ahead = reading("anthropic", 70.0, 0.4)
+    ahead["quota"]["windows"][0]["resetsAt"] = SAMPLE_NOW + 0.4 * WEEK_MIN * 60
+    flat_here = rows([(SAMPLE_NOW - 86000 + h * 3600, 70.0) for h in range(24)],
+                     reset=ahead["quota"]["windows"][0]["resetsAt"])
+    pb._samples = lambda: flat_here
+    try:
+        roomy = reading("anthropic-secondary", 23.0, 0.8)
+        roomy["quota"]["windows"][0]["resetsAt"] = SAMPLE_NOW + 0.8 * WEEK_MIN * 60
+        ahead_window = ahead["quota"]["windows"][0]
+        shifted = pb.pick("executor", "anthropic", data=plan_registry(),
+                          read=reader({"anthropic": ahead, "anthropic-secondary": roomy}), now=SAMPLE_NOW)
+        ranked = {r["transport"]: r for r in shifted["ranked"]}
+        case("the plan with more room is picked over the plan ahead of its pace, whatever the ahead plan's samples say",
+             shifted.get("transport") == "anthropic-secondary"
+             and pb.spare_pct(ranked["anthropic"]) is None, repr(shifted.get("reason")))
+        entry = pb.plan_entry("anthropic", {"status": "available", "quota": {
+            "routingWindow": "seven_day", "windows": [ahead_window]}}, SAMPLE_NOW)
+        case("the plan entry of a plan ahead of its pace has no unused-at-reset clause",
+             "unused" not in entry, entry)
+        table = pb.tier_table(["executor"], "anthropic", data=plan_registry(),
+                              read=reader({"anthropic": ahead, "anthropic-secondary": roomy}), now=SAMPLE_NOW,
+                              ladder={}, draw=lambda *_a: {})
+        text = json.dumps(table)
+        case("for-role's plan facts call no quota of a plan ahead of its pace unused",
+             not any(spare for spare in [pb.spare_pct(p.get("unusedAtReset")) for g in table.get("groups", [])
+                                         for p in g.get("plans", [])]), text[:400])
+    finally:
+        pb._samples = saved
 
 
 LEDGER_ROW = {"label": "plan-board-home", "transport": "anthropic-secondary", "costModel": "plan-quota",

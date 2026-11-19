@@ -3,7 +3,7 @@
 - Runtime logs are `JmoLogger` output, read via `/analyze_godot_logs` after a user playtest.
 
 ## Godot Build & Test
-- **C# commits:** `/regression_gate` is mandatory, once at drive close. Mid-drive verification follows `change_control` §Gate cadence. Pure documentation is exempt from the C# gate.
+- **C# commits:** the gate cadence is `change_control` §Gate cadence: a drive closes with `verify.ps1 -Scope <its domains>`, and the full `/regression_gate` runs in the main check after the land. Pure documentation is exempt from the C# gate.
 - A Godot/C# test run is a long job: start it with `run_in_background` (`CLAUDE.core.md` §Shell Discipline).
 - Run the game and inspect debug output after substantial scene/resource wiring and before accepting a delegate diff that could clip scene methods or resource references. Every engine invocation, headless import included, may write; resaves can drop failed resources and array references, so inspect the diffs.
 
@@ -20,4 +20,4 @@ PascalCase for C# files/types/directories; snake_case for Godot assets. Invoke t
 | Rationalization | Rule to cite |
 |---|---|
 | "grep is faster / LSP is slow / it's just one symbol" | §Godot Docs and C# Navigation, C# navigation |
-| "it's just a rename, the build will catch it" | §Godot Build & Test: a rename can compile clean and still break serialized `.tres`/`.tscn` references, so `.cs` work is gated, once at drive close; `change_control` owns cadence |
+| "it's just a rename, the build will catch it" | §Godot Build & Test: a rename can compile clean and still break serialized `.tres`/`.tscn` references, so `.cs` work takes the drive-close scope run; `change_control` §Gate cadence owns the cadence |

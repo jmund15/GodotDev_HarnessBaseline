@@ -166,6 +166,46 @@ class Sync(Vault):
         code, report = vs.sync(worktree, git_dir)
         self.assertEqual((code, report['pushed']), (0, False), report)
 
+    def test_a_secret_file_is_held_back_and_the_clean_change_still_pushes(self):
+        worktree, git_dir = self.machine('a')
+        self.first(worktree, git_dir)
+        vs.sync(worktree, git_dir, first_push=True)
+        plant(worktree, {'Proj/leak.md': TOKEN, 'Proj/clean.md': 'fine'})
+        code, report = vs.sync(worktree, git_dir)
+        self.assertEqual((code, report['pushed']), (0, True), report)
+        self.assertIn('Proj/clean.md', self.remote_files())
+        self.assertNotIn('Proj/leak.md', self.remote_files())
+        self.assertEqual(git('diff', '--cached', '--name-only', git_dir=git_dir, ).strip(), '')
+        self.assertEqual([(r['kind'], r['path']) for r in report['refusals']], [('secret', 'Proj/leak.md')])
+        status = (git_dir / 'sync_status.json').read_text(encoding='utf-8')
+        self.assertEqual([r['path'] for r in json.loads(status)['refusals']], ['Proj/leak.md'])
+        self.assertNotIn(TOKEN, status)
+        code, report = vs.sync(worktree, git_dir)
+        self.assertEqual((code, report['pushed']), (1, False), report)
+
+    def test_a_forbidden_path_is_held_back_and_the_rest_pushes(self):
+        worktree, git_dir = self.machine('a')
+        self.first(worktree, git_dir)
+        vs.sync(worktree, git_dir, first_push=True)
+        plant(worktree, {'AI/k.md': 'private', 'Proj/clean.md': 'fine'})
+        git('--work-tree', str(worktree), 'add', '-f', 'AI/k.md', git_dir=git_dir)
+        code, report = vs.sync(worktree, git_dir)
+        self.assertEqual((code, report['pushed']), (0, True), report)
+        self.assertNotIn('AI/k.md', self.remote_files())
+        self.assertEqual([r['kind'] for r in report['refusals']], ['forbidden'])
+
+    def test_a_held_back_file_with_a_deletion_over_the_cap_pushes_nothing(self):
+        worktree, git_dir = self.machine('a')
+        plant(worktree, {f'Proj/d/{n}.md': f'note {n}' for n in range(vs.DELETION_CAP + 1)})
+        vs.sync(worktree, git_dir, first_push=True)
+        before = self.tip()
+        for path in (worktree / 'Proj/d').iterdir():
+            path.unlink()
+        plant(worktree, {'Proj/leak.md': TOKEN, 'Proj/clean.md': 'fine'})
+        code, report = vs.sync(worktree, git_dir)
+        self.assertEqual((code, self.tip(), report['pushed']), (1, before, False))
+        self.assertIn('deletion-cap', [r['kind'] for r in report['refusals']])
+
     def test_a_vanished_folder_is_not_pushed(self):
         worktree, git_dir = self.machine('a')
         plant(worktree, {f'Proj/d/{n}.md': f'note {n}' for n in range(vs.DELETION_CAP + 1)})

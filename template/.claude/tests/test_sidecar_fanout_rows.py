@@ -86,9 +86,11 @@ def job(label="j", **extra):
     return dict({"label": label, "kind": "author", "promptFile": PROMPT}, **extra)
 
 
-def plan(readings, jobspec, data):
-    """(argv or the JobError text, stderr) of one `plan_job` over planted readings."""
+def plan(readings, jobspec, data, samples=None):
+    """(argv or the JobError text, stderr) of one `plan_job` over planted readings and, when given, usage samples."""
     fresh()
+    if samples is not None:
+        pb._samples = lambda: samples
     saved = pb.read_capacity
     pb.read_capacity = reader(readings)
     err = io.StringIO()
@@ -298,7 +300,8 @@ def the_drain_forecast_uses_the_row_that_would_run_on_each_plan():
              job(rows={"sonnet": "medium", "sol": "high"}), live("anthropic"))
     finally:
         pb.job_drain = saved
-    return ("anthropic", "claude-sonnet-5-5", "medium") in seen and ("codex", "gpt-6.1-sol", "high") in seen, repr(seen)
+    ids = {m.get("alias"): m["id"] for m in DATA["models"]}
+    return (("anthropic", ids["sonnet"], "medium") in seen and ("codex", ids["sol"], "high") in seen), repr(seen)
 
 
 @case
@@ -386,6 +389,42 @@ def an_idle_full_plan_without_a_projection_ranks_below_a_plan_about_to_lose_quot
     losing = {"transport": "losing", "room": 0.7, "unusedAtReset": {"pct": 5.0, "basis": "average", "daysLeft": 1.0}}
     return ("unusedAtReset" not in idle and max([idle, losing], key=pb.pick_key)["transport"] == "losing"
             and pb.pick_key(idle)[2] == 1.0), repr((idle, pb.pick_key(idle), pb.pick_key(losing)))
+
+
+def reading_at(plan_name, used, left):
+    """An available reading whose 7d routing window is `used`% spent with `left` of its time to go."""
+    got = reading(plan_name, 1.0, left=left)
+    got["quota"]["windows"][0]["usedPercent"] = used
+    return got
+
+
+@case
+def a_plan_ahead_of_its_pace_never_takes_a_job_over_a_plan_with_more_room():
+    """2026-11-11: anthropic at 70% used with 60% of its week to go (room 0.5) took six jobs over
+    anthropic-secondary at 23% used with 84% to go (room 0.92), because a slope over samples that spanned a fall
+    in its used share called all of anthropic's quota unused."""
+    data = live("anthropic", "anthropic-secondary")
+    readings = {"anthropic": reading_at("anthropic", 70.0, 361200 / (WEEK_MIN * 60)),
+                "anthropic-secondary": reading_at("anthropic-secondary", 23.0, 0.84)}
+    reset = NOW + 361200
+    # Every tenth real row, 2026-11-10 14:20Z to 2026-11-11 14:20Z: used fell 99 to 55 mid-period, reset time unchanged.
+    real = [(1794320583, 76.0), (1794321426, 77.0), (1794322094, 78.0), (1794323299, 78.0), (1794324117, 79.0),
+            (1794324777, 81.0), (1794326124, 83.0), (1794327407, 84.0), (1794328446, 85.0),
+            (1794329462, 86.0), (1794331332, 88.0), (1794331846, 88.0), (1794332725, 89.0),
+            (1794333919, 91.0), (1794335187, 92.0), (1794336019, 93.0), (1794336971, 92.0),
+            (1794339413, 94.0), (1794340740, 96.0), (1794341710, 97.0), (1794342550, 96.0),
+            (1794343814, 97.0), (1794344974, 97.0), (1794346584, 98.0), (1794347575, 99.0),
+            (1794349341, 99.0), (1794350919, 99.0), (1794352118, 55.0), (1794352900, 56.0),
+            (1794355481, 57.0), (1794356672, 57.0), (1794362390, 58.0), (1794365153, 59.0),
+            (1794369015, 60.0), (1794370642, 61.0), (1794372231, 63.0), (1794373465, 63.0),
+            (1794375259, 65.0), (1794380630, 65.0), (1794387938, 66.0), (1794390145, 68.0),
+            (1794390510, 68.0), (1794391514, 69.0), (1794402184, 70.0), (1794404604, 71.0),
+            (1794406007, 72.0)]
+    samples = [{"plan": "anthropic", "provider": "anthropic", "window": "seven_day",
+                "ts": NOW - (1794404400 - ts), "used": used, "resets_at": reset} for ts, used in real]
+    argv, err = plan(readings, job(alias="sonnet", effort="medium"), data, samples)
+    return (argv_plan(argv) == os.path.basename(launcher_of("anthropic-secondary"))
+            and "plan anthropic-secondary" in err and "unused at reset" not in err), str(argv)[:200] + err[-400:]
 
 
 failed = []

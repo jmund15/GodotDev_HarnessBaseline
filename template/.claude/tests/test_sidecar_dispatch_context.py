@@ -9,7 +9,8 @@ BACKGROUND: a lib launcher is not denied for running in the background. The hook
 no wake-route line and no background advisory: those facts are in `reference/sidecar_dispatch.md`
 steps 5 and 6 and `/delegate`, read before the call. A mere mention is not a launch.
 CONTEXT: an admitted launch carries no `additionalContext` at all unless the doctrine gate could not
-read its state (a fault report): no recipe pointer, no launch card, no currency, probation,
+read its state (a fault report), or it is a session's direct launch of a registered launcher (the jobs-file
+advisory, which never denies): no recipe pointer, no launch card, no currency, probation,
 cheaper-claimant, long-context or size line.
 TIER FIT (hooks/_dispatch_checks.py, the check the Workflow route runs): a launch or fan-out job whose
 shape implies a tier its alias's row does not serve on the alias's transport is DENIED.
@@ -560,7 +561,7 @@ def test_first_launch_injects_no_recipe_card_or_pointer(tmp_path, monkeypatch):
                    encoding="utf-8")
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None)
     monkeypatch.setattr(sidecar, "launch_jobs", lambda *args: [])
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("skipped", None))
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", lambda payload, tiers=None, embed_slice=False: (None, None), raising=False)
@@ -574,19 +575,11 @@ def test_first_launch_injects_no_recipe_card_or_pointer(tmp_path, monkeypatch):
         context = json.loads(out.getvalue() or "{}").get("hookSpecificOutput", {}).get("additionalContext", "")
         assert context == "", context
 
-def test_the_recipe_carries_what_the_late_advisories_said():
-    """The facts the deleted notes carried are on the recipe, read before the launch."""
-    with open(os.path.join(REPO, "reference", "sidecar_dispatch.md"), encoding="utf-8") as fh:
-        text = fh.read()
-    step6 = text.split("6. **Watch", 1)[1].split("7. **Consume", 1)[0]
-    assert "stopped notice" in step6 and "<record>.exit" in step6
-    assert "its own exit is not the run's" in text
-
 
 def test_a_doctrine_fault_is_the_only_context_an_admitted_launch_carries(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
     monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None)
     monkeypatch.setattr(sidecar, "launch_jobs", lambda *args: [])
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("skipped", None))
     fault = sidecar.model_ladder_gate.FAULT_NOTE
@@ -642,7 +635,7 @@ def test_a_fanout_drivers_child_launch_skips_the_doctrine_only_for_a_recorded_ad
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", doctrine, raising=False)
     monkeypatch.setattr(dispatch_table, "sidecar_entries", lambda payload: ([{"id": "x"}], []))
     monkeypatch.setattr(dispatch_table, "register_sidecars", lambda *args, **kwargs: None)
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None)
     monkeypatch.setattr(sidecar, "run_preflight", lambda *args: ("ok", None))
     monkeypatch.setattr(sidecar, "tracking_session", lambda: "child001")
     monkeypatch.setattr(sidecar, "take_checks", lambda *args: (False, True))
@@ -698,7 +691,7 @@ def test_the_launcher_checks_the_doctrine_for_a_launch_no_hook_checked(monkeypat
     monkeypatch.setattr(sidecar.model_ladder_gate, "doctrine_check", doctrine, raising=False)
     monkeypatch.setattr(dispatch_table, "sidecar_entries", lambda payload: ([{"id": "x"}], []))
     monkeypatch.setattr(dispatch_table, "register_sidecars", lambda *args, **kwargs: None)
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None)
     argv = ["-m", "fake", "-f", "brief.md", "-G", "author"]
     launcher = os.path.join(REPO, "scripts", "anthropic_sidecar.sh")
 
@@ -721,7 +714,7 @@ def test_the_launcher_keeps_a_pause_refusals_exit_code(monkeypatch, capsys):
     sys.path.insert(0, HOOKS)
     import dispatch_table
     monkeypatch.setattr(dispatch_table, "sidecar_entries", lambda payload: ([], []))
-    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None: None)
+    monkeypatch.setattr(sidecar, "dispatch_checks", lambda jobs, kinds=None, **_kw: None)
     monkeypatch.setattr(sidecar, "tracking_session", lambda: None)
     argv = ["-m", "fake", "-f", "brief.md", "-G", "author"]
     launcher = os.path.join(REPO, "scripts", "codex_proxy_sidecar.sh")
@@ -1414,6 +1407,9 @@ def main():
     write_jobs(alias="opus", transport="anthropic", kind="author")
     cases.append(("author jobs retain the child auto-permission gate",
                   run(fanout_cmd, fanout_env, session="sdc00015").get("permissionDecision") == "allow"))
+    write_jobs(pick="cell", spec="tight")
+    cases.append(("a one-job file that records its pin basis keeps auto-approval",
+                  run(fanout_cmd, fanout_env, session="sdcpin01").get("permissionDecision") == "allow"))
     write_jobs(effort="turbo")
     cases.append(("unknown effort pins fall through",
                   run(fanout_cmd, fanout_env, session="sdc00023").get("permissionDecision") is None))
@@ -1778,6 +1774,31 @@ def main():
     cases.append(("fan-out calls are unaffected by literal tracking validation",
                   run("python3 .claude/tools/sidecar_fanout.py --help", fanout_env,
                       session="sdcvar04", ladder=False) == {}))
+
+    # --- advisory: a session-run direct launch of a registered launcher names the jobs-file route
+    advisory_env = dict(env, HARNESS_SIDECAR_PREFLIGHT="0")
+
+    def names_fanout(hso):
+        return "sidecar_fanout.py" in hso.get("additionalContext", "")
+
+    direct_launch = run("bash .claude/scripts/anthropic_sidecar.sh -m fake -R literal.record.json -l advise-01",
+                        advisory_env, session="sdcadv01")
+    cases.append(("a session-run direct launch of a registered launcher gets the jobs-file advisory",
+                  names_fanout(direct_launch) and direct_launch.get("permissionDecision") != "deny"))
+    cases.append(("a registered launcher's --check is not a launch and gets no advisory",
+                  run("bash .claude/scripts/anthropic_sidecar.sh --check", advisory_env, session="sdcadv02") == {}))
+    cases.append(("bash -n on a registered launcher runs nothing and gets no advisory",
+                  run("bash -n .claude/scripts/anthropic_sidecar.sh", advisory_env, session="sdcadv03") == {}))
+    cases.append(("a quoted launcher mention in git grep gets no advisory",
+                  run("git grep -n 'anthropic_sidecar.sh' -- .claude", advisory_env, session="sdcadv04") == {}))
+    cases.append(("worklog_relevance_sidecar.sh is not a registered launcher and gets no advisory",
+                  not names_fanout(run("bash .claude/scripts/worklog_relevance_sidecar.sh -m fake -R literal.record.json -l advise-05",
+                                       advisory_env, session="sdcadv05"))))
+    cases.append(("a run_grid.sh call gets no advisory",
+                  not names_fanout(run("bash .claude/scripts/run_grid.sh -m fake -R literal.record.json -l advise-06",
+                                       advisory_env, session="sdcadv06"))))
+    cases.append(("a sidecar_fanout.py call gets no direct-launch advisory",
+                  not names_fanout(run(fanout_cmd, fanout_env, session="sdcadv07"))))
 
     cases.extend(currency_cases(tmp, ok, env))
     cases.extend(plan_cases(tmp))

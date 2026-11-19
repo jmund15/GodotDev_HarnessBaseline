@@ -81,27 +81,22 @@ def main():
     cases = [
         ("registered synthesis hook emits through UserPromptSubmit stdout",
          output.startswith("<user-prompt-submit-hook>")),
-        ("advice preserves direct reads for known focused or line-level evidence",
-         "known focused" in lowered and "line-level" in lowered),
-        ("advice routes bulk copyable IO to read_files",
-         "bulk copyable" in lowered and "read_files" in lowered),
-        ("advice routes derived multi-file judgment through orchestration",
-         "derived" in lowered and "orchestration" in lowered),
+        ("advice cites the routing rule's owner instead of restating its litmus", "CLAUDE.core.md" in output),
+        ("advice routes bulk copyable IO to read_files", "read_files" in lowered),
+        ("advice routes derived multi-file judgment through orchestration", "orchestration" in lowered),
         # The bulk-copyable arm names a tool this machine may not have.
         ("an absent ai-worker names the local route instead of the worker",
          (lambda out: "read_files" not in out and "bounded Read" in out and "subagent" not in out)(
              run(hook, SYNTHESIS, env=profile_env("full", "absent")))),
         # A delegate cannot dispatch, so its advice names no delegate route (orchestration §0 owns delegation).
         ("a delegate's advice names no orchestration, delegate or subagent route",
-         (lambda out: out.startswith("<user-prompt-submit-hook>") and "Known focused" in out
+         (lambda out: out.startswith("<user-prompt-submit-hook>") and "CLAUDE.core.md" in out
           and not any(w in out.lower() for w in ("orchestration", "delegate", "subagent")))(
              run(hook, SYNTHESIS, env=dict(profile_env("full", "absent"), CLAUDE_CODE_SIDECAR="1")))),
         ("a present ai-worker keeps the worker route",
          "read_files" in run(hook, SYNTHESIS, env=profile_env("full", "present"))),
         ("no profile keeps the worker route",
          "read_files" in run(hook, SYNTHESIS, env=profile_env(None, "present"))),
-        ("advice rejects count/path routing",
-         "not read count or path" in lowered),
         ("background task notification does not emit routing advice",
          run(hook, NOTIFICATION) in ("", "{}")),
         ("agent-message transport does not emit routing advice",

@@ -695,8 +695,8 @@ def main():
     stuck = unresolved_pull(a.repo)
     if stuck:
         print('unresolved baseline pull: ' + ', '.join(stuck))
-        print('  an earlier pull wrote these paths and their proof is red or pending; rerun '
-              '`python3 .claude/scripts/harness_tests.py --for ' + ' '.join(stuck) + '`, then commit them')
+        print('  an earlier pull wrote these paths and no commit has taken them: their proof is red or pending, '
+              'or the pull record is unreadable')
 
     if a.stage == 'final' and not a.resume:
         changed, why = artifact_changes(a.repo, sid, path)

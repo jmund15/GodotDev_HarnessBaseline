@@ -6,7 +6,9 @@ rules/vault_mirror.md without its path-scoped frontmatter when the file is prese
 line as `[vault] <line>`, or `[vault] vault mirror UNAVAILABLE: <reason>` when the tool is missing,
 silent or past its time. Off the cloud it prints a `[vault] sync REFUSED: <reason>` or
 `[vault] sync STALE: <age>` line when this machine's `sync_status.json` says the last sync failed or is
-older than two sync intervals, and nothing when the sync is healthy or never ran here. A status file it
+older than two sync intervals, a `[vault] sync pushed but HELD BACK` line stating the held count, the key
+pattern, the first MAX_REFUSALS_SHOWN paths out of how many, and the rule home
+(`rules/vault_mirror.md` §Held-back paths), and nothing when the sync is healthy or never ran here. A status file it
 cannot read prints `[vault] sync UNKNOWN: status unreadable (<ExcType>)`. It always exits 0:
 a lost mirror must not fail the session, and the line tells the agent to treat design docs as unavailable.
 
@@ -30,6 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import vault_sync
 from vault_sync import SYNC_INTERVAL_MIN, default_git_dir
 
+# The first few refused files name the cause; `sync_status.json` holds the full list.
+MAX_REFUSALS_SHOWN = 3
 # Under the 120 s the registration gives the hook (settings.project.json).
 TOOL_TIMEOUT_S = 100
 
@@ -54,9 +58,19 @@ def sync_status_line(git_dir: Path, now: float | None = None) -> str:
         return ''
     except (OSError, ValueError, KeyError, TypeError) as exc:
         return f'[vault] sync UNKNOWN: status unreadable ({type(exc).__name__})'
+    refusals = [r for r in row.get('refusals') or [] if isinstance(r, dict)]
+    if row.get('ok') and refusals:
+        held = sorted({str(r.get('path')) for r in refusals})
+        patterns = sorted({str(r['pattern']) for r in refusals if r.get('pattern')})
+        shown = held[:MAX_REFUSALS_SHOWN]
+        return (f'[vault] sync pushed but HELD BACK {len(held)} path(s), key pattern {", ".join(patterns) or "unrecorded"}; '
+                f'showing {len(shown)} of {len(held)}: {"; ".join(shown)}. '
+                f'Rule: .claude/rules/vault_mirror.md §Held-back paths')
     if not row.get('ok'):
-        reasons = [f"{r.get('kind')} {r.get('path')}" for r in row.get('refusals') or [] if isinstance(r, dict)]
-        return f"[vault] sync REFUSED: {'; '.join(reasons) or row.get('error') or 'no reason recorded'}"
+        reasons = [f"{r.get('kind')} {r.get('path')}" for r in refusals]
+        more = f' (+{len(reasons) - MAX_REFUSALS_SHOWN} more)' if len(reasons) > MAX_REFUSALS_SHOWN else ''
+        shown = '; '.join(reasons[:MAX_REFUSALS_SHOWN]) + more
+        return f"[vault] sync REFUSED: {shown or row.get('error') or 'no reason recorded'}"
     age_min = ((time.time() if now is None else now) - at) / 60
     if age_min > 2 * SYNC_INTERVAL_MIN:
         return f'[vault] sync STALE: last sync {int(age_min)} min ago'

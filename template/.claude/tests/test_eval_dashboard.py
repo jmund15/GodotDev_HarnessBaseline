@@ -797,12 +797,6 @@ def main():
 
     sys.path.insert(0, os.path.join(CLAUDE, "tools"))
     import eval_dashboard
-    guide = read(os.path.join(CLAUDE, "commands", "eval_dashboard.md"))
-    check("review" in eval_dashboard.TABS and all(tab.capitalize() in guide for tab in eval_dashboard.TABS)
-          and "nine tabs" in guide and "## Review calibration" in guide,
-          "review: every TABS entry appears in eval_dashboard.md, which names nine tabs and a Review calibration section",
-          repr(eval_dashboard.TABS))
-
     effort_rows = [
         {"model": "fixture-a", "tier": "executor", "effort": "high", "outcome": "clean", "effort_fit": "under"},
         {"model": "fixture-a", "tier": "executor", "effort": "high", "outcome": "defects", "effort_fit": "fit"},

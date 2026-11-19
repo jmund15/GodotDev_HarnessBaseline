@@ -435,6 +435,26 @@ def main():
         rc, out, _ = run(r11, "list", "outside.md")
         case("list ignores the scope paths", rc == 0 and "55" in out)
 
+        # ---- a row whose sentence is gone ------------------------------------------
+        # The author rewords a sentence: its old rows key to a hash no line holds. `add` for that file drops them; a
+        # dead row of another file stays until `prune`, which drops every dead row and keeps every live one.
+        r14 = mkrepo(tmp, "c14", {".claude/rules/a.md": "Cap is 500 lines. See the basis.\n",
+                                  ".claude/rules/b.md": "Keep 7 here.\n"},
+                     rows=[row(en, ".claude/rules/a.md", "Cap is 400 lines.", "400"),
+                           row(en, ".claude/rules/b.md", "Keep 6 here.", "6"),
+                           row(en, ".claude/rules/b.md", "Keep 7 here.", "7")])
+        rows14 = os.path.join(r14, ".claude", "instruction_rows", "numbers.jsonl")
+        tokens14 = lambda: sorted(json.loads(l)["token"] for l in open(rows14, encoding="utf-8") if l.strip())
+        write(tmp, "new14.jsonl", json.dumps(row(en, ".claude/rules/a.md", "Cap is 500 lines.", "500")) + "\n")
+        rc, out, err = run(r14, "add", os.path.join(tmp, "new14.jsonl"))
+        case("add drops the dead rows of the file it adds rows for, and only that file",
+             rc == 0 and tokens14() == ["500", "6", "7"] and "dropped 1" in out)
+        rc, out, err = run(r14, "prune")
+        case("prune drops every row whose sentence and token no live line holds",
+             rc == 0 and tokens14() == ["500", "7"] and "dropped 1" in out)
+        rc, out, err = run(r14, "prune")
+        case("prune on a clean store changes nothing", rc == 0 and tokens14() == ["500", "7"] and "dropped 0" in out)
+
         # ---- changed_lines directly --------------------------------------------------
         r13 = mkrepo(tmp, "c13", base)
         write(r13, ".claude/rules/a.md", "Intro line.\n\nAdded.\n")

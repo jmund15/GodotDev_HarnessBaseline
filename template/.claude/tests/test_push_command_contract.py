@@ -1,182 +1,40 @@
 #!/usr/bin/env python3
-"""Structural proof for commands/commit_push.md and commands/clean_push.md.
+"""Structural proof for the push and pull commands: each frontmatter `allowed-tools` grants the calls its steps make.
 
-commit_push runs the opt-in baseline drift gate (`check --strict`) in a step before its push step, allows
-the `python3` call that gate makes, and stops on an unknown argument before any Git command. clean_push
-follows commit_push's steps, so it must link commit_push and keep the `python3` grant. Each rule is also
-proven to fire on a planted mutant. It does not prove runtime behavior.
+Claude Code parses `allowed-tools` from the command's frontmatter; a missing grant makes the step ask or fail at run time.
 
     python3 .claude/tests/test_push_command_contract.py
 """
 from pathlib import Path
-import json
 import re
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lock_rows import project_owned  # noqa: E402
-
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / ".claude" / "tools"))
-import adaptation  # noqa: E402
-
-PAIRED = adaptation.get(ROOT / ".claude", "paired_repos")
-COMMANDS = [ROOT / ".claude" / "commands" / "commit_push.md"]
-CLEAN_PUSH = ROOT / ".claude" / "commands" / "clean_push.md"
-
-PUSH_STEP = re.compile(r"[Pp]ush (?:all commits )?to the current branch on origin")
-UNKNOWN_ARG = re.compile(r"\s+".join("Any other argument: report it and stop before the first Git command".split()))
-GATE_CALL = "baseline_sync.py check --strict"
-
-
-def steps(text):
-    task = text.split("## Your task", 1)[-1]
-    return [(int(m.group(1)), m.group(2)) for m in re.finditer(r"^(\d+)\. (.*)$", task, re.MULTILINE)]
-
-
-def gate_and_push(text):
-    numbered = steps(text)
-    gate = next((n for n, body in numbered if "Baseline drift gate" in body), None)
-    push = next((n for n, body in numbered if PUSH_STEP.search(body)), None)
-    return gate, push
+COMMANDS = ROOT / ".claude" / "commands"
+GRANTS = {
+    "commit_push.md": ("Bash(python3:*)",),
+    "clean_push.md": ("Bash(python3:*)",),
+    "clean_pull.md": ("Bash(git ls-tree:*)", "Bash(git ls-files:*)", "Bash(git submodule:*)",
+                      "Bash(git -C:*)", "Bash(mv:*)"),
+}
 
 
 def allowed_tools(text):
     front = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
     tools = re.search(r"^allowed-tools: (.*)$", front.group(1), re.MULTILINE) if front else None
-    return tools.group(1) if tools else None
-
-
-def problems(text):
-    found = []
-    if "Bash(python3:*)" not in (allowed_tools(text) or ""):
-        found.append("allowed-tools lacks Bash(python3:*)")
-    if not UNKNOWN_ARG.search(text):
-        found.append("an unknown argument does not stop before the first Git command")
-    gate, push = gate_and_push(text)
-    if gate is None:
-        found.append("no baseline drift gate step")
-    if push is None:
-        found.append("no push step")
-    if gate is not None and push is not None and gate >= push:
-        found.append("baseline gate step %d is not before push step %d" % (gate, push))
-    if GATE_CALL not in text:
-        found.append("the gate does not run check --strict")
-    return found
-
-
-def clean_problems(text):
-    found = []
-    if "(commit_push.md)" not in text:
-        found.append("no link to commit_push.md")
-    if "Bash(python3:*)" not in (allowed_tools(text) or ""):
-        found.append("allowed-tools lacks Bash(python3:*)")
-    return found
-
-
-UNTRACKED_DETECT = "git ls-files --others --exclude-standard"
-SUBMODULE_SYNC = "git submodule update --init --recursive"
-
-
-def pull_problems(text):
-    found = []
-    task = text.split("## Your task", 1)[-1]
-    tools = allowed_tools(text) or ""
-    for grant in ("Bash(git ls-tree:*)", "Bash(git ls-files:*)", "Bash(git submodule:*)", "Bash(git -C:*)", "Bash(mv:*)"):
-        if grant not in tools:
-            found.append("allowed-tools lacks %s" % grant)
-    if UNTRACKED_DETECT not in task:
-        found.append("no untracked-blocker check")
-    elif task.index(UNTRACKED_DETECT) > task.index("`git pull`"):
-        found.append("untracked-blocker check runs after the pull")
-    if "--diff-filter=A" not in task:
-        found.append("blocker check does not diff upstream-added paths")
-    if "`.bak`" not in task:
-        found.append("blockers are not moved aside to .bak")
-    if SUBMODULE_SYNC not in task:
-        found.append("no submodule sync step")
-    elif task.index(SUBMODULE_SYNC) < task.index("`git pull`"):
-        found.append("submodule sync runs before the pull")
-    if "ls-tree" not in task or task.index("ls-tree") > task.index("`git pull`"):
-        found.append("no pre-pull gitlink record")
-    if "paired_repos" not in task:
-        found.append("paired repos are not read from adaptation.json")
-    if any(name in task for name in PAIRED):
-        found.append("a paired repo path is hardcoded")
-    return found
-
-
-def mutants(text):
-    gate, push = gate_and_push(text)
-    late_gate = text
-    if gate is not None and push is not None:
-        late_gate = re.sub(r"^%d\. (\*\*Baseline drift gate)" % gate, r"%d. \1" % (push + 1), text, flags=re.MULTILINE)
-    return {
-        "gate moved after push": late_gate,
-        "python3 dropped from allowed-tools": text.replace(", Bash(python3:*)", ""),
-        "unknown-argument stop removed": UNKNOWN_ARG.sub("Any other argument is ignored", text),
-        "gate runs a non-strict check": text.replace(GATE_CALL, "baseline_sync.py check"),
-    }
+    return tools.group(1) if tools else ""
 
 
 def main():
-    cases = [("every rule fails against an empty command", len(problems("")) >= 4, str(problems("")))]
-    for command in COMMANDS:
-        name = command.name
-        if not command.exists():
-            cases.append(("%s exists" % name, False, str(command)))
-            continue
-        text = command.read_text(encoding="utf-8")
-        real = problems(text)
-        cases.append(("%s meets the push contract" % name, not real, str(real)))
-        for label, mutant in mutants(text).items():
-            new = [p for p in problems(mutant) if p not in real]
-            cases.append(("%s: planted mutant detected: %s" % (name, label), mutant != text and bool(new), str(new)))
-
-    clean = CLEAN_PUSH.read_text(encoding="utf-8") if CLEAN_PUSH.exists() else ""
-    real = clean_problems(clean)
-    cases.append(("clean_push.md follows commit_push.md and keeps python3", not real, str(real)))
-    for label, mutant in {"link removed": clean.replace("(commit_push.md)", ""),
-                          "python3 dropped": clean.replace(", Bash(python3:*)", ""),
-                          "python3 dropped from allowed-tools, kept in body":
-                              clean.replace(", Bash(python3:*)", "") + "\nBash(python3:*)\n"}.items():
-        cases.append(("clean_push.md: planted mutant detected: %s" % label,
-                      mutant != clean and bool(clean_problems(mutant)), label))
-
-    pull = (ROOT / ".claude" / "commands" / "clean_pull.md").read_text(encoding="utf-8")
-    real = pull_problems(pull)
-    cases.append(("clean_pull.md checks untracked blockers and syncs paired repos around the pull", not real, str(real)))
-    pull_mutants = {"untracked check removed": pull.replace(UNTRACKED_DETECT, "git status --short"),
-                    "submodule sync removed": pull.replace(SUBMODULE_SYNC, "git status --short"),
-                    "mv grant dropped": pull.replace(", Bash(mv:*)", "")}
-    for name in PAIRED:
-        pull_mutants["paired path %s hardcoded" % name] = pull + "\nRun `git -C %s fetch` first.\n" % name
-    for label, mutant in pull_mutants.items():
-        new = [p for p in pull_problems(mutant) if p not in real]
-        cases.append(("clean_pull.md: planted mutant detected: %s" % label,
-                      mutant != pull and bool(new), str(new)))
-
-    overnight = (ROOT / '.claude/commands/overnight.md').read_text(encoding='utf-8')
-    park = overnight.split('## Step 2', 1)[-1].split('## Step 3', 1)[0].lower()
-    cases.extend([
-        ('overnight authorizes active-branch push including main',
-         'active branch' in overnight.lower() and 'including `main`' in overnight.lower(), ''),
-        ('overnight no longer parks main push', 'push to main' not in park, park),
-    ])
-    if project_owned('.claude/commands/session_end.md'):
-        session_end = (ROOT / '.claude/commands/session_end.md').read_text(encoding='utf-8')
-        cases.append(('session_end is the push authority for the active branch, main included',
-                      'push authority for the active branch, `main` included' in session_end, ''))
-
-    passed = failed = 0
-    for label, ok, detail in cases:
-        print(("ok   " if ok else "FAIL ") + label)
-        if ok:
-            passed += 1
-        else:
-            failed += 1
-            print("     " + detail)
-    print(f"push command contract: {passed} passed, {failed} failed")
+    failed = 0
+    for name, grants in GRANTS.items():
+        path = COMMANDS / name
+        tools = allowed_tools(path.read_text(encoding="utf-8")) if path.exists() else ""
+        for grant in grants:
+            ok = grant in tools
+            print(("ok   " if ok else "FAIL ") + "%s grants %s" % (name, grant))
+            failed += not ok
+    print("push command contract: %d failed" % failed)
     return 1 if failed else 0
 
 

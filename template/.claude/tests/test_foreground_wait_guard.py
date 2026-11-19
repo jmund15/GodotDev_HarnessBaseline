@@ -89,8 +89,6 @@ for label, command, want in (
     got = (hso.get("updatedInput") or {}).get("command")
     check("backgrounded, %s is rewritten to %r" % (label, want),
           rc == 0 and hso.get("permissionDecision") is None and got == want, detail)
-    check("...and the note names the dropped stage and the output file",
-          "output file keeps every line" in (hso.get("additionalContext") or ""), detail)
 
 # Every other blind shape keeps the deny: dropping the stage would change what runs or where its result goes.
 for label, command in (

@@ -126,14 +126,15 @@ and biases toward the arm that produced it.
 ## Phase 4 — Record, and do not conclude early
 
 Append one result row per run to `.claude/scratch/pin_ab/<lens-key>.jsonl`: lens, mandate shape, both pins,
-input SHA, the three scores per arm, and the adjudicator. A `--profiles` run adds the axis it varied:
+input SHA, run date, the three scores per arm, and the adjudicator. A `--profiles` run adds the axis it varied:
 both cells' `-R` record paths, both `toolProfile` objects as recorded, and the `--compare` input hash.
 Read the profile objects from the records, never from the spec strings — a spec is what was asked
 for, and only the record says what the child was given.
 
 **The paired-run count n** is the number of the lens's result rows with distinct input SHAs that answer the current question: the same axis (`--pins` or `--profiles`) and the same control/challenger pair. Rows of another axis or pair never count toward it. A single paired
 run does not move a pin: effort is non-monotonic at n=1. The floor for changing a pin is n=3 with a
-consistent direction, the smallest count where two agreeing runs outvote one dissent; below it, report
+consistent direction, the smallest count where two agreeing runs outvote one dissent, on two or more run days
+(`/ladder_ingest` §What lands on the ladder: one day's runs are thin); below it, report
 the run and leave the pin alone.
 
 Report the verdict as one of: `challenger matched` · `challenger lost — <axis>` · `inconclusive, n=<n>`.

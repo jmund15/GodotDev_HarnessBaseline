@@ -337,11 +337,23 @@ DENY_REASON = (
 # Advisories
 # ---------------------------------------------------------------------------------------------
 
-# A scan that walks a tree and prints matching LINES. Recursive grep is denied above.
+# The command word where a scan starts: the line start, or after a separator, subshell opener or
+# transparent wrapper. A flag spelling or a word in prose never starts one.
+_CMD_START = r"(?:^|[|;&(`{\n]\s*)(?:(?:time|nice|nohup|exec|sudo|xargs|env)\s+)*"
+
+# A scan that walks a tree and prints matching LINES. Recursive grep is denied above. `ls` recurses on an
+# uppercase R or `--recursive`; `-r` reverses the sort.
 RECURSIVE_SCAN = re.compile(
-    r"(?:^|[|;&]\s*|\s)(?:rg\s|find\s|ls\s+-[a-zA-Z]*R|dir\s+/s)",
+    _CMD_START + r"(?P<verb>rg|find|ls(?=\s+(?:-\S*\s+)*(?:-[a-zA-Z]*(?-i:R)|--recursive))|dir(?=\s+/s))(?:\s|$)",
     re.IGNORECASE,
 )
+
+_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+
+
+def _scan_text(command: str) -> str:
+    """The text a command-word matcher judges: heredoc bodies removed, quoted strings emptied."""
+    return _QUOTED.sub('""', executable_text(command or ""))
 
 # Any of these means the caller already bounded or reduced the output.
 BOUNDED = re.compile(
@@ -354,7 +366,7 @@ BOUNDED = re.compile(
 )
 
 # Walks a tree while blind to .gitignore. `rg` and `git grep` honour it.
-GITIGNORE_BLIND = re.compile(r"(?:^|[|;&(`{\n]\s*)(?:(?:time|nice|nohup|exec|sudo|xargs|env)\s+)*find\s", re.IGNORECASE)
+GITIGNORE_BLIND = re.compile(_CMD_START + r"find\s", re.IGNORECASE)
 
 # The caller already scoped the walk, or handed it to a gitignore-aware tool.
 SCOPED = re.compile(
@@ -445,7 +457,7 @@ def _is_file_operand(path: str, cwd: str = "") -> bool:
 def rg_walks_no_tree(command: str, cwd: str = "") -> bool:
     """True when every tree-scan match is an `rg`, and each `rg` either reads a pipe (no path
     operand, fed by `|`) or names only files and one-level file globs."""
-    if any("rg" not in match.group(0).lower() for match in RECURSIVE_SCAN.finditer(command)):
+    if any(match.group("verb").lower() != "rg" for match in RECURSIVE_SCAN.finditer(_scan_text(command))):
         return False
     try:
         tokens = shlex.split(command)
@@ -499,7 +511,7 @@ def needs_bound(command: str, cwd: str = "") -> bool:
     command = executable_text(command or "")
     if not command:
         return False
-    return (bool(RECURSIVE_SCAN.search(command)) and not BOUNDED.search(command)
+    return (bool(RECURSIVE_SCAN.search(_scan_text(command))) and not BOUNDED.search(command)
             and not rg_walks_no_tree(command, cwd))
 
 
@@ -507,7 +519,7 @@ def needs_scope(command: str, cwd: str = "") -> bool:
     command = executable_text(command or "")
     if not command:
         return False
-    if not GITIGNORE_BLIND.search(command):
+    if not GITIGNORE_BLIND.search(_scan_text(command)):
         return False
     if SCOPED.search(command) or has_narrowing_path(command) or in_worktree(cwd):
         return False

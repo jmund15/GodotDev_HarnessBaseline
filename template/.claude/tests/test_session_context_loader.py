@@ -4,7 +4,7 @@ probes only for available off-transport routes, the due line, the git and upstre
 memory index, the setup stamp, and the step-module seam (an absent module is skipped, a present one is
 called, a faulty one is reported and never blocks). The engine and language-server steps are proven in
 test_session_context_loader_godot.py and test_session_context_loader_csharp.py. Pure in-process — no
-git or dotnet.
+git or toolchain spawn.
 
     python3 .claude/tests/test_session_context_loader.py
 """
@@ -116,6 +116,7 @@ def main():
 
     def run_main(main_root, patches, source="startup", step_modules=(), sidecar=False):
         stdout = io.StringIO()
+        exit_codes = []
         scl._STEP_FAULTS.clear()
         with contextlib.redirect_stdout(stdout), patch.dict(os.environ, {}, clear=False):
             if sidecar:
@@ -130,7 +131,8 @@ def main():
                 try:
                     scl.main()
                 except SystemExit as exc:
-                    check("SessionStart main exits successfully", exc.code == 0, repr(exc.code))
+                    exit_codes.append(exc.code)
+        check("SessionStart main exits successfully", exit_codes == [0], repr(exit_codes))
         return stdout.getvalue()
 
     with tempfile.TemporaryDirectory(prefix="scl_main_") as main_dir:
@@ -159,8 +161,32 @@ def main():
         check("a sidecar that is not OK keeps its full status",
               "sidecar-b: sol: shape rating: none exists" in output, output[:800])
         check("a local session gets no cloud contract", "<cloud-session>" not in output)
-        check("the git line states how far main is from its upstream and how old the oldest unpushed commit is",
-              "Git: main | clean | 24 ahead, 3 behind upstream as last fetched (oldest unpushed 30h)" in output, output[-900:])
+        check("a fresh startup repeats no branch or commit block the client already shows, but keeps the upstream drift",
+              "Git: main" not in output and "Recent {{PROJECT_NAME}} commits:" not in output
+              and "24 ahead, 3 behind" in output and "30h" in output, output[-900:])
+        check("a fresh startup in the main checkout prints no Worktree line", "Worktree:" not in output, output[:300])
+        check("a healthy item (an OK step, an OK roster) is silent in the Env line",
+              "rosters OK" not in output and "submodule OK" not in output, output[:600])
+        compact_out = run_main(main_root, patches, source="compact")
+        check("compact prints the branch, drift and commit block",
+              "Git: main | clean" in compact_out and "24 ahead, 3 behind" in compact_out
+              and "Recent {{PROJECT_NAME}} commits:" in compact_out, compact_out[-900:])
+        check("compact folds the reload reminder into one [compaction] line",
+              "<context-reload-reminder>" not in compact_out
+              and sum(1 for ln in compact_out.splitlines() if ln.startswith("[compaction]")) == 1, compact_out[-500:])
+        for quiet_source in ("clear", "resume"):
+            quiet_out = run_main(main_root, patches, source=quiet_source)
+            check("%s prints the branch and commit block" % quiet_source,
+                  "Git: main" in quiet_out and "Recent {{PROJECT_NAME}} commits:" in quiet_out, quiet_out[-600:])
+        clean_drift = run_main(main_root, dict(patches, get_upstream_drift=lambda: (0, 0, 0.0)))
+        check("a fresh startup with no drift prints no git line",
+              "ahead" not in clean_drift and "Git:" not in clean_drift, clean_drift[:400])
+        worktree_out = run_main(main_root, dict(patches, is_worktree=lambda: True))
+        check("a linked worktree still reports itself", "Worktree: YES" in worktree_out, worktree_out[:300])
+        due_patches = dict(patches, self_improvement_advisory=lambda _root, _source: "DUE-LINE")
+        check("the due line reaches the owner", "DUE-LINE" in run_main(main_root, due_patches))
+        check("the due line does not reach a sidecar delegate",
+              "DUE-LINE" not in run_main(main_root, due_patches, sidecar=True))
         check("no step module installed: no engine, Jmodot or language-server lines",
               "GODOT_BIN" not in output and "Jmodot" not in output and "lsp-early-load" not in output
               and "Session step modules" not in output, output[-700:])
@@ -178,8 +204,41 @@ def main():
                 roots_out = run_main(roots_root, patches, source=roots_source, sidecar=roots_sidecar)
                 check("%s%s: the project's document roots print as one locations line"
                       % (roots_source, " sidecar" if roots_sidecar else ""),
-                      roots_out.count("[locations] document roots outside the repo: D:/Vault/DOCROOT-MARKER") == 1,
+                      roots_out.count("[locations]") == 1 and roots_out.count("D:/Vault/DOCROOT-MARKER") == 1,
                       roots_out[-900:])
+
+        shared = scl.locations_line_from(["C:\\Vault\\Dev\\Alpha", "C:\\Vault\\Dev\\Beta", "C:\\Vault\\Dev\\Gamma"])
+        check("document roots sharing a prefix print it once",
+              shared.count("C:\\Vault\\Dev") == 1 and all(n in shared for n in ("Alpha", "Beta", "Gamma")), shared)
+        apart = scl.locations_line_from(["C:/a/x", "D:/b/y"])
+        check("roots with no shared directory print in full", "C:/a/x" in apart and "D:/b/y" in apart, apart)
+        near = scl.locations_line_from(["C:/Vault/Dev1", "C:/Vault/Dev2"])
+        check("a prefix ends at a directory boundary, never mid-name",
+              "Dev1" in near and "Dev2" in near and "C:/Vault" in near and "C:/Vault/Dev:" not in near, near)
+
+        # The client shows a 2,000-character preview of one command's output past HOOK_TEXT_CAP.
+        from _hook_parts import HOOK_TEXT_CAP
+        small_out = run_main(main_root, patches, source="compact")
+        check("an output within the cap prints whole and writes no overflow file",
+              "session_context_full" not in small_out and not (main_root / ".claude" / "scratch").exists(),
+              small_out[-300:])
+        planted_lines = ["  PLANTED-ENV-%03d %s" % (i, "x" * 60) for i in range(400)]
+        big_step = types.SimpleNamespace(env_lines=lambda root, cloud: planted_lines,
+                                         report_lines=lambda root: ["", "STEP-REPORT"])
+        big_out = run_main(main_root, patches, source="compact", step_modules=(big_step,))
+        big_bytes = len(big_out.encode("utf-8"))
+        full_path = next((ln.split("Read ", 1)[1].split(" ", 1)[0]
+                          for ln in big_out.splitlines() if "Read " in ln and "session-context" in ln), "")
+        full_text = Path(full_path).read_text(encoding="utf-8") if full_path and os.path.isfile(full_path) else ""
+        check("an oversize loader output stays within the client's hook-text cap", big_bytes <= HOOK_TEXT_CAP,
+              "%d bytes" % big_bytes)
+        check("an oversize loader output keeps its opening whole lines and its compaction line",
+              big_out.startswith("<session-context>") and "PLANTED-ENV-000 " in big_out
+              and "[compaction]" in big_out and all(ln.endswith("x" * 60) for ln in big_out.splitlines()
+                                                    if ln.startswith("  PLANTED-ENV-")), big_out[-500:])
+        check("an oversize loader output names the file that holds all of it, absolute",
+              os.path.isabs(full_path) and "PLANTED-ENV-399 " in full_text and "STEP-REPORT" in full_text
+              and "24 ahead" in full_text, (full_path, big_out[-400:]))
 
         # A cloud VM has no user or local settings, so the autoMemoryDirectory index does not
         # reach the model unless SessionStart injects it.
@@ -191,6 +250,14 @@ def main():
                              sidecar_health=lambda _root: sidecar_probes.append(1) or {"sidecar-x": "UNAVAILABLE"})
         cloud_out = run_main(main_root, cloud_patches, source="compact")
         check("cloud session gets the memory index", "MEMORY-MARKER" in cloud_out)
+        (main_root / ".claude" / "auto-memory" / "MEMORY.md").write_text(
+            "# Memory Index\n" + "".join("- MEMORY-ROW-%04d %s\n" % (i, "y" * 60) for i in range(300)),
+            encoding="utf-8")
+        report_step = types.SimpleNamespace(report_lines=lambda root: ["", "STEP-REPORT"])
+        cloud_big = run_main(main_root, cloud_patches, source="compact", step_modules=(report_step,))
+        check("an oversize cloud output cuts the bulk memory index before the closing lines, within the cap",
+              len(cloud_big.encode("utf-8")) <= HOOK_TEXT_CAP and "[compaction]" in cloud_big
+              and "STEP-REPORT" in cloud_big, "%d bytes; %s" % (len(cloud_big.encode("utf-8")), cloud_big[-400:]))
         check("cloud session is not told to load an unprovisioned plugin tool",
               "select:mcp__plugin_semantic-search" not in cloud_out)
         check("cloud reload reminder names the Grep fallback for memory search",
@@ -221,7 +288,7 @@ def main():
         )
         output = run_main(main_root, patches, step_modules=(step,))
         check("a step module's setup statuses reach the Env: line in session order",
-              "step_early OK" in output and "step_setup: FIXED (x)" in output and "step_local OK" in output
+              "step_early" not in output and "step_setup: FIXED (x)" in output and "step_local" not in output
               and order == ["early_setup", "setup", "local_checks", "persist_env"], (order, output[:600]))
         check("a step module's lines reach the output",
               all(text in output for text in ("STEP-ENV-LINE", "STEP-CONTEXT", "STEP-NUDGE:OK", "STEP-REPORT")),
@@ -239,7 +306,7 @@ def main():
         output = run_main(main_root, patches, step_modules=(step,))
         check("a raising hook is reported and the session context still prints",
               "Session step modules: FAILED (setup ValueError: hook bug)" in output
-              and "Git: main |" in output and "STEP-REPORT" in output, output[-500:])
+              and "24 ahead" in output and "STEP-REPORT" in output, output[-500:])
 
         # An installed module that cannot be imported is named, and its siblings still load.
         scl._STEP_FAULTS.clear()
@@ -260,7 +327,7 @@ def main():
               scl.roster_health(plain_root) == "", scl.roster_health(plain_root))
         for is_cloud_session in (False, True):
             plain_out = run_main(plain_root, dict(patches, is_cloud=lambda: is_cloud_session,
-                                                  is_worktree=lambda: True))
+                                                  is_worktree=lambda: True), source="compact")
             label = "cloud" if is_cloud_session else "local"
             check("plain %s session: no engine or language-server lines" % label,
                   "GODOT_BIN" not in plain_out and "Jmodot" not in plain_out
@@ -335,8 +402,8 @@ def main():
             stamped = ws_module.stamp(ws_root, preflight_failures=[])
         check("the fixture checkout stamps", stamped[0], stamped)
         out = run_ws_main(env_ws)
-        check("a stamped checkout: the Env: line says workstation OK", "workstation OK" in env_line(out),
-              env_line(out))
+        check("a stamped checkout: the Env: line does not mention the workstation",
+              "workstation" not in env_line(out), env_line(out))
 
         (ws_root / ".mcp.json").write_text("drifted\n", encoding="utf-8")
         out = run_ws_main(env_ws)
@@ -371,6 +438,21 @@ def main():
             os.chdir(cwd)
         check("the drift reader counts unpushed commits against the upstream",
               drift is not None and drift[:2] == (2, 0) and 0 <= drift[2] < 1, repr(drift))
+
+    # A process hoarding handles pins kernel memory no RAM listing shows: the step names it with its pid.
+    rows = [(20296, "SystemSettings.exe", 3_563_258), (10028, "ServiceShell.exe", 45_661), (4, "System", 9_000)]
+    status = scl.handle_hoarders(rows)
+    check("a hoarder above the floor is named with its pid and count; the processes below it are not",
+          "SystemSettings.exe pid 20296" in status and "3,563,258" in status and "ServiceShell" not in status,
+          status)
+    check("no process above the floor: no status", scl.handle_hoarders(rows[1:]) == "", scl.handle_hoarders(rows[1:]))
+    check("an unreadable process table reads UNKNOWN, never healthy",
+          scl.handle_hoarders(None).startswith("UNKNOWN"), scl.handle_hoarders(None))
+    check("no process table to read (off Windows): no status", scl.handle_hoarders([]) == "")
+    if os.name == "nt":
+        live = scl.process_handle_counts()
+        check("the live process table lists this process with a handle count",
+              any(pid == os.getpid() and count > 0 for pid, _name, count in live or ()), repr((live or [])[:3]))
 
     if failures:
         print("\nFAILED:\n  " + "\n  ".join(failures))

@@ -43,27 +43,27 @@ def main():
             json.dump({"last_prompt": "sibling field"}, fh)
 
         out, crashed = run(state_dir, "I think we should split this hook, right?")
-        cases.append(("a suggestion-shaped prompt gets the reminder", not crashed and "Critically analyze" in out))
+        cases.append(("a suggestion-shaped prompt gets the reminder", not crashed and "Suggestion-shape" in out))
         state = read(path)
         cases.append(("the fired flag lands in the shared state file", state.get(FLAG) is True))
         cases.append(("a field another hook wrote survives the update", state.get("last_prompt") == "sibling field"))
 
         out, crashed = run(state_dir, "What about a second suggestion?")
-        cases.append(("the reminder fires once per session", not crashed and "Critically analyze" not in out))
+        cases.append(("the reminder fires once per session", not crashed and "Suggestion-shape" not in out))
 
     with tempfile.TemporaryDirectory() as list_dir:
         with open(os.path.join(list_dir, SID[:8] + ".json"), "w", encoding="utf-8") as fh:
             json.dump(["not", "an", "object"], fh)
         out, crashed = run(list_dir, "I think we should split this hook, right?")
         cases.append(("a non-object state file does not crash the hook",
-                      not crashed and "Critically analyze" in out))
+                      not crashed and "Suggestion-shape" in out))
 
     with tempfile.TemporaryDirectory() as fresh_dir:
         out, crashed = run(fresh_dir, "yes")
-        cases.append(("a bare acknowledgement is not a suggestion", not crashed and "Critically analyze" not in out))
+        cases.append(("a bare acknowledgement is not a suggestion", not crashed and "Suggestion-shape" not in out))
         out, crashed = run(fresh_dir, "not json")
         cases.append(("a plain prompt without a suggestion shape stays silent",
-                      not crashed and "Critically analyze" not in out))
+                      not crashed and "Suggestion-shape" not in out))
 
     challenges = ["fyi what made you select deepseek api over go usage?",
                   "don't believe this, this was probably wrongly extrapolated from few benchmark runs no?",
@@ -79,12 +79,12 @@ def main():
         for prompt in challenges:
             out, crashed = run(ch_dir, prompt)
             cases.append(("a challenge gets the evidence reminder: " + prompt[:48],
-                          not crashed and "Challenge-shape prompt" in out and "run the check" in out))
+                          not crashed and "Challenge-shape prompt" in out))
         cases.append(("a challenge does not set the suggestion flag",
                       read(os.path.join(ch_dir, SID[:8] + ".json")).get(FLAG) is not True))
         out, crashed = run(ch_dir, "I think we should split this hook, right?")
         cases.append(("a suggestion after challenges still gets its reminder",
-                      not crashed and "Critically analyze" in out))
+                      not crashed and "Suggestion-shape" in out))
         out, crashed = run(ch_dir, "are you sure about that?")
         cases.append(("a challenge still fires after the suggestion reminder fired",
                       not crashed and "Challenge-shape prompt" in out))

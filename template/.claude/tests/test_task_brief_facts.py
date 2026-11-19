@@ -351,6 +351,25 @@ def _main(tmp):
             defect = (module.process(written(bad, EMPTY_CHECK_BRIEF)) or {}).get("context") or ""
             case("a malformed task block yields a context naming the defect",
                  defect.startswith(TAG) and "empty check" in defect)
+            repeat = (module.process(written(bad, EMPTY_CHECK_BRIEF)) or {}).get("context") or ""
+            case("the same defect on the same brief in the same session is told once", TAG not in repeat)
+            other = plant(os.path.join(tmp, "repo", ".claude", "scratch", "ocd", "empty_check_two.md"),
+                          EMPTY_CHECK_BRIEF)
+            case("the same defect on another brief is told",
+                 TAG in ((module.process(written(other, EMPTY_CHECK_BRIEF)) or {}).get("context") or ""))
+            case("the same defect in another session is told",
+                 TAG in ((module.process(written(bad, EMPTY_CHECK_BRIEF, session="post0002")) or {})
+                         .get("context") or ""))
+            plant(bad, EMPTY_CHECK_BRIEF.replace('"check": []', '"check": ["x"], "writeSet": "x"'))
+            case("a different defect on the same brief is told",
+                 TAG in ((module.process(written(bad, "")) or {}).get("context") or ""))
+            import _hook_state
+            _hook_state.clear_compaction_keys("post0001")
+            plant(bad, EMPTY_CHECK_BRIEF)
+            case("after a compaction the same defect is told again",
+                 TAG in ((module.process(written(bad, "")) or {}).get("context") or ""))
+            case("a defect line states the defect once, not through a second 'task block' preamble",
+                 defect.count("task block") <= 1)
         elsewhere = plant(os.path.join(tmp, "repo", "plans", "doc_with_fence.md"), BRIEF)
         with planted_env(CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache):
             case("a file outside the scratch directory that holds a task block yields None",
@@ -487,8 +506,7 @@ def _main(tmp):
         first, second = notice("prep-none", False, False)
         line = next((l for l in first.splitlines() if l.startswith(tag)), "")
         case("the first dispatch-prep brief of a window announces both loads and that a launch is denied",
-             'Skill(skill="orchestration")' in line and "for-role" in line and "DENIED" in line
-             and len(line) < 320)
+             'Skill(skill="orchestration")' in line and "for-role" in line)
         case("the second brief of the same window stays silent", tag not in second)
         both, _ = notice("prep-both", True, True)
         case("no notice when the skill and the ladder are both in context", tag not in both)

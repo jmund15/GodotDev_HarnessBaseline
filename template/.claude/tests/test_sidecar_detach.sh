@@ -79,7 +79,7 @@ SC_LAUNCHER_DIR="${SC_LAUNCHER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd
 # shellcheck disable=SC1090
 . "${SC_LIB_UNDER_TEST:?SC_LIB_UNDER_TEST must point at the lib to test}"
 sc_reexec_snapshot "$@"
-sc_check_launch_memory() { :; }
+sc_check_launch_memory() { :; }; sc_check_quota_fit() { :; }
 
 sc_parse_flags "$@"
 shift "$SC_SHIFT"

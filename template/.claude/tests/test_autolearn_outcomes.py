@@ -232,6 +232,19 @@ def main():
         _, out, _ = run(r, "record", "--date", "2026-11-13", "--target", "hooks/a.py", "--signal", "declined now",
                         "--session", "s1", "--recommended", "apply", "--reason", "no", "--outcome", "declined")
         cases.append(("a declined row prints no repeat", "repeat" not in out))
+        # A target's path is the first word of each `;` part, the `.claude/` prefix optional: the label words after
+        # it name no path, and a bare `CLAUDE.core.md` and `.claude/CLAUDE.core.md` are one file.
+        run(r, "record", "--date", "2026-11-14", "--target", "hooks/c.py deny text", "--signal", "c slip", *base, *rec)
+        _, out, _ = run(r, "record", "--date", "2026-11-15", "--target", "hooks/d.py deny text", "--signal", "d slip",
+                        *base, *rec)
+        cases.append(("rows sharing only label words after the path name no repeat", "repeat" not in out))
+        run(r, "record", "--date", "2026-11-14", "--target", "CLAUDE.core.md", "--signal", "core slip", *base, *rec)
+        _, out, _ = run(r, "record", "--date", "2026-11-15", "--target", ".claude/CLAUDE.core.md#Git",
+                        "--signal", "core again", *base, *rec)
+        cases.append(("a bare and a .claude/-prefixed path are one target",
+                      "repeat" in out and "core slip" in out))
+        _, out, _ = run(r, "history", "--target", "CLAUDE.core.md")
+        cases.append(("history matches the prefixed spelling of a bare target", "core again" in out))
 
         g = os.path.join(tmp, "cap.jsonl")
         for i in range(7):

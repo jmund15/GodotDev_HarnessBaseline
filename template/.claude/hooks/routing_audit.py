@@ -60,7 +60,7 @@ from datetime import datetime, timezone
 
 # Shared classifier (extracted 2026-05-04).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _hook_state import read_json_salvage
+from _hook_state import append_jsonl_rotating, read_json_salvage
 try:
     from routing_classifier import classify_call, Classification
 except ImportError:
@@ -165,18 +165,11 @@ def _append_audit_entry(entry: dict) -> None:
     Best-effort append to the audit JSONL. Failure is silent — this hook
     must NEVER break a tool call.
 
-    Uses an append-mode write rather than read-modify-write to handle the
-    parallel-subagent case (two hooks racing on the same file). JSONL's
-    line-atomicity guarantees readability even with interleaved appends
-    (each line is one self-contained event).
+    Appends under the file's lock: parallel subagents fire this hook at once, and
+    an unlocked append tears rows on Windows. The aggregator owns rotation.
     """
     try:
-        os.makedirs(os.path.dirname(AUDIT_LOG_PATH) or ".", exist_ok=True)
-        line = json.dumps(entry, ensure_ascii=True)
-        with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except OSError:
-        pass
+        append_jsonl_rotating(AUDIT_LOG_PATH, [entry], max_bytes=None)
     except Exception:
         pass
 

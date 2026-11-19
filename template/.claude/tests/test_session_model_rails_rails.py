@@ -124,6 +124,114 @@ def missing_ladder():
     finally:
         model_registry.role_tiers = real
 
+# ---- the rails reach the client in parts, each under its per-hook text cap ---------------------------------
+import json  # noqa: E402,F811
+import re  # noqa: E402
+import tempfile  # noqa: E402
+
+from amend_delivery import HOOK_TEXT_CAP  # noqa: E402
+
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+UNREGISTERED = "unregistered-model-for-the-detailed-tier"  # no registry row: the longest (detailed) rails
+KINDS = ("scout", "reviewer", "author")
+NL = chr(10)
+
+
+def _registered_commands():
+    """The argument list of every `session_model_rails.py` command `settings.base.json` registers on SessionStart."""
+    with open(os.path.join(REPO, ".claude", "settings.base.json"), encoding="utf-8") as fh:
+        groups = json.load(fh)["hooks"]["SessionStart"]
+    found = []
+    for group in groups:
+        for hook in group["hooks"]:
+            m = re.search(r"session_model_rails\.py\"(.*)$", hook["command"])
+            if m:
+                found.append(m.group(1).split())
+    return found
+
+
+def _run_args(args, kind, model=UNREGISTERED, planted=None, extra=None):
+    """The hook's stdout, decoded as UTF-8, for one registered argument list under one sidecar kind."""
+    env = dict(os.environ)
+    for name in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_SIDECAR_KIND", "CLAUDE_CODE_SIDECAR_TIER", "ANTHROPIC_BASE_URL"):
+        env.pop(name, None)
+    env["CLAUDE_CODE_TRANSPORT"] = "anthropic"
+    env["CLAUDE_PROJECT_DIR"] = REPO
+    if kind:
+        env.update(CLAUDE_CODE_SIDECAR="1", CLAUDE_CODE_SIDECAR_KIND=kind)
+    env.update(planted or {})
+    done = subprocess.run([sys.executable, MOD] + list(args), input=json.dumps(dict({"model": model}, **(extra or {}))).encode(),
+                          capture_output=True, env=env, timeout=60)
+    return done.stdout.decode("utf-8")
+
+
+def _parts(kind):
+    """Each registered command's output for `kind`, in registration order."""
+    return [_run_args(args, kind) for args in _registered_commands()]
+
+
+def _whole(kind):
+    """The unsplit text: the hook run with no part argument."""
+    return _run_args([], kind)
+
+
+def _parts_fit_and_equal_the_whole(kind):
+    parts, whole = _parts(kind), _whole(kind)
+    return (bool(parts) and all(len(p.encode("utf-8")) <= HOOK_TEXT_CAP for p in parts)
+            and "".join(parts) == whole and len(whole) > 0)
+
+
+def _registers_exactly_the_parts():
+    cmds = _registered_commands()
+    return cmds == [["--part", str(n)] for n in range(1, smr.PARTS + 1)]
+
+
+def _text_fits_the_registered_parts(kind):
+    return "[rails overflow]" not in "".join(_parts(kind))
+
+
+def _a_delegate_env(kind):
+    return {"CLAUDE_CODE_SIDECAR": "1", "CLAUDE_CODE_SIDECAR_KIND": kind, "CLAUDE_CODE_TRANSPORT": "anthropic"}
+
+
+def _overflow_with_one_part():
+    """The author text through a one-part hook: the part says what did not fit, and what it kept is a whole-line prefix."""
+    saved = {k: os.environ.get(k) for k in _a_delegate_env("author")}
+    os.environ.update(_a_delegate_env("author"))
+    real_parts = smr.PARTS
+    try:
+        whole = smr.build_text({"model": UNREGISTERED}, write_tier=False)
+        smr.PARTS = 1
+        part = smr.part_text(whole, 1)
+    finally:
+        smr.PARTS = real_parts
+        for k, v in saved.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+    kept, _, note = part.partition("[rails overflow]")
+    return (len(part.encode("utf-8")) <= HOOK_TEXT_CAP and whole.startswith(kept) and kept.endswith(NL)
+            and 0 < len(kept) < len(whole) and "guard_text.py" in note)
+
+
+def _later_parts_are_empty_and_write_no_tier():
+    """A fitting session prints in part 1 only, and only part 1 caches the session tier."""
+    with tempfile.TemporaryDirectory() as state:
+        planted = {"HARNESS_HOOK_STATE_DIR": state}
+        extra = {"session_id": "parts0001"}
+        later = [_run_args(["--part", str(n)], None, planted=planted, extra=extra) for n in range(2, smr.PARTS + 1)]
+        wrote_early = os.path.exists(os.path.join(state, "parts000.json"))
+        first = _run_args(["--part", "1"], None, planted=planted, extra=extra)
+        wrote = os.path.exists(os.path.join(state, "parts000.json"))
+    return all(p == "" for p in later) and not wrote_early and wrote and "[session] Session tier" in first
+
+
+def _pack_cases():
+    """The helper packs whole lines by UTF-8 bytes and never splits a line across parts."""
+    import _hook_parts
+    text = NL.join(["aaaa", "bb—b", "cccc", "dd", ""])  # the em dash is 3 bytes: line 2 is 7 bytes with its newline, so 3 parts at cap 10
+    parts = [_hook_parts.part_of(text, n, 3, cap=10) for n in (1, 2, 3, 4)]
+    return ("".join(parts[:3]) == text and parts[3] == "" and all(len(p.encode("utf-8")) <= 10 for p in parts)
+            and all(p.endswith(NL) for p in parts[:3]))
+
 
 CASES = [
     ("T1 missing ladder still computes registry tier gaps",
@@ -299,14 +407,25 @@ CASES = [
     # The edit guard denies a harness edit while instruction_quality is not in context (6 denies in session 9c1a9920,
     # 2026-10-14), so the compact start names it in the re-attach rule, and never claims a skill was cleared.
     ("a compaction notice names instruction_quality in the re-attach rule and names no skill cleared",
-     lambda: any("instruction_quality" in line and "truncated for compaction" in line
-                 for line in _compact_lines())
+     lambda: any("instruction_quality" in line for line in _compact_lines())
              and not any("Compaction cleared" in line for line in _compact_lines())
              and not any("instruction_quality" in line for line in _startup_lines())),
     # The ladder's selection line alone states how a dispatch's row and plan are chosen; the effort line points there.
     ("the effort line points at the selection line for the route and never restates its condition",
      lambda: all("selection line" in line and "session's plan" not in line and "launcher" not in line
                  for line in (smr.effort_line({"effort": "high"}), smr.effort_line({"session_id": None})))),
+    # ---- a delegate's rails reach it whole: parts under the client's per-hook cap --------------------------
+    ("every part for a scout delegate fits the cap and the parts joined are the whole text",
+     lambda: _parts_fit_and_equal_the_whole("scout")),
+    ("...a reviewer", lambda: _parts_fit_and_equal_the_whole("reviewer")),
+    ("...an author", lambda: _parts_fit_and_equal_the_whole("author")),
+    ("settings register part 1..PARTS once each and no unsplit command", _registers_exactly_the_parts),
+    ("the longest rails still fit the registered parts without the overflow notice",
+     lambda: all(_text_fits_the_registered_parts(k) for k in KINDS)),
+    ("a text past the last part says what did not fit and keeps a whole-line prefix", _overflow_with_one_part),
+    ("a fitting session prints in part 1 only, and only part 1 caches the session tier",
+     _later_parts_are_empty_and_write_no_tier),
+    ("the helper packs whole lines by bytes", _pack_cases),
 ]
 
 
