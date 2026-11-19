@@ -716,15 +716,16 @@ def new_row(name, kind, commit, session, first_line, now, cause=None, platform=N
 def apply_result(doc, res):
     """The state after one run's result: this platform's rows clear or open, `checkedTo` and `run` update.
     A fresh red whose first failing line differs from an open row's is a second row, so a new break never
-    hides behind an old one. A Linux row clears only when a later baseline run's log lists that proof as passed
-    (`passed`): a lane that never ran its proofs lists nothing, and absence is not a pass."""
+    hides behind an old one. Off Linux, a Linux row is the baseline lane's and clears only when a later baseline run's
+    log lists that proof as passed (`passed`): a lane that never ran its proofs lists nothing, and absence is not a
+    pass. A main check that runs on Linux proves Linux itself, so its Linux rows clear like any own-platform row."""
     now, tip, platform = res["now"], res["tip"], platform_name()
     linux = res.get("linux") or {}
     rows = doc["rows"]
     for row in rows:
         if not open_row(row):
             continue
-        if row.get("platform") == "linux":
+        if row.get("platform") == "linux" and platform != "linux":
             if (linux.get("passed") is not None and row.get("kind") == "proof"
                     and row.get("commit") != linux.get("sha") and row["name"] in linux["passed"]):
                 row["clearedAt"], row["clearedBy"] = now, linux["sha"]

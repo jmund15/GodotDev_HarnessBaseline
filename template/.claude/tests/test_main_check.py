@@ -1079,6 +1079,7 @@ class Status(MainCheckCase):
         self.assertIn('last run no-verdict', out)
 
 
+@unittest.skipIf(PLATFORM == 'linux', 'the baseline Linux lane stands in for Linux only where the main check runs off Linux')
 class BaselineLinuxSource(MainCheckCase):
     """The finalize stage reads the baseline repo's Linux lanes for the lock's `synced_commit` and records their
     reds as `platform: linux` rows (rules/harness_tooling.md §Land and main check). Each case plants a fake `gh` on PATH; no case
