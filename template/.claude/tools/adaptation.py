@@ -42,8 +42,10 @@ Two contracts share this loader:
 read by `scripts/sync_plan_config.py`; an absent key means no project benchmark extras.
 `rigor_defaults` maps project classes to path globs and levels, read by `tools/triage.py`.
 `usage_reset` is the weekly quota reset ({weekday, hour}, machine-local), read by `tools/usage_report.py`.
-`land_prefix` is the branch prefix a project's land runner proves and fast-forwards onto the default branch
-(empty: no runner), read by `hooks/git_guardrails.py` and `/commit_push` step 6.
+`land_prefix` is the branch prefix whose pushes a project's land runner integrates and fast-forwards onto the
+default branch, with no proof run (empty: no runner), read by `hooks/git_guardrails.py` and `/commit_push` step 6.
+`main_check` names the workflow that proves the default branch after each push (empty: the project has none), read by
+`hooks/git_guardrails.py`: a project that declares one needs no local close before a harness push.
 `land_watch` is the command `/commit_push` step 6 starts after a land push to wait on the land and report it
 (`<land branch>` and `<pushed sha>` filled in; empty: no watcher).
 `regenerable_ignored` lists the project's ignored build outputs that a delete of an orphaned or retired worktree may
@@ -94,6 +96,7 @@ DEFAULTS: dict = {
     "index_prebuild": [],
     "usage_reset": {"weekday": "sunday", "hour": 13},
     "land_prefix": "",
+    "main_check": "",
     "land_watch": "",
     "regenerable_ignored": [],
     "rigor_defaults": {
@@ -139,6 +142,7 @@ _TYPES: dict = {
     "index_prebuild": list,
     "usage_reset": dict,
     "land_prefix": str,
+    "main_check": str,
     "land_watch": str,
     "regenerable_ignored": list,
     "rigor_defaults": dict,

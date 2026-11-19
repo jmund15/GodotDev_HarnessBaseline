@@ -5942,6 +5942,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_quota_fit.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_rail_probe_guard.py",
       "layer": "pure",
       "sync": "auto"
@@ -6538,6 +6543,11 @@
     },
     {
       "path": ".claude/tests/test_sidecar_producer_identity.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_sidecar_quota_fit.sh",
       "layer": "pure",
       "sync": "auto"
     },
@@ -7548,6 +7558,11 @@
     },
     {
       "path": ".claude/tools/quota_dashboard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/quota_fit.py",
       "layer": "pure",
       "sync": "auto"
     },

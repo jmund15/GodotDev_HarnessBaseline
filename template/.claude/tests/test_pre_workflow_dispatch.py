@@ -356,13 +356,21 @@ def in_process_cases():
     check("readonly_marker_arm runs on an allowed call", len(ran) == 1, ran)
 
     boom = RuntimeError("planted crash")
-    code, out, err = run_chain([member("dispatch_mechanism_guard", raises=boom),
+    code, out, err = run_chain([member("workflow_script_lf_guard", raises=boom),
                                 member("workflow_provider_guard", deny("capacity"))])
     check("an advisory member's crash names the lost check and repair; later members still decide",
-          code == 0 and "dispatch_mechanism_guard" in out.get("additionalContext", "")
-          and "did not run" in out.get("additionalContext", "")
-          and "Repair .claude/hooks/dispatch_mechanism_guard.py" in out.get("additionalContext", "")
+          code == 0 and "workflow_script_lf_guard" in out.get("additionalContext", "")
+          and "Repair .claude/hooks/workflow_script_lf_guard.py" in out.get("additionalContext", "")
           and out.get("permissionDecisionReason") == "capacity" and "planted crash" in err, (out, err[-200:]))
+
+    code, out, _ = run_chain([member("dispatch_mechanism_guard", raises=boom)])
+    check("a doctrine-guard crash on a Workflow call denies: a paid run must not start on an unchecked pin",
+          out.get("permissionDecision") == "deny" and "planted crash" in out.get("permissionDecisionReason", "")
+          and "dispatch_mechanism_guard" in out.get("permissionDecisionReason", ""), out)
+    stub = pwd._failed_import("dispatch_mechanism_guard", ModuleNotFoundError("No module named 'gone'"))
+    _, out, _ = run_chain([stub])
+    check("a doctrine-guard import fault denies a Workflow call and names the module",
+          out.get("permissionDecision") == "deny" and "gone" in out.get("permissionDecisionReason", ""), out)
 
     code, out, _ = run_chain([member("workflow_provider_guard", raises=boom)])
     check("a provider-guard crash on a Workflow call denies: no args.__transport means the engine cannot run",
@@ -373,6 +381,30 @@ def in_process_cases():
           out.get("permissionDecision") is None and "workflow_provider_guard" in out.get("additionalContext", ""), out)
     code, out, _ = run_chain([member("workflow_provider_guard", code=1, err="Traceback boom")])
     check("a non-zero non-2 exit is a fault, never an allow", out.get("permissionDecision") == "deny", out)
+
+    def frame(path, line, fn, code):
+        return '  File "%s", line %d, in %s\n    %s' % (path, line, fn, code)
+
+    head, fail = "Traceback (most recent call last):", "ValueError: planted failure"
+    trace = "\n".join([head, frame("C:/x/frame_outer.py", 3, "run", "outer_line()"),
+                       frame("C:/x/frame_inner.py", 9, "step", "inner_line()"), fail])
+    library_below = "\n".join([head, frame("C:/r/.claude/hooks/own_frame.py", 3, "run", "x()"),
+                               frame("C:/Python/Lib/json/decoder.py", 361, "raw_decode", "raise"), fail])
+    _, out, err = run_chain([member("workflow_script_lf_guard", code=1, err=trace)])
+    note = out.get("additionalContext", "")
+    check("a member fault reaches the model as its exception and innermost frame, not the whole traceback",
+          "ValueError: planted failure" in note and "frame_inner.py" in note and "outer_line" not in note
+          and "frame_outer.py" not in note and "workflow_script_lf_guard" in note, note)
+    check("the whole traceback stays on stderr for the user's debug log", "frame_outer.py" in err, err)
+    _, out, _ = run_chain([member("workflow_script_lf_guard", code=1, err=library_below)])
+    note = out.get("additionalContext", "")
+    check("the frame shown is the innermost one in this harness, not a library frame below it",
+          "own_frame.py" in note and "decoder.py" not in note, note)
+    _, out, _ = run_chain([member("workflow_provider_guard", code=1, err=trace)])
+    reason = out.get("permissionDecisionReason", "")
+    check("a fail-closed deny carries the same short fault, not the traceback",
+          out.get("permissionDecision") == "deny" and "ValueError: planted failure" in reason
+          and "frame_inner.py" in reason and "outer_line" not in reason, reason)
 
     stub = pwd._failed_import("workflow_provider_guard", ImportError("planted"))
     _, out, _ = run_chain([stub])
@@ -385,8 +417,8 @@ def in_process_cases():
           out.get("permissionDecision") is None and "workflow_script_lf_guard" in out.get("additionalContext", ""), out)
 
     names = [getattr(m, "__name__", "") for m, _ in pwd.HOOKS]
-    check("the six Workflow|Agent members are wired, the args-file expander first and the marker arm last",
-          names == ["expand_args_file", "subagent_dispatch_guard", "workflow_script_lf_guard",
+    check("the seven Workflow|Agent members are wired, the args-file expander first and the marker arm last",
+          names == ["expand_args_file", "fill_efforts", "subagent_dispatch_guard", "workflow_script_lf_guard",
                     "dispatch_mechanism_guard", "workflow_provider_guard", "readonly_marker_arm"], names)
 
 
@@ -418,6 +450,14 @@ def args_file_cases():
     check("argsFile: a valid file expands to its JSON object",
           got and (got.get("updatedInput") or {}).get("args") == {"agents": [{"key": "seat-a", "tier": "fanout"}]},
           got)
+    checkout = Path(tempfile.mkdtemp(prefix="pwd_checkout_"))
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    (checkout / ".claude" / "scratch" / "run").mkdir(parents=True)
+    (checkout / ".claude" / "scratch" / "run" / "args.json").write_text(json.dumps({"agents": []}), encoding="utf-8")
+    (checkout / "sub" / "dir").mkdir(parents=True)
+    got = expands(".claude/scratch/run/args.json", checkout / "sub" / "dir")
+    check("argsFile: a session whose shell sits in a subdirectory resolves against its checkout",
+          got and (got.get("updatedInput") or {}).get("args") == {"agents": []}, got)
     check("argsFile: a call with no argsFile is untouched", pwd.expand_args_file(payload({"agents": []})) is None)
     check("argsFile: a JSON-string args carrying only argsFile expands the same way",
           (pwd.expand_args_file({"tool_name": "Workflow", "cwd": str(root),

@@ -10,6 +10,8 @@ sourced file is not read by this hook. The shared launcher calls `--launcher <pa
 for that path, using these same checks and dispatch_table.sidecar_entries. Successful hook checks
 leave receipts for the observed children (step 2); the launcher consumes them and runs the checks they
 do not cover. Receipts share the table's count and age bounds.
+A session dispatches through `sidecar_fanout.py`; the direct-launch branch serves the launcher's own gate
+and unattended callers.
 The PREFLIGHT and DOCTRINE gates use that reader, never the APPROVAL
 recognizer: a gate keyed on the narrow recognizer fails open for every shape it does not recognize.
 
@@ -30,8 +32,7 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
    budget-band, provider-capacity, balance, and pricing refusals remain owned by the launchers.
    A direct launch whose `-R` or `-l` value comes from a shell variable is denied: tracking
    reads those values from the command text (`reference/sidecar_dispatch.md` Procedure step 5).
-2. DOCTRINE (deny). A launch while the orchestration skill, a governing skill its brief or
-   artifacts name (`skill_dispatch_gate.required_skills`) or the model ladder is not in this
+2. DOCTRINE (deny). A launch while the orchestration skill or the model ladder is not in this
    context (a compaction clears them) is denied with each document's load route
    (`model_ladder_gate.doctrine_check`): the full Read, or `model_registry.py for-role <tier>` for
    the tiers the launch's `-G <kind>` rows imply; a deny for another reason carries the same routes. Fan-out
@@ -51,7 +52,9 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
    visible prompt for every launch it matches, including shapes this hook does not validate; whether this hook's own `ask` surfaces
    under auto mode is unmeasured.
    The wide launch reader never authorizes that ask; shell compounds and extra grants fall through.
-4. CONTEXT. The hook adds `additionalContext` only to report that the doctrine gate could not read its state.
+4. CONTEXT. The hook adds `additionalContext` only in two cases: to report that the doctrine gate could not
+   read its state, and to name the jobs-file route (`sidecar_fanout.py`) on an admitted session direct launch of a
+   registered launcher. The advisory never denies; unattended callers reach `launcher_launch`, not this branch.
    The recipe, the long-context rule, the size line, the plan rooms and the watch route reach the session
    before the call: `reference/sidecar_dispatch.md`, `/delegate`, the `[budget-posture]` line and
    `model_registry.py for-role <tier>`.
@@ -108,7 +111,7 @@ PEAK_EXIT = 11           # lib/sidecar_common.sh: peak pricing window on a peakP
 ENDPOINT_DOWN_EXIT = 16  # the row's endpoint is unavailable right now (live probe no answer, 429 or 5xx); nothing ran; no override
 SAFE_JOB_FIELDS = frozenset({
     "label", "alias", "rows", "promptFile", "effort", "kind", "tier", "armDisclosure",
-    "contextFiles", "schemaFile", "workdir", "transport", "plan",
+    "contextFiles", "schemaFile", "workdir", "transport", "plan", "pick", "spec",
 })
 REQUIRED_JOB_FIELDS = frozenset({"label", "promptFile", "kind"})  # and `alias` or `rows`, per `_listed_rows`
 # Auto-approval rungs. `ultra` stays out on purpose: a job at it falls to owner approval.
@@ -583,15 +586,18 @@ def with_written_tiers(jobs, written):
     return [(*job[:4], written[job[0]]) if job[0] in written else tuple(job[:4]) for job in jobs]
 
 
-def dispatch_checks(jobs):
+def dispatch_checks(jobs, transcript=None, notes=None):
     """The refusal for a job whose written `tier` (a fifth field, `with_written_tiers`), else its kind row,
-    implies a tier its alias's row does not serve, else None. A job of four fields or five checks alike."""
+    implies a tier its alias's row does not serve, else None. A job of four fields or five checks alike.
+    A row the owner names in `transcript` (a path, or a function returning one) fits, and its `owner-named` line
+    is appended to `notes`."""
     if _dispatch_checks is None or model_registry is None or not jobs:
         return None
     try:
         data = model_registry.load()
     except Exception:
         return None
+    owner = _dispatch_checks.OwnerTexts(transcript)
     unfit = []
     for label, alias, kind, _plan, *written in jobs:
         try:
@@ -600,7 +606,7 @@ def dispatch_checks(jobs):
             continue
         try:
             tier, source = _dispatch_checks.job_tier(kind, written[0] if written else None)
-            why = _dispatch_checks.tier_fit(alias, tier, row["transport"], data)
+            why = _dispatch_checks.tier_fit(alias, tier, row["transport"], data, owner_texts=owner, notes=notes)
         except ValueError as err:
             why, source = str(err), None
         except Exception:
@@ -616,9 +622,21 @@ def dispatch_checks(jobs):
 
 
 CHECKS_KEY = "sidecar_launch_checks"
-TRACKING_REASON = ("Launch with literal -R and -l values, one call per job, or put the jobs "
-                   "in a jobs file for python3 .claude/tools/sidecar_fanout.py "
-                   "(reference/sidecar_dispatch.md Procedure step 5).")
+TRACKING_REASON = ("Launch with literal -R and -l values; a session puts its launches in a jobs file for "
+                   "python3 .claude/tools/sidecar_fanout.py (reference/sidecar_dispatch.md Procedure step 5).")
+SESSION_LAUNCH_ADVISORY = ("Session dispatch runs through the fan-out: put this launch in a jobs file as a one-element "
+                           "list and run `python3 .claude/tools/sidecar_fanout.py <jobs.json> --detach` "
+                           "(reference/sidecar_dispatch.md).")
+
+
+def registered_launcher(path):
+    """True when a registry transport names `path` as its launcher."""
+    if model_registry is None:
+        return False
+    try:
+        return bool(model_registry.transports_for_launcher(path))
+    except Exception:
+        return False
 
 
 def checked_job(job):
@@ -814,7 +832,11 @@ def launcher_launch(launcher, argv):
         checked_direct = direct._replace(args=["-m", default, *argv])
     jobs = launch_jobs(checked_direct, None, root)
     checked, preflight = take_checks(payload, entries[0], jobs[0], flags) if entries and jobs else (False, False)
-    refusal = None if checked else dispatch_checks(with_written_tiers(jobs, written_tiers(checked_direct, None, root)))
+    owner_named = []
+    refusal = None if checked else dispatch_checks(with_written_tiers(jobs, written_tiers(checked_direct, None, root)),
+                                                   transcript=payload["transcript_path"], notes=owner_named)
+    for line in owner_named:
+        print(line, file=sys.stderr)
     if (refusal is None and not checked and payload["session_id"]
             and not fanout_admitted(payload["session_id"], flags.get("R"))):
         refusal, fault = model_ladder_gate.doctrine_check(
@@ -862,7 +884,7 @@ def fanout_doctrine_refusal(fanout_args, root):
     return refusal
 
 
-def fanout_fit_refusal(fanout_args, root):
+def fanout_fit_refusal(fanout_args, root, notes=None):
     """`dispatch_checks` over the fan-out call's jobs, fold authors included, else None: the tier-fit deny this hook
     cannot make for a jobs file the same call writes. `sidecar_fanout.py` calls it in its own call, before it spawns or
     detaches anything, so a pin the launcher would refuse reaches the caller and not a detached child's `.err`. A job
@@ -872,10 +894,12 @@ def fanout_fit_refusal(fanout_args, root):
     contracts = fanout_contract(fanout, root)
     held = _receipted_fanout_jobs()
     unchecked = {(tuple(c["job"][:3]), c["directory"]) for c in contracts} - held
+    import dispatch_table as table
     return dispatch_checks(
         with_written_tiers([job for job in launch_jobs(None, fanout, root, contracts)
                             if any(key[0] == tuple(job[:3]) for key in unchecked)],
-                           written_tiers(None, fanout, root, contracts)))
+                           written_tiers(None, fanout, root, contracts)),
+        transcript=lambda: table._transcript(tracking_session()), notes=notes)
 
 
 def _receipted_fanout_jobs():
@@ -929,8 +953,10 @@ def main():
         if _variable_tracking_value(cmd, direct.args, root):
             deny(TRACKING_REASON)
             return
+    owner_named = []
     fit_refusal = dispatch_checks(with_written_tiers(launch_jobs(direct, fanout, root, contracts),
-                                                     written_tiers(direct, fanout, root, contracts)))
+                                                     written_tiers(direct, fanout, root, contracts)),
+                                  transcript=data.get("transcript_path"), notes=owner_named)
     if fit_refusal:
         deny(fit_refusal)
         return
@@ -978,8 +1004,11 @@ def main():
                     % (os.path.basename(direct.path), flags["m"], approval_root, flags["f"])
                 )
 
-    if doctrine_fault:
-        output["additionalContext"] = doctrine_fault
+    context = [line for line in (doctrine_fault, *owner_named) if line]
+    if direct and registered_launcher(direct.path):
+        context.append(SESSION_LAUNCH_ADVISORY)
+    if context:
+        output["additionalContext"] = "\n".join(context)
 
     if len(output) > 1:
         sys.stdout.write(json.dumps({"hookSpecificOutput": output}))

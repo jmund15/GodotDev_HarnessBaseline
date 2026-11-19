@@ -10,6 +10,7 @@ before any worktree exists. Every case runs the CLI against a real git repositor
     python3 .claude/tests/test_delegate_prepare.py
 """
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -22,10 +23,13 @@ TOOL = TOOLS / "lens_briefs.py"
 sys.path.insert(0, str(TOOLS))
 import model_registry  # noqa: E402
 
-# One live executor row and one effort rung it names, so a roster change never breaks the proof.
-_ROW = next(m for m in model_registry.load()["models"] if m.get("alias") and "executor" in (m.get("roles") or []))
-ALIAS = _ROW["alias"]
-EFFORT = next(iter(_ROW["effort"]["byShape"].values()))
+# A planted registry and ladder (copies of the live files, written under each case's temp root and named by
+# HARNESS_MODEL_REGISTRY), with one fixed alias and the rung the proof pins. No registry row carries an effort
+# block of its own: the ladder is the only source.
+ALIAS = "sonnet"
+EFFORT = "medium"
+LIVE_REGISTRY = model_registry.find_registry()
+LIVE_LADDER = model_registry.ladder_path()
 
 
 def git(cwd, *args, check=True):
@@ -48,8 +52,18 @@ class Delegate(unittest.TestCase):
         self.brief = self.tmp / "brief_a.md"
         self.brief.write_text("do the thing\n", encoding="utf-8")
         self.out = self.tmp / "run"
+        reference = self.tmp / "planted" / ".claude" / "reference"
+        reference.mkdir(parents=True)
+        (reference / LIVE_REGISTRY.name).write_bytes(LIVE_REGISTRY.read_bytes())
+        (reference / LIVE_LADDER.name).write_bytes(LIVE_LADDER.read_bytes())
+        self.env_before = os.environ.get("HARNESS_MODEL_REGISTRY")
+        os.environ["HARNESS_MODEL_REGISTRY"] = str(reference / LIVE_REGISTRY.name)
 
     def tearDown(self):
+        if self.env_before is None:
+            os.environ.pop("HARNESS_MODEL_REGISTRY", None)
+        else:
+            os.environ["HARNESS_MODEL_REGISTRY"] = self.env_before
         for line in git(self.root, "worktree", "list", "--porcelain", check=False).splitlines():
             if line.startswith("worktree ") and Path(line[9:]).resolve() != self.root.resolve():
                 git(self.root, "worktree", "remove", "--force", line[9:], check=False)

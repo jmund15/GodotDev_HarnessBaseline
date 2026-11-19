@@ -97,6 +97,10 @@ REGISTRIES = registries(_PREFIXES)
 TEMPLATES_RE = re.compile(r"^## (Agent|Lens) Templates\b")
 STRAY_RE = re.compile(r"^### ([a-z0-9][a-z0-9-]*)(?:\s|$)")
 
+# The reading a seat's effort is computed from (`model_registry.pin_effort`): a registry's lenses read as a plan or
+# design review unless a lens's header says `reading: checklist`.
+REGISTRY_READING = "review"
+
 REGISTRY_TIERS = {
     "review": "executor",
     "session_audit": "executor",
@@ -120,6 +124,7 @@ PURPOSE_CAP = 96
 PRELOAD_RE = re.compile(r"^preload:\s*(\S+)\s*$")
 MANDATES_RE = re.compile(r"^mandates:\s*(.+?)\s*$")
 TIER_RE = re.compile(r"^tier:\s*(\S+)\s*$")
+READING_RE = re.compile(r"^reading:\s*(\S+)\s*$")
 KFM_RE = re.compile(r"^kfm:\s*index\s*$")
 CITERS_RE = re.compile(r"^citers:\s*plan\s*$")
 ADMISSION_RE = re.compile(r"^admission:\s*(.+?)\s*$")
@@ -150,6 +155,11 @@ class Lens:
     def tier(self) -> str:
         found = (TIER_RE.match(line) for line in self.lines[:self._header_len()])
         return next((m.group(1) for m in found if m), REGISTRY_TIERS[self.registry])
+
+    @property
+    def reading(self) -> str:
+        found = (READING_RE.match(line) for line in self.lines[:self._header_len()])
+        return next((m.group(1) for m in found if m), REGISTRY_READING)
 
     def _header_len(self) -> int:
         """Lines before the first fence: the block where `preload:` declarations live."""
@@ -186,7 +196,7 @@ class Lens:
     def body(self) -> str:
         cut = self._header_len()
         kept = [l for l in self.lines[:cut] if not (PRELOAD_RE.match(l) or MANDATES_RE.match(l) or KFM_RE.match(l)
-                                                   or CITERS_RE.match(l) or TIER_RE.match(l)
+                                                   or CITERS_RE.match(l) or TIER_RE.match(l) or READING_RE.match(l)
                                                    or ADMISSION_RE.match(l))] + self.lines[cut:]
         return f"### {self.key} {self.descriptor}\n" + "".join(kept).rstrip() + "\n"
 
@@ -299,6 +309,24 @@ def registry_of(key: str) -> str | None:
     prefix (a registry whose headings share none) takes only the keys no other prefix claims."""
     ranked = sorted(REGISTRIES.items(), key=lambda item: -len(item[1][1]))
     return next((name for name, (_file, prefix) in ranked if key.startswith(prefix)), None)
+
+
+def seat_reading(key) -> str | None:
+    """The reading of a seat key: one lens's, or `a+b` lenses' (`checklist` only when every part reads so, else `review`).
+
+    None when the key is not a string or any part names no lens in its prefix's registry file, as `seat_tier`."""
+    if not isinstance(key, str) or not key.strip():
+        return None
+    readings = []
+    for part in key.split("+"):
+        reg = registry_of(part)
+        if reg is None or not (AGENTS / REGISTRIES[reg][0]).exists():
+            return None
+        found = next((l for l in parse(reg)[1] if l.key == part), None)
+        if found is None:
+            return None
+        readings.append(found.reading)
+    return "checklist" if all(r == "checklist" for r in readings) else "review"
 
 
 def seat_tier(key) -> str | None:
