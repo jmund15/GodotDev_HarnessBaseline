@@ -34,6 +34,7 @@ git = subprocess.run(["git", "config", "--global", "--list"], capture_output=Tru
 out["global_git"] = git.stdout
 out["fscache"] = subprocess.run(["git", "config", "--get", "core.fscache"], capture_output=True, text=True).stdout.strip()
 out["autocrlf"] = subprocess.run(["git", "config", "--get", "core.autocrlf"], capture_output=True, text=True).stdout.strip()
+out["maint"] = subprocess.run(["git", "config", "--get", "maintenance.auto"], capture_output=True, text=True).stdout.strip()
 print("PROBE" + json.dumps(out))
 '''
 
@@ -104,6 +105,7 @@ def main():
     if os.name == "nt":
         check("git keeps its file-system cache on Windows", on["fscache"] == "true", on["fscache"])
     check("no system behaviour setting reaches git", on["autocrlf"] == "", on["autocrlf"])
+    check("fixture repositories run no background maintenance", on["maint"] == "false", on["maint"])
     # CLAUDE_CODE_EXECPATH is the installed binary's location, set only where this machine has one.
     check("only the declared CLAUDE_* names stay",
           set(on["claude_names"]) <= {"CLAUDE_PROJECT_DIR", "CLAUDE_CODE_EXECPATH"}

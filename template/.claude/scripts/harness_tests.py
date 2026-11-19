@@ -714,12 +714,18 @@ def run_proof(path, timeout=None, root=None, *, behavior_cases=None, receipt_sin
     env.update({name: home for name in _RUNNER_HOME_ENV})
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
+    # A fixture repository never runs git's detached auto-maintenance: it rewrites `.git` (a `maintenance.lock`,
+    # a repack) while the proof copies or reads that tree, and the copy fails on a file that vanished.
+    config = [("maintenance.auto", "false"), ("gc.auto", "0")]
     if os.name == "nt":
         # Git for Windows' system config also holds core.fscache, a speed-only cache; without it a git call runs
         # about four times slower than the runner's own git, so it alone comes back as command-scope config.
-        count = int(env.get("GIT_CONFIG_COUNT") or 0)
-        env.update({"GIT_CONFIG_COUNT": str(count + 1), "GIT_CONFIG_KEY_%d" % count: "core.fscache",
-                    "GIT_CONFIG_VALUE_%d" % count: "true"})
+        config.append(("core.fscache", "true"))
+    count = int(env.get("GIT_CONFIG_COUNT") or 0)
+    for key, value in config:
+        env.update({"GIT_CONFIG_KEY_%d" % count: key, "GIT_CONFIG_VALUE_%d" % count: value})
+        count += 1
+    env["GIT_CONFIG_COUNT"] = str(count)
     for name in [k for k in env if k.startswith("CLAUDE_") and k not in _RUNNER_CLAUDE_DECLARED]:
         del env[name]
     # The installed Claude Code binary is a tool, found by the caller's own home before this one replaces it, so
