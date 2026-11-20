@@ -39,6 +39,7 @@ import baseline_sync as sync  # noqa: E402
 import baseline_identity  # noqa: E402
 import autolearn_outcomes  # noqa: E402
 import harness_tests as runner  # noqa: E402
+import baseline_linux_preview as linux_preview  # noqa: E402
 import machine_slots  # noqa: E402
 
 STEP_NAMES = (
@@ -957,6 +958,31 @@ def _consumer_label_for(root: Path) -> str:
     return baseline_identity._consumer_label(lock.get("baseline_repo") or "", root.name)
 
 
+def _lane_line(lane: dict) -> str:
+    counts = lane.get("counts")
+    tally = ("%d pass, %d fail, %d not run" % (counts["pass"], counts["fail"], counts["cannot_run"])
+             if counts else "no battery summary")
+    return "%s: %s, %ds" % (lane["lane"], tally, lane["seconds"])
+
+
+def _linux_lanes(worktree: Path) -> str:
+    """Run the baseline's Linux lanes in WSL on the publish commit, limited to the proofs bound to the paths it
+    changes: the red a Linux-only defect gives, in minutes; CI runs every lane's whole battery after the push.
+    Returns the evidence; raises PublishError on a red lane or a preview that gave no verdict, so the push never
+    happens."""
+    rc, result = linux_preview.preview(worktree, paths=linux_preview.changed_paths(worktree))
+    if rc == 4:
+        return "linux lanes: skipped (%s)" % result["reason"]
+    if rc == 0:
+        return "linux lanes: green; " + "; ".join(_lane_line(lane) for lane in result["lanes"])
+    if rc == 1:
+        reds = [lane for lane in result["lanes"] if lane["status"] == "red"]
+        named = "; ".join("%s: steps %s, proofs %s" % (lane["lane"], ", ".join(lane["failed_steps"]) or "none",
+                                                      ", ".join(lane["failed_proofs"]) or "none") for lane in reds)
+        raise PublishError("linux lanes red: %s; log %s" % (named, result["log"]))
+    raise PublishError("linux lanes gave no verdict (exit %d); log %s" % (rc, (result or {}).get("log", "none")))
+
+
 def _open_pr(worktree: Path, journal: dict, journal_path: Path, root: Path,
              branch: str, journal_id: str, profile: dict) -> str:
     """Commit the publication, push `branch` and open its PR (or find the one already open); records `pr_url`."""
@@ -978,6 +1004,8 @@ def _open_pr(worktree: Path, journal: dict, journal_path: Path, root: Path,
 
     pr_url = journal.get("pr_url")
     if not pr_url:
+        journal["linux_lanes"] = _linux_lanes(worktree)
+        _write_json_atomic(journal_path, journal)
         _git(worktree, ["push", "-q", "-f", "origin", f"HEAD:refs/heads/{branch}"])
         body_path = _journal_dir(root) / f"{journal_id}.pr.md"
         lock = sync.load_lock(root)
@@ -1335,6 +1363,7 @@ def _steps_from_index(journal: dict, journal_path: Path, root: Path, lock: dict,
     _step(journal, journal_path, 7, lambda: _check(root, sync.load_lock(root), records, baseline_cache, after, source))
     journal["finished_at"] = _now()
     _write_json_atomic(journal_path, journal)
+    _release_worktree(root, worktree, branch)
 
 
 def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = False,
@@ -1347,6 +1376,8 @@ def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = 
     journal = _load_journal_file(journal_path)
     if journal is None:
         raise PublishError(f"unreadable publication journal {resume_id}")
+    if journal.get("abandoned_at"):
+        raise PublishError(f"publication {resume_id} was abandoned; run a fresh publish")
     upgraded = bool(full_battery and not journal.get("full_battery"))
     if upgraded and (_journal_complete(journal) or journal["steps"][5].get("status") == "green"):
         raise PublishError(f"{resume_id} is already published; --full-battery upgrades only an "
@@ -1437,6 +1468,51 @@ def _resume(root: Path, resume_id: str, accept_hits: list[str], dry_run: bool = 
                        bool(journal.get("no_ci")), bool(journal.get("full_battery")),
                        bool(dry_run), start, open_only)
     return journal
+
+
+def _release_worktree(root: Path, worktree: Path, branch: str | None) -> None:
+    """Remove a publication's worktree, its registration in the cache clone and its local branch. Only a journal
+    in a terminal state (complete or abandoned) calls this: `--resume` of a live one needs the worktree."""
+    cache = root / sync.CACHE_CLONE
+    if cache.is_dir():
+        _git(cache, ["worktree", "remove", "--force", str(worktree)], check=False)
+    if worktree.exists():
+        _remove_dir(worktree)
+    if cache.is_dir():
+        _git(cache, ["worktree", "prune"], check=False)
+        if branch:
+            _git(cache, ["branch", "-D", branch], check=False)
+
+
+def abandon(root: Path, journal_id: str) -> None:
+    """End a publication that will not be resumed: record `abandoned_at` and release its worktree."""
+    path = _journal_path(Path(root).resolve(), journal_id)
+    journal = _load_journal_file(path)
+    if journal is None:
+        raise PublishError(f"unreadable publication journal {journal_id}")
+    journal["abandoned_at"] = journal.get("abandoned_at") or _now()
+    _write_json_atomic(path, journal)
+    kept = journal.get("worktree") or {}
+    _release_worktree(Path(root).resolve(), Path(kept.get("path") or _journal_dir(Path(root).resolve()) / (journal_id + "-worktree")),
+                      kept.get("branch"))
+
+
+def sweep_worktrees(root: Path) -> list[str]:
+    """Remove every publication worktree whose journal is complete, abandoned or missing, and return their names.
+    A journal that exists and is neither keeps its worktree: `--resume` needs it."""
+    root = Path(root).resolve()
+    directory = _journal_dir(root)
+    removed = []
+    for worktree in sorted(directory.glob("*-worktree")) if directory.is_dir() else []:
+        journal_id = worktree.name[: -len("-worktree")]
+        journal_path = _journal_path(root, journal_id)
+        if journal_path.exists():
+            journal = _load_journal_file(journal_path)
+            if journal is None or not (_journal_complete(journal) or journal.get("abandoned_at")):
+                continue
+        _release_worktree(root, worktree, "publish/" + journal_id)
+        removed.append(worktree.name)
+    return removed
 
 
 def _remove_dir(path: Path) -> None:
@@ -1567,6 +1643,7 @@ def run(root, source: dict | None, rows: list[str] | None, accept_hits: list[str
             )
         journal["supersedes"] = existing["id"]
         _write_json_atomic(journal_path, journal)
+        abandon(root, existing["id"])
 
     _step(journal, journal_path, 1, lambda: _classify(source, lock))
 
@@ -1595,11 +1672,27 @@ def main(argv=None) -> int:
     parser.add_argument("--no-ci", action="store_true")
     parser.add_argument("--full-battery", action="store_true")
     parser.add_argument("--resume")
+    parser.add_argument("--abandon", metavar="ID", help="end a publication that will not be resumed and remove its worktree")
+    parser.add_argument("--sweep", action="store_true",
+                        help="remove the worktree of every complete, abandoned or journal-less publication")
     parser.add_argument("--open-only", action="store_true")
     parser.add_argument("--over-upstream", action="append", default=[], metavar="RELPATH",
                         help="publish this row over the baseline copy that changed since its base; recorded on the row")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
+    if args.sweep or args.abandon:
+        if args.from_commit or args.from_worktree or args.resume or args.rows or (args.sweep and args.abandon):
+            parser.error("--sweep and --abandon take no source, rows or --resume, and not together")
+        try:
+            if args.abandon:
+                abandon(root, args.abandon)
+                print("abandoned " + args.abandon)
+            else:
+                print("swept %d worktree(s)" % len(sweep_worktrees(root)))
+        except PublishError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.resume:
         if args.from_commit or args.from_worktree or args.rows or args.no_ci or args.over_upstream:
             parser.error("--resume takes its source, rows, --no-ci and --over-upstream from the journal and the lock")

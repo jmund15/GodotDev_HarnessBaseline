@@ -11,6 +11,7 @@ so a run on any day proves the bump.
 """
 import datetime
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -327,7 +328,7 @@ def run(p, *args, archive_name="Worklog-Archive.md"):
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
 
 
-def run_add(p, *args, skill=None):
+def run_add(p, *args, skill=None, session=None):
     skill = str(p / "SKILL.md") if skill is None else skill
     cmd = [sys.executable, str(TOOL), "add", *args,
            "--skill", skill,
@@ -335,7 +336,11 @@ def run_add(p, *args, skill=None):
            "--archive", str(p / "Worklog-Archive.md"),
            "--mirror", str(p / "worklog-titles.md"),
            "--history", str(p / "history.jsonl")]
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+    env = dict(os.environ)
+    env.pop("CLAUDE_CODE_SESSION_ID", None)
+    if session:
+        env["CLAUDE_CODE_SESSION_ID"] = session
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env)
 
 
 def snapshot(p):
@@ -765,6 +770,65 @@ def is_domain_row(row):
     cell = row.split("|")[1].strip()
     return cell not in ("", "Long form (Active section header)") and set(cell) - set("-: ")
 
+
+# ================================ session record ================================
+SID_A, SID_B = "probe-session-a", "probe-session-b"
+
+# --- add without --source records the runtime session on the block, after Context ---
+T6 = "Probe the session record"
+p = stage(tempfile.mkdtemp(prefix="wl_add_sess_"), worklog=W4, mirror=M4)
+r = run_add(p, T6, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "session context",
+            "--date", TODAY, session=SID_A)
+check("session: add rc=0", r.returncode == 0, r.stderr[-400:])
+wl = read(p, "Worklog.md")
+check("session: block records the runtime session after Context",
+      ("### Alpha\n- [ ] **%s** — `chore` · scope `1` · added %s\n  - Context: session context\n"
+       "  - Session: %s\n") % (T6, TODAY, SID_A) in wl, wl[:900])
+
+# --- a --source PR ref stays, and the session is recorded on its own line ---
+T7 = "Probe a source ref item"
+p = stage(tempfile.mkdtemp(prefix="wl_add_sess_pr_"), worklog=W4, mirror=M4)
+r = run_add(p, T7, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "ctx",
+            "--date", TODAY, "--source", "PR #42", session=SID_A)
+wl = read(p, "Worklog.md")
+check("session: PR ref source stays and the session is recorded too",
+      "  - Source: PR #42\n  - Session: %s\n" % SID_A in wl, wl[:900])
+
+# --- a --source that already is the runtime session is the record: no second line ---
+T8 = "Probe a session source item"
+p = stage(tempfile.mkdtemp(prefix="wl_add_sess_src_"), worklog=W4, mirror=M4)
+r = run_add(p, T8, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "ctx",
+            "--date", TODAY, "--source", SID_A, session=SID_A)
+wl = read(p, "Worklog.md")
+check("session: source naming the runtime session adds no Session line",
+      "  - Source: %s\n" % SID_A in wl and "  - Session:" not in wl, wl[:900])
+
+# --- FSLINE records the session as a trailing tag, parenthetical unchanged ---
+T9 = "Probe a future session item"
+p = stage(tempfile.mkdtemp(prefix="wl_add_sess_fs_"), worklog=W4, mirror=M4)
+r = run_add(p, T9, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "a probe future item",
+            "--date", TODAY, "--when", "future", session=SID_A)
+wl = read(p, "Worklog.md")
+check("session: FSLINE carries the session tag",
+      "> - `chore` · scope `1` · %s (added %s; a probe future item) · session %s\n" % (T9, TODAY, SID_A) in wl,
+      wl[-900:])
+
+# --- the close's read: exactly the two items session A added, none of session B's or the untagged one ---
+p = stage(tempfile.mkdtemp(prefix="wl_session_read_"), worklog=W4, mirror=M4)
+run_add(p, "Tighten the alpha seam", "--class", "chore", "--scope", "1", "--domain", "Alpha",
+        "--context", "active context", "--date", TODAY, session=SID_A)
+run_add(p, "Plan epsilon migration", "--class", "design", "--scope", "2", "--domain", "Alpha",
+        "--context", "future context", "--date", TODAY, "--when", "future", session=SID_A)
+run_add(p, "Rename the beta probe", "--class", "chore", "--scope", "1", "--domain", "Alpha",
+        "--context", "other context", "--date", TODAY, session=SID_B)
+run_add(p, "Measure gamma latency", "--class", "chore", "--scope", "1", "--domain", "Alpha",
+        "--context", "untagged context", "--date", TODAY)
+wl = read(p, "Worklog.md")
+got = tool.session_additions(wl, SID_A)
+check("session read: lists exactly the two items session A added, in document order",
+      got == [("Tighten the alpha seam", "active context"), ("Plan epsilon migration", "future context")], got)
+check("session read: session B's read lists only its own item",
+      tool.session_additions(wl, SID_B) == [("Rename the beta probe", "other context")])
 
 p = pathlib.Path(tempfile.mkdtemp(prefix="wl_canon_"))
 (p / "SKILL.md").write_text(SKILL_PLANT, encoding="utf-8")

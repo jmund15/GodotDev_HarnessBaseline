@@ -1641,6 +1641,80 @@ def test_a_publish_that_reaches_upstream_clears_the_decline() -> None:
         assert "declined" not in lock["files"][rel], lock["files"][rel]
 
 
+def _registered_worktrees(root: Path) -> set[str]:
+    listed = _git(root / ".claude" / ".cache" / "baseline-repo", "worktree", "list", "--porcelain").decode()
+    return {Path(line[len("worktree "):]).name for line in listed.splitlines() if line.startswith("worktree ")}
+
+
+def _dry_run_journal(publish, root: Path, rel: str, env: dict):
+    commit = _git(root, "rev-parse", "HEAD").decode().strip()
+    with _patched_env(env):
+        return publish.run(root, {"kind": "commit", "repo": str(root), "commit": commit}, [rel], [], True, True, None)
+
+
+def test_a_finished_publish_removes_its_worktree_and_a_dry_run_keeps_it() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        dry = _dry_run_journal(publish, root, rel, env)
+        worktree = Path(dry["worktree"]["path"])
+        assert worktree.exists() and worktree.name in _registered_worktrees(root)
+        with _patched_env(env):
+            done = _load_publish().run(root, None, None, [], False, False, dry["id"])
+        assert all(s["status"] == "green" for s in done["steps"]), done["steps"]
+        assert not worktree.exists(), "a finished publish left its worktree"
+        assert worktree.name not in _registered_worktrees(root)
+
+
+def test_sweep_removes_terminal_and_journalless_worktrees_and_keeps_a_live_one() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        publish = _load_publish()
+        live = _dry_run_journal(publish, root, rel, _install_fake_gh(path))
+        cache = root / ".claude" / ".cache" / "baseline-repo"
+        journals = root / ".claude" / ".cache" / "baseline-publish"
+        planted = {}
+        for name in ("20260101T000000Z-aaaaaaaa", "20260101T000001Z-bbbbbbbb", "20260101T000002Z-cccccccc"):
+            worktree = journals / (name + "-worktree")
+            _git(cache, "worktree", "add", "-q", "-b", "publish/" + name, str(worktree), baseline_commit)
+            planted[name] = worktree
+        done = {"id": "20260101T000000Z-aaaaaaaa", "steps": [{"status": "green"}] * 8}
+        abandoned = {"id": "20260101T000001Z-bbbbbbbb", "abandoned_at": "2026-01-02T00:00:00Z",
+                     "steps": [{"status": "red"}] * 8}
+        for record in (done, abandoned):
+            publish._write_json_atomic(journals / (record["id"] + ".json"), record)
+        removed = publish.sweep_worktrees(root)
+        assert sorted(removed) == sorted(p.name for p in planted.values()), removed
+        assert not any(p.exists() for p in planted.values())
+        assert not (_registered_worktrees(root) & {p.name for p in planted.values()})
+        assert Path(live["worktree"]["path"]).exists(), "a live journal's worktree was swept"
+        assert publish.sweep_worktrees(root) == []
+
+
+def test_abandon_releases_the_worktree_and_resume_refuses_the_journal() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        dry = _dry_run_journal(publish, root, rel, env)
+        worktree = Path(dry["worktree"]["path"])
+        publish.abandon(root, dry["id"])
+        assert not worktree.exists()
+        record = json.loads((root / ".claude" / ".cache" / "baseline-publish" / (dry["id"] + ".json")).read_text())
+        assert record["abandoned_at"]
+        try:
+            with _patched_env(env):
+                publish.run(root, None, None, [], False, False, dry["id"])
+        except publish.PublishError as exc:
+            assert dry["id"] in str(exc)
+        else:
+            raise AssertionError("resume took an abandoned journal")
+
+
 def test_resume_redoes_steps_after_deleted_worktree() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
@@ -1660,7 +1734,7 @@ def test_resume_redoes_steps_after_deleted_worktree() -> None:
         with _patched_env(env):
             resumed = publish2.run(root, None, None, [], False, False, journal["id"])
         assert all(s["status"] == "green" for s in resumed["steps"]), resumed["steps"]
-        assert Path(resumed["worktree"]["path"]).exists()
+        assert not Path(resumed["worktree"]["path"]).exists()
         for index in (2, 3, 4):
             kept = resumed["steps"][index].get("attempts", [])
             assert len(kept) == 1 and kept[0]["status"] == "green", (index, resumed["steps"][index])
@@ -2780,6 +2854,150 @@ def test_classify_lists_exactly_what_the_candidates_command_lists():
 PARTS = 2
 
 
+RED_PREVIEW = {"status": "red", "log": "linux.log", "lanes": [
+    {"lane": "pure", "status": "red", "seconds": 40, "failed_steps": ["baseline-repo-root proofs"],
+     "failed_proofs": ["tests/test_sync_guard.py"], "counts": None},
+    {"lane": "template", "status": "green", "seconds": 900, "failed_steps": [], "failed_proofs": [], "counts": None},
+]}
+GREEN_PREVIEW = {"status": "green", "log": "linux.log", "lanes": [
+    {"lane": "pure", "status": "green", "seconds": 40, "failed_steps": [], "failed_proofs": [],
+     "counts": {"run": 12, "pass": 11, "fail": 0, "cannot_run": 1}},
+]}
+
+
+def _stub_linux_preview(publish, rc: int, result: dict):
+    """Replace the WSL preview's verdict with a recorded one; returns the restore callable."""
+    module = publish.linux_preview
+    saved = module.preview
+
+    def recorded(worktree, only=None, paths=None):
+        module.seen = {"only": only, "paths": paths}
+        return rc, result
+
+    module.preview = recorded
+    return lambda: setattr(module, "preview", saved)
+
+
+def test_linux_lanes_red_refuses_and_names_each_failed_proof() -> None:
+    publish = _load_publish()
+    restore = _stub_linux_preview(publish, 1, RED_PREVIEW)
+    try:
+        with _fixture() as path:
+            try:
+                publish._linux_lanes(path)
+            except publish.PublishError as exc:
+                message = str(exc)
+            else:
+                raise AssertionError("a red Linux lane must refuse the push")
+    finally:
+        restore()
+    assert "tests/test_sync_guard.py" in message and "pure" in message, message
+
+
+def test_linux_lanes_prove_only_the_paths_the_publish_commit_changes() -> None:
+    publish = _load_publish()
+    restore = _stub_linux_preview(publish, 0, GREEN_PREVIEW)
+    try:
+        with _fixture() as path:
+            _git(path, "init", "-q", "-b", "main")
+            (path / "base.txt").write_text("1\n", encoding="utf-8")
+            _git(path, "add", "-A")
+            _git(path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base")
+            (path / "template").mkdir()
+            (path / "template" / "a.py").write_text("1\n", encoding="utf-8")
+            (path / "template" / "b.py").write_text("2\n", encoding="utf-8")
+            _git(path, "add", "-A")
+            _git(path, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "publish")
+            publish._linux_lanes(path)
+            seen = publish.linux_preview.seen
+    finally:
+        restore()
+    assert sorted(seen["paths"]) == ["template/a.py", "template/b.py"], seen
+
+
+def test_linux_lanes_green_returns_evidence_with_each_lane_count() -> None:
+    publish = _load_publish()
+    restore = _stub_linux_preview(publish, 0, GREEN_PREVIEW)
+    try:
+        with _fixture() as path:
+            evidence = publish._linux_lanes(path)
+    finally:
+        restore()
+    assert evidence.startswith("linux lanes: green"), evidence
+    assert "pure" in evidence and "1 not run" in evidence, evidence
+
+
+def test_linux_lanes_without_wsl_skips_with_its_reason() -> None:
+    publish = _load_publish()
+    restore = _stub_linux_preview(publish, 4, {"status": "unavailable", "reason": "no WSL (wsl.exe not found)",
+                                                "lanes": []})
+    try:
+        with _fixture() as path:
+            evidence = publish._linux_lanes(path)
+    finally:
+        restore()
+    assert evidence.startswith("linux lanes: skipped") and "no WSL" in evidence, evidence
+
+
+def test_linux_lanes_a_preview_with_no_verdict_refuses_the_push() -> None:
+    publish = _load_publish()
+    restore = _stub_linux_preview(publish, 3, {"status": "incomplete", "lanes": [], "log": "linux.log"})
+    try:
+        with _fixture() as path:
+            try:
+                publish._linux_lanes(path)
+            except publish.PublishError:
+                refused = True
+            else:
+                refused = False
+    finally:
+        restore()
+    assert refused, "a preview that gave no verdict must refuse the push, not pass as skipped"
+
+
+def test_linux_red_stops_the_push_and_no_publish_branch_reaches_the_remote() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        restore = _stub_linux_preview(publish, 1, RED_PREVIEW)
+        try:
+            with _patched_env(env):
+                try:
+                    publish.run(root, {"kind": "commit", "repo": str(root), "commit": source_commit},
+                                [rel], [], False, True, None)
+                except publish.PublishError as exc:
+                    message = str(exc)
+                else:
+                    raise AssertionError("a red Linux lane must stop the publish")
+        finally:
+            restore()
+        refs = _git(remote, "for-each-ref", "--format=%(refname)", "refs/heads/").decode().split()
+    assert "tests/test_sync_guard.py" in message, message
+    assert refs == ["refs/heads/main"], refs
+
+
+def test_linux_green_pushes_the_publish_branch_and_records_its_evidence() -> None:
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, _baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        source_commit = _git(root, "rev-parse", "HEAD").decode().strip()
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        restore = _stub_linux_preview(publish, 0, GREEN_PREVIEW)
+        try:
+            with _patched_env(env):
+                journal = publish.run(root, {"kind": "commit", "repo": str(root), "commit": source_commit},
+                                      [rel], [], False, True, None)
+        finally:
+            restore()
+        refs = _git(remote, "for-each-ref", "--format=%(refname)", "refs/heads/").decode().split()
+    assert _field(journal, "linux_lanes").startswith("linux lanes: green"), journal.get("linux_lanes")
+    assert any(ref.startswith("refs/heads/publish/") for ref in refs), refs
+
+
 def main(part: int = 1) -> int:
     for other in range(2, PARTS + 1):  # a deleted part file would silently drop its cases
         assert (Path(__file__).parent / ("test_baseline_publish_part%d.py" % other)).is_file(), "missing part %d" % other
@@ -2801,6 +3019,16 @@ def main(part: int = 1) -> int:
         test_validate_shares_slots_with_battery_and_times_each_task,
         test_validate_lists_two_red_checks_and_a_red_battery_in_one_error,
         test_a_full_mode_validate_spawns_no_linux_preview_child,
+        test_a_finished_publish_removes_its_worktree_and_a_dry_run_keeps_it,
+        test_sweep_removes_terminal_and_journalless_worktrees_and_keeps_a_live_one,
+        test_abandon_releases_the_worktree_and_resume_refuses_the_journal,
+        test_linux_lanes_red_refuses_and_names_each_failed_proof,
+        test_linux_lanes_prove_only_the_paths_the_publish_commit_changes,
+        test_linux_lanes_green_returns_evidence_with_each_lane_count,
+        test_linux_lanes_without_wsl_skips_with_its_reason,
+        test_linux_lanes_a_preview_with_no_verdict_refuses_the_push,
+        test_linux_red_stops_the_push_and_no_publish_branch_reaches_the_remote,
+        test_linux_green_pushes_the_publish_branch_and_records_its_evidence,
         test_publish_renames_project_identifiers_without_touching_the_local_file,
         test_journal_and_lock_writes_wait_out_a_reader_holding_the_target,
         test_tracer_publishes_one_row_to_fixture_remote,

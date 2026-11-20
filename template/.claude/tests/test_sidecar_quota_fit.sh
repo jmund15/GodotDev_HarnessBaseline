@@ -65,7 +65,8 @@ run "10|3600 codex: headroom 6 points
 
 run "10|3600 codex: headroom 6 points
 0|fits" SIDECAR_DETACHED=1
-[ "$RC" = 0 ] && [ "$CALLS" = 2 ] && ok "a detached job waits the same way" || bad "detached: rc=$RC calls=$CALLS $ERR"
+[ "$RC" = 0 ] && [ "$CALLS" = 1 ] && [[ "$ERR" == *"WARN quota window"* ]] && [[ "$ERR" == *STARTED* ]] \
+  && ok "a detached session job warns and runs: only a caller that says it can wait waits" || bad "detached: rc=$RC calls=$CALLS $ERR"
 
 run "4|no plan holds the job before Nov 22 18:00Z" SIDECAR_CAN_WAIT=1
 [ "$RC" = 10 ] && [[ "$ERR" != *STARTED* ]] && ok "a waiting caller no window can hold before a long reset exits 10, nothing started" \

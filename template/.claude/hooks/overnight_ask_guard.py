@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 
 from _checkout_root import main_checkout_root as checkout_root
-from _hook_state import update_json_locked, write_json_atomic
+from _hook_state import replace_path, update_json_locked, write_json_atomic
 from _owner_text import ENVELOPE_RE, LEADING_INJECTION_RE
 
 TTL_HOURS = 16
@@ -49,7 +49,7 @@ _Q_ROW = re.compile(
 _EVIDENCE = re.compile(r"^Evidence: (\{.*\})\s*$")
 _NEXT_SESSION = re.compile(r"^(?:- )?Next session: .+ · .+$", re.MULTILINE)
 _NOT_OWNER = re.compile(r"<(?:cross-session-message|task-notification|agent-message)\b", re.I)
-_OFF = re.compile(r"/overnight(?:\s+|</command-name>\s*<command-args>\s*)off\b", re.I)
+_OFF = re.compile(r"/overnight(?:\s+|</command-name>\s*<command-args>\s*)(?:--?)?off\b", re.I)
 _REVIEW = re.compile(r"/overnight_review\b", re.I)
 _RESUME = re.compile(
     r"^(?:/overnight\s*|"
@@ -360,7 +360,7 @@ def archive_closed(folder, root=None):
             out["kept"].append({"doc": str(doc), "reason": reason})
             continue
         target_dir.mkdir(exist_ok=True)
-        doc.replace(target)
+        replace_path(doc, target)
         out["archived"].append(str(target))
     return out
 

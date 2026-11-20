@@ -52,7 +52,7 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
    visible prompt for every launch it matches, including shapes this hook does not validate; whether this hook's own `ask` surfaces
    under auto mode is unmeasured.
    The wide launch reader never authorizes that ask; shell compounds and extra grants fall through.
-4. CONTEXT. The hook adds `additionalContext` in two cases: the `owner-named` lines a tier-fit lift adds, and to
+4. CONTEXT. The hook adds `additionalContext` in two cases: the `pick: owner` lines a tier-fit pass adds, and to
    report that the doctrine gate could not read its state. The advisory never denies; unattended callers reach
    `launcher_launch`, not this branch.
    The recipe, the long-context rule, the size line, the plan rooms and the watch route reach the session
@@ -493,7 +493,7 @@ def fanout_contract(fanout, root):
                     raise ValueError("fan-out paying plan does not serve its alias")
                 served += 1
                 contracts.append({"job": (str(job.get("label") or alias), alias, job.get("kind"), job.get("plan")),
-                                  "tier": job.get("tier"),
+                                  "tier": job.get("tier"), "pick": job.get("pick"),
                                   "effort": effort, "plans": plans,
                                   "directory": os.path.normcase(os.path.abspath(directory))})
             if listed and not served:
@@ -564,6 +564,19 @@ def written_tiers(direct, fanout, root, contracts=None):
     return {c["job"][0]: c["tier"] for c in found if c.get("tier")}
 
 
+def owner_pin_labels(direct, fanout, root, contracts=None):
+    """{label} of the launch's jobs recorded `pick: owner`: a direct launch's `-Y <pick>,<spec>`, a fan-out job's `pick`."""
+    if direct is not None:
+        flags = sidecar_argv.sidecar_flags(direct.args)
+        jobs = launch_jobs(direct, None, root)
+        pin = flags.get("Y")
+        return {jobs[0][0]} if jobs and isinstance(pin, str) and pin.split(",")[0] == "owner" else set()
+    if fanout is None:
+        return set()
+    found = fanout_contract(fanout, root) if contracts is None else contracts
+    return {c["job"][0] for c in found if c.get("pick") == "owner"}
+
+
 def launch_tiers(direct, fanout, root, contracts=None):
     """The sorted tiers the launch's jobs imply through their written `tier`, else their kind row (a direct
     launch's `-G`, a fan-out job's `kind`), else None when a job names no tiered kind or the launch has no
@@ -586,18 +599,17 @@ def with_written_tiers(jobs, written):
     return [(*job[:4], written[job[0]]) if job[0] in written else tuple(job[:4]) for job in jobs]
 
 
-def dispatch_checks(jobs, transcript=None, notes=None):
+def dispatch_checks(jobs, owner_labels=(), notes=None):
     """The refusal for a job whose written `tier` (a fifth field, `with_written_tiers`), else its kind row,
     implies a tier its alias's row does not serve, else None. A job of four fields or five checks alike.
-    A row the owner names in `transcript` (a path, or a function returning one) fits, and its `owner-named` line
-    is appended to `notes`."""
+    A job whose label is in `owner_labels` (recorded `pick: owner`, `owner_pin_labels`) may pin outside the tier;
+    its `pick: owner` line is appended to `notes`."""
     if _dispatch_checks is None or model_registry is None or not jobs:
         return None
     try:
         data = model_registry.load()
     except Exception:
         return None
-    owner = _dispatch_checks.OwnerTexts(transcript)
     unfit = []
     for label, alias, kind, _plan, *written in jobs:
         try:
@@ -606,7 +618,8 @@ def dispatch_checks(jobs, transcript=None, notes=None):
             continue
         try:
             tier, source = _dispatch_checks.job_tier(kind, written[0] if written else None)
-            why = _dispatch_checks.tier_fit(alias, tier, row["transport"], data, owner_texts=owner, notes=notes)
+            why = _dispatch_checks.tier_fit(alias, tier, row["transport"], data, owner_pinned=label in owner_labels,
+                                            notes=notes)
         except ValueError as err:
             why, source = str(err), None
         except Exception:
@@ -819,10 +832,11 @@ def launcher_launch(launcher, argv):
         checked_direct = direct._replace(args=["-m", default, *argv])
     jobs = launch_jobs(checked_direct, None, root)
     checked, preflight = take_checks(payload, entries[0], jobs[0], flags) if entries and jobs else (False, False)
-    owner_named = []
+    pinned = []
     refusal = None if checked else dispatch_checks(with_written_tiers(jobs, written_tiers(checked_direct, None, root)),
-                                                   transcript=payload["transcript_path"], notes=owner_named)
-    for line in owner_named:
+                                                   owner_labels=owner_pin_labels(checked_direct, None, root),
+                                                   notes=pinned)
+    for line in pinned:
         print(line, file=sys.stderr)
     if (refusal is None and not checked and payload["session_id"]
             and not fanout_admitted(payload["session_id"], flags.get("R"))):
@@ -881,12 +895,11 @@ def fanout_fit_refusal(fanout_args, root, notes=None):
     contracts = fanout_contract(fanout, root)
     held = _receipted_fanout_jobs()
     unchecked = {(tuple(c["job"][:3]), c["directory"]) for c in contracts} - held
-    import dispatch_table as table
     return dispatch_checks(
         with_written_tiers([job for job in launch_jobs(None, fanout, root, contracts)
                             if any(key[0] == tuple(job[:3]) for key in unchecked)],
                            written_tiers(None, fanout, root, contracts)),
-        transcript=lambda: table._transcript(tracking_session()), notes=notes)
+        owner_labels=owner_pin_labels(None, fanout, root, contracts), notes=notes)
 
 
 def _receipted_fanout_jobs():
@@ -940,10 +953,10 @@ def main():
         if _variable_tracking_value(cmd, direct.args, root):
             deny(TRACKING_REASON)
             return
-    owner_named = []
+    pinned = []
     fit_refusal = dispatch_checks(with_written_tiers(launch_jobs(direct, fanout, root, contracts),
                                                      written_tiers(direct, fanout, root, contracts)),
-                                  transcript=data.get("transcript_path"), notes=owner_named)
+                                  owner_labels=owner_pin_labels(direct, fanout, root, contracts), notes=pinned)
     if fit_refusal:
         deny(fit_refusal)
         return
@@ -991,7 +1004,7 @@ def main():
                     % (os.path.basename(direct.path), flags["m"], approval_root, flags["f"])
                 )
 
-    context = [line for line in (doctrine_fault, *owner_named) if line]
+    context = [line for line in (doctrine_fault, *pinned) if line]
     if context:
         output["additionalContext"] = "\n".join(context)
 

@@ -262,14 +262,9 @@ def script_pins(payload):
     return out
 
 
-def arg_pins(args, implied=()):
-    """[(label, model, tier or None, tier_is_implied)] for every object in `args` carrying `model`.
-
-    A pin's tier is its own `tier`, else the nearest enclosing object's, else `args.tier` (the
-    root). `implied` holds the `id()` of every entry `with_implied_tiers` filled from the call's own
-    data, so a reader can tell the tier the call implies from the tier a dispatcher wrote.
-    `__`-prefixed keys are injected by hooks, never caller pins, and are not read.
-    """
+def _pin_objects(args, implied=()):
+    """[(label, model, tier or None, tier_is_implied, pick or None)] for every object in `args` carrying `model`;
+    `pick` is that object's own `pick`. See `arg_pins`."""
     out = []
 
     def walk(node, tier, path, from_implied):
@@ -283,13 +278,34 @@ def arg_pins(args, implied=()):
         model = node.get("model")
         if model:
             label = node.get("label") or node.get("key") or node.get("name") or node.get("id") or path or "args"
-            out.append((str(label), str(model), tier, bool(from_implied)))
+            out.append((str(label), str(model), tier, bool(from_implied), node.get("pick")))
         for key, value in node.items():
             if isinstance(key, str) and not key.startswith("__") and isinstance(value, (dict, list)):
                 walk(value, tier, "%s.%s" % (path, key) if path else key, from_implied)
 
     walk(args, None, "", False)
     return out
+
+
+def arg_pins(args, implied=()):
+    """[(label, model, tier or None, tier_is_implied)] for every object in `args` carrying `model`.
+
+    A pin's tier is its own `tier`, else the nearest enclosing object's, else `args.tier` (the
+    root). `implied` holds the `id()` of every entry `with_implied_tiers` filled from the call's own
+    data, so a reader can tell the tier the call implies from the tier a dispatcher wrote.
+    `__`-prefixed keys are injected by hooks, never caller pins, and are not read.
+    """
+    return [(label, model, tier, implied_tier) for label, model, tier, implied_tier, _pick in _pin_objects(args, implied)]
+
+
+def owner_pin_labels(payload):
+    """{label} of this Workflow call's pins whose own object records `pick: owner`: the one pass for a pin outside
+    its tier (`_dispatch_checks.tier_fit`)."""
+    if payload.get("tool_name") != "Workflow":
+        return set()
+    ti = payload.get("tool_input") or {}
+    a, implied = with_implied_tiers(ti, _args(ti))
+    return {label for label, _model, _tier, _implied, pick in _pin_objects(a, implied) if pick == "owner"}
 
 
 def lens_tiers(args):
@@ -559,8 +575,8 @@ def decide_tiers(payload, transport, data):
     A review_fanout seat keyed by a registry lens is judged with its panel through `_dispatch_checks.seat_fit`:
     a pin holding the lens tier only in registry `supplementary` is admitted when a qualified seat in the same
     call carries every mandate the seat does, and denied alone (ladder Role definitions). Every other pin goes
-    through `tier_fit`. A row the owner names in the session's turns (`payload["transcript_path"]`) passes both, and
-    the allow carries its `owner-named` line as an advisory note. A declared `args.measurement` returns before either.
+    through `tier_fit`. A pin whose job records `pick: owner` passes both, and the allow carries its `pick: owner`
+    line as an advisory note. Owner words never lift a pin. A declared `args.measurement` returns before either.
     """
     pins = call_pins(payload)
     if not pins:
@@ -587,18 +603,18 @@ def decide_tiers(payload, transport, data):
         return None, [f"measurement: {measured[:160]} — tier fit skipped"], resolved
     panel = review_panel(payload)
     unfit, rule, seats, named = [], [], [], []
-    owner = _dispatch_checks.OwnerTexts(payload.get("transcript_path"))
+    owner_labels = owner_pin_labels(payload)
     for label, model, tier, implied in resolved:
         if not tier:
             continue
         if label in panel:
             seats.append({"label": label, "model": model, "tier": tier, "mandates": panel[label],
-                          "transport": transport})
+                          "transport": transport, "pick": "owner" if label in owner_labels else None})
             continue
         try:
             why = _dispatch_checks.tier_fit(model, tier, transport, data,
                                             pin_name=lambda r: native_pin(r, transport),
-                                            owner_texts=owner, notes=named)
+                                            owner_pinned=label in owner_labels, notes=named)
         except Exception:
             why = f"{model} is not among the `{tier}` rows on {transport} (none on this transport)"
         if why:
@@ -606,14 +622,14 @@ def decide_tiers(payload, transport, data):
     if seats:
         try:
             verdicts = _dispatch_checks.seat_verdicts(seats, data, pin_name=lambda r: native_pin(r, transport),
-                                                      owner_texts=owner, notes=named)
+                                                      notes=named)
         except Exception as err:
             verdicts = []
             for seat in seats:
                 try:
                     why = _dispatch_checks.tier_fit(seat["model"], seat["tier"], transport, data,
                                                     pin_name=lambda r: native_pin(r, transport),
-                                                    owner_texts=owner, notes=named)
+                                                    owner_pinned=seat["pick"] == "owner", notes=named)
                 except Exception:
                     why = (f"{seat['model']} is not among the `{seat['tier']}` rows on {transport} "
                            "(none on this transport)")

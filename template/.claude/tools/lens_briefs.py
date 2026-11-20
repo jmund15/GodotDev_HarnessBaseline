@@ -588,13 +588,14 @@ def seat_overage(*, key: str, token: str, body: str, context_path: str, entries:
             f"window of {seat['usable']} tokens; over by {seat['over']}")
 
 
-def lens_tier_refusal(*, panel: dict, native: bool, data: dict) -> list[str]:
+def lens_tier_refusal(*, panel: dict, native: bool, data: dict, owner_keys=frozenset()) -> list[str]:
     """The refusal lines for a panel `{seat key: pin}`, in seat order; [] when every seat fits.
 
     The lens tier (`lens.seat_tier`, the strongest of a merged `a+b` key) is the tier `workflow_provider_guard`
     RULE 3 enforces on a review_fanout seat, through the same `_dispatch_checks.seat_fit` on the pin's own
     transport: a pin outside the tier's rows is refused, and a pin holding the tier only as `supplementary` is
-    refused unless a qualified seat in the panel carries every mandate the seat does. A `--tier` or `--tier-for`
+    refused unless a qualified seat in the panel carries every mandate the seat does. A seat whose key is in
+    `owner_keys` (its job records `pick: owner`) may pin outside the tier. A `--tier` or `--tier-for`
     is the job's written claim: the guard never lets it replace the lens tier, so it does not excuse the pin
     here. A pin the registry does not resolve is `seat_overage`'s refusal.
     """
@@ -610,12 +611,10 @@ def lens_tier_refusal(*, panel: dict, native: bool, data: dict) -> list[str]:
                   f"resolve ({err})", file=sys.stderr)
             continue
         seats.append({"label": key, "model": token, "tier": tier, "mandates": lens.seat_mandates(key) or [],
-                      "transport": transport})
+                      "transport": transport, "pick": "owner" if key in owner_keys else None})
     pin_name = (lambda row: _dispatch_pins.native_pin(row, row["transport"])) if native else None
     notes = []
-    verdicts = _dispatch_checks.seat_verdicts(
-        seats, data, pin_name, owner_texts=_dispatch_checks.OwnerTexts(_dispatch_checks.session_transcript_path),
-        notes=notes)
+    verdicts = _dispatch_checks.seat_verdicts(seats, data, pin_name, notes=notes)
     for line in notes:
         print(line, file=sys.stderr)
     return [line if is_rule else (
@@ -1025,6 +1024,8 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
             tier = seat.get("tier") or tiers.get(key)
             if tier:
                 params.tier_for.append(f"{key}={tier}")
+            if seat.get("pick") == "owner":
+                params.pick_for.append(f"{key}=owner")
         try:
             jobs += build_briefs(params)
         except ArgumentRefused as exc:
@@ -1307,7 +1308,8 @@ class BriefParams:
     def __init__(self, *, out: str, prefix: str, context_path: str, model: str, keys: list[str] | None = None,
                  plan: str | None = None, pr_num: str | None = None, branch: str | None = None,
                  target: str = "native", sub: list[str] | None = None, model_for: list[str] | None = None,
-                 tier: str | None = None, tier_for: list[str] | None = None, effort: str | None = None,
+                 tier: str | None = None, tier_for: list[str] | None = None, pick_for: list[str] | None = None,
+                 effort: str | None = None,
                  effort_for: list[str] | None = None, must_read: str | None = None,
                  must_read_for: list[str] | None = None, must_read_from: str | None = None,
                  subject_plan: list[str] | None = None, vault: str | None = None, task: str | None = None,
@@ -1315,6 +1317,7 @@ class BriefParams:
         self.out, self.prefix, self.context_path, self.model = out, prefix, context_path, model
         self.keys, self.plan, self.pr_num, self.branch, self.target = keys, plan, pr_num, branch, target
         self.sub, self.model_for, self.tier, self.tier_for = list(sub or []), list(model_for or []), tier, list(tier_for or [])
+        self.pick_for = list(pick_for or [])
         self.effort, self.effort_for, self.must_read = effort, list(effort_for or []), must_read
         self.must_read_for, self.must_read_from = list(must_read_for or []), must_read_from
         self.subject_plan, self.vault, self.task, self.kfm_root = list(subject_plan or []), vault, task, kfm_root
@@ -1473,8 +1476,14 @@ def build_briefs(a: BriefParams) -> list[dict]:
     else:
         subject = a.prefix
 
+    owner_keys = set()
+    for s in a.pick_for:
+        k, _, pick = s.partition("=")
+        if pick != "owner":
+            sys.exit(f"--pick-for {s}: the only pick this flag takes is `owner`")
+        owner_keys.add(k)
     unfit = lens_tier_refusal(panel={k: model_overrides.get(k) or a.model for k in a.keys},
-                              native=a.target == "native", data=data)
+                              native=a.target == "native", data=data, owner_keys=owner_keys)
     if unfit:
         sys.exit("refused before any brief is built: a seat's pin must be a row serving its lens tier.\n"
                  + "\n".join(unfit))
@@ -1568,8 +1577,7 @@ def build_briefs(a: BriefParams) -> list[dict]:
         token = model_overrides.get(k) or a.model
         entry = resolve_sidecar_entry(token, f"--model-for {k}" if k in model_overrides else "--model", data)
         written = tier_overrides.get(k) or a.tier
-        if written and not serves_tier(entry, written) and not _dispatch_checks.owner_named(
-                entry, _dispatch_checks.OwnerTexts(_dispatch_checks.session_transcript_path)):
+        if written and not serves_tier(entry, written) and k not in owner_keys:
             sys.exit(f"{k}: {token} does not claim {written} or a stronger review tier; "
                      "re-select a qualified row from model_registry.py for-role")
         rungs = effort_rungs(entry, data)
@@ -1676,6 +1684,8 @@ def main() -> None:
                     help="panel tier, the one its --model pin serves; default: each seat's lens tier")
     ap.add_argument("--tier-for", action="append", default=[], metavar="KEY=TIER",
                     help="per-lens tier override, paired with that lens's --model-for pin")
+    ap.add_argument("--pick-for", action="append", default=[], metavar="KEY=owner",
+                    help="per-lens pick: `owner` lets that lens's pin run outside its tier, as the job records it")
     ap.add_argument("--effort", default=None,
                     help="the panel's ladder rung; required unless --effort-for covers every seat")
     ap.add_argument("--effort-for", action="append", default=[], metavar="KEY=EFFORT",

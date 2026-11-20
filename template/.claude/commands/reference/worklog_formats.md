@@ -19,11 +19,12 @@ disable-model-invocation: true
     - Context: <one-line>
     - Where: <path-if-any>
     - Source: <ref-if-any>
+    - Session: <runtime session id>          (`add` writes it; omit if none or Source is it)
     - When: after <condition> | future        (omit if ready)
     - Plan doc: [[<Doc Title>]]               (scope 4 only)
     - Quick-win: flagged YYYY-MM-DD           (triage only)
   ```
-- `FSLINE` — a Future Scope one-liner, `> `-prefixed, no sub-bullets; the parenthetical replaces them with concise context: ``> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>)``
+- `FSLINE` — a Future Scope one-liner, `> `-prefixed, no sub-bullets; the parenthetical replaces them with concise context: ``> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>) · session <runtime session id>`` (`add` writes the tag)
 - `XLINE` — an archive completion line: ``- [x] `<class>` · scope `<n>` · <Title> (completed YYYY-MM-DD, <ref>)``
 - `UTLINE` — a User-Tasks entry: `- YYYY-MM-DD — <Title> — <one-line context>`
 

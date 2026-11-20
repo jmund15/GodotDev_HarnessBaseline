@@ -3060,6 +3060,27 @@ def test_resolve_installs_a_marker_free_copy_and_refuses_one_with_markers() -> N
         assert not copy.exists() and f"resolved: {rel}" in _out(done), _out(done)
 
 
+def test_pull_merge_of_a_row_whose_base_lacks_the_file_writes_a_copy_resolve_installs() -> None:
+    rel = ".claude/rules/rebased.md"
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {rel: {"upstream": b"one\ntwo\n"}})
+        _delete_upstream(baseline, rel)
+        absent = _branch_sha(baseline)
+        lock = _load_lock(root)
+        lock["files"][rel]["base"] = absent
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _diverge(root, baseline, rel, b"one\nLOCAL\n", b"one\nUPSTREAM\n")
+        pull = _run_baseline(root, baseline, "pull", "--merge", rel)
+        line = next((l for l in _out(pull).splitlines() if l.startswith(f"conflict: {rel} ")), "")
+        assert pull.returncode == 1 and " -> " in line, _out(pull)
+        copy = Path(line.rsplit(" -> ", 1)[-1].strip())
+        assert b"LOCAL" in copy.read_bytes() and b"UPSTREAM" in copy.read_bytes(), copy.read_bytes()
+        _write(copy, b"one\nLOCAL\n")
+        done = _run_baseline(root, baseline, "resolve", rel)
+        assert done.returncode == 0, _out(done)
+        assert _load_lock(root)["files"][rel]["base"] == _branch_sha(baseline), _load_lock(root)["files"][rel]
+
+
 def test_resolve_refuses_when_upstream_moved_or_the_file_changed_since_the_merge() -> None:
     rel = ".claude/rules/clash.md"
     with _fixture() as path:
@@ -3899,6 +3920,52 @@ def test_judge_push_allows_a_citer_and_its_local_dependency_in_one_call() -> Non
         root, baseline, _r, _c = _v2_fixture(path, rows)
         result = _run_baseline(root, baseline, "judge", _DEP_CITER, _DEP_HELPER, proof, "--verdict", "push")
         assert result.returncode == 0, _out(result)
+
+
+_CLOSURE_B = ".claude/tools/dep_b.py"
+_CLOSURE_A_OLD = b"h = 0\n"
+_CLOSURE_A_NEW = b"import dep_b\nh = 1\n"
+
+
+def _closure_fixture(path: Path, *, clean: bool):
+    rows = _dep_rows({"upstream": _CLOSURE_A_OLD, "local": _CLOSURE_A_OLD if clean else _CLOSURE_A_NEW})
+    rows[_DEP_CITER] = {"upstream": _DEP_CITES if clean else b"Old.", "local": _DEP_CITES, "judged": _judged_push(_DEP_CITES)}
+    rows[_CLOSURE_B] = {"status": "local", "manifest": False, "local": b"b = 1\n"}
+    root, baseline, _r, _c = _v2_fixture(path, rows)
+    peer = None
+    if clean:
+        _git(root, "commit", "-q", "--allow-empty", "-m", "noop")
+        peer = _head(root)
+    else:
+        _write(root / _DEP_HELPER, _CLOSURE_A_NEW + b"# peer edit\n")
+        peer = _commit(root, "peer edits the helper")
+    _write(root / _DEP_CITER, _DEP_CITES + b"More.\n")
+    head = _commit(root, "edit citer")
+    return root, baseline, peer, head
+
+
+def test_closure_names_the_whole_chain_the_backlog_and_a_peer_commit_in_one_report() -> None:
+    with _fixture() as path:
+        root, baseline, peer, head = _closure_fixture(path, clean=False)
+        result = _run_baseline(root, baseline, "closure", _DEP_CITER, "--carry", f"{peer}..{head}")
+        out = _out(result)
+        assert result.returncode == 0, out
+        lines = out.splitlines()
+        assert any(line.startswith("dependency:") and _DEP_HELPER in line and _DEP_CITER in line for line in lines), out
+        assert any(line.startswith("dependency:") and _CLOSURE_B in line and _DEP_HELPER in line for line in lines), out
+        assert any(line.startswith("backlog:") for line in lines), out
+        assert any(line.startswith("since baseline copy:") and _DEP_HELPER in line and peer[:7] in line
+                   for line in lines), out
+        assert _git(root, "rev-parse", "HEAD").decode().strip() == head
+
+
+def test_closure_prints_no_dependency_or_peer_line_for_a_clean_row() -> None:
+    with _fixture() as path:
+        root, baseline, peer, head = _closure_fixture(path, clean=True)
+        result = _run_baseline(root, baseline, "closure", _DEP_CITER, "--carry", f"{peer}..{head}")
+        out = _out(result)
+        assert result.returncode == 0, out
+        assert not [line for line in out.splitlines() if line.startswith(("dependency:", "since baseline copy:"))], out
 
 
 def test_carry_refuses_a_row_whose_dependency_is_local() -> None:
@@ -4882,6 +4949,7 @@ def main(part: int = 1) -> int:
         test_a_tracked_row_never_published_is_unpublished_and_pull_keeps_it,
         test_pull_merge_combines_both_sides_of_a_diverged_row,
         test_pull_merge_reports_a_conflict_and_leaves_the_row_untouched,
+        test_pull_merge_of_a_row_whose_base_lacks_the_file_writes_a_copy_resolve_installs,
         test_check_reports_layer_closure_and_strict_fails,
         test_bare_pull_skips_unrowed_offer_and_counts_it,
         test_named_pull_adopts_offer_as_tracked,
@@ -4999,6 +5067,8 @@ def main(part: int = 1) -> int:
         test_judge_push_refuses_a_citation_the_change_adds_to_a_modified_dependency,
         test_judge_push_refuses_a_local_dependency_even_when_the_baseline_copy_cites_it,
         test_judge_push_keeps_the_rule_for_a_citer_new_to_the_baseline,
+        test_closure_names_the_whole_chain_the_backlog_and_a_peer_commit_in_one_report,
+        test_closure_prints_no_dependency_or_peer_line_for_a_clean_row,
         test_carry_refuses_a_row_whose_dependency_is_local,
         test_fetch_retries_a_connection_reset_then_succeeds,
         test_fetch_does_not_retry_repository_not_found,

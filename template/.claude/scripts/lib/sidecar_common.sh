@@ -787,7 +787,8 @@ sc_resolve_model() {
 # Go included: no recorded Go error body scopes a limit to one model, so every limit marks the transport.
 # sc_gate_availability runs this first, so every dispatch and every --check refuses with exit 10.
 # Neither -A nor -U overrides it: -A authorizes spend past a band and -U lifts a registry suspension,
-# and an exhausted allowance answers neither.
+# and an exhausted allowance answers neither. A cached provider reading observed after the marker, with every
+# window under 100%, lifts it (exhausted_marker.superseded): an early reset never waits out the default window.
 # A member key (`sc_exhausted_marker <member>`) names one pool member of the transport: its marker lives under
 # members/<transport>/ and holds the member's consecutive-failure count. A member marker never reads or writes
 # the transport-wide one, so one cooled member never refuses the rest of its transport.
@@ -805,7 +806,8 @@ sc_gate_exhausted() {
   local marker msg grc
   marker="$(sc_exhausted_marker ${1:+"$1"})"
   [ -f "$marker" ] || return 0
-  msg="$(MARKER_V="$(sc_to_native "$marker")" TRANSPORT_V="$SC_TRANSPORT" MEMBER_V="${1:-}" python3 - <<'PY'
+  msg="$(MARKER_V="$(sc_to_native "$marker")" TRANSPORT_V="$SC_TRANSPORT" MEMBER_V="${1:-}" \
+    TOOLS_V="$(sc_to_native "$SC_ROOT/tools")" python3 - <<'PY'
 import json, os, sys, time
 path = os.environ["MARKER_V"]
 try:
@@ -816,8 +818,17 @@ except (OSError, ValueError, KeyError, TypeError):
     marker, expires = {}, os.path.getmtime(path) + 1800   # unreadable: fail closed for the default window
 if expires <= time.time():
     sys.exit(0)
-when = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(expires))
 transport, member = os.environ["TRANSPORT_V"], os.environ.get("MEMBER_V", "")
+if not member:
+    sys.path.insert(0, os.environ["TOOLS_V"])
+    try:
+        import exhausted_marker, provider_capacity
+        if exhausted_marker.superseded(marker, provider_capacity.cached(transport)):
+            os.remove(path)
+            sys.exit(0)
+    except (ImportError, OSError, ValueError, TypeError, KeyError):
+        pass
+when = time.strftime("%Y-%m-%d %H:%M:%S %z", time.localtime(expires))
 if member:
     basis = "the member cooldown"
 elif marker.get("resetsAt"):
@@ -1641,11 +1652,11 @@ sc_check_launch_memory() {
 }
 
 # ------------------------------------------------------- launch quota-window fit
-# A job a usage limit would cut mid-run starts only when its plan's windows hold its expected drain
-# (tools/quota_fit.py owns the test). A caller that can wait (a detached job, or SIDECAR_CAN_WAIT=1 from an
+# Whether a job's plan windows hold its expected drain is tools/quota_fit.py's test. A caller that says it can wait (SIDECAR_CAN_WAIT=1 from an
 # unattended script such as the bench grid) sleeps toward the binding window's reset, re-asking every
-# SC_FIT_RECHECK_S since running jobs end, and records one `waiting-quota` journal row. An interactive foreground
-# call cannot wait: it prints the forecast and runs, since a forecast alone never refuses. A waiting caller whose
+# SC_FIT_RECHECK_S since running jobs end, and records one `waiting-quota` journal row. Every other launch,
+# a session's detached dispatch included, prints the forecast and runs: a forecast is an estimate, a session job
+# cut by a limit resumes from its record, and the observed-capacity gate still stops a spent plan. A waiting caller whose
 # job no window holds before a long reset, or whose -T / SIDECAR_TIMEOUT bound passes, exits 10, nothing started.
 # A fit the check cannot read decides nothing: the observed-capacity gate (sc_gate_capacity) still runs.
 SC_FIT_RECHECK_S="${SC_FIT_RECHECK_S:-300}"  # a running job's end frees room well inside one window
@@ -1658,7 +1669,7 @@ sc_check_quota_fit() {
   local said fit_rc wait nap started _sc_fit_row=0 self="${SC_RECORD:-${SC_LABEL:-}}"
   self="${self##*/}"; self="${self##*\\}"
   local can_wait=0
-  { [ -n "${SIDECAR_DETACHED:-}" ] || [ "${SIDECAR_CAN_WAIT:-0}" = 1 ]; } && can_wait=1
+  [ "${SIDECAR_CAN_WAIT:-0}" = 1 ] && can_wait=1
   started=$(date +%s)
   while :; do
     said="$(python3 "$SC_ROOT/tools/quota_fit.py" "$SC_MODEL" "${SC_EFFORT:--}" "${SC_SHAPE:--}" \

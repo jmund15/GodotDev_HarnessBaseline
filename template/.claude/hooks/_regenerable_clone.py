@@ -28,12 +28,12 @@ import subprocess
 import sys
 import tarfile
 from collections import Counter
-from datetime import datetime
 from fnmatch import fnmatchcase
 from pathlib import Path
 
 from _git_commit import (resolve_cd, segments, git_invocation, cd_target,
                          executable_text, literal_assignments, expand_literal)
+from _transcript_calls import Call, Result, session_events
 
 _UNSAFE_PATH_CHARS = re.compile(r"[*?\[\]{}$~%]")
 ANY_SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
@@ -66,13 +66,6 @@ def _git(args: list[str], cwd: Path, stdin: str | None = None) -> str | None:
 
 def _same_path(a: Path, b: Path) -> bool:
     return os.path.normcase(str(a)) == os.path.normcase(str(b))
-
-
-def _timestamp(row: dict) -> float | None:
-    try:
-        return datetime.fromisoformat(row['timestamp'].replace('Z', '+00:00')).timestamp()
-    except (KeyError, TypeError, ValueError):
-        return None
 
 
 def _added_worktrees(command: str, cwd: str) -> list[Path]:
@@ -149,8 +142,6 @@ _TAIL_FILTER = re.compile(r'\s*tail(?:\s+-n\s*\d+|\s+-\d+)?\s*')
 _FAILURE_LINE = re.compile(r'(?m)^\s*(?:fatal|error):')
 _BACKGROUND_NOTICE = re.compile(r'Command running in background with ID: (\w+)\. Output is being written to: '
                                 r'(.+?)\. You will be notified when it completes\.')
-_TASK_NOTIFICATION = re.compile(r'<task-notification>\s*<task-id>(\w+)</task-id>.*?<output-file>(.+?)</output-file>'
-                                r'\s*<status>(\w+)</status>\s*<summary>(.*?)</summary>', re.S)
 _EXIT_CODE = re.compile(r'\(exit code (\d+)\)')
 
 
@@ -310,32 +301,6 @@ def _lane_created_name(command: str) -> str | None:
     return None
 
 
-def _result_text(block: dict) -> str:
-    content = block.get('content')
-    if isinstance(content, list):
-        return '\n'.join(str(part.get('text', '')) for part in content if isinstance(part, dict))
-    return content if isinstance(content, str) else ''
-
-
-def _task_notices(row: dict) -> list[tuple[str, str, str, str]]:
-    """(task id, output file, status, summary) for each `<task-notification>` a harness row carries.
-
-    Assistant rows are skipped: a model can type a notice into its own text, and only the harness writes these rows.
-    A queued row keeps its text in `content`, an attachment in `attachment.prompt`, a user row in its text blocks."""
-    if row.get('type') not in ('user', 'queue-operation', 'attachment'):
-        return []
-    message = row.get('message')
-    body = message.get('content') if isinstance(message, dict) else None
-    attachment = row.get('attachment')
-    texts = []
-    for value in (row.get('content'), attachment.get('prompt') if isinstance(attachment, dict) else None, body):
-        if isinstance(value, str):
-            texts.append(value)
-        elif isinstance(value, list):
-            texts += [str(part.get('text', '')) for part in value if isinstance(part, dict)]
-    return [m.groups() for text in texts for m in _TASK_NOTIFICATION.finditer(text)]
-
-
 def _background_add_ran(visible: bool, output: str, summary: str) -> bool:
     """Whether a backgrounded add succeeded: a visible add reads its output file, any other add the exit code."""
     if visible:
@@ -376,69 +341,45 @@ def session_created_worktree(path: str, transcript_path: str | None) -> bool:
         born = (target / '.git').stat().st_mtime
     except (OSError, ValueError):
         return False
-    sid = os.environ.get('CLAUDE_CODE_SESSION_ID', '')
-    paths = [transcript_path]
-    if sid:
-        paths.append(os.path.join(os.path.dirname(transcript_path), sid + '.jsonl'))
-    for transcript in dict.fromkeys(paths):
+    for events in session_events(transcript_path):
         pending = {}
         backgrounded = {}  # task id -> (start, visible, output file) of an add still awaiting its notification
-        try:
-            with open(transcript, encoding='utf-8', errors='replace') as handle:
-                for line in handle:
-                    try:
-                        row = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(row, dict) or row.get('isSidechain'):
-                        continue
-                    stamp = _timestamp(row)
-                    content = (row.get('message') or {}).get('content') or []
-                    for block in content if isinstance(content, list) else []:
-                        if not isinstance(block, dict):
-                            continue
-                        if block.get('type') == 'tool_use' and block.get('name') == 'Bash':
-                            command = (block.get('input') or {}).get('command', '')
-                            cwd = row.get('cwd')
-                            if stamp is not None and cwd and 'worktree' in command:
-                                unrolled = _unrolled_loops(command)
-                                lane = _lane_created_name(command)
-                                if lane is not None:
-                                    made = Path(common.strip()).resolve().parent / '.claude' / 'worktrees' / lane
-                                    if _same_path(made, target):
-                                        pending[block.get('id')] = (stamp, True)
-                                elif unrolled is not None:
-                                    if any(_same_path(p, target) for p in _first_visible_add(unrolled, cwd)):
-                                        pending[block.get('id')] = (stamp, True)
-                                elif any(_same_path(p, target) for p in _added_worktrees(command, cwd)):
-                                    pending[block.get('id')] = (stamp, False)
-                                elif any(_same_path(p, target) for p in _first_visible_add(command, cwd)):
-                                    pending[block.get('id')] = (stamp, True)
-                        elif block.get('type') == 'tool_result':
-                            start, visible = pending.pop(block.get('tool_use_id'), (None, False))
-                            text = _result_text(block)
-                            notice = _BACKGROUND_NOTICE.search(text)
-                            if notice and start is not None and not block.get('is_error'):
-                                # The notice is the result, not git's output: the call ends at its notification.
-                                backgrounded[notice[1]] = (start, visible, notice[2])
-                                continue
-                            # A visible add's success is read from the text, so a later command's exit
-                            # status cannot void it; a denial never ran and carries no `Exit code` line.
-                            ran = not block.get('is_error') or (visible and text.startswith('Exit code '))
-                            outcome = row.get('toolUseResult')  # a dict, or the error text on a failed call
-                            if (start is not None and stamp is not None and ran
-                                    and not (isinstance(outcome, dict) and outcome.get('interrupted'))
-                                    and not (visible and _FAILURE_LINE.search(text))
-                                    and start <= born <= stamp):
-                                return True
-                    for task, output, status, summary in _task_notices(row):
-                        if task in backgrounded and stamp is not None and status == 'completed':
-                            start, visible, notice_output = backgrounded[task]
-                            if (start <= born <= stamp and _same_path(Path(output), Path(notice_output))
-                                    and _background_add_ran(visible, output, summary)):
-                                return True
-        except (OSError, TypeError, ValueError):
-            continue
+        for event in events:
+            if isinstance(event, Call):
+                command, cwd, stamp = event.command, event.cwd, event.stamp
+                if stamp is not None and cwd and 'worktree' in command:
+                    unrolled = _unrolled_loops(command)
+                    lane = _lane_created_name(command)
+                    if lane is not None:
+                        made = Path(common.strip()).resolve().parent / '.claude' / 'worktrees' / lane
+                        if _same_path(made, target):
+                            pending[event.id] = (stamp, True)
+                    elif unrolled is not None:
+                        if any(_same_path(p, target) for p in _first_visible_add(unrolled, cwd)):
+                            pending[event.id] = (stamp, True)
+                    elif any(_same_path(p, target) for p in _added_worktrees(command, cwd)):
+                        pending[event.id] = (stamp, False)
+                    elif any(_same_path(p, target) for p in _first_visible_add(command, cwd)):
+                        pending[event.id] = (stamp, True)
+            elif isinstance(event, Result):
+                start, visible = pending.pop(event.id, (None, False))
+                notice = _BACKGROUND_NOTICE.search(event.text)
+                if notice and start is not None and not event.is_error:
+                    # The notice is the result, not git's output: the call ends at its notification.
+                    backgrounded[notice[1]] = (start, visible, notice[2])
+                    continue
+                # A visible add's success is read from the text, so a later command's exit
+                # status cannot void it; a denial never ran and carries no `Exit code` line.
+                ran = not event.is_error or (visible and event.text.startswith('Exit code '))
+                if (start is not None and event.stamp is not None and ran and not event.interrupted
+                        and not (visible and _FAILURE_LINE.search(event.text))
+                        and start <= born <= event.stamp):
+                    return True
+            elif event.task in backgrounded and event.stamp is not None and event.status == 'completed':
+                start, visible, notice_output = backgrounded[event.task]
+                if (start <= born <= event.stamp and _same_path(Path(event.output), Path(notice_output))
+                        and _background_add_ran(visible, event.output, event.summary)):
+                    return True
     return False
 
 
@@ -734,6 +675,14 @@ _REGENERABLE_IGNORED_SEGMENTS = frozenset({".godot", "__pycache__", ".pytest_cac
 _REGENERABLE_IGNORED_PAIRS = frozenset({(".claude", "cache"), (".claude", "logs")})
 
 
+def regenerable_segments(parts) -> bool:
+    """True when a path's components hold a regenerable-cache segment or adjacent pair, compared without case.
+    The one list: the clone judge and the delete guard both read it."""
+    lowered = [p.lower() for p in parts]
+    return (any(seg.lower() in lowered for seg in _REGENERABLE_IGNORED_SEGMENTS)
+            or any(pair in _REGENERABLE_IGNORED_PAIRS for pair in zip(lowered, lowered[1:])))
+
+
 def _project_patterns(project_root: Path) -> tuple[str, ...]:
     """The project's `adaptation.json` `regenerable_ignored` patterns for `project_root`. A non-list, an
     unreadable file and an entry that is empty, absolute, climbs with `..` or opens with a wildcard
@@ -788,16 +737,41 @@ def is_proof_plant(name: str) -> bool:
     return bool(_PROOF_PLANT.match(name))
 
 
+# The id git gives a tree with no entry, per object format (SHA-1, SHA-256).
+_EMPTY_TREES = frozenset({"4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                          "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321"})
+
+
+def _holds_only_empty_commits(repo: Path) -> bool:
+    """True when deleting `repo` loses no more than commit messages: a standalone repository with no remote, no
+    changed or untracked file, and whose every commit on any ref (a stash included) has the empty tree, which is
+    what a proof's `git commit --allow-empty` fixture is. A commit that carries a file is work."""
+    if not (repo / ".git").is_dir() or _git(["remote"], repo) != "":
+        return False
+    if _git(["status", "--porcelain", "--untracked-files=all"], repo) != "":
+        return False
+    trees = _git(["log", "--all", "--format=%T"], repo)
+    return trees is not None and all(line in _EMPTY_TREES for line in trees.split())
+
+
 def is_plant_exhaust(path: Path) -> bool:
     """True when `path` is a proof's planted folder (`is_proof_plant` on its name) that is no link and holds no
-    `.git` entry at any depth: a repository inside one may hold commits no remote has, so it takes the
-    ordinary judgment. A folder that cannot be read is not exhaust."""
+    git repository at any depth except one `_holds_only_empty_commits`: a repository with a file in a commit, a
+    remote or a changed file may hold work no remote has, so it takes the ordinary judgment. A folder that
+    cannot be read is not exhaust."""
     if not is_proof_plant(path.name) or path.is_symlink():
         return False
     try:
-        return not any(".git" in dirs or ".git" in files for _here, dirs, files in os.walk(path, followlinks=False))
+        for here, dirs, files in os.walk(path, followlinks=False):
+            if ".git" in files:
+                return False
+            if ".git" in dirs:
+                if not _holds_only_empty_commits(Path(here)):
+                    return False
+                dirs.remove(".git")
     except OSError:
         return False
+    return True
 
 
 def _scratch_start(parts: list[str]) -> int | None:
@@ -899,9 +873,8 @@ def _regenerable_ignored(entry: str, patterns: tuple[str, ...] = (), root: Path 
     """A shared cache, a Godot import temp file, a path the project lists, a job's scratch output
     (`_job_scratch`), or (given `root`) an ignored directory whose every file is listed."""
     parts = entry.split("/")
-    return (bool(_REGENERABLE_IGNORED_SEGMENTS & set(parts))
+    return (regenerable_segments(parts)
             or bool(_GODOT_IMPORT_TEMP.search(entry))
-            or any(pair in _REGENERABLE_IGNORED_PAIRS for pair in zip(parts, parts[1:]))
             or _listed(entry, patterns)
             or _job_scratch_regenerable(entry, root, project_root)
             or (root is not None and _only_listed_files(root / entry, entry, patterns)))

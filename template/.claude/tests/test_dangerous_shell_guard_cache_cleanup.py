@@ -64,6 +64,11 @@ MUST_PASS = [
     "rm -rf .pytest_cache",
     "rm -rf .claude/.cache/baseline-repo",
     "rm -rf .claude/logs/transcript_backups",
+    # the Godot docs cache and the other folders `_regenerable_clone` lists as regenerable are one list, not a second one
+    "rm -rf .claude/cache/godot-docs",
+    "rm -rf .claude/cache",
+    "rm -rf Tests/TestResults",
+    "rm -rf .claude/hooks/.cache",
     "Remove-Item -Recurse -Force .claude/hooks/.search-index",
     # quoted literal targets are the same paths (defect 1: blanked quotes denied them)
     'rm -rf ".search-index"',
@@ -87,6 +92,9 @@ MUST_BLOCK = [
     "rm -rf .search-index-backup",
     "rm -rf my.search-index",
     "rm -rf .claude/.cachex",
+    "rm -rf .claude/cache-old",
+    "rm -rf .claude/cache/../..",
+    "rm -rf .claude/hooks",
     # globs, variables, home
     "rm -rf */.search-index",
     "rm -rf .search-index*",
@@ -167,6 +175,17 @@ for cmd, want in (("rm -rf Tests/.search-index", "allow"), ("rm -rf .claude/.cac
     else:
         print(f"  ok   channel {want}: {cmd}")
 
+# A cwd under the system temp directory is disposable, but a token the shell would expand elsewhere is not a path
+# under that cwd: `~`, `$VAR`, `%VAR%` and globs never ride the temp-dir allow.
+_TEMP_CWD = os.path.join(GUARD_TEMP, "work")
+os.makedirs(_TEMP_CWD)
+for cmd in ("rm -rf ~/peer", "rm -rf $HOME/peer", "rm -rf %USERPROFILE%/peer", "rm -rf peer*/x"):
+    if not dsg.check_bash_command(cmd, _TEMP_CWD)[0]:
+        print(f"  FAIL expansion token allowed under a temp cwd: {cmd}")
+        fails += 1
+    else:
+        print(f"  ok   temp cwd block: {cmd}")
+
 # A planted folder is exhaust by its name only while it holds no git repository at any depth: a repository
 # inside one may hold commits no remote has, so that delete is judged like any other.
 _PLANTED_REPO = os.path.join(PROJECT, ".claude", "tmp", "pe_absent_repo_abcdefgh")
@@ -175,10 +194,18 @@ os.makedirs(os.path.join(_PLANTED_REPO, "repo"))
 os.makedirs(os.path.join(_PLANTED_FILES, "sub"))
 with open(os.path.join(_PLANTED_FILES, "sub", "fixture.txt"), "w", encoding="utf-8", newline="\n") as _fh:
     _fh.write("a proof's own fixture\n")
-for _args in (["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "only here"]):
+with open(os.path.join(_PLANTED_REPO, "repo", "work.txt"), "w", encoding="utf-8", newline="\n") as _fh:
+    _fh.write("unpushed work\n")
+for _args in (["init", "-q"], ["add", "work.txt"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "only here"]):
     subprocess.run(["git", *_args], cwd=os.path.join(_PLANTED_REPO, "repo"), check=True, capture_output=True)
+_PLANTED_EMPTY = os.path.join(PROJECT, ".claude", "tmp", "pe_absent_empty_abcdefgh")
+os.makedirs(os.path.join(_PLANTED_EMPTY, "repo"))
+for _args in (["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "unpushed"]):
+    subprocess.run(["git", *_args], cwd=os.path.join(_PLANTED_EMPTY, "repo"), check=True, capture_output=True)
 for cmd, want_blocked in (("rm -rf .claude/tmp/pe_absent_repo_abcdefgh", True),
                           ("rm -rf .claude/tmp/pe_absent_repo_abcdefgh/repo", True),
+                          ("rm -rf .claude/tmp/pe_absent_empty_abcdefgh", False),
+                          ("rm -rf .claude/tmp/pe_absent_empty_abcdefgh/repo", False),
                           ("rm -rf .claude/tmp/pe_absent_files_abcdefgh", False),
                           ("rm -rf .claude/tmp/pe_absent_files_abcdefgh/sub", False)):
     if blocked(cmd) != want_blocked:

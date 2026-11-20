@@ -177,18 +177,27 @@ def main():
           got == sorted((joined, "local-only", t) for t in ("fixtures/state/rows.jsonl", evidence, gate_map)), got)
 
     shipped_copy = ".claude/tests/fixtures/evidence/r1/tree/.claude/tools/helper.py"
-    got = dependencies({row: "import helper\n", shipped_copy: "x = 1\n"}, {row: "pure", shipped_copy: "pure"}, row)
-    check("a python import never resolves to a shipped test fixture's same-named copy", got == [], got)
-    got = dependencies({row: "import helper\n", shipped_copy: "x = 1\n"}, {row: "pure"}, row)
-    check("a python import never resolves to an unshipped test fixture's same-named copy", got == [], got)
     fixture_doc = ".claude/tests/fixtures/evidence/r1/tree/.claude/commands/plan_check.md"
+    look_alikes = {shipped_copy: True, ".claude/tests/fixtures/x.json": True, ".claude/tests/test_fixtures.py": False,
+                   ".claude/tests/fixtures_notes.md": False, ".claude/fixtures/a.json": False}
+    check("one fixture predicate: a file under tests/fixtures/ is test data, a look-alike name is shipped",
+          {rel: lc._fixture(rel) for rel in look_alikes} == look_alikes,
+          {rel: lc._fixture(rel) for rel in look_alikes})
+    fixture_arms = (
+        ("a python import never resolves to a shipped test fixture's same-named copy", row,
+         {row: "import helper\n", shipped_copy: "x = 1\n"}, {row: "pure", shipped_copy: "pure"}),
+        ("a python import never resolves to an unshipped test fixture's same-named copy", row,
+         {row: "import helper\n", shipped_copy: "x = 1\n"}, {row: "pure"}),
+        ("a fixture-tree copy depends on nothing, so judging it push never waits on what it quotes", fixture_doc,
+         {fixture_doc: "Run `/regression_gate`.\n", ".claude/commands/regression_gate.md": "# g\n"}, {fixture_doc: "pure"}),
+    )
+    for label, relpath, files, layers in fixture_arms:
+        got = dependencies(files, layers, relpath)
+        check(label, got == [], got)
     got = planted({fixture_doc: "Run `/regression_gate`, then read `reference/absent.md`.\n",
                    ".claude/commands/regression_gate.md": "# g\n"},
                   {fixture_doc: "pure", ".claude/commands/regression_gate.md": "godot"})
     check("a shipped fixture-tree copy is test data, never a citer", got == [], kinds(got))
-    got = dependencies({fixture_doc: "Run `/regression_gate`.\n", ".claude/commands/regression_gate.md": "# g\n"},
-                       {fixture_doc: "pure"}, fixture_doc)
-    check("a fixture-tree copy depends on nothing, so judging it push never waits on what it quotes", got == [], got)
 
     skill = ".claude/skills/testing/SKILL.md"
     cmd =".claude/commands/regression_gate.md"

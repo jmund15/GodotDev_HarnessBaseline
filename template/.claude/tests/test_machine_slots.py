@@ -158,6 +158,45 @@ class MachineSlots(unittest.TestCase):
             for worker in workers:
                 worker.join(10)
 
+    def _ordered_takers(self, kinds):
+        """One taker per kind ('x' exclusive, 's' shared), queued in that order behind a held lane; returns the
+        order they were served in and each taker's `split`."""
+        os.environ['HARNESS_MACHINE_SLOTS'] = '1'
+        holder = slots.take(False)
+        served, splits, threads = [], {}, []
+        for index, kind in enumerate(kinds):
+            splits[index] = {}
+            def taker(index=index, kind=kind):
+                held = slots.take(kind == 'x', deadline=time.time() + 20, split=splits[index])
+                served.append(index)
+                time.sleep(.05)
+                slots.release_all(held)
+            thread = threading.Thread(target=taker)
+            thread.start()
+            threads.append(thread)
+            self._wait_for_tickets(index + 1)
+        time.sleep(.3)
+        slots.release_all(holder)
+        for thread in threads:
+            thread.join(20)
+        return served, splits
+
+    def test_exclusive_takers_queued_together_share_one_drain(self):
+        """Measured 2026-11-19: runs each took the whole machine for their serial proofs, interleaved with shared
+        work, and every exclusive take after shared work waited out the longest running lane again; a shared run
+        waited 2441 s for about 340 s of proofs. Exclusive tickets are served together, ahead of shared ones."""
+        served, _ = self._ordered_takers('xsx')
+        self.assertEqual(served, [0, 2, 1])
+
+    def test_shared_tickets_still_go_in_arrival_order_behind_an_exclusive_head(self):
+        served, _ = self._ordered_takers('xss')
+        self.assertEqual(served, [0, 1, 2])
+
+    def test_a_take_reports_where_its_wait_went(self):
+        _, splits = self._ordered_takers('xs')
+        self.assertGreaterEqual(splits[0].get('collect', 0), .2, 'the exclusive head collected while a lane ran')
+        self.assertGreaterEqual(splits[1].get('behind', 0), .2, 'the shared taker waited behind the exclusive head')
+
     def _queued(self, deadline=10):
         """A taker that waits in its own thread; returns (thread, result dict)."""
         result = {}
@@ -267,6 +306,18 @@ class MachineSlots(unittest.TestCase):
             os.environ.pop('HARNESS_SLOT_DIR')
             with self.assertRaisesRegex(slots.SlotStoreError, 'no bridge'):
                 slots.take(False)
+
+    def test_busy_count_takes_a_broker_held_lane_that_has_no_path(self):
+        # A WSL caller holds its lane through the Windows broker: the handle is a _Proxy with no slot path.
+        folder = tempfile.mkdtemp(prefix='busy_lanes_')
+        proxy = slots._Proxy(None)
+        with patch.object(slots._file_lock, 'acquire', side_effect=lambda path, *_a: 'probe'), \
+                patch.object(slots._file_lock, 'release'):
+            self.assertEqual(slots.busy_lanes(folder, 3, [proxy]), 1)
+        with patch.object(slots._file_lock, 'acquire',
+                          side_effect=lambda path, *_a: None if path.endswith('slot-0.lock') else 'probe'), \
+                patch.object(slots._file_lock, 'release'):
+            self.assertEqual(slots.busy_lanes(folder, 3, [proxy]), 1, 'the probe of its own slot is not a second lane')
 
     def test_case_pool_uses_one_lane_when_pool_full(self):
         sys.path.insert(0, str(ROOT / '.claude/tests'))

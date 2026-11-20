@@ -65,7 +65,7 @@ def run_stubbed(repo, paths, outcomes, options=None, serial=()):
     def stub(proof, timeout=None, root=None, **_):
         return outcomes[os.path.basename(proof)].pop(0)
 
-    def take(exclusive, count=1):
+    def take(exclusive, count=1, split=None):
         if exclusive:
             takes.append(exclusive)
         return real_take(exclusive, count)
