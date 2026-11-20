@@ -86,12 +86,15 @@ def _runner():
     adaptation data it loads. A runner that cannot import leaves every helper None."""
     if "runner" not in _LAZY:
         try:
-            from harness_tests import close_base, close_paths, commit_advisories, default_base_covers, push_destination, unproven_command
-            _LAZY["runner"] = SimpleNamespace(error=None, close_base=close_base, close_paths=close_paths,
+            from harness_tests import (close_base, close_paths, commit_advisories, default_base_covers, discover, _named_for,
+                                       push_destination, unproven_command)
+            _LAZY["runner"] = SimpleNamespace(error=None, discover=discover, named_for=_named_for,
+                                              close_base=close_base, close_paths=close_paths,
                                               commit_advisories=commit_advisories, default_base_covers=default_base_covers,
                                               push_destination=push_destination, unproven_command=unproven_command)
         except Exception as _exc:
-            _LAZY["runner"] = SimpleNamespace(error="%s: %s" % (type(_exc).__name__, _exc), close_base=None,
+            _LAZY["runner"] = SimpleNamespace(error="%s: %s" % (type(_exc).__name__, _exc), discover=None,
+                                              named_for=None, close_base=None,
                                               close_paths=None, commit_advisories=None, default_base_covers=None,
                                               push_destination=None, unproven_command=None)
     return _LAZY["runner"]
@@ -427,11 +430,13 @@ def _setup_surface(path):
 
 
 def _tracked_proofs(tests_dir, name, git_env=None):
-    """The tracked proof files for a tool: a file that exists on disk but was never committed
-    reaches no other checkout."""
-    import glob
-    hits = (glob.glob(os.path.join(tests_dir, "test_%s*.py" % name))
-            or glob.glob(os.path.join(tests_dir, "%s_test.*" % name)))
+    """The tracked proof files the runner binds to a tool: a file that exists on disk but was never committed
+    reaches no other checkout. The runner's `discover` and `_named_for` decide which file proves `name`; a runner
+    that does not import binds none."""
+    runner = _runner()
+    if runner.error:
+        return []
+    hits = [h for h in runner.discover(tests_dir) if runner.named_for(os.path.basename(h), name)]
     return [h for h in hits if run_git(["ls-files", "--error-unmatch", "--", h], tests_dir, git_env) is not None]
 
 
@@ -1066,9 +1071,15 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
                 break
 
     if missing:
+        runner = _runner()
+        if runner.error:
+            return ("BLOCKED harness commit (rules/harness_tooling.md) — the proof runner does not import (%s), so no "
+                    "proof can be bound to %s. Fix harness_tests.py; HARNESS_ALLOW_UNSTAMPED_HARNESS=1 is for that "
+                    "repair commit." % (runner.error, ", ".join(norm for norm, _ in missing)))
         lines = ["BLOCKED harness commit (rules/harness_tooling.md) — no re-runnable proof; add a tracked proof for:"]
         for norm, name in missing:
-            lines.append("  %s -> expected .claude/tests/test_%s*.py" % (norm, name))
+            lines.append("  %s -> expected .claude/tests/test_%s*.py or another form harness_tests.py binds"
+                         % (norm, name))
         return "\n".join(lines)
 
     if changed:

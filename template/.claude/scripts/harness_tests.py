@@ -174,7 +174,8 @@ def durations_path():
     return _shared_or_beside(DURATIONS_PATH, "proof_durations.json")
 
 
-_PATTERNS = ("test_*.py", "*_test.py", "*_test.js", "test_*.mjs", "test_*.sh", "*_test.sh", "test_*.ps1")
+_PROOF_EXTS = (".py", ".js", ".mjs", ".sh", ".ps1")
+_PATTERNS = tuple(form % ext for ext in _PROOF_EXTS for form in ("test_*%s", "*_test%s"))
 _TIMEOUT_SEC = 120
 # A proof's timeout is its last whole pass times `_LOAD_FACTOR` (never under the default). A
 # `proof_timeouts` entry in adaptation.json overrides it for the proof it names.
@@ -1392,11 +1393,11 @@ def _claim_width(folder, count):
     return _slot_pool.claim_width(folder, count)
 
 
-def _take_slots(exclusive, count=1):
-    """Admission shared with publish, case pools, runtime work and WSL's Windows broker. An exclusive take waits
-    for every proof on the machine to end, so while it waits it prints a queued line naming the holders."""
+def _take_slots(exclusive, count=1, split=None):
+    """Admission shared with publish, case pools, runtime work and WSL's Windows broker. A take that queues
+    prints a queued line naming the holders; `split` receives where its wait went (`machine_slots.take`)."""
     return _slot_pool.take(exclusive, count, folder=_slot_dir(), width=_machine_slots(), deadline=_deadline(),
-                           notice=exclusive)
+                           notice=True, split=split)
 
 
 @contextmanager
@@ -1447,13 +1448,15 @@ def _launch(path, timeout=None, exclusive=False, root=None, recheck=None, timing
     Queue time is outside the proof timeout and is returned in `timing.wait_s`.
     A missing slot store is cannot-run; an expired run deadline is `_SKIPPED`."""
     asked = time.time()
+    split = {}
     try:
-        handles = [] if _MACHINE_HELD else _take_slots(exclusive or os.path.basename(path) in SERIAL)
+        handles = [] if _MACHINE_HELD else _take_slots(exclusive or os.path.basename(path) in SERIAL, split=split)
     except SlotStoreError as exc:
         return ("cannot-run", 0.0, str(exc))
     finally:
         if timing is not None:
             timing["wait_s"] = round(time.time() - asked, 2)
+            timing["wait_split"] = split
     if handles is None:
         return _SKIPPED
     try:
@@ -3387,7 +3390,7 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     deadline = _deadline()
     reused = set()
     partial = {}  # {proof: cases reused} for a run that skipped `_case_pool` cases
-    waits = {}
+    waits, wait_split = {}, {}
 
     def expected(path):
         value = known.get(os.path.basename(path), 0)
@@ -3436,6 +3439,8 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
         if stop:
             stop()
         waits[path] = waits.get(path, 0.0) + timing.get("wait_s", 0.0)
+        for kind, seconds in timing.get("wait_split", {}).items():
+            wait_split[kind] = wait_split.get(kind, 0.0) + seconds
         if held and path not in reused and result[0] != "skipped":
             partial[path] = len(held)
         else:
@@ -3654,7 +3659,7 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
         record.update({
             "ts": time.time(), "session": os.environ.get("CLAUDE_CODE_SESSION_ID") or None, "mode": mode,
             "head": head, "selected": len(selected), "reused": len(reused),
-            "queue_s": round(sum(waits.values()), 1), "width": width,
+            "queue_s": round(sum(waits.values()), 1), "queue_split_s": {k: round(v, 1) for k, v in wait_split.items()}, "width": width,
             "pool_s": round(pool_s, 1), "alone_n": alone_n, "alone_s": round(alone_s, 1),
             "proofs": [dict({"proof": os.path.basename(p), "status": results[p][0], "run_s": round(results[p][1], 1),
                              "wait_s": round(waits.get(p, 0.0), 1), "reused": p in reused},
@@ -3672,6 +3677,8 @@ def _run_selected(selected, verbose, statuses=None, details=None, options=RunOpt
     if mode != "close":
         _progress("phase times: %s; wall %ds" % (", ".join("%s %ds" % (name, seconds) for name, seconds in phases.items()
                                                            if name != "post" and seconds >= 1) or "none over 1s", wall))
+    if wait_split and sum(wait_split.values()) >= 1:
+        _progress("slot wait, summed over jobs: %s" % ", ".join("%s %ds" % item for item in sorted(wait_split.items())))
     return passed, failed, indeterminate, wall
 
 

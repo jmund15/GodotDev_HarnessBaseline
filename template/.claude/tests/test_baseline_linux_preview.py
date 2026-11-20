@@ -244,6 +244,8 @@ def main():
                   'HOME="$D/a.home"' in script_of_two(blp) and 'export HARNESS_MACHINE_ROOT=' in script_of_two(blp)
                   and 'HARNESS_WINDOWS_SLOT_SCRIPT' in script_of_two(blp)
                   and 'HARNESS_SLOT_DIR="$R/.slots"' not in script_of_two(blp)))
+    cases.append(("a lane holds no machine slot, so its runner takes one per proof instead of running serially",
+                  '"$HARNESS_SLOT_SCRIPT" run --' not in script_of_two(blp)))
 
     home = Path(tempfile.mkdtemp(prefix="blp_home_"))
     tree = Path(tempfile.mkdtemp(prefix="blp_tree_"))
@@ -349,6 +351,16 @@ def main():
     cases.append(("no WSL exits 4 and ::result says unavailable with the reason",
                   code == 4 and '"status": "unavailable"' in text and "no WSL" in text))
 
+    battery = "harness_tests: 3 run, 2 pass, 0 fail, 1 cannot-run, 0 excluded, 0 heavy skipped, 1.0s wall, 1 jobs"
+    cases.append(("the battery summary line reaches the verdict sink",
+                  blp.VERDICT_LINE.match(battery) is not None))
+    counted = blp.summarize([battery, "::lane pure 40s"], ["pure"])
+    cases.append(("a battery's cannot-run proof is counted as not run, and its lane stays green",
+                  counted["status"] == "green"
+                  and counted["lanes"][0]["counts"] == {"run": 3, "pass": 2, "fail": 0, "cannot_run": 1}))
+    cases.append(("a lane with no battery summary reports no counts",
+                  blp.summarize(["::lane root 3s"], ["root"])["lanes"][0]["counts"] is None))
+
     helped = io.StringIO()
     with contextlib.redirect_stdout(helped), contextlib.redirect_stderr(io.StringIO()):
         helped_rc = blp.main(["--help"])
@@ -382,6 +394,73 @@ def main():
                   probe.returncode == 4 and "::unavailable" in probe.stdout and "--setup" in probe.stdout))
     cases.append(("without preflight the script carries no tool check",
                   "::unavailable" not in mine))
+
+    scoped_jobs = [("template", [("template harness battery", "python3 template/.claude/scripts/harness_tests.py")]),
+                   ("pure", [("bootstrap", "bash bootstrap.sh --target \"$t\""),
+                             ("pure profile battery", 'cd "$t" && python3 .claude/scripts/harness_tests.py')])]
+    changed = ["template/.claude/tools/a_tool.py", "template/.claude/tools/b_tool.py", "tests/test_root.py"]
+    scoped = dict(blp.scope_to_paths(scoped_jobs, changed))
+    cases.append(("a battery step runs only the proofs bound to the changed template paths, in every lane",
+                  "--proofs-for '.claude/tools/a_tool.py' '.claude/tools/b_tool.py'" in scoped["template"][0][1]
+                  and "--proofs-for '.claude/tools/a_tool.py' '.claude/tools/b_tool.py'" in scoped["pure"][1][1]
+                  and "tests/test_root.py" not in scoped["pure"][1][1]
+                  and scoped["pure"][0][1] == scoped_jobs[1][1][0][1]))
+    none = dict(blp.scope_to_paths(scoped_jobs, ["tests/test_root.py"]))
+    cases.append(("no changed template path leaves the battery step nothing to run, and green",
+                  "harness_tests.py" not in none["template"][0][1] and "0 run" in none["template"][0][1]))
+    root_jobs = [("root", [("baseline-repo-root proofs", "for f in tests/test_*.py; do python3 $f; done")])]
+    only_template = dict(blp.scope_to_paths(root_jobs, ["template/.claude/tools/a_tool.py"]))
+    root_change = dict(blp.scope_to_paths(root_jobs, ["template/.claude/tools/a_tool.py", "tools/gen_manifest.py"]))
+    cases.append(("the baseline-repo root proofs run only when a path outside template/ changed",
+                  "for f in" not in only_template["root"][0][1] and "0 run" in only_template["root"][0][1]
+                  and root_change["root"][0][1] == root_jobs[0][1][0][1]))
+    cases.append(("paths=None keeps the whole battery",
+                  dict(blp.scope_to_paths(scoped_jobs, None))["template"][0][1] == scoped_jobs[0][1][0][1]))
+    mini = Path(tempfile.mkdtemp(prefix="blp_scoped_"))
+    (mini / ".claude" / "scripts").mkdir(parents=True)
+    (mini / ".claude" / "tools").mkdir()
+    (mini / ".claude" / "tests").mkdir()
+    real_runner = Path(blp.__file__).resolve().parent.parent / "scripts" / "harness_tests.py"
+    (mini / ".claude" / "scripts" / "harness_tests.py").write_text(
+        "import runpy, sys\nsys.argv[1:1] = ['--repo', %r]\nrunpy.run_path(%r, run_name='__main__')\n"
+        % (str(mini), str(real_runner)), encoding="utf-8")
+    for stem in ("a_tool", "b_tool", "c_tool"):
+        (mini / ".claude" / "tools" / (stem + ".py")).write_text("x = 1\n", encoding="utf-8")
+        (mini / ".claude" / "tests" / ("test_" + stem + ".py")).write_text(
+            "import sys\nsys.exit(0)\n", encoding="utf-8")
+    mini_jobs = [("lane", [("battery", "python3 .claude/scripts/harness_tests.py")])]
+
+    def run_mini(paths):
+        body = dict(blp.scope_to_paths(mini_jobs, paths))["lane"][0][1]
+        return subprocess.run([bash_exe(), "--noprofile", "--norc", "-eo", "pipefail", "-c", body], cwd=mini,
+                              capture_output=True, text=True, timeout=300)
+
+    two = run_mini(["template/.claude/tools/a_tool.py", "template/.claude/tools/b_tool.py"])
+    cases.append(("a planted change that binds two proofs runs exactly those two",
+                  two.returncode == 0 and "2 run, 2 pass, 0 fail" in two.stdout and "c_tool" not in two.stdout))
+    cases.append(("the scoped summary line reaches the lane verdict like a full battery's",
+                  blp.BATTERY.match("harness_tests: scoped: 2 run, 2 pass, 0 fail, 0 cannot-run, 0 skipped, 1.0s wall")
+                  is not None))
+    unbound = run_mini(["template/.claude/tools/zzz_unbound.py"])
+    cases.append(("a change that binds no proof is green with zero run, not a failed step",
+                  unbound.returncode == 0 and "0 run" in unbound.stdout))
+    (mini / ".claude" / "tests" / "test_a_tool.py").write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
+    red = run_mini(["template/.claude/tools/a_tool.py"])
+    cases.append(("a red bound proof fails the step and its FAIL line is kept",
+                  red.returncode == 1 and any(blp.PROOF_FAIL.match(l) for l in red.stdout.splitlines())))
+    repo = Path(tempfile.mkdtemp(prefix="blp_changed_"))
+    for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(repo)] + args, check=True)
+    (repo / "keep.txt").write_text("1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "base"], check=True)
+    (repo / "template").mkdir()
+    (repo / "template" / "n.py").write_text("1\n", encoding="utf-8")
+    (repo / "keep.txt").unlink()
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "publish"], check=True)
+    cases.append(("changed_paths lists what the publish commit adds, changes and deletes",
+                  sorted(blp.changed_paths(repo)) == ["keep.txt", "template/n.py"]))
 
     failed = 0
     for label, ok in cases:

@@ -56,7 +56,7 @@ import lock_merge  # noqa: E402  the lock's one serializer; the merge driver wri
 
 OPS = ("check", "diff", "pull", "update-lock", "resolve", "migrate", "upgrade",
        "classify", "judge", "triage", "forget", "gc", "fork", "track",
-       "ignore", "candidates", "paths", "init", "compose", "sub", "doctor", "never-ship")
+       "ignore", "candidates", "paths", "closure", "init", "compose", "sub", "doctor", "never-ship")
 ROOT_ACCEPTS = "<op> [relpaths] [flags]; ops: " + "|".join(OPS)
 ROOT_EXAMPLE = "python3 .claude/tools/baseline_sync.py judge .claude/tools/reap.py --verdict push"
 JUDGE_ACCEPTS = ("judge RELPATH [RELPATH ...] --verdict push|keep-local|fork [--accept-hit PATH] "
@@ -2022,10 +2022,11 @@ _DEPENDENCY_MEANING = {
 _ADDED_CITATION_MEANING = "this change adds the citation and consumers have older bytes"
 
 
-def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None, lock: dict,
-                                   source: BaselineSource | None, pushing: set[str],
-                                   commit: str | None) -> None:
-    """A row publishes with what it imports and cites: each dependency that is a lock row is in sync
+def _dependency_states(root: Path, relpath: str, data: bytes | None, lock: dict,
+                       source: BaselineSource | None, pushing: set[str],
+                       commit: str | None) -> tuple[dict[str, str], set[str] | None]:
+    """`({dependency: state}, the baseline copy's own dependencies)` for each dependency `relpath` would publish
+    with that consumers would not receive: A row publishes with what it imports and cites: each dependency that is a lock row is in sync
     with the baseline, judged push at its current sha (here or in this call), forked, or a `local` row
     the baseline ships (a seed): a forked or shipped-local dependency reaches every consumer as the
     baseline's copy. A `local-modified` dependency (the baseline ships it, consumers hold older bytes)
@@ -2076,12 +2077,113 @@ def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None,
         states[dep] = state
     for dep in rowless:
         states[dep] = "no-row"
+    return states, old_deps
+
+
+def _refuse_unshipped_dependencies(root: Path, relpath: str, data: bytes | None, lock: dict,
+                                   source: BaselineSource | None, pushing: set[str],
+                                   commit: str | None) -> None:
+    """Refuse a row whose dependencies `_dependency_states` finds consumers would not receive, naming each."""
+    states, old_deps = _dependency_states(root, relpath, data, lock, source, pushing, commit)
     if states:
         lines = [f"  {dep}: {state}; "
                  + (_ADDED_CITATION_MEANING if state == "local-modified" and old_deps is not None
                     else _DEPENDENCY_MEANING.get(state, 'it is not in sync with the baseline'))
                  + f"; run `judge {dep} --verdict push`" for dep, state in states.items()]
         raise BaselineError(f"{relpath} depends on rows consumers would not receive:\n" + "\n".join(lines))
+
+
+def _since_baseline_copy(root: Path, source: BaselineSource, lock: dict, relpath: str,
+                         outside: set[str]) -> list[tuple[str, str]]:
+    """`(short sha, subject)` of each commit that changed `relpath` since the local copy last equalled the baseline's,
+    outside the commits in `outside`. Empty for a row the baseline lacks."""
+    upstream = upstream_text(source, relpath, lock.get("substitutions", {}))
+    if upstream is None:
+        return []
+    want = content_sha(relpath, upstream.encode("utf-8"))
+    listed = _git_text(root, ["log", "-n", "200", "--format=%H %s", "--", relpath]).splitlines()
+    commits = [(line.split(" ", 1)[0], line.split(" ", 1)[1] if " " in line else "") for line in listed]
+    blobs = _cat_file_many(root, [f"{sha_}:{relpath}" for sha_, _ in commits]) or [None] * len(commits)
+    since = []
+    for (sha_, subject), blob in zip(commits, blobs):
+        if blob is not None and content_sha(relpath, blob) == want:
+            break
+        since.append((sha_, subject))
+    return [(sha_[:7], subject) for sha_, subject in since if sha_ not in outside]
+
+
+def v2_closure(root: Path, relpaths: list[str], carry: str | None, baseline_dir: str | None = None) -> int:
+    """Print, once and from static reads only, what publishing `relpaths` pulls in: each dependency consumers would
+    not receive and the row that cites it, transitively; the push-judged rows outside that set; and per row the commits
+    since its baseline copy that `carry` (BASE..HEAD) does not cover."""
+    _validate_relpaths(relpaths)
+    lock = load_lock(root)
+    files = lock.get("files", {})
+    unknown = [relpath for relpath in relpaths if relpath not in files]
+    if unknown:
+        raise BaselineError("not a row: " + ", ".join(unknown))
+    source, source_error = _try_source(root, baseline_dir)
+    if source is None:
+        raise BaselineError(f"closure needs the baseline: {source_error}")
+    try:
+        named = set(relpaths)
+        pulled: dict[str, tuple[str, str]] = {}
+        queue = list(relpaths)
+        while queue:
+            row = queue.pop(0)
+            path = root / row
+            data = path.read_bytes() if path.is_file() else None
+            states, _old = _dependency_states(root, row, data, lock, source, named, None)
+            for dep, state in states.items():
+                if dep not in pulled and dep not in named:
+                    pulled[dep] = (state, row)
+                    queue.append(dep)
+        outside: set[str] = set()
+        if carry:
+            base, head = carry.split("..", 1)
+            outside = set(_git_text(root, ["rev-list", f"{base}..{head}"]).split())
+        judged_push = [rel for rel, entry in files.items() if (entry.get("judged") or {}).get("verdict") == "push"]
+        current = _content_shas(root, judged_push)
+        backlog = [rel for rel in judged_push if (files[rel].get("judged") or {}).get("sha") == current.get(rel)
+                   and rel not in named and rel not in pulled]
+        print(f"closure: {len(named)} named row(s), {len(pulled)} dependency(ies) pulled in, "
+              f"{len(backlog)} other push-judged row(s) unshipped")
+        for dep, (state, by) in pulled.items():
+            print(f"dependency: {dep} [{state}] pulled in by {by}")
+        print(f"backlog: {len(backlog)} (`paths --verdict push --unshipped` lists them)")
+        for rel in [*relpaths, *pulled]:
+            state = _v2_state(root, source, lock, rel, files.get(rel, {}))
+            if state in ("diverged", "upstream-updated"):
+                print(f"blocked: {rel} [{state}]: `judge` refuses it until `pull --merge {rel}`")
+        shipping = named | set(pulled)
+        subs = lock.get("substitutions", {})
+        for path in _harness_tests().select_for(str(root), sorted(shipping)):
+            rel = Path(os.path.relpath(path, root)).as_posix()
+            if rel in shipping or (files.get(rel) or {}).get("status", "tracked") != "tracked":
+                continue
+            upstream = upstream_text(source, rel, subs)
+            local = root / rel
+            if upstream is not None and local.is_file() and row_text(rel, local.read_bytes()) != upstream:
+                print(f"proof: {rel} differs from the baseline's copy; publish refuses the rows without it")
+        shipped_proofs = {rel for rel in shipping if _is_shipped_proof(rel)}
+        for rel, entry in files.items():
+            if (rel in shipping or entry.get("status", "tracked") != "tracked"
+                    or (entry.get("judged") or {}).get("verdict") == "keep-local"):
+                continue
+            if _v2_state(root, source, lock, rel, entry) not in ("local-modified", "unpublished"):
+                continue
+            bound = {Path(os.path.relpath(path, root)).as_posix()
+                     for path in _harness_tests().select_for(str(root), [rel])} & shipped_proofs
+            if bound:
+                print(f"subject: {rel} is bound to shipped proof(s) {', '.join(sorted(bound))} and does not ship; "
+                      f"the shipped proof runs against the baseline's older copy")
+        for rel in [*relpaths, *pulled]:
+            since = _since_baseline_copy(root, source, lock, rel, outside)
+            if since:
+                print(f"since baseline copy: {rel} " + "; ".join(f"{sha_} {subject}" for sha_, subject in since))
+    finally:
+        source.close()
+    return 0
 
 
 def _refuse_push_over_newer_upstream(root: Path, relpath: str, entry: dict, lock: dict,
@@ -3086,10 +3188,9 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                     continue
                 base = _upstream_text_at(source, relpath, _row_base(lock, files[relpath]), subs)
                 local = local_text(root, relpath) or ""
-                if base is None:
-                    conflicts.append((relpath, "no upstream copy at the row's base commit; merge by hand", None))
-                    continue
-                text, hunks = _merge3(local, base, upstream)
+                # No upstream copy at the base: merge over an empty base, so every line the two sides
+                # disagree on is a conflict hunk and `resolve` can install the hand-merged copy.
+                text, hunks = _merge3(local, base or "", upstream)
                 if hunks:
                     copy_path = (root / MERGE_COPY_DIR / relpath).resolve()
                     _write_lf(copy_path, text)
@@ -4302,8 +4403,8 @@ def _validate_cli_usage(args) -> list[str] | None:
     if args.status is not None and args.op == "classify" and args.status not in V2_STATUSES:
         raise UsageError("--status must be tracked, local, forked or composed")
     if args.carry is not None:
-        if args.op != "judge":
-            raise UsageError("--carry is only valid with judge")
+        if args.op not in ("judge", "closure"):
+            raise UsageError("--carry is only valid with judge or closure")
         for flag, given in (("--verdict", args.verdict), ("--commit", args.commit),
                             ("--borderline", args.borderline), ("--confirm", args.confirm)):
             if given:
@@ -4516,6 +4617,10 @@ def main(argv=None) -> int:
         layers = resolve_layers_v2(lock, args.layers)
         if args.op == "paths":
             return v2_paths(lock, args.status, args.verdict, args.json, args.unshipped, root)
+        if args.op == "closure":
+            if not args.relpaths:
+                raise UsageError("closure needs the rows to publish")
+            return v2_closure(root, args.relpaths, args.carry, args.baseline_dir)
         if args.op == "gc":
             return v2_gc(root, args.apply)
         if args.op == "forget":

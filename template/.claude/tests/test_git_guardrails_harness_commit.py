@@ -759,6 +759,13 @@ def excluded_proof_cases():
     git(repo, ["add", "-A"])
     failures.append(case("a hook with no tracked proof denies: a hook is a guard",
                          run_hook("git commit -F msg -- .claude/hooks/y.py", repo), DENY, "no re-runnable proof"))
+    for proof in ("test_y.sh", "test_y.mjs", "y_extra_test.js", "y_test.mjs"):
+        repo = make_repo()
+        write(repo, ".claude/hooks/y.py", "y = 1" + NL)
+        write(repo, ".claude/tests/" + proof, "echo ok" + NL)
+        git(repo, ["add", "-A"])
+        failures.append(case("a hook whose only proof is %s, a form the runner binds, commits" % proof,
+                             run_hook("git commit -F msg -- .claude/hooks/y.py", repo), ALLOW))
     return failures
 
 
@@ -1052,7 +1059,7 @@ def inline_cases_b():
     r = subprocess.run([sys.executable, os.path.join(broken_hooks, "git_guardrails.py")],
                        input=json.dumps(payload), capture_output=True, text=True, timeout=30, cwd=repo)
     got = (DENY, r.stderr) if r.returncode == 2 else (ALLOW, r.stdout)
-    failures.append(case("broken runner still denies a missing tracked proof", got, DENY, "no re-runnable proof"))
+    failures.append(case("broken runner still denies a missing tracked proof", got, DENY, "does not import"))
     write(repo, ".claude/reference/repair.md", "repair\n")
     git(repo, ["add", ".claude/reference/repair.md"])
     payload["tool_input"]["command"] = "git commit -F msg -- .claude/reference/repair.md"

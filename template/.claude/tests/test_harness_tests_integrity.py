@@ -407,6 +407,17 @@ class HarnessIntegrityTests(unittest.TestCase):
             found = sorted(Path(p).name for p in runner.discover(tmp))
         self.assertEqual(found, ['real_test.py', 'test_real.sh'])
 
+    def test_discovery_covers_every_extension_the_runner_runs(self):
+        exts = ('.py', '.js', '.mjs', '.sh', '.ps1')
+        names = [form % ext for ext in exts for form in ('test_x%s', 'x_test%s')]
+        for name in names:
+            runner._runner_cmd(name)
+        with tempfile.TemporaryDirectory(prefix='harness-discover-') as tmp:
+            for name in names:
+                (Path(tmp) / name).write_text('', encoding='utf-8')
+            found = sorted(Path(p).name for p in runner.discover(tmp))
+        self.assertEqual(found, sorted(names))
+
     def test_invalid_arguments_fail_before_test_execution(self):
         for args in (['--unknown'], ['--repo'], ['--tiers', '--all'], ['--hash']):
             with self.subTest(args=args), patch.object(runner, 'run_all') as run, \

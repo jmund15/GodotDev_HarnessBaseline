@@ -109,7 +109,6 @@ MUST_BLOCK = [
     "rm -rf .claude/scratch/../../src",
     "rm -rf .claude/scratch/x src",
     "cd /tmp && rm -rf ../Users",
-    "rm -rf src/.godot",
     "mkdir -p src && rm -rf src",
     # KFM #50: a second delete hidden beside an allowed one disqualifies the whole command.
     "rm -rf .claude/scratch/x; echo $(rm -rf src)",
@@ -163,6 +162,7 @@ MUST_PASS = [
     "rm -rf " + PLAIN_TEMP.name.replace('\\', '/') + "/red_check",
     "rm -rf .claude/worktrees/uid-header-backfill/.godot",
     "rm -rf .godot && echo reimport",
+    "rm -rf src/.godot",
 ]
 
 fails = 0

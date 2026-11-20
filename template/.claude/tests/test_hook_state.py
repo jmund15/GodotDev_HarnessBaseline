@@ -361,11 +361,6 @@ def _py_rename_sites(source):
             label(child, name)
 
     label(tree, "<module>")
-    path_vars = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
-                and getattr(node.value.func, "id", "") == "Path":
-            path_vars.update(t.id for t in node.targets if isinstance(t, ast.Name))
     sites = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -374,14 +369,10 @@ def _py_rename_sites(source):
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
                 and "%s.%s" % (func.value.id, func.attr) in PY_RENAME_CALLS:
             sites.append((node.lineno, owner.get(node.lineno, "<module>")))
-        elif isinstance(func, ast.Attribute) and func.attr == "replace" and len(node.args) == 2:
-            receiver = func.value
-            inline = isinstance(receiver, ast.Call) and getattr(receiver.func, "id", "") == "Path"
-            tainted = isinstance(receiver, ast.Name) and receiver.id in path_vars
-            # A Path rename passes paths, never two literals; string `.replace("\\", "/")` stays out.
-            literal_args = all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in node.args)
-            if (inline or tainted) and not literal_args:
-                sites.append((node.lineno, owner.get(node.lineno, "<module>")))
+        elif isinstance(func, ast.Attribute) and func.attr in ("replace", "rename") \
+                and len(node.args) == 1 and not node.keywords:
+            # `str.replace` takes two or more arguments, so a one-argument call on any receiver is a Path rename.
+            sites.append((node.lineno, owner.get(node.lineno, "<module>")))
     return sites
 
 
@@ -443,6 +434,10 @@ try:
         "scripts/c.sh": "mv \"$a\" \"$b\"  # bare-rename: a fresh name\nmv \"$b\" \"$c\"\n# mv in a comment\n",
         "scripts/d.ps1": "Move-Item -LiteralPath $t -Destination $p -Force\n"
                          "# bare-rename:\n[IO.File]::Move($t, $p, $true)\n",
+        "tools/e.py": "def a(doc, target):\n    doc.replace(target)\n"
+                      "def b(src, dst):\n    src.rename(dst)\n"
+                      "def c(s, x, y):\n    return s.replace(x, y)\n"
+                      "def d(doc, target):\n    doc.replace(target)  # bare-rename: target is a fresh name\n",
         "hooks/_hook_state.py": "import os\ndef replace_path(source, target):\n    os.replace(source, target)\n",
     }.items():
         _path = os.path.join(_plant, _rel)
@@ -454,7 +449,7 @@ finally:
     shutil.rmtree(_plant, ignore_errors=True)
 check("the rename scan reports an unexplained site in each language and passes an explained one",
       _planted == ["hooks/b.py:6 move()", "scripts/c.sh:2 <file>()", "scripts/d.ps1:1 <file>()",
-                   "scripts/d.ps1:3 <file>()", "tools/a.py:3 save()"],
+                   "scripts/d.ps1:3 <file>()", "tools/a.py:3 save()", "tools/e.py:2 a()", "tools/e.py:4 b()"],
       repr(_planted))
 
 

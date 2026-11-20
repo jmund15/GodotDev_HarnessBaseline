@@ -649,18 +649,16 @@ def record_contract():
               "effort": EFFORT, "kind": "reviewer"}
     verdict = lens_briefs.record_problems([record], kind="reviewer")
     check("a complete prepared record holds the one contract", verdict == [], verdict)
-    for field in ("label", "mandates", "mustRead", "promptPath", "effort", "kind"):
-        planted = dict(record)
-        planted.pop(field)
+    breaks = [(f"missing {field}", {k: v for k, v in record.items() if k != field}, field)
+              for field in ("label", "mandates", "mustRead", "promptPath", "effort", "kind")]
+    breaks.append(("prompt path not POSIX", dict(record, promptPath=brief.as_posix().replace("/", "\\")), None))
+    breaks.append(("another build's kind", dict(record, kind="author"), None))
+    unmet = []
+    for name, planted, field in breaks:
         problems = lens_briefs.record_problems([planted], kind="reviewer")
-        check(f"a record missing {field} fails the contract, naming it",
-              bool(problems) and field in " ".join(problems), problems)
-    windows = dict(record, promptPath=brief.as_posix().replace("/", "\\"))
-    check("a record whose prompt path is not POSIX fails the contract",
-          bool(lens_briefs.record_problems([windows], kind="reviewer")))
-    wrong_kind = dict(record, kind="author")
-    check("a record carrying another build's kind fails the contract",
-          bool(lens_briefs.record_problems([wrong_kind], kind="reviewer")))
+        if not problems or (field and field not in " ".join(problems)):
+            unmet.append((name, problems))
+    check("the one contract refuses every planted break, naming a missing field", unmet == [], unmet)
     side = {"label": "p-seat", "mandates": ["seat"], "mustRead": record["mustRead"],
             "promptFile": brief.as_posix(), "alias": "probe-alias", "tier": "architect", "effort": "high",
             "kind": "reviewer", "schemaFile": (tmp / "schema.json").as_posix(), "workdir": tmp.as_posix(),

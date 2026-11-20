@@ -120,8 +120,7 @@ Passes are reused while reached inputs are unchanged, whichever checkout of the 
 `/sync_baseline` publish sets `HARNESS_REUSE_PASSES=1` for its full battery, so it reuses recorded passes.
 
 `git_guardrails.py` keeps quick checks (skill load, density, git/index scope and tracked-proof
-presence) and makes the advisory proof run above. An authored `hooks/` `.py` needs a git-TRACKED `tests/test_<name>*.py` or
-`tests/<name>_test.*`, since a hook is a guard; underscore helpers, deletions and edits `_behavior_unchanged` proves comment/docstring-only are exempt. This block and the must-allow set below hold under `reference/mechanism_litmus.md`; the census rules on each. A tool gets a proof when it holds logic a wrong edit breaks silently (a branch it decides on, a parser, a reducer); the author judges that, and no guard asks for a proof file per tool. An edit to a tool whose every tracked proof `adaptation.json` `proof_excluded` lists commits with an advisory naming each excluded proof and its reason, since the close never runs it. A commit touching tracked `baseline.lock.json` rows runs `layer_closure.scan` over those rows from the local cache clone and advises each finding. Staged-blob peer-revert checks stay;
+presence) and makes the advisory proof run above. An authored `hooks/` `.py` needs a git-TRACKED proof the runner binds to it (`harness_tests.py` `_named_for` over `discover`: `tests/test_<name>*`, `tests/<name>_test*` or `tests/<name>_<suffix>_test.*`), since a hook is a guard; underscore helpers, deletions and edits `_behavior_unchanged` proves comment/docstring-only are exempt. This block and the must-allow set below hold under `reference/mechanism_litmus.md`; the census rules on each. A tool gets a proof when it holds logic a wrong edit breaks silently (a branch it decides on, a parser, a reducer); the author judges that, and no guard asks for a proof file per tool. An edit to a tool whose every tracked proof `adaptation.json` `proof_excluded` lists commits with an advisory naming each excluded proof and its reason, since the close never runs it. A commit touching tracked `baseline.lock.json` rows runs `layer_closure.scan` over those rows from the local cache clone and advises each finding. Staged-blob peer-revert checks stay;
 proof-byte freshness moves to committed HEAD at close. The inline prefix
 `HARNESS_ALLOW_UNSTAMPED_HARNESS=1` is only for repairing the guard or runner, never a hurry.
 
@@ -156,8 +155,8 @@ check, as above.
 Local heavy lanes share `tools/machine_slots.py` admission: close proofs, publish checks, preview lanes,
 delegate proofs and C# test lanes. Coordinators and remote model work hold no slot. Direct proof commands
 use `python3 .claude/tools/machine_slots.py run -- <proof command>`; fan-out sidecar shells inherit admission.
-A full pool queues work first come, first served, before its proof timeout starts; a direct proof that waits
-prints a `machine slots: queued` line to stderr, so a queue never reads as a hang. Nested runners spend the parent's lane serially;
+A full pool queues work before its proof timeout starts: whole-machine takes first, then the rest, each in arrival
+order; a take that waits prints a `machine slots: queued` line to stderr naming the holders, so a queue never reads as a hang. Nested runners spend the parent's lane serially;
 case pools borrow extra lanes only when free. A serial proof drains the pool before running.
 
 The Windows pool is `%USERPROFILE%/.claude/.harness_slots`, independent of checkout and proof HOME.

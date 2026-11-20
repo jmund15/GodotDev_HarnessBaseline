@@ -321,7 +321,7 @@ def prove_rows(rows, procs, session_id):
                 table[pid] = {"pid": pid, "ppid": p.get("ppid"), "name": p.get("name") or "",
                               "cmd": p.get("cmd"), "start": p.get("start")}
         live = {}
-        with reap.invocation(session_id, reap.project_key_of_session(session_id)):
+        with reap.invocation(session_id, reap.project_key_of_session(session_id)) as run:
             for r in unknown:
                 owner, _source = reap.owner_of(table, r["pid"], parent_first=True)
                 if not owner:
@@ -334,7 +334,7 @@ def prove_rows(rows, procs, session_id):
                 if live[owner] is True:
                     r["owner"] = "other"
                 elif live[owner] is False:
-                    mine, theirs = reap._RUN.get("project_key"), reap.project_key_of_session(owner)
+                    mine, theirs = run.get("project_key"), reap.project_key_of_session(owner)
                     if mine and theirs and not reap.same_project(theirs, mine):
                         r["owner"] = "other"  # the reaper refuses another project's leftover
                         continue

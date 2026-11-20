@@ -20,6 +20,24 @@ def test_transport_and_member_paths(monkeypatch, tmp_path):
     assert em.marker_path("opencode-cli", "m1") == tmp_path / "members" / "opencode-cli" / "m1.json"
 
 
+def _cap(observed, *used):
+    return {"observedAt": observed, "quota": {"windows": [{"name": f"w{i}", "usedPercent": u} for i, u in enumerate(used)]}}
+
+
+def test_a_later_reading_with_room_supersedes_the_marker():
+    marker = {"writtenAt": 1795118038}
+    assert em.superseded(marker, _cap("2026-11-19T20:02:16Z", 0, 0))
+
+
+def test_the_marker_holds_without_proof_of_a_lifted_limit():
+    marker = {"writtenAt": 1795118038}
+    assert not em.superseded(marker, _cap("2026-11-19T19:00:00Z", 0, 0))      # read before the stop
+    assert not em.superseded(marker, _cap("2026-11-19T20:02:16Z", 100, 0))    # a window still full
+    assert not em.superseded(marker, _cap("2026-11-19T20:02:16Z"))            # no windows
+    assert not em.superseded(marker, None)                                    # no reading
+    assert not em.superseded({"writtenAt": 1795118038, "reason": "auth"}, _cap("2026-11-19T20:02:16Z", 0))
+
+
 def test_read_returns_dict_or_none(monkeypatch, tmp_path):
     monkeypatch.setenv("SIDECAR_EXHAUSTED_DIR", str(tmp_path))
     assert em.read("codex") is None

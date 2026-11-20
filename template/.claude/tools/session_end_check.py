@@ -5,7 +5,7 @@ Receipt completion is author-recorded and freshness-checked, not a semantic audi
 Read/Skill/tool-success observations alone never prove that a full phase finished.
 Default check is precommit; --stage final additionally checks commit and reindex, and prints one line per
 shared-checkout artifact the session changed (index, lock rows, model registry, composed settings) with its check's
-result (`shared_artifact_lines`); the lines report and leave the exit code to the phases.
+result (`shared_artifact_lines`), then the open worklog items this session added (`worklog_session_lines`); the lines report and leave the exit code to the phases.
 --resume reports gaps without failing. --record stores one session-scoped receipt.
 A gated phase (`GATED`) skips only on `--predicate <file>`: the predicate object `close_predicates.py`
 wrote for that stem, stored in the receipt. A false predicate is the skip; a true or null predicate ran
@@ -69,6 +69,7 @@ if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 from self_eval_archive_store import find_session  # noqa: E402
 import close_predicates  # noqa: E402
+import worklog  # noqa: E402
 
 # Stems whose skip is decided by a `close_predicates.py` predicate; a skip with no stored predicate is invalid.
 GATED = frozenset(close_predicates.PREDICATES)
@@ -569,6 +570,18 @@ def shared_artifact_lines(repo, changed, reason=None, runner=None):
     return lines
 
 
+def worklog_session_lines(sid, repo):
+    """The open worklog items `sid` added (`worklog.session_additions`): a count line, then one line per item
+    with its Context. A worklog that cannot be read reads unknown and names why."""
+    try:
+        text = worklog.read_text(str(worklog.vault_todo(repo) / worklog.WORKLOG_NAME))
+    except (OSError, ValueError) as error:
+        return ['worklog items this session added: unknown (%s)' % error]
+    items = worklog.session_additions(text, sid)
+    return ['worklog items this session added (open): %d' % len(items)] + \
+        ['  - %s — %s' % (title, context) for title, context in items]
+
+
 def render(path, sid, archive_path, artifacts, receipts=None, stage='precommit', repo=None):
     """Print observation and receipt status separately; every phase needs a disposition."""
     observations, receipts = phase_observations(path), receipts or {}
@@ -702,6 +715,7 @@ def main():
         changed, why = artifact_changes(a.repo, sid, path)
         print()
         print('\n'.join(shared_artifact_lines(a.repo, changed, why)))
+        print('\n'.join(worklog_session_lines(sid, a.repo)))
 
     print()
     if a.resume:

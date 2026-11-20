@@ -16,7 +16,7 @@ Exemptions, each judged on the resolved target and never on the command's wordin
 - A recursive delete whose every target is a regenerable cache inside the project, a path below the
   system temp directory holding no git repository, this session's own `.claude/scratch/<session id>`
   output, a pushed regenerable clone, a scratch folder holding no git repository and no registered
-  worktree, a folder a proof planted under `.claude/tmp` (`is_proof_plant`, holding no git repository; the owner's loose files
+  worktree, a folder a proof planted under `.claude/tmp` (`is_proof_plant`, holding no git repository but an empty-commit fixture; the owner's loose files
   there stay protected), a retired worktree (nothing git lacks, every commit on a remote; its ignored
   files go only when this session created it), a `NAME=$(mktemp -d)` variable the same command owns, or a
   folder a flagless `mkdir` of this session created (`_session_made_dir`: its transcript call succeeded and the
@@ -38,15 +38,16 @@ Wired in: hooks/pre_bash_dispatch.py (floor member). Standalone: stdin PreToolUs
 import json
 import os
 import re
+from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _command_text import executable_text, executable_spans, command_words, _REDIRECTION  # noqa: E402
 from _regenerable_clone import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
-                                is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
-                                session_created_worktree)
+                                is_plant_exhaust, is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
+                                regenerable_segments, session_created_worktree)
 from _git_commit import literal_assignments, expand_literal, resolve_cd, segments  # noqa: E402
-from _regenerable_clone import _timestamp  # noqa: E402
+from _transcript_calls import Call, Result, session_events  # noqa: E402
 
 
 # Dangerous command patterns — applied to BOTH the Bash and PowerShell tools
@@ -77,15 +78,12 @@ DANGEROUS_BASH_PATTERNS = [
 ]
 
 
-# Regenerable caches a recursive delete may target without asking: harness scratch the tooling
-# itself creates and destroys (baseline clone cache, log spool), the semantic-search index (rebuilt
-# by /reindex_search) and Python bytecode/test caches. Matched by PATH SEGMENT, never substring:
+# Regenerable caches a recursive delete may target without asking are `_regenerable_clone.regenerable_segments`:
+# harness caches and logs, the semantic-search index, engine and test output, Python bytecode caches. Matched by PATH SEGMENT, never substring:
 # the old `\.claude[\\/](?:\.cache|logs)\b` regex passed `.claude/logs-old` and
 # `.claude/.cache/../..` (the repo root). Evidence folders (`.claude/scratch`) and checkouts
 # (`.claude/worktrees`) are gitignored but are NOT caches, so they stay blocked unless
 # `_regenerable_clone` proves the target loses nothing.
-_CACHE_SEGMENTS = frozenset({".search-index", "__pycache__", ".pytest_cache"})
-_CACHE_PAIRS = frozenset({(".claude", ".cache"), (".claude", "logs")})
 _UNSAFE_PATH_CHARS = re.compile(r"[*?\[\]{}$~%]")
 _CACHE_HINT = " Allowed: caches, temp dirs, clean pushed scratch clones, retired worktrees (`orchestration` reference `worktrees.md`), scratch folders holding no git repository, folders this session made with a flagless mkdir."
 
@@ -144,9 +142,7 @@ def _is_cache_path(token: str, cwd: str | None = None) -> bool:
     parts = [p for p in token.replace("\\", "/").split("/") if p not in ("", ".")]
     if not parts or ".." in parts:
         return False
-    segment = (any(p in _CACHE_SEGMENTS for p in parts)
-               or any(pair in _CACHE_PAIRS for pair in zip(parts, parts[1:])))
-    return segment and _inside_root(token, cwd)
+    return regenerable_segments(parts) and _inside_root(token, cwd)
 
 
 # A quoted FLAG is still a flag: `rm "-r" build/` reaches the shell as `rm -r build/`, but
@@ -417,6 +413,7 @@ def _deletable_by_fact(target: str, here: str | None = None, transcript_path: st
     and resolved evaluators admit it. The cheapest fact decides first; the transcript read comes last."""
     return (_is_cache_path(target, here) or _is_own_session_scratch(target, here, transcript_path)
             or _is_regenerable_target(target, here, transcript_path)
+            or (here is not None and _is_regenerable_resolved(target, here))
             or _session_made_dir(target, here, transcript_path))
 
 
@@ -671,10 +668,8 @@ def _is_regenerable_or_scratch(path: str) -> bool:
         plant = path
         for _ in range(len(parts) - 3):
             plant = os.path.dirname(plant)
-        return not _holds_git(plant)
-    if lowered[:2] in ([".claude", ".cache"], [".claude", "logs"]) or lowered[0] == ".godot":
-        return True
-    return any(p in _CACHE_SEGMENTS for p in lowered)
+        return is_plant_exhaust(Path(plant))
+    return regenerable_segments(parts)
 
 
 def _mkdir_targets(command: str, cwd: str | None) -> list[str]:
@@ -715,46 +710,29 @@ def _session_made_dir(value: str, here: str, transcript_path: str | None) -> boo
         return False
     if not os.path.isdir(target) or _holds_git(target) or _peer_working_in(target, transcript_path):
         return False
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
-    paths = [transcript_path] + ([os.path.join(os.path.dirname(transcript_path), sid + ".jsonl")] if sid else [])
-    for transcript in dict.fromkeys(paths):
+    for events in session_events(transcript_path):
         pending = {}
-        try:
-            with open(transcript, encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    try:
-                        row = json.loads(line)
-                    except ValueError:
-                        continue
-                    if not isinstance(row, dict) or row.get("isSidechain"):
-                        continue
-                    stamp = _timestamp(row)
-                    content = (row.get("message") or {}).get("content")
-                    for block in content if isinstance(content, list) else []:
-                        if not isinstance(block, dict):
-                            continue
-                        if block.get("type") == "tool_use" and block.get("name") == "Bash":
-                            command = (block.get("input") or {}).get("command", "")
-                            if stamp is not None and "mkdir" in command \
-                                    and target in _mkdir_targets(command, row.get("cwd")):
-                                pending[block.get("id")] = stamp
-                        elif block.get("type") == "tool_result":
-                            start = pending.pop(block.get("tool_use_id"), None)
-                            if (start is not None and stamp is not None and not block.get("is_error")
-                                    and start <= born <= stamp):
-                                return True
-        except (OSError, TypeError, ValueError):
-            continue
+        for event in events:
+            if isinstance(event, Call):
+                if (event.stamp is not None and "mkdir" in event.command
+                        and target in _mkdir_targets(event.command, event.cwd)):
+                    pending[event.id] = event.stamp
+            elif isinstance(event, Result):
+                start = pending.pop(event.id, None)
+                if start is not None and event.stamp is not None and not event.is_error and start <= born <= event.stamp:
+                    return True
     return False
 
 
 def _is_regenerable_resolved(target: str, here: str) -> bool:
+    if _UNSAFE_PATH_CHARS.search(target):
+        return False
     return _is_regenerable_or_scratch(_norm(resolve_cd(here, target)))
 
 
-def _is_resolved_safe_cleanup(raw: str, cwd: str | None, accept=_is_regenerable_resolved) -> bool:
+def _is_resolved_safe_cleanup(raw: str, cwd: str | None, accept) -> bool:
     """True when every recursive-delete segment in `raw` is a plain delete command whose targets
-    all satisfy `accept(target, base directory)`; the default admits `_is_regenerable_or_scratch` paths.
+    all satisfy `accept(target, base directory)`.
     A delete that does not head its segment (inside `$(...)`, backticks, behind `sudo`/`xargs`), a
     glob in a directory part or a `cd`, `~`, `%` or any unresolvable target disqualifies the whole
     command (KFM #50). A glob in the last part is judged by its directory."""
@@ -869,7 +847,6 @@ def _check_bash_command(command: str, cwd: str | None, transcript_path: str | No
             # block regardless of target.
             if ('format' not in message.lower()
                     and (_is_safe_ephemeral_cleanup(scan, raw, cwd, transcript_path) or _is_owned_temp_cleanup(raw)
-                         or _is_resolved_safe_cleanup(raw, cwd)
                          or _is_resolved_safe_cleanup(
                              raw, cwd, lambda value, here: _deletable_by_fact(value, here, transcript_path)))):
                 continue

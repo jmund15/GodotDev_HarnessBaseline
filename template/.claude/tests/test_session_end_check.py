@@ -844,6 +844,38 @@ def main():
         check("a session under CLAUDE_CONFIG_DIR finds its transcript there",
               got is not None and os.path.dirname(got) == store, detail=repr(got))
 
+    # --- the close's read of this session's worklog items, through the lock's vault path ---
+    token = "{" + "{%s}" + "}"
+    planted_worklog = (
+        "---\nstatus: active\nlast_updated: 2026-01-01\n---\n\n# Worklog\n\n"
+        "## Active (2)\n\n### Alpha\n"
+        "- [ ] **Tighten the alpha seam** — `chore` · scope `1` · added 2026-01-01\n"
+        "  - Context: active context\n  - Session: probe-session-a\n\n"
+        "- [ ] **Rename the beta probe** — `chore` · scope `1` · added 2026-01-01\n"
+        "  - Context: other context\n  - Session: probe-session-b\n\n"
+        "## Future Scope\n> [!example]- Future Scope (1 items)\n> ### Alpha\n"
+        "> - `design` · scope `2` · Plan epsilon migration (added 2026-01-01; future context) · session probe-session-a\n")
+    with tempfile.TemporaryDirectory() as home:
+        vault = os.path.join(home, "vault")
+        os.makedirs(os.path.join(vault, "DevProjects", "Proj", "Claude", "TODO"))
+        Path(vault, "DevProjects", "Proj", "Claude", "TODO", "Worklog.md").write_text(planted_worklog, encoding="utf-8")
+        root = os.path.join(home, "repo")
+        os.makedirs(os.path.join(root, ".claude"))
+        Path(root, ".claude", "baseline.lock.json").write_text(json.dumps({"substitutions": {
+            token % "VAULT_ROOT": vault, token % "PROJECT_NAME": "Proj"}}), encoding="utf-8")
+        got = checker.worklog_session_lines("probe-session-a", root)
+        check("worklog read: this session's items, document order, with Context",
+              got == ["worklog items this session added (open): 2",
+                      "  - Tighten the alpha seam — active context",
+                      "  - Plan epsilon migration — future context"], detail=got)
+        got = checker.worklog_session_lines("probe-session-c", root)
+        check("worklog read: a session with no items reads 0, not a missing line",
+              got == ["worklog items this session added (open): 0"], detail=got)
+    with tempfile.TemporaryDirectory() as bare_root:
+        got = checker.worklog_session_lines("probe-session-a", bare_root)
+        check("worklog read: an unreadable worklog reads unknown and names why",
+              len(got) == 1 and got[0].startswith("worklog items this session added: unknown ("), detail=got)
+
     print()
     n_checks = check.calls
     print("%d/%d cases pass" % (n_checks - len(failures), n_checks))

@@ -116,19 +116,21 @@ def lane_cores(lanes, width, busy=None):
 
 
 def busy_lanes(folder, width, held):
-    """The lanes held now: the caller's `held` plus each other slot whose lock a probe cannot take."""
-    mine = {handle.path for handle in held}
-    busy = len(held)
+    """The lanes held now: the caller's `held` plus each other slot whose lock a probe cannot take. A lane held
+    through the Windows broker has no slot path, and its own slot probes busy, so it is counted once, with the probes."""
+    named = {handle.path for handle in held if hasattr(handle, 'path')}
+    unnamed = len(held) - len(named)
+    probed_busy = 0
     for index in range(width):
         path = os.path.join(folder, 'slot-%d.lock' % index)
-        if path in mine:
+        if path in named:
             continue
         probe = _file_lock.acquire(path, 0)
         if probe:
             _file_lock.release(probe)
         else:
-            busy += 1
-    return busy
+            probed_busy += 1
+    return len(named) + max(unnamed, probed_busy)
 
 
 def claim_width(folder, count):
@@ -204,8 +206,10 @@ def _proxy_take(exclusive, count, folder, width, deadline, notice):
 NOTICE_AFTER = 30
 
 
-def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, inherit=True, notice=False):
-    """`notice` prints a stderr line while queued, so a waiting proof never reads as a hang."""
+def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, inherit=True, notice=False, split=None):
+    """`notice` prints a stderr line while queued, so a waiting proof never reads as a hang. `split`, a dict,
+    receives the seconds this take spent `behind` an older ticket, `drain` (head, another process holds
+    drain.lock) and `collect` (head, holding drain.lock, slots short)."""
     if inherit and inherited():
         return []
     folder = folder or slot_dir()
@@ -225,20 +229,28 @@ def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, in
         # First come, first served: only the oldest live ticket scans the slots, so a releaser that
         # re-takes at once, or a case pool borrowing extras, never passes a waiting proof.
         queue = os.path.join(folder, 'queue')
-        name = '%020d-%d-%d.lock' % (time.time_ns(), os.getpid(), next(_TICKETS))
+        name = '%020d-%d-%d%s.lock' % (time.time_ns(), os.getpid(), next(_TICKETS), _EXCLUSIVE if exclusive else '')
         ticket = _file_lock.acquire(os.path.join(queue, name), 0)
         if ticket is None:
             raise SlotStoreError('machine admission queue unusable: %s' % queue)
         began = time.monotonic()
         next_notice = began + NOTICE_AFTER
+        phase, since = 'behind', began
         while True:
+            now = time.monotonic()
+            if split is not None:
+                split[phase] = split.get(phase, 0.0) + now - since
+            since = now
+            phase = 'behind'
             if not _live_ticket_before(queue, name):
+                phase = 'drain'
                 # The head keeps drain.lock and each slot it collects until it holds all it wants, or its deadline
                 # passes and `finally` returns them. A harness without the queue (another project's, an old
                 # checkout's) claims any free slot while drain.lock is free, so a slot the head let go between
                 # scans would go to it, and an exclusive head would wait for as long as that harness runs.
                 drain = drain or _file_lock.acquire(os.path.join(folder, 'drain.lock'), 0)
                 if drain:
+                    phase = 'collect'
                     active_width = claim_width(folder, width)
                     wanted = active_width if exclusive else max(1, min(count, active_width))
                     mine = {handle.path for handle in held}
@@ -284,13 +296,21 @@ def _holders(folder, mine):
 
 
 _TICKETS = itertools.count()
+_EXCLUSIVE = 'x'
 
 
 def _live_ticket_before(queue, name):
-    """True while an older waiter is alive. A ticket whose owner died is reclaimed by the probe."""
+    """True while another waiter is ahead of `name`. Tickets are served in arrival order, except that exclusive
+    tickets (`_EXCLUSIVE` suffix) go first, among themselves in arrival order: each whole-machine take that
+    follows shared work pays one drain of the longest running lane, so exclusive takers queued together pay
+    it once between them. A ticket whose owner died is reclaimed by the probe."""
+    mine = name.endswith(_EXCLUSIVE + '.lock')
     for other in sorted(os.listdir(queue)):
-        if other >= name:
-            return False
+        if other == name:
+            continue
+        ahead = (not mine or other < name) if other.endswith(_EXCLUSIVE + '.lock') else (not mine and other < name)
+        if not ahead:
+            continue
         probe = _file_lock.acquire(os.path.join(queue, other), 0)
         if not probe:
             return True

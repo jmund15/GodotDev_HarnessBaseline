@@ -132,7 +132,7 @@ class Admission(unittest.TestCase):
         seen = []
         real = runner._take_slots
 
-        def spy(exclusive=False, count=1):
+        def spy(exclusive=False, count=1, split=None):
             seen.append((exclusive, count))
             return real(exclusive, count)
 

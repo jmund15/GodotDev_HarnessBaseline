@@ -12,7 +12,9 @@
 the top of its `## Active`/`## Ledger` domain (a missing domain heading is created at the end of
 that supersection), place an FSLINE inside `## Future Scope` for a `future` item, add a scope-4
 plan doc to `## Linked Docs` on the Active route, bump `last_updated:`, and patch the mirror.
-Formats are the ones commands/reference/worklog_formats.md defines. Class and domain are validated
+Formats are the ones commands/reference/worklog_formats.md defines. Each item `add` writes carries the
+runtime session (`CLAUDE_CODE_SESSION_ID`): a `Session:` sub-bullet on a BLOCK, a ` · session <id>` tag on
+an FSLINE, and no BLOCK line when `--source` already is that session. `session_additions` reads them back. Class and domain are validated
 against the canonical tables in skills/worklog_reference/SKILL.md, read at run time (`--skill`
 names a different copy); a missing, unreadable or table-less owner is a refusal that names it, never
 an empty list. A domain is accepted in the table's long or short form, and the long form is what a
@@ -88,6 +90,8 @@ DOMAIN_TABLE_HEADER = "Long form (Active section header)"
 FS_HEAD = re.compile(r"^> ### (.+?)\s*$")
 FS_ITEM = re.compile(r"^> - `([^`]+)` · scope `([^`]+)` · (.*?) \(added (\d{4}-\d{2}-\d{2});")
 FS_COUNT = re.compile(r"^(> \[!example\]- Future Scope \()\d+ items?(\))")
+FS_SESSION = re.compile(r"^> - `[^`]+` · scope `[^`]+` · (.*?) \(added \d{4}-\d{2}-\d{2}; (.*)\) · session (\S+)$")
+SUB_FIELD = re.compile(r"^  - ([A-Za-z][A-Za-z ]*?): (.*)$")
 NEAR_DUP = 0.7
 
 
@@ -417,6 +421,8 @@ def build_block(f, when_line):
         out.append("  - Where: %s" % f["where"])
     if f["source"]:
         out.append("  - Source: %s" % f["source"])
+    if f["session"] and f["session"] != f["source"]:
+        out.append("  - Session: %s" % f["session"])
     if when_line:
         out.append("  - When: %s" % when_line)
     if f["plan_doc"]:
@@ -425,8 +431,35 @@ def build_block(f, when_line):
 
 
 def build_fsline(f):
-    return "> - `%s` · scope `%s` · %s (added %s; %s)" % (
+    line = "> - `%s` · scope `%s` · %s (added %s; %s)" % (
         f["cls"], f["scope"], f["title"], f["added"], f["context"])
+    return line + " · session %s" % f["session"] if f["session"] else line
+
+
+def runtime_session():
+    return os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip() or None
+
+
+def session_additions(text, sid):
+    """(title, Context) of each open item `sid` added, in document order: a BLOCK whose Session or Source
+    is `sid`, and an FSLINE tagged `· session sid`."""
+    lines = [bare(raw) for raw in text.splitlines()]
+    found = []
+    for item in find_items(lines):
+        fields = {}
+        for line in lines[item.index + 1:]:
+            if not line.startswith("  - "):
+                break
+            m = SUB_FIELD.match(line)
+            if m:
+                fields.setdefault(m.group(1), m.group(2).strip())
+        if sid in (fields.get("Session"), fields.get("Source")):
+            found.append((item.index, item.title, fields.get("Context", "")))
+    for i, line in enumerate(lines):
+        m = FS_SESSION.match(line)
+        if m and m.group(3) == sid:
+            found.append((i, m.group(1), m.group(2)))
+    return [(title, context) for _, title, context in sorted(found)]
 
 
 def find_section(lines, title):
@@ -627,7 +660,7 @@ def fields_from_args(args, classes, domains):
          "scope_text": args.scope, "domain_text": (args.domain or "").strip(),
          "context": (args.context or "").strip(),
          "where": args.where, "source": args.source, "plan_doc": args.plan_doc,
-         "added": args.date or date.today().isoformat(), "when": None}
+         "added": args.date or date.today().isoformat(), "when": None, "session": runtime_session()}
     f["domain"] = resolve_domain(domains, f["domain_text"])
     errors = []
     try:
@@ -646,7 +679,7 @@ def fields_from_row(row, classes, domains):
          "context": str(row.get("context") or "").strip(),
          "where": row.get("where") or None, "source": row.get("source") or None,
          "plan_doc": row.get("plan_doc") or row.get("plan-doc") or None,
-         "added": row.get("date") or date.today().isoformat(), "when": None}
+         "added": row.get("date") or date.today().isoformat(), "when": None, "session": runtime_session()}
     f["domain"] = resolve_domain(domains, f["domain_text"])
     errors = []
     try:

@@ -107,7 +107,9 @@ class OvernightTests(unittest.TestCase):
                 self.assertEqual("deny", self.decision())
 
     def test_overnight_off_in_an_owner_prompt_ends_the_run(self):
-        for text in ("/overnight off", "ok, enough. /overnight off", "<system-reminder>ctx</system-reminder>\n/overnight off"):
+        for text in ("/overnight off", "ok, enough. /overnight off", "<system-reminder>ctx</system-reminder>\n/overnight off",
+                     "/overnight --off",
+                     "<command-name>/overnight</command-name>\n<command-args>--off</command-args>"):
             with self.subTest(text=text):
                 self.arm()
                 out = self.prompt(text)

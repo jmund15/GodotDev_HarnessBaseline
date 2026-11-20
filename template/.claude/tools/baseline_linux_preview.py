@@ -4,6 +4,7 @@
     python3 .claude/tools/baseline_linux_preview.py [<journal-id>]   # default: newest worktree
     python3 .claude/tools/baseline_linux_preview.py --worktree PATH  # a tree anywhere
     python3 .claude/tools/baseline_linux_preview.py --worktree PATH --lanes a,b  # only those lanes
+    python3 .claude/tools/baseline_linux_preview.py <id> --changed   # only the proofs bound to the commit's paths
     python3 .claude/tools/baseline_linux_preview.py --setup          # once: python 3.x + node 20 + pwsh + dotnet runtime, no sudo
     python3 .claude/tools/baseline_linux_preview.py --help
 
@@ -11,7 +12,7 @@ Windows validation cannot see Linux-only failures: a `C:/` path is relative on P
 symlinks exist. Each one otherwise surfaces only as a red PR check, costing a closed PR and a
 fresh dry run. This tool runs every `run:` step of every job, one lane per job, in the worktree's own
 `.github/workflows/baseline.yml` in order, so it tracks CI without a copied step list. Unlike
-CI, it runs every step after a failure. A person runs it to rerun; a publication does not.
+CI, it runs every step after a failure. A person runs it to rerun a red; `publish` runs it before each PR push, each lane limited to the proofs bound to the paths the publish commit changes (`scope_to_paths`).
 
 The worktree is copied, without `.git`, to the run's own tree under `~/baseline-linux-preview`, named
 for the worktree and the run's pid, and committed to a fresh repo, as `actions/checkout` gives; a run
@@ -53,10 +54,21 @@ STRIP_HOST_PATH = ('_kept=; IFS=: read -ra _dirs <<< "$PATH"; for _d in "${_dirs
                    ' case "$_d" in /mnt/*) ;; *) _kept="${_kept:+$_kept:}$_d" ;; esac; done; PATH="$_kept"')
 SHOWN = re.compile(r"^(::(step|pass|fail|lane|unavailable) |FAIL|harness_tests:|\s+\| FAIL)")
 # What the verdict reads; a battery's progress lines stay in the log.
-VERDICT_LINE = re.compile(r"^(::(fail|lane|unavailable) |FAIL \d)")
+VERDICT_LINE = re.compile(r"^(::(fail|lane|unavailable) |FAIL \d|harness_tests: (scoped: )?\d+ run, )")
+BATTERY = re.compile(r"^harness_tests: (?:scoped: )?(\d+) run, (\d+) pass, (\d+) fail, (\d+) cannot-run")
 LANE_END = re.compile(r"^::lane (\S+) (\d+)s$")
 STEP_FAIL = re.compile(r"^::fail (.+) rc=\d+ \d+s$")
 PROOF_FAIL = re.compile(r"^FAIL \d+(?:\.\d+)?s (\S.*)$")
+BATTERY_CALL = re.compile(r"python3 (\S*harness_tests\.py)(?=\s|$)(?! --)")
+ROOT_PROOFS = re.compile(r"for f in tests/test_\*\.py")
+SKIPPED_SCOPED = ("echo 'harness_tests: scoped: 0 run, 0 pass, 0 fail, 0 cannot-run, 0 skipped"
+                  " (no template path changed)'")
+TEMPLATE = "template/"
+# `--proofs-for` exits 1 for "no proof selected" as for a red proof; a change that binds no proof is no red.
+SCOPED_SHIM = (r'_scoped() { local o rc; o=$(mktemp); set +e; "$@" 2>&1 | tee "$o"; rc=${PIPESTATUS[0]}; set -e;'
+               r' if [ "$rc" = 1 ] && grep -q "^harness_tests: no proof selected" "$o"; then'
+               r' echo "harness_tests: scoped: 0 run, 0 pass, 0 fail, 0 cannot-run, 0 skipped (no proof bound to the changed paths)";'
+               r' rc=0; fi; rm -f "$o"; return $rc; }')
 TOOLS = ("py/bin/python", "node/bin/node", "pwsh/pwsh", "dotnet/dotnet")
 
 SETUP_SCRIPT = r"""set -euo pipefail
@@ -169,6 +181,7 @@ def summarize(lines: list[str], expected: list[str]) -> dict:
     lanes: list[dict] = []
     steps: list[str] = []
     proofs: list[str] = []
+    counts: dict | None = None
     for line in lines:
         failed = STEP_FAIL.match(line)
         if failed:
@@ -180,15 +193,59 @@ def summarize(lines: list[str], expected: list[str]) -> dict:
             if name not in proofs:
                 proofs.append(name)
             continue
+        battery = BATTERY.match(line)
+        if battery:
+            run, passed, failed_count, not_run = (int(n) for n in battery.groups())
+            counts = {"run": run, "pass": passed, "fail": failed_count, "cannot_run": not_run}
+            continue
         closed = LANE_END.match(line)
         if closed:
             lanes.append({"lane": closed.group(1), "status": "red" if steps else "green",
-                          "seconds": int(closed.group(2)), "failed_steps": steps, "failed_proofs": proofs})
-            steps, proofs = [], []
+                          "seconds": int(closed.group(2)), "failed_steps": steps, "failed_proofs": proofs,
+                          "counts": counts})
+            steps, proofs, counts = [], [], None
     seen = [lane["lane"] for lane in lanes]
     missing = [name for name in expected if name not in seen]
     status = "incomplete" if (not lanes or missing) else "red" if any(l["status"] == "red" for l in lanes) else "green"
     return {"status": status, "lanes": lanes, "missing": missing}
+
+
+def changed_paths(worktree: Path) -> list[str]:
+    """The paths the worktree's HEAD commit adds, changes or deletes against its parent: a publish commit's scope."""
+    out = subprocess.run(["git", "-C", str(worktree), "diff", "--no-renames", "--name-only", "-z", "HEAD^", "HEAD"],
+                         capture_output=True)
+    return [p for p in out.stdout.decode("utf-8", "replace").split("\0") if p]
+
+
+def scope_to_paths(jobs: list[tuple[str, list[tuple[str, str]]]],
+                   paths: list[str] | None) -> list[tuple[str, list[tuple[str, str]]]]:
+    """`jobs` with each `harness_tests.py` call limited to the proofs bound to `paths` (the runner's `--proofs-for`),
+    so a lane's wall tracks the change. Every battery the workflow runs, the template's or a bootstrapped profile's,
+    reads template-relative paths, so `paths` under `template/` lose that prefix. None keeps every battery whole. A
+    publish that changes nothing under `template/` leaves the battery nothing to run. The baseline-repo root proofs
+    (`tests/test_*.py`, over the root tools and the template as a whole) run only when a path outside `template/`
+    changed."""
+    if paths is None:
+        return jobs
+    mine = [p[len(TEMPLATE):] for p in paths if p.startswith(TEMPLATE)]
+    root_changed = any(not p.startswith(TEMPLATE) for p in paths)
+    args = " ".join(_quote(p) for p in mine)
+    scoped = []
+    for job, steps in jobs:
+        out = []
+        for name, body in steps:
+            if ROOT_PROOFS.search(body):
+                out.append((name, body if root_changed else
+                            "echo 'baseline-repo root proofs: 0 run (no path outside template/ changed)'"))
+            elif not BATTERY_CALL.search(body):
+                out.append((name, body))
+            elif mine:
+                out.append((name, SCOPED_SHIM + "\n" + BATTERY_CALL.sub(
+                    lambda m: "_scoped python3 %s --proofs-for %s" % (m.group(1), args), body)))
+            else:
+                out.append((name, BATTERY_CALL.sub(lambda m: SKIPPED_SCOPED, body)))
+        scoped.append((job, out))
+    return scoped
 
 
 def preview_script(src: str, jobs: list[tuple[str, list[tuple[str, str]]]], origin: str | None = None,
@@ -199,8 +256,8 @@ def preview_script(src: str, jobs: list[tuple[str, list[tuple[str, str]]]], orig
     executable bit back after the 644 reset. Each run has its own tree, named for the worktree and
     the run's pid, so a second preview never deletes a running one; a green run removes its own tree
     and a run sweeps the trees of runs that ended. Each lane has its own copy and HOME, as a CI job
-    has its own checkout and runner. Each lane holds one Windows machine slot through the
-    interop broker; nested runners spend that lane serially. Lane logs print in job order; the exit is 1 when any lane
+    has its own checkout and runner. A lane is a coordinator and holds no machine slot: its runner takes one
+    Windows slot per proof through the interop broker, so the lanes together run as wide as the pool. Lane logs print in job order; the exit is 1 when any lane
     failed. `run` labels the run's own directory under ~/baseline-linux-preview; `preflight` exits 4
     with `::unavailable` before any copy when a `--setup` tool is missing."""
     slot_script = str(Path(machine_slots.__file__).resolve())
@@ -245,7 +302,7 @@ def preview_script(src: str, jobs: list[tuple[str, list[tuple[str, str]]]], orig
     for job, steps in jobs:
         parts += [
             'cp -a "$D/src" "$D/%s" && mkdir -p "$D/%s.home" || exit 3' % (job, job),
-            '( python3 "$HARNESS_SLOT_SCRIPT" run -- /bin/bash --noprofile --norc <<\'PREVIEW_LANE_EOF\'',
+            "( /bin/bash --noprofile --norc <<'PREVIEW_LANE_EOF'",
             'HOME="$D/%s.home"; export HOME; cd "$D/%s" || exit 3; fail=0; lane0=$SECONDS' % (job, job),
         ]
         for name, body in steps:
@@ -305,10 +362,52 @@ def _no_wsl() -> bool:
     return shutil.which("wsl.exe") is None
 
 
-def _unavailable(reason: str) -> int:
+def _unavailable(reason: str) -> tuple[int, dict]:
     print("::unavailable " + reason)
-    print("::result " + json.dumps({"status": "unavailable", "reason": reason, "lanes": []}))
-    return 4
+    return 4, {"status": "unavailable", "reason": reason, "lanes": []}
+
+
+def preview(worktree: Path, only: list[str] | None = None,
+            paths: list[str] | None = None) -> tuple[int, dict | None]:
+    """Run the lanes of `worktree`'s baseline workflow in WSL. Returns (exit code, result): the result is the
+    `::result` object (None when the run never starts, and that error goes to stderr). Exit codes as the module
+    docstring gives them. `only` names the lanes to run; None runs every lane. `paths` limits each lane's battery to the
+    proofs bound to those changed paths; None runs every battery whole."""
+    workflow = worktree / WORKFLOW
+    if not workflow.is_file():
+        return _unavailable("no %s in the tree: no CI lane to run" % WORKFLOW.as_posix())
+    jobs = ci_jobs(workflow.read_text(encoding="utf-8"))
+    if only:
+        unknown = [name for name in only if name not in [job for job, _ in jobs]]
+        if unknown:
+            print("error: no lane %s in %s" % (", ".join(unknown), WORKFLOW.as_posix()), file=sys.stderr)
+            return 3, None
+        jobs = [(job, job_steps) for job, job_steps in jobs if job in only]
+    jobs = scope_to_paths(jobs, paths)
+    step_count = sum(len(job_steps) for _, job_steps in jobs)
+    if not step_count:
+        print("error: no run: step parsed from %s; a preview of nothing is not green"
+              % (worktree / WORKFLOW).as_posix(), file=sys.stderr)
+        return 3, None
+    if _no_wsl():
+        return _unavailable("no WSL (wsl.exe not found)")
+    log_path = LOG_DIR / (worktree.name + ("." + "+".join(only) if only else "") + ".log")
+    print("preview %s: %d step(s); log %s" % (worktree.name, step_count, log_path), flush=True)
+    origin = subprocess.run(["git", "-C", str(worktree), "remote", "get-url", "origin"],
+                            capture_output=True, text=True).stdout.strip() or None
+    run = re.sub(r"[^A-Za-z0-9._-]", "_", worktree.name)
+    sink: list[str] = []
+    rc = _run_wsl(preview_script(wsl_path(str(worktree)), jobs, origin, exec_paths_of(worktree), run, True),
+                  log_path, sink)
+    if rc == 4:
+        said = next((line[len("::unavailable "):] for line in sink if line.startswith("::unavailable ")),
+                    "a tool the preview needs is missing")
+        return _unavailable(said)
+    result = summarize(sink, [job for job, _ in jobs])
+    result["log"] = str(log_path)
+    if rc == 3 or result["status"] not in ("green", "red"):
+        return 3, result
+    return (1 if result["status"] == "red" or rc else 0), result
 
 
 def main(argv: list[str]) -> int:
@@ -320,8 +419,10 @@ def main(argv: list[str]) -> int:
         at = argv.index("--lanes", 1)
         only = [name for name in (argv[at + 1] if at + 1 < len(argv) else "").split(",") if name]
         argv = argv[:at] + argv[at + 2:]
+    changed = "--changed" in argv
+    argv = [a for a in argv if a != "--changed"]
     if argv[:1] and argv[0].startswith("-") and argv[0] not in ("--setup", "--worktree"):
-        print("usage: baseline_linux_preview.py [<journal-id> | --worktree PATH [--lanes a,b] | --setup | --help]\n"
+        print("usage: baseline_linux_preview.py [<journal-id> | --worktree PATH] [--lanes a,b] [--changed] | --setup | --help\n"
               "error: unknown option %s" % argv[0], file=sys.stderr)
         return 2
     if argv[:1] == ["--setup"]:
@@ -341,41 +442,10 @@ def main(argv: list[str]) -> int:
             print("error: no publish worktree%s under %s"
                   % (" for " + argv[0] if argv else "", CACHE), file=sys.stderr)
             return 3
-    workflow = worktree / WORKFLOW
-    if not workflow.is_file():
-        return _unavailable("no %s in the tree: no CI lane to run" % WORKFLOW.as_posix())
-    jobs = ci_jobs(workflow.read_text(encoding="utf-8"))
-    if only:
-        unknown = [name for name in only if name not in [job for job, _ in jobs]]
-        if unknown:
-            print("error: no lane %s in %s" % (", ".join(unknown), WORKFLOW.as_posix()), file=sys.stderr)
-            return 3
-        jobs = [(job, job_steps) for job, job_steps in jobs if job in only]
-    step_count = sum(len(job_steps) for _, job_steps in jobs)
-    if not step_count:
-        print("error: no run: step parsed from %s; a preview of nothing is not green"
-              % (worktree / WORKFLOW).as_posix(), file=sys.stderr)
-        return 3
-    if _no_wsl():
-        return _unavailable("no WSL (wsl.exe not found)")
-    log_path = LOG_DIR / (worktree.name + ("." + "+".join(only) if only else "") + ".log")
-    print("preview %s: %d step(s); log %s" % (worktree.name, step_count, log_path), flush=True)
-    origin = subprocess.run(["git", "-C", str(worktree), "remote", "get-url", "origin"],
-                            capture_output=True, text=True).stdout.strip() or None
-    run = re.sub(r"[^A-Za-z0-9._-]", "_", worktree.name)
-    sink: list[str] = []
-    rc = _run_wsl(preview_script(wsl_path(str(worktree)), jobs, origin, exec_paths_of(worktree), run, True),
-                  log_path, sink)
-    if rc == 4:
-        said = next((line[len("::unavailable "):] for line in sink if line.startswith("::unavailable ")),
-                    "a tool the preview needs is missing")
-        return _unavailable(said)
-    result = summarize(sink, [job for job, _ in jobs])
-    result["log"] = str(log_path)
-    print("::result " + json.dumps(result), flush=True)
-    if rc == 3 or result["status"] not in ("green", "red"):
-        return 3
-    return 1 if result["status"] == "red" or rc else 0
+    rc, result = preview(worktree, only or None, changed_paths(worktree) if changed else None)
+    if result is not None:
+        print("::result " + json.dumps(result), flush=True)
+    return rc
 
 
 if __name__ == "__main__":

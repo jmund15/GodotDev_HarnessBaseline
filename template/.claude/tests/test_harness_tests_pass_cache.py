@@ -295,7 +295,7 @@ def case_a_waiting_run_reuses_a_peer_pass():
     result = {}
     waiting, real_take = threading.Event(), harness_tests._take_slots
 
-    def take(exclusive, count=1):
+    def take(exclusive, count=1, split=None):
         waiting.set()
         return real_take(exclusive, count)
 
@@ -360,7 +360,7 @@ def case_a_timeout_retry_takes_one_slot():
     taken, results = [], [("fail", 1.0, "TIMEOUT after 1s"), ("pass", 0.1, "")]
     real_run, real_take = harness_tests.run_proof, harness_tests._take_slots
 
-    def take(exclusive, count=1):
+    def take(exclusive, count=1, split=None):
         taken.append(exclusive)
         return []
 
@@ -404,7 +404,7 @@ def case_a_pass_never_lands_under_a_key_taken_before_the_slot_wait():
     beta = os.path.join(repo, ".claude", "tools", "beta.py")
     real_take = harness_tests._take_slots
 
-    def take(exclusive, count=1):
+    def take(exclusive, count=1, split=None):
         write(repo, ".claude/tools/beta.py", "B = 7\n")
         return real_take(exclusive, count)
 
@@ -2066,7 +2066,7 @@ def case_a_head_comparison_takes_a_slot_and_honours_the_deadline():
     taken, started = [], []
     real_run, real_take = harness_tests.run_proof, harness_tests._take_slots
 
-    def take(exclusive, count=1):
+    def take(exclusive, count=1, split=None):
         taken.append(exclusive)
         return None
 

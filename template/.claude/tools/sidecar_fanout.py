@@ -1532,8 +1532,7 @@ def check_row(job, label, alias, effort, data):
         except ValueError as err:
             raise JobError(f"job {label}: {err}")
         notes = []
-        why = checks.tier_fit(alias, tier, transport, data, owner_texts=checks.OwnerTexts(checks.session_transcript_path),
-                              notes=notes)
+        why = checks.tier_fit(alias, tier, transport, data, owner_pinned=job.get("pick") == "owner", notes=notes)
         for line in notes:
             print(line)
         if why:

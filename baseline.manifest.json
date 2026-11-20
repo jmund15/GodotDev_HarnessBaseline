@@ -1782,6 +1782,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/hooks/_transcript_calls.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/hooks/_transcript_scan.py",
       "layer": "pure",
       "sync": "auto"
@@ -1833,11 +1838,6 @@
     },
     {
       "path": ".claude/hooks/bash_length_guard.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/hooks/brief_deliverable_guard.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4597,11 +4597,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tests/test_brief_deliverable_guard.py",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/tests/test_budget_posture_cadence.py",
       "layer": "pure",
       "sync": "auto"
@@ -4893,6 +4888,11 @@
     },
     {
       "path": ".claude/tests/test_dispatch_checks.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_dispatch_checks_pick_owner.py",
       "layer": "pure",
       "sync": "auto"
     },
