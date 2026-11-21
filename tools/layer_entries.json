@@ -1085,7 +1085,6 @@
     ".claude/tests/test_watch_records_wait.py": "pure",
     ".claude/tests/test_watch_records_workflow.py": "pure",
     ".claude/tests/test_wide_test_guard.py": "godot",
-    ".claude/tests/test_wide_test_guard_contract.py": "godot",
     ".claude/tests/test_work_key.py": "pure",
     ".claude/tests/test_worker_rate_epoch.py": "pure",
     ".claude/tests/test_workflow_provider_guard_bar.py": "pure",
