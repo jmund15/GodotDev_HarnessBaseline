@@ -7337,11 +7337,6 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tests/test_wide_test_guard_contract.py",
-      "layer": "godot",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/tests/test_work_key.py",
       "layer": "pure",
       "sync": "auto"
