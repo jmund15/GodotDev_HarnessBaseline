@@ -21,6 +21,9 @@ Reach: `hooks/_wide_runs.py`'s -- shell segments, `bash -c`/`pwsh -Command` bodi
 `.py` literal process calls, and launched scripts to depth 2. Not seen from the hook: a command built
 at run time, and a script chain deeper than the scan.
 
+`--command "<invocation>"` asks the same question from a runner script's entry check, for runs that
+host no Claude hooks: exit 2 and the reason on stdout when refused, else 0.
+
 Fail posture: a crash here reports the lost check through additionalContext and admits the call.
 Retirement: delegate transcripts show no non-gate wide-run attempt and no denial naming
 `wide_test_guard` since the `Your checks` line shipped.
@@ -84,7 +87,16 @@ def hook(payload):
     return deny_text(wide, _checks(root))
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--command"] and len(argv) == 2:
+        # A runner script's entry check, for runs that host no Claude hooks: the same verdict,
+        # as exit 2 with the reason on stdout.
+        reason = hook({"tool_name": "Bash", "tool_input": {"command": argv[1]}, "cwd": os.getcwd()})
+        if reason:
+            print(reason)
+            return 2
+        return 0
     try:
         reason = hook(json.load(sys.stdin))
     except Exception as exc:  # noqa: BLE001 - a lost check is reported, not silent

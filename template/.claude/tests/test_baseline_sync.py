@@ -1374,6 +1374,33 @@ def test_pull_and_update_lock_with_layers_keep_the_lock_profile() -> None:
         assert _load_lock(root)["profile"] == "pure,coding"
 
 
+def test_a_copy_equal_to_upstream_at_the_pin_reconciles_there_whatever_older_base_it_records() -> None:
+    """A lock row can keep a `base` older than the pin its copy already matches (a hand-edited lock, or
+    one written before the pin move learned to clear it). Read at that stale base, a copy upstream
+    later changed looks diverged, and a 3-way merge over it re-applies what both sides share: a
+    function added twice. The pin is the copy's reconcile point."""
+    rel = ".claude/tools/shared.py"
+    v1, v2 = b"a = 1\n", b"a = 1\n\ndef warm():\n    return 1\n"
+    v3 = b"a = 1\n\ndef warm():\n    return 1\n\ndef cold():\n    return 0\n"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(path, {rel: {"upstream": v2}})
+        _write(baseline / "template" / rel, v1)
+        stale = _commit(baseline, "an older copy, recorded as the row's base")
+        _write(baseline / "template" / rel, v3)
+        _commit(baseline, "upstream moves on")
+        lock = _load_lock(root)
+        lock["files"][rel]["base"] = stale
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _commit(root, "stale base")
+
+        state = _run_baseline(root, baseline, "check", "--json")
+        found = _json_output(state)["results"].get(rel)
+        assert found == "upstream-updated", found
+        pulled = _run_baseline(root, baseline, "pull", rel, "--merge")
+        assert pulled.returncode == 0, (pulled.stdout + pulled.stderr).decode(errors="replace")
+        assert (root / rel).read_bytes() == v3
+
+
 def test_v2_fork_success_and_repeat() -> None:
     rel = ".claude/tools/fork.py"
     with _fixture() as path:
@@ -5128,6 +5155,7 @@ def main(part: int = 1) -> int:
         test_a_red_pull_stays_in_the_journal_that_check_and_the_next_pull_read,
         test_the_runner_stores_the_engine_reads_are_planted,
         test_pull_and_update_lock_with_layers_keep_the_lock_profile,
+        test_a_copy_equal_to_upstream_at_the_pin_reconciles_there_whatever_older_base_it_records,
     ]
     return run_cases(cases[part - 1::PARTS])
 

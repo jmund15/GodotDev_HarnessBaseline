@@ -1313,6 +1313,19 @@ def _row_base(lock: dict, entry: dict) -> str | None:
     return lock.get("synced_commit")
 
 
+def _reconcile_base(source: BaselineSource | Path, lock: dict, relpath: str, entry: dict,
+                    local: str | None) -> str | None:
+    """`_row_base`, except a copy equal to upstream at the lock's pin reconciled at the pin. A row can
+    keep a `base` older than the pin its copy already matches (a hand-edited lock); read at that base,
+    the copy looks diverged and a 3-way merge over it re-applies what both sides already share."""
+    base = _row_base(lock, entry)
+    pin = lock.get("synced_commit")
+    if (base and pin and base != pin and local is not None
+            and _upstream_text_at(source, relpath, pin, lock.get("substitutions", {})) == local):
+        return pin
+    return base
+
+
 _PIN_BASE = object()
 _TOUCHES_CACHE: dict[str, dict[str, list[str]]] = {}
 
@@ -1410,9 +1423,10 @@ def _drop_settled_push(root: Path, source: BaselineSource | Path, lock: dict,
     judged = entry.get("judged")
     if not isinstance(judged, dict) or judged.get("verdict") != "push":
         return
-    base_text = _upstream_text_at(source, relpath, _row_base(lock, entry),
+    local = local_text(root, relpath)
+    base_text = _upstream_text_at(source, relpath, _reconcile_base(source, lock, relpath, entry, local),
                                   lock.get("substitutions", {}))
-    if base_text is not None and local_text(root, relpath) == base_text:
+    if base_text is not None and local == base_text:
         entry.pop("judged", None)
 
 
@@ -1491,7 +1505,7 @@ def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
     local = local_text(root, relpath)
     if upstream is not None and local is not None and local == upstream:
         return "in-sync"
-    base = _row_base(lock, entry)
+    base = _reconcile_base(source, lock, relpath, entry, local)
     if base is None:
         # No reconcile point could be derived (a legacy `hash` naming no commit, or none at all):
         # local and upstream cannot be separated, so report the unknown, never a guessed state.
@@ -1573,9 +1587,16 @@ def _triage_needed(root: Path, source: BaselineSource | Path, lock: dict,
     if status != "tracked":
         return False
     current = _content_sha(root, relpath) if current_sha is _UNREAD else current_sha
-    base_text = _upstream_text_at(source, relpath, _row_base(lock, entry), lock.get("substitutions", {}))
-    base_sha = sha(base_text.encode("utf-8")) if base_text is not None else None
-    return current is not None and current != base_sha and current != judged.get("sha")
+    if current is None or current == judged.get("sha"):
+        return False
+    subs = lock.get("substitutions", {})
+    # Any reconcile point `_reconcile_base` could pick: the row's base, or the pin when it has one.
+    base = _row_base(lock, entry)
+    for commit in dict.fromkeys((base, lock.get("synced_commit")) if base else ()):
+        base_text = _upstream_text_at(source, relpath, commit, subs)
+        if base_text is not None and current == sha(base_text.encode("utf-8")):
+            return False
+    return True
 
 
 def _diff_text(root: Path, source: BaselineSource | Path, lock: dict, relpath: str) -> str:
@@ -3169,7 +3190,8 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 continue
             if action == "retire":
                 local = local_text(root, relpath)
-                base_text = _upstream_text_at(source, relpath, _row_base(lock, files[relpath]), subs)
+                base_text = _upstream_text_at(
+                    source, relpath, _reconcile_base(source, lock, relpath, files[relpath], local), subs)
                 if local is None or (base_text is not None and local == base_text):
                     if local is not None:
                         (root / relpath).unlink()
@@ -3186,8 +3208,9 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
                 if isinstance(upstream, BinaryText):
                     conflicts.append((relpath, "binary row; keep the local copy or take upstream with pull --force", None))
                     continue
-                base = _upstream_text_at(source, relpath, _row_base(lock, files[relpath]), subs)
                 local = local_text(root, relpath) or ""
+                base = _upstream_text_at(
+                    source, relpath, _reconcile_base(source, lock, relpath, files[relpath], local), subs)
                 # No upstream copy at the base: merge over an empty base, so every line the two sides
                 # disagree on is a conflict hunk and `resolve` can install the hand-merged copy.
                 text, hunks = _merge3(local, base or "", upstream)
