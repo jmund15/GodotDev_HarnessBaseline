@@ -1350,6 +1350,30 @@ def test_v2_classify_local_declines_a_pulled_path_once_its_file_is_gone() -> Non
         assert present.returncode == 1 and b"use --force" in present.stderr, present.stderr
 
 
+def test_pull_and_update_lock_with_layers_keep_the_lock_profile() -> None:
+    """`--layers` scopes one call; it never rewrites the profile the lock adopted. A pull that saved
+    it once made the next bare pull take every godot row into a pure,coding consumer."""
+    taken = ".claude/commands/taken.md"
+    synced = ".claude/commands/synced.md"
+    with _fixture() as path:
+        root, baseline, _remote_path, _commit_sha = _v2_fixture(
+            path, {taken: {"upstream": b"new body\n", "local": None, "row": False},
+                   synced: {"upstream": b"same\n"}})
+        lock = _load_lock(root)
+        lock["profile"] = "pure,coding"
+        _write_json(root / ".claude" / "baseline.lock.json", lock)
+        _commit(root, "pure,coding profile")
+        pulled = _run_baseline(root, baseline, "pull", taken, "--layers", "pure,coding,godot")
+        assert pulled.returncode == 0, (pulled.stdout + pulled.stderr).decode(errors="replace")
+        assert (root / taken).read_bytes() == b"new body\n"
+        assert _load_lock(root)["profile"] == "pure,coding"
+
+        _commit(root, "pulled")
+        moved = _run_baseline(root, baseline, "update-lock", synced, "--layers", "pure,coding,godot")
+        assert moved.returncode == 0, (moved.stdout + moved.stderr).decode(errors="replace")
+        assert _load_lock(root)["profile"] == "pure,coding"
+
+
 def test_v2_fork_success_and_repeat() -> None:
     rel = ".claude/tools/fork.py"
     with _fixture() as path:
@@ -5103,6 +5127,7 @@ def main(part: int = 1) -> int:
         test_pull_that_wrote_nothing_runs_no_proof,
         test_a_red_pull_stays_in_the_journal_that_check_and_the_next_pull_read,
         test_the_runner_stores_the_engine_reads_are_planted,
+        test_pull_and_update_lock_with_layers_keep_the_lock_profile,
     ]
     return run_cases(cases[part - 1::PARTS])
 

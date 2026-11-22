@@ -3225,7 +3225,7 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
         if not changed:
             return NO_CHANGE
         move_pin(lock, source, source.sha, taken)
-        lock["profile"] = ",".join(layers)
+        lock.setdefault("profile", ",".join(layers))
         return changed
 
     result = mutate_lock(root, apply, source=source)
@@ -3523,7 +3523,7 @@ def v2_update_lock(root: Path, source: BaselineSource, relpaths: list[str], laye
                 files[relpath].get("base") for relpath in targets):
             return NO_CHANGE
         move_pin(lock, source, source.sha, set(targets))
-        lock["profile"] = ",".join(layers)
+        lock.setdefault("profile", ",".join(layers))
         return targets
 
     result = mutate_lock(root, apply, source=source)
