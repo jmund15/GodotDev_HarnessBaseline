@@ -122,7 +122,7 @@ def inventory(out, jobs):
         json.dump({"schemaVersion": 1, "jobs": [{"label": l, "recordPath": os.path.abspath(r)} for l, r in jobs]}, fh)
 
 
-def watch(out, labels, fallbacks=None, alive=True, wait=1.5, max_parallel=None, script=None, **kw):
+def watch(out, labels, fallbacks=None, alive=True, wait=1.5, max_parallel=None, script=None, driver=None, **kw):
     """(printed text, outcome dict, seconds) for sf.await_admission over `labels` planted in `out`. `max_parallel`
     None is the no-flag run: the fan-out names no count."""
     planned = [(l, job_argv(out, l, script or REFUSER), os.path.join(out, l + ".out.json")) for l in labels]
@@ -132,7 +132,7 @@ def watch(out, labels, fallbacks=None, alive=True, wait=1.5, max_parallel=None, 
     t0 = time.time()
     try:
         with contextlib.redirect_stdout(buf):
-            outcome = sf.await_admission(Driver(), out, planned, fallbacks or {}, max_parallel, time.time() - 5,
+            outcome = sf.await_admission(driver or Driver(), out, planned, fallbacks or {}, max_parallel, time.time() - 5,
                                          wait=wait, poll=0.05, settle=0.3, **kw)
     finally:
         sf._pid_alive = real
@@ -311,13 +311,18 @@ def moved_job_is_reported_refused_then_admitted():
     inventory(out, [("job", first)])
     second = os.path.join(out, "job.record.2.json")
 
-    def move():
-        time.sleep(0.3)
-        plant(out, "job", stream=True, rec=second)
-        inventory(out, [("job", second)])
+    class Mover(Driver):
+        """Relaunches the job on its first poll, which follows the watcher's first read of the refused record."""
+        moved = False
 
-    threading.Thread(target=move).start()
-    text, outcome, _ = watch(out, ["job"], fallbacks={"job": [("anthropic", SPARE)]}, wait=3)
+        def poll(self):
+            if not self.moved:
+                self.moved = True
+                plant(out, "job", stream=True, rec=second)
+                inventory(out, [("job", second)])
+            return None
+
+    text, outcome, _ = watch(out, ["job"], fallbacks={"job": [("anthropic", SPARE)]}, wait=3, driver=Mover())
     return (("refused on anthropic-secondary, nothing ran: " + REFUSAL) in text and "moved to anthropic" in text
             and "[fanout] job: admitted on anthropic " in text and outcome["job"] == "admitted")
 

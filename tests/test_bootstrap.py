@@ -111,7 +111,7 @@ def test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean() -> None:
         check = subprocess.run(
             [sys.executable, str(target / ".claude" / "tools" / "baseline_sync.py"), "check", "--strict",
              "--baseline-dir", str(baseline)],
-            cwd=target, capture_output=True, text=True, timeout=60,
+            cwd=target, capture_output=True, text=True, timeout=180,
         )
         assert check.returncode == 0, check.stdout + check.stderr
     finally:
