@@ -42,18 +42,19 @@ Use `mcp__ai-worker__read_web(urls=[...], question=...)` when the answer needs c
 
 If that route is unavailable, choose another eligible route explicitly or report the coverage gap. `orchestration` owns model, currency and budget checks.
 
-### Shape B — three source-class lenses through the explore engine
+### Shape B — three source-class lenses through the explore path
 
-`explore_fanout.js` already does corroboration merge, cross-lens contradiction detection, and unbacked-confidence downgrade. That IS the trust machinery — a claim asserted by `res-field` alone and contradicted by `res-official` surfaces as a contradiction the orchestrator must settle, which is exactly what a tier hierarchy is for.
+`explore_result.py` already does corroboration merge, cross-lens contradiction detection, and unbacked-confidence downgrade. That IS the trust machinery — a claim asserted by `res-field` alone and contradicted by `res-official` surfaces as a contradiction the orchestrator must settle, which is exactly what a tier hierarchy is for.
 
-```
-Workflow({scriptPath: ".claude/workflows/explore_fanout.js", args: {
-  lenses: [{key, promptPath, model, effort, tier, kind: "author"}], contextPrefixPath: <ctx>, labelPrefix: "research"}})
+The lenses are fan-out jobs, dispatched exactly as `/explore` Phase 2 does (`prepare`, `sidecar_fanout.py --detach`, then `explore_result.py`), with `"prefix": "research"` and each lens a manual seat:
+
+```json
+{"key": "<lens key>", "brief": "<scratchpad file of its mandate>", "kind": "author", "tier": "<tier>", "rows": {"<row>": "<rung>"}}
 ```
 
 Consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5, except that Phase 3 step 1 rules UNCHECKED external claims.
 
-Write each resolved mandate below to its own scratchpad file and pass `promptPath`. Each lens's `tier` is the model tier its pin serves (`orchestration` §5), not the source-class tier in the table. The CONTEXT file carries `QUESTIONS`, the 1d URL set, and the version pins (engine per `.claude/reference/project_stack.md`, .NET 9) — seeds, never caps.
+Write each resolved mandate below to its own scratchpad file and name it as the seat's `brief`. Each lens's `tier` is the model tier its pin serves (`orchestration` §5), not the source-class tier in the table. The CONTEXT file carries `QUESTIONS`, the 1d URL set, and the version pins (engine per `.claude/reference/project_stack.md`, .NET 9) — seeds, never caps.
 
 | Lens | Source class | Tier |
 |---|---|---|
@@ -68,7 +69,7 @@ Resolve one suitable arm per lens through `orchestration`; `res-field` needs a q
 ```
 You are res-official. You establish what the OFFICIAL documentation says about each listed question — the class reference, the API docs, the spec.
 
-**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. Read `.claude/reference/source_trust.md` and follow it — every claim cites a fetched P1 URL in `file`, names the local path it was quoted from in `artifact` when one exists, quotes verbatim in `evidence`, and ends its `claim` text with `[P1]` plus the version. Never answer from memory; unfetched is a gap, not an inference.**
+**RULES: Do NOT use TodoWrite. End your final message with the claims object as one ```` ```json ```` fence, nothing else. Read `.claude/reference/source_trust.md` and follow it — every claim cites a fetched P1 URL in `file`, names the local path it was quoted from in `artifact` when one exists, quotes verbatim in `evidence`, and ends its `claim` text with `[P1]` plus the version. Never answer from memory; unfetched is a gap, not an inference.**
 
 ## Your Scope
 1. For each question, fetch the documentation that owns it: the version-pinned local docs cache where it covers the question (its path is in the stack sibling of `source_trust.md`), `mcp__plugin_context7_context7__query-docs` for a resolved library id, otherwise `.claude/scripts/fetch_source.sh <url>...` to land the bytes. `WebFetch` for a single page it cannot reach; `read_web` only when the answer needs synthesis across pages.
@@ -90,7 +91,7 @@ You are res-official. You establish what the OFFICIAL documentation says about e
 ```
 You are res-source. You establish what the IMPLEMENTATION does — first-party source, release notes, changelogs — because docs describe intent and source describes behavior.
 
-**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. Read `.claude/reference/source_trust.md` and follow it — every claim cites a fetched P1 URL in `file`, names the local path it was quoted from in `artifact` when one exists, quotes verbatim in `evidence`, and ends its `claim` text with `[P1]` plus the version. Never answer from memory.**
+**RULES: Do NOT use TodoWrite. End your final message with the claims object as one ```` ```json ```` fence, nothing else. Read `.claude/reference/source_trust.md` and follow it — every claim cites a fetched P1 URL in `file`, names the local path it was quoted from in `artifact` when one exists, quotes verbatim in `evidence`, and ends its `claim` text with `[P1]` plus the version. Never answer from memory.**
 
 ## Your Scope
 1. Read the actual source on `raw.githubusercontent.com` via `.claude/scripts/fetch_source.sh` (browse/tree URLs have no raw form — use as-is) so every quote is checkable against landed bytes, plus the changelog or release notes for the version in the CONTEXT pins.
@@ -112,7 +113,7 @@ You are res-source. You establish what the IMPLEMENTATION does — first-party s
 ```
 You are res-field. You establish what practitioners REPORT — issues, proposals, forum threads, prior-art write-ups — and every one of those is P3: a pointer, never an answer.
 
-**RULES: Do NOT use TodoWrite. Return the claims schema ONLY. Read `.claude/reference/source_trust.md` and follow it. A P3-only claim is emitted as `polarity: "unclear"` with a gap — NEVER as `exists`. Chase every hit to the P1/P2 source that owns the behavior and cite that instead; if none exists, that absence is the finding.**
+**RULES: Do NOT use TodoWrite. End your final message with the claims object as one ```` ```json ```` fence, nothing else. Read `.claude/reference/source_trust.md` and follow it. A P3-only claim is emitted as `polarity: "unclear"` with a gap — NEVER as `exists`. Chase every hit to the P1/P2 source that owns the behavior and cite that instead; if none exists, that absence is the finding.**
 
 ## Your Scope
 1. For each question, find field reports of the actual behavior — engine bug trackers, proposals, threads describing what people hit.

@@ -188,16 +188,26 @@ RECORD = {'launchId': 'L1', 'parentSessionId': None, 'sessionId': 'ab0978fb-98c0
 
 
 class Resume(unittest.TestCase):
+    PEAK = 314882       # peakRequestTokens of the real r16-card-build record, the run that was resumed cold
+
     def jobs(self):
         return [dict(JOB, label='lim', contextFiles=[str(PROMPT)], extraArgs=['-Z', '1']),
                 dict(JOB, label='done'), dict(JOB, label='broke')]
 
-    def results(self, out, sid=RECORD['sessionId']):
+    def results(self, out, sid=RECORD['sessionId'], peak=PEAK):
         record = out / 'lim.record.json'
-        record.write_text(json.dumps(dict(RECORD, sessionId=sid)), encoding='utf-8')
-        return {'lim': {'exit': 10, 'resumeWith': sid, 'plan': 'anthropic-secondary',
+        body = dict(RECORD, sessionId=sid)
+        if peak is not None:
+            body['peakRequestTokens'] = peak
+        record.write_text(json.dumps(body), encoding='utf-8')
+        stream = out / 'lim.stream'
+        stream.write_text('{"type":"assistant","note":"partial output"}\n', encoding='utf-8')
+        return {'lim': {'exit': 10, 'resumeWith': sid, 'plan': 'anthropic-secondary', 'stream': str(stream),
                         'limitResetsAt': 1792000800, 'record': str(record)},
                 'done': {'exit': 0, 'stdout': str(out / 'done.out.json')}, 'broke': {'exit': 1}}
+
+    def written(self, out, name):
+        return json.loads((out / name).read_text(encoding='utf-8'))
 
     def test_run_jobs_keeps_the_plan_and_reset_a_limited_record_names(self):
         out = Path(tempfile.mkdtemp(prefix='rj_', dir=TMP))
@@ -218,29 +228,62 @@ class Resume(unittest.TestCase):
         self.assertEqual((got['exit'], got['resumeWith'], got['plan'], got['limitResetsAt']),
                          (10, RECORD['sessionId'], 'anthropic-secondary', 1792000800))
 
-    def test_a_stopped_job_is_written_to_resume_jobs_pinned_to_its_plan_with_its_session(self):
+    def test_a_stopped_job_is_continued_fresh_on_its_plan_with_a_note_of_what_the_stopped_run_left(self):
         out = Path(tempfile.mkdtemp(prefix='rs_', dir=TMP))
-        path, text = sf.resume_plan(self.jobs(), self.results(out), out, None)
+        jobs = [dict(j, workdir=str(out)) if j['label'] == 'lim' else j for j in self.jobs()]
+        path, text = sf.resume_plan(jobs, self.results(out), out, None)
         self.assertEqual(path, out / 'resume-jobs.json')
-        spec = json.loads(path.read_text(encoding='utf-8'))
+        spec = self.written(out, 'resume-jobs.json')
         self.assertEqual([j['label'] for j in spec['jobs']], ['lim'])      # not the finished or the failed
         job = spec['jobs'][0]
         self.assertEqual(job['plan'], 'anthropic-secondary')
-        self.assertEqual(job['extraArgs'], ['-Z', '1', '-r', RECORD['sessionId']])
-        self.assertEqual(job['contextFiles'], [str(PROMPT)])
+        self.assertEqual(job['extraArgs'], ['-Z', '1'])
+        note = out / 'lim.continuation.md'
+        self.assertEqual(job['contextFiles'], [str(PROMPT), str(note)])
         self.assertEqual(spec['spillDir'], str(out))
-        self.assertIn('2026-10-14T18:00:00Z', text)
-        self.assertIn('sidecar_fanout.py', text)
+        body = note.read_text(encoding='utf-8')
+        for needed in ('=== CONTINUATION ===', sf._posix(PROMPT), sf._posix(out), sf._posix(out / 'lim.md'),
+                       sf._posix(out / 'lim.attempt1.salvage.jsonl')):
+            self.assertIn(needed, body)
+        self.assertIn('partial output', (out / 'lim.attempt1.salvage.jsonl').read_text(encoding='utf-8'))
         self.assertIn('resume-jobs.json', text)
 
-    def test_a_stop_before_any_session_reruns_the_job_with_no_resume_flag_and_no_pin(self):
+    def test_the_saved_session_is_a_second_file_the_output_offers_beside_the_fresh_one(self):
+        out = Path(tempfile.mkdtemp(prefix='rq_', dir=TMP))
+        _path, text = sf.resume_plan(self.jobs(), self.results(out), out, None)
+        job = self.written(out, 'resume-session-jobs.json')['jobs'][0]
+        self.assertEqual((job['label'], job['plan']), ('lim', 'anthropic-secondary'))
+        self.assertEqual(job['extraArgs'], ['-Z', '1', '-r', RECORD['sessionId']])
+        self.assertEqual(job['contextFiles'], [str(PROMPT)])
+        self.assertIn('resume-session-jobs.json', text)
+        self.assertIn('resume-jobs.json', text)
+        self.assertNotIn('after the reset, run', text)
+
+    def test_the_output_states_the_facts_the_choice_needs(self):
+        out = Path(tempfile.mkdtemp(prefix='rf_', dir=TMP))
+        _path, text = sf.resume_plan(self.jobs(), self.results(out), out, None)
+        self.assertIn('2026-10-14T18:00:00Z', text)
+        self.assertIn('314,882', text)
+        self.assertIn('uncached', text)
+        self.assertIn(sf._posix(out / 'lim.md'), text)
+        self.assertIn(sf._posix(out / 'lim.attempt1.salvage.jsonl'), text)
+
+    def test_a_context_size_the_record_does_not_carry_is_printed_unknown_never_zero(self):
+        out = Path(tempfile.mkdtemp(prefix='rk_', dir=TMP))
+        _path, text = sf.resume_plan(self.jobs(), self.results(out, peak=None), out, None)
+        self.assertIn('context size unknown', text)
+        self.assertNotIn(' 0 tokens', text)
+
+    def test_a_stop_before_any_session_has_only_the_fresh_file_and_no_pin(self):
         out = Path(tempfile.mkdtemp(prefix='rn_', dir=TMP))
         results = self.results(out, sid=None)
-        results['lim']['resumeWith'] = None
-        path, _text = sf.resume_plan(self.jobs(), results, out, None)
-        job = json.loads(path.read_text(encoding='utf-8'))['jobs'][0]
+        results['lim'].update(resumeWith=None, plan=None, record=None)
+        _path, text = sf.resume_plan(self.jobs(), results, out, None)
+        job = self.written(out, 'resume-jobs.json')['jobs'][0]
         self.assertNotIn('plan', job)
         self.assertNotIn('-r', job.get('extraArgs') or [])
+        self.assertFalse((out / 'resume-session-jobs.json').exists())
+        self.assertIn('no saved session', text)
 
     def test_a_stop_whose_record_carries_no_reset_says_so_never_the_epoch(self):
         out = Path(tempfile.mkdtemp(prefix='ru_', dir=TMP))
@@ -250,24 +293,28 @@ class Resume(unittest.TestCase):
         self.assertIn('anthropic-secondary resets at an unrecorded time', text)
         self.assertNotIn('1970', text)
 
-    def test_a_chain_resumes_the_stopped_job_and_the_jobs_its_lane_never_ran(self):
+    def test_a_chain_continues_the_stopped_job_and_keeps_the_jobs_its_lane_never_ran(self):
         out = Path(tempfile.mkdtemp(prefix='rc_', dir=TMP))
         jobs = [dict(JOB, label='first', _lane='L'), dict(JOB, label='lim', _lane='L'),
                 dict(JOB, label='after', _lane='L'), dict(JOB, label='other', _lane='M')]
         results = self.results(out)
-        results.update({'first': {'exit': 0}, 'after': {'exit': None, 'error': 'not run: lane `L` stopped'},
+        results.update({'first': {'exit': 0}, 'after': {'exit': None, 'error': 'not run: lane L stopped'},
                         'other': {'exit': 0}})
-        path, _text = sf.resume_plan(jobs, results, out, [('L', ['first', 'lim', 'after']), ('M', ['other'])])
-        spec = json.loads(path.read_text(encoding='utf-8'))
-        self.assertEqual([(c['name'], [j['label'] for j in c['jobs']]) for c in spec['chains']],
-                         [('L', ['lim', 'after'])])
-        self.assertNotIn('_lane', json.dumps(spec))
+        lanes = [('L', ['first', 'lim', 'after']), ('M', ['other'])]
+        sf.resume_plan(jobs, results, out, lanes)
+        for name in ('resume-jobs.json', 'resume-session-jobs.json'):
+            spec = self.written(out, name)
+            self.assertEqual([(c['name'], [j['label'] for j in c['jobs']]) for c in spec['chains']],
+                             [('L', ['lim', 'after'])], name)
+            self.assertNotIn('_lane', json.dumps(spec))
+        after = self.written(out, 'resume-jobs.json')['chains'][0]['jobs'][1]
+        self.assertNotIn('contextFiles', after)         # it never ran: nothing for a note to say
 
     def test_nothing_stopped_writes_nothing(self):
         out = Path(tempfile.mkdtemp(prefix='rz_', dir=TMP))
         path, text = sf.resume_plan(self.jobs(), {'lim': {'exit': 0}, 'done': {'exit': 0}}, out, None)
         self.assertEqual((path, text), (None, ''))
-        self.assertFalse((out / 'resume-jobs.json').exists())
+        self.assertEqual(sorted(p.name for p in out.iterdir()), [])
 
     def test_the_summary_points_at_the_file_not_at_a_launcher_to_find(self):
         out = Path(tempfile.mkdtemp(prefix='rt_', dir=TMP))

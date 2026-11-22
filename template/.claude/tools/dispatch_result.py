@@ -12,7 +12,7 @@ tool fills in a `<label>.md` for an out dir that predates that. Both routes name
 
 USAGE
     python3 .claude/tools/dispatch_result.py <workflow-run-dir | fanout-out-dir> [--out-dir DIR]
-    python3 .claude/tools/dispatch_result.py check <spill.md> --block <name>=<key,key...> [--block ...]
+    python3 .claude/tools/dispatch_result.py check <spill.md> [--block <name>=<key,key...> ...]
     python3 .claude/tools/dispatch_result.py consume <workflow-run-dir | sidecar-out-dir | sidecar-record.json> --label <label> [--check-timeout S] [--brief P]
     python3 .claude/tools/dispatch_result.py take <sidecar-out-dir | sidecar-record.json> --label <label> [--run-proofs]
 
@@ -25,11 +25,12 @@ Per job it prints one line: `wrote <path>`, `kept <path>` (the file exists: the 
 earlier pass wrote it), `spill-missing <label> <path>` (the job's digest names a spill file that
 does not exist; the digest is not the deliverable, so nothing is written), or `no-result <label>`.
 
-`check` validates a spill the parent parses by script. Each `--block` names a fenced block (a
-fence opened with the name) and the keys every row must hold. A block fenced more than once reads
-as one block. Every non-blank line of a block must be a JSON object holding its keys. It prints
-one line per bad row (`<name> row <n>: ...`, n counting the block's non-blank rows), `MISSING block
-<name>` for a block that was never fenced, and `<name>: <n> rows` per block.
+`check` validates a report the parent reads or parses by script. With no `--block` it passes a report
+that exists, is not blank (`EMPTY report` otherwise) and, when it fences a `claims` block, holds one JSON object
+per non-blank row of it. Each `--block` adds a fenced block (a fence opened with the name) and the keys every
+row must hold. A block fenced more than once reads as one block. Every non-blank line of a block must be a JSON
+object holding its keys. It prints one line per bad row (`<name> row <n>: ...`, n counting the block's non-blank
+rows), `MISSING block <name>` for a block that was never fenced, and `<name>: <n> rows` per block.
 
 EXIT 0 every job has its `<label>.md` (`check`: every block present and every row holds its keys);
 1 some job has none (`check`: a block is missing or a row is bad); 2 the input is unusable.
@@ -324,8 +325,9 @@ def _spill_dir_of(run_dir):
     return None
 
 
-def _journal_jobs(journal):
-    """[(label, result-or-None)] in start order; a label's latest agent with a result wins."""
+def journal_agents(journal):
+    """{label: (agentId, result-or-None)} in start order; a label's latest agent with a result wins, else its last
+    agent. The agent id names its transcript, `agent-<id>.jsonl`, beside the journal."""
     labels, results, order = {}, {}, []
     for line in journal.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
@@ -340,11 +342,18 @@ def _journal_jobs(journal):
                 order.append(ev["label"])
         elif ev.get("type") == "result":
             results[ev["agentId"]] = ev.get("result")
-    by_label = {}
+    found = {}
     for agent, label in labels.items():
         if agent in results and results[agent] is not None:
-            by_label[label] = results[agent]
-    return [(label, by_label.get(label)) for label in order]
+            found[label] = (agent, results[agent])
+        else:
+            found.setdefault(label, (agent, None))
+    return {label: found[label] for label in order}
+
+
+def _journal_jobs(journal):
+    """[(label, result-or-None)] in start order; a label's latest agent with a result wins."""
+    return [(label, result) for label, (_agent, result) in journal_agents(journal).items()]
 
 
 def _spill_target(text):
@@ -406,8 +415,13 @@ def _fenced_bodies(text, name):
 
 
 def check_spill(text, blocks):
-    """(report lines, bad count) for `blocks`, a {name: [keys]} mapping, checked against `text`."""
+    """(report lines, bad count) for `text`: it is not blank, a `claims` fence it holds parses as JSON objects, and
+    each of `blocks`, a {name: [keys]} mapping, is present with its keys."""
     lines, bad = [], 0
+    if not text.strip():
+        return ["EMPTY report"], 1
+    if "claims" not in blocks and _fenced_bodies(text, "claims"):
+        blocks = {**blocks, "claims": []}
     for name, keys in blocks.items():
         found = _fenced_bodies(text, name)
         if not found:
@@ -926,10 +940,10 @@ def _spill_path(spill):
 
 def main_check(argv):
     ap = argparse.ArgumentParser(prog="dispatch_result.py check",
-                                 description="Check the fenced JSON Lines blocks of a spill file.")
+                                 description="Check a report is non-blank, its claims fence parses, and the fenced JSON Lines blocks --block names.")
     ap.add_argument("spill", help="the spill markdown file; a relative path missing from a linked worktree "
                                   "is read from the main checkout")
-    ap.add_argument("--block", action="append", required=True, type=_block_spec,
+    ap.add_argument("--block", action="append", default=[], type=_block_spec,
                     metavar="NAME=KEY,KEY", help="a fenced block and the keys each row must hold")
     args = ap.parse_args(argv)
     try:

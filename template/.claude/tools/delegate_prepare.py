@@ -12,7 +12,7 @@ fan-out's own fields (`tools/sidecar_fanout.py` docstring) plus:
     worktree   `true` (named for the label) or a name: the job works in a new worktree
                `<root>/.claude/worktrees/<name>` on branch `scratch/<name>`, cut from `base` (default `HEAD`)
 Required per job: `label` (`[A-Za-z0-9._-]`, unique), a brief file that exists, `kind`
-(scout|lens|reviewer|author|judge), `tier`, and `rows` or `model` + `effort`, never both. `role` defaults to
+(scout|lens|reviewer|author|judge|gate), `tier`, and `rows` or `model` + `effort`, never both. `role` defaults to
 `tier`. Every other field passes through unchanged, so the fan-out's own checks (`pick`/`spec`, `tools`,
 `window`, ...) stay its own.
 """
@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-KINDS = ("scout", "lens", "reviewer", "author", "judge")
+KINDS = ("scout", "lens", "reviewer", "author", "judge", "gate")
 _SAFE = re.compile(r"^[A-Za-z0-9._-]+$")
 LINE_CHARS = 400
 
@@ -46,7 +46,7 @@ def _rel(path, root):
 
 
 def _kinds():
-    """The job kinds a delegate may name: the five the command documents, that `guards/tool_profiles.json` declares."""
+    """The job kinds a delegate may name: the kinds the command documents, that `guards/tool_profiles.json` declares."""
     declared = json.loads((HERE.parent / "guards" / "tool_profiles.json").read_text(encoding="utf-8")).get("kinds") or {}
     return [kind for kind in KINDS if kind in declared]
 

@@ -4,7 +4,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 
 ## detailed
 
-- Run only the targeted tests of the items you change, plus the repo-scan lints your layer's rails name. A scoped suite run and the project's regression gate are your dispatcher's, once at close: report them owed. A wide run your brief itself names (a crash that reproduces only in a batch) is the one exception, for that run alone. Any other wide run, in your command or in a script you run, is refused. [change_control §Gate cadence]
+- Run the checks your rails' `Your checks` line names, plus the repo-scan lints your layer names; a wider run is the gate kind's (`orchestration` §4). A scoped suite run and the project's regression gate are your dispatcher's, once at close: report them owed. Any wide run, in your command or in a script you run, is refused. [change_control §Gate cadence]
 - In the shared main checkout you never commit or branch: return every changed path as `changedPaths`, and your dispatcher commits them. In a worktree on its own branch, commit there. [orchestration reference writer_returns.md]
 - Comments: default NONE. Add one only where deleting it would lead a maintainer to a wrong decision. [CLAUDE.core.md §Core Code Conventions]
 - Do NOT reduce planned scope mid-execution. If the scope looks wrong, stop and report it — the cut is not yours to make. [feedback_dont_unilaterally_reduce_planned_scope.md]
@@ -14,7 +14,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 
 ## condensed
 
-- Run only your changed items' targeted tests, plus the repo-scan lints your layer's rails name; a scoped suite run and the regression gate are the dispatcher's at close (`change_control` §Gate cadence): report them owed. A wide run your brief itself names is the one exception; any other is refused.
+- Run the checks your rails' `Your checks` line names, plus the repo-scan lints your layer names; a scoped suite run and the regression gate are the dispatcher's at close (`change_control` §Gate cadence): report them owed. A wide run is the gate kind's (`orchestration` §4); any other is refused.
 - In the shared main checkout never commit or branch; return `changedPaths` for the dispatcher. A worktree on its own branch commits there (orchestration reference writer_returns.md).
 - Comments default to none (CLAUDE.core.md §Core Code Conventions). Planned scope is not yours to cut (`feedback_dont_unilaterally_reduce_planned_scope.md`).
 - End your turn only after every command you started has finished: a returned child cannot be resumed. Run the edited unit's proof file in the foreground (RED-first) (`rules/harness_tooling.md`; orchestration §4).

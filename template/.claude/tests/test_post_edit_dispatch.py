@@ -191,8 +191,10 @@ def main():
     growth_payload = written(big_md, "- " + "large " * 500, session="postgrow", cwd=repo)
     growth_payload["tool_response"]["type"] = "create"
     rc, out, err = run(growth_payload, env)
-    cases.append(("harness_growth_guard still reports a size/density measurement",
-                  rc == 0 and "[harness-growth]" in context(out)))
+    cases.append(("a large harness markdown edit gets no growth report",
+                  rc == 0 and "[harness-growth]" not in context(out)))
+    cases.append(("harness_growth_guard is not in the post-edit chain",
+                  "harness_growth_guard" not in dict(load_dispatch_module().CHAIN)))
 
     # --- self_eval_archive_guard ------------------------------------------
     archive = plant(os.path.join(tmp, "repo", "self_evaluate_archive.json"), "not json")

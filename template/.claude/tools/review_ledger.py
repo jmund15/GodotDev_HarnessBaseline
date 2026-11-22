@@ -2258,8 +2258,8 @@ def served_model():
     session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session:
         return None
-    base = Path(_import("model_registry").session_projects_dir())
-    for transcript in sorted(base.glob(f"*/{session}.jsonl")):
+    found = _import("model_registry").find_session_transcript(session)
+    for transcript in [found] if found else []:
         try:
             with transcript.open("rb") as handle:
                 handle.seek(0, os.SEEK_END)

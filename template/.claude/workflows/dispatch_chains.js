@@ -334,7 +334,7 @@ const badJob = allJobs.filter(([, j]) => !j || !j.label || !j.promptPath || !kin
 if (chains.length === 0 || badChain.length > 0 || badJob.length > 0) {
   return {
     error: 'Every chain needs {name, jobs:[...]} and every job needs {label, promptPath, model, kind}; kind must be one of '
-      + '[scout|lens|reviewer|author|judge], resolved by the guard into args.__toolProfiles. Each job needs ' + pinVocab
+      + '[scout|lens|reviewer|author|judge|gate], resolved by the guard into args.__toolProfiles. Each job needs ' + pinVocab
       + '. Write each prompt to a file and pass its path — never inline large prompts into args.',
     badChains: badChain.map(c => (c && c.name) || '(unnamed)'),
     badJobs: badJob.map(([, j]) => (j && j.label) || '(unlabeled)'),

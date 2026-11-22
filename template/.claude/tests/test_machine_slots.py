@@ -66,6 +66,73 @@ class MachineSlots(unittest.TestCase):
         finally:
             slots.release_all(other)
 
+    def test_run_passes_a_proof_runner_through_without_a_lane(self):
+        # A wrapped runner held one lane for its whole batch and ran every proof serially inside it, so an
+        # exclusive head waited out the batch while the rest of the pool sat idle.
+        runner = Path(self.tmp.name) / 'harness_tests.py'
+        runner.write_text('import os; print(os.environ.get("HARNESS_SLOT_BUDGET"))', encoding='utf-8')
+        held = slots.take(True)
+        try:
+            out = subprocess.run([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--deadline', str(time.time() + 3),
+                                  '--', sys.executable, str(runner), '--proofs-for', 'x.py'],
+                                 capture_output=True, text=True, timeout=60)
+        finally:
+            slots.release_all(held)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(out.stdout.strip(), 'None', 'the runner admits itself per proof, never in an inherited lane')
+
+    def test_run_still_queues_a_proof_that_names_the_runner_as_an_argument(self):
+        held = slots.take(True)
+        try:
+            out = subprocess.run([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--deadline', str(time.time() + 1),
+                                  '--', sys.executable, '-c', 'print(1)', 'harness_tests.py'],
+                                 capture_output=True, text=True, timeout=60)
+        finally:
+            slots.release_all(held)
+        self.assertEqual(out.returncode, 2, out.stdout + out.stderr)
+
+    def test_a_dispatched_jobs_run_gives_up_its_place_in_a_full_pool_and_names_the_run_owed(self):
+        held = slots.take(True)
+        out = Path(self.tmp.name) / 'out.txt'
+        argv = ['machine_slots.py', 'run', '--', sys.executable, 'test_x.py']
+        try:
+            with patch.dict(os.environ, {'CLAUDE_CODE_SIDECAR': 'anthropic', 'CLAUDE_CODE_SIDECAR_KIND': 'author'}), \
+                    patch.object(slots, 'JOB_WAIT_S', 0.3), patch.object(sys, 'argv', argv), \
+                    open(out, 'w', encoding='utf-8') as fh, contextlib.redirect_stdout(fh), \
+                    contextlib.redirect_stderr(fh):
+                began = time.monotonic()
+                code = slots.main()
+                waited = time.monotonic() - began
+        finally:
+            slots.release_all(held)
+        text = out.read_text(encoding='utf-8')
+        self.assertEqual(code, 2, text)
+        self.assertLess(waited, 10, 'the job waits one bounded call, not for as long as the pool stays full')
+        self.assertIn('test_x.py', text, 'the line names the run the job owes its dispatcher')
+
+    def test_only_a_dispatched_non_gate_job_gets_the_bound(self):
+        with patch.dict(os.environ, {'CLAUDE_CODE_SIDECAR': 'anthropic', 'CLAUDE_CODE_SIDECAR_KIND': 'author'}):
+            self.assertIsNotNone(slots.job_deadline())
+        with patch.dict(os.environ, {'CLAUDE_CODE_SIDECAR': 'anthropic', 'CLAUDE_CODE_SIDECAR_KIND': 'gate'}):
+            self.assertIsNone(slots.job_deadline(), 'a gate job exists to run the wide run, queue included')
+        with patch.dict(os.environ):
+            os.environ.pop('CLAUDE_CODE_SIDECAR', None)
+            self.assertIsNone(slots.job_deadline(), 'the session itself is woken by its watcher and keeps its place')
+
+    def test_a_dispatched_jobs_proof_process_gives_up_its_place_the_same_way(self):
+        # sitecustomize admits a direct `python test_x.py` through admit(); None makes it exit 2.
+        held = slots.take(True)
+        out = Path(self.tmp.name) / 'admit.txt'
+        try:
+            with patch.dict(os.environ, {'CLAUDE_CODE_SIDECAR': 'anthropic', 'CLAUDE_CODE_SIDECAR_KIND': 'author'}), \
+                    patch.object(slots, 'JOB_WAIT_S', 0.3), open(out, 'w', encoding='utf-8') as fh, \
+                    contextlib.redirect_stderr(fh):
+                got = slots.admit(['python', 'test_x.py'])
+        finally:
+            slots.release_all(held)
+        self.assertIsNone(got)
+        self.assertIn('test_x.py', out.read_text(encoding='utf-8'))
+
     def test_windows_root_ignores_proof_home(self):
         with patch.object(slots.os, 'name', 'nt'), patch.dict(os.environ, {'USERPROFILE': 'C:/Users/worker', 'HOME': 'X:/fixture'}):
             os.environ.pop('HARNESS_SLOT_DIR')
@@ -191,6 +258,54 @@ class MachineSlots(unittest.TestCase):
     def test_shared_tickets_still_go_in_arrival_order_behind_an_exclusive_head(self):
         served, _ = self._ordered_takers('xss')
         self.assertEqual(served, [0, 1, 2])
+
+    def _head_overtaken_by_exclusive(self, width, shared_count):
+        """A shared head holds drain.lock behind a full pool, an exclusive ticket then queues ahead of it, and the
+        holder releases. Returns the order the two were served in."""
+        os.environ['HARNESS_MACHINE_SLOTS'] = str(width)
+        holder = slots.take(False)
+        served, threads, events = [], [], {}
+        def taker(name, exclusive, count):
+            events[name] = threading.Event()
+            held = slots.take(exclusive, count, deadline=time.time() + 8)
+            if held is not None:
+                served.append(name)
+                events[name].set()
+                time.sleep(.1)
+                slots.release_all(held)
+        try:
+            threads.append(threading.Thread(target=taker, args=('shared', False, shared_count)))
+            threads[-1].start()
+            self._wait_for_tickets(1)
+            drain = Path(self.folder) / 'drain.lock'
+            until = time.monotonic() + 5
+            while not drain.exists() and time.monotonic() < until:
+                time.sleep(.01)
+            self.assertTrue(drain.exists(), 'the shared head never took drain.lock')
+            threads.append(threading.Thread(target=taker, args=('exclusive', True, 1)))
+            threads[-1].start()
+            self._wait_for_tickets(2)
+            time.sleep(.2)
+        finally:
+            slots.release_all(holder)
+        for thread in threads:
+            thread.join(20)
+        return served, events
+
+    def test_a_head_overtaken_by_an_exclusive_ticket_lets_it_have_the_machine(self):
+        """Observed 2026-11-21: a shared broker held drain.lock with no slot held and the whole pool free for 47
+        minutes, and 61 tickets queued behind it. It had taken drain.lock as head; an exclusive ticket then went
+        ahead of it, so it stopped collecting but kept drain.lock, which the exclusive head needs."""
+        started = time.monotonic()
+        served, _ = self._head_overtaken_by_exclusive(1, 1)
+        self.assertEqual(served, ['exclusive', 'shared'])
+        self.assertLess(time.monotonic() - started, 6, 'the exclusive head waited for the shared head to give up')
+
+    def test_an_overtaken_head_returns_the_slots_it_had_collected(self):
+        started = time.monotonic()
+        served, _ = self._head_overtaken_by_exclusive(2, 2)
+        self.assertEqual(served, ['exclusive', 'shared'])
+        self.assertLess(time.monotonic() - started, 6, 'the exclusive head waited for a slot the shared head kept')
 
     def test_a_take_reports_where_its_wait_went(self):
         _, splits = self._ordered_takers('xs')

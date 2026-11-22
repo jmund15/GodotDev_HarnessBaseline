@@ -304,7 +304,8 @@ def main():
             folder.mkdir(parents=True, exist_ok=True)
             (folder / f"{name}.jsonl").write_text("{}\n", encoding="utf-8")
         declared = [str(Path(home, d)) for d in (".claude", ".claude-secondary", ".claude-third")]
-        with patch.object(sd, "login_dirs", lambda: declared, create=True):
+        with patch('model_registry.login_dirs', lambda: declared), patch.dict(
+                os.environ, {'CLAUDE_CONFIG_DIR': str(primary.parent.parent)}):
             try:
                 sd.pick_transcript(primary, "eeee", None)
                 fails.append("a login store the registry does not declare must not be searched")

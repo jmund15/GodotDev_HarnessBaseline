@@ -100,20 +100,17 @@ This file contains all agent definitions, spawn rules, scoring rubric, and fix c
 
 For each selected agent, build its prompt from the `review_agents.md` template, substituting `{{CONTEXT}}` (the block from 2b), `{{PR_NUM}}`, `{{BRANCH}}`, `{{CHECKLIST_CDS}}`, `{{CHECKLIST_RP}}`, `{{CHECKLIST_I}}`, `{{TEST_QUALITY_CHECKLIST}}`, `{{TRANSCRIPT_CORRECTIONS}}`.
 
-Then dispatch them all through the engine — it runs them in parallel, appends the read-only / no-tests / no-LSP single-flight guard to every agent (so no agent can run the project's regression gate or another single-flight tool concurrently), and consolidates per Step 1 of the action protocol:
+Write each seat's assembled prompt to its own file under `.claude/scratch/review_pr/` and the 2b CONTEXT block to one context file, then write the jobs file one job per seat (`reference/sidecar_dispatch.md` §review panel: `label`, `mandates: [<agent key>]`, `mustRead`, `alias` a registry row per the template's model tier, `promptFile`, `effort`, `kind: "reviewer"`, `schemaFile`, `workdir`, `contextFiles`) and dispatch them all through the fan-out, which places each seat by the ladder's selection line, runs the sidecars in parallel and consolidates per Step 1 of the action protocol:
 
-```
-Workflow({
-  scriptPath: ".claude/workflows/review_fanout.js",
-  args: { agents: [ { key: "code-reviewer", prompt: "<assembled>", model: "<per template>" }, ... ] }
-})
+```bash
+python3 .claude/tools/sidecar_fanout.py .claude/scratch/review_pr/jobs.json --review --out .claude/scratch/review_pr/out --detach
 ```
 
-It returns `{ findings: [...deduped, sorted...], counts, perAgent, verification }`. Do not re-spawn agents manually.
+A seat it keeps on this session's plan comes back as a printed `NATIVE` Workflow call (issue it) and the `--review-close` call that consolidates every seat once they have all ended. The read-only profile and the single-flight rail come from each seat's `reviewer` kind, so no agent can run the project's regression gate or another single-flight tool concurrently. `<out>/review.json` holds the result: `findings` as the grouped view, `sources`, per-seat `coverage` and `verification`. Do not re-spawn agents manually.
 
 ### Phase 2 Completion
 
-The workflow already performed **Step 1 (Merge & Deduplicate)** of the [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md) — its original findings remain in `sources`, while `findings` is a sorted/grouped view; account for every source ID. Continue with the rest of the protocol yourself (these need the live-file/user access the workflow lacks):
+The fan-out already performed **Step 1 (Merge & Deduplicate)** of the [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md) — its original findings remain in `sources`, while `findings` is a sorted/grouped view; account for every source ID. Continue with the rest of the protocol yourself (these need the live-file/user access the workflow lacks):
 
 1. **Step 1.5** — consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md); the report's `held` ids and failed checks stay visible first.
 2. **Steps 2–4** — present the unified report, add NOTE synthesis, then rule the held ids with the user.

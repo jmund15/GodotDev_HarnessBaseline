@@ -104,4 +104,4 @@ Prefer established terms to coinages; pair a prohibition with the correct action
 
 ## Composition with other tools
 
-Use `/instruction_audit` for structural quality and hook validity, `/rule_consistency` for contradictions, `/test_skill` for content resistance, `/claudemd_compact` for CLAUDE.md size, `/memory_audit` for retention. `harness_growth_guard.py` reports size/density; it does not prove preserved quality. A review of actively changing inputs records drift and rechecks affected claims, not a clean verdict or a blind rerun.
+Use `/instruction_audit` for structural quality and hook validity, `/rule_consistency` for contradictions, `/test_skill` for content resistance, `/claudemd_compact` for CLAUDE.md size, `/memory_audit` for retention. A review of actively changing inputs records drift and rechecks affected claims, not a clean verdict or a blind rerun.

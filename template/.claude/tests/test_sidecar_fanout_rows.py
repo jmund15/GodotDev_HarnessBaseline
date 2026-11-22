@@ -17,6 +17,7 @@ import os
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -231,7 +232,8 @@ def the_launch_fallback_switches_alias_and_effort_to_the_next_rows():
     argv = [sys.executable, refuser, "-m", "sonnet", "-e", "medium", "-l", "j", "-R", rec,
             "-P", sf._posix(os.path.join(out, "j.stream")), "-X"]
     err = io.StringIO()
-    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+    with patch.dict(os.environ, {"LAUNCH_MIN_COMMIT_GIB": "0", "LAUNCH_MIN_PHYSICAL_GIB": "0"}), \
+            contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
         results = sf.run_jobs([("j", argv, os.path.join(out, "j.out.json"))], 1, out,
                               fallbacks={"j": [("codex", spare, "sol", "high")]})
     calls = open(os.path.join(out, "calls.log"), encoding="utf-8").read().split("\n")

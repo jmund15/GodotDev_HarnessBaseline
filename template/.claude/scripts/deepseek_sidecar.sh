@@ -86,7 +86,7 @@
 #       -p bypassPermissions: grant the one path instead of disarming the
 #       whole permission system. VERIFY the read actually lands — a grant
 #       that silently misses turns a check into a false empty.
-#   -G  job kind, required: scout|lens|reviewer|author|judge (guards/tool_profiles.json
+#   -G  job kind, required: scout|lens|reviewer|author|judge|gate (guards/tool_profiles.json
 #       `kinds`; the internal arm|bench-score|bench-review too). Omitting -G refuses (exit 2). The
 #       kind's row sets built-ins, MCP servers, disclosure and guard text, so -D refuses (only
 #       -G arm takes it) and an unsigned -t refuses (a signed delta stays legal). Exported as

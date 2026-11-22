@@ -137,6 +137,22 @@ class DiscardLosesNothing(unittest.TestCase):
         git(self.root, 'hash-object', '-w', A)
         self.assertEqual(0, self.run_hook(f'git restore {A}', [])[0])
 
+    def test_restore_of_a_file_deleted_from_the_worktree_allows(self):
+        # A merge resolution that keeps one side drops the other side's deletion: no worktree bytes exist to lose.
+        (self.root / A).unlink()
+        self.assertEqual(0, self.run_hook(f'git restore -- {A}', [])[0])
+        self.assertEqual(0, self.run_hook(f'git restore --source=HEAD -- {A}', [])[0])
+
+    def test_restore_of_a_deleted_file_beside_unsaved_bytes_denies(self):
+        (self.root / A).unlink()
+        self.assertEqual(2, self.run_hook(f'git restore -- {A} {B}', [])[0])
+
+    def test_checkout_from_a_ref_of_a_deleted_file_with_a_staged_edit_denies(self):
+        # A checkout from a ref also overwrites the index, whose staged bytes a missing worktree file says nothing about.
+        git(self.root, 'add', A)
+        (self.root / A).unlink()
+        self.assertEqual(2, self.run_hook(f'git checkout HEAD -- {A}', [])[0])
+
     def test_checkout_from_head_deny_names_a_next_step_that_passes(self):
         # Rows F736, F741: `git checkout HEAD -- <a> <b>` over this session's own abandoned edits. The deny names
         # the save and the `restore --source=HEAD` retry; running both passes with no owner reply.

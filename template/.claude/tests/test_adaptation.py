@@ -201,6 +201,8 @@ def main():
         cases.append(("a wrong-typed lens_preloads falls back to {} and names itself",
                       result.get("lens_preloads") == {} and "lens_preloads" in err
                       and len(err.strip().splitlines()) == 1))
+        cases.append(("the module docstring lists lens_preloads with its reader",
+                      "lens_preloads" in doc and "lens.py" in doc))
         # --- gate_cadence: the harness' one cadence data key --------------------------------
         empty = {"slice": [], "merge": [], "close": [], "wide": []}
         claude_dir = _claude_dir_with(tmp, None)

@@ -14,6 +14,7 @@ import shlex
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -159,7 +160,21 @@ class Admission(unittest.TestCase):
 
 
 class HookAdmission(unittest.TestCase):
-    def call(self, table, jobs, flags='', background=False, cached=True):
+    def call(self, table, jobs, flags='', background=False, confirmed=None, run=None):
+        self.confirmations = []
+        confirmed = table if confirmed is None else confirmed
+
+        def confirm(argv, timeout, **kwargs):
+            self.confirmations.append((argv, timeout))
+            self.assertEqual(Path(argv[1]).name, 'provider_capacity.py')
+            self.assertEqual(argv[0], sys.executable)
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, hook.PREFLIGHT_TIMEOUT)
+            if run is not None:
+                return run(argv, timeout, **kwargs)
+            value = planted(confirmed)(argv[-1])
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps(value), stderr='')
+
         path = TMP / 'hook_jobs.json'
         path.write_text(json.dumps(jobs), encoding='utf-8')
         command = shlex.join(['python3', '.claude/tools/sidecar_fanout.py', str(path).replace('\\', '/'),
@@ -169,6 +184,7 @@ class HookAdmission(unittest.TestCase):
         out = io.StringIO()
         with patch.object(provider_capacity, 'cached', lambda t, data=None, **k: planted(table)(t)), \
                 patch.object(provider_capacity, 'reading') as live, \
+                patch.object(hook, 'run_bounded', side_effect=confirm), \
                 patch.dict(os.environ, {'CLAUDE_PROJECT_DIR': str(ROOT), 'HARNESS_SIDECAR_PREFLIGHT': '1'}), \
                 patch.object(hook.sys, 'stdin', io.StringIO(json.dumps(payload))), \
                 patch.object(hook.sys, 'stdout', out), \
@@ -209,8 +225,76 @@ class HookAdmission(unittest.TestCase):
             got = self.call({PAID: value}, [job(plan=PAID)])
             self.assertNotEqual(got.get('permissionDecision'), 'deny', value)
 
-    def test_the_hook_reads_cached_capacity_only(self):
+    def test_a_missing_cached_reading_starts_no_confirmation(self):
         self.call({PAID: None}, [job(plan=PAID), job('b')])
+        self.assertEqual(self.confirmations, [])
+
+    def test_a_blocking_reading_is_confirmed_once_per_plan_for_the_whole_call(self):
+        got = self.call({PAID: FLOOR}, [job(plan=PAID), job('b', plan=PAID)])
+        self.assertEqual(got.get('permissionDecision'), 'deny')
+        self.assertEqual([argv[-1] for argv, _timeout in self.confirmations], [PAID])
+        self.assertIn('fix-r3, b', got['permissionDecisionReason'])
+
+    def test_a_manual_reset_drops_the_cached_refusal(self):
+        got = self.call({PAID: FLOOR}, [job(plan=PAID)], confirmed={PAID: ROOMY})
+        self.assertNotEqual(got.get('permissionDecision'), 'deny')
+        self.assertEqual(len(self.confirmations), 1)
+
+    def test_a_confirmed_exhausted_plan_is_refused(self):
+        got = self.call({PAID: SPENT}, [job(plan=PAID)], background=True)
+        self.assertEqual(got.get('permissionDecision'), 'deny')
+        self.assertIn('Exhausted', got['permissionDecisionReason'])
+        self.assertEqual(len(self.confirmations), 1)
+
+    def test_a_failed_confirmation_never_reuses_the_cached_refusal(self):
+        for result in (types.SimpleNamespace(returncode=None, stdout='', stderr=''),
+                       types.SimpleNamespace(returncode=2, stdout='', stderr='failed'),
+                       types.SimpleNamespace(returncode=0, stdout='broken JSON', stderr=''),
+                       types.SimpleNamespace(returncode=0, stdout=json.dumps(dict(FLOOR, transport=OTHER)), stderr='')):
+            got = self.call({PAID: FLOOR}, [job(plan=PAID)], run=lambda *a, **k: result)
+            self.assertNotEqual(got.get('permissionDecision'), 'deny')
+            self.assertEqual(len(self.confirmations), 1)
+
+    def test_confirmations_share_the_hooks_remaining_deadline(self):
+        clock = [100.0]
+
+        def expired(argv, timeout, **kwargs):
+            self.assertLessEqual(timeout, 3.5)
+            clock[0] += timeout
+            return types.SimpleNamespace(returncode=None, stdout='', stderr='')
+
+        with patch.object(hook, 'HOOK_BUDGET_SECONDS', 3.5), \
+                patch.object(hook.time, 'monotonic', side_effect=lambda: clock[0]):
+            got = self.call(everyone(FLOOR), [job()], run=expired)
+        self.assertNotEqual(got.get('permissionDecision'), 'deny')
+        self.assertEqual(len(self.confirmations), 1)
+
+    def test_confirmation_uses_the_real_reader_and_obeys_its_cooldown(self):
+        real_reading = provider_capacity.reading
+        cache = TMP / 'confirmation_cache.json'
+
+        def run(argv, timeout, **kwargs):
+            out = io.StringIO()
+            with patch.object(provider_capacity, 'reading', real_reading), \
+                    contextlib.redirect_stdout(out):
+                code = provider_capacity.main([argv[-1]])
+            return types.SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr='')
+
+        for status in ('full', 'reset', 'cooldown'):
+            now = time.time()
+            old = reading(PAID, seven=99, now=now - 10)
+            old['observedAt'] = provider_capacity._utc(now - 10)
+            blob = {PAID: old}
+            if status == 'cooldown':
+                blob[provider_capacity.RATE_LIMIT_KEY] = {PAID: now + 100}
+            cache.write_text(json.dumps(blob), encoding='utf-8')
+            answer = reading(PAID, seven=99 if status == 'full' else 10)
+            with patch.dict(os.environ, {'PROVIDER_CAPACITY_CACHE': str(cache)}), \
+                    patch.object(provider_capacity, '_run_probe', return_value=answer) as probe_call:
+                got = self.call({PAID: old}, [job(plan=PAID)], background=True, run=run)
+            self.assertEqual(got.get('permissionDecision') == 'deny', status == 'full', status)
+            self.assertEqual(probe_call.call_count, 0 if status == 'cooldown' else 1, status)
+            self.assertEqual(len(self.confirmations), 1, status)
 
     def test_a_refold_launches_no_seat_and_is_left_alone(self):
         got = self.call({PAID: FLOOR}, [job(plan=PAID)], flags=' --refold')

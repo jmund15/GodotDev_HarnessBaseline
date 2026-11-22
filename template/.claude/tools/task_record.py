@@ -34,7 +34,8 @@ refuses the write and prints its replacement; legacy reproduction commands are n
 
     task_record.py open <task_id> --spec <spec.json> [--reset]
     task_record.py open <task_id> --session <sid> --title <t> [--reset]
-    task_record.py set <task_id> [--phase P] [--next N] [--owner O] [--files PATH ...] [--rigor light|normal|thorough]
+    task_record.py set <task_id> [--phase P] [--next N] [--owner O] [--files PATH ...]
+                       [--rigor light|normal|thorough] [--mode fix-now|attended|unattended]
     task_record.py add <task_id> requirement|exclusion|decision|artifact "<text>" [--evidence P ...]
     task_record.py add <task_id> decision "<text>" --evidence-item '<json>' [--evidence-item '<json>' ...] [--supersedes <Dn> ...]
     task_record.py supersede <task_id> <Dn> --by <Dm>
@@ -420,11 +421,15 @@ def _require(state, task_id):
         raise KeyError("no record for %s; open it first" % task_id)
 
 
-def set_fields(task_id, phase=None, next_action=None, owner=None, files=None, rigor=None):
+def set_fields(task_id, phase=None, next_action=None, owner=None, files=None, rigor=None, mode=None):
     if rigor is not None:
         import triage
         if rigor not in triage.RIGORS:
             raise TriageRefused("rigor must be one of %s" % ", ".join(triage.RIGORS))
+    if mode is not None:
+        import triage
+        if mode not in triage.MODES:
+            raise TriageRefused("mode must be one of %s" % ", ".join(triage.MODES))
 
     def mutation(state):
         _require(state, task_id)
@@ -439,6 +444,9 @@ def set_fields(task_id, phase=None, next_action=None, owner=None, files=None, ri
         if rigor is not None:
             state["rigor"] = rigor
             state["rigorAt"] = now()
+        if mode is not None:
+            state["mode"] = mode
+            state["modeAt"] = now()
         return state["phase"]
 
     return _mutate(task_id, mutation)
@@ -951,6 +959,8 @@ def render_block(task_id, max_bytes=BLOCK_BYTES):
     head = ["[task-record] %s phase=%s next=%s" % (task_id, rec.get("phase"), rec.get("next_action"))]
     if rec.get("rigor"):
         head.append("rigor: " + rec["rigor"])
+    if rec.get("mode"):
+        head.append("mode: " + rec["mode"])
     triaged = (rec.get("triage") or {}).get("fields")
     if triaged:
         head.append("triage: " + " ".join("%s=%s" % (k, _joined(triaged[k])) for k in TRIAGE_ORDER if k in triaged))
@@ -995,6 +1005,7 @@ def main(argv=None):
     p.add_argument("--spec", help="JSON spec for a one-call open"); p.add_argument("--reset", action="store_true")
     p = sub.add_parser("set"); p.add_argument("task_id"); p.add_argument("--phase"); p.add_argument("--next")
     p.add_argument("--owner"); p.add_argument("--files", nargs="*"); p.add_argument("--rigor", choices=triage.RIGORS)
+    p.add_argument("--mode", choices=triage.MODES)
     p = sub.add_parser("add"); p.add_argument("task_id"); p.add_argument("kind", choices=sorted(ITEM_KINDS))
     p.add_argument("text"); p.add_argument("--evidence", nargs="*")
     p.add_argument("--evidence-item", action="append", help="decision evidence JSON; repeat for each item")
@@ -1041,7 +1052,8 @@ def main(argv=None):
                     raise _spec_refusal("open needs --session and --title, or --spec <spec.json>")
                 print(json.dumps(open_record(a.task_id, a.session, a.title, a.owner, reset=a.reset), indent=1))
         elif a.cmd == "set":
-            set_fields(a.task_id, phase=a.phase, next_action=a.next, owner=a.owner, files=a.files, rigor=a.rigor)
+            set_fields(a.task_id, phase=a.phase, next_action=a.next, owner=a.owner, files=a.files, rigor=a.rigor,
+                       mode=a.mode)
             print(json.dumps(load(a.task_id), indent=1))
         elif a.cmd == "supersede":
             print(json.dumps(supersede(a.task_id, a.old_id, a.by), indent=1))

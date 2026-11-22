@@ -9,9 +9,9 @@ const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'remaining-engines-'))
 fs.writeFileSync(path.join(temp, 'fixture'), 'true quote\n')
 const liveStart = fs.readFileSync(path.resolve(__dirname, 'fixtures/evidence/review/journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).find(row => row.type === 'started')
 const root = path.resolve(__dirname, '../..')
-const engines = ['dispatch', 'explore_fanout', 'review_fanout', 'doc_architecture_audit', 'dispatch_chains', 'key_reachability', 'worklog_relevance']
+const engines = ['dispatch', 'review_fanout', 'doc_architecture_audit', 'dispatch_chains', 'key_reachability', 'worklog_relevance']
 const base = { __transport: { ids: ['producer', 'checker'] }, checker: { model: 'checker', effort: 'low' }, __toolProfiles: { verify: { agentType: 'lane-verify', tier: 'fanout' } } }
-// Every closeCheck argument must reach the verifier command in all seven engines: each engine carries its own
+// Every closeCheck argument must reach the verifier command in every engine: each engine carries its own
 // copy of the block, and a copy that drops an argument runs a weaker check without failing anywhere else.
 const reachCases = [
   { args: { fold: { findings: 'f.json', digest: 'd.json', snapshot: 's.json' }, root: 'subject-root', spillDir: 'spill', expectTotal: 3, expectSources: 2,
@@ -95,7 +95,6 @@ async function missingFlags(file, transform = source => source) {
     const evidence = [{file: path.join(temp, 'fixture'), quote: 'true quote'}]
     const claim = (subject, index) => ({subject, claim: subject, polarity: 'exists', bearing: index ? 'premise-contradiction' : 'context', evidence: index === 2 ? [] : [{file: path.join(temp, 'fixture'), quote: index ? 'fake quote' : 'true quote'}], confidence: 'verified'})
     const specs = {
-      explore_fanout: {args: {resultMode: 'full', lenses: [{key: 'lens', prompt: 'scan', model: 'producer', effort: 'low', kind: 'reviewer'}]}, reply: {claims: [claim('true', 0), claim('fake', 1), claim('empty', 2)], checked: checkedSource}, member: 'claims'},
       review_fanout: {args: {resultMode: 'full', agents: [{key: 'lens', prompt: 'scan', model: 'producer', effort: 'low', kind: 'reviewer', mustRead: [{path: 'fixture', lines: 1}]}]}, reply: {findings: [0,1,2].map(i => ({agent: 'lens', action: 'FIX', category: 'bug', critical: false, file: 'fixture:' + (i+1), description: ['true','fake','empty'][i], old: null, new: null, question: null, options: null, scope: null, rationale: 'why', evidence: claim('x', i).evidence})), checked: checkedSource}, member: 'findings'},
       doc_architecture_audit: {args: {context: 'context', model: 'producer', effort: 'low', tier: 'fanout', kind: 'reviewer'}, reply: {findings: [0,1,2].map(i => ({agent: 'da-structural', check: 'S2', severity: i === 1 ? 'critical' : 'warning', action: 'FIX', system: null, description: ['true','fake','empty'][i], recommendation: 'fix', handler: null, options: null, scope: [], evidence: claim('x',i).evidence}))}, member: 'findings'},
       dispatch_chains: {args: {chains: [{name: 'lane', jobs: [{label: 'job', promptPath: 'brief', model: 'producer', effort: 'low', kind: 'reviewer'}]}]}, reply: '```claims\n' + [claim('true',0),claim('fake',1),claim('empty',2)].map(JSON.stringify).join('\n') + '\n```', member: null},
@@ -176,7 +175,7 @@ async function missingFlags(file, transform = source => source) {
         }
         const rows = spec.reply.claims || spec.reply.findings || spec.reply.overlaps || [0,1,2]
         rows.forEach((row, index) => {
-          const key = name === 'explore_fanout' ? 'lens#' + (index+1) : name === 'review_fanout' ? 'F' + (index+1) : opts.label + '#' + (index+1)
+          const key = name === 'review_fanout' ? 'F' + (index+1) : opts.label + '#' + (index+1)
           verdicts[key] = ['VERIFIED','UNVERIFIED','UNCHECKED'][index]
         })
         if (name === 'worklog_relevance') verdicts['worklog:relevance#checked'] = 'VERIFIED'
@@ -198,10 +197,6 @@ async function missingFlags(file, transform = source => source) {
     else if (name === 'key_reachability') spec.args.tasks.task.ids.reverse()
     else if (name === 'dispatch_chains') spec.reply = '```claims\n' + spec.reply.match(/```claims\n([\s\S]*?)```/)[1].trim().split('\n').reverse().join('\n') + '\n```'
     await runFull(false)
-    if (name === 'explore_fanout') {
-      spec.reply.claims.splice(1, 0, {claim: 'shape-invalid source'})
-      await runFull(false)
-    }
     console.log('PASS ' + name + ': real checker, both source orders, applied verification, failed verifier')
   }
 })().catch(error => { console.error(error); process.exitCode = 1 }).finally(() => fs.rmSync(temp, {recursive: true, force: true}))

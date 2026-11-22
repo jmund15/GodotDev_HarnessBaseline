@@ -218,6 +218,7 @@ def planted_plan(name, left):
 
 
 def main():
+    os.environ.pop("CLAUDE_CODE_SIDECAR", None)
     tmp = tempfile.mkdtemp(prefix="task_brief_facts_")
     try:
         return _main(tmp)
@@ -492,14 +493,15 @@ def _main(tmp):
         import _hook_state
         tag = getattr(module, "NOTICE_TAG", "[dispatch-prep]")
 
-        def notice(sid, met_skill, met_ladder):
+        def notice(sid, met_skill, met_ladder, delegate=False):
             _hook_state.clear_compaction_keys(sid)
             if met_skill:
                 _hook_state.mark_skill_in_context(sid, "orchestration")
             if met_ladder:
                 _hook_state.mark_ladder_slice(sid, ["executor"])
             with planted_env(HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir,
-                             CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache), no_probe_spy([]):
+                             CLAUDE_CODE_TRANSPORT=SEAT, PROVIDER_CAPACITY_CACHE=warm_cache,
+                             **({"CLAUDE_CODE_SIDECAR": "anthropic"} if delegate else {})), no_probe_spy([]):
                 first = (module.process(written(brief_path, "", session=sid)) or {}).get("context") or ""
                 second = (module.process(written(brief_path, "", session=sid)) or {}).get("context") or ""
             return first, second
@@ -514,6 +516,10 @@ def _main(tmp):
         skill_only, _ = notice("prep-skill", True, False)
         case("the notice names only the missing requirement when the skill is loaded",
              tag in skill_only and "for-role" in skill_only and 'Skill(skill="orchestration")' not in skill_only)
+        delegate_first, _ = notice("prep-deleg", False, False, delegate=True)
+        delegate_line = next((l for l in delegate_first.splitlines() if l.startswith(tag)), "")
+        case("a delegate's notice names the SKILL.md Read it can perform, not the Skill call it lacks",
+             "Skill(skill=" not in delegate_line and "SKILL.md" in delegate_line and "for-role" in delegate_line)
         ladder_only, _ = notice("prep-ladder", False, True)
         case("the notice names only the missing requirement when the ladder is credited",
              tag in ladder_only and 'Skill(skill="orchestration")' in ladder_only and "for-role" not in ladder_only)

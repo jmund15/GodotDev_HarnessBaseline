@@ -164,9 +164,29 @@ FAULT_NOTE = ("Dispatch doctrine check could not read its session state, so this
 
 # The load steps the deny names and the post-compaction rule (`doctrine_rule`) states: one string per step.
 SKILL_STEP = 'invoke Skill(skill="orchestration") (orchestration §0)'
+SKILL_READ_STEP = 'Read `{path}` in full with the Read tool, no offset or limit ({rule})'
 SLICE_STEP = 'print the doctrine for {which}: `' + SLICE_COMMAND + ' {tiers}` (orchestration §5)'
 SLICE_BELOW_STEP = 'read the ladder slice for {which} below (orchestration §5)'
 READ_STEP = 'Read `{path}` in full, no offset or limit (orchestration §5)'
+
+
+def has_skill_tool(payload):
+    """False for a delegate: no `guards/tool_profiles.json` row grants the Skill tool, and a sidecar child (the
+    launchers export CLAUDE_CODE_SIDECAR) or an in-session subagent (its transcript lives under `subagents`) runs
+    a profile."""
+    if os.environ.get('CLAUDE_CODE_SIDECAR'):
+        return False
+    transcript = str(payload.get('transcript_path') or '').replace('\\', '/')
+    return '/subagents/' not in transcript
+
+
+def skill_step(name, payload, rule):
+    """The one load step for skill `name`: the Skill call where the caller has the tool, else a full Read of its
+    SKILL.md, which `skill_load_marker.py` records as the same load."""
+    if has_skill_tool(payload):
+        return SKILL_STEP if name == 'orchestration' else f'invoke Skill(skill="{name}") ({rule})'
+    path = os.path.realpath(_root(payload) / '.claude' / 'skills' / name / 'SKILL.md')
+    return SKILL_READ_STEP.format(path=path, rule=rule)
 
 
 def _tier_phrase(tier, consumers):
@@ -233,8 +253,9 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
     one load route: the orchestration skill (orchestration §0) and the ladder (orchestration §5). The step after
     the load is to check the call against them and re-issue it, because they exist to change the call. Both are
     observed state, never the route or pin they inform. A compaction clears the ladder, and the skill unless the
-    client re-attached it whole (`_hook_state.skill_in_context` reads that attachment from the payload's transcript). A full SKILL.md Read still marks the skill loaded (skill_load_marker.py) for a session without the Skill
-    tool; the deny names only the Skill call. State the lock cannot write fails open with the fault note
+    client re-attached it whole (`_hook_state.skill_in_context` reads that attachment from the payload's transcript). A full SKILL.md Read marks the skill loaded
+    too (skill_load_marker.py), so a caller without the Skill tool (`has_skill_tool`) is told that Read and one
+    with it the Skill call: each deny names the one load its caller can perform. State the lock cannot write fails open with the fault note
     (instruction_quality §16): no load could be recorded.
 
     The ladder is met by a full Read or by `model_registry.py for-role` for every tier the call implies.
@@ -256,7 +277,7 @@ def doctrine_check(payload, tiers=None, embed_slice=False):
     unmet, slice_text = [], None
     if not skill_in_context(session_id, 'orchestration', agent_id=payload.get('agent_id') or '',
                             transcript_path=payload.get('transcript_path'), root=str(_root(payload))):
-        unmet.append(SKILL_STEP)
+        unmet.append(skill_step('orchestration', payload, 'orchestration §0'))
     if not ladder_ready:
         needed = _call_tiers(tiers)
         if needed is None:

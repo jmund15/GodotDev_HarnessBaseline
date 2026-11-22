@@ -23,13 +23,13 @@ try {
   A = { scope: args }
 }
 
-// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge) for every child it spawns;
+// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge|gate) for every child it spawns;
 // hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
 // child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
 // entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
 const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
 if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
-  return { error: 'worklog-relevance: args.kind is required (scout|lens|reviewer|author|judge), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. The relevance delegate runs as that kind.' }
+  return { error: 'worklog-relevance: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. The relevance delegate runs as that kind.' }
 }
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 // EVIDENCE-SSOT-BEGIN

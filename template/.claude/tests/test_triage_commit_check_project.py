@@ -649,7 +649,6 @@ def main(tmp):
     stage(root, "notes.txt")
     write(root, "plain.txt", "fix: file message\n")
     shapes = (
-        'git commit -F plain.txt -- notes.txt',
         'git commit -m "$(cat <<\'EOF\'\nfix: heredoc\n\ngit commit is message text\nEOF\n)" -- notes.txt',
         'git -C "' + root.replace("\\", "/") + '" commit -m "plain" 2>/dev/null',
         'git commit -m "one"; git commit -m "two"',
@@ -674,7 +673,28 @@ def main(tmp):
               len(rewritten_invocations) == count and all(
                   "Triage: reach=local" in (_git_commit.commit_message(i.rest, i.cwd) or "")
                   for i in rewritten_invocations), updated)
+        check("derived rewrite is idempotent", is_silent(h.context(root, payload(root, updated, session="derived-shapes"))))
         check("record rewrite is idempotent", is_silent(h.context(root, payload(root, updated, session="derived-shapes"))))
+    # A -F commit whose one message file is readable takes its derived trailer in that file and is never
+    # rewritten (auto mode denies a call whose input a hook changed after review); an unreadable file takes the
+    # rewrite. These run under their own session so the record above does not turn the trailer into its `Triage:`.
+    file_command = 'git commit -F plain.txt -- notes.txt'
+    ctx, raw, parsed = h.context(root, payload(root, file_command, session="fileonly"))
+    with open(os.path.join(root, "plain.txt"), encoding="utf-8") as fh:
+        message = fh.read()
+    check("a readable -F commit keeps its command and carries the derived trailer in its message file",
+          raw[0] == 0 and "updatedInput" not in parsed.get("hookSpecificOutput", {})
+          and message == "fix: file message\n\nTriage-Derived: reach=local oracle=none\n", (raw, message))
+    h.context(root, payload(root, file_command, session="fileonly"))
+    with open(os.path.join(root, "plain.txt"), encoding="utf-8") as fh:
+        check("a second run of a readable -F commit adds no second trailer",
+              fh.read().count("Triage-Derived:") == 1)
+    absent_command = 'git commit -F not-yet.txt -- notes.txt'
+    ctx, raw, parsed = h.context(root, payload(root, absent_command, session="fileonly"))
+    updated = parsed.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
+    check("an unreadable -F commit takes the rewrite and keeps its shell bytes",
+          raw[0] == 0 and updated.replace(' --trailer "Triage-Derived: reach=local oracle=none"', '') == absent_command
+          and updated.count("Triage-Derived:") == 1, raw)
     write(root, "hooks/g.py", "x = 2\n")
     stage(root, "hooks/g.py")
     ctx, raw, parsed = h.context(root, payload(root, 'git commit -m "shared"', session="norec-shapes"))

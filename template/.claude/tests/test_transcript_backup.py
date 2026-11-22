@@ -130,7 +130,12 @@ def main():
         cases.append(("parent: re-arms fire_once_since_compaction", "fired_since_compaction" not in state))
         cases.append(("parent: keeps the once-per-session gate", state.get("fired_once") == {"o": True}))
         cases.append(("parent: logs the event", log_exists))
-        cases.append(("parent: reminder reaches the model", "POST-CONTINUATION REMINDER" in out))
+        cases.append(("parent: successful backup and summary add no compaction context", not out.strip()))
+        cases.append(("parent: the summary and manifest still exist while success is silent",
+                      any(f.endswith(".summary.json") for f in files) and manifest))
+        failed_out, failed_crash, _, _, _, _ = scenario({"transcript_path": "Z:/missing-transcript.jsonl"}, base)
+        cases.append(("parent: backup failure still reports the lost backup on stdout",
+                      not failed_crash and "backup unavailable" in failed_out.lower()))
 
         out, crashed, state, files, log_exists, manifest = scenario({"agent_id": "a1b2c3d4e5f6"}, base)
         cases.append(("subagent: no crash", not crashed))

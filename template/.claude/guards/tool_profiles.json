@@ -59,6 +59,16 @@
       "internal": false,
       "routes": ["launcher", "fanout", "engine", "agent"]
     },
+    "gate": {
+      "builtins": ["Read", "Grep", "Bash"],
+      "mcpServers": [],
+      "disclosure": "full",
+      "guard": "gate",
+      "agentType": "lane-gate",
+      "tier": "fanout",
+      "internal": false,
+      "routes": ["launcher", "fanout", "engine", "agent"]
+    },
     "arm": {
       "builtins": null,
       "mcpServers": ["semantic-search"],

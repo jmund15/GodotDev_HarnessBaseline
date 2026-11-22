@@ -2148,6 +2148,23 @@ def case_a_runner_with_no_width_set_adopts_the_recorded_width():
     check("with no width recorded and none set, the width is the default 4", fresh == 4, "fresh=%r" % (fresh,))
 
 
+def case_the_behavior_plan_is_built_once_per_cache():
+    """Every proof's key folds in its behavior binding, and the plan behind it scans the whole repo: built per
+    proof, a scoped run spends minutes before its first proof starts."""
+    repo, proof, counter = make_repo()
+    real, calls = harness_tests._behavior_plan, []
+    harness_tests._behavior_plan = lambda root, paths=None: calls.append(paths) or real(root, paths)
+    try:
+        cache = harness_tests._PassCache(repo)
+        rel = os.path.relpath(proof, repo).replace(os.sep, "/")
+        manifest = {"files": [rel], "probes": [], "dirs": [], "static": [], "git": False, "opaque": False}
+        keys = [cache.observed_key(proof, manifest) for _ in range(3)]
+        check("three proof keys build the behavior plan once", len(calls) == 1 and len(set(keys)) == 1,
+              str(calls))
+    finally:
+        harness_tests._behavior_plan = real
+
+
 def case_the_pool_width_defaults_to_the_machines_recorded_slots():
     repo, _proof, _counter = make_repo()
     slots = os.path.join(repo, "slots")

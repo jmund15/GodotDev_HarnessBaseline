@@ -16,7 +16,6 @@ const JOB = { label: 'j', promptPath: 'p.md', model: 'fable', effort: 'medium', 
 const ENGINES = {
   'dispatch.js': (extra) => ({ jobs: [{ ...JOB }], ...extra }),
   'dispatch_chains.js': (extra) => ({ chains: [{ name: 'c', jobs: [{ ...JOB }] }], ...extra }),
-  'explore_fanout.js': (extra) => ({ lenses: [{ key: 'k', promptPath: 'p.md', model: 'fable', effort: 'medium', kind: 'reviewer' }], ...extra }),
   'review_fanout.js': (extra) => ({ agents: [{ key: 'k', promptPath: 'p.md', model: 'fable', effort: 'medium', kind: 'reviewer', mustRead: [{ path: 'x', lines: 1 }] }], ...extra }),
 }
 
@@ -61,7 +60,7 @@ async function prompts(file, args, logs) {
   // Inline delivery: the hook supplies `__railsText` for the pairs a call uses; each engine pastes it
   // after the brief under a standing-rules header, and keeps the pointer only as the fallback.
   const INLINE_KEY = { 'dispatch.js': 'review/minimal', 'dispatch_chains.js': 'review/minimal',
-    'explore_fanout.js': 'review/minimal', 'review_fanout.js': 'review/minimal' }
+    'review_fanout.js': 'review/minimal' }
   for (const [file, build] of Object.entries(ENGINES)) {
     const logs = []
     const inline = await prompts(file, build({ __rails: RAILS, __railsText: { [INLINE_KEY[file]]: 'RAILS-BODY-XYZ' } }), logs)

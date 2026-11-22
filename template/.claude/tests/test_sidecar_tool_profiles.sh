@@ -69,6 +69,7 @@ for kind in scout lens reviewer judge; do
   check "$kind resolves to the table's row"  "Read,Glob,Grep|$READ_SPEC|$kind shape-default strict semantic-search,ai-worker,git" "$(resolved $kind '')"
 done
 check "author resolves to the write set"    "Read,Glob,Grep,Edit,Write,Bash|Read,Glob,Grep,Edit,Write,Bash,mcp__${SS_NORM},mcp__ai-worker|author shape-default strict semantic-search,ai-worker" "$(resolved author '')"
+check "gate resolves to its own row, no MCP" "Read,Grep,Bash|Read,Grep,Bash|gate shape-default strict " "$(resolved gate '')"
 check "arm takes its task row and one server" "Read,Glob,Grep,Edit,Write,Bash,TodoWrite|Read,Glob,Grep,Edit,Write,Bash,TodoWrite,mcp__${SS_NORM}|arm task-base strict semantic-search" "$(resolved arm 'Read,Glob,Grep,Edit,Write,Bash,TodoWrite,mcp__'"${SS_KEY}"'__search')"
 check "a signed csv is a delta"             "Read,Glob,Grep|Read,Glob,Grep,mcp__${SS_NORM},mcp__ai-worker,mcp__git,mcp__godot|scout delta strict semantic-search,ai-worker,git,godot" "$(resolved scout '+mcp:godot')"
 check "a removal drops exactly one server"  "Read,Glob,Grep|Read,Glob,Grep,mcp__${SS_NORM},mcp__git|scout delta strict semantic-search,git" "$(resolved scout '-mcp:ai-worker')"
@@ -262,15 +263,16 @@ done
 # 2026-11-05: the same loop reads the kind the launcher exported (CLAUDE_CODE_SIDECAR_KIND), which the rails
 # and dispatch guard hooks branch on: a launcher that dropped it would give every child the `common` rails
 # while every table and argv proof stayed green. Both values are unset first, so an inherited env is no pass.
+for kind in scout gate; do
 for launcher in "${LAUNCHERS[@]}"; do
   body="$(awk '/^run_claude\(\) \{/ { on = 1 } on { print } on && /^}/ { exit }' "$SCRIPTS/$launcher")"
-  argv="$WORK/argv.cap.$launcher"; envf="$WORK/env.cap.$launcher"
+  argv="$WORK/argv.cap.$launcher.$kind"; envf="$WORK/env.cap.$launcher.$kind"
   ( . "$LIB" >/dev/null 2>&1
     set +u
     SC_CLAUDE="$WORK/stub_claude" SC_RUN_CWD="$WORK" SC_WORKDIR="$WORK"
     SC_MODEL=m SC_FORMAT=json SC_PROMPT=p SC_TIMEOUT="" SC_DISALLOWED="" SC_MAX_TURNS=""
     SC_RESUME_SID="" SC_SCRUB=() SC_APPEND_ARGS=() EXTRA_ARGS=() VERBOSE_ARGS=() EFFORT_ARGS=() SC_ADD_DIRS=()
-    SC_SHAPE=scout SC_TOOLS="" CLAUDE_CONFIG_DIR="$CFG" SC_MAX_OUTPUT=123456
+    SC_SHAPE=$kind SC_TOOLS="" CLAUDE_CONFIG_DIR="$CFG" SC_MAX_OUTPUT=123456
     unset CLAUDE_CODE_MAX_OUTPUT_TOKENS CLAUDE_CODE_SIDECAR_KIND
     export STUB_ARGV="$argv" STUB_ENV="$envf" CLAUDE_CONFIG_DIR="$CFG"
     sc_resolve_tools 2>/dev/null
@@ -278,8 +280,9 @@ for launcher in "${LAUNCHERS[@]}"; do
     run_claude </dev/null >/dev/null 2>&1 )
   check "$launcher: the child gets the resolved output cap" "123456" \
         "$(sed -n 1p "$envf" 2>/dev/null || echo '<never ran>')"
-  check "$launcher: the child gets the kind launcher exported (SC_SHAPE)" "scout" \
+  check "$launcher: the child gets the kind launcher exported ($kind)" "$kind" \
         "$(sed -n 2p "$envf" 2>/dev/null || echo '<never ran>')"
+done
 done
 
 # sc_max_output resolves the cap: the env override when it is a number, else the registry's max-output

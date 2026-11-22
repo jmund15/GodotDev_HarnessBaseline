@@ -18,6 +18,8 @@ as a fixture in most cases so the proof does not depend on this machine's regist
 """
 import json
 import os
+import re
+import subprocess
 import sys
 import tempfile
 
@@ -32,6 +34,13 @@ MCP_CFG = tempfile.mkdtemp(prefix="tool_profiles_mcp_")
 with open(os.path.join(MCP_CFG, ".claude.json"), "w", encoding="utf-8", newline="\n") as _fh:
     json.dump({"mcpServers": {"ai-worker": {"command": "aiw"}, "git": {"command": "gr"},
                               "godot": {"command": "g"},
+                              "plugin:semantic-search:semantic-search": {"command": "node"}},
+               "projects": {}}, _fh)
+# The committed agent files were rendered with ai-worker and the semantic-search plugin registered and the
+# repo-scoped `git` server not, so `agents --check` reads this config rather than this machine's registrations.
+AGENTS_CFG = tempfile.mkdtemp(prefix="tool_profiles_agents_")
+with open(os.path.join(AGENTS_CFG, ".claude.json"), "w", encoding="utf-8", newline="\n") as _fh:
+    json.dump({"mcpServers": {"ai-worker": {"command": "aiw"},
                               "plugin:semantic-search:semantic-search": {"command": "node"}},
                "projects": {}}, _fh)
 
@@ -373,6 +382,7 @@ P_GITDIFF = plant("planted_gitdiff", "allowed-tools: Bash(git diff:*), Read\n",
 P_NOLINE_WF = plant("planted_noline_wf", "", "Dispatch:\n\nWorkflow({scriptPath: '.claude/workflows/dispatch.js', args: {}})")
 P_NOLINE = plant("planted_noline", "", "Run `git status --short` and report.")
 P_BARE = plant("planted_bare", "allowed-tools: Bash, Read\n", "Run `git rev-parse HEAD`, then `python3 x.py`.")
+P_NPM = plant("planted_npm", "allowed-tools: Read\n", "1. Run `npm run typecheck` before you finish.")
 
 
 def attempt(fn):
@@ -433,6 +443,13 @@ check("nested_fanout_hit ignores a command without a fan-out grant", None,
       attempt(lambda: tp.nested_fanout_hit("Next, run /planted_noline.", CMD_ROOT)))
 check("a `run:<id>` key heading a ledger unit row is data, not a dispatch verb", None,
       attempt(lambda: tp.nested_fanout_hit("run:wf_1a2b\t.claude/commands/planted_wf.md,.claude/x.md", CMD_ROOT)))
+_EVIDENCE_LINE = '- [2026-11-09 prompt U12] "keep it compact" (general: run /planted_wf on the slice)'
+check("a ui_ledger evidence line's reader tag naming a fan-out command is data, not a dispatch", None,
+      attempt(lambda: tp.nested_fanout_hit(_EVIDENCE_LINE, CMD_ROOT)))
+check("...as is a superseded evidence line", None,
+      attempt(lambda: tp.nested_fanout_hit('- [U9] "then run /planted_wf for each"', CMD_ROOT)))
+check("...while the same sentence outside the evidence shape still dispatches", True,
+      attempt(lambda: tp.nested_fanout_hit("Next, run /planted_wf on the slice.", CMD_ROOT)) is not None)
 check("...while the verb before a command path still dispatches", True,
       attempt(lambda: tp.nested_fanout_hit("Next, run .claude/commands/planted_wf.md.", CMD_ROOT)) is not None)
 
@@ -451,6 +468,12 @@ check("no allowed-tools line and a Bash command is no gap", [],
       attempt(lambda: tp.command_coverage(P_NOLINE)["gaps"]))
 check("bare Bash covers every command", [],
       attempt(lambda: tp.command_coverage(P_BARE)["gaps"]))
+check("a brief that orders `npm run typecheck` needs Bash", ["Bash"],
+      attempt(lambda: tp.command_coverage(P_NPM)["gaps"]))
+check("brief_commands returns the commands a brief orders, never a quoted or negated one", True,
+      attempt(lambda: [command for _line, command in tp.brief_commands(
+          "- [ ] npm run verify\nNever run `npm run verify`.\nRun `npm run typecheck`.\n")]
+          == ["npm run typecheck"]))
 check("a Workflow grant covers a line-start Workflow({ call", [],
       attempt(lambda: tp.command_coverage(P_WF)["gaps"]))
 check("--include adds a linked file's invocations to the command", ["Bash"],
@@ -571,7 +594,7 @@ _repo_scope_case()
 
 # ---- the kind table: one required `kind` per job sets tools, -D, guard and agent type ----------
 _TB = tp.load_table()
-_PUBLIC = ["scout", "lens", "reviewer", "author", "judge"]
+_PUBLIC = ["scout", "lens", "reviewer", "author", "judge", "gate"]
 check("PUBLIC_KINDS derive from the table's non-internal rows", _PUBLIC,
       sorted(tp.public_kinds(_TB), key=_PUBLIC.index))
 for _k, _b, _d, _a, _t in (
@@ -579,11 +602,12 @@ for _k, _b, _d, _a, _t in (
         ("lens", ["Read", "Glob", "Grep"], "pointer", "lane-survey", "fanout"),
         ("reviewer", ["Read", "Glob", "Grep"], "full", "lane-review", "executor"),
         ("author", ["Read", "Glob", "Grep", "Edit", "Write", "Bash"], "full", "lane-author", "executor"),
-        ("judge", ["Read", "Glob", "Grep"], "full", "lane-review", "executor")):
+        ("judge", ["Read", "Glob", "Grep"], "full", "lane-review", "executor"),
+        ("gate", ["Read", "Grep", "Bash"], "full", "lane-gate", "fanout")):
     _p = tp.resolve_kind(_k, route="fanout", candidates=CANDIDATES)[0]
     check("resolve_kind %s: builtins, disclosure, agentType, tier" % _k, (_b, _d, _a, _t),
           (_p["builtins"], _p["disclosure"], _p["agentType"], _p["tier"]))
-raises("an unknown kind names the public kinds", "scout, lens, reviewer, author, judge",
+raises("an unknown kind names the public kinds", "scout, lens, reviewer, author, judge, gate",
        lambda: tp.resolve_kind("nonesuch", route="fanout", candidates=CANDIDATES))
 raises("an internal kind on the wrong route names its routes and the fix", "internal to",
        lambda: tp.resolve_kind("bench-score", route="fanout", candidates=CANDIDATES))
@@ -708,12 +732,51 @@ for _kind, _agent in (("scout", "lane-survey"), ("lens", "lane-survey"), ("revie
 _rendered = tp.render_agents(TABLE, CANDIDATES)
 check("render_agents writes the variant file with Bash after the reviewer's built-ins", True,
       "tools: Read, Glob, Grep, Bash, " in _rendered.get("lane-review-sh.md", ""))
-check("render_agents writes one file per agent type", ["lane-author.md", "lane-review-sh.md", "lane-review.md", "lane-survey.md", "lane-verify.md"],
+check("render_agents writes one file per agent type", ["lane-author.md", "lane-gate.md", "lane-review-sh.md", "lane-review.md", "lane-survey.md", "lane-verify.md"],
       sorted(_rendered))
+_NO_GIT = [c for c in CANDIDATES if c[0] != "git"]
+_rendered_no_git = tp.render_agents(TABLE, _NO_GIT)
+check("a repo that registers no repo-scoped server still renders every agent type", sorted(_rendered),
+      sorted(_rendered_no_git))
+check("its agents leave the unregistered repo-scoped server out and keep the rest", (False, True),
+      ("mcp__git" in _rendered_no_git["lane-review.md"], "mcp__ai-worker" in _rendered_no_git["lane-review.md"]))
+raises("render_agents still refuses a missing server that is not repo-scoped", "not registered",
+       lambda: tp.render_agents(TABLE, [c for c in CANDIDATES if c[0] != "ai-worker"]))
 raises("a variant adding Write to a non-author kind is refused at load", "author",
        lambda: _bad_variants([{"kind": "reviewer", "add": ["Write"], "agentType": "lane-review-w"}]))
 raises("a variant reusing a kind's agentType is refused at load", "agentType",
        lambda: _bad_variants([{"kind": "reviewer", "add": ["Bash"], "agentType": "lane-review"}]))
+
+# The committed agent files are the table's rendering: a kind added without `agents --write` drifts.
+# A consumer whose servers were not registered at init rendered none (`baseline_sync.render_lane_agents`).
+_AGENTS_DIR = os.path.join(ROOT, ".claude", "agents")
+if any(n.startswith("lane-") and n.endswith(".md") for n in (os.listdir(_AGENTS_DIR) if os.path.isdir(_AGENTS_DIR) else [])):
+    _agents_check = subprocess.run([sys.executable, os.path.join(ROOT, ".claude", "tools", "tool_profiles.py"),
+                                    "agents", "--check"], capture_output=True, text=True,
+                                   env={**os.environ, "CLAUDE_CONFIG_DIR": AGENTS_CFG})
+    check("the committed agent files match the table (agents --check)", (0, ""),
+          (_agents_check.returncode, _agents_check.stderr.strip()))
+else:
+    print("SKIP the committed agent files match the table: this repo rendered no lane agents")
+
+# ---- every written-out copy of the kind table names exactly the table's kinds -----------------
+# A copy that lists the kinds by hand goes stale the day the table gains one, and the stale copy reads as
+# authoritative. Found by the table's own vocabulary, never by a fixed file list; the pattern is split so
+# this proof is not its own finding.
+_KIND_LIST = "scout" + "|lens|reviewer|author"
+_COPY_RE = re.compile(r"[a-z][a-z-]*(?:\|[a-z][a-z-]*)+")
+_grep = subprocess.run(["git", "-C", ROOT, "grep", "-n", _KIND_LIST, "--", ".claude/"],
+                       capture_output=True, text=True)
+check("the kind-list sweep finds the written-out copies", True, bool(_grep.stdout.strip()))
+_stale = []
+for _hit in _grep.stdout.splitlines():
+    _path, _num, _text = _hit.split(":", 2)
+    if _path.endswith("tests/test_tool_profiles.py"):
+        continue
+    for _found in _COPY_RE.findall(_text):
+        if _found.startswith("scout|") and _found.split("|") != tp.public_kinds(_TB):
+            _stale.append("%s:%s -> %s" % (_path, _num, _found))
+check("every written-out kind list names exactly the table's public kinds", [], _stale)
 
 WRITE_DOC = "mcp__ai-worker__write_doc"
 for _kind in ("scout", "lens", "reviewer", "judge"):

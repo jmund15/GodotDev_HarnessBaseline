@@ -802,7 +802,9 @@ def _job_scratch(entry: str, root: Path | None = None, project_root: Path | None
     standalone clone (`_clean_pushed_clone`), one a saved copy under the project's `.claude/scratch`
     holds (`_saved_copy_holds`), or a `.git` directory that names no commit (`_names_no_commit`). A session id
     names that session's own output folder; a file only named by one (a guard's per-session state, a copied
-    fixture) is no folder. Any other repository may hold commits on no remote. Either keeps the delete
+    fixture) is no folder. A loose file directly in a `.claude/scratch` folder is evidence, not a job's
+    output, so it keeps the delete denied; a job's output lives in a folder under the scratch root. Any other
+    repository may hold commits on no remote. Either keeps the delete
     denied. Given `root`, the tree under the entry is read, since git reports an ignored directory as one line; a nested copy's own
     `template/.claude/scratch` counts at any depth."""
     parts = entry.split("/")
@@ -822,6 +824,9 @@ def _job_scratch(entry: str, root: Path | None = None, project_root: Path | None
         return None
     leaf_is_file = root is not None and (root / entry).is_file()
     for index, name in enumerate(parts[start:], start):
+        if index == start == len(parts) - 1 and parts[start - 1] == "scratch" \
+                and (root is None or leaf_is_file):
+            return 'is a loose file in the scratch folder, not a job output folder'
         reason = named(name, folder=not (leaf_is_file and index == len(parts) - 1))
         if reason:
             return reason
@@ -851,7 +856,10 @@ def _job_scratch(entry: str, root: Path | None = None, project_root: Path | None
                     continue
                 return rel + ' holds a git repository that loses work: ' + (why[0] if why else 'unreadable') \
                     + _save_step(Path(here), project_root)
+            direct_scratch = rel.split("/")[-2:] == [".claude", "scratch"]
             for name, folder in [(d, True) for d in dirs] + [(f, False) for f in files]:
+                if direct_scratch and not folder:
+                    return rel + '/' + name + ' is a loose file in the scratch folder, not a job output folder'
                 reason = named(name, folder)
                 if reason:
                     return rel + '/' + name + ' ' + reason

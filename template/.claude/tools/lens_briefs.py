@@ -21,9 +21,16 @@ Usage:
 
 `prepare --spec <spec.json> --out <run dir>` is one fan-out prep: it composes `review_ledger.py plan`
 (ledger modes), `session_audit_inputs.py freeze` (a `sessionAudit` block), each seat's must-read list,
-the seat fit, the `kfm` snapshot, the fold snapshot, the briefs, the job record
-`<run dir>/jobs_<prefix>.json` (one contract, `record_problems`) and `<run dir>/args.json`, the engine
-args `Workflow({scriptPath, args: {argsFile}})` expands. Spec keys: `mode` (`explore`, `session-audit`,
+the seat fit, the `kfm` snapshot, the fold snapshot, the briefs and `<run dir>/jobs_<prefix>.json`, the job record
+(one contract, `record_problems`) and, for a review panel, the jobs file of `sidecar_fanout.py --review`: a review panel's spec names no `target` (or `sidecar`), and the fan-out places each
+seat by the ladder's selection line, native on the session's plan through a Workflow call it prints, a sidecar
+elsewhere, then `--review-close` consolidates every seat. `"target": "native"` is the explicit `review_fanout.js`
+engine path: it writes `<run dir>/args.json`, the engine args `Workflow({scriptPath, args: {argsFile}})` expands, and
+every seat pays the session's plan. A registry-less seat (`brief`) is pinned to a registry row like the others, and its
+`tools` (a delta such as `+Bash`) rides in the job. Mode `explore` has no Workflow engine: it writes
+`<run dir>/jobs_<prefix>.json` for `sidecar_fanout.py`, each lens listing its `rows` (`{alias: effort}`, from the
+seat's `rows` or its pin and effort) and no plan, so the fan-out places it; `explore_result.py` then consolidates
+the lenses of every transport. Spec keys: `mode` (`explore`, `session-audit`,
 `plan-check`, `pr-review`, `design-redteam`, `pr-ready`), `prefix`, `topic`, `questions`, `seats`
 (`{key, mandates?, tier?, effort?, pin?, mustRead?, brief?}`) or `roster` or `lenses`, `pins`,
 `efforts`, `tiers`, `fold`, `subjectFiles`, `seatFiles`, `subjectPlans`, `context`, `task`,
@@ -144,6 +151,7 @@ import _session_transport  # noqa: E402  (the host transport's own pin and effor
 import _dispatch_checks  # noqa: E402  (the guard's tier fit)
 import _dispatch_pins  # noqa: E402  (the native pin name of a row)
 import dispatch_size  # noqa: E402  (a seat's reading and its fit to its pin's window)
+import explore_result  # noqa: E402  (the claims contract an explore lens brief carries)
 import lens  # noqa: E402  (sibling module: registry parsing)
 import model_registry  # noqa: E402  (the tier vocabulary, and the sidecar alias resolution)
 import finding_bar  # noqa: E402  (the run's bar words; a sidecar prompt has no engine contract to carry them)
@@ -177,6 +185,8 @@ FLAG_PLACEHOLDERS = {"PR_NUM": "--pr-num", "BRANCH": "--branch"}
 # `sidecar_fanout.DEFAULT_REVIEW_SCHEMA` — the launcher's own default — and the import is deferred so
 # the native route never pays for the fan-out's process machinery.
 REVIEW_KIND = "reviewer"
+# An explore lens is a survey, not a review: its kind, and no schema — its claims object rides its final message.
+EXPLORE_KIND = "lens"
 
 
 @functools.lru_cache(maxsize=None)
@@ -431,7 +441,8 @@ def record_problems(jobs: list[dict], *, kind: str) -> list[str]:
     One contract for the native jobs, the sidecar jobs and `prepare`'s registry-less seats: each record
     names a unique label and its seat's lens mandates, carries the build's `kind`, an `effort`, one POSIX
     prompt path, one pin, and the `mustRead` files its seat reads. Every path a record carries is POSIX;
-    a sidecar record also names its schema, workdir and context files."""
+    a sidecar record also names its schema, workdir and context files (an explore lens has no schema, so its
+    record is exempt)."""
     if not isinstance(jobs, list) or not jobs or not all(isinstance(job, dict) for job in jobs):
         return ["the prepared record must be a non-empty list of job objects"]
     problems, labels = [], set()
@@ -480,7 +491,7 @@ def record_problems(jobs: list[dict], *, kind: str) -> list[str]:
         pins = [key for key in ("model", "alias") if job.get(key) is not None]
         if len(pins) != 1 or not isinstance(job[pins[0]], str) or not job[pins[0]]:
             problems.append(f"{who}: exactly one of `model` (native) or `alias` (sidecar) names its pin")
-        if job.get("alias") is not None:
+        if job.get("alias") is not None and job.get("kind") != EXPLORE_KIND:
             if not posix(job.get("schemaFile")):
                 problems.append(f"{who}: a sidecar record names its absolute POSIX `schemaFile`")
             if not posix(job.get("workdir")):
@@ -703,8 +714,8 @@ def acceptance_section(task_id: str) -> str:
 
 
 PREP_MODES = ("explore", "session-audit", "plan-check", "pr-review", "design-redteam", "pr-ready")
-# The engines that ship beside this tool; a mode whose engine sits in the coding layer (explore) names it
-# in `spec.engine`, so this pure tool never cites a higher-layer file.
+# The Workflow engines that ship beside this tool. `explore` has none: its lenses are fan-out jobs, consolidated by
+# `explore_result.py`.
 PREP_ENGINES = {"session-audit": ".claude/workflows/review_fanout.js",
                 "plan-check": ".claude/workflows/review_fanout.js",
                 "pr-review": ".claude/workflows/review_fanout.js",
@@ -716,7 +727,7 @@ PREP_STAGES = {"session-audit": "candidate", "plan-check": "plan-check", "pr-rev
 # §Job kind owns the choice). Explore lenses survey with the registry's doctrine, so they run as `lens`;
 # every other mode's seats return a verdict on a plan or diff, so they run as `reviewer`.
 MODE_KIND = {mode: "reviewer" for mode in PREP_MODES}
-MODE_KIND["explore"] = "lens"
+MODE_KIND["explore"] = EXPLORE_KIND
 
 
 def _rel(path: Path, root: Path) -> str:
@@ -833,7 +844,7 @@ _SIDECAR_LEDGER_FLAGS = (("stage", "--ledger-stage"), ("subject", "--ledger-subj
 def _sidecar_call(root: Path, out: Path, prefix: str, fold: dict | None, ledger: dict) -> list[str]:
     """The sidecar review launch carrying the same fold and ledger the native args hold."""
     call = ["python3", ".claude/tools/sidecar_fanout.py", _rel(out / f"jobs_{prefix}.json", root),
-            "--review", "--out", _rel(out, root)]
+            "--review", "--out", _rel(out, root), "--detach"]
     if fold:
         call += ["--fold-alias", str(fold["model"]), "--fold-effort", str(fold["effort"])]
         for subject in fold.get("subjects") or []:
@@ -908,10 +919,8 @@ def _run_ledger_plan(root: Path, spec: dict, seats: list[dict], out: Path
     kept = planned.get("roster") or []
     by_key = {seat["key"]: seat for seat in seats}
     for seat in kept:
-        extra = by_key.get(seat.get("key"), {})
-        for name in ("brief", "pin", "mustRead"):
-            if name in extra:
-                seat[name] = extra[name]
+        for name, value in by_key.get(seat.get("key"), {}).items():
+            seat.setdefault(name, value)
     return kept, planned.get("dropped") or [], planned.get("crossFamily")
 
 
@@ -1006,7 +1015,8 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
             sys.exit("prepare: the spec pins no model (`pins.panel` or a seat's `pin`)")
         params = BriefParams(
             plan=str(roster), out=str(out), prefix=prefix, context_path=str(context), model=panel_pin,
-            effort=panel_effort, target="sidecar" if spec.get("target") == "sidecar" else "native",
+            effort=panel_effort,
+            target="explore" if spec["mode"] == "explore" else _target(spec),
             pr_num=None if spec.get("prNum") is None else str(spec["prNum"]),
             branch=str(spec["branch"]) if spec.get("branch") else None,
             subject_plan=[str(plan_arg) for plan_arg in spec.get("subjectPlans") or []],
@@ -1038,8 +1048,9 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
         if not text.strip():
             sys.exit(f"prepare: seat {key!r} is not a lens-registry key and carries no `brief` text")
         path = out / f"{prefix}_{key}.md"
+        body = text.rstrip() + "\n" + ("\n" + explore_result.claims_contract() if spec["mode"] == "explore" else "")
         pending.append((path, f"<!-- lens brief: {key} — generated by tools/lens_briefs.py prepare; do not edit -->\n\n"
-                              + text.rstrip() + "\n"))
+                              + body))
         pins = spec.get("pins") or {}
         efforts = spec.get("efforts") or {}
         jobs.append({"label": f"{prefix}-{key}", "key": key,
@@ -1058,37 +1069,103 @@ def _write_briefs(root: Path, spec: dict, out: Path, prefix: str, registry: list
     return jobs
 
 
+def _fanout_jobs(spec: dict, seats: list[dict], jobs: list[dict], context: Path, out: Path, prefix: str) -> list[dict]:
+    """The fan-out's job list for a review panel: a registry seat's job already is one; a registry-less seat (its
+    `brief` text) is pinned to a registry row like the others. Rewrites `jobs_<prefix>.json` when it adds one."""
+    data = model_registry.load()
+    by_key = {seat["key"]: seat for seat in seats}
+    converted, changed = [], False
+    for job in jobs:
+        if "promptFile" in job:
+            converted.append(job)
+            continue
+        key = job.get("key") or job["label"]
+        entry = resolve_sidecar_entry(job["model"], f"seat {key} pin", data)
+        rungs = effort_rungs(entry, data)
+        if rungs and job["effort"] not in rungs:
+            sys.exit(f"{key}: effort {job['effort']!r} is not a rung {entry['alias']} serves ({', '.join(rungs)})")
+        seat = by_key.get(key) or {}
+        converted.append({k: v for k, v in {
+            "label": job["label"], "mandates": job["mandates"], "mustRead": job["mustRead"],
+            "alias": entry["alias"], "promptFile": job["promptPath"], "tier": job.get("tier"),
+            "effort": job["effort"], "kind": job["kind"], "schemaFile": str(review_schema()).replace("\\", "/"),
+            "workdir": str(REPO).replace("\\", "/"), "contextFiles": [Path(context).resolve().as_posix()],
+            "tools": seat.get("tools")}.items() if v is not None})
+        changed = True
+    if changed:
+        (out / f"jobs_{prefix}.json").write_text(json.dumps(converted, indent=2), encoding="utf-8", newline="\n")
+    return converted
+
+
 def _engine_args(spec: dict, root: Path, out: Path, prefix: str, context: Path, jobs: list[dict],
                  fold: dict | None, ledger: dict | None) -> dict:
-    mode = spec["mode"]
-    if mode == "explore":
-        lenses = [{"key": job.get("seat") or job.get("key"), "promptPath": job["promptPath"],
-                   "model": job["model"], "effort": job["effort"],
-                   "kind": job["kind"], "tier": job.get("tier")}
-                  for job in jobs]
-        args = {"lenses": lenses, "contextPrefixPath": str(context)}
-        if spec.get("checker"):
-            args["checker"] = spec["checker"]
-        else:
-            sys.exit("prepare: explore mode needs a `checker` pin ({model, effort})")
-    else:
-        agents = [{"key": job.get("seat") or job.get("key"), "label": job["label"],
-                   "mandates": job.get("mandates"), "mustRead": job.get("mustRead"),
-                   "promptPath": job.get("promptPath") or job.get("promptFile"),
-                   "model": job.get("model") or job.get("alias"), "effort": job["effort"],
-                   "kind": job["kind"]}
-                  for job in jobs]
-        args = {"agents": agents, "contextPrefixPath": str(context)}
-        if fold:
-            args["fold"] = fold
-        if ledger:
-            args["ledger"] = ledger
+    agents = [{"key": job.get("seat") or job.get("key"), "label": job["label"],
+               "mandates": job.get("mandates"), "mustRead": job.get("mustRead"),
+               "promptPath": job.get("promptPath") or job.get("promptFile"),
+               "model": job.get("model") or job.get("alias"), "effort": job["effort"],
+               "kind": job["kind"]}
+              for job in jobs]
+    args = {"agents": agents, "contextPrefixPath": str(context)}
+    if fold:
+        args["fold"] = fold
+    if ledger:
+        args["ledger"] = ledger
     spill = Path(spec.get("spillDir") or (out / "spill")).resolve()
     spill.mkdir(parents=True, exist_ok=True)
     args["spillDir"] = _rel(spill, root)
     if spec.get("transcriptDir"):
         args["transcriptDir"] = str(spec["transcriptDir"])
     return args
+
+
+def _explore_rows(seat: dict, pins: dict, efforts: dict) -> dict[str, str]:
+    """The rows a lens may run on, `{alias: effort}`: the seat's own `rows`, else its pin and effort (the panel's when the seat has none)."""
+    rows = seat.get("rows")
+    if rows is not None:
+        if not isinstance(rows, dict) or not rows or not all(isinstance(k, str) and isinstance(v, str) for k, v in rows.items()):
+            sys.exit(f"prepare: seat {seat['key']!r}: `rows` must be a non-empty object of {{alias: effort}}")
+        return dict(rows)
+    key = seat["key"]
+    pin = seat.get("pin") or pins.get(key) or pins.get("panel")
+    effort = seat.get("effort") or efforts.get(key) or efforts.get("panel")
+    if not pin or not effort:
+        sys.exit(f"prepare: seat {key!r} names no row: give it `rows`, or `pin` and `effort` (or `pins.panel` and `efforts.panel`)")
+    return {pin: effort}
+
+
+def _explore_document(spec: dict, root: Path, out: Path, context: Path, seats: list[dict], jobs: list[dict]) -> Path:
+    """Write the fan-out's jobs file for an explore run. Each lens lists the rows that meet its bar and no plan:
+    `sidecar_fanout.py` places it, so the plan the ladder's selection line picks pays for it, whether it runs as a
+    `dispatch.js` agent or a sidecar. The fan-out's out dir is the spec's `spillDir`, else `<run dir>/fanout`."""
+    by_key = {seat["key"]: seat for seat in seats}
+    pins, efforts = spec.get("pins") or {}, spec.get("efforts") or {}
+    rows = []
+    for job in jobs:
+        key = job.get("seat") or job["key"]
+        seat = by_key[key]
+        row = {"label": job["label"], "seat": key, "mandates": job.get("mandates") or [key],
+               "mustRead": job.get("mustRead") or [], "promptFile": job.get("promptFile") or job["promptPath"],
+               "rows": _explore_rows(seat, pins, efforts), "kind": seat.get("kind") or EXPLORE_KIND}
+        tier = job.get("tier") or seat.get("tier")
+        if tier:
+            row["tier"] = tier
+        rows.append(row)
+    spill = Path(spec.get("spillDir") or (out / "fanout")).resolve()
+    spill.mkdir(parents=True, exist_ok=True)
+    document = {"jobs": rows, "contextPath": str(context.resolve()).replace("\\", "/"), "spillDir": _rel(spill, root)}
+    path = out / f"jobs_{spec.get('prefix') or spec['mode']}.json"
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def _fanout_tiers(jobs: list[dict], fold: bool = False) -> list[str]:
+    """The tiers the fan-out call's doctrine gate asks a slice for (`sidecar_dispatch_context.launch_tiers`): each job's
+    written `tier`, else its kind row's, and a fold's `author` row, since the fan-out launches a fold as an author
+    job that carries no written tier."""
+    tiers = {_dispatch_checks.job_tier(job.get("kind") or REVIEW_KIND, job.get("tier"))[0] for job in jobs}
+    if fold:
+        tiers.add(_dispatch_checks.job_tier("author")[0])
+    return sorted(model_registry.canonical_tier(tier) for tier in tiers if tier)
 
 
 def _receipt_line(spec: dict, pinned: list[str]) -> str:
@@ -1100,6 +1177,12 @@ def _receipt_line(spec: dict, pinned: list[str]) -> str:
     if missing:
         line += "; missing receipt: " + ", ".join(missing)
     return line
+
+
+def _target(spec: dict) -> str:
+    """`native` only when the spec asks for the `review_fanout.js` engine; every other review panel is the fan-out's
+    jobs file (`sidecar` names that job schema), so `sidecar_fanout.py` places each seat by the ladder's selection."""
+    return "native" if spec.get("target") == "native" else "sidecar"
 
 
 def _refuse_retired_keys(spec: dict) -> None:
@@ -1119,6 +1202,9 @@ def _refuse_retired_keys(spec: dict) -> None:
 
 def _refuse_bad_spec(spec: dict, root: Path) -> None:
     """Refuse a spec the later steps would fail on, before prepare writes any file."""
+    if spec.get("target") not in (None, "sidecar", "native"):
+        sys.exit(f"prepare: target {spec.get('target')!r} is not one of sidecar (the default: the fan-out places "
+                 "each seat) or native (the review_fanout.js engine, every seat on the session's plan)")
     fold = spec.get("fold")
     if fold and not (fold.get("subjects") if isinstance(fold, dict) else None) and not spec.get("subjectFiles"):
         sys.exit("prepare: the fold needs `subjectFiles` (or `fold.subjects`)")
@@ -1156,7 +1242,7 @@ def prepare_command(argv: list[str]) -> None:
         sys.exit(delegate_prepare.run(spec, a.out, root))
     if not isinstance(spec, dict) or spec.get("mode") not in PREP_MODES:
         sys.exit(f"prepare: spec mode must be one of {', '.join(PREP_MODES)}, or delegate")
-    if spec["mode"] not in PREP_ENGINES and not spec.get("engine"):
+    if spec["mode"] not in PREP_ENGINES and spec["mode"] != "explore" and not spec.get("engine"):
         sys.exit(f"prepare: mode {spec['mode']} runs an engine the calling command names; add `engine` to the spec")
     root = Path(spec.get("root") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
     _refuse_retired_keys(spec)
@@ -1185,7 +1271,13 @@ def prepare_command(argv: list[str]) -> None:
     seats = _prep_seats(spec)
     dropped = []
     cross_family = None
-    if spec["mode"] != "explore":
+    if spec["mode"] == "explore":
+        for seat in seats:
+            if isinstance(seat.get("rows"), dict) and seat["rows"]:
+                first = next(iter(seat["rows"]))
+                seat.setdefault("pin", first)
+                seat.setdefault("effort", seat["rows"][first])
+    else:
         seats, dropped, cross_family = _run_ledger_plan(root, spec, seats, out)
         if not seats:
             print("prepare: the ledger keeps no seat (nothing is owed); no args.json written")
@@ -1239,6 +1331,20 @@ def prepare_command(argv: list[str]) -> None:
     for job in jobs:
         if job["label"] in whole_as_context:
             _note_context(job.get("promptPath") or job["promptFile"], whole_as_context[job["label"]])
+    if spec["mode"] != "explore" and _target(spec) == "sidecar":
+        jobs = _fanout_jobs(spec, seats, jobs, context, out, prefix)
+
+    if spec["mode"] == "explore":
+        jobs_file = _explore_document(spec, root, out, context, seats, jobs)
+        written = json.loads(jobs_file.read_text(encoding="utf-8"))["jobs"]
+        print(_receipt_line(spec, _fanout_tiers(written)))
+        if spec.get("engine") or spec.get("checker"):
+            print("note: explore runs through the fan-out and explore_result.py; the spec's `engine` and `checker` are unused")
+        shown = _rel(jobs_file, root)
+        print(f"next: python3 .claude/tools/sidecar_fanout.py {shlex.quote(shown)} --detach")
+        print(f"then: python3 .claude/tools/explore_result.py {shlex.quote(shown)} (add --workflow-dir <transcriptDir> "
+              "for each NATIVE Workflow call the fan-out printed)")
+        return
 
     fold = None
     if spec.get("fold"):
@@ -1246,7 +1352,7 @@ def prepare_command(argv: list[str]) -> None:
         fold = dict(spec["fold"])
         if not fold.get("subjects"):
             files = [str(path) for path in spec.get("subjectFiles") or []]
-            if spec.get("target") != "sidecar":
+            if _target(spec) != "sidecar":
                 # The native engine runs no project tests or gate, so production code folds on the sidecar route.
                 production = [path for path in files if path.lower().endswith(PRODUCTION_SUFFIXES)]
                 files = [path for path in files if path not in production]
@@ -1264,21 +1370,20 @@ def prepare_command(argv: list[str]) -> None:
     roster_out = out / "roster.json"
     roster_out.write_text(json.dumps([{k: s[k] for k in ("key", "mandates", "tier", "effort") if k in s}
                                       for s in seats], indent=2), encoding="utf-8", newline="\n")
-    ledger = None
-    if spec["mode"] != "explore":
-        ledger = _spec_ledger(spec)
-        ledger["roster"] = _rel(roster_out, root)
-        for key in ("scopeJson",):
-            if ledger.get(key):
-                ledger[key] = _rel(Path(ledger[key]), root)
-        if packets:
-            for key in ("premiseCommits", "head", "blobs"):
-                if packets.get(key):
-                    ledger[key] = packets[key]
+    ledger = _spec_ledger(spec)
+    ledger["roster"] = _rel(roster_out, root)
+    for key in ("scopeJson",):
+        if ledger.get(key):
+            ledger[key] = _rel(Path(ledger[key]), root)
+    if packets:
+        for key in ("premiseCommits", "head", "blobs"):
+            if packets.get(key):
+                ledger[key] = packets[key]
 
     args = _engine_args(spec, root, out, prefix, context, jobs, fold, ledger)
     args_path = out / "args.json"
-    args_path.write_text(json.dumps(args, indent=2) + "\n", encoding="utf-8", newline="\n")
+    if _target(spec) == "native":
+        args_path.write_text(json.dumps(args, indent=2) + "\n", encoding="utf-8", newline="\n")
 
     for row in dropped:
         print(f"dropped: {row.get('mandate')} coveredBy {row.get('coveredBy')}")
@@ -1286,13 +1391,19 @@ def prepare_command(argv: list[str]) -> None:
         candidates = ", ".join(str(c) for c in cross_family.get("candidates") or []) or "none"
         print("crossFamily: required=%s candidates=%s — %s"
               % (str(bool(cross_family.get("required"))).lower(), candidates, cross_family.get("reason", "")))
-    pinned = sorted({str(job.get("tier")) for job in jobs if job.get("tier")}
-                    | ({str(fold["tier"])} if fold and fold.get("tier") else set()))
+    if spec.get("target") == "sidecar":
+        pinned = _fanout_tiers(jobs, fold=bool(fold))
+    else:
+        pinned = sorted({str(job.get("tier")) for job in jobs if job.get("tier")}
+                        | ({str(fold["tier"])} if fold and fold.get("tier") else set()))
     print(_receipt_line(spec, pinned))
     engine = spec.get("engine") or PREP_ENGINES.get(spec["mode"])
-    if spec.get("target") == "sidecar":
+    if _target(spec) == "sidecar":
         print("next: " + " ".join(shlex.quote(part) for part in _sidecar_call(
             root, out, prefix, args.get("fold"), args.get("ledger") or {})))
+        print("then: the fan-out places each seat by the ladder; it prints a NATIVE Workflow call for the seats it "
+              "keeps on this session's plan (issue it) and the exact `--review-close` call that consolidates "
+              "every seat once they have all ended. A panel it keeps wholly on sidecars consolidates itself.")
     else:
         print(f'next: Workflow({{scriptPath: "{engine}", args: {{argsFile: "{_rel(args_path, root)}"}}}})')
 
@@ -1355,7 +1466,6 @@ def build_briefs(a: BriefParams) -> list[dict]:
         if not schema.is_file():
             sys.exit(f"the review schema every sidecar job sets is missing: {schema} — "
                      f"restore it, or dispatch this panel natively")
-
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -1584,13 +1694,20 @@ def build_briefs(a: BriefParams) -> list[dict]:
         if rungs and effort not in rungs:
             sys.exit(f"{k}: effort {effort!r} is not a rung {entry['alias']} serves "
                      f"({', '.join(rungs)}) — pass --effort or --effort-for with a legal rung")
-        parts = [f"<!-- lens brief: {k} for {subject} — sidecar review seat; generated by "
-                 f"tools/lens_briefs.py; do not edit -->",
-                 "", "# Shared rules for every lens (registry preamble)", "", preamble, "",
-                 sidecar_tool_block(a.context_path, builtins), ""]
-        parts.append(lens_part)
-        if preloaded:
-            parts.append(preloaded)
+        if a.target == "explore":
+            parts = [f"<!-- lens brief: {k} for {subject} — generated by tools/lens_briefs.py; do not edit -->",
+                     "", "# Shared rules for every lens (registry preamble)", "", preamble, "", lens_part]
+            if preloaded:
+                parts.append(preloaded)
+            parts += ["", explore_result.claims_contract()]
+        else:
+            parts = [f"<!-- lens brief: {k} for {subject} — sidecar review seat; generated by "
+                     f"tools/lens_briefs.py; do not edit -->",
+                     "", "# Shared rules for every lens (registry preamble)", "", preamble, "",
+                     sidecar_tool_block(a.context_path, builtins), ""]
+            parts.append(lens_part)
+            if preloaded:
+                parts.append(preloaded)
         body = "\n".join(parts)
         path = out / f"{a.prefix}_{k}.md"
         # Every brief is written only after the whole panel passes.
@@ -1599,6 +1716,20 @@ def build_briefs(a: BriefParams) -> list[dict]:
         readings.append((k, reading, len(body.encode("utf-8"))))
         over.append(seat_overage(key=k, token=token, body=body, context_path=a.context_path, entries=must,
                                  data=data, reading=reading))
+        if a.target == "explore":
+            jobs.append({
+                "label": f"{a.prefix}-{k}",
+                "seat": k,
+                "mandates": seats[k],
+                "mustRead": must,
+                "alias": entry["alias"],
+                "promptFile": str(path.resolve()).replace("\\", "/"),
+                "tier": tier,
+                "effort": effort,
+                "kind": EXPLORE_KIND,
+            })
+            briefs.append((path, body))
+            continue
         jobs.append({
             "label": f"{a.prefix}-{k}",
             "mandates": seats[k],

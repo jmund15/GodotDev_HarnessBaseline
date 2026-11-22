@@ -383,7 +383,138 @@ def main():
     else:
         case("live_jobs and native_width cases ran", False, "missing live_jobs or native_width")
 
+    # ---- S3: a brief that orders a wide test run is refused at launch ----
+    if hasattr(dc, "wide_run_refusal"):
+        wide_run_cases(case, dc)
+    else:
+        case("wide_run_refusal cases ran", False, "no wide_run_refusal")
+    if hasattr(dc, "wide_run_refusals"):
+        joined_refusal_cases(case, dc)
+    else:
+        case("wide_run_refusals cases ran", False, "no wide_run_refusals")
+
     return report(cases)
+
+
+WIDE_ROW = {"runner": r"npm\s+run\s+verify\b", "exempt": [], "narrow": None}
+CLOSE_ROW = {"runner": r"(?:(?:python3?|py)\s+)?(?:\S*/)?harness_tests\.py\b",
+             "exempt": ["^--help$"], "narrow": None}
+STAGING_ROW = {"runner": r"npm\s+run\s+staging:e2e\b", "exempt": [],
+               "narrow": {"requires": [r"\.spec\.ts:\d+", "--project"]}}
+
+# Trimmed from `.claude/scratch/mentions/m15-brief.md:12`.
+M15_TEMPLATE = ("An e2e row runs only if you change a screen's behavior beyond swapping its reader; then run "
+                "that row alone on staging (`npm run staging:deploy` once, then `npm run staging:e2e -- "
+                "<spec>:<line> --project=<desktop|phone>`).\n")
+# Trimmed from `.claude/scratch/mentions/m2plain-brief.md:14` (one of five briefs carrying it).
+MENTIONS_TEMPLATE = ("- E2 and E3 pass alone on staging on each project: `npm run staging:deploy`, then "
+                     "`npm run staging:e2e -- e2e/mentions.spec.ts:<line> --project=<desktop|phone>`.\n")
+# Trimmed from `.claude/scratch/ui-lock/r22/gatefix2-common.md:3`.
+GATEFIX_REPORT = ("`npm run verify:merge` ran in `{{PROJECT_ROOT}}/.claude/worktrees/"
+                  "ui-r22-int` at `72818ca4`: 833 passed, 19 failed, 1 flaky.\n")
+# Trimmed from the same file's line 11, beside its line 3.
+GATEFIX_COMMON = (GATEFIX_REPORT + "1. Reproduce it alone on its project: `npm run staging:deploy` once in "
+                  "your worktree, then `npm run staging:e2e -- <spec>:<line> --project=<desktop|phone>`.\n")
+# Trimmed from `.claude/scratch/ui-lock/r22/gatefix-brief.md:5,24`.
+GATEFIX_ORDER = ("Make `npm run verify:merge` green in the worktree "
+                 "`{{PROJECT_ROOT}}/.claude/worktrees/ui-r22-int`.\n"
+                 "and `cd .claude/worktrees/ui-r22-int && npm run verify:merge` (it starts from the last "
+                 "green head) end with 0 failed and 0 flaky.\n")
+# Trimmed from `.claude/scratch/ui-lock/r22/gate-brief.md:21`.
+PROOFS_ORDER = ("the harness proof for the doc: `python3 .claude/scripts/harness_tests.py --proofs-for "
+                ".claude/skills/ui_lock/reference/review_page.md`\n")
+
+
+def _cadence_root(rows):
+    """A project root whose `gate_cadence.wide` holds `rows` and nothing else."""
+    root = tempfile.mkdtemp(prefix="dc_wide_")
+    folder = os.path.join(root, ".claude", "skills", "project_subsystems")
+    os.makedirs(folder)
+    with open(os.path.join(folder, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"gate_cadence": {"slice": [], "merge": [], "close": [], "wide": rows}}, fh)
+    return root
+
+
+def wide_run_cases(case, dc):
+    root = _cadence_root([WIDE_ROW, CLOSE_ROW])
+    prose = "Read the staging spec files and report what the last run said.\n"
+    case("a brief that names no runner passes", dc.wide_run_refusal("author", prose, root) is None)
+    ordered = "1. Run `npm run verify` before you finish.\n"
+    why = dc.wide_run_refusal("author", ordered, root) or ""
+    case("an author brief ordering a wide run is refused",
+         "npm run verify" in why and "wide test run" in why, why)
+    case("the refusal names the gate kind as the next step",
+         "gate" in why and "orchestration" in why, why)
+    case("a gate job may order the same run", dc.wide_run_refusal("gate", ordered, root) is None)
+    case("a kind without Bash carries no brief-command check",
+         dc.wide_run_refusal("scout", ordered, root) is None)
+    case("a negated clause is a prohibition, not an instruction",
+         dc.wide_run_refusal("author", "Never run `npm run verify` in this job.\n", root) is None)
+    case("a checklist item quoted into the brief is data",
+         dc.wide_run_refusal("author", "- [ ] npm run verify\n", root) is None)
+    case("a json fence is data",
+         dc.wide_run_refusal("author", '```json\n{"check": "npm run verify"}\n```\n', root) is None)
+    case("a bare fence is an instruction",
+         bool(dc.wide_run_refusal("author", "```\nnpm run verify\n```\n", root)))
+    case("a --help run of the close runner is exempt",
+         dc.wide_run_refusal("author", "Run `python3 .claude/scripts/harness_tests.py --help`.\n", root) is None)
+    case("the close runner is wide in an author brief",
+         bool(dc.wide_run_refusal(
+             "author", "Run `python3 .claude/scripts/harness_tests.py --close` at the end.\n", root)))
+    task = '```task\n{"check": ["npm run verify"], "writeSet": ["x.md"]}\n```\n'
+    case("a task block check that is a wide run is refused for an author",
+         bool(dc.wide_run_refusal("author", task, root)))
+    case("the same task block check is refused for a scout (a task check runs in the parent)",
+         bool(dc.wide_run_refusal("scout", task, root)))
+    case("a gate job's task block check passes", dc.wide_run_refusal("gate", task, root) is None)
+    bad = _cadence_root([{"runner": "(", "exempt": [], "narrow": None}])
+    why_bad = dc.wide_run_refusal("author", prose, bad) or ""
+    case("a malformed gate_cadence row fails closed and names the validation error",
+         "wide[0].runner" in why_bad, why_bad)
+    # The real briefs' deciding passages, trimmed from the files named in the vc-s3fix brief.
+    project = _cadence_root([WIDE_ROW, CLOSE_ROW, STAGING_ROW])
+    case("a narrow row's template, printed with a placeholder for the spec line, is not a wide order",
+         dc.wide_run_refusal("author", M15_TEMPLATE, project) is None,
+         dc.wide_run_refusal("author", M15_TEMPLATE, project))
+    case("the same template with a real spec path and a placeholder line passes",
+         dc.wide_run_refusal("author", MENTIONS_TEMPLATE, project) is None,
+         dc.wide_run_refusal("author", MENTIONS_TEMPLATE, project))
+    case("the template and a past-tense gate report in one brief pass together",
+         dc.wide_run_refusal("author", GATEFIX_COMMON, project) is None,
+         dc.wide_run_refusal("author", GATEFIX_COMMON, project))
+    case("a sentence reporting that the merge gate ran is a status fact, not an order",
+         dc.wide_run_refusal("author", GATEFIX_REPORT, root) is None,
+         dc.wide_run_refusal("author", GATEFIX_REPORT, root))
+    redirect = "Run `npm run staging:e2e < /dev/null > e2e.log` now.\n"
+    case("a real shell redirect is not a placeholder: the wide staging run still denies",
+         bool(dc.wide_run_refusal("author", redirect, project)),
+         dc.wide_run_refusal("author", redirect, project))
+    case("a placeholder does not narrow a row that declares no narrow form",
+         bool(dc.wide_run_refusal("author", "Run `npm run verify -- <only>` once.\n", root)))
+    case("an order making the merge gate green still denies",
+         bool(dc.wide_run_refusal("author", GATEFIX_ORDER, root)),
+         dc.wide_run_refusal("author", GATEFIX_ORDER, root))
+    case("an order to run a doc's bound proofs still denies",
+         bool(dc.wide_run_refusal("author", PROOFS_ORDER, root)))
+
+
+def joined_refusal_cases(case, dc):
+    """The one joined launch denial both dispatch hooks print, from `(label, kind, brief_text)` items."""
+    root = _cadence_root([WIDE_ROW, CLOSE_ROW])
+    items = [("alpha", "author", "1. Run `npm run verify` before you finish.\n"),
+             ("beta", "author", "Read the staging spec files and report what the last run said.\n"),
+             ("gamma", "author", "Run `python3 .claude/scripts/harness_tests.py --close` at the end.\n")]
+    why = dc.wide_run_refusals(items, root) or ""
+    case("the joined denial opens with the launch sentence",
+         why.startswith("A brief orders a wide run, refused at launch — "), why)
+    case("the joined denial names each wide job's label", "`alpha`:" in why and "`gamma`:" in why, why)
+    case("the joined denial leaves a clean job out", "`beta`:" not in why, why)
+    case("no wide item means no denial",
+         dc.wide_run_refusals([("beta", "author", "Read the spec files.\n")], root) is None)
+    many = [("job%d" % index, "author", "Run `npm run verify`.\n") for index in range(10)]
+    why_many = dc.wide_run_refusals(many, root) or ""
+    case("the joined denial names the first eight and counts the rest",
+         "`job7`:" in why_many and "`job8`:" not in why_many and "(2 more)" in why_many, why_many)
 
 
 def report(cases):

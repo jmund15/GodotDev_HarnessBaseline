@@ -3,14 +3,14 @@ export const meta = {
   description: 'Run one cloud cell from a rendered S/D/F prompt file and capture the raw answer; cloud-sdf runs whole staircases',
   phases: [{ title: 'Cells' }],
 }
-// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge) for every child it spawns;
+// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge|gate) for every child it spawns;
 // hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
 // child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
 // entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
 const KIND_ARGS = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return a || {} } catch (e) { return {} } })()
 const KP = (KIND_ARGS.__kindProfile && typeof KIND_ARGS.__kindProfile === 'object') ? KIND_ARGS.__kindProfile : null
 if (typeof KIND_ARGS.kind !== 'string' || !KIND_ARGS.kind.trim() || !KP || KP.kind !== KIND_ARGS.kind || !KP.agentType) {
-  return { error: 'sdf-cloud: args.kind is required (scout|lens|reviewer|author|judge), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. Every child of the run launches as that kind.' }
+  return { error: 'sdf-cloud: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. Every child of the run launches as that kind.' }
 }
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 // POST-CHECK exempt (benchmark/probe self-scoring): a benchmark or probe engine scores its own output.

@@ -63,13 +63,16 @@ HOST_PREFIXES = ("CLAUDE", "ANTHROPIC", "SC_", "SIDECAR", "DEEPSEEK", "OPENCODE"
 
 def launch_env(temp_root, path_dirs=(), **extra):
     """The environment for a launcher: HOME, temp and cache all under `temp_root`, stubs first on PATH.
-    The host's launcher variables are dropped, so a session's own plan cannot steer the launch."""
+    The host's launcher variables are dropped, so a session's own plan cannot steer the launch.
+    The memory floors are zero, so the machine's free memory cannot refuse it: test_launch_memory.py
+    owns the admission proof."""
     home = Path(temp_root) / "home"
     home.mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith(HOST_PREFIXES)}
     env.update({
         "HOME": home.as_posix(), "USERPROFILE": str(home), "TEMP": str(temp_root), "TMPDIR": str(temp_root),
         "PATH": os.pathsep.join([str(p) for p in path_dirs] + [os.environ.get("PATH", "")]),
+        "LAUNCH_MIN_COMMIT_GIB": "0", "LAUNCH_MIN_PHYSICAL_GIB": "0",
     })
     env.update(extra)
     return env

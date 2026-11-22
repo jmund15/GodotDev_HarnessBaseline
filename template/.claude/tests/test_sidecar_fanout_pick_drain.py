@@ -381,14 +381,27 @@ def hook_admits_forecasts_but_refuses_spent_allowance():
     import sidecar_dispatch_context as hook
     from types import SimpleNamespace
     fanout = object()
+    roomy = reading(PA, 96)
+    spent = dict(reading(PA, 100), status="exhausted")
     with patch.object(hook, "sidecar_fanout", sf), patch.object(hook, "_read_fanout",
             return_value=(SimpleNamespace(refold=False), None, route(PA), [job(plan=PA)], None)), \
             patch.dict(os.environ, {"HARNESS_SIDECAR_PREFLIGHT": "1"}):
-        with patch.object(pb, "read_capacity", return_value=reading(PA, 96)):
+        with patch.object(pb.provider_capacity, "cached", return_value=roomy), \
+                patch.object(hook, "run_bounded") as confirm:
             admit = hook.fanout_capacity_refusal(fanout, sf.REPO, time.monotonic() + 10)
-        with patch.object(pb, "read_capacity", return_value=reading(PA, 100)):
-            refuse = hook.fanout_capacity_refusal(fanout, sf.REPO, time.monotonic() + 10)
-    return admit is None and bool(refuse)
+        confirm.assert_not_called()
+        refusals = []
+        for result in (SimpleNamespace(returncode=0, stdout=json.dumps(spent)),
+                       SimpleNamespace(returncode=0, stdout=json.dumps(roomy)),
+                       SimpleNamespace(returncode=None, stdout="")):
+            with patch.object(pb.provider_capacity, "cached", return_value=spent), \
+                    patch.object(hook, "run_bounded", return_value=result) as confirm:
+                refusals.append(hook.fanout_capacity_refusal(fanout, sf.REPO, time.monotonic() + 10))
+            confirm.assert_called_once()
+            argv, timeout = confirm.call_args.args
+            assert argv == [sys.executable, str(hook.TOOLS / "provider_capacity.py"), PA]
+            assert 0 < timeout <= 10
+    return admit is None and bool(refusals[0]) and refusals[1:] == [None, None]
 
 
 def slot(plan, effort="high", candidates=()):
@@ -940,7 +953,8 @@ def the_continuation_brief_points_the_child_at_its_brief_its_workdir_and_its_rep
     text = open(fresh[0], encoding="utf-8").read() if len(fresh) == 1 else ""
     return (text.startswith("=== CONTINUATION ===") and sf._posix(PROMPT) in text and sf._posix(workdir) in text
             and "%s/j1.md" % got["out"].name in text and "uncommitted" in text and "same paths" in text
-            and "fresh session" in text and "plan %s" % PA in text and "Nothing it did is lost" not in text and second.index(fresh[0]) < second.index("-P"))
+            and "fresh session" in text and "plan %s" % PA in text and "Nothing it did is lost" not in text and second.index(fresh[0]) < second.index("-P")
+            and sf._posix(got["out"] / "j1.attempt1.salvage.jsonl") in text)
 
 
 def the_stopped_runs_stream_is_kept_beside_the_continuation():

@@ -20,6 +20,14 @@ def load(name):
     return module
 
 
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _main_session_env(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_SIDECAR", raising=False)
+
+
 FIXTURE = HERE / "fixtures" / "model_ladder_gate_bash_result.json"
 SETTINGS = HERE.parent / "settings.base.json"
 BARE = "python3 .claude/tools/model_registry.py for-role executor fanout"
@@ -543,6 +551,64 @@ def test_the_embedded_text_is_exactly_what_for_role_prints(tmp_path, monkeypatch
     reason, _ = gate.doctrine_check(payload, tiers=lambda: ['executor'], embed_slice=True)
     text, ladder_error = registry.for_role_text(registry.claimed_tiers())
     assert ladder_error is None and reason.endswith(text), reason[-300:]
+
+
+def _delegate_payload(tmp_path, sid, transcript=None):
+    payload = {'session_id': sid, 'cwd': str(tmp_path), 'agent_id': ''}
+    if transcript:
+        payload['transcript_path'] = transcript
+    return payload
+
+
+def _skill_read(skill_path, lines=133):
+    return {'tool_name': 'Read', 'session_id': 'unset', 'tool_input': {'file_path': skill_path},
+            'tool_response': {'file': {'startLine': 1, 'numLines': lines, 'totalLines': lines}}}
+
+
+def test_a_sidecar_delegate_is_told_to_read_the_skill_it_cannot_invoke(tmp_path, monkeypatch):
+    # No delegate profile carries the Skill tool (guards/tool_profiles.json): the deny must name a load the caller can perform.
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    monkeypatch.setenv('CLAUDE_CODE_SIDECAR', 'anthropic')
+    gate = load('model_ladder_gate')
+    reason, _ = gate.doctrine_check(_delegate_payload(tmp_path, 'deleg001'))
+    skill = os.path.realpath(tmp_path / '.claude' / 'skills' / 'orchestration' / 'SKILL.md')
+    assert 'Skill(skill=' not in reason, reason
+    assert skill in reason and 'Read tool' in reason and 'no offset or limit' in reason, reason
+
+
+def test_an_in_session_subagent_is_told_to_read_the_skill_too(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    monkeypatch.delenv('CLAUDE_CODE_SIDECAR', raising=False)
+    gate = load('model_ladder_gate')
+    payload = _delegate_payload(tmp_path, 'deleg002', '/home/u/.claude/projects/p/s/subagents/agent-1.jsonl')
+    reason, _ = gate.doctrine_check(payload)
+    assert 'Skill(skill=' not in reason and 'Read tool' in reason, reason
+
+
+def test_the_main_session_keeps_the_skill_call_as_its_one_route(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    monkeypatch.delenv('CLAUDE_CODE_SIDECAR', raising=False)
+    gate = load('model_ladder_gate')
+    reason, _ = gate.doctrine_check(_delegate_payload(tmp_path, 'main0001', '/home/u/.claude/projects/p/main.jsonl'))
+    assert 'Skill(skill="orchestration")' in reason and 'SKILL.md' not in reason, reason
+
+
+def test_the_skill_read_the_deny_names_meets_it_for_a_delegate(tmp_path, monkeypatch):
+    # The load the deny names is recognized when performed: a full Read of that path through the Read hook, then no skill step.
+    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    monkeypatch.setenv('CLAUDE_CODE_SIDECAR', 'anthropic')
+    gate = load('model_ladder_gate')
+    marker = load('skill_load_marker')
+    payload = _delegate_payload(tmp_path, 'deleg003')
+    path = os.path.realpath(tmp_path / '.claude' / 'skills' / 'orchestration' / 'SKILL.md')
+    assert path in gate.doctrine_check(payload)[0]
+    marker.process(dict(_skill_read(path), session_id='deleg003'))
+    reason, _ = gate.doctrine_check(payload)
+    assert 'SKILL.md' not in reason and 'model_ladder_evidence.md' in reason, reason
 
 
 if __name__ == "__main__":

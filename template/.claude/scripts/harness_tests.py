@@ -2097,6 +2097,22 @@ class _PassCache:
         self._siblings = self._other_worktrees()
         self._temp_real = self._real(tempfile.gettempdir())
         self.runner = _runner_launch_digest()
+        self._behavior, self._behavior_lock = None, threading.Lock()
+
+    def _behavior_dependencies(self):
+        """Each behavior proof's binding, built once per cache: a proof's entry reads only its own rows and
+        reach, so the whole-repo plan answers every proof, and building it per proof is a repo scan each."""
+        with self._behavior_lock:
+            if self._behavior is None:
+                self._behavior = _behavior_plan(self.root).get("dependencies", {})
+            return self._behavior
+
+    def _behavior_of(self, rel, fresh):
+        """`rel`'s behavior binding; `fresh` rebuilds it, as fresh digests re-read bytes, for a bound proof only."""
+        dependencies = self._behavior_dependencies()
+        if fresh and rel in dependencies:
+            return _behavior_plan(self.root).get("dependencies", {}).get(rel, {})
+        return dependencies.get(rel, {})
 
     def _read_digest(self, rel, full=None):
         try:
@@ -2799,7 +2815,7 @@ class _PassCache:
         runner = _runner_launch_digest() if fresh else self.runner
         recorder = [self._digest("<recorder>", os.path.join(_RECORDER_DIR, "sitecustomize.py")),
                     self._digest("<node-recorder>", _NODE_RECORDER)]
-        behavior = _behavior_plan(self.root, [rel]).get("dependencies", {}).get(rel, {})
+        behavior = self._behavior_of(rel, fresh)
         keyed = sorted([r, None if r in hidden else digest(r), r in self.tracked] for r in used)
         if files is not None:
             files.extend(keyed)
@@ -2850,7 +2866,7 @@ class _PassCache:
         rows = sorted([rel, digest(rel), rel in self.tracked] for rel in self.reach(proof))
         runner = _runner_launch_digest() if fresh else self.runner
         rel = _norm(os.path.relpath(proof, self.root))
-        behavior = _behavior_plan(self.root, [rel]).get("dependencies", {}).get(rel, {})
+        behavior = self._behavior_of(rel, fresh)
         blob = json.dumps([runner, rows, behavior.get("inputKey"), behavior.get("bindingHash")]).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()
 

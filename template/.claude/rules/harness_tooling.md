@@ -155,8 +155,9 @@ check, as above.
 Local heavy lanes share `tools/machine_slots.py` admission: close proofs, publish checks, preview lanes,
 delegate proofs and C# test lanes. Coordinators and remote model work hold no slot. Direct proof commands
 use `python3 .claude/tools/machine_slots.py run -- <proof command>`; fan-out sidecar shells inherit admission.
+`harness_tests.py` is a coordinator that admits each proof itself: run it bare, and `run` passes it through with no lane.
 A full pool queues work before its proof timeout starts: whole-machine takes first, then the rest, each in arrival
-order; a take that waits prints a `machine slots: queued` line to stderr naming the holders, so a queue never reads as a hang. Nested runners spend the parent's lane serially;
+order; a take that waits prints a `machine slots: queued` line to stderr naming the holders, so a queue never reads as a hang. Inside a dispatched job other than a `gate` job, a take waits one bounded call (`JOB_WAIT_S`), then exits 2 naming the run the job owes its dispatcher. Nested runners spend the parent's lane serially;
 case pools borrow extra lanes only when free. A serial proof drains the pool before running.
 
 The Windows pool is `%USERPROFILE%/.claude/.harness_slots`, independent of checkout and proof HOME.

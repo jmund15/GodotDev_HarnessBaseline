@@ -19,7 +19,7 @@ Run when grounding is admitted (`_brainstorm_shared/execution_depth.md` §Admiss
 Name the capability/files and intended change; a breadth map with no design question is a `/delegate` scout (`CLAUDE.core.md` §9); a design question too vague to set coverage gets a clarifying question. Record actual constraints and exclusions. Facts inherited from another session are claims to check, not ground truth.
 
 ### 1b. Select resources
-Load `orchestration`; choose each lens's row and paying plan by the ladder's selection line. Every lens is `fanout`-tier work (a read-heavy survey); resolve the tier per `orchestration` §5, which owns when to declare it. Use one suitable arm per independently needed lens: `/explore` runs one seat per mandate and never merges (`orchestration` §2 *Sizing the width*), because its engine stamps each claim with its seat key. Provider availability does not create more jobs. Explicit comparisons are separate, frozen and budgeted.
+Load `orchestration`; choose each lens's row and paying plan by the ladder's selection line. Every lens is `fanout`-tier work (a read-heavy survey); resolve the tier per `orchestration` §5, which owns when to declare it. Use one suitable arm per independently needed lens: `/explore` runs one seat per mandate and never merges (`orchestration` §2 *Sizing the width*), because `explore_result.py` stamps each claim with its seat key. Provider availability does not create more jobs. Explicit comparisons are separate, frozen and budgeted.
 
 ### 1c. Infer domains
 Use actual scope and `reference/memory_domains.md`; meta work does not need gameplay domains. Search memory by separate relevant facets, not one broad union query.
@@ -34,45 +34,44 @@ Map each question to the selected lens whose mandate owns it, and write the map 
 
 ## Phase 2: Dispatch
 
-Invoking `/explore` is this fan-out's Workflow authorization (`orchestration` §0). One `prepare` call writes the briefs, the context, the run's `args.json` and prints the next call. Write `<run dir>/spec.json`:
+Invoking `/explore` is this fan-out's authorization (`orchestration` §0). Every lens is a pinned job, so `tools/sidecar_fanout.py` places it: each lens runs on the plan the ladder's selection line picks, as a native `dispatch.js` agent when that is the session's own plan and as a sidecar otherwise. `prepare` never picks the plan. One `prepare` call writes the briefs, the context and the fan-out's jobs file and prints the next calls. Write `<run dir>/spec.json`:
 
 ```json
 {
   "mode": "explore",
-  "engine": ".claude/workflows/explore_fanout.js",
   "prefix": "explore",
   "topic": "<topic>",
   "questions": {"<seat key>": ["<question it owns>"]},
-  "seats": [{"key": "<lens key>", "pin": "<row>", "effort": "<rung>"}],
-  "pins": {"panel": "<row>"},
-  "efforts": {"panel": "<rung>"},
+  "seats": [{"key": "<lens key>", "rows": {"<row>": "<rung>"}}],
   "subjectFiles": ["<evidence handles the lens reads>"],
-  "context": "<absolute context.md from 1e>",
-  "checker": {"model": "<row>", "effort": "<rung>"}
+  "context": "<absolute context.md from 1e>"
 }
 ```
 
+A seat's `rows` lists every row that meets its bar, each with its effort (`orchestration` Pre-Dispatch Checklist); `pin` and `effort` name one row, and `pins.panel` with `efforts.panel` default both. A seat may add `kind` (default `lens`) and `tier`.
+
 ```bash
 python3 .claude/tools/lens_briefs.py prepare --spec <run dir>/spec.json --out <run dir>
+python3 .claude/tools/sidecar_fanout.py <run dir>/jobs_explore.json --detach
 ```
 
-```
-Workflow({scriptPath: ".claude/workflows/explore_fanout.js", args: {argsFile: "<run dir>/args.json"}})
+The fan-out prints one `NATIVE` line holding the `Workflow` call for the lenses it placed on the session's own plan, and hands the rest to its driver; issue the call and keep its `transcriptDir`. Never pass `name`: a named call can run a cached older engine. The session watcher (`reference/sidecar_dispatch.md` step 6) wakes you when the sidecar lenses end. Once every lens has ended, one call consolidates both kinds the same way:
+
+```bash
+python3 .claude/tools/explore_result.py <run dir>/jobs_explore.json [--workflow-dir <transcriptDir> ...]
 ```
 
-Never pass `name`: a named call can run a cached older engine.
-
-Each lens carries `tier: "fanout"`; `prepare` refuses a seat that does not fit its pin's window, naming the seat and tokens. Off-transport, run the registered sidecar owner with `.claude/workflows/explore_fanout.schema.json`; preserve one run identity across routes (`transcriptDir`, which recovery and full retrieval key on); current transport capability, not vendor count, selects the mechanism.
+Each lens carries `tier: "fanout"`; `prepare` refuses a seat that does not fit its pin's window, naming the seat and tokens.
 
 Lenses are read-only; `orchestration` §5b owns the capability preflight and §4 the return contract. Keep completed evidence recoverable before the final response. Tests/builds/shared LSP operations stay serialized by the parent; cheap independent searches remain part of each lens's work.
 
 Every claim has a subject, polarity, bearing, source/quote and verification status. `absent` needs git-aware proof within a named scope; when the seat has neither Bash nor a supplied enumeration, report `unclear` and the missing check. Return a short decision digest and artifact handles; do not reject full evidence to satisfy a presentation cap.
 
-The engine returns a bounded preview of the claims. Capture `transcriptDir` from the Workflow result — the salvage path needs it — and retrieve the full claim set with `--workflow-kind explore` per `orchestration` §4. A dossier built from the preview alone is an undercount, not a short run. Consume the checked claims per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5 before they enter the dossier.
+`explore_result.py` stamps each claim with its lens and a place id, groups on the subject, flags contradictions and corroboration, checks every claim's evidence through `verify_claims.py`, and writes the full result to `<run dir>/explore_result.json`. Its printed summary is bounded to counts, flags and UNCOVERED lenses; a dossier built from the summary alone is an undercount, not a short run, so read the file for the claims. Consume the checked claims per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5 before they enter the dossier.
 
 ## Phase 3: Consolidate & Report
 
-- Account for every required lens. A `flags` entry of kind `lens-did-not-run` or `lens-no-return` is an UNCOVERED dimension, not a clean one; when the flag names a spill file, recover from it first (the engine writes one only for a lens whose profile has `Write`).
+- Account for every required lens. A `flags` entry of kind `lens-did-not-run` or `lens-no-return` is an UNCOVERED dimension, not a clean one; recover from the lens's `<label>.md`, stream and record in the fan-out out dir first.
 - Account for every context question: name the claims that answer it. A question with none is UNCOVERED, like a lens that did not run.
 - For an `absent` claim a design or plan decision will rest on, its `{command, output: ""}` evidence is rerun in-run (`reference/evidence_contract.md`); per protocol Step 1.5, rerun first-party only when the claim is not VERIFIED.
 - Verify premise contradictions first-party. Reconcile conflicting claims against evidence, never sort order or vote count.

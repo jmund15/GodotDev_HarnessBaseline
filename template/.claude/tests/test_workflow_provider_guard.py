@@ -381,6 +381,28 @@ def channel_cases():
     case("an Agent TIER the pin does not serve -> denied",
          run_channel(agent_tool("h-arch", ["TIER: fanout"])), "deny", ("`fanout`", EFFORT_LINE))
 
+    # -- S3: a brief that orders a wide test run is refused before launch --------------------------
+    wide_root = tempfile.mkdtemp(prefix="wpg_wide_")
+    wide_folder = os.path.join(wide_root, ".claude", "skills", "project_subsystems")
+    os.makedirs(wide_folder)
+    with open(os.path.join(wide_folder, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"gate_cadence": {"slice": [], "merge": [], "close": [],
+                                    "wide": [{"runner": r"npm\s+run\s+verify\b", "exempt": [],
+                                              "narrow": None}]}}, fh)
+    wide_brief = os.path.join(wide_root, "brief.md")
+    with open(wide_brief, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("1. Run `npm run verify` before you finish.\n")
+    at_wide = [(wpg, "_brief_root", lambda _payload: wide_root)]
+    case("S3: an author brief ordering a wide run is denied at launch",
+         run_channel(job_call([job("wide-op", "h-arch", kind="author", promptPath=wide_brief)]), patches=at_wide),
+         "deny", ("npm run verify", "gate"))
+    case("S3: a gate job's brief ordering the same run passes",
+         run_channel(job_call([job("wide-op", "h-arch", kind="gate", promptPath=wide_brief)]), patches=at_wide),
+         "allow")
+    case("S3: a scout brief is not scanned for commands (its kind carries no Bash)",
+         run_channel(job_call([job("wide-op", "h-arch", kind="scout", promptPath=wide_brief)]), patches=at_wide),
+         "allow")
+
     # -- tier declared and legal ------------------------------------------------------------------
     case("On pace: a pinned entry with no tier -> allow; a missing tier never denies",
          run_channel(jobs(["h-fan"])), "allow", absent=("No tier declared",))

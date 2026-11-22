@@ -42,7 +42,7 @@
 # active session touches its folder with every request.
 #
 # DELEGATE RAILS + DRIVER NOTES. `-G <kind>` (a launcher kind in guards/tool_profiles.json:
-# scout|lens|reviewer|author|judge, plus the internal arm|bench-score|bench-review) is required and
+# scout|lens|reviewer|author|judge|gate, plus the internal arm|bench-score|bench-review) is required and
 # exports CLAUDE_CODE_SIDECAR_KIND; omitting -G refuses (exit 2). The kind's row sets built-ins, MCP
 # servers, disclosure and guard text, so `-D` refuses (only `-G arm` takes it) and an unsigned `-t`
 # refuses (a signed delta, `-t +Bash`, stays legal). With disclosure full (reviewer, author, judge), the

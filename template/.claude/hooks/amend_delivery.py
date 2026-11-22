@@ -5,7 +5,9 @@ Each engine ends an author job's prompt with the line `amend_path_in` parses, na
 job's key on every engine. A sidecar child is a `claude` process, so payload `transcript_path` is its own
 transcript. A Workflow or Agent-tool child (payload `agent_id`) shares its parent's session and transcript path; its
 own transcript is `<session>/subagents/**/agent-<agent_id>.jsonl`. The key is read from the job's first prompt
-record, last match, so a brief quoting another job's line keeps its own.
+record, last match, so a brief quoting another job's line keeps its own. A Workflow agent's transcript may open with
+a relay of the session's user request (`RELAY_HEAD`); that record is skipped and the computed task after it is the
+prompt record.
 
 PreToolUse (every tool): when the amendment file holds text and this job has no receipt for that text's sha, the
 full text arrives as `additionalContext` and a receipt is claimed under a file lock, so parallel calls deliver once.
@@ -33,12 +35,19 @@ from pathlib import Path
 
 LINE_RE = re.compile(r"Amendments: the harness delivers (.+?\.amend\.md) to you when your parent writes or changes it")
 HEAD_LINES = 50
+# Opens the record a Workflow harness puts before the computed task when the session's user request triggered the run:
+# the session's own words, never the job's brief, so it is not the job's prompt record.
+RELAY_HEAD = "[Workflow harness — user request]"
 # The client's cap on hook text it injects (additionalContext, stdout); past it the client shows a 2,000-character
 # preview and a saved-file path instead (code.claude.com/docs/en/hooks; observed on a 12,030-character amendment).
 HOOK_TEXT_CAP = 10_000
 # Opens a blocked stop's reason. `tools/dispatch_result.py` `answered_after_report` reads it: the reply after it is the
 # job's full report, re-issued as the reason asks, not a trailing answer.
 STOP_HEAD = "[amendment] Your parent amended your brief after your last tool call"
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _win_path import native_path  # noqa: E402
 
 
 def _state():
@@ -59,11 +68,7 @@ def text_sha(text):
 
 
 def _norm(path):
-    p = str(path).replace("\\", "/")
-    m = re.match(r"^/([a-zA-Z])/(.*)$", p)
-    if m and os.name == "nt":
-        p = m.group(1) + ":/" + m.group(2)
-    return os.path.normcase(os.path.normpath(p))
+    return os.path.normcase(os.path.normpath(native_path(str(path).replace("\\", "/"))))
 
 
 def receipt_path(amend):
@@ -123,7 +128,10 @@ def job_amend_path(payload):
                 continue
             if record.get("type") != "user" or record.get("isMeta"):
                 continue
-            path = amend_path_in(_prompt_text(record))
+            text = _prompt_text(record)
+            if text.startswith(RELAY_HEAD):
+                continue
+            path = amend_path_in(text)
             if not path:
                 return None
             if not os.path.isabs(path.replace("\\", "/")) and not re.match(r"^[a-zA-Z]:", path):

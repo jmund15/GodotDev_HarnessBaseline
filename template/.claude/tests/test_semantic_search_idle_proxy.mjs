@@ -1046,6 +1046,11 @@ test('S4.6 output-format drift blocks rebasing before a backend starts', async (
 	}
 })
 
+test('S4.6a the pinned result-format hashes accept the active plugin', () => {
+	const out = execFileSync(process.execPath, [PROXY, '--print-contract', PLUGIN], { encoding: 'utf8' })
+	assert.equal(JSON.parse(out).serverInfo.version, PLUGIN_VERSION)
+})
+
 test('S4.7 headers escaping the shared root fail without rewriting source text', async () => {
 	const { linked } = linkedFixture('s4-7')
 	const c = fakeCase('s4-7')

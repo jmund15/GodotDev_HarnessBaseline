@@ -674,7 +674,7 @@ def tool_spec(profile, keys):
 # instructions, only a ```json fence is data.
 
 _COMMAND = (r"(?:git(?:\s+-C\s+\S+)?\s+(?:diff|show|log|blame|grep|status|ls-files|rev-parse)"
-            r"|gh|python3?|node|pytest|dotnet|bash|pwsh|powershell)(?=\s|$)")
+            r"|gh|npm|npx|python3?|node|pytest|dotnet|bash|pwsh|powershell)(?=\s|$)")
 # A command stands at a code segment's start, after a shell connector, or after a `$ ` prompt.
 _CODE_COMMAND = re.compile(r"(?:^|[|;&(]|\$ )\s*(?:\$\s+)?(?P<cmd>" + _COMMAND + ")")
 # In prose it stands only at the line's start or after a `$ ` prompt.
@@ -686,6 +686,9 @@ _SCRIPT = re.compile(r"(?:[\w.-]+/)+[\w.-]+\.(?:sh|ps1|py)(?=\s+\S)")
 _WRITE = re.compile(r"\b(?:write|spill|save|dump)\b(?:[^.;\n]|\.(?!\s|$)){0,80}?\b(?:to|into|under)\s+"
                     r"(?P<path>`[^`\s]+`|<[^>\s]+>\S*|\S+)", re.I)
 _NEGATION = re.compile(r"(?<!\bor )\b(?:not|never)\b|n't\b", re.I)  # "present or not" negates nothing
+# A command the sentence reports as already run ("`npm run verify:merge` ran in ...: 833 passed") is a
+# status fact. `failed`/`passed` are absent on purpose: a real order ends "with 0 failed and 0 flaky".
+_PAST_RUN = re.compile(r"\b(?:ran|reran)\b|\b(?:was|were|has|have|had|been)\s+(?:run|rerun|executed)\b", re.I)
 _PROHIBITION_LIST = re.compile(r"^\W*no\b", re.I)  # "No commits, no stash, no X": a clause that opens with "No"
 _CLAUSE_END = re.compile(r"[.;:!?](?=\s|$)|—| -- ")
 def _is_path(token):
@@ -695,6 +698,11 @@ def _is_path(token):
 def _negated(line, start):
     clause = _CLAUSE_END.split(line[:start])[-1]
     return bool(_NEGATION.search(clause) or _PROHIBITION_LIST.match(clause))
+
+
+def _reported(line, after):
+    """True when the clause after a command reports it as already run, so it is a status fact."""
+    return bool(_PAST_RUN.search(_CLAUSE_END.split(line[after:])[0]))
 
 
 # A Workflow call's args object, or any `args: {...}` literal, carries data for a script (a judged
@@ -900,9 +908,16 @@ PATH_LIST_LABEL_RE = re.compile(r"^[ \t]*(?:[-*+]\s+)?\w+(?:[ \t]+\w+){1,2}:[ \t
                                 r"`?[\w./\-]+`?(?:[ \t]*,[ \t]*`?[\w./\-]+`?)*[ \t]*$")
 
 
+# A ui_ledger evidence line (`- [date kind id] "quote" (tag)`, `ui_ledger.word_line`) quotes an owner's
+# word and its reader tag: data the reader judges.
+LEDGER_EVIDENCE_RE = re.compile(r'^[ \t]*[-*+][ \t]+\[[^\]\n]*\][ \t]+".*$', re.M)
+
+
 def instruction_text(text):
-    """The instruction half of a brief: fenced blocks blanked, quoted data blanked, lines kept."""
-    return without_quoted_data(FENCED_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text))
+    """The instruction half of a brief: fenced blocks blanked, ledger evidence lines blanked, quoted data
+    blanked, lines kept."""
+    unfenced = FENCED_RE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    return without_quoted_data(LEDGER_EVIDENCE_RE.sub("", unfenced))
 
 
 def _grammar(names, engines):
@@ -1033,31 +1048,44 @@ def _scan(source, text, out, commands=None):
             continue
         hits = []
         if fenced:
-            hits += [("Bash", m.start("cmd"), len(line)) for m in _CODE_COMMAND.finditer(line)]
+            hits += [("Bash", m.start("cmd"), len(line), m.end("cmd")) for m in _CODE_COMMAND.finditer(line)]
         else:
-            hits += [("Bash", m.start("cmd"), len(line)) for m in _PROSE_COMMAND.finditer(line)]
-            hits += [("Bash", m.start("cmd"), len(line)) for m in _IMPERATIVE_COMMAND.finditer(line)]
+            hits += [("Bash", m.start("cmd"), len(line), m.end("cmd")) for m in _PROSE_COMMAND.finditer(line)]
+            hits += [("Bash", m.start("cmd"), len(line), m.end("cmd"))
+                     for m in _IMPERATIVE_COMMAND.finditer(line)]
             for m in _WRITE.finditer(line):
                 if _is_path(m.group("path").strip("`<>").rstrip(".,;:)")):
-                    hits.append(("Write", m.start(), m.end()))
+                    hits.append(("Write", m.start(), m.end(), m.end()))
         # A backtick span is scanned the same way fenced or not: a mandate sentence can quote a
         # command inside a fenced example without the fence's own shell text being one.
         for span in _CODE_SPAN.finditer(line):
-            hits += [("Bash", span.start(2) + m.start("cmd"), span.end(2))
+            hits += [("Bash", span.start(2) + m.start("cmd"), span.end(2), span.end(2))
                      for m in _CODE_COMMAND.finditer(span.group(2))]
             script = _SCRIPT.match(span.group(2))
             if script:
-                hits.append(("Bash", span.start(2) + script.start(), span.end(2)))
+                hits.append(("Bash", span.start(2) + script.start(), span.end(2), span.end(2)))
         if commands is not None:
             commands.extend((number, line[start:end].strip().rstrip("`.,;:"))
-                            for tool, start, end in hits if tool == "Bash" and not _negated(line, start))
+                            for tool, start, end, stop in hits
+                            if tool == "Bash" and not _negated(line, start) and not _reported(line, stop))
         seen = set()
-        for tool, start, _end in sorted(hits, key=lambda h: h[1]):
+        for tool, start, _end, _stop in sorted(hits, key=lambda h: h[1]):
             if tool in seen:
                 continue
             seen.add(tool)
             out.append({"tool": tool, "source": source, "line": number, "text": line.strip(),
                         "negated": _negated(line, start)})
+
+
+def brief_commands(text):
+    """[(line, command)] every Bash command `text` (a brief) instructs: the `commands` list `_scan` fills,
+    read over the instruction half (`without_quoted_data`, `_drop_data_regions`). A negated clause, a
+    ```json fence, a checklist item quoted into the brief and a past-tense report of a run add none; a
+    bare fence is an instruction.
+    The wide-run dispatch check reads this (harness plan `verify-cadence-harness.md` S3, R7)."""
+    commands = []
+    _scan("brief", _drop_data_regions(without_quoted_data(text or "")), [], commands)
+    return list(dict.fromkeys(commands))
 
 
 def _command_matches(source, text, root, out):
@@ -1170,10 +1198,13 @@ def render_agents(table, candidates):
     (the name `tool_spec` gives, since a server's individual tool names are only known by starting
     it), then `ToolSearch` when any server is listed, because MCP tool schemas load deferred. A row's
     `denyTools` become a `disallowedTools:` line, so a read-only type holds the server minus its writers. A
-    variant is its kind's row with the signed built-in delta applied, in canonical order.
+    variant is its kind's row with the signed built-in delta applied, in canonical order. A
+    repo-scoped server the repo does not register is left out, as `resolve_kind` leaves it out of a
+    default profile; any other missing server refuses.
     """
     out = {}
     rows = []
+    scoped = table.get("repoScopedServers", [])
     for kind, row in table["kinds"].items():
         if row.get("agentType"):
             rows.append((row["agentType"], row.get("guard") or kind, row["builtins"], row["mcpServers"],
@@ -1187,6 +1218,7 @@ def render_agents(table, candidates):
     for agent_type, profile, builtins, servers, deny in rows:
         if agent_type + ".md" in out:
             continue
+        servers = [s for s in servers if s not in scoped or registered_key(s, candidates) is not None]
         keys, _mapping = resolve_servers(servers, candidates)
         tools = list(builtins) + [LEGACY_MCP_PREFIX + norm(k) for k in keys]
         if keys:

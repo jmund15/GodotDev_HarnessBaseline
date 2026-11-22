@@ -66,16 +66,14 @@ The core lenses (+ any Step 0.5 additions), each judging the pushed input. The m
 python3 .claude/tools/lens_briefs.py prepare --spec <run dir>/spec.json --out <run dir>
 ```
 
-```
-Workflow({scriptPath: ".claude/workflows/review_fanout.js", args: {argsFile: "<run dir>/args.json"}})
-```
+Run the `next:` call `prepare` prints, the fan-out's `--review` run: it places each seat by the ladder's selection line, prints a `NATIVE` Workflow call for the seats it keeps on this session's plan (issue it) and runs the rest as sidecars, and it prints the `--review-close` call that consolidates every seat once they have all ended (`reference/sidecar_dispatch.md` owns the recipe). `"target": "native"` keeps the `review_fanout.js` call, every seat on the session's plan.
 
 `prepare` briefs only the seats the ledger returns. The scope file holds `{"files": ["<design path>"]}` so a pass with no fold still records its rows over the design. The design path is each seat's must-read entry; write a design that is not yet a file to a scratch file first and name it in `subjectFiles`. Consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5.
 
-**Dispatch.** `review_fanout.js` §USAGE CONTRACT owns the flat `args` shape and the large-design fallback to `dispatch.js` brief files.
-Phase-scoped subsets and Step 0.5 additions are the spec's `seats`; a bespoke lens with no registry key carries its mandate text as that seat's `brief`. A purely mechanical bespoke lens may take the fanout tier; the orchestrator tier only by an explicit per-seat pin. For a large design, pass the same generated jobs to `dispatch.js` with `contextPath` and `spillDir`.
+**Dispatch.** `reference/sidecar_dispatch.md` owns the fan-out recipe; the `native` target's flat `args` shape is `review_fanout.js` §USAGE CONTRACT's.
+Phase-scoped subsets and Step 0.5 additions are the spec's `seats`; a bespoke lens with no registry key carries its mandate text as that seat's `brief`. A purely mechanical bespoke lens may take the fanout tier; the orchestrator tier only by an explicit per-seat pin.
 
-**Liveness is mandatory — a silent-empty round is NOT a clean round.** `review_fanout.js` marks a lens that errors, times out or returns an invalid shape `failed` or `uncovered` in `perAgent` and raises a flag. Before reporting or converging, confirm every dispatched lens key reads as returned. A merged seat reports each mandate's coverage per `orchestration` §2 *Sizing the width*, and a mandate it did not reach counts as missing. Any missing lens is INCOMPLETE, never APPROVE: surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses or halt.
+**Liveness is mandatory — a silent-empty round is NOT a clean round.** The review marks a lens that errors, times out or returns an invalid shape `failed` or `uncovered` in its `coverage` (`perAgent` on the `native` target) and raises a flag. Before reporting or converging, confirm every dispatched lens key reads as returned. A merged seat reports each mandate's coverage per `orchestration` §2 *Sizing the width*, and a mandate it did not reach counts as missing. Any missing lens is INCOMPLETE, never APPROVE: surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses or halt.
 
 Each lens returns findings per the schema, classified by the registry's shared rule (design-hole → `FIX`/`PLAN`, taste-fork → `ASK`). One more class:
 - **Dead-end** → a design-hole with **no addressable fix within the design's constraints** (e.g. "cannot satisfy invariant X without breaking the framework boundary"). Encoded as `critical: true, action: PLAN` and named DEAD-END in the description. A design-hole with a named fix is FIX or a non-critical PLAN; `critical: true, action: PLAN` is reserved for DEAD-END: in this command `critical` marks a dead-end and overrides the protocol's §Critical Flag, so a severe design-hole states its weight in `minRigor`. It halts (see below) — it is not a taste-fork.

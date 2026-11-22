@@ -618,7 +618,7 @@ sc_apply_kind() {
   SC_KIND_APPLIED="$SC_SHAPE"
 }
 
-# The guard name a kind's row carries (survey|review|author|common|arm), for the registry's --shape.
+# The guard name a kind's row carries (survey|review|author|gate|common|arm), for the registry's --shape.
 sc_kind_guard() {
   python3 "$SC_ROOT/tools/tool_profiles.py" kind-row --kind="$1" --field=guard 2>/dev/null | tr -d '\r'
 }
@@ -787,8 +787,9 @@ sc_resolve_model() {
 # Go included: no recorded Go error body scopes a limit to one model, so every limit marks the transport.
 # sc_gate_availability runs this first, so every dispatch and every --check refuses with exit 10.
 # Neither -A nor -U overrides it: -A authorizes spend past a band and -U lifts a registry suspension,
-# and an exhausted allowance answers neither. A cached provider reading observed after the marker, with every
-# window under 100%, lifts it (exhausted_marker.superseded): an early reset never waits out the default window.
+# and an exhausted allowance answers neither.
+# A transport-wide marker is confirmed first (`exhausted_marker.py lift`): a reading observed after the marker's
+# `writtenAt` that says the plan has room deletes it, so a manual quota reset needs no owner-side file delete.
 # A member key (`sc_exhausted_marker <member>`) names one pool member of the transport: its marker lives under
 # members/<transport>/ and holds the member's consecutive-failure count. A member marker never reads or writes
 # the transport-wide one, so one cooled member never refuses the rest of its transport.
@@ -806,6 +807,10 @@ sc_gate_exhausted() {
   local marker msg grc
   marker="$(sc_exhausted_marker ${1:+"$1"})"
   [ -f "$marker" ] || return 0
+  # An owner's manual quota reset leaves the marker standing: a live reading taken after it decides first.
+  if [ -z "${1:-}" ]; then
+    python3 "$(sc_to_native "$SC_ROOT/tools/exhausted_marker.py")" lift "$SC_TRANSPORT" >/dev/null 2>&1 && return 0
+  fi
   msg="$(MARKER_V="$(sc_to_native "$marker")" TRANSPORT_V="$SC_TRANSPORT" MEMBER_V="${1:-}" \
     TOOLS_V="$(sc_to_native "$SC_ROOT/tools")" python3 - <<'PY'
 import json, os, sys, time
@@ -1458,13 +1463,19 @@ SC_USAGE_LIMIT_SID=""
 SC_USAGE_MARKED=0
 
 sc_kill_descendants() {
-  # Depth-first: on POSIX the pipeline's run and tee children outlive a kill of their subshell parent,
-  # where taskkill /T is absent.
-  local child
-  for child in $(pgrep -P "$1" 2>/dev/null); do
-    sc_kill_descendants "$child"
+  # On POSIX the pipeline's run and tee children outlive a kill of their subshell parent, where taskkill /T is
+  # absent: collect the whole tree first, then end each parent before its children, since a shell whose child
+  # died first runs its next command before its own kill lands.
+  local pids="" queue="$1" next p
+  while [ -n "$queue" ]; do
+    next=""
+    for p in $queue; do
+      pids="$pids $p"
+      next="$next $(pgrep -P "$p" 2>/dev/null)"
+    done
+    queue="$(echo $next)"
   done
-  kill "$1" 2>/dev/null
+  for p in $pids; do kill "$p" 2>/dev/null; done
 }
 
 sc_kill_tree() {
@@ -2168,8 +2179,9 @@ sc_scrub_env() {
   # The parent-session tag: the scrub drops CLAUDE_CODE_SESSION_ID and a detached child outlives its
   # wrapper, so tools/reap.py proves the child is this session's through this tag.
   [ -n "${SC_PARENT_SESSION_ID:-}" ] && SC_SCRUB+=(SIDECAR_PARENT_SESSION_ID="$SC_PARENT_SESSION_ID")
-  # The brief's identity rides every launcher's child: hooks/wide_test_guard.py reads the dispatcher's prompt
-  # (and its .amend.md) to learn which wide test runs this delegate was ordered to make.
+  # The brief's identity rides every launcher's child: the compaction rails read the dispatcher's prompt
+  # through this (compact_directive_ledger, compact_directive_anchor, subagent_compaction_rail,
+  # sidecar_recompact_reprompt).
   [ -n "${SC_PROMPT_FILE:-}" ] && SC_SCRUB+=(CLAUDE_CODE_SIDECAR_PROMPT_FILE="$(sc_prompt_file_abs)")
   [ -n "${SC_LABEL:-}" ] && SC_SCRUB+=(CLAUDE_CODE_SIDECAR_LABEL="$SC_LABEL")
   # The launch id rides the child too: tools/reap.py and watch_records.py find a seat that outlived its

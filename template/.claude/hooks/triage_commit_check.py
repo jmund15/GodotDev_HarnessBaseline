@@ -8,10 +8,14 @@ triage is the commit's `Triage:` trailer, else the session's task record (`task_
 the diff raises above it is printed with the tag and its probe. Standing reach names its computed
 harness-quality-seat admission, not a declaration. A commit with no trailer under a session record gets
 `--trailer "Triage: <recorded fields>"` through `updatedInput`, so `review_ledger.py owed` and the escape log
-read the triage this check used. A commit with neither is not rewritten: no reader parses a derived trailer
-(`triage.py rederive` and `escape_log.py` recompute from the diff), and a rewritten call costs a turn under auto
-mode, whose classifier gives no verdict on a call a hook changed. It speaks only above local reach, and its
-derived-fields line speaks once per distinct text per session.
+read the triage this check used. A commit whose message is one `-F <file>` (no `-m`) gets its trailer appended
+into that file and its command is not rewritten, because auto mode denies a call whose input a hook changed
+after review; a `-F` file not readable yet falls back to the `updatedInput` rewrite. A plain `-m` commit with
+neither trailer nor record is left as written: no reader parses a derived trailer (`triage.py rederive` and
+`escape_log.py` recompute from the diff), and a rewritten call costs a turn under auto mode, whose classifier
+gives no verdict on a call a hook changed. A `-F` commit with neither carries `Triage-Derived: reach=<r>
+oracle=<o>` (in its message file when readable, else the rewrite), so the derived fields travel with it; the
+derived-fields line speaks once per distinct text per session and only above local reach.
 Derived fields are not a judged triage. This hook never denies. An exception, a read error or an
 import failure exits non-zero; the dispatcher reports the unavailable check on stderr and in context.
 
@@ -42,8 +46,8 @@ for _d in (HERE, TOOLS):
         sys.path.insert(0, _d)
 
 from _commit_scope import authored_paths, publishes_index  # noqa: E402
-from _git_commit import (commit_invocations, commit_message, commit_source, commit_trailer_lines,  # noqa: E402
-                         in_project, run_git, staged_paths)
+from _git_commit import (_flag_values, commit_invocations, commit_message, commit_source,  # noqa: E402
+                         commit_trailer_lines, in_project, run_git, staged_paths)
 import triage  # noqa: E402
 
 OWED = ("[review] %d staged file(s) changed since their last review (%d edited after a reviewed blob, "
@@ -121,9 +125,13 @@ def _premises(invocation, session_id, fields):
                "premises block (reference/evidence_contract.md).")
         return ask if _once(session_id, "premises-ask", message) else None
     try:
-        import verify_claims
         rows = [dict(json.loads(line), id="premise-%d" % n)
                 for n, line in enumerate(block.group(1).splitlines(), 1) if line.strip()]
+    except (ValueError, TypeError):
+        return ("[premises] the ```premises block is malformed: it is not one JSON object per line, so no "
+                "claim was checked; rewrite it as JSONL (reference/evidence_contract.md §Load-bearing premises).")
+    try:
+        import verify_claims
         result = verify_claims.check_claims(rows, root=triage._toplevel(invocation.cwd, invocation.git_env),
                                           session_id=session_id)
         failures = ["%s %s: %s" % (key, item["verdict"], item.get("reason", ""))
@@ -210,6 +218,11 @@ def _triage_block(invocation, session_id, tags, paths):
     fields, error, from_record = _recorded(message, session_id, with_source=True)
     advice, trailer = triage_verdict(result, fields, error, message, invocation.sub,
                                      lambda: _standing_state(invocation), from_record)
+    if (trailer is None and fields is None and not error and invocation.sub == "commit"
+            and _has_message_file(invocation)):
+        trailer = "Triage-Derived: reach=%s oracle=%s" % (result.reach, triage._format_oracle(result.oracle))
+        if message and re.search(r"^Triage-Derived:", message, re.MULTILINE):
+            trailer = None
     if advice and fields is None and not error:
         advice = _once(session_id, "triage-derived", advice)  # the derived fields repeat until the session records its triage
     return advice, trailer
@@ -279,6 +292,32 @@ def _rewrite(command, trailers, calls):
     return command
 
 
+def _has_message_file(invocation):
+    """Whether the commit's message comes from a `-F`/`--file` flag, with no `-m`, readable or not."""
+    files, from_stdin = _flag_values(invocation.rest, "--file", "F")
+    messages, _ = _flag_values(invocation.rest, "--message", "m")
+    return len(files) == 1 and not from_stdin and not messages
+
+
+def _message_file(invocation):
+    """The one `-F` message file of a commit whose message is that file alone, else None."""
+    if not _has_message_file(invocation):
+        return None
+    files, _ = _flag_values(invocation.rest, "--file", "F")
+    path = os.path.join(invocation.cwd, files[0])
+    return path if os.path.isfile(path) else None
+
+
+def _append_trailer(path, trailer):
+    """Append the trailer to the message file, inside its last paragraph when that is a trailer block."""
+    with open(path, encoding="utf-8", errors="replace", newline="") as fh:
+        text = fh.read().rstrip("\r\n")
+    last = text.rsplit("\n\n", 1)[-1].splitlines()
+    in_block = "\n\n" in text and all(re.match(r"^[A-Za-z][A-Za-z0-9-]*: ", line) for line in last)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text + ("\n" if in_block else "\n\n") + trailer + "\n")
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -299,7 +338,11 @@ def main():
             found, trailer = _check(invocation, session_id, tags)
             blocks.extend(found)
             if trailer is not None:
-                trailers[ordinal] = trailer
+                path = _message_file(invocation)
+                if path is None:
+                    trailers[ordinal] = trailer
+                else:
+                    _append_trailer(path, trailer)
     except _ReadError as exc:
         sys.stderr.write("[triage] %s\n" % exc)
         return 1

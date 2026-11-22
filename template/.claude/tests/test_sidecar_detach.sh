@@ -421,16 +421,17 @@ fi
 
 echo
 # --- 14. a detached launch releases the caller's output pipe ----------------------------------
+# A held pipe returns only once the 12 s job has ended and written its exit file; the order, not the
+# seconds, is the proof, so machine load cannot fail it.
 REC14="$WORK/case14.record.json"
-c14_start=$(date +%s)
 FAKE_SLEEP=12 run_launcher out14 err14 rc14 -X -R "$REC14"
-c14_elapsed=$(( $(date +%s) - c14_start ))
+c14_done_at_return=$( [ -e "${REC14}.exit" ] && echo yes || echo no )
 c14_pid="$(printf '%s\n' "$out14" | sed -n 's/^DETACHED pid=//p')"
 [ -n "$c14_pid" ] && record_owned_pid "$c14_pid"
-if [ "$rc14" = "0" ] && [ -n "$c14_pid" ] && [ "$c14_elapsed" -lt 5 ] && poll_until 30 "${REC14}.exit"; then
-  pass "14 detached launch released the caller's pipe after ${c14_elapsed}s with a 12 s child"
+if [ "$rc14" = "0" ] && [ -n "$c14_pid" ] && [ "$c14_done_at_return" = no ] && poll_until 60 "${REC14}.exit"; then
+  pass "14 detached launch returned while its 12 s job still ran"
 else
-  fail "14 detached launch releases the caller's pipe" "rc=$rc14 (want 0)" "elapsed=${c14_elapsed}s (want < 5)" "DETACHED pid=${c14_pid:-none}" "exit file present=$( [ -e "${REC14}.exit" ] && echo yes || echo no )"
+  fail "14 detached launch releases the caller's pipe" "rc=$rc14 (want 0)" "job ended before the launch returned=$c14_done_at_return (want no)" "DETACHED pid=${c14_pid:-none}" "exit file present=$( [ -e "${REC14}.exit" ] && echo yes || echo no )"
 fi
 
 # --- 15. the atomic detached claim has a Windows identity on its first line ------------------

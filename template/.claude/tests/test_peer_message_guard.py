@@ -139,9 +139,10 @@ class PeerMessageGuardTests(unittest.TestCase):
         self.assertEqual("deny", decision)
         self.assertIn("5m", reason)
 
-    def test_parent_session_id_with_glob_characters_is_matched_literally(self):
-        self.subagent("a1d0bc9001d84f797", 10 * 60, parent="par[ent]-sid")
-        self.assertEqual("deny", self.decide("a1d0bc9001d84f797", session="par[ent]-sid")[0])
+    def test_parent_session_id_with_glob_characters_is_never_a_glob(self):
+        # `par[ent]-sid` read as a glob matches `part-sid`; an id outside the session-id charset finds nothing.
+        self.subagent("a1d0bc9001d84f797", 10 * 60, parent="part-sid")
+        self.assertEqual("allow", self.decide("a1d0bc9001d84f797", session="par[ent]-sid")[0])
 
     def test_subagent_inside_its_cache_is_allowed(self):
         self.subagent("a1d0bc9001d84f797", 60)

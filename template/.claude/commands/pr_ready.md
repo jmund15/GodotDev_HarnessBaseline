@@ -58,7 +58,7 @@ Where the project's stack ships a boot-log probe — the engine diagnoses its ow
 
 ## Step 1: Dispatch the battery
 
-Each lens reads a different input, so a branch's first run runs one seat per mandate (`orchestration` §2 *Sizing the width*); a rerun after new commits is a later round, sized per `orchestration` §2 *Later rounds* from what the new commits changed. Write the seats to `.claude/scratch/pr_ready/roster_<branch>.json` (`{key, effort}`, the effort per `orchestration` §5; `review_ledger.py` fills each seat's mandates and tier from the lens registry) and run `python3 .claude/tools/review_ledger.py plan --stage pr-ready --subject session:<sid> --roster <roster.json> --files <changed files>`; dispatch only the mandates it returns. An audit scope the owner names ignores the ledger: pass `--ignore-ledger`. Write `{"files": [<changed files>]}` to `.claude/scratch/pr_ready/scope_<branch>.json`. The `review_fanout` call carries `args.ledger` `{stage: "pr-ready", subject: "session:<sid>", roster: <roster.json>, scopeJson: <that file>}`, so its post-check records those rows over the changed files; the `parity` seat's rows come from its own post-check (Step 1a). Its lens battery needs Workflow, which a delegate lacks, so a delegate never runs `/pr_ready` and the parent keeps the lenses (`orchestration` §0). Triage any 4ms/0-agent/0-byte death as **malformed args, not a broken tool** (`gotcha_workflow_args_generation_fidelity.md`).
+Each lens reads a different input, so a branch's first run runs one seat per mandate (`orchestration` §2 *Sizing the width*); a rerun after new commits is a later round, sized per `orchestration` §2 *Later rounds* from what the new commits changed. Write the seats to `.claude/scratch/pr_ready/roster_<branch>.json` (`{key, effort}`, the effort per `orchestration` §5; `review_ledger.py` fills each seat's mandates and tier from the lens registry) and run `python3 .claude/tools/review_ledger.py plan --stage pr-ready --subject session:<sid> --roster <roster.json> --files <changed files>`; dispatch only the mandates it returns. An audit scope the owner names ignores the ledger: pass `--ignore-ledger`. Write `{"files": [<changed files>]}` to `.claude/scratch/pr_ready/scope_<branch>.json`. The fan-out call carries `--ledger-stage pr-ready --ledger-subject session:<sid> --ledger-roster <roster.json> --ledger-scope-json <that file>`, so its post-check records those rows over the changed files; the `parity` seat's rows come from its own post-check (Step 1a). Its lens battery needs Workflow, which a delegate lacks, so a delegate never runs `/pr_ready` and the parent keeps the lenses (`orchestration` §0). Triage any 4ms/0-agent/0-byte death as **malformed args, not a broken tool** (`gotcha_workflow_args_generation_fidelity.md`).
 
 ### Step 1a: parity lens — `dispatch.js`, brief as a file
 
@@ -75,9 +75,9 @@ The executor tier at its review rung (`reference/model_ladder_evidence.md` §Rol
 
 Mandate (`parity`): the brief carries the [Mandate section of the parity checklist](checklists/parity.md) verbatim, the one home of this mandate.
 
-### Step 1b: the other five lenses — `review_fanout`
+### Step 1b: the other five lenses — the review fan-out
 
-Keep each `prompt` lean: push the shared diff stat + changed-file list + the 3 pre-computed critical grep results via `contextPrefix` (NOT repeated per agent). Each seat's must-read list is the diff of the changed files its candidates come from (written to scratch); `worklog-roadmap`'s is the worklog-titles and roadmap files it reconciles. Pass it as the seat's `mustRead` (`review_fanout.js` §USAGE CONTRACT).
+Keep each brief lean: push the shared diff stat + changed-file list + the 3 pre-computed critical grep results into one context file (NOT repeated per seat). Each seat's must-read list is the diff of the changed files its candidates come from (written to scratch); `worklog-roadmap`'s is the worklog-titles and roadmap files it reconciles. Pass it as the seat's `mustRead` (`lens_briefs.py must-read <list file>` prints the entries).
 
 | key | lens | mandate (findings: action FIX/ASK/PLAN, category bug/rule/improvement, `critical?`, file:line, description, rationale) |
 |---|---|---|
@@ -112,27 +112,19 @@ One verdict per candidate:
 
 **Each reachability lens returns exactly one coverage roll-up finding** (`action: PLAN`, `category: improvement`, non-critical, `file: null`): candidates enumerated, and the REACHED ones listed with reacher `file:line`. A lens that enumerated zero candidates reports that in the roll-up, so "no findings" stays distinguishable from "nothing examined".
 
-```
-Workflow({
-  scriptPath: ".claude/workflows/review_fanout.js",
-  args: {
-    contextPrefix: "<diff --stat + changed-file list + the 3 pre-computed critical grep results>",
-    agents: [
-      { key: "data-reach",      prompt: "<rubric + changed authored-field declarations with defaults + threshold comparisons, verbatim with file:line>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
-      { key: "wire-reach",      prompt: "<rubric + OLD+NEW signature lines (from the Step 0 parity capture) + new type declarations, verbatim with file:line>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
-      { key: "api-consume",     prompt: "<mandate + new-public-API list + call-site content>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
-      { key: "worklog-roadmap", prompt: "<mandate + worklog-titles + roadmap Parts table>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] },
-      { key: "doc-coverage",    prompt: "<mandate + changed-export/subsystem content>", shape: "review", tools: { add: ["Bash"] }, tier: "<resolved tier>", model: "<resolved native id>", effort: "<resolved effort>", agentType: "general-purpose", mustRead: [<must-read entries>] }
-    ]
-  }
-})
+Write each seat's brief (its mandate row above, the rubric, and its OLD/NEW or content slice, verbatim with file:line) to `.claude/scratch/pr_ready/<key>_<branch>.md`, then the spec `prepare` reads (`mode: "pr-ready"`, `seats: [{key, mandates, tier, effort, brief: "<that path>", tools: "+Bash"}, ...]`, `pins`, `efforts`, `ledger` as above, `context`) and run:
+
+```bash
+python3 .claude/tools/lens_briefs.py prepare --spec .claude/scratch/pr_ready/spec_<branch>.json --out .claude/scratch/pr_ready/out
 ```
 
-Every lens runs `git diff`/`git grep` itself, so each declares `tools: { add: ["Bash"] }` on the `review` shape. Resolve all five lenses' pins through `orchestration` §5; each `<resolved effort>` is the chosen row's review rung (ladder §Role guidance). Send OLD+NEW *signature lines* only, never whole methods — `parity` already owns method bodies, and duplicating them here walks back into the generation-fidelity envelope. `api-consume` is line-precision work — demand verbatim file:line.
+Run the `next:` call it prints: the fan-out places each seat by the ladder's selection line, prints a `NATIVE` Workflow call for the seats it keeps on this session's plan (issue it in the same message as the Step 1a call) and the `--review-close` call that consolidates every seat once they have all ended.
+
+Every lens runs `git diff`/`git grep` itself, so each seat declares `tools: "+Bash"`. Resolve all five lenses' pins through `orchestration` §5; each `<resolved effort>` is the chosen row's review rung (ladder §Role guidance). Send OLD+NEW *signature lines* only, never whole methods — `parity` already owns method bodies, and duplicating them here walks back into the generation-fidelity envelope. `api-consume` is line-precision work — demand verbatim file:line.
 
 ## Step 2: Present findings by weight
 
-`review_fanout` returns deduped+sorted findings; merge in the standalone `parity` Agent()'s findings, the three Claude-side grep critical candidates, and any Step 0b boot-probe verdicts. Treat every critical finding as a candidate Claude verifies, not final truth.
+`review.json` holds the deduped, sorted findings; merge in the standalone `parity` Agent()'s findings, the three Claude-side grep critical candidates, and any Step 0b boot-probe verdicts. Treat every critical finding as a candidate Claude verifies, not final truth.
 
 **Re-run every UNREACHED probe before presenting it.** Take the `git grep` the finding quoted, run it Claude-side, and let the result set the tier: still empty → critical; returns a production hit → clear `critical` and set `minRigor` thorough, naming the reacher the lens missed; no probe stated, or it does not run → a coverage gap, open at every rigor, saying which. Never promote an UNREACHED on the lens's word alone — the whole finding rests on an absence, and an absence one intermittent `Grep` produced is not evidence.
 

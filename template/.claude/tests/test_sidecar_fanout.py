@@ -424,7 +424,7 @@ CASES = [
 
     # ---- every job declares one `kind`; the kind alone sets -G, -D, tools and the schema -------
     ("a job with no kind is refused, naming `kind` and the public kinds",
-     lambda: refuses(KJOB, "needs a kind (scout|lens|reviewer|author|judge)")),
+     lambda: refuses(KJOB, "needs a kind (scout|lens|reviewer|author|judge|gate)")),
     ("`kind author` plans -G author and no -D",
      lambda: (flag(plan(dict(KJOB, kind="author"))[1], "-G"), flag(plan(dict(KJOB, kind="author"))[1], "-D"))
      == ("author", None)),

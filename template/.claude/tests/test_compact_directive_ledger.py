@@ -12,6 +12,7 @@ is a CRASH, never a pass.
 
     python3 .claude/tests/test_compact_directive_ledger.py
 """
+import hashlib
 import json
 import os
 import re
@@ -164,7 +165,6 @@ ANCHOR_HOOK = os.path.join(HERE, "..", "hooks", "compact_directive_anchor.py")
 # Bytes of the carry-forward instruction text before R5a, measured by running the hook on session
 # 30b7e19d. The echoed ledger does not grow net of the summary-fidelity rules R5a adds.
 INSTRUCTION_BYTES_BEFORE = 3706
-WHOLE_RE = re.compile(r"^Anchor prints whole: (.*)\.$", re.MULTILINE)
 
 
 def fidelity_bullets():
@@ -205,6 +205,63 @@ def summary_fidelity_cases():
     return cases
 
 
+def compact_bloat_cases():
+    cases = []
+    fixture = Path(HERE) / "fixtures" / "compact_bloat" / "rows.jsonl"
+    captured = [json.loads(line) for line in fixture.read_text(encoding="utf-8").splitlines()]
+    summaries = [row["message"]["content"] for row in captured if row.get("isCompactSummary")]
+    for number, text in enumerate(summaries):
+        statuses = ledger_hook.directive_statuses(text)
+        cases.append((f"captured summary {number}: bold headings and a bulleted settled list are parsed",
+                      statuses.get(15) == "holds" and statuses.get(505) == "done"
+                      and statuses.get(652) == "holds"))
+    cases.append(("captured terminal IDs carry forward, but the opening goal never does",
+                  {505, 659, 661}.issubset(ledger_hook.carried_forward_ids(summaries))
+                  and 15 not in ledger_hook.carried_forward_ids(summaries)))
+    for heading in ("## Owner directives", "**Owner directives**", "10. Owner directives:"):
+        text = heading + "\n- **U1** — holds — keep the constraint\n- Settled (done/scoped/replaced): U2\n"
+        text += "\n**Artifacts**\nU3 — done — not a directive status\n"
+        statuses = ledger_hook.directive_statuses(text)
+        cases.append((f"{heading}: formatting does not drop statuses or consume the next section",
+                      statuses == {1: "holds", 2: "done"}))
+    instructions = ledger_hook.INSTRUCTIONS_CARRY_FORWARD
+    cases.append(("no holds line repeats owner text, including clipped or omitted messages",
+                  "Every holds line is ID, status and scope only" in instructions
+                  and "Any other holds line quotes" not in instructions))
+    cases.append(("the summary preserves the exact recovery command instead of repeating stored debt",
+                  "unchanged" in instructions and "recovery command" in instructions
+                  and "new or changed" in instructions))
+    with tempfile.TemporaryDirectory() as tmp:
+        transcript = write_transcript(tmp, captured, "captured")
+        payload = {"hook_event_name": "PreCompact", "session_id": "captured",
+                   "transcript_path": str(transcript)}
+        out, crashed = run_hook(tmp, payload)
+        text = summaries[-1]
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        cases.append(("the real-format run provides a section-scoped recovery command",
+                      not crashed and "--show-summary" in out and digest in out
+                      and "'Pending ratings'" in out))
+        env = dict(os.environ, PYTHONIOENCODING="utf-8")
+        env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
+        command = [sys.executable, HOOK, "--show-summary", str(transcript), digest, "Pending ratings"]
+        result = subprocess.run(command, input="{}", capture_output=True, text=True, encoding="utf-8", env=env)
+        expected = text[text.index("**Pending ratings**"):].rstrip()
+        cases.append(("the recovery command returns the captured outcomes and reasons verbatim, not other sections",
+                      result.returncode == 0 and "Traceback" not in result.stderr
+                      and result.stdout.rstrip() == expected and "**Owner directives**" not in result.stdout))
+        for args in (("0" * 64, "Pending ratings"), (digest, "Missing section"), ("not-a-hash", "Pending ratings")):
+            result = subprocess.run([sys.executable, HOOK, "--show-summary", str(transcript), *args],
+                                    input="{}", capture_output=True, text=True, encoding="utf-8", env=env)
+            cases.append((f"summary recovery rejects an unknown selector or section: {args[0][:8]} {args[1]}",
+                          result.returncode != 0 and not result.stdout and "Traceback" not in result.stderr))
+        known = write_transcript(tmp, carry_forward_rows(), "known")
+        known_out, crashed = run_hook(tmp, dict(payload, session_id="known", transcript_path=str(known)))
+        cases.append(("previously statused message heads are not echoed again; the known IDs and new message remain",
+                      not crashed and "U2 ·" not in known_out and "U4 ·" not in known_out
+                      and "Statused in preceding summary: U2, U4" in known_out and "U6 ·" in known_out))
+    return cases
+
+
 def heavy_rows(count=30):
     """Mid-length owner messages: the anchor prints its ends whole and clips or omits the middle."""
     return [user(f"Heavy owner message {n}. " + "detail " * 60 + f"END{n}") for n in range(count)]
@@ -229,7 +286,7 @@ def whole_in_anchor(tmp, transcript, session):
 
 
 def anchor_overlap_cases():
-    """R4c: the ledger names the IDs the anchor prints whole, so a holds line for one carries no quote."""
+    """Raw owner words stay in the anchor; every summary status line avoids a second copy."""
     cases = []
     with tempfile.TemporaryDirectory() as tmp:
         for name, content_rows in (("heavy", heavy_rows()), ("mixed", rows()),
@@ -238,28 +295,21 @@ def anchor_overlap_cases():
             out, crashed = run_hook(tmp, {"hook_event_name": "PreCompact", "trigger": "auto", "session_id": name,
                                           "transcript_path": str(transcript)})
             anchor_whole, total, anchor_ok = whole_in_anchor(tmp, transcript, name)
-            match = WHOLE_RE.search(out)
-            claimed = match.group(1) if match else None
-            if claimed == "every owner message":
-                ledger_whole = anchor_whole if len(anchor_whole) == total else None
-            elif claimed is None:
-                ledger_whole = None
-            else:
-                ledger_whole = {int(i) for i in re.findall(r"U(\d+)", claimed)}
-            cases.append((f"{name}: the ledger names exactly the IDs the anchor prints whole "
-                          f"({claimed!r} vs {sorted(anchor_whole)})",
-                          not crashed and anchor_ok and ledger_whole == anchor_whole))
+            cases.append((f"{name}: the ledger does not repeat the anchor's layout or ask for duplicate quotes",
+                          not crashed and anchor_ok and "Anchor prints whole:" not in out
+                          and "Every holds line is ID, status and scope only" in out
+                          and "--show recovery for clipped or omitted messages" in out))
             if name == "heavy":
-                cases.append(("heavy: the anchor really clips part of the session (the control is not vacuous)",
+                cases.append(("heavy: the no-duplicate rule also covers messages the anchor clips",
                               0 < len(anchor_whole) < total))
             if name == "tiny":
-                cases.append(("tiny: every message is whole, so the ledger says so in one phrase",
-                              claimed == "every owner message"))
-    cases.append(("a holds line for an ID the anchor prints whole is ID, status and scope only",
-                  "ID, status and scope only" in ledger_hook.INSTRUCTIONS_CARRY_FORWARD
-                  and "ID, status and scope only" in ledger_hook.INSTRUCTIONS))
-    cases.append(("every other holds line still quotes the owner's binding sentences verbatim",
-                  "verbatim" in ledger_hook.INSTRUCTIONS_CARRY_FORWARD and "binding sentences" in ledger_hook.INSTRUCTIONS))
+                cases.append(("tiny: the raw anchor still prints every short directive whole",
+                              len(anchor_whole) == total))
+    cases.append(("both instruction variants keep owner statuses and scopes without quoting the text",
+                  all("Every holds line is ID, status and scope only" in text
+                      for text in (ledger_hook.INSTRUCTIONS_CARRY_FORWARD, ledger_hook.INSTRUCTIONS))))
+    cases.append(("binding words remain recoverable verbatim rather than becoming a paraphrase",
+                  "Recover their binding sentences verbatim there" in ledger_hook.INSTRUCTIONS))
     return cases
 
 
@@ -480,6 +530,8 @@ def main():
         out, crashed = run_hook(tmp, dict(payload, transcript_path=str(Path(tmp) / "missing.jsonl")))
         cases.append(("an unreadable transcript still asks for the section without IDs",
                       not crashed and "## Owner directives" in out and "U1 ·" not in out))
+        cases.append(("unreadable owner recovery keeps binding words in the summary instead of losing them",
+                      "recovery is unverified" in out and "keep binding sentences verbatim" in out))
         out, crashed = run_hook(tmp, [])
         cases.append(("a non-object payload is a silent no-op", out.strip() == "" and not crashed))
         out, crashed = run_hook(tmp, payload, {"CLAUDE_CODE_SIDECAR_PROMPT_FILE": str(transcript)})
@@ -517,10 +569,11 @@ def main():
                       not crashed))
         cases.append(("an ID settled in the last two summaries is named in one compact line, not a full entry",
                       "settled (status carried forward" in out and "U1" in out and "U1 ·" not in out))
-        cases.append(("an ID done in only the latest summary keeps its full entry (needs two in a row)",
-                      "U4 ·" in out))
-        cases.append(("a holds ID never carries forward, in the latest summary or the compact line",
-                      "U2 ·" in out))
+        cases.append(("an ID terminal in only the latest summary remains unsettled without repeating its head",
+                      "Statused in preceding summary: U2, U4" in out and "U4 ·" not in out))
+        cases.append(("a holds ID keeps its status line and never enters the settled list",
+                      "Statused in preceding summary: U2, U4" in out
+                      and "settled (status carried forward; re-list one only if later conversation reopened it): U1\n" in out))
         cases.append(("a message newer than the latest summary keeps its full entry",
                       "U6 ·" in out))
         cases.append(("carry-forward mode asks for one comma-separated settled list",
@@ -533,7 +586,7 @@ def main():
         out, crashed = run_hook(tmp2, dict(cf_payload, session_id="reopened",
                                            transcript_path=str(reopened_transcript)))
         cases.append(("reopened: a later 'holds' status blocks carry-forward even after two prior "
-                      "terminal summaries", not crashed and "U1 ·" in out
+                      "terminal summaries", not crashed and "Statused in preceding summary: U1." in out
                       and "settled (status carried forward" not in out))
 
         # Fewer than two prior summaries: exactly today's behavior ----------------------------
@@ -557,7 +610,6 @@ def main():
         expected = ledger_hook.INSTRUCTIONS + "\n" + header + "\n" + "".join(l + "\n" for l in legacy_lines)
         out, crashed = run_hook(tmp2, dict(payload, session_id="zerosummary",
                                            transcript_path=str(zero_transcript)))
-        out = re.sub(r"^Anchor prints whole: .*\n", "", out, count=1, flags=re.MULTILINE)  # own cases below
         new_bytes, expected_bytes = len(out.encode("utf-8")), len(expected.encode("utf-8"))
         cases.append((f"no prior summary: output is byte-identical to today's legacy path "
                       f"({new_bytes} vs {expected_bytes} bytes)", not crashed and out == expected))
@@ -580,7 +632,7 @@ def main():
                       "meaningfully smaller ledger", not crashed_new and not crashed_old
                       and new_bytes < old_bytes * 0.65))
 
-    cases += summary_fidelity_cases() + anchor_overlap_cases()
+    cases += summary_fidelity_cases() + anchor_overlap_cases() + compact_bloat_cases()
 
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:

@@ -8,7 +8,7 @@ command CLIs; each of those files documents itself in its docstring.
    `pre_read_dispatch.py` / `post_read_dispatch.py` (read/search tool family),
    `pre_edit_dispatch.py` / `post_edit_dispatch.py` (Write|Edit family: before the edit
    `harness_edit_skill_reminder.py`, `readonly_lens_write_guard.py`, `running_script_edit_guard.py`;
-   after it `design_surface_reminder.py`, `plan_memory_reminder.py`, `harness_growth_guard.py`,
+   after it `design_surface_reminder.py`, `plan_memory_reminder.py`,
    `self_eval_archive_guard.py`, `retire_trigger_advisory.py`, the reaper's `check()`) and
    `pre_bash_dispatch.py` (Bash/PowerShell/Monitor family: `git_guardrails.py`,
    `baseline_classification_guard.py`, `unbounded_scan_guard.py`, `compound_cd_approver.py`,
@@ -31,7 +31,7 @@ command CLIs; each of those files documents itself in its docstring.
    `compact_directive_anchor.py` (the owner's own messages, under the same IDs). Sub-hooks behind the
    dispatchers (`routing_audit.py`, `file_size_preblock.py`, `semantic_search_scope_guard.py`) keep
    standalone `main()` for testing.
-2. **Libraries** — imported, never registered: `_transcript_summary.py`, `_owner_text.py` (the one
+2. **Libraries** — imported, never registered: `_transcript_summary.py`, `harness_growth_guard.py` (preimage and rule-unit helpers), `_owner_text.py` (the one
    owner-row parser; kill_guard, harness_growth_guard and the digest each project it) and
    `_file_lock.py` (the open-handle lock behind `_hook_state`, the self-evaluate store and
    orchestration metrics).

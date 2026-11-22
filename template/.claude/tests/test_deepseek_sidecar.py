@@ -2,6 +2,7 @@
 a bad model and a bad flag are refused; a dispatch runs the stub claude with the flash model on its argv.
 No network, no paid call."""
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -27,6 +28,8 @@ def contract(temp_root):
         "deepseek": planted_reading("deepseek", "marginal-usd"),
         "anthropic": planted_reading("anthropic", "plan-quota"),
     }), encoding="utf-8", newline="\n")
+    # A host floor no machine meets: the dispatch below passes only while launch_env sets its own floors.
+    os.environ["LAUNCH_MIN_COMMIT_GIB"] = "99999"
     env = launch_env(temp_root, [temp_root / "bin"], CLAUDE_BIN=str(stub), STUB_LOG=str(temp_root / "argv.log"),
                      PROVIDER_CAPACITY_CACHE=str(cache), SC_PRICE_AT=OFF_PEAK)
 

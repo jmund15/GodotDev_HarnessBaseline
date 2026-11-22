@@ -374,9 +374,14 @@ class OwnWorktree(unittest.TestCase):
         wt = self.root / '.claude/worktrees/mine'
         (wt / 'notes/evidence.txt').unlink()
         scratch = wt / '.claude/scratch'
-        scratch.mkdir(parents=True, exist_ok=True)
-        (scratch / 'job_output.txt').write_text('a job\'s output', encoding='utf-8')
+        output = scratch / 'a-job'
+        output.mkdir(parents=True, exist_ok=True)
+        (output / 'output.txt').write_text('a job\'s output', encoding='utf-8')
         self.assertFalse(self.blocked([]))
+        loose = scratch / 'notes.txt'
+        loose.write_text('a file nobody filed under a job', encoding='utf-8')
+        self.assertTrue(self.blocked([]))
+        loose.unlink()
         folder = scratch / '947c1a2b-0000-4000-8000-123456789abc'
         folder.mkdir()
         (folder / 'record.json').write_text('{}', encoding='utf-8')

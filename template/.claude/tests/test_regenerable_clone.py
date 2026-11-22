@@ -441,8 +441,12 @@ def landed_worktree_cases(proj_remote):
     scratch = job("scratch")
     os.makedirs(os.path.join(scratch, ".claude", "scratch", "job_x", "run"))
     write(os.path.join(scratch, ".claude", "scratch", "job_x", "run", "args.json"), "{}\n")
-    write(os.path.join(scratch, ".claude", "scratch", "notes.md"), "launcher notes\n")
+    write(os.path.join(scratch, ".claude", "scratch", "job_x", "notes.md"), "launcher notes\n")
     expect_wt("ignored scratch holding only the job's own output", scratch, True, lp)
+    loose = job("loose")
+    os.makedirs(os.path.join(loose, ".claude", "scratch"), exist_ok=True)
+    write(os.path.join(loose, ".claude", "scratch", "notes.md"), "launcher notes\n")
+    expect_wt("a loose file directly in scratch is evidence, not a job's output", loose, False, lp)
     peer = job("peer")
     os.makedirs(os.path.join(peer, ".claude", "scratch", PEER_SID))
     write(os.path.join(peer, ".claude", "scratch", PEER_SID, "out.txt"), "peer\n")
@@ -798,7 +802,7 @@ def retired_worktree_cases():
         try:
             with patch.object(rc, '_git', side_effect=planted):
                 verdict = rc.is_retired_worktree(with_sub, proj, proj, reasons=reasons)
-            ok = not verdict and reasons == [reason]
+            ok = not verdict and len(reasons) == 1 and reasons[0].startswith(reason)
         except TypeError:
             ok = False
         if not ok:

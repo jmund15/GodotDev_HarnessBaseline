@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Proof for tools/sentence_diff.py: the sentence comparison the harness-growth hook and citers.py share.
+"""Proof for tools/sentence_diff.py: the sentence comparison `triage.py sentences` and citers.py share.
 
     python3 .claude/tests/test_sentence_diff.py
 """

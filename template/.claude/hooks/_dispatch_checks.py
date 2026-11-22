@@ -33,6 +33,12 @@ the reading is past its long-context point. These are facts for the reader: no c
 `spare_plan_fact(tier, transport, data)` adds one fact when a row claiming `tier` on another plan projects
 quota unused at its reset: `<alias> on <plan>: ~N% unused at reset in Dd`, read from the capacity cache only.
 
+`wide_run_refusal(kind, brief_text, root)` is the deny for a job whose brief orders a wide test run: `gate`
+is the one kind that may, and every other kind's `task` block `check` entries are classified, plus the
+brief's commands when its kind's built-ins hold Bash. `wide_run_refusals(items, root)` is the one
+joined launch denial both dispatch hooks print, over `(label, kind, brief_text)` items; each caller
+reads its own job's brief and hands the items here. `hooks/_wide_runs.py` owns the match.
+
 `kind_tiers()` reads each kind row's tier from `guards/tool_profiles.json`, for a job's `kind`.
 `job_tier(kind, written)` is the sidecar route's one resolution: the job's written `tier`, else its kind row's.
 Capacity is read through `provider_bands.read_capacity`: the fresh cache, else one live read while
@@ -50,6 +56,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
 import quota_bands  # noqa: E402
+import _wide_runs  # noqa: E402
 from _dispatch_pins import _tp, tier_rows  # noqa: E402
 try:
     import model_registry  # noqa: E402
@@ -567,6 +574,75 @@ def spare_plan_fact(tier, transport, data=None, now=None, read=None):
     except Exception:
         return None
     return None
+
+
+def _task_checks(brief_text):
+    """The `check` entries of the brief's one `task` block, or [] when it fences none or fences an
+    unreadable one (`dispatch_result.task_block` owns that error; another check refuses it)."""
+    try:
+        import dispatch_result
+        return [check for check in (dispatch_result.task_block(brief_text or "") or {}).get("check") or []
+                if isinstance(check, str)]
+    except Exception:
+        return []
+
+
+def _kind_has_bash(kind):
+    """Whether the kind's resolved built-ins hold Bash (`guards/tool_profiles.json`, variants included).
+    None when the row is unknown or the table cannot be read, so the caller checks the brief anyway."""
+    try:
+        table = _tp().load_table()
+        profile, _spec, _keys = _tp().resolve_kind(str(kind), route="fanout", table=table, walk_mcp=False)
+    except Exception:
+        return None
+    return "Bash" in set(profile.get("builtins") or [])
+
+
+def _brief_commands(kind, brief_text):
+    """The commands the brief orders, when the kind's built-ins hold Bash (or cannot be resolved)."""
+    if _kind_has_bash(kind) is False:
+        return []
+    try:
+        return [command for _line, command in _tp().brief_commands(brief_text)]
+    except Exception:
+        return []
+
+
+def wide_run_refusal(kind, brief_text, root):
+    """The denial when a `kind` job's brief orders a wide test run, else None.
+
+    `gate` is the one kind that may run one. Every other kind's `task` block `check` entries are classified
+    (a check runs in the dispatcher's process, where no Bash guard sees it), and so is each command the brief
+    orders when the kind's built-ins hold Bash. The denial names the runner, its reason from the cadence row,
+    and the next step (`orchestration` §4; `guards/author.md` `Your checks`)."""
+    if str(kind or "").strip().lower() == _wide_runs.GATE_KIND:
+        return None
+    # An empty command still validates the cadence table, so a malformed row fails closed on a brief
+    # that orders nothing.
+    for command in _task_checks(brief_text) + _brief_commands(kind, brief_text) or [""]:
+        wide = _wide_runs.classify(command, str(root), root)
+        if wide:
+            return ("`%s` is a wide test run (%s). A job's checks come from its kind and the project's "
+                    "`gate_cadence` rows, and a wide runner starts only in a `gate` job: dispatch a `gate` "
+                    "job for it, or run a check the `slice` rows name (`orchestration` §4)."
+                    % (wide[0]["runner"], wide[0]["reason"]))
+    return None
+
+
+def wide_run_refusals(items, root):
+    """The one joined launch denial over `(label, kind, brief_text)` items, or None when none is wide.
+
+    Each dispatch route reads its own job's brief and hands the items here, so both hooks print the same
+    sentence: the first eight wide jobs are named, with a count of the rest."""
+    lines = []
+    for label, kind, brief_text in items:
+        why = wide_run_refusal(kind, brief_text, root)
+        if why:
+            lines.append("`%s`: %s" % (label, why))
+    if not lines:
+        return None
+    more = " (%d more)" % (len(lines) - 8) if len(lines) > 8 else ""
+    return "A brief orders a wide run, refused at launch — " + "; ".join(lines[:8]) + more
 
 
 def claimant_text(c, reading_tokens, upper_tokens=None):

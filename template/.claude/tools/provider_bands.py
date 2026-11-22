@@ -83,6 +83,14 @@ JOB_DRAIN_PCT = float(os.environ.get("SIDECAR_JOB_DRAIN_PCT") or 4)
 DRAIN_QUANTILE = 0.75
 # Fewer than five jobs make the 0.75 quantile their maximum, which is an anecdote; the group widens instead.
 GROUP_MIN_JOBS = 5
+# A plan window is priced by what its own recent jobs of the group cost, because a plan's work changes: on
+# 2026-11-08 codex five_hour priced every sol-high-author job at the lifetime 0.75 quantile ($4.25, 48.9 points)
+# while the three jobs finished in the preceding five hours cost $0.32, $0.43 and $0.72 (8.3 points at the plan's
+# 11.5 points/$), and a four-job wave that drew 4 to 17 points a job launched one at a time. The horizon is the
+# window being priced, so a five-hour window reads five hours of finished jobs and a weekly window reads a week.
+WINDOW_HORIZON_S = {"five_hour": 5 * 3600.0, "seven_day": 7 * 86400.0}
+# One finished job inside the window is a single job's anecdote; the whole history prices it until two have run.
+RECENT_MIN_JOBS = 2
 # A rate from fewer reset periods is one burst's rate. Thin: the plans with the fewest each have four.
 RATE_MIN_PERIODS = 3
 _LEDGER_CACHE = {"at": None, "rows": []}
@@ -349,8 +357,11 @@ def _unused_clause(plan, capacity, window, now):
 
 def read_capacity(transport, data=None, live=True):
     """A transport's normalized reading: the fresh cache first, else `provider_capacity.reading` when `live`
-    (itself cache-first, one live read per transport at a time)."""
+    (itself cache-first, one live read per transport at a time). A cached refusal is never served from here:
+    `provider_capacity.BLOCKING` readings are confirmed live, or left to the launcher's preflight when not `live`."""
     got = provider_capacity.cached(transport, data=data)
+    if got is not None and got.get("status") in provider_capacity.BLOCKING:
+        got = None
     if got is None and live:
         got = provider_capacity.reading(transport, data=data)
     return got
@@ -613,22 +624,27 @@ def plan_rate(plan, window, jobs, samples):
     return (rise / cost if counted >= RATE_MIN_PERIODS else None), counted
 
 
-def _group_quantile(model, effort, shape, jobs, value):
+def _group_quantile(model, effort, shape, jobs, value, since=None, until=None, min_jobs=GROUP_MIN_JOBS):
     """The `DRAIN_QUANTILE` of `value(job)` over finished jobs of `model`, `effort` and `shape`: the narrowest group
-    of at least `GROUP_MIN_JOBS` jobs, widening to the model and effort, then the model. None when no group is that
-    large. A job a usage limit cut short is left out: its cost and its run are the part it ran."""
-    done = [j for j in jobs or [] if not j.get("truncated") and j.get("model") == model]
+    of at least `min_jobs` jobs, widening to the model and effort, then the model. None when no group is that
+    large. `since` and `until` (epoch seconds) keep only jobs that ended inside them. A job a usage limit cut
+    short is left out: its cost and its run are the part it ran."""
+    done = [j for j in jobs or [] if not j.get("truncated") and j.get("model") == model
+            and (since is None or (isinstance(j.get("end"), (int, float)) and j["end"] >= since))
+            and (until is None or (isinstance(j.get("end"), (int, float)) and j["end"] <= until))]
     for group in ([j for j in done if j.get("effort") == effort and j.get("shape") == shape],
                   [j for j in done if j.get("effort") == effort], done):
-        if len(group) >= GROUP_MIN_JOBS:
+        if len(group) >= min_jobs:
             ordered = sorted(value(j) for j in group)
             return ordered[min(len(ordered) - 1, int(DRAIN_QUANTILE * len(ordered)))]
     return None
 
 
-def job_usd(model, effort, shape, jobs):
-    """The `DRAIN_QUANTILE` list-price cost of finished jobs of `model`, `effort` and `shape` (`_group_quantile`)."""
-    return _group_quantile(model, effort, shape, jobs, lambda j: j["usd"])
+def job_usd(model, effort, shape, jobs, since=None, until=None, min_jobs=GROUP_MIN_JOBS):
+    """The `DRAIN_QUANTILE` list-price cost of finished jobs of `model`, `effort` and `shape` (`_group_quantile`).
+    `since`, `until` and `min_jobs`: see `_group_quantile`."""
+    return _group_quantile(model, effort, shape, jobs, lambda j: j["usd"],
+                           since=since, until=until, min_jobs=min_jobs)
 
 
 def job_span(model, effort, shape, jobs):
@@ -656,11 +672,13 @@ def reset_drain_cache():
     _drain_cache.clear()
 
 
-def job_drain(plan, window, model, effort, shape, jobs=None, samples=None):
-    """{pct, basis, usd, rate, span, why} for one job on `plan`: the percentage points it is expected to take from the
-    plan's `window`, over `span` seconds (`job_span`, None with no group). basis `measured` is `plan_rate` x `job_usd`. basis `default` is `JOB_DRAIN_PCT`, and `why`
-    names the missing measure. `jobs` and `samples` default to the ledger and the samples file, each read once per
-    SAMPLES_TTL_S; a plan's rate is computed once per reading of them."""
+def job_drain(plan, window, model, effort, shape, jobs=None, samples=None, now=None):
+    """{pct, basis, usd, rate, span, why} for one job on `plan`: the percentage points it is expected to take from
+    the plan's `window`, over `span` seconds (`job_span`, None with no group). basis `measured` is `plan_rate` x
+    `job_usd`: the cost of the group's jobs finished inside the window being priced (`WINDOW_HORIZON_S`, at least
+    `RECENT_MIN_JOBS`), else of its whole history. basis `default` is `JOB_DRAIN_PCT`, and `why` names the missing
+    measure. `jobs` and `samples` default to the ledger and the samples file, each read once per SAMPLES_TTL_S; a
+    plan's rate is computed once per reading of them. `now` pins the window being priced, default the clock."""
     explicit = jobs is not None or samples is not None
     jobs = _ledger_jobs() if jobs is None else jobs
     samples = _samples() if samples is None else samples
@@ -681,7 +699,13 @@ def job_drain(plan, window, model, effort, shape, jobs=None, samples=None):
     if rate is None:
         return dict(default, why="%d reset period%s of %s samples with finished %s jobs, %d needed"
                     % (counted, "" if counted == 1 else "s", window, plan, RATE_MIN_PERIODS))
-    usd = job_usd(model, effort, shape, jobs)
+    usd = None
+    horizon = WINDOW_HORIZON_S.get(window)
+    if horizon:
+        now = time.time() if now is None else now
+        usd = job_usd(model, effort, shape, jobs, since=now - horizon, until=now, min_jobs=RECENT_MIN_JOBS)
+    if usd is None:
+        usd = job_usd(model, effort, shape, jobs)
     if usd is None:
         return dict(default, why="fewer than %d finished jobs of %s" % (GROUP_MIN_JOBS, model))
     return dict(default, pct=rate * usd, basis="measured", usd=usd, why=None)

@@ -61,7 +61,7 @@ mandates: rt-testability
 interleave: Step 4 (only when an approach already names its test surface), 5, 7 (needs commitments)
 
 ```
-Can each commitment be driven test-first (Logic → concrete `[TestCase]` names; Gameplay → ISceneRunner or explicit subjective flag; a person's task on a rendered screen → a row of the project's agent playtest command, and subjective covers taste only)? Feeds the plan stage.
+Can each commitment be driven test-first (Logic → concrete `[TestCase]` names; Gameplay → ISceneRunner or explicit subjective flag; a person's task on a rendered screen → a row of the project's agent playtest command, and subjective covers taste only)? A test can assert only a value the design states, so check each derived value (a default, a suggestion, a count, a label, which view opens) against `architecture_philosophy` §Behaviour per situation: a task stated for first use only, a value with no stated facts or no value in each situation the person meets, a value that ignores a fact its own surface shows, and an owner approval claimed for a state no approved artifact shows are design-holes. Feeds the plan stage.
 ```
 
 ### rt-systemic (neighboring-design conflict) — triggered

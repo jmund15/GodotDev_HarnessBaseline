@@ -141,6 +141,11 @@ class Fixture:
         return self.spec_path
 
     def prepare(self, **fields):
+        if fields and "target" not in fields and fields.get("mode") != "explore":
+            fields["target"] = "native"
+        return self.prepare_as_written(**fields)
+
+    def prepare_as_written(self, **fields):
         spec = self.spec(**fields) if fields else self.spec_path
         return subprocess.run([sys.executable, str(TOOLS / "lens_briefs.py"), "prepare",
                                "--spec", str(spec), "--out", str(self.out)],
@@ -175,7 +180,6 @@ def check_record(label, f, kind, seats, read=None):
 
 
 HOOK = REPO / ".claude" / "hooks" / "workflow_provider_guard.py"
-EXPLORE_ENGINE = REPO / ".claude" / "workflows" / "explore_fanout.js"
 REVIEW_ENGINE = REPO / ".claude" / "workflows" / "review_fanout.js"
 FIXTURE_RESULT = {"findings": [], "claims": [], "gaps": [],
                   "checked": {"toolsUsed": ["Read:fixture"], "stoppedAt": "done", "basis": "fixture"}}
@@ -258,20 +262,84 @@ def check_engine(label, f, engine):
 def mode_explore():
     f = Fixture()
     proc = f.prepare(mode="explore", lenses=["exp-integration-surface"],
-                     engine=str(f.root / "engine.js"),
                      pins={"panel": PANEL}, efforts={"panel": EFFORT},
-                     checker={"model": PANEL, "effort": EFFORTS[0]},
                      spillDir=str(f.scratch("run", "spill")))
     good, detail = ok(proc)
-    args = f.args()
-    check("explore: prepare writes a dispatchable args.json", good and isinstance(args, dict), detail)
-    check("explore: args carry lenses, a context prefix and the checker",
-          isinstance(args, dict) and isinstance(args.get("lenses"), list) and args["lenses"]
-          and args.get("contextPrefixPath") and args.get("checker", {}).get("model"), args)
-    check_record("explore", f, "lens", ["exp-integration-surface"], "docs/plan.md")
-    check("explore: the printed next call passes the args file",
-          good and "Workflow(" in proc.stdout and "argsFile" in proc.stdout, proc.stdout[-500:])
-    check_engine("explore", f, EXPLORE_ENGINE)
+    jobs_path = f.out / "jobs_p.json"
+    document = json.loads(jobs_path.read_text(encoding="utf-8")) if jobs_path.exists() else {}
+    jobs = document.get("jobs") if isinstance(document, dict) else None
+    check("explore: prepare needs no engine and no checker pin", good, detail)
+    check("explore: prepare writes no Workflow args that would pin the session's plan",
+          good and not (f.out / "args.json").exists(), sorted(x.name for x in f.out.glob("*")))
+    check("explore: the jobs file is the fan-out's object form with a shared context and a spill dir",
+          isinstance(jobs, list) and jobs and document.get("contextPath") and document.get("spillDir"), document)
+    check("explore: each lens is a lens-kind job listing its rows, with no plan, agentType or schemaFile",
+          isinstance(jobs, list) and all(
+              j.get("kind") == "lens" and j.get("rows") == {PANEL: EFFORT} and "agentType" not in j
+              and not {"alias", "model", "effort", "plan", "schemaFile"} & set(j)
+              and Path(j["promptFile"]).is_file() for j in jobs), jobs)
+
+    def brief_contract(job):
+        return Path(job["promptFile"]).read_text(encoding="utf-8")
+
+    check("explore: each brief carries the claims contract, whose return channel is the json fence",
+          isinstance(jobs, list) and all("CLAIMS CONTRACT" in brief_contract(j) and "```json" in brief_contract(j)
+                                         for j in jobs), jobs)
+    check("explore: the contract cites the claim checks as the object's one home",
+          isinstance(jobs, list) and all("_is_claim" in brief_contract(j) and "_is_checked" in brief_contract(j)
+                                         for j in jobs), jobs)
+    naming = [p.relative_to(REPO).as_posix() for d in ("tools", "commands", "workflows")
+              for p in (REPO / ".claude" / d).rglob("*")
+              if p.is_file() and p.suffix in (".py", ".md", ".js", ".json")
+              and "explore_fanout.schema" in p.read_text(encoding="utf-8", errors="replace")]
+    check("explore: no source path names the deleted claims schema file", not naming, naming)
+    import sidecar_fanout
+    data = sidecar_fanout.model_registry.load()
+    try:
+        loaded, shared, _spill = sidecar_fanout.load_jobs(str(jobs_path))
+        placed = [sidecar_fanout.normalize_job(j, data, shared) for j in loaded]
+        kinds = [sidecar_fanout.check_job_kind(j, j["label"]) for j in placed]
+        refused = ""
+    except sidecar_fanout.JobError as exc:
+        placed, kinds, refused = [], [], str(exc)
+    check("explore: the fan-out accepts the jobs file and keeps the lens kind", kinds == ["lens"] and not refused,
+          refused or kinds)
+    import shlex
+    line = next((l[len("next: "):] for l in proc.stdout.splitlines() if l.startswith("next: python3")), "")
+    try:
+        parsed = sidecar_fanout.build_parser().parse_args(shlex.split(line)[2:])
+    except SystemExit:
+        parsed = None
+    check("explore: the printed next call is the fan-out, detached, over the jobs file",
+          parsed is not None and parsed.detach and Path(parsed.jobs).name == "jobs_p.json" and not parsed.review, line)
+    check("explore: the printed finish call names explore_result.py over the same jobs file",
+          any(l.startswith("then: python3 .claude/tools/explore_result.py") and "jobs_p.json" in l
+              for l in proc.stdout.splitlines()), proc.stdout[-500:])
+    check("explore: no Workflow call is printed", "Workflow(" not in proc.stdout, proc.stdout[-300:])
+    rowed = Fixture()
+    proc = rowed.prepare(mode="explore", seats=[{"key": "exp-integration-surface", "rows": {PANEL: EFFORT, ARCH: EFFORT_HI}}],
+                         spillDir=str(rowed.scratch("run", "spill")))
+    listed = json.loads((rowed.out / "jobs_p.json").read_text(encoding="utf-8"))["jobs"] if proc.returncode == 0 else []
+    check("explore: a seat's own rows pass to the fan-out unchanged",
+          listed and listed[0].get("rows") == {PANEL: EFFORT, ARCH: EFFORT_HI}, (proc.stderr[-300:], listed))
+
+
+def explore_manual_seat():
+    f = Fixture()
+    brief = f.write("ctx/res_official.md", "You are res-official. Fetch the docs.\n")
+    proc = f.prepare(mode="explore", prefix="research",
+                     seats=[{"key": "res-official", "brief": str(brief), "kind": "author", "tier": "fanout",
+                             "rows": {PANEL: EFFORT}}],
+                     spillDir=str(f.scratch("run", "spill")))
+    good, detail = ok(proc)
+    document = json.loads((f.out / "jobs_research.json").read_text(encoding="utf-8")) if good else {}
+    row = (document.get("jobs") or [{}])[0]
+    check("explore: a seat with no lens-registry key runs as a fan-out job of its own kind and rows",
+          good and row.get("kind") == "author" and row.get("rows") == {PANEL: EFFORT} and row.get("tier") == "fanout"
+          and row.get("label") == "research-res-official", (detail, row))
+    text = Path(row["promptFile"]).read_text(encoding="utf-8") if row.get("promptFile") else ""
+    check("explore: a manual seat's brief keeps its mandate and carries the claims contract",
+          "Fetch the docs." in text and "CLAIMS CONTRACT" in text, text[-400:])
 
 
 def plan_check_roster():
@@ -291,6 +359,11 @@ def mode_plan_check():
     good, detail = ok(proc)
     args = f.args()
     check("plan-check: prepare writes a dispatchable args.json", good and isinstance(args, dict), detail)
+    check("plan-check: args carry agents mapped from the ledger roster",
+          isinstance(args, dict) and args.get("agents") and all(a.get("promptPath") for a in args["agents"]), args)
+    check("plan-check: each agent names the reviewer kind and no retired agentType (the engine refuses agentType)",
+          isinstance(args, dict) and all(a.get("kind") == "reviewer" and "agentType" not in a
+                                         for a in args.get("agents") or []), args)
     check_record("plan-check", f, "reviewer",
                  [seat["key"] for seat in plan_check_roster()], "docs/plan.md")
     check("plan-check: the ledger handle names the filled roster file",
@@ -307,6 +380,27 @@ def mode_plan_check():
           and "Known failure modes" in (f.out / "p_plc-memory-alignment.md").read_text(encoding="utf-8")
           if (f.out / "p_plc-memory-alignment.md").exists() else False, list(map(str, kfm)))
     check_engine("plan-check", f, REVIEW_ENGINE)
+
+
+def owner_pick_survives_the_ledger_plan():
+    """A seat the owner pinned (`pick: owner`) keeps its written rung after the ledger rebuilds the roster: the
+    rung above the ladder's computed one runs, never the capped one."""
+    top = "xhigh" if "xhigh" in EFFORTS else EFFORTS[-1]
+    f = Fixture()
+    proc = f.prepare(mode="plan-check",
+                     roster=[{"key": "plc-test-readiness", "pin": PANEL, "effort": top, "pick": "owner"},
+                             {"key": "plc-memory-alignment", "effort": EFFORT}],
+                     pins={"panel": PANEL}, efforts={"panel": EFFORT},
+                     ledger={"stage": "plan-check", "subject": "plan:" + str(f.plan),
+                             "files": [str(f.plan)], "baseRef": f.base},
+                     subjectPlans=["code:" + str(f.plan)],
+                     fold={"tier": "architect", "model": ARCH, "effort": EFFORT_HI},
+                     spillDir=str(f.scratch("run", "spill")))
+    path = f.out / "jobs_p.json"
+    jobs = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+    got = {job.get("seat") or job.get("key"): job.get("effort") for job in jobs}
+    check("plan-check: an owner-picked seat keeps its written rung through the ledger plan",
+          ok(proc)[0] and got.get("plc-test-readiness") == top, (got, ok(proc)[1]))
 
 
 def mode_pr_review():
@@ -694,13 +788,126 @@ def spec_refused_before_any_write():
           seat.returncode != 0 and "agentType" in seat.stderr and "kind" in seat.stderr, seat.stderr[-400:])
 
 
+def default_panels_run_through_the_fanout():
+    """A spec naming no `target` prepares the fan-out's jobs file and prints the fan-out call, never a Workflow call:
+    the fan-out places each seat by the ladder's selection line. `target: "native"` is the explicit engine path."""
+    sys.path.insert(0, str(TOOLS))
+    import shlex
+    import sidecar_fanout
+    builds = []
+    if "plan_check" in SHIPPED:
+        f = Fixture()
+        builds.append(("plan-check", f, dict(
+            mode="plan-check", roster=plan_check_roster(), pins={"panel": PANEL}, efforts={"panel": EFFORT},
+            ledger={"stage": "plan-check", "subject": "plan:" + str(f.plan), "files": [str(f.plan)],
+                    "baseRef": f.base},
+            subjectPlans=["code:" + str(f.plan)], fold={"tier": "executor", "model": PANEL, "effort": EFFORT},
+            spillDir=str(f.scratch("run", "spill")))))
+    if "review" in SHIPPED:
+        f = Fixture()
+        scope = f.write("scope.json", json.dumps({"files": ["src/thing.py"]}))
+        builds.append(("pr-review", f, dict(
+            mode="pr-review", roster=[{"key": REVIEW_SEAT, "mandates": ["cq.C"], "effort": EFFORT}],
+            pins={"panel": PANEL}, efforts={"panel": EFFORT}, prNum=1, branch="proof",
+            ledger={"stage": "pr-review", "subject": "pr:1", "scopeJson": str(scope), "baseRef": f.base},
+            fold={"tier": "executor", "model": PANEL, "effort": EFFORT},
+            spillDir=str(f.scratch("run", "spill")))))
+        f = Fixture()
+        scope = f.write("scope_ready.json", json.dumps({"files": ["src/thing.py"]}))
+        builds.append(("pr-ready", f, dict(
+            mode="pr-ready", seats=PR_READY_SEATS, pins={"data-reach": PANEL, "wire-reach": PANEL},
+            efforts={"panel": EFFORT_HI},
+            ledger={"stage": "pr-ready", "subject": "session:prepsess", "files": [str(f.plan)],
+                    "scopeJson": str(scope), "baseRef": f.base},
+            fold={"tier": "executor", "model": PANEL, "effort": EFFORT_HI},
+            spillDir=str(f.scratch("run", "spill")))))
+    if "redteam" in SHIPPED:
+        f = Fixture()
+        builds.append(("design-redteam", f, dict(
+            mode="design-redteam", roster=[{"key": RT_SEAT, "effort": EFFORT_HI}], pins={"panel": PANEL},
+            efforts={RT_SEAT: EFFORT_HI},
+            ledger={"stage": "design", "subject": "doc:" + str(f.plan), "files": [str(f.plan)], "baseRef": f.base},
+            subjectFiles=[str(f.plan)], fold={"tier": "architect", "model": PANEL, "effort": EFFORT_HI},
+            spillDir=str(f.scratch("run", "spill")))))
+    if "session_audit" in SHIPPED:
+        f = Fixture()
+        (f.tasks / "task-1.json").write_text(json.dumps({"id": "task-1", "title": "planted",
+                                                         "requirements": ["Ship it."], "exclusions": []}),
+                                             encoding="utf-8")
+        builds.append(("session-audit", f, dict(
+            mode="session-audit", roster=[{"key": "sa-harness-quality", "effort": EFFORT}],
+            pins={"panel": PANEL}, efforts={"panel": EFFORT}, task="task-1",
+            sessionAudit={"sessionBase": f.base, "baseRef": f.base, "files": ["src/thing.py"],
+                          "session": "prepsess", "task": "task-1", "plan": str(f.plan)},
+            ledger={"stage": "candidate", "subject": "session:prepsess", "files": [str(f.plan)], "baseRef": f.base},
+            fold={"tier": "executor", "model": PANEL, "effort": EFFORT},
+            spillDir=str(f.scratch("run", "spill")))))
+    check("every review mode the registries ship is built", len(builds) >= 1, [b[0] for b in builds])
+    for mode, f, fields in builds:
+        proc = f.prepare_as_written(**fields)
+        jobs_path = f.out / "jobs_p.json"
+        document = json.loads(jobs_path.read_text(encoding="utf-8")) if jobs_path.is_file() else None
+        jobs = document["jobs"] if isinstance(document, dict) else document
+        check("%s: with no target, prepare writes the fan-out's jobs file (alias, promptFile, kind reviewer, schemaFile)"
+              % mode, proc.returncode == 0 and isinstance(jobs, list) and jobs
+              and all(j.get("kind") == "reviewer" and j.get("alias") and j.get("promptFile") and j.get("schemaFile")
+                      and "rows" not in j and "plan" not in j for j in jobs), (proc.stdout[-300:], proc.stderr[-800:]))
+        check("%s: with no target, no Workflow call and no engine args are written" % mode,
+              "Workflow(" not in proc.stdout and not (f.out / "args.json").exists(), proc.stdout[-400:])
+        line = next((l[len("next: "):] for l in proc.stdout.splitlines() if l.startswith("next: python3")), "")
+        try:
+            parsed = sidecar_fanout.build_parser().parse_args(shlex.split(line)[2:])
+        except SystemExit:
+            parsed = None
+        check("%s: the next call is the fan-out's --review run, detached, carrying the spec's ledger" % mode,
+              parsed is not None and parsed.review and parsed.detach and parsed.ledger_stage
+              == fields["ledger"]["stage"], line)
+        check("%s: the printed text says what the fan-out prints and what closes the panel" % mode,
+              "--review-close" in proc.stdout and "NATIVE" in proc.stdout, proc.stdout[-500:])
+    if builds:
+        mode, f, fields = builds[0]
+        proc = f.prepare_as_written(**dict(fields, target="native"))
+        check("an explicit native target still writes the engine args and the Workflow call",
+              (f.out / "args.json").is_file() and "Workflow(" in proc.stdout, (proc.stdout[-300:], proc.stderr[-500:]))
+
+
+def printed_tiers_are_the_guards():
+    """The `tiers pinned` line names the slices the fan-out's doctrine gate asks for the printed call: the gate's own
+    `launch_tiers` over that call (a job's written tier, else its kind row's, and a fold's author row)."""
+    import re
+    import shlex
+    import types
+    sys.path[:0] = [str(TOOLS), str(TOOLS.parent / "hooks")]
+    import sidecar_dispatch_context as gate
+    cases = {
+        "a fold on the sidecar route": dict(
+            roster=[{"key": RT_SEAT, "effort": EFFORT_HI}], fold={"tier": "architect", "model": PANEL, "effort": EFFORT_HI}),
+        "seats with no fold": dict(roster=[{"key": RT_SEAT, "effort": EFFORT_HI}]),
+    }
+    for name, extra in cases.items():
+        f = Fixture()
+        proc = f.prepare(mode="design-redteam", target="sidecar", pins={"panel": PANEL}, efforts={RT_SEAT: EFFORT_HI},
+                         ledger={"stage": "design", "subject": "doc:" + str(f.plan), "files": [str(f.plan)],
+                                 "baseRef": f.base},
+                         subjectFiles=[str(f.plan)], spillDir=str(f.scratch("run", "spill")), **extra)
+        good, detail = ok(proc)
+        line = next((l[len("next: "):] for l in proc.stdout.splitlines() if l.startswith("next: python3")), "")
+        match = re.search(r"tiers pinned: ([a-z, ]+)", proc.stdout)
+        printed = {t.strip() for t in match.group(1).split(",") if t.strip()} if match else set()
+        fanout = types.SimpleNamespace(args=shlex.split(line)[2:])
+        asked = set(gate.launch_tiers(None, fanout, str(f.root)) or ())
+        check("the pinned-tier line is the doctrine gate's own set: " + name,
+              good and bool(asked) and printed == asked, "printed %s, the gate asks %s\n%s" % (sorted(printed), sorted(asked), detail))
+
+
 def main():
     check("test_lens_briefs_prepare.py finds the tool it proves", (TOOLS / "lens_briefs.py").is_file())
-    for case in (mode_explore, mode_plan_check, mode_pr_review, mode_design_redteam, mode_pr_ready,
+    for case in (mode_explore, explore_manual_seat, mode_plan_check, owner_pick_survives_the_ledger_plan, mode_pr_review, mode_design_redteam, mode_pr_ready,
                  mode_session_audit, over_window_refusal, refusals_state_their_shape, sidecar_target, stale_kfm_snapshot,
                  task_text_not_backticked, later_round_diff, base_sizes_past_a_command_line,
                  mixed_roster_code_seat_keeps_its_files, spec_refused_before_any_write,
-                 doc_defined_none_placeholder, record_contract):
+                 doc_defined_none_placeholder, default_panels_run_through_the_fanout,
+                 printed_tiers_are_the_guards, record_contract):
         if NEEDS.get(case.__name__, "") and NEEDS[case.__name__] not in SHIPPED:
             print("skip %s: the %s lens registry is not installed" % (case.__name__, NEEDS[case.__name__]))
             continue

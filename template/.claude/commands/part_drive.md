@@ -6,7 +6,7 @@ description: Drive a plan-pending Part to ship or an approval-ready plan
 
 **Input:** a `plan-pending` Part: `/part_drive <part-name> [roadmap-path] [--plan-only]`, resolved on the nearest-ancestor `roadmap.md`.
 **Enters at:** intake, through the `/plan_part` brief.
-**Owner stop:** with `--plan-only`, approval of the converged plan; without it, none before land.
+**Owner stop:** with `--plan-only`, approval of the converged plan; without it, none before land, except a taste fork in work a person sees, which goes to the project's UI skill's review loop where it has one, and that loop holds only the piece it shows.
 
 Run the stages and halts in [`drive_spine.md`](../skills/_brainstorm_shared/drive_spine.md), slices in [`drive_execution.md`](../skills/_brainstorm_shared/drive_execution.md), and close in [`drive_close.md`](../skills/_brainstorm_shared/drive_close.md). This file holds only what a Part adds.
 

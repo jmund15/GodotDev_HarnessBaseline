@@ -296,6 +296,63 @@ def test_rigor_read_survives_a_write_to_another_record(tmp_path, monkeypatch):
     assert triage.rigor(root=tmp_path, session_id='survive-session') == 'light'
 
 
+def _mode_cli(args, env):
+    return subprocess.run([sys.executable, str(HERE.parent / 'tools/triage.py'), 'mode'] + args,
+                          stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', env=env)
+
+
+def _mode_env(tmp_path, session=None):
+    return _rigor_env(tmp_path, session)
+
+
+def _plant_marker(root, session):
+    path = Path(root) / '.claude' / 'scratch' / 'overnight' / ('active-' + session + '.json')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({'goal': 'drive', 'session_id': session, 'armed_at': __import__('time').time()}),
+                    encoding='utf-8')
+
+
+def test_mode_reads_the_record_then_the_marker(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setenv('HARNESS_TASK_RECORD_DIR', str(tmp_path / 'records'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'mode-session')
+    task_record.open_record('mode-task', 'mode-session', 'Mode')
+    for value in triage.MODES:
+        task_record.set_fields('mode-task', mode=value)
+        record = task_record.load('mode-task')
+        assert record['mode'] == value and record.get('modeAt'), record
+        assert triage.mode(task_id='mode-task', root=tmp_path) == value
+    env = _mode_env(tmp_path, session='mode-session')
+    printed = _mode_cli(['--task', 'mode-task'], env)
+    assert printed.returncode == 0 and printed.stdout.strip() == 'unattended', printed.stderr
+    assert _mode_cli(['--set', 'fix-now', '--task', 'mode-task'], env).returncode == 0
+    assert task_record.load('mode-task')['mode'] == 'fix-now'
+    assert _mode_cli(['--task', 'mode-task'], env).stdout.strip() == 'fix-now'
+    # No recorded mode: a live /overnight marker for this session reads unattended, its absence attended.
+    assert triage.mode(root=tmp_path, session_id='fresh-session') == 'attended'
+    _plant_marker(tmp_path, 'fresh-session')
+    assert triage.mode(root=tmp_path, session_id='fresh-session') == 'unattended'
+    assert triage.mode(root=tmp_path, session_id='other-session') == 'attended'
+    (tmp_path / '.claude' / 'scratch' / 'overnight' / 'active-fresh-session.json').write_text(
+        json.dumps({'goal': 'drive', 'session_id': 'fresh-session', 'armed_at': time.time() - 17 * 3600}),
+        encoding='utf-8')
+    assert triage.mode(root=tmp_path, session_id='fresh-session') == 'attended'
+
+
+def test_mode_refuses_an_unknown_recorded_value(tmp_path, monkeypatch):
+    monkeypatch.setenv('HARNESS_TASK_RECORD_DIR', str(tmp_path / 'records'))
+    monkeypatch.setenv('CLAUDE_PROJECT_DIR', str(tmp_path))
+    task_record.open_record('bad-mode', 'mode-session', 'Bad mode')
+    task_record._mutate('bad-mode', lambda state: state.update(mode='sometimes'))
+    try:
+        triage.mode(task_id='bad-mode', root=tmp_path)
+    except ValueError as exc:
+        assert 'sometimes' in str(exc)
+    else:
+        raise AssertionError('an unknown recorded mode was accepted')
+
+
 def main():
     from types import SimpleNamespace
     from unittest.mock import patch

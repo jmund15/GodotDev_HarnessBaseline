@@ -145,6 +145,43 @@ def recommends_stash(message):
     return "git stash" in message
 
 
+def stash_scenario(untracked=False, index_text=None):
+    """main holds a.txt, b.txt and gone.txt; branch `feat` stashes an edit to a.txt and b.txt and the
+    deletion of gone.txt, plus an untracked n.txt when asked. `index_text` stages that a.txt content
+    first, so the entry's index part differs from its worktree part. The worktree is clean afterwards."""
+    repo = tempfile.mkdtemp(prefix="ggheld_")
+    git(repo, "init", "-q", "-b", "main")
+    for name in ("a.txt", "b.txt", "gone.txt"):
+        write(repo, name, "base\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-q", "-m", "base")
+    git(repo, "checkout", "-q", "-b", "feat")
+    if index_text is not None:
+        write(repo, "a.txt", index_text)
+        git(repo, "add", "a.txt")
+    write(repo, "a.txt", "a-new\n")
+    write(repo, "b.txt", "b-new\n")
+    os.remove(os.path.join(repo, "gone.txt"))
+    if untracked:
+        write(repo, "n.txt", "n-new\n")
+    git(repo, "stash", "push", "-q", *(["-u"] if untracked else []))
+    return repo
+
+
+def land(repo, files):
+    """Commit `files` (name -> text, None deletes) on the checked-out ref, as the stash's work."""
+    for name, text in files.items():
+        if text is None:
+            os.remove(os.path.join(repo, name))
+        else:
+            write(repo, name, text)
+    git(repo, "add", "-A", ".")
+    git(repo, "commit", "-q", "-m", "land")
+
+
+STASHED_WORK = {"a.txt": "a-new\n", "b.txt": "b-new\n", "gone.txt": None}
+
+
 def sec0():
     template = tempfile.mkdtemp(prefix="ggtemplate_")
     _init_repo(template)
@@ -175,6 +212,118 @@ def sec0():
 
     rc, msg, crashed = run_hook("git stash drop", repo)
     check("git stash drop is still blocked", not crashed and rc == 2, msg)
+
+    # A drop loses nothing when another ref still holds the stash commit: the block's stated
+    # reason ("unreferenced once dropped") is then false, so the drop passes. Unpreserved stashes,
+    # an unresolvable target and `clear` stay blocked.
+    stashed = tempfile.mkdtemp(prefix="ggstash_")
+    git(stashed, "init", "-q")
+    write(stashed, "a.txt", "base\n")
+    git(stashed, "add", "a.txt")
+    git(stashed, "commit", "-q", "-m", "base")
+    write(stashed, "a.txt", "kept\n")
+    git(stashed, "stash", "-q")
+    write(stashed, "a.txt", "loose\n")
+    git(stashed, "stash", "-q")
+    kept = subprocess.run(["git", "rev-parse", "stash@{1}"], cwd=stashed, capture_output=True,
+                          text=True, check=True).stdout.strip()
+    git(stashed, "update-ref", "refs/preserve/kept", kept)
+    rc, msg, crashed = run_hook("git stash drop stash@{1}", stashed)
+    check("drop of a stash another ref preserves passes", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git stash drop 'stash@{1}'", stashed)
+    check("quoted preserved target passes", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git stash drop -q stash@{1}", stashed)
+    check("a quiet drop of a preserved stash passes", not crashed and rc == 0, msg)
+    rc, msg, crashed = run_hook("git stash drop --quiet stash@{0}", stashed)
+    check("a quiet drop of an unpreserved stash is still blocked", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash drop --index stash@{1}", stashed)
+    check("an unknown drop flag fails closed", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash drop stash@{0}", stashed)
+    check("drop of an unpreserved stash is blocked", not crashed and rc == 2, msg)
+    check("the drop block names the preserve-then-drop retry",
+          "git update-ref refs/preserve/" in msg and "stash@{0}" in msg, msg)
+    rc, msg, crashed = run_hook("git stash drop", stashed)
+    check("implicit drop of an unpreserved stash@{0} is blocked", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash drop stash@{9}", stashed)
+    check("drop of a missing stash is blocked", not crashed and rc == 2, msg)
+    rc, msg, crashed = run_hook("git stash clear", stashed)
+    check("git stash clear stays blocked with a preserved entry", not crashed and rc == 2, msg)
+
+    # A drop also loses nothing when every change the entry holds (tracked edits and deletions, the
+    # index part, the untracked part) is already in a ref's tip: git still holds the work, so the
+    # drop passes with no owner go-ahead. Any change no ref tip holds stays blocked.
+    drop = "git stash drop stash@{0}"
+
+    def drop_verdict(held):
+        return run_hook(drop, held)
+
+    held = stash_scenario()
+    land(held, STASHED_WORK)
+    git(held, "checkout", "-q", "main")
+    rc, msg, crashed = drop_verdict(held)
+    check("drop passes when the stashed edits and deletion match a branch tip", not crashed and rc == 0, msg)
+
+    held = stash_scenario()
+    land(held, STASHED_WORK)
+    git(held, "tag", "held")
+    git(held, "checkout", "-q", "main")
+    git(held, "branch", "-D", "feat")
+    rc, msg, crashed = drop_verdict(held)
+    check("drop passes when only a tag holds the matching tip", not crashed and rc == 0, msg)
+
+    held = stash_scenario(untracked=True)
+    land(held, dict(STASHED_WORK, **{"n.txt": "n-new\n"}))
+    git(held, "checkout", "-q", "main")
+    rc, msg, crashed = drop_verdict(held)
+    check("drop passes when the untracked part matches a branch tip too", not crashed and rc == 0, msg)
+
+    held = stash_scenario(index_text="a-new\n")
+    land(held, STASHED_WORK)
+    git(held, "checkout", "-q", "main")
+    rc, msg, crashed = drop_verdict(held)
+    check("drop passes when the staged part equals the held worktree part", not crashed and rc == 0, msg)
+
+    held = stash_scenario()
+    land(held, {"a.txt": "a-new\n"})
+    rc, msg, crashed = drop_verdict(held)
+    check("a partial match (b.txt and gone.txt not held) stays blocked", not crashed and rc == 2, msg)
+
+    held = stash_scenario(untracked=True)
+    land(held, STASHED_WORK)
+    rc, msg, crashed = drop_verdict(held)
+    check("an untracked file no ref holds stays blocked", not crashed and rc == 2, msg)
+
+    held = stash_scenario(untracked=True)
+    land(held, dict(STASHED_WORK, **{"n.txt": "other\n"}))
+    rc, msg, crashed = drop_verdict(held)
+    check("an untracked file held with other content stays blocked", not crashed and rc == 2, msg)
+
+    held = stash_scenario()
+    land(held, STASHED_WORK)
+    land(held, {"a.txt": "a-later\n"})
+    rc, msg, crashed = drop_verdict(held)
+    check("a branch that moved past the stashed change stays blocked", not crashed and rc == 2, msg)
+
+    held = stash_scenario()
+    land(held, STASHED_WORK)
+    git(held, "checkout", "-q", "main")
+    git(held, "branch", "-D", "feat")
+    rc, msg, crashed = drop_verdict(held)
+    check("a branch since deleted leaves nothing to match and stays blocked", not crashed and rc == 2, msg)
+
+    held = stash_scenario()
+    git(held, "checkout", "-q", "--detach")
+    land(held, STASHED_WORK)
+    rc, msg, crashed = drop_verdict(held)
+    check("a detached HEAD holds no ref, so it stays blocked", not crashed and rc == 2, msg)
+
+    held = stash_scenario(index_text="a-staged\n")
+    land(held, STASHED_WORK)
+    git(held, "checkout", "-q", "main")
+    rc, msg, crashed = drop_verdict(held)
+    check("a staged version no ref holds stays blocked", not crashed and rc == 2, msg)
+    check("a content-mismatch block keeps the preserve-then-drop next step",
+          "git update-ref refs/preserve/" in msg and "stash@{0}" in msg, msg)
 
     cite = "CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first"
     loss_cite = "CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost"

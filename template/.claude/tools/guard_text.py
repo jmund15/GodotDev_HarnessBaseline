@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Single home of delegate-guard tier extraction.
 
-`.claude/guards/{any,survey,review,author,arm}.md` is the one home for delegate rails. Every route
+`.claude/guards/{common,survey,review,author,gate,arm}.md` is the one home for delegate rails. Every route
 delivers this module's assembly and none may re-implement the parse:
 
-  * hooks/workflow_provider_guard.py — INLINES, as `args.__railsText`, for the four Workflow
-                                 engines (dispatch, dispatch_chains, explore_fanout, review_fanout);
-                                 each engine keeps a Read pointer only as its fallback
+  * hooks/workflow_provider_guard.py — INLINES, as `args.__railsText`, for the Workflow job
+                                 engines (dispatch, dispatch_chains, review_fanout); each engine
+                                 keeps a Read pointer only as its fallback
   * hooks/session_model_rails  — INLINES, via guard_text(), for a sidecar `claude` child
   * scripts/lib/sidecar_common.sh — INLINES, via this module's CLI, on the -D bare/pointer
                                  tiers where no project hook fires
 
 A second implementation in awk or JS would drift and fail silently: a guard that extracts the
 wrong section still looks like a guard.
+
+Every delivery ends with the job's `Your checks` line from the project's `gate_cadence` data
+(`checks_line`), for the guards that own rows and at every tier, `none` included.
 
 `common` is CONCATENATED into every other shape rather than chained by reference. Its section
 carries the concurrency bar, the read-only bar, the confidence ladder and the terseness rail —
@@ -130,17 +133,51 @@ def _guard_name(name: str) -> str:
     raise ValueError("unknown kind %r (legal: %s)" % (name, ", ".join(legal)))
 
 
+CHECKS_KEYS = {"author": ("slice",), "gate": ("merge", "close")}
+
+
+def checks_line(shape: str, root=None):
+    """The `Your checks` line a guard's rails end with, or None when its guard owns no row.
+
+    An `author` prints the project's `gate_cadence.slice` forms and a `gate` prints `merge` and
+    `close` (`tools/adaptation.py` owns the data). A table this module cannot read leaves the line
+    out rather than breaking the rails' delivery. `root` is the checkout root, resolved from this
+    file when a caller passes none.
+    """
+    try:
+        root = root or os.path.dirname(os.path.dirname(_GUARDS))
+        keys = CHECKS_KEYS.get(_guard_name(shape))
+        if not keys:
+            return None
+        tools_dir = os.path.dirname(os.path.abspath(__file__))
+        if tools_dir not in sys.path:
+            sys.path.insert(0, tools_dir)
+        import adaptation
+        cadence = adaptation.get(os.path.join(root, ".claude"), "gate_cadence")
+        rows = []
+        for key in keys:
+            forms = cadence.get(key)
+            if not isinstance(forms, list):
+                continue
+            rows += ["- %s: %s" % (key, form) for form in forms if isinstance(form, str) and form.strip()]
+        return "Your checks:\n" + "\n".join(rows) if rows else None
+    except Exception:
+        return None
+
+
 def guard_text(shape: str, tier: str) -> str:
     """Assemble the rails a delegate of this kind (or guard name) and tier receives.
 
-    Returns "" for tier `none` — an empty string is a valid delivery, distinct from the
-    ValueError raised when a requested section is missing.
+    Returns "" for tier `none` when the guard owns no checks row, and the checks line alone when it
+    does: an empty string is a valid delivery, distinct from the ValueError raised when a requested
+    section is missing.
     """
     shape = _guard_name(shape)
     if tier not in VALID_TIERS:
         raise ValueError("unknown tier %r (legal: %s)" % (tier, ", ".join(VALID_TIERS)))
+    checks = checks_line(shape)
     if tier == "none":
-        return ""
+        return checks or ""
 
     names = ["common"] if shape == "common" else ["common", shape]
     homes, parts = [], []
@@ -160,7 +197,7 @@ def guard_text(shape: str, tier: str) -> str:
         shape, tier, " + ".join(homes), "\n\n".join(parts))
     if AI_WORKER_TOOL in text and _ai_worker_absent():
         text = text.replace(AI_WORKER_TOOL, AI_WORKER_ABSENT_ROUTE)
-    return text
+    return text + ("\n\n" + checks if checks else "")
 
 
 def main() -> int:

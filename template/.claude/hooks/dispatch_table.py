@@ -17,23 +17,24 @@ less elapsed time and the measured report/state-write reserve. Exhausted command
 unattempted, retain applied verdicts, and never alone cause a block. Audit crashes are advisory.
 
 --launch   PostToolUse on Workflow | Agent | Bash (sidecar launcher or sidecar_fanout.py). The moment
-           the dispatch starts: `▶ <name> · N agents`, then one line per distinct
-           `model · effort · type: agent, agent`. Lines describe what RUNS: the hook waits up to
+           the dispatch starts: `▶ N agents · model effort plan: label, label` for the first model/effort/plan
+           group, then one indented `model effort plan: label, label` line per further group (`N sidecars`
+           for a sidecar launch, `N started` for a script that computes its pins). The plan is the one the
+           job pays on: a sidecar's inventory or record plan, else its launcher's; a Workflow or Agent job's
+           is the session's. A job whose plan is not known yet prints none, and jobs on different plans never
+           share a group. A job is named by
+           model, effort, plan and task only: Claude Code prefixes every line of the message on the owner's
+           screen, so the agent type, an engine script or launcher name and the tool profile never
+           print. Lines describe what RUNS: the hook waits up to
            DISPATCH_TABLE_LAUNCH_WAIT (3 s) for started agents' first API response and reads served
            model + applied effort from their transcripts in the run dir (the per-run
            workflows/<runId>.json is only written when the run ends). Args-enumerated jobs not
            started yet show their exact pins. A started agent whose label the script computes
            waits up to DISPATCH_TABLE_UNRESOLVED_WAIT (12 s) for its first answer, else shows the
            script's declared efforts (`low|medium`). Such rows, and agents a script starts later,
-           print at the next Stop as `▶ <name> · update` while the run is going. A run that has ended by
+           print at the next Stop as `▶ update · model effort: label` while the run is going. A run that has ended by
            that Stop prints no update: it reports contradictions only. An effort nothing declares shows `?`.
-           Sidecars show the registry version of the pinned alias. TYPE is the agent type, which
-           sets how much harness the child loads. A dispatch that DECLARED a tool profile gets one
-           `tools <label>:` line under the table (`_profile_lines`): the kind, the final built-ins
-           and servers, the `+`/`-` delta, and `strict`, `inherited (MCP not restricted)` or
-           `agent-type (<type>)`, the last stamped by an engine that launched the generated type.
-           A call that declared none gets no line — that is an absent decision, never a default
-           kind — and a recorded dispatch whose profile cannot be read says `unknown`.
+           Sidecars show the registry version of the pinned alias.
            Registers the dispatch as pending. The shared launcher also registers before spending,
            through the same sidecar_entries builder; record path and label dedupe both observations.
            A fan-out needs a background task id, its detached-driver launch line, or an owned inventory.
@@ -51,6 +52,13 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            never a sidecar: the Workflow launch whose `args.jobsFile` names that file (or whose jobs carry
            its labels) clears it; one still pending after FANOUT_PREFLIGHT_S prints the same
            `<labels>: never started (...)` line. A `handoff` is never uncovered, so it blocks no Stop.
+           A detached or background fan-out call registers its jobs as sidecars before its driver writes
+           `native.args.json`; the next read (`read_table`) or Workflow launch that finds the file listing a
+           record-less job's label turns that job into the same `handoff` (`_adopt_native`), so the inventory
+           check never judges a native job. A `handoff` label that a later-issued run of the same label has a
+           record for, or whose clean spend-ledger row (`watch_records.clean_launch_rows`) is stamped after
+           the hand-off's issue, is superseded (`watch_records.taken_over`, the test a superseded sidecar
+           uses): it leaves with no line, and a `handoff` prints only the labels no later run took over.
            A fan-out job's model and effort are its `alias` + `effort`, else its only listed row, else the
            placement the fan-out printed for its label, else its listed rows as candidates (`a|b`), which no
            finished run contradicts (`orchestration_metrics.fanout_job_pin`).
@@ -59,10 +67,11 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            Last, while any registered dispatch is unfinished: `⏳ still running · N · ctx 250k (25%)`
            (the session's context size, from the status line's `cc-cachestat-<sid>.json` in
            CC_CACHESTAT_DIR or the temp dir; omitted when that file is absent or unreadable), then one line
-           each (`name · model · effort · label · elapsed · ctx 376k · 2 compactions`; a Workflow shows its agent
-           count and pins ×count, and `ctx up to` its largest live agent with the agents' summed compactions). The
-           ctx and compactions come from the child's own transcript (`_dispatch_gauge`), each omitted when unread or
-           zero. Nothing unfinished, no block.
+           each (`model · effort · plan · label · elapsed · ctx 376k · 2 compactions`; the plan is the one the job
+           pays on, no engine or launcher name, and a Workflow shows its agent count and pins ×count, with `ctx up
+           to` its largest live agent and the agents' summed compactions). The ctx and compactions come from the
+           child's own transcript (`_dispatch_gauge`), and every optional clause is omitted when unread or zero.
+           Nothing unfinished, no block.
            A running sidecar that no live watcher covers ALSO blocks the Stop: nothing would wake
            this session when that sidecar needs a decision, so the reason names
            `python3 .claude/tools/watch_records.py --session --wake` to arm. Coverage is
@@ -77,8 +86,12 @@ unattempted, retain applied verdicts, and never alone cause a block. Audit crash
            test of live shell work), gated on a non-empty list and no session coverage. That read parses the
            whole transcript (0.7 s at 230 MB), so it runs only in that case.
 
-CHANNEL: `systemMessage` — "Warning message shown to the user" (hooks.md, JSON output) — and for
-`--complete` only, `decision: block` with `reason`, which reaches the model. No additionalContext.
+CHANNEL: `systemMessage` — "Warning message shown to the user" (hooks.md, JSON output) — carries only what
+the owner reads: the pin table, a running block, and a one-line ⚠ when something dispatched failed or
+went untracked. Text that addresses the model rides a model channel: `--launch` puts the native fan-out
+hand-off line (the Workflow call to issue and its `args.jobsFile`) on PostToolUse `additionalContext`,
+and `--complete` puts the Stop-blocking instructions on `decision: block` with `reason`. A hand-off-only
+launch emits no `systemMessage`.
 A sidecar that ended without a result (`ended before a result`, `ended without an exit file`, `never started`)
 also rides the block `reason` once, as it leaves the table, so a session with no watcher armed learns of it.
 Must stay a SYNCHRONOUS hook: an async hook's systemMessage is delivered to Claude instead.
@@ -736,18 +749,19 @@ LABELS_SHOWN = 8
 
 
 def _table(title, rows):
-    """`▶ title`, then one line per distinct model · effort · type with its agents after it.
-
-    No column alignment: the same plain text reaches the terminal and the phone, and the phone
-    prefixes every line, so fewer lines that wrap cleanly read better than padded columns."""
+    """`▶ title · model effort plan: labels` for the first group, one indented `model effort plan: labels` line
+    per further group. A group is one model, effort and plan: the plan is the one the jobs pay on, so the owner
+    tells one plan's draw from another's, and a row with no known plan names none. A job is named by model,
+    effort, plan and task only; Claude Code prefixes every line of this message on the owner's screen, so a
+    one-group launch is one line. A row is (label, model, effort, agent type, plan)."""
     groups = {}
-    for label, model, effort, agent_type in rows:
-        groups.setdefault((str(model), str(effort), str(agent_type)), []).append(str(label))
-    lines = ["▶ " + title]
-    for (model, effort, agent_type), labels in groups.items():
+    for label, model, effort, _agent_type, *plan in rows:
+        groups.setdefault((str(model), str(effort), plan[0] if plan and plan[0] else None), []).append(str(label))
+    lines = []
+    for (model, effort, plan), labels in groups.items():
         shown = ", ".join(labels[:LABELS_SHOWN]) + (" +%d" % (len(labels) - LABELS_SHOWN) if len(labels) > LABELS_SHOWN else "")
-        lines.append("  %s · %s · %s: %s" % (model, effort, agent_type, shown))
-    return "\n".join(lines)
+        lines.append("%s %s%s: %s" % (model, effort, " " + plan if plan else "", shown))
+    return "\n".join(["▶ %s · %s" % (title, lines[0])] + ["  " + line for line in lines[1:]])
 
 
 def _launch_wait():
@@ -842,16 +856,16 @@ def _job_for(label, jobs):
     return None
 
 
-def _row(label, display_model, pin_effort, agent_type, recorded=None, responded=False, model_for_effort=None):
+def _row(label, display_model, pin_effort, agent_type, recorded=None, responded=False, model_for_effort=None, plan=None):
     """One table row. Effort, first found: `recorded` → `none` once the agent responded without one, or
-    for a model that takes no effort → `pin_effort` (a `?` pin stays `?`) → `?`."""
+    for a model that takes no effort → `pin_effort` (a `?` pin stays `?`) → `?`. `plan` is the plan the job pays on."""
     if recorded:
         effort = recorded
     elif responded or not _mr().takes_effort(model_for_effort or display_model):
         effort = NO_EFFORT
     else:
         effort = pin_effort or UNKNOWN
-    return (label, display_model, effort, agent_type)
+    return (label, display_model, effort, agent_type, plan)
 
 
 def _agent_row(agent, jobs, declared=None):
@@ -872,7 +886,7 @@ def _agent_row(agent, jobs, declared=None):
     if not exact and declared.get("all"):
         pin_effort = "|".join(declared["all"])
     row = _row(agent["label"], short(model), pin_effort, agent["type"], recorded=agent["effort"],
-               responded=agent["responded"], model_for_effort=model)
+               responded=agent["responded"], model_for_effort=model, plan=_session_plan_name())
     return row, bool(agent["responded"] or exact)
 
 
@@ -953,14 +967,6 @@ def _launch_plan(launch):
     return _mr().plan_for_launcher(".claude/scripts/%s_sidecar.sh" % launch["launcher"])
 
 
-def _kind_agent_type(kind):
-    """The generated agent type a native job of `kind` runs as, else None (a kindless job names none)."""
-    try:
-        return resolve_request({"kind": kind})["agentType"] if kind else None
-    except Exception:
-        return None
-
-
 def _jobs(payload):
     """[{label, model, effort, record?}] — `effort` is the value the job runs at: its pin, the engine
     default, the inherited session level, or UNKNOWN."""
@@ -985,7 +991,7 @@ def _jobs(payload):
     out = []
     for j in raw:
         effort = j.get("effort")
-        agent_type = j.get("agentType") or _kind_agent_type(j.get("kind"))
+        agent_type = j.get("agentType")
         out.append({"label": j["label"],
                     "model": j.get("model") if j.get("model") not in (None, "unresolved") else
                     ("inherit" if tool == "Agent" else UNKNOWN),
@@ -1062,6 +1068,13 @@ def _profile_lines(payload):
 
 def sidecar_entries(payload, jobs=None, now=None):
     """The entry builder shared by PostToolUse and the launcher's actual argv path."""
+    entries, untracked, _ = _admit_sidecars(payload, jobs, now)
+    return entries, untracked
+
+
+def _admit_sidecars(payload, jobs=None, now=None):
+    """(entries, untracked lines, unlaunched jobs): `unlaunched` are the jobs the call is known not to have
+    started (a fan-out with no launch evidence, or a jobs file it refuses), which a launch line must not name."""
     jobs = _jobs(payload) if jobs is None else jobs
     now = time.time() if now is None else now
     resp = payload.get("tool_response") or {}
@@ -1102,6 +1115,7 @@ def sidecar_entries(payload, jobs=None, now=None):
                 or (not entry.get("deferred") and (driver_started or
                     (issued is not None and _owned_records(entry, payload.get("session_id"), entries))))):
             admitted.append(entry)
+    unlaunched = [j for entry in entries if entry not in admitted for j in entry["jobs"]] + unreadable
     untracked = ["⚠ %s: not tracked — its job path names a shell variable the hook cannot expand"
                  % j["label"] for j in unresolved]
     untracked += ["⚠ %s: not tracked — no fan-out launch was observed" % _label(entry)
@@ -1111,7 +1125,7 @@ def sidecar_entries(payload, jobs=None, now=None):
                   % j["label"] for j in unreadable]
     untracked += ["%s: not written yet when this call returned; its jobs are tracked once it appears" % _label(entry)
                   for entry in entries if entry.get("deferred")]
-    return entries, untracked
+    return entries, untracked, unlaunched
 
 
 def _same_file(left, right, cwd=None):
@@ -1120,16 +1134,51 @@ def _same_file(left, right, cwd=None):
     return bool(left and right) and norm(left) == norm(right)
 
 
+def _handoff_entry(jobs_file, labels, call, launched_at, issued_at, writes=False):
+    """The one pending `handoff` shape: `labels` the fan-out left for a Workflow call whose `args.jobsFile` is `jobs_file`."""
+    return {"kind": "handoff", "id": "handoff:" + os.path.normcase(os.path.abspath(jobs_file)),
+            "jobs_file": jobs_file, "labels": list(labels), "task_id": None, "launched_at": launched_at,
+            "issued_at": issued_at, "call": call, "writes": bool(writes),
+            "jobs": [{"label": label, "launcher": "native", "kind": "handoff"} for label in labels]}
+
+
 def _handoff_entries(payload, handoffs, now):
     """One pending `handoff` entry per native args file: the jobs the fan-out left for a Workflow call. The
     matching Workflow launch clears it; a Stop past FANOUT_PREFLIGHT_S without one reports the jobs never started."""
     call = payload.get("tool_use_id") or str(now)
     issued = _call_issued_at(payload.get("session_id"), call, payload.get("transcript_path"))
-    return [{"kind": "handoff", "id": "handoff:" + os.path.normcase(os.path.abspath(h["jobs_file"])),
-             "jobs_file": h["jobs_file"], "labels": list(h["labels"]), "task_id": None, "launched_at": now,
-             "issued_at": issued if issued is not None else now, "call": call,
-             "jobs": [{"label": label, "launcher": "native", "kind": "handoff"} for label in h["labels"]]}
+    return [_handoff_entry(h["jobs_file"], h["labels"], call, now, issued if issued is not None else now)
             for h in handoffs]
+
+
+def _adopt_native(pending):
+    """(pending, changed): each fan-out sidecar entry that allocated no record and whose out dir's `native.args.json`
+    now lists its label joins a `handoff` entry for that file. A detached or background call registers its jobs
+    before the driver places any of them, so the file lands after the entry; left a sidecar, the job would be
+    judged by an inventory a native job never writes."""
+    groups, rest = {}, []
+    for entry in pending:
+        native = None
+        if (isinstance(entry, dict) and entry.get("kind") == "sidecar" and entry.get("fanout_dir")
+                and not entry.get("record") and _label(entry)):
+            native, _labels = _om().native_handoff(entry["fanout_dir"], {_label(entry)})
+        if native:
+            groups.setdefault(native, []).append(entry)
+        else:
+            rest.append(entry)
+    for jobs_file, entries in groups.items():
+        same = next((e for e in rest if e.get("kind") == "handoff" and _same_file(e.get("jobs_file"), jobs_file)), None)
+        labels = list(same.get("labels") or []) if same else []
+        labels += [_label(e) for e in entries if _label(e) not in labels]
+        first = min(entries, key=lambda e: float(e.get("issued_at") or e.get("launched_at") or 0))
+        adopted = _handoff_entry(
+            jobs_file, labels, first.get("call"), first.get("launched_at"),
+            first.get("issued_at") or first.get("launched_at"), any(e.get("writes") for e in entries))
+        if same:
+            rest[rest.index(same)] = dict(same, labels=labels, jobs=adopted["jobs"])
+        else:
+            rest.append(adopted)
+    return (rest, True) if groups else (pending, False)
 
 
 def _handoff_line(entry):
@@ -1162,7 +1211,7 @@ def _clear_handoffs(payload, jobs):
 
     def drop(pending):
         kept = []
-        for entry in pending:
+        for entry in _adopt_native(pending)[0]:
             if entry.get("kind") == "handoff":
                 if _same_file(named, entry.get("jobs_file"), payload.get("cwd")):
                     continue
@@ -1176,10 +1225,26 @@ def _clear_handoffs(payload, jobs):
     _update_pending(payload, drop)
 
 
+def _handoff_since(entry, now):
+    return float(entry.get("issued_at") or entry.get("launched_at") or now)
+
+
+def _handoff_labels_left(entry, payload):
+    """The hand-off's labels no later fan-out run of the same label took over (`watch_records.taken_over`): a
+    label whose later run is launched is answered by it, as a superseded sidecar is."""
+    pending = payload.get("_pending_sidecars") or []
+    session_id = payload.get("session_id")
+    since = _handoff_since(entry, time.time())
+    launches = watch_records.clean_launch_rows(session_id)
+    return [label for label in entry.get("labels") or []
+            if not watch_records.taken_over(label, since, pending,
+                                            lambda other: resolve_sidecar_record(other, session_id, pending),
+                                            skip=entry, launches=launches)]
+
+
 def _handoff_unissued(entry, now):
     """Why this hand-off's jobs will never start, or None while the session may still issue its Workflow call."""
-    since = float(entry.get("issued_at") or entry.get("launched_at") or now)
-    if now - since < FANOUT_PREFLIGHT_S:
+    if now - _handoff_since(entry, now) < FANOUT_PREFLIGHT_S:
         return None
     return ("the fan-out handed them to a Workflow call with args.jobsFile %s, and none was issued within %d min"
             % (str(entry.get("jobs_file")).replace("\\", "/"), FANOUT_PREFLIGHT_S // 60))
@@ -1258,13 +1323,14 @@ def launch(payload):
                 reported.append(agent["id"])
         started = {_job_for(a["label"], jobs)["label"] for a in agents if _job_for(a["label"], jobs)}
         # Enumerated jobs not started yet: their pins are exactly what the engine will send.
-        rows += [_row(j["label"], _shown(j["model"]), j["effort"], j["agentType"], model_for_effort=j["model"])
+        rows += [_row(j["label"], _shown(j["model"]), j["effort"], j["agentType"], model_for_effort=j["model"],
+                      plan=_session_plan_name())
                  for j in jobs if j["label"] not in started and j["effort"] != UNKNOWN]
         reported += ["label:" + j["label"] for j in jobs]
         total = max(len(jobs), len(agents))
-        title = "%s · %d agent%s" % (_workflow_name(payload), total, "" if total == 1 else "s")
+        title = "%d agent%s" % (total, "" if total == 1 else "s")
         if not jobs:
-            title = "%s · %d started" % (_workflow_name(payload), len(agents))
+            title = "%d started" % len(agents)
         raw_args = (payload.get("tool_input") or {}).get("args") or {}
         if isinstance(raw_args, str):
             raw_args = json.loads(raw_args)
@@ -1285,7 +1351,7 @@ def launch(payload):
                         isinstance(job, dict) and (job.get("fold") or job.get("ledger"))
                         for job in raw_args.get("jobs") or [])}] if run_id else []
     elif tool == "Agent":
-        title = "Agent"
+        title = "1 agent"
         entries = [{"kind": "agent", "id": resp.get("agentId"), "task_id": None, "launched_at": now,
                     "jobs": jobs}] if resp.get("agentId") else []
         transcript = os.path.join(session or "", "subagents", "agent-%s.jsonl" % resp.get("agentId"))
@@ -1297,25 +1363,28 @@ def launch(payload):
         served, effort, responded = _wait_for(responded_yet)
         served = served or resp.get("resolvedModel")
         rows = [_row(j["label"], short(served) if served else _shown(j["model"]), j["effort"], j["agentType"],
-                     recorded=effort, responded=responded, model_for_effort=served or j["model"]) for j in jobs]
+                     recorded=effort, responded=responded, model_for_effort=served or j["model"],
+                     plan=_session_plan_name()) for j in jobs]
     else:
         handoffs = [j for j in jobs if j.get("kind") == "handoff"]
         jobs = [j for j in jobs if j.get("kind") != "handoff"]
         if not jobs and not handoffs:
             return None
-        launchers = {j["launcher"] for j in jobs}
-        title = "%s sidecar" % (launchers.pop() if len(launchers) == 1 else "mixed")
-        entries, untracked = sidecar_entries(payload, jobs, now) if jobs else ([], [])
+        entries, untracked, unlaunched = _admit_sidecars(payload, jobs, now) if jobs else ([], [], [])
+        jobs = [j for j in jobs if not any(j is u for u in unlaunched)]
+        title = "%d sidecar%s" % (len(jobs), "" if len(jobs) == 1 else "s")
         entries += _handoff_entries(payload, handoffs, now)
-        rows = [_row(j["label"], _sidecar_shown(j["model"]),
-                     j["effort"], "sidecar", model_for_effort=j["model"]) for j in jobs]
+        owner = {id(e["jobs"][0]): e for e in entries if e.get("jobs")}
+        rows = [_row(j["label"], _sidecar_shown(j["model"]), j["effort"], "sidecar", model_for_effort=j["model"],
+                     plan=_job_plan(owner.get(id(j)) or {"jobs": [j]}, payload.get("session_id"), entries))
+                for j in jobs]
     for entry in entries:
         entry["writes"] = writes(tool, payload.get("tool_input") or {})
     handoff_only = bool(entries) and all(e["kind"] == "handoff" for e in entries)
-    lines = [] if handoff_only else [_table(title, rows) if rows else
-                                     "▶ %s — the script computes its pins; each agent's row prints when it starts" % title]
-    lines.extend(_handoff_line(e) for e in entries if e["kind"] == "handoff")
-    lines.extend(_profile_lines(payload))
+    shown = [_table(title, rows) if rows else
+             "▶ %s — the script computes its pins; each agent's row prints when it starts" % title]
+    lines = [] if handoff_only or (tool == "Bash" and not jobs) else shown
+    context = [_handoff_line(e) for e in entries if e["kind"] == "handoff"]
     lines.extend(untracked if tool == "Bash" else [])
     still_pending = []
     for entry in entries:
@@ -1345,7 +1414,7 @@ def launch(payload):
             fresh = {(e["kind"], e["id"]) for e in still_pending}
             _update_pending(payload, lambda pending: [e for e in pending if (e.get("kind"), e.get("id")) not in fresh]
                             + still_pending)
-    return "\n".join(lines)
+    return "\n".join(lines), "\n".join(context)
 
 
 # ---------------------------------------------------------------- completion
@@ -1596,11 +1665,8 @@ def _expanded(entry, labeled):
     spill = _spill_dir(d["jobs_path"])
     out_dir = sidecar_argv.fanout_out_dir(d["jobs_path"], None, spill, _om()._PROJECT_DIR) if spill else d["out_dir"]
     native_file, native = _om().native_handoff(out_dir, {job.get("label") for job in labeled})
-    handoff = [{"kind": "handoff", "id": "handoff:" + os.path.normcase(os.path.abspath(native_file)),
-                "jobs_file": native_file, "labels": native, "task_id": None, "launched_at": entry.get("launched_at"),
-                "issued_at": entry.get("issued_at") or entry.get("launched_at"), "call": d["call"],
-                "writes": bool(entry.get("writes")),
-                "jobs": [{"label": label, "launcher": "native", "kind": "handoff"} for label in native]}] if native else []
+    handoff = [_handoff_entry(native_file, native, d["call"], entry.get("launched_at"),
+                              entry.get("issued_at") or entry.get("launched_at"), entry.get("writes"))] if native else []
     return handoff + [{"kind": "sidecar", "id": _fanout_entry_id(out_dir, job.get("label"), d["call"]),
              "record": None, "fanout_dir": out_dir, "task_id": None,
              "writes": bool(entry.get("writes") or author_writes(job)),
@@ -1738,7 +1804,13 @@ def read_table(session_id, live=None):
     read the pending table, so no reader sees a deferred entry that can never resolve. `live` is
     expand_deferred's set of running background task ids, when the caller has one."""
     expand_deferred(session_id, live=live)
-    return _hook_state.read_json_salvage(_hook_state.state_path(session_id)) or {}
+    path = _hook_state.state_path(session_id)
+    state = _hook_state.read_json_salvage(path) or {}
+    if _adopt_native(state.get(STATE_KEY) or [])[1]:
+        _hook_state.update_json_locked(
+            path, lambda st: st.__setitem__(STATE_KEY, _adopt_native(st.get(STATE_KEY) or [])[0]))
+        state = _hook_state.read_json_salvage(path) or {}
+    return state
 
 
 def _take_gone(path):
@@ -1969,13 +2041,13 @@ def _projects_root(plan=None):
 
 
 def _transcript(session_id, plan=None):
-    """A session's transcript under the projects root of `plan` (a sidecar child's paying plan;
-    None for this session's own), or None."""
+    """A session's transcript path through `model_registry.find_session_transcript`, current login first. An
+    explicit paying plan or root stays scoped to that root."""
     if not session_id:
         return None
-    root = _projects_root(plan)
-    hits = glob.glob(os.path.join(glob.escape(root), "*", glob.escape(session_id) + ".jsonl"))
-    return hits[0] if hits else None
+    scoped = [_projects_root(plan)] if plan or os.environ.get("CLAUDE_PROJECTS_ROOT") else None
+    found = _mr().find_session_transcript(session_id, scoped)
+    return str(found) if found else None
 
 
 def _agent_finished(transcript, payload, ids):
@@ -2180,9 +2252,13 @@ def complete(payload):
                 audited.add(key)
             continue
         if key[0] == "handoff":
+            left = _handoff_labels_left(entry, payload)
+            if not left:
+                done.add(key)
+                continue
             unissued = _handoff_unissued(entry, now)
             if unissued:
-                lines.append("%s: never started (%s)" % (", ".join(entry.get("labels") or [UNLABELED]), unissued))
+                lines.append("%s: never started (%s)" % (", ".join(left), unissued))
                 failed.append(lines[-1])
                 done.add(key)
             continue
@@ -2273,6 +2349,33 @@ def _awaiting_launch(entry):
                 and watch_records.ended_code(record) is None)
 
 
+def _session_plan_name():
+    """The plan this session pays on, which every Workflow agent shares; None when it cannot be read."""
+    try:
+        import _session_transport
+        plan = _session_transport.session_plan()
+    except Exception:  # the line still prints without its plan
+        return None
+    return plan if isinstance(plan, str) and plan and plan != _session_transport.UNKNOWN else None
+
+
+def _job_plan(entry, session_id=None, pending=None):
+    """The plan a sidecar job pays on, first found: its own `plan`, its fan-out inventory row's `plan`, its record's
+    `transport`; None while none of them is written (never a guess)."""
+    job = (entry.get("jobs") or [{}])[0]
+    if isinstance(job.get("plan"), str) and job["plan"]:
+        return job["plan"]
+    inventory = entry.get("inventory")
+    if not inventory and entry.get("fanout_dir") and session_id:
+        owned = _owned_records(entry, session_id, pending)
+        inventory = owned[-1][1] if owned else None
+    for row in (_read_json(inventory).get("jobs") or []) if inventory else []:
+        if isinstance(row, dict) and row.get("label") == job.get("label") and isinstance(row.get("plan"), str) and row["plan"]:
+            return row["plan"]
+    transport = _read_json(entry["record"]).get("transport") if entry.get("record") else None
+    return transport if isinstance(transport, str) and transport else None
+
+
 def _child_transcript(stream, transport):
     """A sidecar child's own transcript, `<transport projects root>/<cwd, each non-alphanumeric as '-'>/<session
     id>.jsonl`, named by the stream's `init` row; None when the stream names no session or the file is absent. A
@@ -2357,30 +2460,30 @@ def _gauge_text(entry, session_dir):
     return out
 
 
-def _running_line(entry, now, session_dir=None):
-    """`name · pins · labels · elapsed · ctx · compactions` for one unfinished dispatch."""
+def _running_line(entry, now, session_id=None, session_dir=None):
+    """`model · effort · plan · label · elapsed · ctx · compactions` for one unfinished dispatch; the plan is the
+    one the job pays on, so the owner tells one plan's draw from another's, and a job whose plan is not known yet
+    prints none. No engine script, launcher or agent-type name. A Workflow shows its agent count and pins ×count.
+    A gauge clause is absent when unread or zero."""
     jobs = entry.get("jobs") or []
     kind = entry.get("kind")
     age = _elapsed(now - float(entry.get("launched_at") or now))
     gauge = _gauge_text(entry, session_dir)
     if kind == "workflow":
-        parts = [entry.get("name") or "Workflow"]
-        if jobs:
-            parts.append("%d agent%s" % (len(jobs), "" if len(jobs) == 1 else "s"))
-            parts.append(workflow_pins(jobs))
-        return "  " + " · ".join(parts + [age] + gauge)
+        parts = ["%d agent%s" % (len(jobs), "" if len(jobs) == 1 else "s"), workflow_pins(jobs)] if jobs else ["Workflow"]
+        return "  " + " · ".join(parts + [_session_plan_name() or "this session's plan", age] + gauge)
     if kind == "handoff":
         return "  " + " · ".join(["native hand-off", ", ".join(entry.get("labels") or []), "Workflow call not issued", age])
     job = jobs[0] if jobs else {}
     if kind == "sidecar":
         shown = _sidecar_shown(job.get("model") or UNKNOWN)
-        name = "%s sidecar" % (job.get("launcher") or "")
         if _awaiting_launch(entry):
             age = "queued"
     else:
-        shown, name = _shown(job.get("model")), "Agent"
-    return "  " + " · ".join([name.strip(), shown, str(job.get("effort") or UNKNOWN),
-                              str(job.get("label") or UNLABELED), age] + gauge)
+        shown = _shown(job.get("model"))
+    plan = _job_plan(entry, session_id) if kind == "sidecar" else _session_plan_name()
+    paid = [plan] if isinstance(plan, str) and plan else []
+    return "  " + " · ".join([shown, str(job.get("effort") or UNKNOWN)] + paid + [str(job.get("label") or UNLABELED), age] + gauge)
 
 
 def _context_size(session_id):
@@ -2407,7 +2510,7 @@ def _running_block(entries, now, session_id=None, session_dir=None):
     lines = ["⏳ still running · %d" % len(entries) + (" · " + ctx if ctx else "")]
     for e in entries:
         try:
-            lines.append(_running_line(e, now, session_dir))
+            lines.append(_running_line(e, now, session_id, session_dir))
         except Exception as exc:  # one bad entry must not hide the others
             lines.append("  %s %s: unreadable (%s)" % (e.get("kind"), e.get("id"), type(exc).__name__))
     return "\n".join(lines)
@@ -2436,7 +2539,7 @@ def _newly_started(entry):
             ids.append(agent["id"])
     if not rows:
         return None, []
-    return _table("%s · update" % (entry.get("name") or "Workflow"), rows), ids
+    return _table("update", rows), ids
 
 
 def _update_pending(payload, change, raising=False):
@@ -2468,9 +2571,12 @@ def main():
         if body:
             sys.stdout.write(json.dumps(body, ensure_ascii=False))
         return
-    text = launch(payload) if mode == "--launch" else None
-    if text:
-        sys.stdout.write(json.dumps({"systemMessage": text}, ensure_ascii=False))
+    text, context = (launch(payload) or ("", "")) if mode == "--launch" else ("", "")
+    body = {"systemMessage": text} if text else {}
+    if context:
+        body["hookSpecificOutput"] = {"hookEventName": "PostToolUse", "additionalContext": context}
+    if body:
+        sys.stdout.write(json.dumps(body, ensure_ascii=False))
 
 
 if __name__ == "__main__":

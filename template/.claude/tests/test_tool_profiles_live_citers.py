@@ -10,7 +10,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _HISTORY = (".claude/auto-memory/archive/", ".claude/tests/fixtures/", ".claude/scripts/rail_battery/reports/",
-            ".claude/plans/", ".claude/scratch/", ".claude/autolearn_outcomes.jsonl", ".claude/orchestration_verdicts.json",
+            ".claude/plans/", ".claude/scratch/", ".claude/instruction_rows/",
+            ".claude/autolearn_outcomes.jsonl", ".claude/orchestration_verdicts.json",
             ".claude/orchestration_metrics.jsonl", ".claude/self_evaluate_archive.json",
             ".claude/baseline.lock.json", ".claude/tests/test_tool_profiles.py",
             ".claude/tests/test_tool_profiles_live_citers.py")
