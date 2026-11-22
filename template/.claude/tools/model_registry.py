@@ -286,12 +286,7 @@ def _merge_overlay(data, target):
         transports[name].update(fields)
 
 
-def load(path=None, start=None):
-    """Parse and validate. Raises RegistryError on anything unusable."""
-    target = Path(path) if path else find_registry(start)
-    key = str(target)
-    if key in _cache:
-        return _cache[key]
+def _read_registry(target):
     if not target.is_file():
         raise RegistryError(f"registry not found: {target}")
     try:
@@ -300,6 +295,16 @@ def load(path=None, start=None):
     except (OSError, json.JSONDecodeError) as exc:
         raise RegistryError(f"registry unreadable at {target}: {exc}")
     _merge_overlay(data, target)
+    return data
+
+
+def load(path=None, start=None):
+    """Parse and validate. Raises RegistryError on anything unusable."""
+    target = Path(path) if path else find_registry(start)
+    key = str(target)
+    if key in _cache:
+        return _cache[key]
+    data = _read_registry(target)
     _validate(data, target)
     _cache[key] = data
     return data
@@ -1558,11 +1563,20 @@ def projects_dir(path):
 def login_dirs(data=None):
     """Every login (config) directory, expanded, each once: the default `~/.claude`, each transport's
     `configDir`, and `CLAUDE_CONFIG_DIR` when set. The registry declares each login a transport uses,
-    so a directory no transport names is not a login."""
-    data = data if data is not None else load()
+    so a directory no transport names is not a login. Discovery parses the registry and local overlay
+    without validating model or payment-plan rules; aliases of one login are deduplicated here."""
+    data = data if data is not None else _read_registry(find_registry())
+    if not isinstance(data, dict) or not isinstance(data.get("transports"), dict):
+        raise RegistryError("login discovery needs a registry 'transports' object")
     candidates = [DEFAULT_LOGIN_DIR]
-    candidates += [cfg["configDir"] for _, cfg in sorted((data.get("transports") or {}).items())
-                   if isinstance(cfg, dict) and cfg.get("configDir")]
+    for name, cfg in sorted(data["transports"].items()):
+        if not isinstance(cfg, dict):
+            raise RegistryError(f"login discovery: transport {name} must be an object")
+        config = cfg.get("configDir")
+        if config is not None:
+            if not isinstance(config, str) or not config.strip():
+                raise RegistryError(f"login discovery: transport {name} configDir must be a non-empty string")
+            candidates.append(config)
     if os.environ.get("CLAUDE_CONFIG_DIR"):
         candidates.append(os.environ["CLAUDE_CONFIG_DIR"])
     out, seen = [], set()
@@ -1571,6 +1585,21 @@ def login_dirs(data=None):
             seen.add(login_dir(path))
             out.append(expand_login_dir(path))
     return out
+
+
+def session_project_roots():
+    """Transcript roots in lookup order: current login first, then each declared login once.
+
+    Yield the current root before loading the registry; an identity found there needs no other login.
+    """
+    current = session_projects_dir()
+    seen = {login_dir(os.path.dirname(current))}
+    yield current
+    for login in login_dirs():
+        key = login_dir(login)
+        if key not in seen:
+            seen.add(key)
+            yield projects_dir(login)
 
 
 def session_projects_dir():
@@ -2659,7 +2688,8 @@ _TRANSCRIPT_INDEX = {}
 
 
 def _scan_transcripts(root):
-    """{file name: [paths]} of every transcript under `<root>/*/`."""
+    """{entry name: [paths]} under `<root>/*/`: each project's `*.jsonl` transcripts and its `<id>/` session
+    directories (named by the bare session id)."""
     index = {}
     try:
         with os.scandir(root) as projects:
@@ -2667,24 +2697,71 @@ def _scan_transcripts(root):
                 if project.is_dir():
                     with os.scandir(project.path) as files:
                         for entry in files:
-                            if entry.name.endswith('.jsonl'):
+                            if entry.name.endswith('.jsonl') or entry.is_dir():
                                 index.setdefault(entry.name, []).append(Path(entry.path))
     except OSError:
         pass
     return index
 
 
-def _probe_transcripts(root, name):
-    """Sorted `<root>/*/<name>` files, found by one existence probe per project directory: the question is
-    whether one file exists, so no directory is listed or stamped. The probes run on a pool, as they wait on
-    the filesystem (3,836 directories took 1.2 s in sequence, 0.3 s on 16 threads)."""
+_SESSION_ID = re.compile(r'[A-Za-z0-9_-]{1,128}')
+
+
+def session_transcript_hits(session_id, roots=None, prefix=False, allow_dir=False):
+    """Every transcript path `<root>/<project>/<id>.jsonl` the first root holding any match has, else []. A
+    caller that reports ambiguity reads this; every other caller uses `find_session_transcript`, which holds
+    the rule."""
+    roots = session_project_roots() if roots is None else roots
+    if not isinstance(session_id, str) or not _SESSION_ID.fullmatch(session_id):
+        return []
+    seen = set()
+    for root in roots:
+        key = os.path.normpath(str(root))
+        if os.path.normcase(key) in seen:
+            continue
+        seen.add(os.path.normcase(key))
+        found = {Path(p) for p in _transcript_matches(key, session_id + '.jsonl')}
+        if allow_dir:
+            found |= {Path(str(p) + '.jsonl') for p in _transcript_matches(key, session_id, is_dir=True)}
+        if not found and prefix:
+            index = _scan_root(key)[1]
+            for name, paths in index.items():
+                stem = name[:-len('.jsonl')] if name.endswith('.jsonl') else name
+                if stem.startswith(session_id) and (allow_dir or name.endswith('.jsonl')):
+                    found |= {p.with_name(stem + '.jsonl') for p in paths if p.exists()}
+        if found:
+            return sorted(found)
+    return []
+
+
+def find_session_transcript(session_id, roots=None, prefix=False, allow_dir=False):
+    """The one transcript `<root>/<project>/<session_id>.jsonl` for a session id, or None.
+
+    `roots` are transcript roots (each holds `<project>/<id>.jsonl`), searched in order; the default is
+    `session_project_roots()`, current login first. The first root holding any match answers and a later
+    login is never read; inside it exactly one match returns and two or more return None (the same id under
+    two projects): a guess could hand a caller another session's file, and reap acts on the answer.
+    `prefix` accepts a unique id prefix when the root holds no exact match. `allow_dir` also counts a session
+    that has only its `<id>/` directory (workflow runs, subagents): the result is then the transcript path
+    that would belong to it, which need not exist; `.with_suffix('')` is the session directory. An id outside
+    `[A-Za-z0-9_-]{1,128}` finds nothing, so it is never read as a glob or a path."""
+    hits = session_transcript_hits(session_id, roots, prefix, allow_dir)
+    return hits[0] if len(hits) == 1 else None
+
+
+def _probe_transcripts(root, name, is_dir=False):
+    """Sorted `<root>/*/<name>` entries, found by one existence probe per project directory: the question is
+    whether one entry exists, so no directory is listed or stamped. `is_dir` probes session directories rather
+    than transcripts. The probes run on a pool, as they wait on the filesystem (3,836 directories took 1.2 s in
+    sequence, 0.3 s on 16 threads)."""
     try:
         with os.scandir(root) as projects:
             candidates = [os.path.join(project.path, name) for project in projects if project.is_dir()]
     except OSError:
         return []
+    probe = os.path.isdir if is_dir else os.path.isfile
     with ThreadPoolExecutor(max_workers=16) as pool:
-        present = list(pool.map(os.path.isfile, candidates))
+        present = list(pool.map(probe, candidates))
     return sorted(Path(path) for path, there in zip(candidates, present) if there)
 
 
@@ -2695,10 +2772,11 @@ def _scan_root(root):
     return _TRANSCRIPT_INDEX[root]
 
 
-def _transcript_matches(root, name, settled_by=None):
-    """Sorted `<root>/*/<name>` files. One directory scan per root serves every lookup of a file it held (a
+def _transcript_matches(root, name, settled_by=None, is_dir=False):
+    """Sorted `<root>/*/<name>` entries. One directory scan per root serves every lookup of an entry it held (a
     repricing pass looks up hundreds of sessions). A name the index lacks is probed once per project directory,
-    so a transcript written since the scan is found, and the probe's finds join the index.
+    so a transcript written since the scan is found, and the probe's finds join the index. `is_dir` looks for a
+    session directory (named by the bare session id) instead of a transcript file.
 
     `settled_by` is a time the session had finished by (its record's mtime): its transcript was on disk then, so
     an index scanned at or after it answers a miss for good, with no probe. An older index is rescanned once;
@@ -2708,15 +2786,16 @@ def _transcript_matches(root, name, settled_by=None):
     if scanned:
         entry = _scan_root(root)
     index = entry[1]
-    found = sorted(path for path in index.get(name, ()) if path.is_file())
+    keep = Path.is_dir if is_dir else Path.is_file
+    found = sorted(path for path in index.get(name, ()) if keep(path))
     if found or scanned:
         return found
     if settled_by is not None:
         if entry[0] < settled_by:
             index = _scan_root(root)[1]
-            found = sorted(path for path in index.get(name, ()) if path.is_file())
+            found = sorted(path for path in index.get(name, ()) if keep(path))
         return found
-    found = _probe_transcripts(root, name)
+    found = _probe_transcripts(root, name, is_dir=is_dir)
     if found:
         index[name] = found
     return found
@@ -2724,10 +2803,11 @@ def _transcript_matches(root, name, settled_by=None):
 
 def session_transcript(session_id, transport, data=None, settled_by=None):
     """Find one client transcript by session id on its transport's projects root. `settled_by`: see
-    `_transcript_matches`; a caller holding a finished session's record passes its mtime."""
-    if not session_id or Path(str(session_id)).name != session_id:
+    `_transcript_matches`; a caller holding a finished session's record passes its mtime. Unlike
+    `find_session_transcript`, two matches raise: a repricing pass must not skip a session silently."""
+    if not isinstance(session_id, str) or not _SESSION_ID.fullmatch(session_id):
         return None
-    root = Path(transport_projects_root(transport, data=data))
+    root = os.path.normpath(str(transport_projects_root(transport, data=data)))
     matches = _transcript_matches(root, session_id + '.jsonl', settled_by=settled_by)
     if len(matches) > 1:
         raise RegistryError(f'ambiguous transcript for session {session_id}: {matches}')

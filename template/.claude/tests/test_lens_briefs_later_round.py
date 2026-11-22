@@ -132,6 +132,7 @@ class Fixture:
         spec = {"mode": "plan-check", "prefix": "lbr", "root": str(self.root), "context": str(self.context),
                 "roster": [{"key": seat_key, "effort": EFFORT}], "pins": {"panel": PANEL},
                 "efforts": {"panel": EFFORT}, "subjectFiles": [SUBJECT], "spillDir": str(self.run_dir / "spill"),
+                "target": "native",
                 "ledger": {"stage": "plan-check", "subject": "plan:" + SUBJECT, "files": [SUBJECT],
                            "baseRef": self.base}}
         spec.update(fields)

@@ -4,7 +4,8 @@ Launch (PostToolUse on Workflow | Agent | sidecar Bash) prints requested model /
 job; completion (Stop sweep) prints only contradictions (served != requested) and late-started agents,
 and additionally BLOCKS (Stop `decision: block`) while a running sidecar has no live watcher. Every
 case feeds a real hook payload on stdin against a planted session dir, ledger and state dir, and
-asserts the emitted channel: `--launch` is `systemMessage` only (user-visible, zero model context),
+asserts the emitted channel: `--launch` is `systemMessage` (user-visible, zero model context) plus, for a
+native fan-out hand-off, the model's `additionalContext` (never `systemMessage`),
 `--complete` may add `decision`/`reason`. Negatives are the point: a Bash line that only mentions a
 launcher, a computed Workflow pin, an Agent call with no model, a covered or Workflow-only pending set.
 """
@@ -80,7 +81,13 @@ class Env:
         self.transcript = self.session + ".jsonl"
         open(self.transcript, "w").close()
         self.body = {}
-        self.extra = {"BENCH_ROOTS": json.dumps({"BenchmarkArms": os.path.join(self.root, "arms")})}
+        self.extra = {"BENCH_ROOTS": json.dumps({"BenchmarkArms": os.path.join(self.root, "arms")}),
+                      "CLAUDE_CONFIG_DIR": os.path.join(self.root, "no-login")}  # a session whose plan is unknown
+
+    def on_plan(self, plan):
+        """Declare the plan this session pays on."""
+        self.extra["CLAUDE_CODE_TRANSPORT"] = plan
+        return self
 
     def state_path(self):
         return os.path.join(self.state, SID[:8] + ".json")
@@ -116,7 +123,8 @@ class Env:
             out = in_process(mode, json.dumps(payload), env)
         assert out.returncode == 0 and "Traceback" not in out.stderr, "CRASH rc=%s %s" % (out.returncode, out.stderr)
         body = json.loads(out.stdout) if out.stdout.strip() else {}
-        allowed = {"systemMessage"} if mode == "--launch" else {"systemMessage", "decision", "reason"}
+        allowed = ({"systemMessage", "hookSpecificOutput"} if mode == "--launch"
+                   else {"systemMessage", "decision", "reason"})
         assert set(body) <= allowed, "unexpected channel emitted: %s" % sorted(body)
         self.body = body
         return body.get("systemMessage", "")
@@ -179,15 +187,18 @@ def _row(msg, label):
 
 
 def cells(msg, label):
-    """[label, model, effort, type] for `label` from its group line `  model · effort · type: a, b`
-    ([] when absent). The LAST match wins, so a message carrying two tables yields the later one."""
+    """[label, model, effort] for `label` from its group line `model effort: a, b` (the first group rides the
+    `▶ <title> · ` line; later groups are indented). [] when absent. The LAST match wins, so a message
+    carrying two tables yields the later one."""
     found = []
     for line in msg.splitlines():
-        if not line.startswith("  ") or ": " not in line:
+        if ": " not in line or not (line.startswith("  ") or line.startswith("▶ ")):
             continue
         pin, labels = line.strip().split(": ", 1)
-        if label in labels.split(", "):
-            found = [label] + pin.split(" · ")
+        if line.startswith("▶ "):
+            pin = pin.rsplit(" · ", 1)[-1]
+        if label in labels.split(", ") and len(pin.split(" ")) in (2, 3):
+            found = [label] + pin.split(" ")[:2]
     return found
 
 
@@ -233,19 +244,19 @@ def test_launch_stores_writer_flag():
 def test_agent_no_model_prints_inherited_effort_level():
     e = Env()
     msg = e.run(agent_payload({"description": "doc lookup", "prompt": "x", "subagent_type": "Explore"}), "--launch")
-    assert cells(msg, "doc lookup") == ["doc lookup", "sonnet-5", "medium", "Explore"], msg
+    assert cells(msg, "doc lookup") == ["doc lookup", "sonnet-5", "medium"], msg
 
 
 def test_agent_without_effort_field_says_unknown():
     e = Env()
     msg = e.run(agent_payload({"description": "d", "prompt": "x"}, effort=None), "--launch")
-    assert cells(msg, "d") == ["d", "sonnet-5", "?", "general-purpose"], msg
+    assert cells(msg, "d") == ["d", "sonnet-5", "?"], msg
 
 
 def test_agent_launch_shows_resolved_model():
     e = Env()
     msg = e.run(agent_payload({"description": "rm", "prompt": "x", "model": "sonnet"}), "--launch")
-    assert cells(msg, "rm") == ["rm", "sonnet-5", "medium", "general-purpose"], msg
+    assert cells(msg, "rm") == ["rm", "sonnet-5", "medium"], msg
 
 
 def test_haiku_effort_mismatch_row_says_none():
@@ -260,7 +271,7 @@ def test_haiku_effort_mismatch_row_says_none():
 def test_agent_with_model_prints_it():
     e = Env()
     msg = e.run(agent_payload({"description": "d", "prompt": "x", "model": "sonnet"}), "--launch")
-    assert cells(msg, "d") == ["d", "sonnet-5", "medium", "general-purpose"], msg
+    assert cells(msg, "d") == ["d", "sonnet-5", "medium"], msg
 
 
 def test_foreground_agent_prints_served_row_at_launch():
@@ -272,7 +283,7 @@ def test_foreground_agent_prints_served_row_at_launch():
     msg = e.run(agent_payload({"description": "fg", "prompt": "x", "model": "haiku45"},
                                response={"status": "completed", "agentId": "a0002", "resolvedModel": "claude-haiku-4-5"}),
                 "--launch")
-    assert cells(msg, "fg") == ["fg", "haiku-4-5", "medium", "general-purpose"] and "⚠" not in msg, msg
+    assert cells(msg, "fg") == ["fg", "haiku-4-5", "medium"] and "⚠" not in msg, msg
     assert "finished" not in msg, "a matching finish must stay silent: " + msg
     assert e.pending() == [], e.pending()
 
@@ -306,9 +317,38 @@ def test_review_fanout_omitted_pins_show_unknown():
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/review_fanout.js",
                                   "args": {"agents": [{"key": "k1", "model": "opus", "effort": "low"}, {"key": "k2"}]}}),
                 "--launch")
-    assert msg.splitlines()[0] == "▶ review_fanout · 2 agents", msg
-    assert cells(msg, "k1") == ["k1", "opus-5-5", "low", "general-purpose"], msg
+    assert msg.splitlines()[0] == "▶ 2 agents · opus-5-5 low: k1", msg
+    assert cells(msg, "k1") == ["k1", "opus-5-5", "low"], msg
     assert "high" not in msg, msg  # the session's level is never shown for a pin the engine will refuse
+
+
+def test_a_one_group_launch_is_one_line_naming_model_effort_and_task_only():
+    """The launch message reaches the owner with a prefix on every line: model, effort and task, one line per
+    model/effort group, with no agent type, no engine script name and no `tools` line."""
+    e = Env()
+    msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
+                                  "args": {"jobs": [{"label": "ul-m11", "model": "sonnet", "effort": "high",
+                                                     "agentType": "lane-author", "shape": "author"},
+                                                    {"label": "ul-c8", "model": "sonnet", "effort": "high",
+                                                     "agentType": "lane-author", "shape": "author"}]}}),
+                "--launch")
+    assert msg == "▶ 2 agents · sonnet-5-5 high: ul-m11, ul-c8", msg
+    assert "tools " not in msg and "lane-author" not in msg and "dispatch" not in msg, msg
+
+
+def test_a_two_group_launch_adds_one_line_per_extra_group():
+    e = Env()
+    msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
+                                  "args": {"jobs": [{"label": "a", "model": "sonnet", "effort": "high"},
+                                                    {"label": "b", "model": "haiku45", "effort": "low"}]}}),
+                "--launch")
+    assert msg == "▶ 2 agents · sonnet-5-5 high: a\n  haiku-4-5 none: b", msg
+
+
+def test_an_agent_launch_carries_no_tools_line():
+    e = Env()
+    msg = e.run(agent_payload({"description": "doc lookup", "prompt": "x", "subagent_type": "Explore"}), "--launch")
+    assert "tools " not in msg and msg.count("\n") == 0, msg
 
 
 def test_dispatch_jobs_rows():
@@ -316,16 +356,16 @@ def test_dispatch_jobs_rows():
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
                                   "args": {"jobs": [{"label": "j1", "model": "haiku45", "effort": "low", "agentType": "Explore"}]}}),
                 "--launch")
-    assert cells(msg, "j1") == ["j1", "haiku-4-5", "none", "Explore"], msg
+    assert cells(msg, "j1") == ["j1", "haiku-4-5", "none"], msg
 
 
-def test_dispatch_job_row_shows_its_kinds_agent_type():
+def test_dispatch_job_row_names_no_agent_type_for_its_kind():
     e = Env()
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
                                   "args": {"jobs": [{"label": "r1", "model": "haiku45", "effort": "low", "kind": "reviewer"},
                                                     {"label": "w1", "model": "haiku45", "effort": "low", "kind": "author"}]}}),
                 "--launch")
-    assert cells(msg, "r1")[3] == "lane-review" and cells(msg, "w1")[3] == "lane-author", msg
+    assert msg == "▶ 2 agents · haiku-4-5 none: r1, w1", msg
 
 
 def test_inline_script_literal_pins():
@@ -335,8 +375,8 @@ def test_inline_script_literal_pins():
     e = Env()
     script = "export const meta = {name:'p'}\nconst r = await agent('go', {label: 'x1', model: 'opus', effort: 'high', agentType: 'Explore'})"
     msg = e.run(workflow_payload({"script": script}), "--launch")
-    assert msg.splitlines()[0] == "▶ Workflow · 1 agent", msg
-    assert cells(msg, "x1") == ["x1", "opus-5-5", "high", "Explore"], msg
+    assert msg == "▶ 1 agent · opus-5-5 high: x1", msg
+    assert cells(msg, "x1") == ["x1", "opus-5-5", "high"], msg
 
 
 def test_inline_script_job_table_literals():
@@ -350,7 +390,7 @@ def test_inline_script_job_table_literals():
               "await parallel(JOBS.map(j => () => agent(j.prompt, { label: j.label, model: j.model, effort: j.effort })))\n"
               "await agent('z', { label: 'k:' + n, model: 'opus', effort: 'low' })")
     msg = e.run(workflow_payload({"script": script}), "--launch")
-    assert msg.splitlines()[0] == "▶ Workflow · 2 agents", msg
+    assert msg.splitlines()[0] == "▶ 2 agents · opus-5-5 medium: a1" and "sonnet-5-5 high: a2" in msg, msg
     assert cells(msg, "a1")[1:3] == ["opus-5-5", "medium"] and cells(msg, "a2")[2] == "high", msg
     assert "k:" not in msg, msg
 
@@ -361,7 +401,7 @@ def test_workflow_versions_come_from_the_journal():
     e.plant_run("wf_proof-1", "running", [("review:v1", "va1", "opus", "claude-opus-5-5", "low", "Explore")])
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
                                   "args": {"jobs": [{"label": "v1", "model": "opus", "effort": "low", "agentType": "Explore"}]}}), "--launch")
-    assert cells(msg, "review:v1") == ["review:v1", "opus-5-5", "low", "Explore"], msg
+    assert cells(msg, "review:v1") == ["review:v1", "opus-5-5", "low"], msg
     assert cells(msg, "v1") == [], "a started job must not print twice: " + msg
 
 
@@ -371,16 +411,16 @@ def test_model_without_effort_param_shows_none_at_launch_never_pending():
     e = Env()
     e.plant_run("wf_proof-1", "running", [("hk%d" % i, "hk%d" % i, "haiku45", None, None, "Explore") for i in range(2)])
     msg = e.run(workflow_payload({"script": "export const meta={name:'x'}"}), "--launch")
-    assert cells(msg, "hk0") == ["hk0", "haiku-4-5", "none", "Explore"] and "pending" not in msg, msg
+    assert cells(msg, "hk0") == ["hk0", "haiku-4-5", "none"] and "pending" not in msg, msg
 
 
 def test_haiku_agent_and_sidecar_show_none_not_the_pin():
     e = Env()
     msg = e.run(agent_payload({"description": "hA", "prompt": "x", "model": "haiku45"},
                               response={"status": "async_launched", "agentId": "h1", "resolvedModel": "claude-haiku-4-5"}), "--launch")
-    assert cells(msg, "hA") == ["hA", "haiku-4-5", "none", "general-purpose"], msg
+    assert cells(msg, "hA") == ["hA", "haiku-4-5", "none"], msg
     msg = e.run(bash_payload("bash .claude/scripts/anthropic_sidecar.sh -m haiku45 -e low -l hS -f p.md"), "--launch")
-    assert cells(msg, "hS") == ["hS", "haiku-4-5", "none", "sidecar"], msg
+    assert cells(msg, "hS") == ["hS", "haiku-4-5", "none"], msg
 
 
 def test_template_labels_take_the_scripts_only_literal_effort_and_one_answer_versions_all():
@@ -395,7 +435,7 @@ def test_template_labels_take_the_scripts_only_literal_effort_and_one_answer_ver
               "const out = await parallel(JOBS.map(j => () => agent(j.prompt,\n"
               "  { label: `audit:${j.part}:${j.lens}`, model: 'opus', effort: 'low', agentType: 'general-purpose' })))")
     msg = e.run(workflow_payload({"script": script}), "--launch")
-    assert msg == "▶ Workflow · 7 started\n  opus-5-5 · low · general-purpose: " + ", ".join(labels), msg
+    assert msg == "▶ 7 started · opus-5-5 low: " + ", ".join(labels), msg
 
 
 def test_table_driven_efforts_never_print_pending():
@@ -430,19 +470,18 @@ def test_bespoke_script_lists_every_started_agent_then_the_late_ones():
     e.plant_run("wf_proof-1", "running", early + late)
     script = "export const meta={name:'bench-wave1'}\nfor (const p of parts) await agent(p.prompt, {label: p.label, model: 'opus', effort: p.eff})"
     msg = e.run(workflow_payload({"script": script}), "--launch")
-    assert msg.splitlines()[0] == "▶ Workflow · 6 started", msg
-    assert [cells(msg, "exec:%s" % p) for p in "ADEF"] == [["exec:%s" % p, "opus-5-5", "medium", "general-purpose"] for p in "ADEF"], msg
-    assert cells(msg, "plc:r2a") == ["plc:r2a", "opus-5-5", "?", "general-purpose"], msg
-    assert msg == ("▶ Workflow · 6 started\n"
-                   "  opus-5-5 · medium · general-purpose: exec:A, exec:D, exec:E, exec:F\n"
-                   "  opus-5-5 · ? · general-purpose: plc:r2a, plc:r2b"), msg
+    assert msg.splitlines()[0] == "▶ 6 started · opus-5-5 medium: exec:A, exec:D, exec:E, exec:F", msg
+    assert [cells(msg, "exec:%s" % p) for p in "ADEF"] == [["exec:%s" % p, "opus-5-5", "medium"] for p in "ADEF"], msg
+    assert cells(msg, "plc:r2a") == ["plc:r2a", "opus-5-5", "?"], msg
+    assert msg == ("▶ 6 started · opus-5-5 medium: exec:A, exec:D, exec:E, exec:F\n"
+                   "  opus-5-5 ?: plc:r2a, plc:r2b"), msg
     msg = e.run(stop_payload(), "--complete")
     assert "▶" not in msg and _block(msg), "nothing new until the unsettled agents respond: " + msg
     e.plant_run("wf_proof-1", "running", [("plc:r2a", "eb1", "opus", "claude-opus-5-5", "low"),
                                          ("plc:r2b", "eb2", "opus", "claude-opus-5-5", "low")])
     msg = e.run(stop_payload(), "--complete")
-    assert msg.split("\n\n")[0] == "▶ Workflow · update\n  opus-5-5 · low · general-purpose: plc:r2a, plc:r2b", msg
-    assert cells(msg, "plc:r2a") == ["plc:r2a", "opus-5-5", "low", "general-purpose"], msg
+    assert msg.split("\n\n")[0] == "▶ update · opus-5-5 low: plc:r2a, plc:r2b", msg
+    assert cells(msg, "plc:r2a") == ["plc:r2a", "opus-5-5", "low"], msg
     msg = e.run(stop_payload(), "--complete")
     assert "▶" not in msg and _block(msg), "reported agents must not repeat: " + msg
 
@@ -478,21 +517,21 @@ def test_a_run_still_going_keeps_its_start_update():
     assert "▶" not in msg and _block(msg), "nothing new until the late agent responds: " + msg
     e.plant_run("wf_proof-1", "running", [("review:merge", "eb1", "opus", "claude-opus-5-5", "low")])
     msg = e.run(stop_payload(), "--complete")
-    assert msg.split("\n\n")[0] == "▶ Workflow · update\n  opus-5-5 · low · general-purpose: review:merge", msg
+    assert msg.split("\n\n")[0] == "▶ update · opus-5-5 low: review:merge", msg
 
 
 def test_long_model_ids_are_shortened():
     e = Env()
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
                                   "args": {"jobs": [{"label": "l", "model": "claude-opus-5-5[1m]", "effort": "low"}]}}), "--launch")
-    assert cells(msg, "l") == ["l", "opus-5-5", "low", "general-purpose"], msg
+    assert cells(msg, "l") == ["l", "opus-5-5", "low"], msg
 
 
 def test_inline_script_computed_pins_are_unresolved():
     e = Env()
     script = "export const meta = {name:'p'}\nawait agent(p, {label: 'y1', model: pick(role), effort: eff})"
     msg = e.run(workflow_payload({"script": script}), "--launch")
-    assert msg == "▶ Workflow · 0 started — the script computes its pins; each agent's row prints when it starts", msg
+    assert msg == "▶ 0 started — the script computes its pins; each agent's row prints when it starts", msg
 
 
 def test_workflow_launch_registers_pending():
@@ -508,14 +547,14 @@ def test_workflow_launch_registers_pending():
 def test_sidecar_launch_row():
     e = Env()
     msg = e.run(bash_payload("bash .claude/scripts/deepseek_sidecar.sh -m flash -e low -l sc1 -R r.json -f p.md"), "--launch")
-    assert msg.splitlines()[0] == "▶ deepseek sidecar", msg
-    assert cells(msg, "sc1") == ["sc1", FLASH_VERSION, "low", "sidecar"], msg
+    assert msg == "▶ 1 sidecar · %s low deepseek: sc1" % FLASH_VERSION, msg
+    assert cells(msg, "sc1") == ["sc1", FLASH_VERSION, "low"], msg
 
 
 def test_sidecar_env_prefix_and_redirect_default_model():
     e = Env()
     msg = e.run(bash_payload("FOO=1 bash .claude/scripts/deepseek_sidecar.sh -e max -f p.md 2>/dev/null"), "--launch")
-    assert cells(msg, "(unlabeled)") == ["(unlabeled)", "default", "max", "sidecar"], msg
+    assert cells(msg, "(unlabeled)") == ["(unlabeled)", "default", "max"], msg
 
 
 def test_fanout_attempt_two_uses_inventory_record():
@@ -836,8 +875,8 @@ def test_sidecar_fanout_rows():
     json.dump([{"label": "fa", "alias": "muse", "effort": "max", "promptFile": "a.md"},
                {"label": "fb", "alias": "flash", "promptFile": "b.md"}], open(jobs, "w"))
     msg = e.run(bash_payload("python3 .claude/tools/sidecar_fanout.py %s" % jobs.replace("\\", "/")), "--launch")
-    assert cells(msg, "fa") == ["fa", "muse-spark-1.3-contributor-free", "max", "sidecar"], msg
-    assert cells(msg, "fb") == ["fb", FLASH_VERSION, "default", "sidecar"], msg
+    assert cells(msg, "fa") == ["fa", "muse-spark-1.3-contributor-free", "max"], msg
+    assert cells(msg, "fb") == ["fb", FLASH_VERSION, "default"], msg
 
 
 def test_sidecar_fanout_follows_a_leading_cd():
@@ -852,7 +891,7 @@ def test_sidecar_fanout_follows_a_leading_cd():
                            % e.root.replace("\\", "/"))
     payload["cwd"] = os.path.join(e.root, "sub", "deep")
     msg = e.run(payload, "--launch")
-    assert cells(msg, "fc") == ["fc", "muse-spark-1.3-contributor-free", "max", "sidecar"], msg
+    assert cells(msg, "fc") == ["fc", "muse-spark-1.3-contributor-free", "max"], msg
 
 
 def test_sidecar_fanout_expands_a_shell_variable_assigned_earlier():
@@ -866,7 +905,7 @@ def test_sidecar_fanout_expands_a_shell_variable_assigned_earlier():
     for cmd in ("cd %s && P=p; python3 .claude/tools/sidecar_fanout.py $P/jobs.json" % root,
                 "cd %s && P=p && python3 .claude/tools/sidecar_fanout.py ${P}/jobs.json" % root):
         msg = e.run(bash_payload(cmd), "--launch")
-        assert cells(msg, "fv") == ["fv", "muse-spark-1.3-contributor-free", "max", "sidecar"], (cmd, msg)
+        assert cells(msg, "fv") == ["fv", "muse-spark-1.3-contributor-free", "max"], (cmd, msg)
 
 
 def test_sidecar_for_loop_tracks_one_job_per_loop_value():
@@ -1021,6 +1060,33 @@ def test_completed_fanout_without_launch_evidence_never_reaches_watcher():
         e.run(payload, "--launch")
         assert e.pending() == [], e.pending()
         assert _watcher_pending(e) == [], "a never-launched job could wake UNRESOLVED"
+
+
+def test_a_refused_fanout_launch_line_names_no_job_it_did_not_launch():
+    """A fan-out its own gate denied exits before any inventory: the call launched nothing, so the launch line
+    names no sidecar and only the warning speaks for the job."""
+    e = Env()
+    jobs = os.path.join(e.root, "jobs.json")
+    json.dump([{"label": "never-ran", "alias": "opus", "effort": "high", "promptFile": "a.md"}], open(jobs, "w"))
+    payload = bash_payload("python3 .claude/tools/sidecar_fanout.py %s --detach 2>&1 | grep -E '^fit|NATIVE'"
+                           % jobs.replace("\\", "/"))
+    payload["tool_response"] = {"stdout": "fit: `never-ran` (opus) reading 1 tokens", "stderr": ""}
+    msg = e.run(payload, "--launch")
+    assert "▶" not in msg and "sidecar" not in msg.replace("fan-out", ""), msg
+    assert "never-ran: not tracked" in msg and e.pending() == [], (msg, e.pending())
+
+
+def test_a_launch_line_names_the_launched_job_and_not_a_refused_fanout_job_in_the_same_call():
+    e = Env()
+    jobs = os.path.join(e.root, "jobs.json")
+    json.dump([{"label": "never-ran", "alias": "opus", "effort": "high", "promptFile": "a.md"}], open(jobs, "w"))
+    cmd = ("bash .claude/scripts/deepseek_sidecar.sh -m flash -e low -f p.md -R ran.json -l ran-direct; "
+           "python3 .claude/tools/sidecar_fanout.py %s --detach" % jobs.replace("\\", "/"))
+    payload = bash_payload(cmd)
+    payload["tool_response"]["stdout"] = ""
+    msg = e.run(payload, "--launch")
+    assert "ran-direct" in msg and "▶ 1 sidecar" in msg, msg
+    assert msg.count("never-ran") == 1 and "never-ran: not tracked" in msg, msg
 
 
 def test_refused_real_fanout_with_unresolved_shell_path_never_reaches_watcher():
@@ -1453,7 +1519,7 @@ def test_sidecar_that_finished_without_a_record_resolves_silently():
 def test_unlabeled_sidecar_without_record_prints_its_row_but_is_not_tracked():
     e = Env()
     msg = e.run(bash_payload("bash .claude/scripts/anthropic_sidecar.sh -m sonnet -e low -f p.md"), "--launch")
-    assert cells(msg, "(unlabeled)") == ["(unlabeled)", "sonnet-5-5", "low", "sidecar"], msg
+    assert cells(msg, "(unlabeled)") == ["(unlabeled)", "sonnet-5-5", "low"], msg
     assert e.pending() == [], e.pending()
 
 
@@ -1530,13 +1596,13 @@ def test_unresolvable_pins_still_print_the_launch_table():
                                          "content": []}}) + "\n")
     msg = e.run(agent_payload({"description": "inh", "prompt": "x"},
                               response={"status": "completed", "agentId": "a0003"}), "--launch")
-    assert cells(msg, "inh") == ["inh", "sonnet-5", "low", "general-purpose"], msg
+    assert cells(msg, "inh") == ["inh", "sonnet-5", "low"], msg
     script = "export const meta={name:'q'}\nawait agent(p, {label: 'q1', model: pick(r), effort: 'low'})"
     e.plant_run("wf_proof-1", "running", [("q1", "q1a", "?", None, None)])
     msg = e.run(workflow_payload({"script": script}), "--launch")
-    assert cells(msg, "q1") == ["q1", "?", "low", "general-purpose"], msg
+    assert cells(msg, "q1") == ["q1", "?", "low"], msg
     msg = e.run(bash_payload("bash .claude/scripts/anthropic_sidecar.sh -m opsu -e low -l ty -f p.md"), "--launch")
-    assert cells(msg, "ty") == ["ty", "opsu", "low", "sidecar"], msg
+    assert cells(msg, "ty") == ["ty", "opsu", "low"], msg
 
 
 # ---------------------------------------------------------------- still-running block (2026-09-23)
@@ -1568,7 +1634,7 @@ def test_running_workflow_prints_one_line_with_pins_and_elapsed():
         and block[1].endswith(" · 7m"), block
 
 
-def test_running_sidecar_line_names_launcher_label_pins():
+def test_running_sidecar_line_names_model_effort_label_and_no_launcher():
     e = Env()
     rec = os.path.join(e.root, "run.json").replace("\\", "/")
     e.run(bash_payload("bash .claude/scripts/codex_proxy_sidecar.sh -m luna -e max -l lens:a -R %s -f p.md" % rec),
@@ -1576,7 +1642,8 @@ def test_running_sidecar_line_names_launcher_label_pins():
     _age(e, 2 * 3600 + 5 * 60)
     e.watch()
     block = _block(e.run(stop_payload(), "--complete"))
-    assert len(block) == 2 and "codex_proxy" in block[1] and "lens:a" in block[1] and " · max" in block[1] \
+    assert len(block) == 2 and "codex_proxy" not in block[1] and "sidecar" not in block[1] \
+        and "lens:a" in block[1] and " · max" in block[1] \
         and block[1].endswith(" · 2h05m"), block
 
 
@@ -2537,26 +2604,26 @@ def _job_line(msg, label):
     return next((line for line in msg.splitlines() if " · %s · " % label in line), "")
 
 
-def test_planned_fanout_job_line_names_its_launcher_and_says_queued_until_it_launches():
+def test_planned_fanout_job_line_names_no_launcher_and_says_queued_until_it_launches():
     msg = _planned_fanout(Env(), "wl-waiting", launched=False)
     line = _job_line(msg, "wl-waiting")
-    assert line.startswith("  anthropic_secondary sidecar · ") and line.endswith(" · wl-waiting · queued"), msg
+    assert "sidecar" not in line and "anthropic_secondary" not in line and line.endswith(" · wl-waiting · queued"), msg
 
 
-def test_planned_fanout_job_line_names_its_launcher_and_shows_elapsed_once_launched():
+def test_planned_fanout_job_line_names_no_launcher_and_shows_elapsed_once_launched():
     msg = _planned_fanout(Env(), "wl-going", launched=True)
     line = _job_line(msg, "wl-going")
-    assert line.startswith("  anthropic_secondary sidecar · ") and line.endswith(" · wl-going · <1m"), msg
+    assert "sidecar" not in line and "anthropic_secondary" not in line and line.endswith(" · wl-going · <1m"), msg
 
 
-def test_fanout_job_line_keeps_sidecar_fanout_before_any_inventory():
+def test_fanout_job_line_names_no_launcher_before_any_inventory():
     e = Env()
     jobs = os.path.join(e.root, "jobs.json")
     json.dump([{"label": "wl-early", "alias": "muse", "promptFile": "a.md"}], open(jobs, "w"))
     e.run(bash_payload("python3 .claude/tools/sidecar_fanout.py %s" % jobs.replace("\\", "/")), "--launch")
     e.watch()
     line = _job_line(e.run(stop_payload(), "--complete"), "wl-early")
-    assert line.startswith("  sidecar_fanout sidecar · ") and line.endswith(" · wl-early · <1m"), line
+    assert "sidecar" not in line and "sidecar_fanout" not in line and line.endswith(" · wl-early · <1m"), line
 
 
 def test_a_sidecar_record_without_transport_reads_its_paying_plan_from_the_inventory():
@@ -2752,7 +2819,7 @@ def test_fanout_rows_job_shows_the_placement_the_call_printed_not_default():
     e = Env()
     msg, _out = _fanout_launch(e, [{"label": "bb-fx16", "promptFile": "a.md", "kind": "scout",
                                     "rows": {"sonnet": "high", "opus": "high"}}], _real_fanout_output())
-    assert cells(msg, "bb-fx16") == ["bb-fx16", short_version("sonnet"), "high", "sidecar"], msg
+    assert cells(msg, "bb-fx16") == ["bb-fx16", short_version("sonnet"), "high"], msg
     assert "default" not in msg, msg
 
 
@@ -2760,14 +2827,14 @@ def test_fanout_rows_job_with_one_row_shows_that_row():
     e = Env()
     msg, _out = _fanout_launch(e, [{"label": "ul-one", "promptFile": "a.md", "kind": "scout",
                                     "rows": {"flash": "low"}}])
-    assert cells(msg, "ul-one") == ["ul-one", FLASH_VERSION, "low", "sidecar"], msg
+    assert cells(msg, "ul-one") == ["ul-one", FLASH_VERSION, "low"], msg
 
 
 def test_fanout_queued_rows_job_shows_its_listed_rows_as_candidates():
     e = Env()
     msg, _out = _fanout_launch(e, [{"label": "ul-q", "promptFile": "a.md", "kind": "scout",
                                     "rows": {"flash": "low", "muse": "max"}}])
-    assert cells(msg, "ul-q") == ["ul-q", "flash|muse", "low|max", "sidecar"], msg
+    assert cells(msg, "ul-q") == ["ul-q", "flash|muse", "low|max"], msg
     assert "default" not in msg, msg
 
 
@@ -2813,7 +2880,10 @@ def test_fanout_native_jobs_register_one_handoff_and_no_sidecar():
     entry = e.pending()[0]
     assert os.path.normcase(os.path.abspath(entry["jobs_file"])) == os.path.normcase(os.path.abspath(native)), entry
     assert entry["labels"] == ["nat-a", "nat-b"], entry
-    assert "▶ native" not in msg and "nat-a, nat-b" in msg and native.replace("\\", "/") in msg, msg
+    context = (e.body.get("hookSpecificOutput") or {}).get("additionalContext", "")
+    assert "nat-a, nat-b" in context and native.replace("\\", "/") in context, e.body
+    assert e.body["hookSpecificOutput"]["hookEventName"] == "PostToolUse", e.body
+    assert "nat-a" not in msg and native.replace("\\", "/") not in msg and "jobsFile" not in msg, msg
     e.run(stop_payload(), "--complete")
     assert e.body.get("decision") != "block" and "never started" not in json.dumps(e.body), e.body
 
@@ -2858,6 +2928,286 @@ def test_an_unrelated_workflow_launch_leaves_the_handoff_pending():
     e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
                             "args": {"jobs": [{"label": "other", "model": "flash", "effort": "low"}]}}), "--launch")
     assert "handoff" in [p["kind"] for p in e.pending()], e.pending()
+
+
+FIXTURES = os.path.join(CLAUDE_DIR, "tests", "fixtures", "dispatch_table")
+
+
+def _background_fanout_launch(e, labels):
+    """The real call shape of a session's detached fan-out: a background Bash call that returns before the
+    driver decides any placement, so no `native.args.json` exists when the hook registers its jobs."""
+    jobs = os.path.join(e.root, "jobs.json")
+    out = os.path.join(e.root, "out")
+    json.dump([{"label": l, "promptFile": "a.md", "alias": "sonnet", "kind": "scout"} for l in labels],
+              open(jobs, "w"))
+    command = ("J=%s; python3 .claude/tools/sidecar_fanout.py $J --out-dir %s --detach > launch.log 2>&1; "
+               "rg \"admitted|refused|NATIVE\" launch.log" % (jobs.replace("\\", "/"), out.replace("\\", "/")))
+    payload = bash_payload(command)
+    payload["tool_input"]["run_in_background"] = True
+    payload["tool_response"] = {"stdout": "", "stderr": "", "interrupted": False, "backgroundTaskId": "bnhkgl619"}
+    e.run(payload, "--launch")
+    return out
+
+
+def _driver_writes_native(out, labels):
+    """What the fan-out driver writes after the launch call returned: `sidecar_fanout.native_document`'s output."""
+    sys.path.insert(0, os.path.join(CLAUDE_DIR, "tools"))
+    import sidecar_fanout
+    os.makedirs(out, exist_ok=True)
+    document = sidecar_fanout.native_document(
+        [{"label": l, "promptFile": "a.md", "alias": "sonnet", "effort": "high", "kind": "scout"} for l in labels],
+        "anthropic", None, None, ".claude/scratch/proof")
+    path = os.path.join(out, "native.args.json")
+    sidecar_fanout.write_json(path, document)
+    return path
+
+
+def _age_pending(e, seconds):
+    state = json.load(open(e.state_path(), encoding="utf-8"))
+    for entry in state["dispatch_table_pending"]:
+        for key in ("launched_at", "issued_at"):
+            if entry.get(key) is not None:
+                entry[key] -= seconds
+    json.dump(state, open(e.state_path(), "w"))
+
+
+def _kinds(e):
+    return sorted(p["kind"] for p in e.pending())
+
+
+def test_a_job_the_driver_placed_native_after_registration_is_covered_by_its_workflow_call():
+    e = Env()
+    out = _background_fanout_launch(e, ["nat-bg-1", "nat-bg-2"])
+    assert _kinds(e) == ["sidecar", "sidecar"], e.pending()  # registered before the driver decided
+    native = _driver_writes_native(out, ["nat-bg-1", "nat-bg-2"])
+    _age_pending(e, 3600)
+    e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
+                            "args": {"jobsFile": native.replace("\\", "/")}}), "--launch")
+    msg = e.run(stop_payload(), "--complete")
+    assert "never started" not in msg and e.body.get("decision") != "block", (msg, e.body)
+    assert "sidecar" not in _kinds(e) and "handoff" not in _kinds(e), e.pending()
+
+
+def test_a_native_job_not_yet_issued_waits_as_a_handoff_and_blocks_no_stop():
+    e = Env()
+    out = _background_fanout_launch(e, ["nat-bg-wait"])
+    native = _driver_writes_native(out, ["nat-bg-wait"])
+    msg = e.run(stop_payload(), "--complete")
+    assert "never started" not in msg and e.body.get("decision") != "block", (msg, e.body)
+    assert _kinds(e) == ["handoff"], e.pending()
+    e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
+                            "args": {"jobsFile": native.replace("\\", "/")}}), "--launch")
+    assert "handoff" not in _kinds(e) and "sidecar" not in _kinds(e), e.pending()
+
+
+def test_a_native_job_whose_workflow_call_never_came_prints_the_handoff_reason_not_the_inventory_one():
+    e = Env()
+    out = _background_fanout_launch(e, ["nat-bg-lost"])
+    _driver_writes_native(out, ["nat-bg-lost"])
+    _age_pending(e, 3600)
+    msg = e.run(stop_payload(), "--complete")
+    assert "nat-bg-lost: never started (" in msg and "Workflow call" in msg, msg
+    assert "wrote no inventory" not in msg, msg
+    assert e.body.get("decision") == "block" and "nat-bg-lost: never started" in e.body["reason"], e.body
+    assert e.pending() == [], e.pending()
+
+
+def test_a_sidecar_job_the_driver_never_placed_native_still_reports_launched_nothing():
+    e = Env()
+    out = _background_fanout_launch(e, ["side-bg-lost"])
+    os.makedirs(out, exist_ok=True)
+    _driver_writes_native(out, ["some-other-label"])  # a native file that does not list this label
+    _age_pending(e, 3600)
+    msg = e.run(stop_payload(), "--complete")
+    assert "side-bg-lost: never started (its fan-out call wrote no inventory" in msg, msg
+
+
+def _plant_handoff_then_sidecar(e, labels_on_handoff=None):
+    """The session's real pending table for `cadence-status` (trimmed): a hand-off from the call that placed the job
+    native, and the sidecar entry of a later call that re-ran the same label. Aged past the window."""
+    out = os.path.join(e.root, "out")
+    os.makedirs(out, exist_ok=True)
+    with open(os.path.join(FIXTURES, "handoff_then_sidecar_pending.json"), encoding="utf-8") as fh:
+        text = fh.read().replace("{OUT}", out.replace("\\", "/"))
+    pending = json.loads(text)
+    if labels_on_handoff:
+        pending[0]["labels"] = labels_on_handoff
+        pending[0]["jobs"] = [{"label": l, "launcher": "native", "kind": "handoff"} for l in labels_on_handoff]
+    shift = time.time() - 3600 - pending[0]["issued_at"]
+    for entry in pending:
+        for key in ("launched_at", "issued_at"):
+            entry[key] += shift
+    json.dump({"dispatch_table_pending": pending}, open(e.state_path(), "w"))
+    return pending
+
+
+def test_a_handoff_a_later_run_of_the_same_label_took_over_is_superseded():
+    e = Env()
+    _plant_handoff_then_sidecar(e)
+    msg = e.run(stop_payload(), "--complete")
+    assert "cadence-status: never started" not in msg, msg
+    assert "cadence-status: never started" not in json.dumps(e.body.get("reason", "")), e.body
+    assert "handoff" not in _kinds(e), e.pending()
+
+
+def _plant_ledger_row(e, issued_at, later=True):
+    """The session's real clean spend row for the re-run label, stamped `later` or earlier than the hand-off's issue."""
+    with open(os.path.join(FIXTURES, "clean_launch_row.json"), encoding="utf-8") as fh:
+        row = json.load(fh)
+    row["parentSessionId"] = SID
+    row["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(issued_at + (600 if later else -600)))
+    with open(e.ledger, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(row) + "\n")
+
+
+def test_a_handoff_is_superseded_by_a_later_clean_run_whose_entry_already_left_the_table():
+    # The real sequence: the re-run finished and the Stop pruned its entry before the hand-off's window ran out.
+    e = Env()
+    pending = _plant_handoff_then_sidecar(e)
+    json.dump({"dispatch_table_pending": pending[:1]}, open(e.state_path(), "w"))
+    _plant_ledger_row(e, pending[0]["issued_at"])
+    msg = e.run(stop_payload(), "--complete")
+    assert "cadence-status: never started" not in msg, msg
+    assert e.pending() == [], e.pending()
+
+
+def test_a_clean_run_that_ended_before_the_handoff_was_issued_does_not_supersede_it():
+    e = Env()
+    pending = _plant_handoff_then_sidecar(e)
+    json.dump({"dispatch_table_pending": pending[:1]}, open(e.state_path(), "w"))
+    _plant_ledger_row(e, pending[0]["issued_at"], later=False)
+    msg = e.run(stop_payload(), "--complete")
+    assert "cadence-status: never started (" in msg, msg
+
+
+def test_a_handoff_keeps_reporting_the_labels_no_later_run_took_over():
+    e = Env()
+    _plant_handoff_then_sidecar(e, ["cadence-status", "other-lost"])
+    msg = e.run(stop_payload(), "--complete")
+    assert "other-lost: never started (" in msg and "cadence-status: never" not in msg and "cadence-status," not in msg, msg
+    assert "handoff" not in _kinds(e), e.pending()
+
+
+def test_an_earlier_run_of_the_same_label_does_not_supersede_a_handoff():
+    e = Env()
+    pending = _plant_handoff_then_sidecar(e)
+    pending[1]["issued_at"] = pending[0]["issued_at"] - 60  # the sidecar's call came BEFORE the hand-off's
+    json.dump({"dispatch_table_pending": pending}, open(e.state_path(), "w"))
+    msg = e.run(stop_payload(), "--complete")
+    assert "cadence-status: never started (" in msg and "Workflow" in msg, msg
+
+
+def test_a_running_sidecar_line_names_the_plan_it_pays_on():
+    # The owner tells the primary plan from the secondary by this line; a job with no known plan prints none.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dispatch_table_plan_line", HOOK)
+    dt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dt)
+    now = time.time()
+
+    def line(job, kind="sidecar"):
+        return dt._running_line({"kind": kind, "launched_at": now - 180, "jobs": [job]}, now)
+
+    paid = line({"label": "fix-card", "model": dt.DEFAULT, "effort": "medium", "launcher": "anthropic_secondary",
+                 "plan": "anthropic-secondary"})
+    assert paid.split(" · ")[2:] == ["anthropic-secondary", "fix-card", "3m"], paid
+    assert "anthropic_secondary" not in paid, paid  # the plan's name, never the launcher's file stem
+    unknown = line({"label": "fix-map", "model": dt.DEFAULT, "effort": "medium", "launcher": "sidecar_fanout"})
+    assert unknown.split(" · ")[2:] == ["fix-map", "3m"], unknown
+    workflow = {"kind": "workflow", "launched_at": now - 180, "jobs": [{"label": "a", "model": FLASH_VERSION, "effort": "high"}]}
+    dt._session_plan_name = lambda: "plan-x"
+    assert dt._running_line(workflow, now).split(" · ")[-2:] == ["plan-x", "3m"], dt._running_line(workflow, now)
+    dt._session_plan_name = lambda: None  # unreadable: the line says whose plan, never a blank
+    assert dt._running_line(workflow, now).split(" · ")[-2:] == ["this session's plan", "3m"], dt._running_line(workflow, now)
+
+
+def _dt():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dispatch_table_planline", HOOK)
+    dt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dt)
+    return dt
+
+
+def test_table_groups_by_model_effort_and_plan_and_prints_no_plan_it_lacks():
+    dt = _dt()
+    rows = [("a", "opus-5-5", "medium", "x", "anthropic-secondary"), ("b", "opus-5-5", "medium", "x", "anthropic"),
+            ("c", "opus-5-5", "medium", "x", None), ("d", "opus-5-5", "medium", "x", "anthropic-secondary")]
+    assert dt._table("4 sidecars", rows) == ("▶ 4 sidecars · opus-5-5 medium anthropic-secondary: a, d\n"
+                                             "  opus-5-5 medium anthropic: b\n  opus-5-5 medium: c")
+
+
+def test_a_workflow_launch_line_names_the_session_plan_and_none_when_it_is_unknown():
+    jobs = {"jobs": [{"label": "a", "model": "sonnet", "effort": "high"}]}
+    call = {"scriptPath": ".claude/workflows/dispatch.js", "args": jobs}
+    assert Env().on_plan("anthropic-secondary").run(workflow_payload(call), "--launch") == \
+        "▶ 1 agent · sonnet-5-5 high anthropic-secondary: a"
+    assert Env().run(workflow_payload(call), "--launch") == "▶ 1 agent · sonnet-5-5 high: a"
+
+
+def test_an_agent_launch_line_names_the_session_plan():
+    msg = Env().on_plan("anthropic-secondary").run(agent_payload({"description": "d", "prompt": "p"}), "--launch")
+    assert " anthropic-secondary: " in msg, msg
+
+
+def test_a_sidecar_launch_line_names_the_plan_its_launcher_pays_and_splits_plans():
+    e = Env()
+    one = e.run(bash_payload("bash .claude/scripts/anthropic_secondary_sidecar.sh -m opus -e medium -l s1 -R r1.json -f p.md"),
+                "--launch")
+    assert one == "▶ 1 sidecar · %s medium anthropic-secondary: s1" % one.split(" · ")[1].split(" ")[0], one
+    primary = e.run(bash_payload("bash .claude/scripts/anthropic_sidecar.sh -m opus -e medium -l s2 -R r2.json -f p.md"),
+                    "--launch")
+    assert " anthropic: s2" in primary and "secondary" not in primary, primary
+    loop = e.run(bash_payload("bash .claude/scripts/anthropic_secondary_sidecar.sh -m opus -e medium -l s3 -R r3.json -f p.md"
+                              " & bash .claude/scripts/anthropic_sidecar.sh -m opus -e medium -l s4 -R r4.json -f p.md"),
+                 "--launch")
+    assert loop.count("\n") == 1 and "anthropic-secondary: s3" in loop and "anthropic: s4" in loop, loop
+
+
+def test_a_start_update_line_names_the_session_plan():
+    e = Env().on_plan("anthropic-secondary")
+    e.plant_run("wf_proof-1", "running", [("seat:a", "ea1", "opus", "claude-opus-5-5", "high"),
+                                         ("review:merge", "eb1", "opus", None, None)])
+    script = "export const meta={name:'review-fanout'}\nfor (const p of parts) await agent(p.prompt, {label: p.label, model: 'opus', effort: p.eff})"
+    e.run(workflow_payload({"script": script}), "--launch")
+    e.plant_run("wf_proof-1", "running", [("review:merge", "eb1", "opus", "claude-opus-5-5", "low")])
+    msg = e.run(stop_payload(), "--complete")
+    assert msg.split("\n\n")[0] == "▶ update · opus-5-5 low anthropic-secondary: review:merge", msg
+
+
+def test_a_fanout_jobs_plan_is_its_inventorys_then_its_records_transport_and_none_before_either():
+    dt = _dt()
+    e = Env()
+    inventory = os.path.join(e.root, "fanout-x.inventory.json")
+    record = os.path.join(e.root, "j.record.json")
+    entry = {"kind": "sidecar", "jobs": [{"label": "j", "launcher": "sidecar_fanout"}], "record": record,
+             "inventory": inventory}
+    assert dt._job_plan(entry) is None
+    json.dump({"jobs": [{"label": "j", "recordPath": record, "plan": "anthropic-secondary"}]}, open(inventory, "w"))
+    assert dt._job_plan(entry) == "anthropic-secondary"
+    json.dump({"jobs": [{"label": "j", "recordPath": record}]}, open(inventory, "w"))
+    json.dump({"transport": "deepseek"}, open(record, "w"))
+    assert dt._job_plan(entry) == "deepseek"
+    now = time.time()
+    line = dt._running_line(entry, now)
+    assert line.split(" · ")[2:4] == ["deepseek", "j"], line
+
+
+def test_a_fanout_launch_line_names_the_plan_its_inventory_already_holds():
+    e = Env()
+    jobs = os.path.join(e.root, "jobs.json")
+    json.dump([{"label": "wl-plan", "alias": "muse", "promptFile": "a.md"}], open(jobs, "w"))
+    e.run(bash_payload("python3 .claude/tools/sidecar_fanout.py %s" % jobs.replace("\\", "/")), "--launch")
+    entry = e.pending()[0]
+    os.makedirs(entry["fanout_dir"], exist_ok=True)
+    record = os.path.join(entry["fanout_dir"], "wl-plan.record.json")
+    json.dump({"schemaVersion": 1, "fanoutId": "f", "parentSessionId": SID, "fanoutProcess": _pid_line(os.getpid()),
+               "jobs": [{"label": "wl-plan", "recordPath": record, "plan": "anthropic-secondary"}]},
+              open(os.path.join(entry["fanout_dir"], "fanout-plan.inventory.json"), "w", encoding="utf-8"))
+    e.watch()
+    line = _job_line(e.run(stop_payload(), "--complete"), "wl-plan")
+    assert " · anthropic-secondary · wl-plan · " in line, line
+
 
 
 def test_never_started_line_ignores_a_refusal_file_older_than_the_call():

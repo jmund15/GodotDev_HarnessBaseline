@@ -979,6 +979,24 @@ def test_fold_requires_executor_doctrine_even_with_only_survey_seats(checked_fan
     assert "for-role executor" in check(loaded=False)
 
 
+def test_a_dry_run_held_in_a_shell_variable_launches_nothing_and_needs_no_doctrine(checked_fanout):
+    """`--dry-run` reaches the fan-out through `$FLAGS` as often as literally; the hook reads the words the shell
+    would, so the call is judged by what it runs, not by how its arguments were spelled."""
+    _check, _compact, _launch, path, out = checked_fanout
+    head = 'python3 .claude/tools/sidecar_fanout.py %s' % path.as_posix()
+    tail = '--review --out-dir %s' % out.as_posix()
+
+    def verdict(command):
+        return _deny_reason({"tool_name": "Bash", "session_id": "fold0001", "cwd": str(path.parent),
+                             "tool_input": {"command": command}})
+
+    assert verdict('%s %s --dry-run' % (head, tail)) is None
+    assert verdict('FLAGS="%s --dry-run"; %s $FLAGS' % (tail, head)) is None
+    assert verdict('FLAGS="%s --dry-run"; %s ${FLAGS}' % (tail, head)) is None
+    assert "not in context" in verdict('FLAGS="%s"; %s $FLAGS' % (tail, head))
+    assert "not in context" in verdict('%s %s --ledger-subject "doc --dry-run"' % (head, tail))
+
+
 def test_fanout_attempt_receipt_cannot_be_consumed_twice(checked_fanout, capsys):
     check, compact, launch, _path, _out = checked_fanout
     assert check() is None
@@ -1013,6 +1031,14 @@ def fixture():
     env = dict(_transport_fixture.hook_env(), HARNESS_HOOK_STATE_DIR=tmp, CLAUDE_PROJECT_DIR=project,
                CLAUDE_PROJECTS_ROOT=os.path.join(tmp, "projects"))
     env.pop("HARNESS_SIDECAR_PREFLIGHT", None)
+    # This proof may itself run inside a sidecar child, and `hook_env` copies the whole environment.
+    # The seat it plants is the PARENT session's, so the child's launch signals go: left in, the
+    # doctrine deny names the child's Read route where the cases assert the parent's Skill route.
+    for key in ("CLAUDE_CODE_SIDECAR", "CLAUDE_CODE_SIDECAR_KIND", "CLAUDE_CODE_SIDECAR_LABEL",
+                "CLAUDE_CODE_SIDECAR_PROMPT_FILE", "SIDECAR_DETACHED", "SIDECAR_DISPATCH_OWNER",
+                "SIDECAR_FANOUT_ID", "SIDECAR_LAUNCH_ID", "SIDECAR_PARENT_SESSION_ID",
+                "SIDECAR_SEAT_LAUNCH_ID"):
+        env.pop(key, None)
     ok = fdir + "/ok_sidecar.sh"
     refusing = fdir + "/hot_sidecar.sh"
     for path, body in ((ok, OK_LAUNCHER), (refusing, REFUSING_LAUNCHER)):
@@ -1427,6 +1453,7 @@ def group_fanout_approval(fx):
     jobs, base_job, prompt = fan["jobs"], fan["base_job"], fan["prompt"]
     write_jobs, outside_early = fan["write_jobs"], fan["outside_early"]
     fanout_env, fanout_cmd = fan["fanout_env"], fan["fanout_cmd"]
+    project, ok, env = fx["project"], fx["ok"], fx["env"]
     cases = []
     fanout = run(fanout_cmd, fanout_env, session="sdc00013")
     cases.append(("the existing sidecar gate approves a validated fan-out wrapper",
@@ -1489,6 +1516,40 @@ def group_fanout_approval(fx):
     write_jobs(extraArgs=[])
     cases.append(("extra launcher arguments fall through",
                   run(fanout_cmd, fanout_env, session="sdc00017").get("permissionDecision") is None))
+    # S3: a brief that orders a wide test run is refused before launch, on both routes.
+    def plant_wide(parent, brief_name):
+        folder = os.path.join(parent, ".claude", "skills", "project_subsystems")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump({"gate_cadence": {"slice": [], "merge": [], "close": [], "wide": [
+                {"runner": r"npm\s+run\s+verify\b", "exempt": [], "narrow": None}]}}, fh)
+        brief = os.path.join(parent, ".claude", "scratch", brief_name)
+        with open(brief, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("```task\n{\"check\": [\"npm run verify\"], \"writeSet\": [\"x.md\"]}\n```\n")
+        return brief
+
+    wide_job_brief = plant_wide(fanout_root, "wide-brief.md")
+    write_jobs(promptFile=wide_job_brief, kind="lens")
+    wide_fanout = run(fanout_cmd, fanout_env, session="sdcwide1")
+    reason = wide_fanout.get("permissionDecisionReason", "")
+    cases.append(("S3: a fan-out job whose task block orders a wide run is denied at launch",
+                  wide_fanout.get("permissionDecision") == "deny"
+                  and "npm run verify" in reason and "gate" in reason))
+    write_jobs(promptFile=wide_job_brief, kind="gate")
+    cases.append(("S3: a gate job's brief ordering the same run passes",
+                  run(fanout_cmd, fanout_env, session="sdcwide2").get("permissionDecision") != "deny"))
+    write_jobs()
+    plant_wide(project, "wide-direct.md")
+    direct_wide = run("bash %s -G author -f .claude/scratch/wide-direct.md -m fake" % ok,
+                      env, session="sdcwide3")
+    cases.append(("S3: a direct launch whose brief orders a wide run is denied at launch",
+                  direct_wide.get("permissionDecision") == "deny"
+                  and "npm run verify" in direct_wide.get("permissionDecisionReason", "")))
+    with open(os.path.join(project, "prompt.md"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("review\n")
+    cases.append(("S3: a direct launch with a plain brief still reaches its approval path",
+                  run("bash %s -G scout -m fake -f prompt.md" % ok, env,
+                      session="sdcwide4").get("permissionDecision") in ("allow", "ask")))
     outside = os.path.join(tmp, "outside.md")
     with open(outside, "w", encoding="utf-8") as fh:
         fh.write("outside\n")

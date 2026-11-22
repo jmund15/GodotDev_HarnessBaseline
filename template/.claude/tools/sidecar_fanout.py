@@ -24,10 +24,12 @@ row with a new attempt record, the stopped run's `-P` stream kept as `<label>.at
 brief (`<label>.continuation.md`) telling the child to read its brief, keep its workdir's commits and uncommitted
 edits, read its progress report `<label>.md` and return to the same paths. Each plan that stops a job is spent for
 the run, so a job is continued at most once per plan. A job whose `plan` was named, or one no plan holds or whose
-new plan refuses it before spawn, is reported, and the tool writes `<out-dir>/resume-jobs.json` (the stopped job
-pinned to its plan with `-r <session>`, plus the jobs its chain lane never ran) and prints the one command that
-runs it after the reset. Other failed runs are REPORTED -- with their resume id when the launcher persisted one --
-and the caller decides.
+new plan refuses it before spawn, is reported with the facts of the choice (its context size, the reset, where its
+work is on disk), and the tool writes `<out-dir>/resume-jobs.json` (the stopped job as a fresh session on its plan with
+a continuation note, plus the jobs its chain lane never ran) and, when a session is saved,
+`<out-dir>/resume-session-jobs.json` (the same jobs, the stopped one pinned with `-r <session>`). It prints the command
+for each and picks neither: whether the stopped history is worth its uncached re-send is the caller's judgment. Other
+failed runs are REPORTED -- with their resume id when the launcher persisted one -- and the caller decides.
 
 THE PICK COUNTS LOAD; FORECASTS PACE WAVES. Among plans that hold this job's expected drain
 (`provider_bands.job_drain`) plus live launchers and earlier picks, `provider_bands.pick_key` ranks.
@@ -40,7 +42,8 @@ effort. A move or a launch fallback switches alias and effort to the next plan's
 
 EACH PLAN PACES ITSELF, AND LEARNS FROM WHAT ITS JOBS DREW (`Waves`). A plan prices a job per window, since points of
 two windows are different units: each window's headroom is held against that window's own history
-(`provider_bands.job_drain`), and the plan holds the job only while every window does. A window is charged only the
+(`provider_bands.job_drain`: the jobs of the same model, effort and shape finished inside the same window price it,
+and the whole history only when fewer than two have run), and the plan holds the job only while every window does. A window is charged only the
 share of a job's run still ahead that falls before its reset (`provider_bands.charge`): what a running job already
 spent is in the reading, and what a job spends after the reset lands in the next window. Every readable plan is paced,
 whatever its jobs' summed forecast, because a forecast is wrong by what nothing has measured yet. Every job end and
@@ -115,7 +118,7 @@ fields this route has no use for (`readOnly`) are ignored; `agentType` refuses, 
     promptFile  required  path to the prompt; NEVER argv (Windows caps argv near 8K)
     effort                vendor rung -> `-e`; refused unless the transport's vocabulary serves it. Also refused
                           when the row's registry `effort.avoid` lists it, unless this run is --compare (SC_COMPARISON)
-    kind        required  scout|lens|reviewer|author|judge (`guards/tool_profiles.json` `kinds`): sets the
+    kind        required  scout|lens|reviewer|author|judge|gate (`guards/tool_profiles.json` `kinds`): sets the
                           tools, `-D`, `-G` and agent type. A job carrying `shape`, `disclosure` or
                           `agentType` refuses. The internal `arm` kind (the /pin_ab benchmark arms) and
                           `bench-review` (the offkey review benchmark seat) are the other fan-out kinds
@@ -217,6 +220,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -248,7 +252,12 @@ import post_check  # noqa: E402  -- closes every --review run: verdicts, fold ch
 import finding_bar  # noqa: E402  -- the run's bar line for the fold prompt
 import dispatch_result  # noqa: E402  -- one `<label>.md` writer for both dispatch routes
 import watch_records  # noqa: E402  -- owns the record's end: the journal's `ended` row, else `.exit`
+from _job_brief import restore_brief
 import sidecar_completion  # noqa: E402 -- shared source keys and fail-closed verdict application
+try:
+    import ui_round  # noqa: E402 -- a UI round's one-owner and page-entry launch refusals
+except ImportError:  # a project with no UI round has no such refusals
+    ui_round = None
 
 GUARD_SOURCE = ROOT / "guards" / "single_flight.json"
 
@@ -590,6 +599,18 @@ def _missing_inputs(alias, needs, data):
     unknown is not proven wrong, so the session's listing stands."""
     types = model_registry.input_types(model_registry.resolve(alias, data))
     return [] if types is None else [n for n in needs if n not in types]
+
+
+def brief_collision(jobs, out_dir):
+    """The refusal when a job's brief is `<out dir>/<label>.md`, the path its deliverable lands on, else None."""
+    out = Path(out_dir).resolve()
+    hits = [f"{job['label']} ({_posix(out / (job['label'] + '.md'))})" for job in jobs
+            if job.get("promptFile") and job.get("label")
+            and Path(job["promptFile"]).resolve() == out / (job["label"] + ".md")]
+    if not hits:
+        return None
+    return ("a job's brief is the file its deliverable overwrites: " + ", ".join(hits)
+            + ". Rename each brief (for example `<label>-brief.md`) and relaunch.")
 
 
 def _drop_unfit_rows(jobs, data):
@@ -1051,7 +1072,7 @@ def admission_refusal(jobs, data, read=None, now=None, load=None):
     when none fits, matching `pick_plan`. `load` is {plan: [signature]} (default `plan_load`); admitted jobs
     add their signatures so a file counts its summed forecast. Pacing what the forecast cannot hold is `Waves`'s.
     Stale, missing or unreadable readings decide nothing: the launcher's own gate still runs.
-    `read` defaults to `provider_bands.read_capacity`; the PreToolUse hook passes a cache-only reader.
+    `read` defaults to `provider_bands.read_capacity`; the PreToolUse hook bounds blocking-cache confirmation.
     One message groups every refused job by reason."""
     read = read or provider_bands.read_capacity
     now = time.time() if now is None else now
@@ -1822,23 +1843,23 @@ def add_chain_handoff(planned, lanes, out_dir):
     return handed
 
 
-def continuation_text(attempt, stopped, plan, brief, workdir, start_head, report):
+def continuation_text(attempt, stopped, plan, brief, workdir, start_head, report, salvage=None):
     """The `-C` brief of a job's next attempt after a usage limit stopped attempt `attempt - 1` on plan `stopped`: a fresh
-    session on `plan`, told where the stopped run left its work (`workdir` from `start_head`, its `report`) and to
-    return as `brief` says."""
+    session on `plan`, told where the stopped run left its work (`workdir` from `start_head`, its `report`, its
+    `salvage` stream of partial output) and to return as `brief` says."""
     where = workdir or "your working directory"
     log = f"git log --oneline {start_head}..HEAD" if start_head else "git log --oneline"
-    return ("=== CONTINUATION ===\n"
+    return restore_brief(brief, before=("=== CONTINUATION ===\n"
             f"A provider usage limit stopped the earlier run of this job on plan {stopped} partway through its work. "
             f"You are a fresh session on plan {plan} (attempt {attempt}), with none of that run's memory. "
-            "\n"
-            f"- Read the brief {brief} in full first; the harness delivers its amendment, if any, at your next tool call.\n"
+            "\n"), after=(
             f"- {where} holds the earlier run's commits (`{log}`) and its uncommitted edits (`git status --short`). "
             "Keep both: read each uncommitted diff, finish or correct it, and commit it under the brief's rules. "
             "Never discard it.\n"
             f"- Read the earlier run's progress report {report} and any files it names; redo nothing it records as "
             "done with evidence.\n"
-            "- Return exactly as the brief's Return section says, to the same paths.\n")
+            + (f"- The earlier run's partial output (JSON lines; its last assistant text shows where it stopped) is "
+               f"kept at {salvage}.\n" if salvage else "")))
 
 
 def attempt_number(record_path):
@@ -2584,7 +2605,7 @@ def run_jobs(planned, max_parallel, out_dir, fallbacks=None, lanes=None, after_s
         brief.write_text(continuation_text(
             attempt_number(record), stopped, waves.plan_of(label), brief_of(argv),
             _posix(row["workdir"]) if row.get("workdir") else None, row.get("startHead"),
-            _posix(dispatch_result.deliverable_path(out_dir, label))),
+            _posix(dispatch_result.deliverable_path(out_dir, label)), kept),
             encoding="utf-8", newline="\n")
         argv = list(argv)
         argv[argv.index("-R") + 1] = record
@@ -2809,6 +2830,7 @@ def summarize(planned, results, compare):
 
 
 RESUME_FILE = "resume-jobs.json"
+SESSION_FILE = "resume-session-jobs.json"
 
 
 def _utc(epoch):
@@ -2818,55 +2840,113 @@ def _utc(epoch):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
 
 
-def resume_plan(jobs, results, out_dir, lanes):
-    """-> (path, text) for the jobs a usage limit stopped mid-run: `<out-dir>/resume-jobs.json`, a jobs file the
-    same tool runs as written, and the message that names the command; (None, "") when none stopped.
+def _peak_tokens(record_path):
+    """The `peakRequestTokens` a stopped run's record carries, else None: the size of the history a resume re-sends."""
+    try:
+        with open(record_path, encoding="utf-8") as fh:
+            peak = json.load(fh).get("peakRequestTokens")
+    except (OSError, TypeError, ValueError, AttributeError):
+        return None
+    return peak if isinstance(peak, int) and not isinstance(peak, bool) and peak > 0 else None
 
-    A stopped job that persisted a session is pinned to the plan whose login holds it and carries
-    `-r <session>`; one that persisted none reruns fresh. A chain lane resumes from its stopped job, with the
-    jobs the lane never ran after it. Nothing is launched: the plan refuses until its reset."""
+
+def resume_plan(jobs, results, out_dir, lanes):
+    """-> (path, text) for the jobs a usage limit stopped mid-run, and (None, "") when none stopped.
+
+    `<out-dir>/resume-jobs.json` continues each stopped job as a fresh session on the plan that stopped it, with
+    `<label>.continuation.md` naming what the stopped run left (the `continuation_text` an in-run continuation
+    uses) and a copy of its partial output. `<out-dir>/resume-session-jobs.json` is written when a stopped job
+    saved a session: the same jobs, those with a session carrying `-r <session>`. Both are jobs files the same tool
+    runs as written, and a chain lane restarts from its stopped job with the jobs it never ran after it. The text
+    states the facts of the choice between them (the stopped run's context size, where its work is on disk, the
+    reset) and picks neither: a session id shows a resume is possible, not that reloading its history is worth
+    its uncached re-send. Nothing is launched: the plan refuses until its reset."""
     out_dir = Path(out_dir)
     by_label = {j.get("label"): j for j in jobs if isinstance(j, dict)}
     stopped = {label for label, r in results.items() if (r or {}).get("exit") == USAGE_LIMIT_EXIT
                and not (r or {}).get("preSpawnRefusal")}
     if not stopped:
         return None, ""
+    facts = {}
 
-    def entry(label):
+    def stopped_run(label):
+        """Write the continuation note and the partial-output copy for a stopped `label`; -> its note path."""
+        r, job = results.get(label) or {}, by_label[label]
+        was = r.get("record") or latest_attempt_record_path(out_dir, label)
+        n = attempt_number(was)
+        salvage = None
+        if r.get("stream") and os.path.isfile(r["stream"]):
+            salvage = (out_dir / f"{label}.attempt{n}.salvage.jsonl").resolve()
+            try:
+                shutil.copyfile(r["stream"], salvage)
+            except OSError:
+                salvage = None
+        note = out_dir / f"{label}.continuation.md"
+        workdir = _posix(os.path.abspath(str(job["workdir"]))) if job.get("workdir") else None
+        report = dispatch_result.deliverable_path(out_dir, label).resolve()
+        brief = _posix(os.path.abspath(str(job["promptFile"]))) if job.get("promptFile") else "its brief"
+        plan = r.get("plan") or "its plan"
+        note.write_text(continuation_text(n + 1, plan, plan, brief, workdir, None, _posix(report),
+                                          _posix(salvage) if salvage else None),
+                        encoding="utf-8", newline="\n")
+        peak = _peak_tokens(was) if was else None
+        facts[label] = {"plan": r.get("plan"), "session": r.get("resumeWith"), "peak": peak, "workdir": workdir,
+                        "report": _posix(report), "reportBytes": report.stat().st_size if report.is_file() else None,
+                        "salvage": _posix(salvage) if salvage else None}
+        return note
+
+    def entry(label, session):
         job = {k: v for k, v in by_label[label].items() if k not in ("_lane", "_exclusive", "_shared_single_flight")}
         for key in ("promptFile", "schemaFile", "workdir"):
             if job.get(key):
                 job[key] = os.path.abspath(str(job[key]))
         if job.get("contextFiles"):
             job["contextFiles"] = [os.path.abspath(str(c)) for c in job["contextFiles"]]
+        if label not in stopped:
+            return job
         r = results.get(label) or {}
-        if label in stopped and r.get("resumeWith"):
-            extra, kept = list(job.get("extraArgs") or []), []
-            while extra:
-                flag = extra.pop(0)
-                if flag == "-r":
-                    extra[:1] = []
-                else:
-                    kept.append(flag)
-            job["extraArgs"] = kept + ["-r", r["resumeWith"]]
-            if r.get("plan"):
-                job["plan"] = r["plan"]
+        extra, kept = list(job.get("extraArgs") or []), []
+        while extra:
+            flag = extra.pop(0)
+            if flag == "-r":
+                extra[:1] = []
+            else:
+                kept.append(flag)
+        job["extraArgs"] = kept
+        if r.get("plan"):
+            job["plan"] = r["plan"]
+        if session and r.get("resumeWith"):
+            job["extraArgs"] += ["-r", r["resumeWith"]]
+        else:
+            job["contextFiles"] = list(job.get("contextFiles") or []) + [os.path.abspath(str(notes[label]))]
         return job
 
-    spec = {"spillDir": str(out_dir)}
-    if lanes:
-        chains = []
-        for name, labels in lanes:
-            at = next((i for i, label in enumerate(labels) if label in stopped), None)
-            if at is not None:
-                chains.append({"name": name, "jobs": [entry(label) for label in labels[at:] if label in by_label]})
-        spec["chains"] = chains
-        count = sum(len(c["jobs"]) for c in chains)
-    else:
-        spec["jobs"] = [entry(label) for label in by_label if label in stopped]
-        count = len(spec["jobs"])
-    path = out_dir / RESUME_FILE
-    path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8", newline="\n")
+    notes = {label: stopped_run(label) for label in sorted(stopped) if label in by_label}
+    stopped = set(notes)
+
+    def spec_of(session):
+        spec = {"spillDir": str(out_dir)}
+        if lanes:
+            chains = []
+            for name, labels in lanes:
+                at = next((i for i, label in enumerate(labels) if label in stopped), None)
+                if at is not None:
+                    chains.append({"name": name, "jobs": [entry(label, session) for label in labels[at:]
+                                                          if label in by_label]})
+            spec["chains"] = chains
+            return spec, sum(len(c["jobs"]) for c in chains)
+        spec["jobs"] = [entry(label, session) for label in by_label if label in stopped]
+        return spec, len(spec["jobs"])
+
+    def write(name, session):
+        spec, count = spec_of(session)
+        path = out_dir / name
+        path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8", newline="\n")
+        return path, count
+
+    path, count = write(RESUME_FILE, False)
+    saved = sorted(label for label in stopped if facts[label]["session"])
+    session_path, session_count = write(SESSION_FILE, True) if saved else (None, 0)
     resets = {}
     for label in stopped:
         r = results[label] or {}
@@ -2874,10 +2954,26 @@ def resume_plan(jobs, results, out_dir, lanes):
             known = [t for t in (resets.get(r["plan"]), r.get("limitResetsAt")) if _utc(t)]
             resets[r["plan"]] = max(known) if known else None
     when = ", ".join(f"{plan} resets {_utc(t) or 'at an unrecorded time'}" for plan, t in sorted(resets.items()))
-    text = (f"\nusage-limit stop: {len(stopped)} job(s) stopped mid-run; {count} job(s) in {_posix(path)}"
-            + (f" ({when})" if when else "")
-            + f"\n  after the reset, run: python3 .claude/tools/sidecar_fanout.py {_posix(path)} --detach")
-    return path, text
+    lines = [f"\nusage-limit stop: {len(stopped)} job(s) stopped mid-run" + (f" ({when})" if when else "")]
+    for label in sorted(stopped):
+        f = facts[label]
+        size = (f"largest request {f['peak']:,} tokens; a resume after the reset re-sends that history as uncached "
+                "input (the prompt cache lasts minutes)" if f["peak"] and f["session"]
+                else "context size unknown; a resume after the reset re-sends the whole history as uncached input"
+                if f["session"] else "no saved session")
+        lines.append(f"  {label}: {size}")
+        lines.append(f"    on disk: workdir {f['workdir'] or 'not recorded'}; report {f['report']} "
+                     f"({str(f['reportBytes']) + ' bytes' if f['reportBytes'] is not None else 'not written'}); partial output "
+                     f"{f['salvage'] or 'none kept (no -P stream)'}")
+    lines.append(f"  continue fresh on the same plan, from the brief and a note of what the stopped run left: "
+                 f"python3 .claude/tools/sidecar_fanout.py {_posix(path)} --detach  ({count} job(s))")
+    if session_path:
+        lines.append(f"  resume the saved session ({', '.join(saved)}): "
+                     f"python3 .claude/tools/sidecar_fanout.py {_posix(session_path)} --detach  ({session_count} job(s))")
+    lines.append("  Choose per job: what its remaining work needs from the stopped history against the cost of "
+                 "re-sending it (reference/sidecar_runs.md §Provider usage limit). A job runs from one file only; "
+                 "the plan refuses launches until its reset.")
+    return path, "\n".join(lines)
 
 
 def _status_labels(out_dir):
@@ -3014,10 +3110,11 @@ SCRATCH_REL = ".claude/scratch"
 
 
 def split_enabled(args):
-    """(True, None), or (False, why): a run whose flags are sidecar-only keeps every job a sidecar. `--review`
-    and the fold read sidecar out files, `--compare` needs process isolation, `--authorize` lifts a launcher's gate
-    that `Workflow` has no flag for, and `--max-parallel` is the caller's process-level pacing."""
-    for flag, value in (("--review", args.review), ("--fold", args.fold), ("--refold", args.refold),
+    """(True, None), or (False, why): a run whose flags are sidecar-only keeps every job a sidecar. A review panel
+    splits like any fan-out: `--review-close` lands the native seats' files and runs the one review tail over every
+    seat. `--refold` and `--review-close` place no seat, `--compare` needs process isolation, `--authorize` lifts a
+    launcher's gate that `Workflow` has no flag for, and `--max-parallel` is the caller's process-level pacing."""
+    for flag, value in (("--refold", args.refold), ("--review-close", args.review_close),
                         ("--compare", args.compare), ("--authorize", args.authorize),
                         ("--max-parallel", args.max_parallel)):
         if value:
@@ -3454,6 +3551,202 @@ def close_review(args, out_dir, *, independent=None, expect_total=None):
     return code
 
 
+def land_native_seats(jobs, run_dir, out_dir, data):
+    """Write the files a sidecar seat leaves for each of `jobs` the `dispatch.js` run in `run_dir` delivered, so the
+    one review tail reads every seat the same way: `<label>.out.json` (a `result` event holding the seat's object)
+    and `<label>.record.json` (exit, schema validity, the pinned alias, the served model its agent metadata names,
+    and `transcript`, the agent's own tool-call stream the tail judges reads from). A seat already holding an
+    `.out.json`, or one the run never started, is left alone. Returns the landed labels."""
+    run_dir, out_dir = Path(run_dir), Path(out_dir)
+    try:
+        agents = dispatch_result.journal_agents(run_dir / "journal.jsonl")
+    except OSError as err:
+        raise JobError(f"--workflow-dir {_posix(run_dir)}: its journal is unreadable: {err}")
+    landed = []
+    for job in jobs:
+        label = job["label"]
+        if label not in agents or (out_dir / f"{label}.out.json").exists():
+            continue
+        agent, result = agents[label]
+        transcript = run_dir / f"agent-{agent}.jsonl"
+        record = {"exitCode": 0 if result is not None else 1, "schemaValid": result is not None, "native": True,
+                  "requestedModel": job.get("alias"), "tier": job.get("tier"), "effort": job.get("effort"),
+                  "agentId": agent, "workflowRun": run_dir.name,
+                  "transcript": _posix(transcript) if transcript.is_file() else None}
+        try:
+            record["transport"] = model_registry.resolve(job["alias"], data)["transport"]
+        except Exception:
+            pass
+        try:
+            served = json.loads((run_dir / f"agent-{agent}.meta.json").read_text(encoding="utf-8")).get("model")
+            if isinstance(served, str) and served.strip():
+                record["servedModel"] = served
+        except (OSError, ValueError, AttributeError):
+            pass
+        if result is not None:
+            event = {"type": "result", "is_error": False,
+                     ("result" if isinstance(result, str) else "structured_output"): result}
+            (out_dir / f"{label}.out.json").write_text(json.dumps(event, ensure_ascii=False) + "\n",
+                                                       encoding="utf-8", newline="\n")
+        write_json(out_dir / f"{label}.record.json", record)
+        landed.append(label)
+    return landed
+
+
+def seat_running(out_dir, label):
+    """True when `label`'s newest sidecar attempt has recorded no end and its detached process is alive."""
+    record = latest_attempt_record_path(out_dir, label)
+    return bool(record) and not watch_records.ended_code(record) and _pid_alive(_detached_pid(record))
+
+
+def seat_results(jobs, out_dir):
+    """{label: result} for every seat, read from the files a run left in `out_dir`: the shape `run_jobs` returns
+    for the fields the review tail reads. A seat with no record and no output never ran."""
+    out_dir, results = Path(out_dir), {}
+    for job in jobs:
+        label = job["label"]
+        out_path = out_dir / f"{label}.out.json"
+        record_path = latest_attempt_record_path(out_dir, label)
+        if record_path is None and (out_dir / f"{label}.record.json").is_file():
+            record_path = out_dir / f"{label}.record.json"
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8")) if record_path else None
+        except (OSError, ValueError):
+            record = None
+        if record_path is None and not out_path.is_file():
+            results[label] = {"exit": None, "error": "never ran: no record and no output in the out dir"}
+            continue
+        stream = (record or {}).get("transcript") or str(out_dir / f"{label}.stream")
+        results[label] = {"exit": (record or {}).get("exitCode"), "stdout": str(out_path),
+                          "stream": stream if os.path.isfile(stream) else None,
+                          "record": str(record_path) if record is not None else None}
+    return results
+
+
+def close_call(argv, jobs_path):
+    """The `--review-close` call that closes the run `argv` started: its flags without the launch-only ones, the
+    original jobs file, and one `--workflow-dir` slot for each NATIVE call."""
+    call, skip = ["python3", ".claude/tools/sidecar_fanout.py", _posix(jobs_path)], False
+    for token in argv:
+        if skip:
+            skip = False
+        elif token in ("--detach", "--dry-run"):
+            continue
+        elif token == "--max-parallel":
+            skip = True
+        elif os.path.abspath(token) == os.path.abspath(jobs_path) or token.startswith("--max-parallel="):
+            continue
+        else:
+            call.append(token)
+    return " ".join(shlex.quote(part) for part in call + ["--review-close", "--workflow-dir", "<transcriptDir>"])
+
+
+def close_panel(args, jobs, out_dir, data, selection):
+    """`--review-close`: land each native seat of the `--workflow-dir` runs, read every seat's result from the out
+    dir, and run the review tail. Refused (2) while a sidecar seat still runs, since the tail reads each seat once."""
+    global REFUSED
+    REFUSED = None
+    landed = []
+    for directory in args.workflow_dir:
+        try:
+            landed += land_native_seats(jobs, directory, out_dir, data)
+        except JobError as err:
+            print(str(err), file=sys.stderr)
+            return 2
+    running = [job["label"] for job in jobs
+               if not (Path(out_dir) / f"{job['label']}.out.json").is_file() and seat_running(out_dir, job["label"])]
+    if running:
+        print("--review-close refused: still running: " + ", ".join(running)
+              + ". Close once they end (the session watcher wakes you); nothing was consolidated.")
+        return 2
+    results = seat_results(jobs, out_dir)
+    for label in landed:
+        print(f"[close] {label}: landed from its Workflow run")
+    text, code = summarize([(job["label"], None, None) for job in jobs], results, False)
+    return finish_review(args, jobs, results, out_dir, data, selection, None, text, code)
+
+
+def finish_review(args, jobs, results, out_dir, data, selection, saved_review, text, code):
+    """The one review tail, run over every seat's result whichever transport ran it: consolidate the seats into
+    `review.json`, run the fold, close with the post-check and ledger rows, apply the verdicts to the sources and
+    the grouped view, print the summary and return the exit code."""
+    try:
+        review = saved_review if args.refold else review_result.consolidate(jobs, results, out_dir, verify=False)
+        if args.refold:
+            post_check._write(out_dir / "review.json", review)
+        if selection is not None and not args.refold:
+            review["reviewerSelection"] = selection
+            post_check._write(out_dir / "review.json", review)
+    except (OSError, ValueError) as err:
+        print(f"review consolidation failed: {err}", file=sys.stderr)
+        return 1
+    text += f"\nreview: {review['status']} — {out_dir / 'review.json'}"
+    for entry in review["coverage"]:
+        if entry["status"] == "failed":
+            unread = entry.get("unread") or []
+            text += (f"\nuncovered: {entry['label']} failed — "
+                     + (f"unread {', '.join(unread)}" if unread else "a gap has no legal reason and the seat has no must-read list")
+                     + "; fix the cause before any second run")
+    if review["status"] != "complete":
+        code = 1
+    fold = None
+    fold_error = None
+    if args.fold and review["view"]:
+        try:
+            fold = run_review_fold(review, args, data, out_dir, jobs)
+        except (OSError, ValueError, JobError, fold_check.Unusable) as err:
+            fold_error = f"review fold failed before its check: {err}"
+            print(fold_error, file=sys.stderr)
+            code = 1
+    try:
+        checked = close_review(args, out_dir, independent=(fold or {}).get('independent'),
+                               expect_total=len(review['view']))
+    except (OSError, ValueError, fold_check.Unusable) as err:
+        print(f"post-check failed before its report: {err}", file=sys.stderr)
+        for failure in (fold or {}).get("failures") or []:
+            print(f"{failure['kind']}: {failure['detail']}", file=sys.stderr)
+        return 1
+    report_path = out_dir / "post_check.json"
+    if fold_error:
+        report = json.loads(report_path.read_text(encoding='utf-8'))
+        report['status'] = 'fail'
+        report.setdefault('errors', []).append({'kind': 'fold-precheck-failed', 'detail': fold_error})
+        post_check._write(report_path, report)
+    roots = {source: str(job['subject'].root) for job in (fold or {}).get('jobs', [])
+             for row in job['rows'] for source in fold_check._sources(row)}
+    originals = [dict(source['finding'], id=source['id'],
+                      root=roots.get(source['id'], str(args.root or REPO))) for source in review['sources']]
+    applied = sidecar_completion.publish(originals, report_path, out_dir / 'claims.json',
+                                         errors=[] if review['status'] == 'complete' else
+                                         [f"review coverage is {review['status']}"])
+    publish_review_children(review, applied, results, out_dir, args.root or REPO, fold)
+    by_id = {row['id']: row for row in applied['claims']}
+    for source in review['sources']:
+        source['finding'] = by_id[source['id']]
+    for view in review['view']:
+        members = [by_id[key]['verdict'] for key in fold_check._sources(view)]
+        verdict = next(v for v in ('UNVERIFIED', 'UNCHECKED', 'VERIFIED') if v in members)
+        view.update(verdict=verdict, confidence='verified' if verdict == 'VERIFIED' else 'unverified')
+    review['verification'] = applied['verification']
+    review['verdicts'] = [{'id': row['id'], 'verdict': row['verdict']} for row in applied['claims']]
+    review['verdictPath'] = str(report_path)
+    review['quoteCounts'] = applied['verification']['counts']
+    post_check._write(out_dir / 'review.json', review)
+    report = json.loads(report_path.read_text(encoding='utf-8'))
+    outcome, counts = report.get('outcome', report['status']), report.get('counts') or {}
+    text += (f"\npost-check: {outcome} — claims {counts.get('VERIFIED', 0)} verified, {counts.get('UNVERIFIED', 0)} "
+             f"unverified, {counts.get('UNCHECKED', 0)} unchecked; {len(report.get('held') or [])} held — {report_path}")
+    if checked != 0 or outcome != 'pass':
+        code = 1
+    if fold is not None:
+        digest = finish_fold(review, fold, report, out_dir)
+        text += f"\nfold: {digest['status']} — {out_dir / 'fold_digest.json'}"
+        if digest["status"] != "pass":
+            code = 1
+    print(text)
+    return code
+
+
 def refold_dir(out_dir):
     """Next unused fold-only attempt: refold, refold.attempt2, ...; prior bytes never move."""
     out_dir = Path(out_dir)
@@ -3493,6 +3786,13 @@ def build_parser():
     ap.add_argument('--root', help='subject checkout for claims and non-folded review evidence')
     ap.add_argument("--review", action="store_true",
                     help="consolidate schema-checked review seats into review.json")
+    ap.add_argument("--review-close", action="store_true",
+                    help="with the jobs file a split --review run was given: land each native seat's result from "
+                         "--workflow-dir, then consolidate, fold and post-check every seat, whichever transport "
+                         "ran it; dispatches no seat")
+    ap.add_argument("--workflow-dir", action="append", default=[], metavar="DIR",
+                    help="with --review-close: the transcriptDir of a dispatch.js run the fan-out printed "
+                         "(repeat per NATIVE call)")
     ap.add_argument("--refold", action="store_true",
                     help="fold and post-check saved OUT_DIR/review.json, dispatching no seat; "
                          "preserve prior artifacts in place and write under refold[.attemptN]")
@@ -3929,8 +4229,18 @@ def _main(argv):
         return 2
     args = ap.parse_args(argv)
     if args.refold:
-        if args.review_artifact or args.select or args.compare:
-            print("--refold does not combine with --review-artifact, --select or --compare", file=sys.stderr)
+        if args.review_artifact or args.select or args.compare or args.review_close:
+            print("--refold does not combine with --review-artifact, --select, --compare or --review-close",
+                  file=sys.stderr)
+            return 2
+        args.review = True
+    if args.workflow_dir and not args.review_close:
+        print("--workflow-dir needs --review-close", file=sys.stderr)
+        return 2
+    if args.review_close:
+        if args.review_artifact or args.select or args.compare or args.dry_run or args.max_parallel or args.authorize:
+            print("--review-close does not combine with --review-artifact, --select, --compare, --dry-run, "
+                  "--max-parallel or --authorize: it dispatches no seat", file=sys.stderr)
             return 2
         args.review = True
     # SC_COMPARISON is the launchers' proof of an observable comparison: only --compare sets it, so an
@@ -4045,6 +4355,12 @@ def _main(argv):
         _LAUNCH["jobs"] = os.path.abspath(args.jobs)
         REFUSED = RefusedLaunch(out_dir, [j.get("label") for j in jobs])
         jobs = _drop_unfit_rows([normalize_job(j, data, shared_context) for j in jobs], data)
+        collision = brief_collision(jobs, out_dir)
+        if collision:
+            raise JobError(collision)
+        ui_round_denial = ui_round.jobs_refusal(jobs) if ui_round else None
+        if ui_round_denial:
+            raise JobError(ui_round_denial)
     except (JobError, model_registry.RegistryError) as err:
         return _refused(str(err))
     saved_review = None
@@ -4082,7 +4398,8 @@ def _main(argv):
             claim = out_dir / REVIEW_CLAIM
             # review.json lands only at a run's end, so a launch while an earlier review still runs
             # in this out-dir sees none of review_paths; the claim, made at launch, is what it sees.
-            if claim.exists() and claim.read_text(encoding="utf-8") != os.environ.get("SIDECAR_REVIEW_CLAIM"):
+            if (not args.review_close and claim.exists()
+                    and claim.read_text(encoding="utf-8") != os.environ.get("SIDECAR_REVIEW_CLAIM")):
                 occupied.append(REVIEW_CLAIM)
             if occupied:
                 raise JobError("review artifacts already exist (" + ", ".join(occupied)
@@ -4099,28 +4416,29 @@ def _main(argv):
         SLOTS.clear()
         _LIVE.clear()
         _REPORTED_UNREADABLE.clear()
-        refusal = None if args.refold else admission_refusal(jobs, data)
+        refusal = None if args.refold or args.review_close else admission_refusal(jobs, data)
         if refusal:
             raise JobError(refusal)
-        planned = [] if args.refold else [
+        planned = [] if args.refold or args.review_close else [
             plan_job(j, data, out_dir, args.authorize, stage=args.ledger_stage) for j in jobs]
-        if args.fold and not args.refold:
+        if args.fold and not args.refold and not args.review_close:
             plan_job(fold_probe(args, jobs, data), data, out_dir, args.authorize)
     except (JobError, model_registry.RegistryError) as err:
         return _refused(str(err))
 
-    fit = launcher_fit_refusal(argv if argv is not None else sys.argv[1:])
-    if fit:
-        return _refused(fit)
-    size = fit_size(jobs)
-    over = over_window_refusal(size)
-    if over:
-        return _refused(over)
-    for fact in fit_facts(jobs, size):
-        print(fact)
-    if not args.refold:
-        for fact in spare_facts(jobs, data):
+    if not args.review_close:
+        fit = launcher_fit_refusal(argv if argv is not None else sys.argv[1:])
+        if fit:
+            return _refused(fit)
+        size = fit_size(jobs)
+        over = over_window_refusal(size)
+        if over:
+            return _refused(over)
+        for fact in fit_facts(jobs, size):
             print(fact)
+        if not args.refold:
+            for fact in spare_facts(jobs, data):
+                print(fact)
 
     if args.detach and not args.dry_run:
         refusal = doctrine_refusal(argv if argv is not None else sys.argv[1:])
@@ -4128,7 +4446,8 @@ def _main(argv):
             print(refusal)
             return 2
     rest_file = None
-    if not args.refold and not is_remainder_file(args.jobs, out_dir):
+    split_run = False
+    if not args.refold and not args.review_close and not is_remainder_file(args.jobs, out_dir):
         if not args.dry_run:
             clear_handoff(out_dir)
         enabled, why = split_enabled(args)
@@ -4141,7 +4460,11 @@ def _main(argv):
                 print(str(err), file=sys.stderr)
                 return 2
             handed = set(hand_off(routed, jobs, lanes, session, shared_context, out_dir, data, not args.dry_run))
+            if handed and args.review:
+                print("then, once the Workflow call and every sidecar seat have ended, consolidate the panel: "
+                      + close_call(argv if argv is not None else sys.argv[1:], args.jobs), flush=True)
             if handed:
+                split_run = True
                 kept = {job.get("label") for job in jobs} - handed
                 jobs = [job for job in jobs if job.get("label") in kept]
                 planned = [item for item in planned if item[0] in kept]
@@ -4225,7 +4548,7 @@ def _main(argv):
         refusal = doctrine_refusal(argv if argv is not None else sys.argv[1:])
         if refusal:
             return _refused(refusal, stream=sys.stdout)
-    if args.review and not args.refold and not os.environ.get("SIDECAR_REVIEW_CLAIM"):
+    if args.review and not args.refold and not args.review_close and not os.environ.get("SIDECAR_REVIEW_CLAIM"):
         token = str(uuid.uuid4())
         try:
             with open(out_dir / REVIEW_CLAIM, "x", encoding="utf-8", newline="\n") as fh:
@@ -4247,6 +4570,9 @@ def _main(argv):
         return code
     if args.refold:
         out_dir.mkdir(parents=True, exist_ok=False)
+    if args.review_close:
+        return close_panel(args, jobs, out_dir, data, selection)
+    deferred = split_run or is_remainder_file(args.jobs, out_dir)
     # Keep the three-argument call for a run with no extra stages or scheduling.
     extras = {k: v for k, v in (('fallbacks', dict(FALLBACKS)), ('lanes', lanes),
                                 ('after_seats', bool(args.review)), ('wake_groups', groups),
@@ -4257,83 +4583,13 @@ def _main(argv):
     text, code = summarize(planned, results, args.compare)
     if not args.review:
         text += resume_plan(jobs, results, out_dir, lanes)[1]
+    if args.review and deferred:
+        print(text + "\nseats done; the panel is consolidated by --review-close once every seat has ended")
+        return code
     if args.review:
-        try:
-            review = saved_review if args.refold else review_result.consolidate(jobs, results, out_dir, verify=False)
-            if args.refold:
-                post_check._write(out_dir / "review.json", review)
-            if selection is not None and not args.refold:
-                review["reviewerSelection"] = selection
-                post_check._write(out_dir / "review.json", review)
-        except (OSError, ValueError) as err:
-            print(f"review consolidation failed: {err}", file=sys.stderr)
-            return 1
-        text += f"\nreview: {review['status']} — {out_dir / 'review.json'}"
-        for entry in review["coverage"]:
-            if entry["status"] == "failed":
-                unread = entry.get("unread") or []
-                text += (f"\nuncovered: {entry['label']} failed — "
-                         + (f"unread {', '.join(unread)}" if unread else "a gap has no legal reason and the seat has no must-read list")
-                         + "; fix the cause before any second run")
-        if review["status"] != "complete":
-            code = 1
-        fold = None
-        fold_error = None
-        if args.fold and review["view"]:
-            try:
-                fold = run_review_fold(review, args, data, out_dir, jobs)
-            except (OSError, ValueError, JobError, fold_check.Unusable) as err:
-                fold_error = f"review fold failed before its check: {err}"
-                print(fold_error, file=sys.stderr)
-                code = 1
-        try:
-            checked = close_review(args, out_dir, independent=(fold or {}).get('independent'),
-                                   expect_total=len(review['view']))
-        except (OSError, ValueError, fold_check.Unusable) as err:
-            print(f"post-check failed before its report: {err}", file=sys.stderr)
-            for failure in (fold or {}).get("failures") or []:
-                print(f"{failure['kind']}: {failure['detail']}", file=sys.stderr)
-            return 1
-        report_path = out_dir / "post_check.json"
-        if fold_error:
-            report = json.loads(report_path.read_text(encoding='utf-8'))
-            report['status'] = 'fail'
-            report.setdefault('errors', []).append({'kind': 'fold-precheck-failed', 'detail': fold_error})
-            post_check._write(report_path, report)
-        roots = {source: str(job['subject'].root) for job in (fold or {}).get('jobs', [])
-                 for row in job['rows'] for source in fold_check._sources(row)}
-        originals = [dict(source['finding'], id=source['id'],
-                          root=roots.get(source['id'], str(args.root or REPO))) for source in review['sources']]
-        applied = sidecar_completion.publish(originals, report_path, out_dir / 'claims.json',
-                                             errors=[] if review['status'] == 'complete' else
-                                             [f"review coverage is {review['status']}"])
-        publish_review_children(review, applied, results, out_dir, args.root or REPO, fold)
-        by_id = {row['id']: row for row in applied['claims']}
-        for source in review['sources']:
-            source['finding'] = by_id[source['id']]
-        for view in review['view']:
-            members = [by_id[key]['verdict'] for key in fold_check._sources(view)]
-            verdict = next(v for v in ('UNVERIFIED', 'UNCHECKED', 'VERIFIED') if v in members)
-            view.update(verdict=verdict, confidence='verified' if verdict == 'VERIFIED' else 'unverified')
-        review['verification'] = applied['verification']
-        review['verdicts'] = [{'id': row['id'], 'verdict': row['verdict']} for row in applied['claims']]
-        review['verdictPath'] = str(report_path)
-        review['quoteCounts'] = applied['verification']['counts']
-        post_check._write(out_dir / 'review.json', review)
-        report = json.loads(report_path.read_text(encoding='utf-8'))
-        outcome, counts = report.get('outcome', report['status']), report.get('counts') or {}
-        text += (f"\npost-check: {outcome} — claims {counts.get('VERIFIED', 0)} verified, {counts.get('UNVERIFIED', 0)} "
-                 f"unverified, {counts.get('UNCHECKED', 0)} unchecked; {len(report.get('held') or [])} held — {report_path}")
-        if checked != 0 or outcome != 'pass':
-            code = 1
-        if fold is not None:
-            digest = finish_fold(review, fold, report, out_dir)
-            text += f"\nfold: {digest['status']} — {out_dir / 'fold_digest.json'}"
-            if digest["status"] != "pass":
-                code = 1
-    else:
-        if close_claims(args, out_dir, results=results) != 0:
-            code = 1
+        return finish_review(args, jobs, results, out_dir, data, selection, saved_review, text, code)
+    if close_claims(args, out_dir, results=results) != 0:
+        code = 1
     print(text)
     return code
 

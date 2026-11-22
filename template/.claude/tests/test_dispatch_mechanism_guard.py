@@ -20,6 +20,7 @@ HOOK = os.path.join(HERE, "..", "hooks", "dispatch_mechanism_guard.py")
 ALLOW, DENY = "allow", "deny"
 PR_READY_PRESENT = os.path.isfile(os.path.join(HERE, "..", "commands", "pr_ready.md"))
 STATE = tempfile.mkdtemp(prefix="dispatchguard_state_")
+os.environ.pop("CLAUDE_CODE_SIDECAR", None)
 
 # Former skill-load markers stay as transcript fixtures; neither authorizes a dispatch.
 MARKER_0 = "Dispatch Shape — decide this " + "FIRST"

@@ -15,6 +15,7 @@ holes; this module is the single home, so a fix lands in every guard at once.
     memoized()                          context: run_git answers a repeated read-only query once
     in_project(cwd, project_root, env)  -> bool  the commit targets this project's repo (worktrees included)
     incoming_paths(sub, rest, cwd, env) -> same shape, for merge / cherry-pick / revert
+    merge_refs(rest), merge_strategy(rest) -> the refs, and (strategy, [options]), a `git merge` names
     resolve_index(git_env, cwd)         -> (git_env, None) | (None, reason the index is unreadable)
     git_environ(git_env)                -> os.environ with a command's GIT_* variables applied
     bypass_declared(inline_env, VAR)    -> True when VAR=1 in the hook's env OR inline on the command
@@ -956,6 +957,47 @@ def _first_ref(rest):
         elif not a.startswith("-"):
             return a
     return None
+
+
+def merge_refs(rest):
+    """The refs a `git merge` invocation merges, in order (`--into-name` and option values skipped)."""
+    refs, skip = [], False
+    for a in rest:
+        if skip:
+            skip = False
+        elif a in _VALUE_OPTIONS:
+            skip = True
+        elif a == "--":
+            continue
+        elif not a.startswith("-"):
+            refs.append(a)
+    return refs
+
+
+def merge_strategy(rest):
+    """(strategy or None, [strategy options]) a `git merge` invocation names: `-s X`, `-sX`,
+    `--strategy=X`, `-X o`, `-Xo`, `--strategy-option=o`; the last strategy wins, as in git."""
+    strategy, options, want = None, [], None
+    for a in rest:
+        if want:
+            if want == "s":
+                strategy = a
+            else:
+                options.append(a)
+            want = None
+        elif a in ("-s", "--strategy"):
+            want = "s"
+        elif a in ("-X", "--strategy-option"):
+            want = "X"
+        elif a.startswith("--strategy="):
+            strategy = a.split("=", 1)[1]
+        elif a.startswith("--strategy-option="):
+            options.append(a.split("=", 1)[1])
+        elif a.startswith("-s") and len(a) > 2 and not a.startswith("--"):
+            strategy = a[2:]
+        elif a.startswith("-X") and len(a) > 2:
+            options.append(a[2:])
+    return strategy, options
 
 
 def incoming_paths(sub, rest, cwd, env=None):

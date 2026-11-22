@@ -380,6 +380,9 @@ class WakeUnit(unittest.TestCase):
         self.assertTrue(exited, "an ungrouped clean end is its own unit and wakes; printed: %r" % text)
         self.assertIn("DONE a exit=0", text)
         self.assertIn("STILL RUNNING 2", text)
+        for label in ("b", "c"):
+            self.assertRegex(text, r"RUNNING %s for \d+ min" % label,
+                             "every wake names each job still running with its age, not only a count")
 
     def test_grouped_clean_end_waits_for_its_running_group_member_then_wakes_on_the_last(self):
         self.fanout({"a": "seats", "b": "seats"})

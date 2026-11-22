@@ -32,8 +32,8 @@ decided from facts in the job and its brief:
                 `:N` or `:N-M` suffix; counted whole. A file cited both bare outside the `writeSet` and with a
                 suffix is an input.
   named spans   a named file inside the `writeSet`, or cited with a line suffix; the job reads ranges of it.
-A named file whose own tokens exceed the job's point cannot be read whole: it counts 0 and is a `searchSources`
-entry. `lowerTokens` is listed + inputs (`readingTokens` and `tokens` equal it); `upperTokens` adds the spans.
+A named file whose own tokens exceed the job's point cannot be read whole, and a named file the job's own
+`searchSources` list holds is only searched: each counts 0 and is a `searchSources` entry. `lowerTokens` is listed + inputs (`readingTokens` and `tokens` equal it); `upperTokens` adds the spans.
 The line prints the heaviest job's lower share and the point it used, and the count of backticked path-shaped names
 that are no file (a vault path spelled through an alias such as `V/...`), counted 0. A job is over its point when
 `lowerTokens` is; when only `upperTokens` is, the fit line says `ceiling over`. A pin the registry does not resolve
@@ -70,6 +70,12 @@ as a fact: each job the fan-out would refuse by `kind` (in the fan-out's own tex
 reading past its window, each pinned tier with no ladder slice in this context, and each governing
 skill the briefs need that is not in context. Each names its load step and never the ladder itself; a check that
 cannot run prints `preflight: not checked`, and one `preflight: clean` line is the launch's go.
+
+`attribution_lines(spec)` prints after the preflight, as `advisory:` lines that never refuse and never change the go: one per
+job whose brief holds a sentence that names a decision as the owners' ("the owners' ... rule/pick/choice, "owners' call/lock", "owners
+picked/chose/decided/locked", "your rule") with no owner source id in that same sentence (a U-id, a thread or
+message id, a `[date kind source]` ledger entry, a session id, a full date, a cited `.md` or `.jsonl` record). An earlier agent's decision reaches a job as a
+claim (`orchestration` §4); this names the sentence that dresses one as the owners'.
 """
 from __future__ import annotations
 
@@ -463,9 +469,11 @@ def dispatch_size(jobs, root=None, data=None) -> dict:
         model, effort = _pin_of(job, data)
         point = fit_tokens(model, 0, data, job)["usable"]
         write_set = _write_set(job, root)
+        listed_search = {os.path.normcase(os.path.abspath(root / p)) for p in job.get("searchSources") or []
+                         if isinstance(p, str)}
         inputs, spans, searched = [], [], []
         for key, path in named.items():
-            if point and _tokens_of(characters[key]) > point:
+            if key in listed_search or (point and _tokens_of(characters[key]) > point):
                 searched.append(path)
             elif _in_write_set(path, root, write_set) or not cites.get(key, (True, False))[0]:
                 spans.append(key)
@@ -698,10 +706,75 @@ def _credit_lines(spec, root: Path, session_id: str, transcript_path) -> list:
     return out
 
 
+def codify_prompt_lines(spec) -> list:
+    """Each job whose prompt is a `codify_*/prompt*.md` that differs from `codify_prompt.py`'s render."""
+    try:
+        jobs = _jobs_of(spec)
+        import codify_prompt
+    except Exception:
+        return []
+    out = []
+    for job in jobs:
+        for key in ("promptFile", "promptPath"):
+            path = job.get(key)
+            if not isinstance(path, str):
+                continue
+            norm = _posix(path)
+            if not re.search(r"/codify_[^/]+/prompt[^/]*\.md$", "/" + norm.lstrip("/")):
+                continue
+            try:
+                bad = codify_prompt.differs(path)
+            except OSError:
+                continue
+            if bad:
+                out.append("preflight: unmet: job %s: %s %s (a codify derivation prompt is written only by tools/codify_prompt.py); "
+                           "a derivation that read it is void and relaunches" % (
+                               job.get("label") or "?", norm, bad[0]))
+    return out
+
+
+def wide_run_lines(spec, root: Path) -> list:
+    """One `preflight: unmet:` line per job whose brief orders a wide test run, else [].
+
+    Both dispatch hooks refuse such a launch, so the preflight shows it before the call
+    (`instruction_quality` §3); `_dispatch_checks.wide_run_refusal` owns the match, and a `gate` job passes."""
+    if _dispatch_checks is None:
+        return ["preflight: not checked: wide runs (the dispatch check did not import)"]
+    try:
+        jobs = _jobs_of(spec)
+    except ValueError:
+        return []
+    out = []
+    for job in jobs:
+        for text in _brief_texts(job, root):
+            why = _dispatch_checks.wide_run_refusal(job.get("kind"), text, root)
+            if why:
+                out.append("preflight: unmet: job %s: %s" % (job.get("label") or "?", why))
+                break
+    return out
+
+
+def ui_round_lines(jobs, root: Path) -> list:
+    """The UI-round launch refusal for these jobs as one `preflight: unmet:` line, else []. The fan-out launch
+    refuses the same jobs; `ui_round.jobs_refusal` owns the rule."""
+    try:
+        import ui_round
+        why = ui_round.jobs_refusal(jobs, str(root))
+    except ModuleNotFoundError as err:
+        if err.name != "ui_round":
+            return ["preflight: not checked: UI round jobs (%s: %s)" % (type(err).__name__, err)]
+        return []  # a project without UI rounds has no refusal to check
+    except Exception as err:
+        return ["preflight: not checked: UI round jobs (%s: %s)" % (type(err).__name__, err)]
+    return ["preflight: unmet: " + why] if why else []
+
+
 def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> list:
     """Every unmet launch precondition, as facts, in the output `/delegate` already reads before a launch: each
-    job the fan-out would refuse by `kind`, each job whose reading passes its window, each pinned tier with no
-    ladder slice in this context, and the orchestration skill when it is not in context. One `preflight: clean: ...` line means every check
+    job the fan-out would refuse by `kind`, each brief that orders a wide test run, each job whose `codify_*`
+    prompt differs from its render, each UI-round job `ui_round.jobs_refusal` refuses, each job whose reading
+    passes its window, each pinned tier with no ladder slice in this context, and the orchestration skill when
+    it is not in context. One `preflight: clean: ...` line means every check
     ran and passed, so a clean preflight is the launch's go. A check that cannot run prints `preflight: not
     checked: ...`, never a pass. Facts only; no check denies on these lines."""
     root = Path(root) if root else Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
@@ -709,7 +782,8 @@ def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> l
         jobs = _jobs_of(spec)
     except ValueError:
         return ["preflight: not checked: launch preconditions (the spec holds no job list)"]
-    out = _kind_refusals(jobs) + _over_window_unmet(spec, root)
+    out = (_kind_refusals(jobs) + codify_prompt_lines(spec) + wide_run_lines(spec, root)
+           + ui_round_lines(jobs, root) + _over_window_unmet(spec, root))
     session_id = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session_id:
         return out + ["preflight: not checked: ladder and skill credit (CLAUDE_CODE_SESSION_ID is unset)"]
@@ -720,6 +794,65 @@ def preflight_lines(spec, root=None, session_id=None, transcript_path=None) -> l
     if out:
         return out
     return ["preflight: clean: every launch precondition is met"]
+
+
+_OWNER = r"\bowners?(?:['’]s?)?"
+_GAP = r"(?:(?!(?:per|for|of|to|in|on|and|or|that|is|are|as|call|calls|lock|locks)\b)[\w-]+\s+){0,2}"
+_ATTRIBUTION = re.compile(
+    r"%s\s+%s(?:rules?|rulings?|decisions?|picks?|choices?)\b" % (_OWNER, _GAP)
+    + r"|\bowners['’]s?\s+%s(?:calls?|locks?)\b" % _GAP
+    + r"|%s\s+(?:picked|chose|decided|locked|ruled)\b" % _OWNER
+    + r"|\byour\s+(?:rule|decision)\b"
+    + r"|\bowner-(?:decided|locked)\b", re.I)
+_OWNER_SOURCE = re.compile(
+    r"\bU\d{3,6}\b"
+    r"|\[\d{4}-\d\d-\d\d\s+[a-z]+\s+[^\]\n]+\]"
+    r"|\b[MT](?=[0-9a-f]*\d)[0-9a-f]{7,}(?:-\d+)?\b"
+    r"|\b(?=[0-9a-f]*\d)[0-9a-f]{8}\b"
+    r"|\brec-\d+\b|\b\d{4}-\d\d-\d\d\b|\.(?:md|jsonl)\b", re.I)
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
+ATTRIBUTION_SHOWN = 3
+
+
+def _brief_texts(job: dict, root: Path) -> list:
+    texts = [job["prompt"]] if isinstance(job.get("prompt"), str) else []
+    for key in ("promptPath", "promptFile"):
+        path = job.get(key)
+        if isinstance(path, str) and path.strip():
+            candidate = Path(path)
+            try:
+                texts.append((candidate if candidate.is_absolute() else root / candidate).read_text(
+                    encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+    return texts
+
+
+def unsourced_attributions(text: str) -> list:
+    """Each sentence of `text` that names a decision as the owners' and holds no owner source id."""
+    return [s.strip() for s in _SENTENCE.split(text)
+            if _ATTRIBUTION.search(s) and not _OWNER_SOURCE.search(s)]
+
+
+def attribution_lines(spec, root=None) -> list:
+    """One `advisory:` line per job whose brief holds a sentence that attributes a decision to the owners with no
+    owner source id (a U-id, a thread or message id, a ledger entry) in that sentence. Advisory: it prints and
+    never refuses; a spec that holds no job list prints nothing."""
+    root = Path(root) if root else Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    try:
+        jobs = _jobs_of(spec)
+    except ValueError:
+        return []
+    out = []
+    for index, job in enumerate(jobs):
+        found = [s for text in _brief_texts(job, root) for s in unsourced_attributions(text)]
+        if found:
+            label = job.get("label") or "job%d" % (index + 1)
+            shown = "; ".join('"%s"' % (s if len(s) <= 140 else s[:137] + "...") for s in found[:ATTRIBUTION_SHOWN])
+            out.append("advisory: job `%s` brief names a decision as the owners' with no owner source id in the "
+                       "sentence (%d): %s; cite its U-id, thread id or ledger entry, or brief it as an earlier "
+                       "agent's claim" % (label, len(found), shown))
+    return out
 
 
 def _job_tier(job: dict, by_kind: dict):
@@ -843,6 +976,8 @@ def main(argv=None) -> int:
         for fact in fact_lines(spec, session_id=os.environ.get("CLAUDE_CODE_SESSION_ID")):
             print(fact)
         for fact in preflight_lines(spec, session_id=os.environ.get("CLAUDE_CODE_SESSION_ID")):
+            print(fact)
+        for fact in attribution_lines(spec):
             print(fact)
     except (OSError, ValueError) as exc:
         print("dispatch_size: %s" % exc, file=sys.stderr)

@@ -4,7 +4,7 @@ Lean is an owner-set condition beside rigor. While it holds, the bar that picks 
 
 ## Setting it
 
-Only the owner sets lean, from an owner turn that holds the literal token `--lean`; `--normal` goes back. A token inside a pasted block does not count. Run `python3 .claude/tools/spend_mode.py set lean`, with `--task <id> --until <ISO>` or `--until-reset <plan>` for a task scope (a task scope needs an end, and an unreadable reset refuses). `show` prints the posture; `clear` returns the session to normal. A delegate cannot set it. Nothing sets it automatically: room already moves the paying plan, and an automatic lean would trade quality the owner never chose. The posture line offers it when the session's own plan is Hot or worse; the offer is not a setting.
+Only the owner sets lean, from an owner turn that holds the literal token `--lean`; `--normal` goes back. A token inside a pasted block does not count. Run `python3 .claude/tools/spend_mode.py set lean`, with `--task <id> --until <ISO>` or `--until-reset <plan>` for a task scope (a task scope needs an end, and an unreadable reset refuses). `show` prints the posture; `clear` returns the session to normal. A delegate cannot set it. A skill or command the owner invokes with `--lean`, and a handoff turn that carries the token, runs `python3 .claude/tools/spend_mode.py set lean` before its first dispatch, and the session's first status line names the posture it set. Nothing sets it automatically: room already moves the paying plan, and an automatic lean would trade quality the owner never chose. The posture line offers it when the session's own plan is Hot or worse; the offer is not a setting.
 
 ## Picking a row under lean
 

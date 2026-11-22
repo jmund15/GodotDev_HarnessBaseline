@@ -27,7 +27,6 @@ status, original reason and dependency stems, and appends {reason, at, changed} 
 refuses with no receipt, a blocked receipt, a dependency that is not current, or no change.
 """
 import argparse
-import glob
 import hashlib
 import importlib.util
 import json
@@ -90,13 +89,8 @@ def transcript_for(session, repo):
     if not isinstance(session, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', session):
         return None
     import session_digest
-    bases = [str(store) for store in session_digest.project_dirs(os.path.abspath(repo))]
-    for base in bases:
-        exact = os.path.join(base, session + '.jsonl')
-        if os.path.isfile(exact):
-            return exact
-    candidates = [path for base in bases for path in glob.glob(os.path.join(glob.escape(base), session + '*.jsonl'))]
-    return candidates[0] if len(candidates) == 1 else None
+    hits = session_digest.store_transcripts(session_digest.project_dirs(os.path.abspath(repo)), session, prefix=True)
+    return str(hits[0]) if len(hits) == 1 else None
 
 
 def phase_observations(path):

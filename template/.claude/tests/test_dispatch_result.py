@@ -255,8 +255,29 @@ case("a block name fenced twice is read as one block",
      lambda: _twice[0] == 0 and "rules: 3 rows" in _twice[1])
 case("an unreadable spill exits 2",
      lambda: _absent[0] == 2)
-case("a --block without keys and a check with no --block exit 2",
-     lambda: _badspec[0] == 2 and _noargs[0] == 2)
+case("a --block without keys exits 2",
+     lambda: _badspec[0] == 2)
+
+_PROSE = "# report\n\nDone.\n"
+_claims_ok = cli("check", plant_spill("claims_ok.md", _PROSE + _FENCE + "claims\n" + '{"id":"c1","claim":"x"}\n' + _FENCE + "\n"))
+_claims_bad = cli("check", plant_spill("claims_bad.md", _PROSE + _FENCE + "claims\n" + "not json\n" + _FENCE + "\n"))
+_claims_arr = cli("check", plant_spill("claims_arr.md", _PROSE + _FENCE + "claims\n" + "[1]\n" + _FENCE + "\n"))
+_plain = cli("check", plant_spill("plain.md", _PROSE))
+_blank = cli("check", plant_spill("empty.md", "  \n\n"))
+_empty_block = cli("check", plant_spill("empty_block.md", "\n"), "--block", "rules=id")
+_absent_plain = cli("check", os.path.join(CHECKS, "absent_plain.md"))
+
+case("check with no --block passes a non-empty report and says OK",
+     lambda: _noargs[0] == 0 and _plain[0] == 0 and "OK" in _plain[1])
+case("check with no --block parses a claims fence when present and passes a clean one",
+     lambda: _claims_ok[0] == 0 and "claims: 1 rows" in _claims_ok[1])
+case("check with no --block fails a claims fence whose row is not JSON, or not an object",
+     lambda: _claims_bad[0] == 1 and "claims row 1: not JSON" in _claims_bad[1]
+     and _claims_arr[0] == 1 and "claims row 1: not a JSON object" in _claims_arr[1])
+case("check with no --block fails an empty report naming it, and an absent one exits 2",
+     lambda: _blank[0] == 1 and "EMPTY report" in _blank[1] and _absent_plain[0] == 2)
+case("--block stays the stricter form: an empty report fails it too",
+     lambda: _empty_block[0] == 1 and "EMPTY report" in _empty_block[1])
 
 
 # ---- consume: one label of a Workflow run, its checks, changed paths and diff ------------------

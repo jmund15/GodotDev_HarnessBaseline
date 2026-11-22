@@ -225,8 +225,8 @@ def writes(tool_name, tool_input):
 # names its replacement, and the engines and the hook refuse a job that still carries one.
 RETIRED_JOB_KEYS = {
     "agentType": "the `kind` row sets the agent type",
-    "shape": "use `kind` (scout|lens|reviewer|author|judge)",
-    "readOnly": "a reviewer, scout, lens or judge job cannot write and an author job can: pick the kind",
+    "shape": "use `kind` (scout|lens|reviewer|author|judge|gate)",
+    "readOnly": "a reviewer, scout, lens, judge or gate job cannot write and an author job can: pick the kind",
 }
 
 
@@ -475,7 +475,7 @@ def profile_line(label, profile):
         note = STRICT
     mode = profile.get("overrideMode") or ""
     mode = "" if mode in ("shape-default", "delta") else " (%s)" % mode
-    return "  tools %s: %s %s %s \u00b7 %s%s%s" % (
+    return "  tools %s: %s %s %s · %s%s%s" % (
         label, profile.get("kind"), note, ",".join(profile.get("builtins") or []), mcp,
         (" " + delta) if delta else "", mode)
 
@@ -483,3 +483,5 @@ def profile_line(label, profile):
 def undeclared_profile(label):
     """The line for a recorded dispatch whose profile nobody declared: `unknown`, never a default."""
     return "  tools %s: unknown (no profile declared)" % label
+
+

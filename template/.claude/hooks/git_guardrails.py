@@ -24,13 +24,19 @@ Why:
   same intent (stash, --keep, dry-run, unstage), so blocking costs one extra
   step and never a re-do.
 
+A merge commit whose result drops lines a parent added to a `.claude/` file since the merge base
+names them as an advisory (`merge_drop_advisory`), never a deny.
+
 Scope: destructive local actions, history rewrites and harness push coverage. `git
 status`, `git restore --staged`, `git clean -n`, `git branch -d` stay allowed —
 they are recoverable or non-destructive. So does `git branch -D` of a local branch whose every
 commit `git cherry` finds already applied to HEAD or origin/HEAD (a squash-merged branch), of a branch
 whose tip a ref outside the deleted set holds (a remote-tracking ref, a tag, `refs/preserve/`), or of a
 `scratch/<name>` session fixture branch (`orchestration` reference `worktrees.md`). A path-scoped checkout
-or restore that loses no edit passes too (`_discards_nothing`: a `__pycache__` path, an edit git stores).
+or restore that loses no edit passes too (`_discards_nothing`: a `__pycache__` path, an edit git stores, a restore
+of a file the worktree lacks).
+`git stash drop` of one entry passes when a ref outside `refs/stash` holds the entry commit, or when one ref's
+tip already holds every change the entry carries (`_stash_changes_held`).
 
 Matching: `_git_commit.py` owns the command parse (heredoc bodies stripped, segments split,
 `git -C <path>` and a preceding `cd <path>` retarget the repo, inline `VAR=1` prefixes read).
@@ -101,10 +107,10 @@ def _runner():
 # Which paths a merge commit authors, shared with `baseline_classification_guard.py`. Guarded like
 # the two above: a missing helper must deny commit-like invocations, never crash the other git guards.
 try:
-    from _commit_scope import authored_paths, publishes_index, writes_index  # noqa: E402
+    from _commit_scope import authored_paths, publishes_index, writes_index, merge_dropped_lines  # noqa: E402
     _SCOPE_IMPORT_ERROR = None
 except Exception as _exc:
-    authored_paths = publishes_index = writes_index = None
+    authored_paths = publishes_index = writes_index = merge_dropped_lines = None
     _SCOPE_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 # The pull proof record: a pulled path whose proof is pending or red commits with a note. Guarded like the helpers above.
 try:
@@ -117,7 +123,7 @@ from _git_commit import (  # noqa: E402
     git_environ,
     git_invocation, git_invocations, executable_text, run_git,
     staged_paths, incoming_paths, bypass_declared, parse_commit_args, full_pathspec, resolve_index, commit_source,
-    _pathspec_file,
+    _pathspec_file, merge_refs, merge_strategy,
     unexpanded_hint, resolve_cd, expand_literal, ref_resolves, refs_created, ref_names_created,
 )
 
@@ -166,7 +172,8 @@ def _discards_nothing(sub, rest, cwd, git_env=None):
     path taken with --theirs/--ours (not .tscn/.tres, where one side silently drops Export wiring),
     or sits in a `__pycache__` directory (Python regenerates the bytecode), or has no difference from its source
     beyond CR line endings, or (checked out of another ref) is a
-    path HEAD tracks with no staged or unstaged edit, or a path absent from HEAD, index and worktree.
+    path HEAD tracks with no staged or unstaged edit, or a path absent from HEAD, index and worktree,
+    or (a restore, which writes only the worktree) a path absent from the worktree, which holds no bytes to lose.
     Any doubt reads as a loss."""
     if cwd is None or (sub == "checkout" and "--" not in rest):
         return False
@@ -191,6 +198,8 @@ def _discards_nothing(sub, rest, cwd, git_env=None):
             unmerged = run_git(["ls-files", "-u", "--", path], cwd, git_env)
             if not (unmerged or "").strip():
                 return False
+            continue
+        if sub == "restore" and not path.startswith(":") and not os.path.lexists(os.path.join(cwd, path)):
             continue
         diff = ["diff", "--quiet", "--ignore-cr-at-eol"] + ([base] if base else []) + ["--", path]
         if (run_git(diff, cwd, git_env) is None and not (base and _clean_in_head(path, cwd, git_env))
@@ -221,8 +230,8 @@ def _clean_in_head(path, cwd, git_env=None):
 
 
 def _stash_preserved(args, cwd, git_env=None):
-    """True when the one stash entry `git stash drop` targets is still held by a ref outside
-    refs/stash, so dropping it loses nothing git cannot reach."""
+    """True when the one stash entry `git stash drop` targets loses nothing git cannot reach: a ref outside
+    refs/stash holds the entry commit, or `_stash_changes_held` finds every change it carries in one ref's tip."""
     args = [a for a in args if a not in ("-q", "--quiet")]
     targets = [a for a in args if not a.startswith("-")]
     if len(targets) > 1 or len(targets) != len(args) or not cwd:
@@ -231,7 +240,91 @@ def _stash_preserved(args, cwd, git_env=None):
     if not sha or not sha.strip():
         return False
     holders = run_git(["for-each-ref", "--contains", sha.strip(), "--format=%(refname)"], cwd, git_env)
-    return any(ref and ref != "refs/stash" for ref in (holders or "").splitlines())
+    if any(ref and ref != "refs/stash" for ref in (holders or "").splitlines()):
+        return True
+    return _stash_changes_held(sha.strip(), cwd, git_env)
+
+
+_STASH_PREFILTER_PATHS = 16
+
+
+def _tree_names(args, cwd, git_env):
+    """The NUL-separated path list of a `git diff`/`ls-tree` call as a set, or None when the call failed."""
+    out = run_git(args, cwd, git_env)
+    return None if out is None else {p for p in out.split("\0") if p}
+
+
+def _stash_changes_held(stash, cwd, git_env=None):
+    """True when one ref outside refs/stash has, at its tip, every change the stash entry carries: each tracked
+    path the entry's worktree tree or its index commit (`stash^2`) changes against its base (`stash^1`), and each
+    file of its untracked commit (`stash^3`), is byte- and mode-equal at that tip (the worktree and index versions
+    both, so a staged version no tip holds is not lost silently). Fails closed on a deleted branch, a branch that
+    moved past the change, a detached HEAD (no ref), a partial match, an entry with no change to compare, a path a
+    batch query cannot name (a newline or an undecodable byte) and any git failure. `cat-file --batch-check`
+    prefilters every ref tip in one process on the first `_STASH_PREFILTER_PATHS` paths, a cost bound only: the
+    tree diffs on each surviving tip are the verdict."""
+    index = run_git(["rev-parse", "--verify", "--quiet", stash + "^2^{tree}"], cwd, git_env)
+    base = run_git(["rev-parse", "--verify", "--quiet", stash + "^1^{tree}"], cwd, git_env)
+    untracked = run_git(["rev-parse", "--verify", "--quiet", stash + "^3^{tree}"], cwd, git_env)
+    if not index or not base:
+        return False
+    worktree_paths = _tree_names(["diff", "--name-only", "-z", "--no-renames", stash + "^1", stash], cwd, git_env)
+    index_paths = _tree_names(["diff", "--name-only", "-z", "--no-renames", stash + "^1", stash + "^2"], cwd, git_env)
+    untracked_paths = (_tree_names(["ls-tree", "-r", "--name-only", "-z", stash + "^3"], cwd, git_env)
+                       if untracked and untracked.strip() else set())
+    if worktree_paths is None or index_paths is None or untracked_paths is None:
+        return False
+    expected = ([(stash, p) for p in sorted(worktree_paths)]
+                + [(stash + "^2", p) for p in sorted(index_paths - worktree_paths)]
+                + [(stash + "^3", p) for p in sorted(untracked_paths)])
+    if not expected or any("\n" in p or "�" in p for _, p in expected):
+        return False
+    refs = run_git(["for-each-ref", "--format=%(objectname) %(refname)"], cwd, git_env)
+    if refs is None:
+        return False
+    tips = []
+    for line in refs.splitlines():
+        tip, _, name = line.partition(" ")
+        if tip and name != "refs/stash" and tip not in tips:
+            tips.append(tip)
+    probe = expected[:_STASH_PREFILTER_PATHS]
+    queries = [f"{tree}:{p}" for tree, p in probe]
+    for tip in tips:
+        queries.extend(f"{tip}:{p}" for _, p in probe)
+    try:
+        batch = subprocess.run(["git", "cat-file", "--batch-check"], cwd=cwd, input="\n".join(queries).encode("utf-8") + b"\n",
+                               capture_output=True, timeout=30, env=git_environ(git_env))
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    rows = batch.stdout.decode("utf-8", "replace").splitlines()
+    if batch.returncode != 0 or len(rows) != len(queries):
+        return False
+    answers = [None if row.endswith(" missing") else row.split(" ", 1)[0] for row in rows]
+    want = answers[:len(probe)]
+    for n, tip in enumerate(tips):
+        if answers[len(probe) * (n + 1):len(probe) * (n + 2)] != want:
+            continue
+        if _tip_holds_stash(tip, stash, worktree_paths, index_paths, untracked_paths, cwd, git_env):
+            return True
+    return False
+
+
+def _tip_holds_stash(tip, stash, worktree_paths, index_paths, untracked_paths, cwd, git_env):
+    """The exact verdict for one ref tip: no path the entry's worktree tree changes differs between the tip and
+    that tree, no path its index commit changes differs between the tip and that commit (an unstaged path leaves
+    the index at its base, so it is not compared there), and no untracked file differs between the tip and
+    `stash^3`."""
+    for side, paths in ((stash, worktree_paths), (stash + "^2", index_paths)):
+        if paths:
+            differing = _tree_names(["diff", "--name-only", "-z", "--no-renames", tip, side], cwd, git_env)
+            if differing is None or differing & paths:
+                return False
+    if untracked_paths:
+        differing = _tree_names(["diff", "--name-only", "-z", "--no-renames", "--diff-filter=AMTU", tip, stash + "^3"],
+                                cwd, git_env)
+        if differing is None or differing & untracked_paths:
+            return False
+    return True
 
 
 _BRANCH_DELETE_FLAGS = ("-D", "--delete", "--force", "-f", "-q", "--quiet")
@@ -940,6 +1033,67 @@ def _revert_message(stale):
 
 ADVISORIES = []  # commit advisories `main()` prints as additionalContext when no check denies
 
+MERGE_DROP_SHOWN = (10, 8)  # files, then lines per file, the advisory prints; the rest it counts
+
+
+def _merge_result(sub, rest, cwd, git_env):
+    """(ours, theirs, result) for the merge this invocation commits, or None.
+
+    The commit that closes a merge (`commit`, `merge --continue`) commits the index against
+    `MERGE_HEAD`. A bare two-parent `git merge` that commits at once is read only when its strategy
+    can drop a side's lines without a conflict (`-s ours`, `-X ours|theirs`); a default merge keeps
+    every added line or stops at a conflict, whose closing commit is read instead. A `-a` commit
+    takes the worktree, which this reads as the index."""
+    if publishes_index(sub, rest):
+        if run_git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd, git_env) is None:
+            return None
+        if (run_git(["ls-files", "-u"], cwd, git_env) or "").strip():
+            return None
+        return "HEAD", "MERGE_HEAD", ""
+    if sub != "merge" or any(a in ("--no-commit", "--squash", "--abort", "--quit", "--continue") for a in rest):
+        return None
+    refs = merge_refs(rest)
+    strategy, options = merge_strategy(rest)
+    if len(refs) != 1:
+        return None
+    if strategy == "ours":
+        return "HEAD", refs[0], "HEAD^{tree}"
+    picks = [o for o in options if o in ("ours", "theirs")]
+    if not picks or strategy not in (None, "ort", "recursive"):
+        return None
+    tree = run_git(["merge-tree", "--write-tree", "-X", picks[-1], "HEAD", refs[0]], cwd, git_env)
+    if not tree or not tree.split():
+        return None
+    return "HEAD", refs[0], tree.split()[0]
+
+
+def merge_drop_advisory(sub, rest, cwd, git_env=None):
+    """The advisory naming the lines a merge drops that a parent added to a `.claude/` file since the
+    merge base, or None. Never a deny: a replacement made on purpose reads the same."""
+    merge = _merge_result(sub, rest, cwd, git_env)
+    if merge is None or merge_dropped_lines is None:
+        return None
+    ours, theirs, result = merge
+    drops, unchecked = merge_dropped_lines(ours, theirs, result, cwd, git_env)
+    if not drops and not unchecked:
+        return None
+    files_shown, lines_shown = MERGE_DROP_SHOWN
+    lines = ["[merge drops] this merge's result lacks lines a parent added since the merge base "
+             "(a replacement made on purpose reads the same):"]
+    entries = [(side, path, found) for side in ("ours", "theirs") for path, found in sorted(drops.get(side, {}).items())]
+    for side, path, found in entries[:files_shown]:
+        lines.append("  %s: %d of %d lines %s added are missing"
+                     % (path, len(found["dropped"]), found["added"], ours if side == "ours" else theirs))
+        lines.extend("    - " + line.strip()[:160] for line in found["dropped"][:lines_shown])
+        if len(found["dropped"]) > lines_shown:
+            lines.append("    ... %d more" % (len(found["dropped"]) - lines_shown))
+    if len(entries) > files_shown:
+        lines.append("  ... %d more files" % (len(entries) - files_shown))
+    if unchecked:
+        lines.append("  not checked (past the read budget or a failed read): " + ", ".join(unchecked[:files_shown])
+                     + (" ... %d more" % (len(unchecked) - files_shown) if len(unchecked) > files_shown else ""))
+    return "\n".join(lines)
+
 
 def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=None, refs_pending=()):
     """Quick commit checks and an advisory, budgeted run of authored harness paths' bound proofs."""
@@ -1417,6 +1571,14 @@ def main() -> None:
             if not message:
                 message = harness_verdict(args[0], args[1:], target, inline_env, git_env,
                                           input_data.get("session_id"), ref_makers.get(key, ()))
+            if not message and publishes_index is not None:
+                try:
+                    dropped = merge_drop_advisory(args[0], args[1:], target, git_env)
+                except Exception as exc:
+                    dropped = "[merge drops] the check could not run (%s: %s); this merge's dropped lines are unchecked." % (
+                        type(exc).__name__, exc)
+                if dropped:
+                    ADVISORIES.append(dropped)
         if args and args[0] in REF_MAKERS:
             ref_makers.setdefault(key, set()).update(refs_created(args[0], args[1:]))
         if message:

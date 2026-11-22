@@ -23,10 +23,16 @@ recognizer: a gate keyed on the narrow recognizer fails open for every shape it 
    availability gate. A fan-out job's `plan` must be a live plan of its row's route (of at least one listed row's, for `rows`) for the approval in step 3.
    A fan-out whose jobs file the same call writes is checked by `sidecar_fanout.py` itself, through
    `fanout_fit_refusal`, once it can read the file and before it spawns or detaches.
+0b. WIDE RUN AT LAUNCH (deny path). A job whose brief orders a wide test run is refused before the
+   preflight: each `task` block `check` entry and, when the kind's built-ins hold Bash, each command
+   `tools/tool_profiles.brief_commands` finds in the brief. A direct launch's brief is its `-f`; a
+   fan-out job's is its `promptFile`; `gate` is the one kind that may run one. `_dispatch_checks`
+   `wide_run_refusal` owns the match.
 1. PREFLIGHT (deny path). Direct launchers run `<launcher> --check [-m <alias>] [-A] [-U] [-W]`
-   synchronously. A fan-out call has no launcher to check, so the hook denies it from cached capacity
-   through `sidecar_fanout.admission_refusal` (`fanout_capacity_refusal`): a job whose named plan, or whose
-   route's every plan, has no room is refused in the call, backgrounded or not. A forecast-only shortfall
+   synchronously. A fan-out call has no launcher to check, so the hook uses
+   `sidecar_fanout.admission_refusal` (`fanout_capacity_refusal`), confirming cached blocking readings
+   through `provider_capacity.reading` within the hook deadline and its 429 cooldown. A job whose named plan,
+   or whose route's every plan, has confirmed no room is refused in the call, backgrounded or not. A forecast-only shortfall
    never refuses; the fan-out paces each plan in waves (`sidecar_fanout.Waves`). A stale, missing or unreadable reading decides nothing.
    The same launcher gates each fan-out child at runtime. Availability,
    budget-band, provider-capacity, balance, and pricing refusals remain owned by the launchers.
@@ -164,9 +170,10 @@ def fanout_launch(cmd):
     for inv in sidecar_argv.launcher_invocations(cmd):
         if inv.kind != "fanout":
             continue
+        inv = _assigned(inv, cmd)
         if any(arg in NON_DISPATCHING_FANOUT_ARGS or arg.startswith("--status=") for arg in inv.args):
             continue
-        return _assigned(inv, cmd)
+        return inv
     return None
 
 
@@ -181,7 +188,7 @@ def _assigned(inv, cmd):
         return inv
     if not env:
         return inv
-    return inv._replace(args=[orchestration_metrics._expand_vars(arg, env) for arg in inv.args])
+    return inv._replace(args=orchestration_metrics._expand_words(inv.args, env))
 
 
 def launch_preflight(cmd, root):
@@ -430,12 +437,12 @@ def _read_fanout(fanout, root):
 
 
 def fanout_capacity_refusal(fanout, root, deadline):
-    """`sidecar_fanout.admission_refusal` for the call's jobs, read from cached capacity only, else None.
-    The cache rule is the launcher's (`provider_capacity.cached`: a reading no older than its TTL). A stale
-    or missing reading decides nothing; nor does a call this hook cannot read or one past `deadline`, since
-    each launcher still gates its own job. Positive headroom admits even below the forecast; only observed
-    lack of room refuses, and the pacing that shortfall needs (per-plan waves, re-sized from observed drain) is
-    the fan-out's own, never this hook's. A refold launches no seat."""
+    """Admission from cached capacity, with blocking readings confirmed by the provider reader.
+
+    Confirmation runs once per plan through the existing CLI, bounded by the remaining hook deadline.
+    The provider owns live-read locking and the 429 cooldown; an unconfirmed refusal decides nothing.
+    Positive headroom admits even below the forecast; the fan-out owns pacing. A refold launches no seat.
+    """
     if (fanout is None or sidecar_fanout is None or model_registry is None
             or os.environ.get("HARNESS_SIDECAR_PREFLIGHT") == "0" or time.monotonic() >= deadline):
         return None
@@ -443,9 +450,29 @@ def fanout_capacity_refusal(fanout, root, deadline):
         args, _path, data, jobs, _spill = _read_fanout(fanout, root)
         if getattr(args, "refold", False):
             return None
-        return sidecar_fanout.admission_refusal(
-            jobs, data, read=lambda transport, table: sidecar_fanout.provider_bands.read_capacity(
-                transport, table, live=False))
+        capacity = sidecar_fanout.provider_bands.provider_capacity
+        seen = {}
+
+        def read(transport, table):
+            if transport in seen:
+                return seen[transport]
+            seen[transport] = None
+            got = capacity.cached(transport, data=table)
+            if got is not None and got.get("status") in capacity.BLOCKING:
+                allowed = min(PREFLIGHT_TIMEOUT, deadline - time.monotonic())
+                if allowed < 1:
+                    return None
+                result = run_bounded([sys.executable, str(TOOLS / "provider_capacity.py"), transport],
+                                     allowed, cwd=root, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+                if result.returncode != 0:
+                    return None
+                got = json.loads(result.stdout)
+                if capacity.validate_reading(got, transport, model_registry.cost_model_for(transport, table)):
+                    return None
+            seen[transport] = got
+            return got
+
+        return sidecar_fanout.admission_refusal(jobs, data, read=read)
     except (Exception, SystemExit):
         return None
 
@@ -632,6 +659,49 @@ def dispatch_checks(jobs, owner_labels=(), notes=None):
                 "tier (guards/tool_profiles.json). Launch a row of that tier "
                 "(`python3 .claude/tools/model_registry.py for-role <tier>`); raise effort before tier.")
     return None
+
+
+def _brief_text(path, roots):
+    """The text of a job's brief, resolved from each of `roots` in order, or None when it cannot be read."""
+    if not isinstance(path, str) or not path.strip():
+        return None
+    candidates = [path] if os.path.isabs(path) else [os.path.join(base, path) for base in roots]
+    for full in candidates:
+        try:
+            with open(full, encoding="utf-8") as source:
+                return source.read()
+        except (OSError, UnicodeError):
+            continue
+    return None
+
+
+def wide_run_refusal(direct, fanout, root, call_root=None):
+    """The denial when a launched job's brief orders a wide test run, else None.
+
+    A direct launch's brief is its `-f`, resolved from the call's cwd then the project root; a fan-out
+    job's is its `promptFile`. `_dispatch_checks.wide_run_refusals` owns the match and the joined
+    denial, and a `gate` job passes."""
+    if _dispatch_checks is None:
+        return None
+    pairs = []
+    try:
+        if direct is not None:
+            flags = sidecar_argv.sidecar_flags(direct.args)
+            pairs.append((str(flags.get("l") or flags.get("m") or "job"), flags.get("G"), flags.get("f")))
+        elif fanout is not None:
+            _args, _path, _data, jobs, _spill = _read_fanout(fanout, root)
+            pairs = [(str(job.get("label") or "job"), job.get("kind"), job.get("promptFile"))
+                     for job in jobs if isinstance(job, dict)]
+    except (Exception, SystemExit):
+        return None
+    roots = [base for base in (call_root, root) if base]
+    items = []
+    for label, kind, path in pairs:
+        text = _brief_text(path, roots)
+        if text is None:
+            continue
+        items.append((label, kind, text))
+    return _dispatch_checks.wide_run_refusals(items, root)
 
 
 CHECKS_KEY = "sidecar_launch_checks"
@@ -959,6 +1029,10 @@ def main():
                                   owner_labels=owner_pin_labels(direct, fanout, root, contracts), notes=pinned)
     if fit_refusal:
         deny(fit_refusal)
+        return
+    wide_refusal = wide_run_refusal(direct, fanout, root, call_root)
+    if wide_refusal:
+        deny(wide_refusal)
         return
     capacity_refusal = fanout_capacity_refusal(fanout, launch_root, started + HOOK_BUDGET_SECONDS)
     if capacity_refusal:

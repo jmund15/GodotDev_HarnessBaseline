@@ -118,13 +118,20 @@ class WakeDecisionTests(unittest.TestCase):
         class Polled(Exception):
             pass
 
+        from datetime import datetime, timezone
         group = {'u': {'records': [('seat', 'seat.record.json')], 'fanout_dir': None}}
         with tempfile.TemporaryDirectory() as temp:
             transcript = Path(temp) / 'session.jsonl'
-            transcript.write_text('{}\n')
+            # The client appends untimestamped metadata rows (an artifact view, the title, the bridge row) while
+            # the session is idle; they move the file's mtime but spend no prompt cache, so the clock ignores them.
             for offset, due in ((-1000, True), (60, False)):
-                stamp = time.time() + offset
-                os.utime(transcript, (stamp, stamp))
+                turn = datetime.fromtimestamp(time.time() + offset, timezone.utc).isoformat().replace('+00:00', 'Z')
+                transcript.write_text(json.dumps({'type': 'assistant', 'timestamp': turn}) + '\n'
+                                      + json.dumps({'type': 'artifact-autoreact-ledger', 'artifacts': {}}) + '\n'
+                                      + json.dumps({'type': 'bridge-session', 'sessionId': 's'}) + '\n')
+                os.utime(transcript, None)
+                # Both rewrites keep one size; a coarse filesystem clock can give them one mtime, the read cache's key.
+                watch._TURN_CACHE.clear()
                 source = lambda: group
                 source.shells = types.SimpleNamespace(path=str(transcript), persist=lambda: None)
                 with self.subTest(offset=offset), \

@@ -111,6 +111,11 @@ class Delegate(unittest.TestCase):
         self.assertNotIn("workdir", scout)
         self.assertEqual(git(self.root, "branch", "--list", "scratch/scout"), "")
 
+    def test_a_gate_job_is_a_kind_a_delegate_may_name(self):
+        code, _, err = self.prepare([self.job(label="gate", kind="gate", worktree=None, tier="executor")])
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.jobs_file()["jobs"][0]["kind"], "gate")
+
     def test_spill_and_context_pass_through_and_the_launch_and_return_calls_print(self):
         context = self.tmp / "ctx.md"
         context.write_text("c\n", encoding="utf-8")

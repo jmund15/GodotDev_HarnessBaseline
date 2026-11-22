@@ -187,7 +187,7 @@ def sidecar_delegate_shape() -> str | None:
         guard = tool_profiles.kind_guard(kind)
     except Exception:
         guard = None
-    return guard if guard in ("common", "survey", "review", "author") else "common"
+    return guard if guard in ("common", "survey", "review", "author", "gate") else "common"
 
 
 def sidecar_delegate_tier() -> str:

@@ -563,7 +563,7 @@ if (retiredAgents.length) {
 }
 const kindless = agents.filter(a => !kindOk(a))
 if (kindless.length) {
-  return { error: 'review-fanout: every agent needs a kind in [scout|lens|reviewer|author|judge], resolved by the guard into args.__toolProfiles. Missing or unresolved: ' + kindless.map(a => a.key).join(', ') + '.' }
+  return { error: 'review-fanout: every agent needs a kind in [scout|lens|reviewer|author|judge|gate], resolved by the guard into args.__toolProfiles. Missing or unresolved: ' + kindless.map(a => a.key).join(', ') + '.' }
 }
 if (!TOOLP['review:merge'] || (A.fold && !TOOLP['review:fold'])) {
   return { error: 'review-fanout: args.__toolProfiles lacks the engine own review:merge' + (A.fold ? ' or review:fold' : '') + ' row; hooks/workflow_provider_guard.py injects it, and a call it did not rewrite fails closed.' }

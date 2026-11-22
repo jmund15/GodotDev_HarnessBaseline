@@ -26,6 +26,14 @@ TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
 export SIDECAR_EXHAUSTED_DIR="$TMPD/exhausted"
 MARKER="$SIDECAR_EXHAUSTED_DIR/codex.json"
+# A marker is confirmed against a live reading first (`exhausted_marker.py lift`). The planted cache holds a
+# rate-limit cooldown for each transport named here, so the confirmation fails closed without probing.
+export PROVIDER_CAPACITY_CACHE="$TMPD/capacity.json"
+python3 - "$PROVIDER_CAPACITY_CACHE" <<'PY'
+import json, sys, time
+until = time.time() + 3000
+json.dump({"_rateLimitedUntil": {"codex": until, "go": until}}, open(sys.argv[1], "w"))
+PY
 SC_WATCH_POLL_SEC=1
 SC_USAGE_LIMIT_RETRIES=10
 SC_WORKDIR="$(cd "$R/.." && pwd)"
@@ -236,6 +244,24 @@ write_marker $(( $(date +%s) - 10 ))
 _out="$( (SC_TRANSPORT_STATE=available; SC_ALIAS=luna; sc_gate_availability; echo GATE-PASSED) 2>&1 )"; _rc=$?
 [ "$_rc" = 0 ] && printf '%s' "$_out" | grep -q GATE-PASSED && ok "E2 an expired marker allows the launch" \
   || bad "E2 an expired marker allows the launch" "rc=$_rc out=$(printf '%s' "$_out" | tr '\n' ' ' | cut -c1-200)"
+# E2b a reading taken after the marker that says the plan has room lifts it (an owner's manual quota reset).
+python3 - "$PROVIDER_CAPACITY_CACHE" "$SIDECAR_EXHAUSTED_DIR" "$R" <<'PY'
+import json, sys, time
+sys.path.insert(0, sys.argv[3] + "/tools"); sys.path.insert(0, sys.argv[3] + "/scripts")
+import anthropic_capacity_probe as probe, provider_capacity as pc
+now = time.time()
+value = probe.summarize({"five_hour": {"utilization": 5, "resets_at": now + 10000},
+                         "seven_day": {"utilization": 10, "resets_at": now + 3 * 86400},
+                         "extra_usage": {"is_enabled": False}, "limits": []}, now=now)
+value["transport"] = "anthropic"
+json.dump({"anthropic": value}, open(sys.argv[1], "w"))
+json.dump({"schemaVersion": 1, "transport": "anthropic", "writtenAt": int(now) - 60, "expiresAt": int(now) + 1200,
+           "resetsAt": None}, open(sys.argv[2] + "/anthropic.json", "w"))
+PY
+_out="$( (SC_TRANSPORT=anthropic; sc_gate_exhausted; echo GATE-PASSED) 2>&1 )"; _rc=$?
+[ "$_rc" = 0 ] && printf '%s' "$_out" | grep -q GATE-PASSED && [ ! -f "$SIDECAR_EXHAUSTED_DIR/anthropic.json" ] \
+  && ok "E2b a live reading taken after the marker lifts it" \
+  || bad "E2b a live reading taken after the marker lifts it" "rc=$_rc out=$(printf '%s' "$_out" | tr '\n' ' ' | cut -c1-200)"
 for _l in anthropic_sidecar.sh codex_proxy_sidecar.sh deepseek_sidecar.sh opencode_sidecar.sh; do
   _f="$R/scripts/$_l"
   # Assert the contract for every launcher THIS tree ships. anthropic_sidecar.sh is consumer-local

@@ -214,7 +214,8 @@
     ],
     "fable": [
       {"id": "claude-fable-5", "since": "2026-07-19T14:42:49Z", "until": "2026-09-01T23:48:39Z", "evidence": "Transcript census 2026-09-22: claude-fable-5 first 2026-07-19T14:42:49Z, last 2026-08-31T09:39:19Z; claude-fable-5-1 first 2026-09-01T23:48:39Z, no overlap. Every fable arm record (2026-09-05 onward) reports servedModel claude-fable-5-1."},
-      {"id": "claude-fable-5-1"}
+      {"id": "claude-fable-5-1", "until": "2026-11-10T15:25:00Z", "evidence": "The registry moved the alias on the owner's order of 2026-11-10 (session 5879dccd: \"You just launched Fable 5.1. That is unacceptable. Launch Fable 5.2.\"). The last 5.1 dispatch, r16-card-whole launched 2026-11-10T15:17:07Z, reports model claude-fable-5-1 in its stream. When Anthropic first served claude-fable-5-2 is not censused; session 5879dccd itself ran on claude-fable-5-2 that day."},
+      {"id": "claude-fable-5-2"}
     ],
     "sonnet": [
       {"id": "claude-sonnet-5", "since": "2026-07-16T01:05:12Z", "until": "2026-10-09",
@@ -982,17 +983,18 @@
       }
     },
     {
-      "id": "claude-fable-5-1",
+      "id": "claude-fable-5-2",
+      "_versionNote": "Moved from claude-fable-5-1 on 2026-11-10 by the owner's order (aliasHistory). Limits, price, railTier and driverNotes are carried from the 5.1 row and not re-read or re-measured for 5.2.",
       "input": ["text", "image", "pdf"],
       "limits": {"contextTokens": 1000000, "maxOutputTokens": 128000},
-      "_limitsSource": "Anthropic first-party, read 2026-09-30: https://platform.claude.com/docs/en/about-claude/models/overview (context window 1M, max output 128K)",
+      "_limitsSource": "Anthropic first-party, read 2026-09-30 for claude-fable-5-1: https://platform.claude.com/docs/en/about-claude/models/overview (context window 1M, max output 128K)",
       "railTier": "minimal",
       "railTierEvidence": {"evidence": "unmeasured"},
       "_railTierComment": "Measured by the O10 matrix, partial for this row (verdicts and open stages there): .claude/scripts/rail_battery/reports/o10-matrix-2026-09-23/README.md",
       "driverNotes": [{"text": "Recognizing a name is not knowing its current state: verify before answering, and include the name as written in at least one search.", "evidenceRef": "plans/archive/fable51_harness_assessment.md F12", "weakness": "At `low`, fable answered from memory on names it recognized instead of verifying their current state (fable51_harness_assessment.md F12, case B23).", "removeWhen": "a /pin_ab run at `low` whose task names a file or symbol the model recognizes, with this note suppressed on one arm, verifies before answering on both arms."}],
       "alias": "fable",
       "transport": "anthropic",
-      "label": "Fable 5.1", "family": "fable", "version": "claude-fable-5-1", "lifecycle": "current", "order": 30, "costRank": 3, "prior": "frontier",
+      "label": "Fable 5.2", "family": "fable", "version": "claude-fable-5-2", "lifecycle": "current", "order": 30, "costRank": 3, "prior": "frontier",
       "roles": ["orchestrator"],
       "effort": {
         "evidence": "see-ladder"
@@ -1061,6 +1063,31 @@
         "cacheMissPer1M": 10,
         "outputPer1M": 50,
         "cacheHitPer1M": 1,
+        "cacheWrite5mPer1M": 12.5,
+        "cacheWrite1hPer1M": 20,
+        "currency": "USD",
+        "asOf": "2026-09-24",
+        "source": "https://platform.claude.com/docs/en/about-claude/pricing"
+      },
+      "authTier": "open",
+      "gate": {"minBand": "Surplus"}
+    },
+    {
+      "id": "claude-fable-5-1",
+      "input": ["text", "image", "pdf"],
+      "railTier": "minimal",
+      "railTierEvidence": {"evidence": "unmeasured"},
+      "driverNotes": [{"text": "Recognizing a name is not knowing its current state: verify before answering, and include the name as written in at least one search.", "evidenceRef": "plans/archive/fable51_harness_assessment.md F12", "weakness": "At `low`, fable answered from memory on names it recognized instead of verifying their current state (fable51_harness_assessment.md F12, case B23).", "removeWhen": "a /pin_ab run at `low` whose task names a file or symbol the model recognizes, with this note suppressed on one arm, verifies before answering on both arms."}],
+      "alias": "fable51",
+      "transport": "anthropic",
+      "label": "Fable 5.1", "family": "fable", "version": "claude-fable-5-1", "lifecycle": "retired", "order": 32, "costRank": 3, "prior": "frontier",
+      "status": {"state": "unavailable", "reason": "Retired version: the `fable` alias served it from 2026-09-01 to 2026-11-10 (aliasHistory). Registered for record identity only; not a dispatch target."},
+      "roles": [],
+      "effort": {"evidence": "unmeasured", "_note": "The ladder's fable cells were measured on this version; the current row carries them."},
+      "price": {
+        "cacheMissPer1M": 10,
+        "outputPer1M": 50,
+        "cacheHitPer1M": 0.25,
         "cacheWrite5mPer1M": 12.5,
         "cacheWrite1hPer1M": 20,
         "currency": "USD",
@@ -1247,7 +1274,7 @@
       "prior": "mid",
       "roles": ["architect", "executor", "fanout", "scout"],
       "effort": {"evidence": "see-ladder"},
-      "driverNotes": [{"text": "Your dispatch is concurrent only when your brief or rails say so; sibling jobs named in run logs or job files do not make it concurrent, so run the builds and tests your brief requires.", "evidenceRef": "use: fixr2-117 2026-09-28 skipped every build and test after inferring concurrency from .claude/scratch/a8/r2/fix_run.txt", "weakness": "fixr2-117 skipped every build and test after inferring concurrency from a run log (2026-09-28).", "removeWhen": "a /pin_ab run on a task whose run log names sibling jobs, with this note suppressed on one arm, runs the builds and tests its brief requires on both arms."}],
+      "driverNotes": [{"text": "Your dispatch is concurrent only when your brief or rails say so; sibling jobs named in run logs or job files do not make it concurrent, so run the builds and tests your brief requires.", "evidenceRef": "use: fixr2-117 2026-09-28 skipped every build and test after inferring concurrency from .claude/scratch/a8/r2/fix_run.txt", "weakness": "fixr2-117 skipped every build and test after inferring concurrency from a run log (2026-09-28).", "removeWhen": "a /pin_ab run on a task whose run log names sibling jobs, with this note suppressed on one arm, runs the builds and tests its brief requires on both arms."}, {"text": "Your provider rejects any request that holds more than 30 images, and every image you open stays in every later request, so the 31st image you open in a run ends it with no output. Open at most 25 images in a whole run: put a before and its after side by side in one image (a script that tiles them), crop to the part you judge, and use the text facts a tool prints before opening a picture. Write each finding or result to its file as you settle it.", "evidenceRef": "use: r23-judge-map 2026-11-19 died after 536 s with 'too many images in request: 32 > 30' and no findings (.claude/scratch/ui-lock/r23/r23-judge-map.record.json.out)", "weakness": "r23-judge-map opened 32 frames and crops in one run; the Go provider refused the request at 32 > 30 and the run ended with no findings (2026-11-19).", "removeWhen": "the go transport drops the oldest images past the provider's per-request cap, or the provider raises the cap past what a whole frame review opens, and an image review of 40+ frames on this row ends with its findings written."}],
       "authTier": "open",
       "gate": {"minBand": "Surplus"},
       "servedIds": ["deepseek-v4.1-flash"],

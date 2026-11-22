@@ -18,6 +18,13 @@ label) and a single-kind engine's in `args.__kindProfile`, recorded `enforcement
 added to a job for what its brief says: a job that writes declares `kind: author`.
 Proof: tests/test_workflow_tool_profiles.py.
 
+RULE W -- WIDE RUN AT LAUNCH (process guard). A job's brief that orders a wide test run is refused before
+any agent starts: each `check` entry of its `task` block and, for a kind whose built-ins hold Bash, each
+command `tools/tool_profiles.brief_commands` finds in the brief (quoted data, a ```json fence and a negated
+clause add none). `gate` is the one kind that may run one, and the deny names the runner and that next step;
+`_dispatch_checks.wide_run_refusal` owns the match. Retire it when delegate transcripts show no non-gate
+wide-run attempt since the rails' `Your checks` line shipped (harness plan R10).
+
 RULE C -- CITER COVERAGE (process guard; denies while `citer_coverage.BLOCKING`). `citer_coverage`
 validates current meta subject sweeps at the shared native boundary. Phase 2 of plan_check.md owns
 materialization; the guard never creates a sweep.
@@ -1074,6 +1081,66 @@ def required_returns(payload):
     return out
 
 
+def _payload_cwd(payload):
+    """The hook payload's working directory as an absolute forward-slash path, or "" when it is missing,
+    relative or holds a `..` segment (review_fanout.js refuses such a `fold.repoRoot`)."""
+    cwd = payload.get("cwd")
+    root = cwd.strip().replace("\\", "/").rstrip("/") if isinstance(cwd, str) else ""
+    if not re.match(r"^([A-Za-z]:)?/", root) or re.search(r"(^|/)\.\.(/|$)", root):
+        return ""
+    return root
+
+
+def _git_line(cwd, *argv):
+    try:
+        done = subprocess.run(["git", "-C", cwd, *argv], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip().replace("\\", "/").rstrip("/") if done.returncode == 0 else ""
+
+
+def _repo_root(payload):
+    """The checkout the payload cwd belongs to, absolute with forward slashes: the superproject working tree
+    when the cwd sits inside a submodule, else the cwd's own top level (a linked worktree is its own root).
+    "" when git cannot answer. An engine builds repository-relative paths and commands against this, because the
+    agents that run them resolve relative paths against a session cwd that drifts."""
+    cwd = _payload_cwd(payload)
+    if not cwd:
+        return ""
+    return _git_line(cwd, "rev-parse", "--show-superproject-working-tree") or _git_line(cwd, "rev-parse", "--show-toplevel")
+
+
+def _brief_root(payload):
+    """The project root a job's brief and the `gate_cadence` rows resolve against: the payload cwd's git
+    top level (`_repo_root`), else this hook's own checkout."""
+    return _repo_root(payload) or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def wide_run_refusal(payload):
+    """The deny when any job's brief orders a wide test run, else None (harness plan S3).
+
+    Each job's brief is its `promptPath` (unreadable: its inline `prompt`), and `_dispatch_checks`
+    `wide_run_refusals` owns the match and the joined denial: `gate` is the one kind that may run one."""
+    root = _brief_root(payload)
+    items = []
+    for job in dispatch_jobs(payload):
+        text = None
+        path = job.get("promptPath")
+        if path:
+            full = path if os.path.isabs(path) else os.path.join(root, path)
+            try:
+                with open(full, encoding="utf-8") as source:
+                    text = source.read()
+            except (OSError, UnicodeError):
+                text = None
+        if text is None and isinstance(job.get("prompt"), str):
+            text = job["prompt"]
+        if text is None:
+            continue
+        items.append((job["label"], job.get("kind"), text))
+    return _dispatch_checks.wide_run_refusals(items, root)
+
+
 def _review_rigor(payload, task_id, repo_root, advice):
     """The run's rigor for a review_fanout call, or None. An unreadable record names its cause in `advice`
     (`additionalContext`). The reader is `triage.rigor`, the call post-check makes through `finding_bar`."""
@@ -1562,6 +1629,12 @@ def check(payload):
     profile_reason = tool_profile_refusal(payload)
     if profile_reason:
         _deny(profile_reason + " (orchestration §Pre-Dispatch Checklist) Name the job's kind (a job that writes is an author), then re-issue.")
+        return
+
+    # RULE W — a brief that orders a wide test run is refused before any agent starts.
+    wide_reason = wide_run_refusal(payload)
+    if wide_reason:
+        _deny(wide_reason)
         return
 
     guard_notes = []

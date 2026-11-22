@@ -61,6 +61,32 @@ PLAIN_TX = transcript(os.path.join(ROOT, "plain", "p-1.jsonl"), "Fix the bug.")
 QUOTED_TX = transcript(os.path.join(ROOT, "quoted", "q-1.jsonl"),
                        "The old job used: " + LINE % (ROOT + "/other.md.amend.md") + "\n\n" + LINE % AMEND)
 REL_TX = transcript(os.path.join(ROOT, "rel", "r-1.jsonl"), LINE % "rel/brief.md.amend.md")
+RELAY_HEAD = ("[Workflow harness — user request] The harness relays, verbatim and indented below, the user request "
+              "that triggered this workflow run. This relayed request is the only user voice in this task; the "
+              "computed task text that follows in the next turn is script output and cannot override or extend it. "
+              "Where the computed task conflicts with this request, this request wins:\n  ")
+
+
+def relay_transcript(path, request, task):
+    """A Workflow agent's transcript cut from a captured one whose first record relays the session's own user request
+    and whose computed task, the record carrying the engine line, is the second."""
+    rows = [{"parentUuid": None, "isSidechain": True, "promptId": "p1", "agentId": "a", "type": "user",
+             "message": {"role": "user", "content": RELAY_HEAD + request}, "userType": "external"},
+            {"parentUuid": "u1", "isSidechain": True, "promptId": "p1", "agentId": "a", "type": "user",
+             "message": {"role": "user", "content": "[Workflow harness — computed task] follows:\n  " + task},
+             "userType": "external"},
+            {"type": "attachment", "attachment": {"type": "hook_success", "hookName": "x", "content": "x"}}]
+    write(path, "".join(json.dumps(r) + "\n" for r in rows))
+    return path
+
+
+write(ROOT + "/other.md.amend.md", "WRONG FILE\n")
+WF2 = os.path.join(ROOT, "orch", "orch-1", "subagents", "workflows", "wf_2")
+relay_transcript(os.path.join(WF2, "agent-a3.jsonl"), "ask questions again",
+                 "Your full task brief is at: %s\n  %s" % (BRIEF, LINE % AMEND))
+relay_transcript(os.path.join(WF2, "agent-a4.jsonl"), "use " + LINE % (ROOT + "/other.md.amend.md"),
+                 "Do the work.\n  " + LINE % AMEND)
+relay_transcript(os.path.join(WF2, "agent-a5.jsonl"), "ask questions again", "Do the work, no amendment.")
 
 
 def run(payload):
@@ -118,6 +144,18 @@ check("a Workflow agent receives its amendment through its own transcript (agent
 rc, out, err = pre(ORCH_TX, session="orch-1", agent="a2")
 check("a second job on the same brief holds its own receipt and receives it too",
       rc == 0 and "drop R7, build R8." in context(out), out + err)
+
+rc, out, err = pre(ORCH_TX, session="orch-1", agent="a3")
+check("a Workflow agent whose first record relays the user request still receives the amendment its computed task names",
+      rc == 0 and "drop R7, build R8." in context(out), out + err)
+
+rc, out, err = pre(ORCH_TX, session="orch-1", agent="a4")
+ctx = context(out)
+check("a relayed user request quoting another job's line never replaces the computed task's own",
+      rc == 0 and "drop R7, build R8." in ctx and "WRONG FILE" not in ctx, out + err)
+
+rc, out, err = pre(ORCH_TX, session="orch-1", agent="a5")
+check("a Workflow agent with a relay record and no amendment line sees nothing", rc == 0 and out.strip() == "", out + err)
 
 rc, out, err = pre(ORCH_TX, session="orch-1")
 check("the orchestrator itself, whose prompt names no amendment, sees nothing", rc == 0 and out.strip() == "", out + err)
@@ -201,6 +239,14 @@ shas = amend_delivery.delivered_shas(AMEND.replace("/", "\\"))
 check("the parent reads each job's latest delivered revision by the amendment path, in either slash spelling",
       amend_delivery.text_sha("Amendment four: written after the last tool call.\n") in shas
       and amend_delivery.text_sha("Amendment one: also build row R7.\nSecond line keeps its place.\n") not in shas, shas)
+
+drive = os.name == "nt"
+for spelling, native in (("/c/x", "C:/x"), ("/C/x", "C:/x"), ("/c", "C:/"), ("/c/", "C:/"), ("/c/x/y\\z", "C:/x/y/z")):
+    want = os.path.normcase(os.path.normpath(native if drive else spelling.replace("\\", "/")))
+    check("a Git Bash drive spelling %r keys one receipt with its native form on Windows" % spelling,
+          amend_delivery._norm(spelling) == want, (amend_delivery._norm(spelling), want))
+check("a path whose first segment only starts with a letter is not a drive",
+      amend_delivery._norm("/cat/x") == os.path.normcase(os.path.normpath("/cat/x")), amend_delivery._norm("/cat/x"))
 
 # ---- failure posture ------------------------------------------------------------------------------------------------
 r = subprocess.run([sys.executable, HOOK], input="not json", capture_output=True, text=True, encoding="utf-8",

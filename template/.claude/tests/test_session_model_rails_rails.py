@@ -341,6 +341,8 @@ CASES = [
         "claude-opus-5-5", {"CLAUDE_CODE_SIDECAR_KIND": "reviewer"})),
     ("an author delegate gets the author rails", lambda: "shape 'author'" in _delegate_output(
         "claude-opus-5-5", {"CLAUDE_CODE_SIDECAR_KIND": "author"})),
+    ("a gate delegate gets the gate rails", lambda: "shape 'gate'" in _delegate_output(
+        "claude-opus-5-5", {"CLAUDE_CODE_SIDECAR_KIND": "gate"})),
     ("the retired CLAUDE_CODE_SIDECAR_SHAPE is no longer read", lambda: "shape 'survey'" not in _delegate_output(
         "claude-opus-5-5", {"CLAUDE_CODE_SIDECAR_SHAPE": "survey"})),
     # Delegates receive notes keyed to the child model, not the parent/orchestrator.

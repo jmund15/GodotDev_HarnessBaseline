@@ -13,7 +13,6 @@ Sidecar children register no inbox, so no message reaches them.
 agent to weigh before a send (ListAgents shows no last-turn time).
 Malformed input and hook errors fail open. Proof: tests/test_peer_message_guard.py.
 """
-import glob
 import json
 import os
 import re
@@ -49,10 +48,21 @@ def _logins():
     """Every declared login directory; none when the registry cannot load, so the guard fails open."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-        from model_registry import login_dirs
-        return [Path(p) for p in login_dirs()]
+        from model_registry import session_project_roots
+        return [Path(p).parent for p in session_project_roots()]
     except Exception:
         return []
+
+
+def _find_transcript(session_id, allow_dir=False):
+    """The session's transcript (`model_registry.find_session_transcript`); None when absent, ambiguous or
+    the registry cannot load, so the guard fails open."""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        from model_registry import find_session_transcript
+        return find_session_transcript(session_id, allow_dir=allow_dir)
+    except Exception:
+        return None
 
 
 def _registry():
@@ -111,18 +121,21 @@ def idle_seconds(session_id):
     """Seconds since the peer's last stamped transcript entry; None when no transcript is found."""
     if not session_id:
         return None
-    stamps = [_last_entry_time(p) for login in _logins()
-              for p in login.glob(f"projects/*/{glob.escape(session_id)}.jsonl")]
-    return time.time() - max(stamps) if stamps else None
+    transcript = _find_transcript(session_id)
+    return time.time() - _last_entry_time(transcript) if transcript else None
 
 
 def subagent_idle_seconds(parent_session, agent_id):
     """Seconds since this session's subagent transcript was last written; None when it is not one."""
     if not parent_session or not _AGENT_ID.match(agent_id or ""):
         return None
-    stamps = [p.stat().st_mtime for login in _logins()
-              for p in login.glob(f"projects/*/{glob.escape(parent_session)}/subagents/agent-{agent_id}.jsonl")]
-    return time.time() - max(stamps) if stamps else None
+    parent = _find_transcript(parent_session, allow_dir=True)
+    if not parent:
+        return None
+    try:
+        return time.time() - (parent.with_suffix("") / "subagents" / f"agent-{agent_id}.jsonl").stat().st_mtime
+    except OSError:
+        return None
 
 
 def is_warm(row, idle):

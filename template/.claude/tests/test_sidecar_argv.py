@@ -6,6 +6,7 @@ launcher's flags the way getopts reads SC_OPTSTRING. A `<launcher> --check` prob
 
     python3 .claude/tests/test_sidecar_argv.py
 """
+import json
 import os
 import re
 import sys
@@ -318,6 +319,18 @@ def main():
     inner = _call("launcher_calls", "echo $(bash a/x_sidecar.sh -m f)") or []
     cases.append(("a launcher inside a substitution body is still read",
                   [c[:2] for c in inner] == [("sidecar", "x_sidecar.sh")]))
+
+    # 2026-11-21, session bef84f25: a panel's `--review-close` call consolidates seats an earlier call launched,
+    # yet each seat registered as a launch of it, and the Stop hook reported all six "never started".
+    import tempfile
+    panel = tempfile.mkdtemp()
+    jobs_file = os.path.join(panel, "jobs.json").replace("\\", "/")
+    with open(jobs_file, "w", encoding="utf-8") as fh:
+        json.dump([{"label": "pc-seat", "model": "planted-row", "effort": "high", "promptFile": "b.md", "kind": "reviewer"}], fh)
+    close = "python3 .claude/tools/sidecar_fanout.py %s --review --out %s --review-close" % (jobs_file, panel)
+    cases.append(("a --review-close call launches no job of its jobs file", om.sidecar_launches(close) == []))
+    cases.append(("the same call without --review-close still reads its jobs as launches",
+                  len(om.sidecar_launches(close.replace(" --review-close", ""))) == 1))
 
     with open(os.path.join(CLAUDE, "scripts", "lib", "sidecar_common.sh"), encoding="utf-8") as fh:
         optstring = re.search(r'^SC_OPTSTRING="([^"]*)"', fh.read(), re.M).group(1)

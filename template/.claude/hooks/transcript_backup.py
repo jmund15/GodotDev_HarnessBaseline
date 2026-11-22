@@ -6,9 +6,12 @@ Hook: PreCompact - Backup conversation transcript before compaction
 Purpose:
 - Saves conversation transcript before Claude compacts context
 - Preserves potentially valuable context that would otherwise be lost
-- Generates concise summary (~10-20KB) optimized for post-compaction resume
+- Writes a structured transcript index beside the raw backup, not the client's compaction summary
 - Backups stored in logs/transcript_backups/ with timestamps
 - Re-arms the cadence hooks' per-compaction gates (`_hook_state.clear_compaction_keys`)
+
+Success is silent; the paths remain in the compaction log and session manifest. Only a failed
+backup or index emits context. `session_context_loader.py` owns the post-compaction memory reminder.
 
 A subagent's PreCompact payload carries the parent's session_id and transcript_path; that compaction
 is not the parent's, so the hook exits without any of the above (`_hook_state.is_subagent_payload`).
@@ -215,23 +218,10 @@ def main():
     # fire_once_since_compaction key so they land again in the resumed context.
     clear_compaction_keys(session_id)
 
-    output_lines = ["<pre-compact-hook>"]
-
-    if backup_path:
-        output_lines.append(f"Transcript backed up to: {backup_path}")
-        if summary_path:
-            output_lines.append(f"Summary generated: {summary_path}")
-        else:
-            output_lines.append("(Summary generation skipped or failed)")
-    else:
-        output_lines.append("Compaction triggered (no transcript to backup)")
-
-    output_lines.append("")
-    output_lines.append("POST-CONTINUATION REMINDER: After resuming from this compaction,")
-    output_lines.append("immediately search auto-memory (semantic-search if connected, else Grep) for task-relevant gotchas before proceeding.")
-    output_lines.append("</pre-compact-hook>")
-
-    print("\n".join(output_lines))
+    if not backup_path:
+        print("[compaction-backup] Backup unavailable; the original transcript remains the recovery source.")
+    elif not summary_path:
+        print(f"[compaction-backup] Transcript saved to {backup_path}; structured summary unavailable.")
     sys.exit(0)
 
 

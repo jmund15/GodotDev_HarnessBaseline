@@ -79,10 +79,6 @@ const cases = [
     resultMode: 'full',
     agents: ['one', 'two'].map(key => ({ key, prompt: 'Review it.', model: 'sonnet', effort: 'medium', kind: 'author', mustRead: [{ path: 'fixture', lines: 1 }] })),
   }, { findings: [], checked, gaps: [] }],
-  ['explore_fanout.js', {
-    resultMode: 'full',
-    lenses: ['one', 'two'].map(key => ({ key, prompt: 'Inspect.', model: 'opus', effort: 'low', kind: 'author' })),
-  }, { claims: [], checked }],
   ['dispatch.js', {
     jobs: ['one', 'two'].map(label => ({ label, promptPath: label + '.md', model: 'sonnet', effort: 'low', kind: 'author' })),
   }, 'done'],

@@ -1,66 +1,37 @@
 #!/usr/bin/env python3
-"""PreCompact — ask the compaction summary for an owner-directive ledger.
+"""PreCompact — ask for directive statuses, not a second copy of the owner's words.
 
-Claude Code appends PreCompact stdout to the compaction instructions. The summarizer is the only
-reader that still sees what happened after each owner message, so it is the one place that can tell
-a standing decision from a finished step or a replaced instruction (owner decision 2026-09-14,
-session 3259384b). This hook lists every owner message by the U-ID that `compact_directive_anchor.py`
-re-injects after compaction, and asks the summary for one status line per ID.
+The summarizer sees what followed each owner message; the SessionStart anchor preserves the
+verbatim words. This hook uses the anchor's owner filter and shaping, lists new or unstatused
+messages by U-ID and a bounded head, and refers to the preceding summary for IDs it already
+statused. Only an ID terminal in both newest summaries enters the compact settled list. A later
+holds or unclear status reopens it. Missing or unreadable sections keep the full listing.
 
-Selection and shaping are the anchor's own (`keep`, `shape`): interrupts, bare and session-control
-commands are filtered out, and an answer entry shows the owner's answers rather than the question.
-Each entry is a head of at most HEAD_CHARS characters, shortened together toward MIN_HEAD_CHARS when
-the list is long. The output has a byte cap, TOTAL_BYTES, under the client's 10,000-character hook
-output limit; past it the first HEAD_KEEP entries and the newest that fit stay, and the omitted
-middle is counted.
+Summary sections accept ATX, bold and numbered headings, with bulleted settled IDs and formatted
+U-IDs. The status parser stops at the next section. Current work, unanswered questions, file
+ownership, exact strings, scope and stop conditions stay in the summary. `checkpointing.md`
+Summary fidelity owns what it keeps; `_fidelity_section` emits its bullets to the summarizer.
+Owner holds lines keep ID, status and scope; clipped or omitted words remain recoverable through
+the anchor's --show command instead of being quoted twice.
 
-Status carry-forward (owner decision A2, 2026-09-15): a settled ID costs its full ~138-byte entry
-every compaction forever, even though most entries stop changing. The hook reads the transcript's own
-prior `isCompactSummary` records for their "Owner directives" sections. Once at least two exist, an ID
-whose status was terminal (done, scoped or replaced) in both of the last two is dropped from the full
-listing and named only in one bare comma-separated line; the next summary is asked to keep carrying it
-forward the same way unless later conversation actually reopened it, in which case it gets a fresh
-full status line. Fewer than two prior summaries in the transcript: the hook behaves exactly as before
-this feature, full entries and the plain instructions text, which is also what an unreadable
-transcript falls back to (asking for the section, without IDs). A sidecar child and a non-object payload
-are silent no-ops. A subagent payload (`_hook_state.is_subagent_payload`; its transcript is the parent's, so
-the ledger would list the parent's owner messages in the subagent's summary) prints nothing and logs a
-`skipped` row, so a muted parent compaction is visible in the run log. The hook never blocks.
+Unchanged ratings and deferred bookkeeping can cite a section of a prior summary already on disk.
+`--show-summary <transcript> <sha256> <section>` prints that section verbatim and rejects a missing
+summary or section. The hash binds the command to its captured text; no mutable checkpoint store
+or extra write is needed. New or changed facts and the current next action stay inline.
 
-The instructions give each kind of fact one section of the summary, the client's built-in sections
-included, which then cite it: compaction audits found
-summaries restating owner messages up to three times, writing each ruling in force twice and copying
-the next step into three sections. They also ask for what those audits found lost: a ruling's scope
-and stop condition (on its holds line), the meaning of a reply that only names an option, exact syntax
-a denial taught, unanswered owner questions, whose an uncommitted file is, exact values in a pending
-step, and unrated outcomes. After the owner lines, a facts block read from the transcript gives the last
-assistant messages with their send times and the background jobs (a background Bash call, or any
-tool whose result reports a task id, such as a Workflow) launched with no completion notice, since
-summaries claimed a sent reply unsent in 5 of 30 compactions and inferred a running job's state. An empty facts block prints nothing.
-
-What a summary keeps and drops (exact re-issuable strings, the command of each pending step that already
-ran once, no "…" inside a quote, one line per ID, no landed-commit lists or fixed-error history) is owned by
-`skills/orchestration/reference/checkpointing.md` §Summary fidelity. The summarizer cannot read files, so
-the hook emits that section's bullets as they stand (`_fidelity_section`). The owner-message list closes with
-an "Anchor prints whole" line: the IDs the SessionStart anchor re-injects in full, from the anchor's own
-layout (`anchor.plan`), so a holds line for one is ID, status and scope only. Any other ID quotes its
-binding sentences, the anchor clipping or omitting them.
-
-Echo: the client appends this stdout to the summarizer's instructions and, after a manual `/compact` only,
-records it again as `<local-command-stdout>` in the context that follows. The hooks documentation names no PreCompact output channel (only
-UserPromptSubmit, UserPromptExpansion, SessionStart and PostModelSwitch add stdout as context, and PreCompact
-discards `systemMessage`), so no channel avoids the echo. The echo is held to the cap `TOTAL_BYTES`, and the
-instruction text grows by less than the fidelity section.
-
-Every transcript pass (owner messages, prior summaries, facts) resumes from its `hooks/_transcript_scan.py`
-cache, and each run appends its duration, output bytes and scans to `logs/compaction_hooks.jsonl`
-(`compact_directive_anchor.log_run`).
+The facts block records sent turn closers and observed background launches without inferring job
+state. Main-hook scans resume from `_transcript_scan`; cold section recovery streams its source.
+Manual /compact echoes PreCompact stdout into the resumed context, so instructions and message
+heads share TOTAL_BYTES. The hook logs duration, emitted bytes and scans through the anchor.
+Sidecar children, subagent payloads and non-object payloads are silent; the hook never blocks.
 """
 import contextlib
+import hashlib
 import io
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -83,25 +54,26 @@ MIN_PRIOR_SUMMARIES = 2  # fewer than this: behave exactly as before A2 (owner d
 FIDELITY_DOC = HERE.parent / "skills" / "orchestration" / "reference" / "checkpointing.md"
 
 _SECTIONS = """## Section owners
-Each fact goes in one section; the others cite it by ID, label or path.- Owner directives (below) owns every owner request and ruling. Primary Request gives the goal in a few lines, citing U-IDs. All user messages: write "see Owner directives".
-- Artifacts (required section): one line per changed file later work needs: `<path>` — what changed and, while uncommitted, whose it is (this session, a delegate's job label, another session's id, else "unknown"). Files and Code Sections: write "see Artifacts".
-- Open questions (required section): each question put to the owner and unanswered: what it decides, the options, your pick, the default if work keeps running, the open question's observed values verbatim. None: write "none".
-- Pending Tasks owns open work; each item stands alone for a cold reader: what, why, next action. Current Work and Next Step cite the item, never copy its steps.
-- A job's state is its last observation with its time ("result written 17:06; end not checked"), never an inference such as "not returned".
-- Key Concepts and Errors keep only what a pending step needs and no file holds: an open problem's exact error text, and syntax a denial or a usage print taught.
-- Pending ratings: each dispatch result consumed and not yet rated, by label, with the outcome you judged (clean, defects, rework or discarded) and why."""
+Each fact goes in one section; the others cite its ID, label or path.
+- Owner directives owns request statuses and scope. Primary Request gives the goal, citing U-IDs. All user messages: write "see Owner directives".
+- Artifacts (required section): one line per changed file later work needs: `<path>` — what changed and, while uncommitted, whose it is (this session, a delegate's label, another session's id, else "unknown"). Files and Code Sections: write "see Artifacts".
+- Open questions (required section): each unanswered question's decision, options, your pick, default if work keeps running, and the open question's observed values verbatim. None: write "none".
+- Pending Tasks owns open work: what, why, next action. Current Work and Next Step cite its item, never copy the steps.
+- A job's state is its last observation with its time ("result written 17:06; end not checked"), never an inferred "not returned".
+- Key Concepts and Errors keep only what a pending step needs and no file holds: exact error text and syntax a denial or a usage print taught.
+- Pending ratings owns consumed dispatches not yet rated: label, judged outcome (clean, defects, rework or discarded) and why."""
 
-_LEGACY_ASK = """Add a section headed "Owner directives". Give one line for every ID listed below, in order: `U<id> — <status> — <what it asked, in a few words>`. The status is exactly one of:"""
+_LEGACY_ASK = """Add a section headed "Owner directives". Give one line for every ID listed below, in order: `U<id> — <status> — <scope or result>`. The status is exactly one of:"""
 
-_CARRY_ASK = """Add a section headed "Owner directives". The list below marks some IDs settled. Carry every settled ID forward in one comma-separated line, `Settled (done/scoped/replaced): U<id>, U<id>, ...`, with no status or text; reopen one with its own full line only when later conversation actually reopened it. Every other ID (holds, unclear, never statused) gets its own full line: `U<id> — <status> — <what it asked, in a few words>`. The status is exactly one of:"""
+_CARRY_ASK = """Add a section headed "Owner directives". Keep the preceding summary's statused IDs, updating them from later conversation. Carry every settled ID in one comma-separated line, `Settled (done/scoped/replaced): U<id>, U<id>, ...`, with no text; reopen one with a full line only when later conversation reopened it. Every other ID gets a full line: `U<id> — <status> — <scope or result>`. The status is exactly one of:"""
 
-_STATUS_MENU = """- holds: still binds the rest of the session (a standing goal, constraint or preference);
+_STATUS_MENU = """- holds: still binds the rest of the session (a goal, constraint or preference);
 - done: carried out, answered, or no longer needed;
-- replaced by U<id>: a later owner message changed or reversed it;
-- scoped: bound one step or moment that has passed;
+- replaced by U<id>: a later owner message changed it;
+- scoped: bound a step or moment that has passed;
 - unclear: the conversation does not settle it.
-A message with any part still pending or still binding holds; name only that part, its scope, when it stops (a slice, a phase, a condition) and the doc anchor holding its full text. A holds line for an ID on the "Anchor prints whole" line below is ID, status and scope only: compact_directive_anchor.py re-injects those messages under the same IDs. Any other holds line quotes the owner's binding sentences verbatim, the words that constrain later work; a paraphrase drops the reasoning the owner corrected with. A ruling holds while it constrains work, even after its first use. When a reply only names an option ("O2", "Sure"), write out that option's text from the message it answered.
-Judge each status from what happened after the message, not from its wording."""
+A message with any part still pending or still binding holds; name that part, its scope, when it stops and the doc anchor holding its full text. Every holds line is ID, status and scope only: compact_directive_anchor.py re-injects the owner's words under the same IDs and supplies --show recovery for clipped or omitted messages. Recover their binding sentences verbatim there, never quote or paraphrase them in the summary. A ruling holds while it constrains work, even after its first use. When a reply only names an option ("O2", "Sure"), keep the option's meaning unless the anchor's labeled answering context already carries it.
+Judge each status from what happened after the message, not its wording."""
 
 _KEEP_ALL = "Keep every ID."
 _KEEP_SPLIT = "Keep every ID: settled ones in the comma list, the rest on full lines."
@@ -130,14 +102,19 @@ def _instructions(ask: str, keep: str) -> str:
 INSTRUCTIONS = _instructions(_LEGACY_ASK, _KEEP_ALL)
 INSTRUCTIONS_CARRY_FORWARD = _instructions(_CARRY_ASK, _KEEP_SPLIT)
 
-UNREADABLE = ("The owner message list could not be read. List the owner's decisions and instructions you can "
-              "find in the conversation, each with a status.")
+UNREADABLE = ("The owner message list could not be read; anchor recovery is unverified. For this compaction, "
+              "override the no-quote rule: keep binding sentences verbatim in Owner directives, with their "
+              "status and scope. List the owner's decisions and instructions from the conversation.")
 
 TERMINAL_STATUSES = frozenset({"done", "scoped", "replaced"})
-_OWNER_SECTION_RE = re.compile(r"##\s*owner directives\b.*?\n(.*?)(?=\n##\s|\Z)", re.IGNORECASE | re.DOTALL)
-_STATUS_LINE_RE = re.compile(r"^\s*-?\s*U(\d+)\s*[—-]\s*(holds|done|scoped|unclear|replaced)\b",
-                             re.IGNORECASE | re.MULTILINE)
-_SETTLED_LIST_RE = re.compile(r"^\s*settled\b[^:\n]*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+_SECTION_RE = re.compile(
+    r"^(?:#{1,6}[ \t]+(?P<atx>[^\n]+)|\*\*(?P<bold>[^\n*]+)\*\*:?[ \t]*|"
+    r"\d+\.[ \t]+(?P<numbered>[A-Z][^\n]+))$", re.MULTILINE)
+_STATUS_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s+)?(?:\*\*|`)?U(\d+)(?:\*\*|`)?\s*[—-]\s*"
+    r"(holds|done|scoped|unclear|replaced)\b", re.IGNORECASE | re.MULTILINE)
+_SETTLED_LIST_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*)?settled\b[^:\n]*:\s*(.+)$",
+                              re.IGNORECASE | re.MULTILINE)
 _ID_TOKEN_RE = re.compile(r"U(\d+)")
 
 
@@ -177,11 +154,21 @@ def prior_summaries(transcript_path: Path) -> list:
         return []
 
 
+def summary_section(text: str, name: str) -> str:
+    """One section, including its heading, from the client's Markdown summary formats."""
+    headings = list(_SECTION_RE.finditer(text))
+    wanted = name.casefold()
+    for i, heading in enumerate(headings):
+        title = next(value for value in heading.groupdict().values() if value is not None).strip().rstrip(":").casefold()
+        if title == wanted or title.startswith(wanted + " ("):
+            end = headings[i + 1].start() if i + 1 < len(headings) else len(text)
+            return text[heading.start():end]
+    return ""
+
+
 def directive_statuses(summary_text: str) -> dict:
-    """{id: status} read from one past summary's own Owner directives section. A bare settled-list
-    ID counts as terminal ("done"); its exact prior sub-status is not needed for carry-forward."""
-    match = _OWNER_SECTION_RE.search(summary_text)
-    section = match.group(1) if match else ""
+    """{id: status} from Owner directives; a settled ID is terminal without its former sub-status."""
+    section = summary_section(summary_text, "Owner directives")
     statuses = {}
     for m in _STATUS_LINE_RE.finditer(section):
         statuses[int(m.group(1))] = m.group(2).lower()
@@ -189,6 +176,53 @@ def directive_statuses(summary_text: str) -> dict:
         for id_match in _ID_TOKEN_RE.finditer(m.group(1)):
             statuses.setdefault(int(id_match.group(1)), "done")
     return statuses
+
+
+def summary_recovery_lines(transcript_path: Path, summaries: list) -> list:
+    """Exact section reads of the preceding summary, without a second store or a mutable pointer."""
+    if not summaries:
+        return []
+    text = summaries[-1]
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    command = ("python3 .claude/hooks/compact_directive_ledger.py --show-summary "
+               f"{shlex.quote(transcript_path.resolve().as_posix())} {digest}")
+    lines = [f"- {name}: {command} {shlex.quote(name)}"
+             for name in ("Pending Tasks", "Pending ratings") if summary_section(text, name)]
+    return ["## Stored resume state (recover only when that work is next)"] + lines if lines else []
+
+
+def show_summary(args: list) -> int:
+    """`--show-summary <transcript> <sha256> <section>` prints only that captured section."""
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+    if len(args) != 3 or not re.fullmatch(r"[0-9a-f]{64}", args[1]):
+        print("usage: compact_directive_ledger.py --show-summary <transcript> <sha256> <section>", file=sys.stderr)
+        return 2
+    path, digest, section = args
+    try:
+        with open(path, encoding="utf-8") as transcript:
+            for line in transcript:
+                if "isCompactSummary" not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or not row.get("isCompactSummary"):
+                    continue
+                text = _row_text(row)
+                if hashlib.sha256(text.encode("utf-8")).hexdigest() != digest:
+                    continue
+                found = summary_section(text, section)
+                if not found:
+                    print(f"no section {section!r} in summary {digest}", file=sys.stderr)
+                    return 1
+                print(found.rstrip())
+                return 0
+    except (OSError, UnicodeError) as exc:
+        print(f"cannot read {path}: {exc}", file=sys.stderr)
+        return 1
+    print(f"no summary {digest} in {path}", file=sys.stderr)
+    return 1
 
 
 def carried_forward_ids(summaries: list) -> set:
@@ -384,24 +418,9 @@ def ledger_lines(messages, budget):
     return kept_head + [note] + tail[::-1]
 
 
-def whole_line(payload: dict, transcript_path: Path, messages: list) -> str:
-    """Which messages the SessionStart anchor will print in full, from the anchor's own layout
-    (`anchor.plan`), so a holds line for one can be ID, status and scope only. A layout that cannot
-    be built names none: every holds line then quotes, the safe direction."""
-    try:
-        sid = payload.get("session_id") or transcript_path.stem
-        where = anchor.full_location(sid)
-        layout = anchor.plan(transcript_path, sid, anchor.project_dir(payload), messages, where,
-                             anchor.fetch_command(where), rating_line=anchor.rating_debt_text(99))
-        ids = anchor.whole_ids(layout)
-    except Exception:
-        ids = []
-    if ids and len(ids) == len(messages):
-        return "Anchor prints whole: every owner message."
-    return f"Anchor prints whole: {', '.join(f'U{i}' for i in ids) or 'none'}."
-
-
 def main() -> int:
+    if sys.argv[1:2] == ["--show-summary"]:
+        return show_summary(sys.argv[2:])
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -435,8 +454,7 @@ def _ledger(payload: dict) -> int:
         return 0
 
     summaries = prior_summaries(transcript_path)
-    whole = whole_line(payload, transcript_path, messages)
-    facts = [whole] + facts_lines(transcript_path)
+    facts = summary_recovery_lines(transcript_path, summaries) + facts_lines(transcript_path)
     if len(summaries) < MIN_PRIOR_SUMMARIES:
         print(INSTRUCTIONS)
         print("Owner messages (ID · sent · opening words):")
@@ -449,18 +467,20 @@ def _ledger(payload: dict) -> int:
 
     listed_ids = {m["index"] for m in messages}
     carry_ids = carried_forward_ids(summaries) & listed_ids
-    full_messages = [m for m in messages if m["index"] not in carry_ids]
+    known_ids = (directive_statuses(summaries[-1]).keys() & listed_ids) - carry_ids
+    full_messages = [m for m in messages if m["index"] not in carry_ids | known_ids]
+    known = (anchor._listed("Statused in preceding summary", [{"index": i} for i in sorted(known_ids)])
+             + ". Keep their status lines; update them from later conversation." if known_ids else None)
+    settled = settled_line(carry_ids) if carry_ids else None
+    carried = [line for line in (known, settled) if line]
 
     print(INSTRUCTIONS_CARRY_FORWARD)
     print("Owner messages (ID · sent · opening words):")
-    settled = settled_line(carry_ids) if carry_ids else None
     budget = (TOTAL_BYTES - size([INSTRUCTIONS_CARRY_FORWARD, "Owner messages (ID · sent · opening words):"])
-              - (size([settled]) if settled else 0) - size(facts))
+              - size(carried) - size(facts))
     for line in ledger_lines(full_messages, budget):
         print(line)
-    if settled:
-        print(settled)
-    for line in facts:
+    for line in carried + facts:
         print(line)
     return 0
 

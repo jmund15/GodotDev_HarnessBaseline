@@ -31,9 +31,9 @@ def _admit():
     if machine_slots.inherited():
         return
     try:
-        held = machine_slots.take(notice=True)
+        held = machine_slots.admit(['python'] + sys.argv)
         if held is None:
-            raise machine_slots.SlotStoreError('proof admission unavailable')
+            os._exit(2)
         atexit.register(machine_slots.release_all, held)
         os.environ['HARNESS_MACHINE_ROOT'] = machine_slots.machine_root()
         os.environ['HARNESS_SLOT_BUDGET'] = '1'

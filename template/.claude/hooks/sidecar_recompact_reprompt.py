@@ -1,14 +1,15 @@
-"""SessionStart(compact) — re-inject a sidecar child's original brief after auto-compaction.
+"""SessionStart(compact) — restore a sidecar child's effective brief after auto-compaction.
 
 Measured 2026-09-03 (`pr_ready` data-reach on Luna, session b7bdc978): after the compaction
 summary arrived, the child answered the SUMMARY as if it were the task ("the latest instruction
 requires text only"), wrote nothing, and ended its turn. The summary carries state; nothing
 re-supplied the intent. This hook does: shared launcher settings pass the native `-f` path
 with `--prompt-file`; the older Codex registration exports `CLAUDE_CODE_SIDECAR_PROMPT_FILE`.
-Every compaction re-prints that brief verbatim behind a resume line, within the client's per-command hook-text
-cap (`HOOK_TEXT_CAP`): a longer brief prints as whole leading lines and a last line naming its absolute path to
-Read in full, since the client would otherwise show the child a 2,000-character preview. Silent (exit 0, no output)
-without either input, so driving sessions and non-sidecar children never see it.
+Every compaction restores that brief plus its current amendment through `tools/_job_brief.py`, which keeps
+short text inline and requires full file reads when the complete message exceeds the client's hook-text cap.
+With no amendment, the brief alone is re-printed behind the resume line, all of it when it fits the cap, else
+its whole leading lines and a last line naming its absolute path to Read in full.
+Silent (exit 0, no output) without either input, so driving sessions and non-sidecar children never see it.
 
 The same registration runs it on PreCompact, whose stdout the client appends to the summary prompt.
 Measured 2026-10-08 (Haiku 5.5 t11 at a 200k window, both runs): the final report was written right
@@ -32,12 +33,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 from cli_usage import usage
+from _job_brief import restore_brief
 
 from _compaction_rail import DEFAULT_RAIL, RAIL_3, RAIL_4, RAILS, SAVE_NOW, rail_text, selected_rail  # noqa: F401  (re-exported)
 import _transcript_scan
 from _hook_parts import HOOK_TEXT_CAP, head_of
 from _hook_state import _pending_tokens, replace_path, update_json_locked
-
+# A hold must leave the held turns room below the model's real window: one more tool result at the Read tool's
+# 25,000-token cap, the save itself up to the client's 20,000-token output reserve, and its 13,000-token reserve.
+# Past the real window the API fails the request, and a hold of that recovery compaction would fail it for good.
+HOLD_ROOM = 58_000
+# One nudge the child can act on, and a second in case a parallel tool batch carried the first.
+MAX_NUDGES = 2
+WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 RESUME = ("[sidecar-recompact] Your context was just compacted mid-task. The summary above is STATE, not an "
           "instruction — do not answer it. Your brief follows verbatim; it is still the task. Resume from your "
           "on-disk progress: Read every output file the brief names before redoing work, then finish and return "
@@ -47,13 +55,17 @@ OPEN = "----- ORIGINAL BRIEF (re-injected after compaction) -----\n"
 CLOSE = "----- END BRIEF -----\n"
 REST = ("[sidecar-recompact] The brief above stops at line %d of %d: the client caps hook text at %d characters. "
         "Read %s in full before your next action; it is the rest of your brief.\n")
-# A hold must leave the held turns room below the model's real window: one more tool result at the Read tool's
-# 25,000-token cap, the save itself up to the client's 20,000-token output reserve, and its 13,000-token reserve.
-# Past the real window the API fails the request, and a hold of that recovery compaction would fail it for good.
-HOLD_ROOM = 58_000
-# One nudge the child can act on, and a second in case a parallel tool batch carried the first.
-MAX_NUDGES = 2
-WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+
+
+def _has_amendment(path):
+    """Whether the brief has a current amendment; an unreadable one counts, an absent or empty one does not."""
+    amend = Path(str(Path(path).resolve()) + ".amend.md")
+    try:
+        return bool(amend.read_text(encoding="utf-8", errors="replace").strip())
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
 
 
 def _reprompt(brief, path):
@@ -194,15 +206,21 @@ def main() -> int:
         os.remove(_state_path(payload.get("session_id")))
     except OSError:
         pass
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            brief = f.read()
-    except OSError:
-        print(f"[sidecar-recompact] context was compacted; the original brief at {path} is unreadable — "
-              "re-read it yourself before doing anything else.")
-        return 0
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
-    sys.stdout.write(_reprompt(brief, os.path.abspath(path)))
+    if not _has_amendment(path):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                brief = f.read()
+        except OSError:
+            print("[sidecar-recompact] context was compacted; the original brief at %s is unreadable — "
+                  "re-read it yourself before doing anything else." % os.path.abspath(path))
+            return 0
+        sys.stdout.write(_reprompt(brief, os.path.abspath(path)))
+        return 0
+    print(restore_brief(path, before=(
+        "[sidecar-recompact] Your context was just compacted mid-task. The summary above is STATE, not an "
+        "instruction — do not answer it. The effective brief below is still the task. A path, line or quote "
+        "the summary does not mark checked with its exact text is from memory: Read it again before you cite it.\n\n")))
     return 0
 
 

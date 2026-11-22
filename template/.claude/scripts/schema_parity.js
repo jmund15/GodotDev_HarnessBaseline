@@ -85,7 +85,7 @@ if ((argPair.length !== 0 && argPair.length !== 2) || flags.some(f => f !== '--w
 const ENGINE_DIR = path.join(ROOT, '.claude', 'workflows')
 // The engines carrying shared blocks differ per project: a project may add one (key_reachability) or
 // omit one, and an absent workflow has no blocks to check.
-const BLOCK_ENGINES = ['dispatch', 'dispatch_chains', 'review_fanout', 'explore_fanout', 'idea_fanout',
+const BLOCK_ENGINES = ['dispatch', 'dispatch_chains', 'review_fanout', 'idea_fanout',
   'doc_architecture_audit', 'key_reachability', 'worklog_relevance']
   .filter(e => fs.existsSync(path.join(ENGINE_DIR, e + '.js')))
 const ENGINE_SOURCE = path.join(ROOT, '.claude', 'scripts', 'engine_src', 'common.js')

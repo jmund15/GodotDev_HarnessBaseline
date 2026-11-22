@@ -463,7 +463,7 @@ def apply_judge(comparison: Path, result: dict) -> tuple[str, str]:
 
 
 def resolve(pdir: Path, prefix: str) -> Path:
-    hits = sorted(p for store in digest.sibling_stores(pdir) for p in store.glob("*.jsonl") if p.stem.startswith(prefix))
+    hits = digest.store_transcripts(digest.sibling_stores(pdir), prefix, prefix=True)
     if not hits:
         sys.exit("no transcript starts with %r under %s" % (prefix, pdir))
     if len(hits) > 1:

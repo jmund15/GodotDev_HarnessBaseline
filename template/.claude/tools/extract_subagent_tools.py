@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from model_registry import session_projects_dir  # noqa: E402
+from model_registry import find_session_transcript, session_projects_dir, session_project_roots  # noqa: E402
 
 PROJECTS_ROOT = Path(session_projects_dir())
 
@@ -68,12 +68,12 @@ def find_subagent_jsonl(
 
     Resolution order:
     1. If session_id + project_dir provided: direct path lookup (O(1)).
-    2. If session_id provided but no project_dir: glob across all project
-       roots for the session. (Subagent files sometimes appear under the
-       worktree's project dir even when cwd is the main repo.)
-    3. Fallback: glob across all projects for any
-       `*/<session_id>/subagents/agent-<agent_id>.jsonl` if session_id given,
-       otherwise `*/*/subagents/agent-<agent_id>.jsonl`.
+    2. If session_id provided but no project_dir: the session's directory
+       through `model_registry.find_session_transcript`. (Subagent files
+       sometimes appear under the worktree's project dir even when cwd is the
+       main repo.) An absent or ambiguous session finds nothing.
+    3. Without session_id: glob across all projects for any
+       `*/*/subagents/agent-<agent_id>.jsonl`.
     """
     if not agent_id:
         return None
@@ -90,22 +90,14 @@ def find_subagent_jsonl(
         if found:
             return found
 
-    if not PROJECTS_ROOT.exists():
-        return None
-
-    # Path 2 & 3: glob scan
     if session_id:
-        # Narrow scan: only look in the named session dir under any project
-        for project in PROJECTS_ROOT.iterdir():
-            if not project.is_dir():
-                continue
-            found = in_session(project / session_id)
-            if found:
-                return found
-    else:
-        # Wide scan: any project, any session
-        # Use glob rather than rglob for performance — depth is fixed.
-        for project in PROJECTS_ROOT.iterdir():
+        session = find_session_transcript(session_id, allow_dir=True)
+        return in_session(session.with_suffix("")) if session else None
+
+    for root in dict.fromkeys([PROJECTS_ROOT, *map(Path, session_project_roots())]):
+        if not root.is_dir():
+            continue
+        for project in root.iterdir():
             if not project.is_dir():
                 continue
             for sess in project.iterdir():
@@ -120,10 +112,7 @@ def find_subagent_jsonl(
 
 def find_session_jsonl(session_id: str) -> Path | None:
     """A headless `claude -p` child's own transcript, `<project>/<session_id>.jsonl`, under any project."""
-    if not session_id or not PROJECTS_ROOT.exists():
-        return None
-    return next((p / f"{session_id}.jsonl" for p in PROJECTS_ROOT.iterdir()
-                 if (p / f"{session_id}.jsonl").is_file()), None)
+    return find_session_transcript(session_id)
 
 
 def extract_tool_names(

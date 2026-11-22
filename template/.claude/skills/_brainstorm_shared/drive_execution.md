@@ -24,7 +24,7 @@
   edits get the parent's review before commit.
   Execution state lives in the task record (`orchestration` reference `checkpointing.md`), never in a Workflow. The driving session keeps spec
   ownership, diff review, gate adjudication and commits.
-- Lane/slice verification and lane/Part/drive close follow `change_control` §Gate cadence.
+- Lane/slice verification and lane/Part/drive close follow `change_control` §Gate cadence, and the merge tier and owner touchpoints follow the drive's mode (`execution_depth.md` §Mode names each value's effect).
 - The orchestrator records a verdict on every delegated slice diff, as an inline read with no agent. A rejected slice
   is re-dispatched to repair the named violation over its diff; the repaired diff's review is a later round
   (`orchestration` §2 *Later rounds*). A violation that invalidates the slice's design re-plans it.

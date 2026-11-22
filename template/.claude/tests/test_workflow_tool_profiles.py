@@ -308,8 +308,9 @@ _declared = sorted(r["agentType"] + ".md" for r in json.load(open(
     os.path.join(os.path.dirname(AGENTS_DIR), "guards", "tool_profiles.json"), encoding="utf-8"))["kinds"].values()
     if r.get("agentType"))
 _declared = sorted(set(_declared) | {"lane-review-sh.md"})
-check("the table declares survey, review, review-sh, author and verify agent types",
-      ["lane-author.md", "lane-review-sh.md", "lane-review.md", "lane-survey.md", "lane-verify.md"], _declared)
+check("the table declares survey, review, review-sh, author, verify and gate agent types",
+      ["lane-author.md", "lane-gate.md", "lane-review-sh.md", "lane-review.md", "lane-survey.md", "lane-verify.md"],
+      _declared)
 check("only kinds and variants that declare agentType render a file", _declared,
       sorted(os.listdir(_gen_agents)))
 for _name in _declared:

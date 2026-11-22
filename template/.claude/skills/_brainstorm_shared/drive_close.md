@@ -4,7 +4,7 @@
 
 ## Close
 
-1. Verify by chain position per `change_control` §Gate cadence, which also owns fix re-verification. At each Part's
+1. Verify by chain position per `change_control` §Gate cadence, which also owns fix re-verification; the owner acceptance this step runs, and when it runs, follow the drive's mode (`execution_depth.md` §Mode names each value's effect). At each Part's
    close, run its plan's root-acceptance rows (`plan_file_format.md` §Root acceptance) on the Part's candidate through
    the project's agent playtest command; at drive close, before the drive-close scope run, run the rows of every plan serving the goal on their
    merged candidate the same way. Record each requirement met, partial, not met or owner-judges with its run
@@ -33,7 +33,8 @@
    remain unrated.
 5. Commit per the project's commit rules (`change_control` §Commits). The drive does not push; a later push follows
    `CLAUDE.core.md` §Git, and one the Owner approval row admits waits for the owner.
-6. The adapter's write-back, which its header's owner stop or close clause names: the roadmap flip for a Part,
+6. The adapter's write-back, which its header's owner stop or close clause names: the roadmap flip for a Part, with
+   the journey sweep of an MVP the flip makes `🧪 Ready for playtest` (`roadmap_triggers_mvp.md` §6.11 *Status*),
    `/worklog complete` with the commit ref per item in the session it lands, or none.
 7. Write the final report to the owner per `reference/deliverable_report.md`; its screenshots reuse step 1's
    playtest frames.

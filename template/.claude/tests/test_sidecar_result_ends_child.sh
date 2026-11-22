@@ -179,5 +179,18 @@ else
 fi
 [ -n "$orphan" ] && alive_win "$orphan" && MSYS_NO_PATHCONV=1 taskkill /PID "$orphan" /F >/dev/null 2>&1
 
+# 9. The POSIX tree kill ends a parent before its children: a shell whose child dies first runs its next
+#    command (the stub's re-wake) before its own kill lands. A planted process table records the kill order.
+order="$(
+  pgrep() { case "$2" in 10) echo 11 ;; 11) echo 12 ;; esac; }
+  kill() { printf '%s ' "$1"; }
+  sc_kill_descendants 10
+)"
+if [ "$order" = "10 11 12 " ]; then
+  say "OK   the POSIX tree kill ends each parent before its children"
+else
+  say "FAIL POSIX tree kill order: got '$order', want '10 11 12 '"; fail=1
+fi
+
 rm -rf "$d"
 exit $fail

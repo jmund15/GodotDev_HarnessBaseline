@@ -4,11 +4,14 @@
 Prints `<session_id>\\t<reason>` when the run should be resumed, and nothing otherwise.
 
 RESUME IS NOT RETRY, and the distinction is what keeps this inside the standing rule against
-auto-retrying a billed call. `--resume <sid>` continues the same session: every turn already paid
-for is kept, and the run picks up where it stopped (measured — a 91-turn lens killed by a mid-stream
-reset resumed and finished at 58 further turns, exit 0). A fresh dispatch would re-buy all of it.
-So this tool NEVER re-issues a run from the start; with no session id there is nothing to resume and
-it stays silent.
+auto-retrying a billed call. `--resume <sid>` continues the same session and the run picks up where
+it stopped (measured — a 91-turn lens killed by a mid-stream reset resumed and finished at 58 further
+turns, exit 0). It fits the two endings below because each is resumed at once, while the history is
+still cached. A session id alone does not make a resume worth its cost: one that starts after the
+prompt cache's lifetime re-sends the whole history uncached, and a fresh continuation from the brief
+and the work on disk is the other route (`reference/sidecar_runs.md` §Provider usage limit). So this
+tool NEVER re-issues a run from the start; with no session id there is nothing to resume and it stays
+silent.
 
 Two resumable endings:
 
@@ -21,7 +24,7 @@ Two resumable endings:
 Deliberately NOT resumable — each would loop or re-buy, so they exit silent:
   * deterministic request faults (unknown model, malformed request, 400/404) — identical on resume
   * auth/permission faults (401/403) — a resume repeats the rejection
-  * quota / rate limits — resumable in principle, but needs backoff this tool does not implement
+  * quota / rate limits — the continuation after a reset is a cost choice (`sidecar_fanout.py` states its facts)
   * any run with no session id
 
 The same module owns the live stream-event classification the launcher watchdog and

@@ -126,8 +126,6 @@ Settled, mechanical or cheaply reversible work goes straight to execution. An ad
 
 `triage.admits("candidate-lenses", ...)` returns the width. Admission is policy: a scope of harness paths (`.claude/**`, `CLAUDE.md`, `MEMORY.md`) none of which runs gets `none` below thorough, since prose and tool-written ledgers have no code subject; a changed script, proof, hook, settings file or data a tool reads (`_claude_scope.is_executable_harness_path`) or any production path keeps the sizing below, and the review ledger owes the same scope no candidate pair. A mechanical change under a green gate whose size is one-context or reach is local gets `none`, no candidate review, below thorough; gate unknown counts as not green. Thorough gets `all`, the command's full roster with its conditional mandates admitted below. Every other change gets `sized`: it carries `sa-architecture-sweep` (plan conformance and executor design), and the session adds each of `sa-design-semantics`, `sa-robustness-performance` and `sa-intuitiveness-testability` whose risk the change carries, against the rigor bar in `orchestration` reference `review_width.md`'s size rule, and reports the lenses and why.
 
-Every stage that dispatches, reviews or folds reads rigor through §Conditions Rigor; this layer's stages are in [`rigor_stages.md`](rigor_stages.md).
-
 ### Simpler-path probe
 
 The simpler-path probe is the first required output section of the architect pass: the simplest change that meets
@@ -155,7 +153,7 @@ table holds when each conditional one runs.
 | `/research` | Shape B | the question rests on an external fact with grounding = assumed and reach ≥ shared or design = open; the fact is version-contested, or first-party and community sources are expected to disagree; or a Shape A answer came back unclear or contested, which is a re-triage |
 | `/session_audit` | `sa-architecture-sweep` | at drive close, whenever §Candidate width admits review (`sized` or `all`); otherwise design = open, reach ≥ shared, a new authored surface, or the invoking step names it, subject to the Candidate review row |
 | `/session_audit` | `sa-harness-quality` | the change adds or changes a decision in standing or shared harness text, or rigor through §Conditions Rigor is thorough; apply the Harness-quality review seat row's kind, size, reach and light-run limits |
-| `/session_audit` | `sa-holistic` | at `/session_end`, the session landed work no single review saw together: `review_ledger.py whole-scope` returns `wholeScope: false` for the session's files (a prose-only harness scope below thorough owes no candidate mandate and returns true) |
+| `/session_audit` | `sa-holistic` | at `/session_end`, the session landed work no single review saw together: `review_ledger.py whole-scope` returns `wholeScope: false` for the session's files |
 | `/pr_ready` | the parity and API lenses | the change holds code or authored data; a meta-only change holds no input for them |
 | `/session_audit` and the review commands | the code-quality and test-quality checklists | an admitted review changes code or tests those checklist items check; load only the applicable sections |
 | the prototype route | the composed-encounter verification obligations | the question has an open fork (design = open), or its answer spans more than one mechanism (oracle = runtime) |
@@ -170,7 +168,7 @@ inside the chosen route (the Owner design decision row), never a reason to chang
 | an approved plan file exists | `/part_execute`, which enters at execute |
 | the work is a roadmap Part | `/part_drive`; `--plan-only` stops at an approved plan |
 | the work is logged worklog items | `/worklog drive` |
-| design = open, and no candidate approaches exist yet | `/idea_brainstorm` |
+| design = open, and no candidate approaches exist yet, except work a person sees where the project's UI skill supplies the candidates (the size rows below then route it) | `/idea_brainstorm` |
 | the owner asks to design in dialogue | `architecture_brainstorm`, optionally `--red_team` |
 | size = parts with an approved design doc | the Decomposition row, then `/part_drive` per Part |
 | size = parts | `/design_drive`: one design doc, its design challenge and roadmap, then a plan and plan check per Part |
@@ -207,11 +205,21 @@ Work with no nameable oracle is not ready. It goes to grounding, a spike or resh
 
 ## Conditions
 
-Conditions describe the run, not the work. They adjust when an admitted review runs, its width and its mandates, and the bar its findings clear. None waives a floor element (§Boundary's quality floor) or an owner approval.
+Conditions describe the run, not the work. They adjust when an admitted review runs, its width and its mandates, the bar its findings clear, and — for mode — the owner touchpoints and the merge tier. None waives a floor element (§Boundary's quality floor) or an owner approval.
 
 ### Rigor
 
 Recording and reading the level, the bar, every panel's rule and the shared stages are `orchestration` reference `rigor.md`'s. The floor (§Boundary) never scales with it, and the Do-now gate's "declined with a reason and an offer" (`worklog_reference`) is the close of a below-bar finding. What rigor changes at each stage this layer adds is [`rigor_stages.md`](rigor_stages.md)'s table.
+
+### Mode
+
+Mode is how the owner wants this run driven: `fix-now`, `attended` or `unattended`. Set it at drive Intake, in the step that records rigor, from the owner's words, with those words recorded as a request condition (§Other conditions). Read it with `python3 .claude/tools/triage.py mode [--task <task id>]` and store it with `python3 .claude/tools/task_record.py set <task id> --mode fix-now|attended|unattended`. When the owner's words name none, it is `unattended` while this session holds an armed `/overnight` marker, else `attended`.
+
+- **fix-now:** the first report gives the owner rendered frames, and a preview link where the project declares one, before any hardening slice runs; the Owner acceptance row (§Admission) runs then, not at close; the merge tier is skipped and one gate runs at close. Urgency's rule (§Other conditions) applies.
+- **attended:** milestone reports carry frames.
+- **unattended:** the full gate and the acceptance walk run at close, and the owner checklist waits at their return.
+
+Mode orders the owner touchpoints and the merge tier, nothing else; rigor keeps the review width. In a round the project's UI skill runs, the order is that skill's loop.
 
 ### Other conditions
 

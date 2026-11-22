@@ -33,6 +33,7 @@ CLAUDE = HERE.parent
 sys.path[:0] = [str(CLAUDE / "hooks"), str(CLAUDE / "tools")]
 STATE = tempfile.mkdtemp(prefix="compaction_state_")
 os.environ["HARNESS_HOOK_STATE_DIR"] = STATE
+os.environ.pop("CLAUDE_CODE_SIDECAR", None)
 
 import _hook_state  # noqa: E402
 import _transcript_summary  # noqa: E402

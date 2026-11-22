@@ -976,24 +976,9 @@ def find_session_dir(session_id=None):
             explicit_path = os.path.abspath(os.path.expanduser(session_id))
             if os.path.isdir(explicit_path):
                 return explicit_path
-        matches = []
-        for project_name in (os.listdir(root) if os.path.isdir(root) else []):
-            project = os.path.join(root, project_name)
-            if not os.path.isdir(project):
-                continue
-            session_names = set()
-            for name in os.listdir(project):
-                session_names.add(name[:-6] if name.endswith('.jsonl') else name)
-            for name in session_names:
-                path = os.path.join(project, name)
-                if not (os.path.isfile(path + '.jsonl')
-                        or os.path.isdir(os.path.join(path, 'workflows'))):
-                    continue
-                if name == sid:
-                    return path
-                if name.startswith(sid):
-                    matches.append(path)
-        return matches[0] if len(matches) == 1 else None
+        found = model_registry.find_session_transcript(
+            sid, itertools.chain([root], model_registry.session_project_roots()), prefix=True, allow_dir=True)
+        return str(found.with_suffix('')) if found else None
 
     cands = _candidate_project_dirs(root)
     sessions = []
@@ -2276,7 +2261,9 @@ def sidecar_launches(command, cwd=None, output=None):
                             effort=f.get('e') if isinstance(f.get('e'), str) else None,
                             record=_resolve_session_path(record, cwd) if isinstance(record, str) else None))
             continue
-        if '--dry-run' in args:
+        if '--dry-run' in args or '--review-close' in args:
+            # Neither launches a job of the jobs file: a dry run prints the plan, a review close consolidates
+            # seats an earlier call launched (its fold job writes its own record).
             continue
         parsed = _parse_fanout_args(args, cwd)
         if not parsed:
@@ -2376,7 +2363,7 @@ def _resolved_launcher_calls(command, cwd):
                  and any(re.search(r'\$(?:\{%s\}|%s(?!\w))' % (n, n), a) for a in args)]
         for values in itertools.product(*(loops[n] for n in names)):
             scope = dict(env, **dict(zip(names, values)))
-            calls.append((kind, script, [_expand_vars(a, scope) for a in args]))
+            calls.append((kind, script, _expand_words(args, scope)))
     return run_cwd, calls
 
 
@@ -2384,6 +2371,19 @@ def _expand_vars(token, env):
     """`$NAME` and `${NAME}` in `token` replaced from `env`; an unknown name stays as written."""
     return re.sub(r'\$(?:\{(\w+)\}|(\w+))',
                   lambda m: env.get(m.group(1) or m.group(2), m.group(0)), token)
+
+
+def _expand_words(tokens, env):
+    """`tokens` with `_expand_vars` applied, a token that is only a variable reference (`$FLAGS`, `${FLAGS}`) split into
+    the words the shell makes of its value, and a reference inside a longer token left one word."""
+    words = []
+    for token in tokens:
+        value = _expand_vars(token, env)
+        if value != token and re.fullmatch(r'\$(?:\{\w+\}|\w+)', token):
+            words.extend(value.split())
+        else:
+            words.append(value)
+    return words
 
 
 def _launcher_calls_named(command):

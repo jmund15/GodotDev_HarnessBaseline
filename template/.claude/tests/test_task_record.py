@@ -108,6 +108,21 @@ def test_rigor_cli(tmp_path, monkeypatch):
     assert load().load("rigor")["rigor"] == "thorough"
 
 
+def test_mode_cli(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_TASK_RECORD_DIR", str(tmp_path / "records"))
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path))
+    assert cli("open", "mode", "--session", "mode-session", "--title", "Mode", cwd=tmp_path, env=env).returncode == 0
+    for value in ("fix-now", "attended", "unattended"):
+        r = cli("set", "mode", "--mode", value, cwd=tmp_path, env=env)
+        assert r.returncode == 0, r.stderr
+        record = json.loads(r.stdout)
+        assert record["mode"] == value and record.get("modeAt"), record
+    assert "mode: unattended" in load().render_block("mode")
+    r = cli("set", "mode", "--mode", "unknown", cwd=tmp_path, env=env)
+    assert r.returncode != 0 and "invalid choice" in r.stderr
+    assert load().load("mode")["mode"] == "unattended"
+
+
 def test_optional_kind_cli(tmp_path, monkeypatch):
     monkeypatch.setenv("HARNESS_TASK_RECORD_DIR", str(tmp_path / "records"))
     env = dict(os.environ, CLAUDE_PROJECT_DIR=str(tmp_path))
@@ -130,7 +145,7 @@ def main():
     from pathlib import Path
     from types import SimpleNamespace
     from unittest.mock import patch
-    for case in (test_optional_kind_cli, test_rigor_cli, test_condition_command_args,
+    for case in (test_optional_kind_cli, test_rigor_cli, test_mode_cli, test_condition_command_args,
                  test_condition_command_args_refuses_non_owner):
         with tempfile.TemporaryDirectory() as fixture, patch.dict(os.environ):
             try:

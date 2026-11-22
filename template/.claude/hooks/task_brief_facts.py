@@ -280,7 +280,10 @@ def _dispatch_prep_notice(payload):
         return ""
     if skill and ladder:
         return ""
-    missing = [step for step, met in ((SKILL_LOAD, skill), (LADDER_LOAD, ladder)) if not met]
+    import model_ladder_gate
+    skill_load = (SKILL_LOAD if model_ladder_gate.has_skill_tool(payload)
+                  else model_ladder_gate.skill_step("orchestration", payload, "orchestration §0"))
+    missing = [step for step, met in ((skill_load, skill), (LADDER_LOAD, ladder)) if not met]
     if not _hook_state.fire_once_since_compaction(session_id, NOTICE_ONCE):
         return ""
     return "%s a dispatch is denied until you %s." % (NOTICE_TAG, " and ".join(missing))

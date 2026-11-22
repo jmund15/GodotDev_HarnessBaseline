@@ -11,6 +11,9 @@ no project path: every project fact lives in that data.
     triage.py rederive <rev-range>       flag each commit whose Triage: trailer sits below its own diff
     triage.py rigor [--task ID] [--set LEVEL]
                                         print the rigor in force, or record LEVEL on the task or session record
+    triage.py mode [--task ID] [--set MODE]
+                                        print the drive mode in force, or record it; unattended while this
+                                        session holds an /overnight marker, else attended
 
 Trailer, one line, keys in any order; reversibility and kind are optional and validated when supplied.
 The other five keys are required; the last `Triage:` line of a message counts:
@@ -166,6 +169,7 @@ class Admission:
 
 CHECKS = ("harness-quality-seat", "candidate-lenses", "premises", "iq-audit")
 RIGORS = ("light", "normal", "thorough")
+MODES = ("fix-now", "attended", "unattended")
 
 
 def rigor(task_id: str | None = None, root: Path | None = None, session_id: str | None = None) -> str:
@@ -222,6 +226,38 @@ def rigor(task_id: str | None = None, root: Path | None = None, session_id: str 
                     matches.append((specificity, RIGORS.index(entry['level'])))
         levels.append(RIGORS[max(matches)[1]] if matches else 'normal')
     return max(levels or ["normal"], key=RIGORS.index)
+
+
+def mode(task_id: str | None = None, root: Path | None = None, session_id: str | None = None) -> str:
+    """The drive mode in force, recorded and read like rigor.
+
+    The named task's record when it holds one, else the level the session named last (`task_record.active`
+    by `modeAt`); with neither, `unattended` while this session holds a live `/overnight` marker, else
+    `attended`. A marker nobody owns (no session id, a malformed one) names no run, so it cannot set the
+    default."""
+    import task_record
+    root = Path(root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()).resolve()
+    directory = Path(task_record.record_dir(root))
+    session = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if task_id:
+        record = task_record._hook_state.read_json_salvage(str(directory / (task_id + ".json")))
+        value = record.get("mode")
+    elif session:
+        held = task_record.active(session, require="mode", directory=str(directory))
+        value = (held or {}).get("mode")
+    else:
+        value = None
+    if value is not None:
+        if value not in MODES:
+            raise ValueError("unknown mode %r" % value)
+        return value
+    if not session:
+        return "attended"
+    import overnight_ask_guard
+    try:
+        return "unattended" if overnight_ask_guard.armed(str(root), session) else "attended"
+    except ValueError:
+        return "attended"
 
 
 def admits(check: str, fields: Fields, rigor: str, *, gate_green: bool | None = None,
@@ -842,7 +878,7 @@ def current(root: Path, *, rev: str | None = None, staged: bool = False,
 
 
 def sentences(root: Path, *, rev: str | None = None, staged: bool = False) -> list:
-    """Added and removed doctrine sentences, using harness_growth_guard's shared sentence_diff."""
+    """Added and removed doctrine sentences, using the shared sentence_diff."""
     import sentence_diff
     root = str(root)
     if rev:
@@ -913,26 +949,46 @@ def _cmd_rederive(args, tags):
     return 1 if flagged else 0
 
 
+def _record_run_condition(value, task, title, key):
+    """Store `key=value` on `task`'s record, or on this session's newest record, opened when it has none."""
+    import task_record
+    if not task:
+        session = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
+        if not session:
+            raise ValueError("no session id: set CLAUDE_CODE_SESSION_ID or pass --task")
+        newest = task_record.active(session)
+        if newest:
+            task = newest["task_id"]
+        else:
+            task = "session-" + task_record._session_key(session)
+            task_record.open_record(task, session, title)
+    task_record.set_fields(task, **{key: value})
+
+
 def _cmd_rigor(args):
     import task_record
     root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or ".")
     try:
         if args.set_level:
-            task = args.task
-            if not task:
-                session = os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
-                if not session:
-                    raise ValueError("no session id: set CLAUDE_CODE_SESSION_ID or pass --task")
-                newest = task_record.active(session)
-                if newest:
-                    task = newest["task_id"]
-                else:
-                    task = "session-" + task_record._session_key(session)
-                    task_record.open_record(task, session, "session rigor")
-            task_record.set_fields(task, rigor=args.set_level)
+            _record_run_condition(args.set_level, args.task, "session rigor", "rigor")
             print(args.set_level)
             return 0
         print(rigor(args.task, root))
+        return 0
+    except (OSError, ValueError, KeyError, task_record.RecordTooLarge, task_record.TriageRefused, task_record.OpenRefused) as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 1
+
+
+def _cmd_mode(args):
+    import task_record
+    root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or ".")
+    try:
+        if args.set_mode:
+            _record_run_condition(args.set_mode, args.task, "session mode", "mode")
+            print(args.set_mode)
+            return 0
+        print(mode(args.task, root))
         return 0
     except (OSError, ValueError, KeyError, task_record.RecordTooLarge, task_record.TriageRefused, task_record.OpenRefused) as exc:
         print("error: %s" % exc, file=sys.stderr)
@@ -969,10 +1025,15 @@ def main(argv=None):
     p = sub.add_parser("rigor", help="print the drive rigor in force, or record it with --set")
     p.add_argument("--task", help="task id; without it, this session's record")
     p.add_argument("--set", dest="set_level", choices=RIGORS, help="record this level")
+    p = sub.add_parser("mode", help="print the drive mode in force, or record it with --set")
+    p.add_argument("--task", help="task id; without it, this session's record")
+    p.add_argument("--set", dest="set_mode", choices=MODES, help="record this mode")
     args = ap.parse_args(argv)
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
     if args.cmd == "rigor":
         return _cmd_rigor(args)
+    if args.cmd == "mode":
+        return _cmd_mode(args)
     if args.cmd == "admits":
         import task_record
         try:

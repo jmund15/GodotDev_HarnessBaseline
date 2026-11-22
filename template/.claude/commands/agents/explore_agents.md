@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 <!-- Single source of truth for exploration lens definitions. -->
 <!-- Referenced by: /explore (Phase 2); the drive commands and both brainstorm skills reach it through /explore. -->
-<!-- Engine: .claude/workflows/explore_fanout.js — it owns the CLAIMS schema, the read-only/concurrency contract, and consolidation. -->
+<!-- Consolidation: .claude/tools/explore_result.py — it owns the claims contract every lens brief carries, the consolidation, and `_is_claim`/`_is_checked`, the claims object's shape's one home. -->
 <!-- If you update a mandate here, every caller picks up the change automatically. -->
 
 ## Agent Spawn Rules
@@ -21,9 +21,9 @@ Follow the **Agent Spawn Rules** in [`review_agents.md`](review_agents.md). Five
 
 ## Claims Schema
 
-All lenses return the schema in [`explore_fanout.schema.json`](../../workflows/explore_fanout.schema.json) — the engine enforces it, and the sidecar transport passes the same file to `-S`.
+Every lens ends its reply with the claims object as one ```` ```json ```` fence, on whichever plan the fan-out places it. No lens job carries a schema: `_is_claim` and `_is_checked` in [`explore_result.py`](../../tools/explore_result.py) own the object's shape, and an object they reject is a failed lens.
 
-The engine injects the `CLAIMS CONTRACT` block into every lens prompt at every tier: polarity requirements and `bearing` ranks. Evidence items and claim verdicts follow [`evidence_contract.md`](../../reference/evidence_contract.md), with [`evidence.json`](../../schemas/evidence.json) as its machine twin. A mandate below cites these owners rather than restating their rules.
+`lens_briefs.py prepare` writes the `CLAIMS CONTRACT` block into every lens brief at every tier: polarity requirements and `bearing` ranks. Evidence items and claim verdicts follow [`evidence_contract.md`](../../reference/evidence_contract.md), with [`evidence.json`](../../schemas/evidence.json) as its machine twin. A mandate below cites these owners rather than restating their rules.
 
 **Reporting filter.** Emit a claim only if it would change what a planner does: a premise the code refutes, a family that already owns the concern, a rule the plan must respect, a consumer a change would break. Orienting facts are `bearing: "context"` and should be few — a dossier padded with context claims buries the four bearings that matter. There is no "might be interesting" tier.
 

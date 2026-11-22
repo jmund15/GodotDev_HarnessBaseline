@@ -35,6 +35,14 @@ SC_TRANSPORT=go
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
 export SIDECAR_EXHAUSTED_DIR="$TMPD/markers"
+# A marker is confirmed against a live reading first (`exhausted_marker.py lift`). The planted cache holds a
+# rate-limit cooldown for each transport named here, so the confirmation fails closed without probing.
+export PROVIDER_CAPACITY_CACHE="$TMPD/capacity.json"
+python3 - "$PROVIDER_CAPACITY_CACHE" <<'PY'
+import json, sys, time
+until = time.time() + 3000
+json.dump({"_rateLimitedUntil": {"codex": until, "go": until}}, open(sys.argv[1], "w"))
+PY
 SC_TRANSPORT_STATE=available
 SC_ALIAS=go-kimi
 SC_MODEL=go-alpha

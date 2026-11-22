@@ -266,7 +266,7 @@ def test_actual_destructive_member_fault_fails_closed(monkeypatch):
 
 GODOT_MEMBERS = ('cloud_test_enforcer', 'editor_live_build_guard', 'gate_cadence_guard', 'pattern_enforcer',
                  'prototype_containment_guard', 'provisional_totality_guard', 'tres_nullstrip_guard',
-                 'tres_script_strip_guard', 'wide_test_guard')
+                 'tres_script_strip_guard')
 
 
 _PURE = {}

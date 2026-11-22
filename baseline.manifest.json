@@ -1622,6 +1622,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/guards/gate.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/guards/review.md",
       "layer": "pure",
       "sync": "auto"
@@ -1793,6 +1798,11 @@
     },
     {
       "path": ".claude/hooks/_transcript_summary.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/hooks/_wide_runs.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -2318,7 +2328,7 @@
     },
     {
       "path": ".claude/hooks/wide_test_guard.py",
-      "layer": "godot",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -3302,6 +3312,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/skills/orchestration/reference/dispatch_rows.md",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/skills/orchestration/reference/drive_dispatch.md",
       "layer": "pure",
       "sync": "auto"
@@ -3742,6 +3757,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/codify_prompt_fixture/5a10d094_owner_rows.jsonl",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/csharp-ls-adapter_contract_test.js",
       "layer": "coding",
       "sync": "auto"
@@ -3812,22 +3832,17 @@
       "sync": "auto"
     },
     {
-      "path": ".claude/tests/explore_fanout_transport_test.js",
-      "layer": "coding",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/tests/explore_fanout_verification_bound_test.js",
-      "layer": "coding",
-      "sync": "auto"
-    },
-    {
       "path": ".claude/tests/fixtures/analyze_eval_archive/console.txt",
       "layer": "pure",
       "sync": "auto"
     },
     {
       "path": ".claude/tests/fixtures/analyze_eval_archive/stats.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/compact_bloat/rows.jsonl",
       "layer": "pure",
       "sync": "auto"
     },
@@ -3862,7 +3877,17 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/fixtures/dispatch_table/clean_launch_row.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/fixtures/dispatch_table/fanout_detach_output.txt",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/dispatch_table/handoff_then_sidecar_pending.json",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4263,6 +4288,11 @@
     },
     {
       "path": ".claude/tests/fixtures/v1_check_golden.json",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/fixtures/wide_test_guard/lane_author_payload.json",
       "layer": "pure",
       "sync": "auto"
     },
@@ -4722,6 +4752,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tests/test_codify_prompt.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tests/test_command_text_heredoc.py",
       "layer": "pure",
       "sync": "auto"
@@ -5033,6 +5068,11 @@
     },
     {
       "path": ".claude/tests/test_exhausted_marker.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_explore_result.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -6178,6 +6218,11 @@
     },
     {
       "path": ".claude/tests/test_rail_probe_guard.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tests/test_reach_run.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -7333,7 +7378,7 @@
     },
     {
       "path": ".claude/tests/test_wide_test_guard.py",
-      "layer": "godot",
+      "layer": "pure",
       "sync": "auto"
     },
     {
@@ -7502,6 +7547,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/_job_brief.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/_supervised_launch.py",
       "layer": "pure",
       "sync": "auto"
@@ -7592,6 +7642,11 @@
       "sync": "auto"
     },
     {
+      "path": ".claude/tools/codify_prompt.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
       "path": ".claude/tools/csharp-ls-adapter.js",
       "layer": "coding",
       "sync": "auto"
@@ -7643,6 +7698,11 @@
     },
     {
       "path": ".claude/tools/exhausted_marker.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/explore_result.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -7863,6 +7923,11 @@
     },
     {
       "path": ".claude/tools/quota_fit.py",
+      "layer": "pure",
+      "sync": "auto"
+    },
+    {
+      "path": ".claude/tools/reach_run.py",
       "layer": "pure",
       "sync": "auto"
     },
@@ -8213,16 +8278,6 @@
     },
     {
       "path": ".claude/workflows/effort_on_agenttype_probe.js",
-      "layer": "pure",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/workflows/explore_fanout.js",
-      "layer": "coding",
-      "sync": "auto"
-    },
-    {
-      "path": ".claude/workflows/explore_fanout.schema.json",
       "layer": "pure",
       "sync": "auto"
     },

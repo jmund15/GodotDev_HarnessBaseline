@@ -1,0 +1,12 @@
+{
+ "hook_event_name": "PreToolUse",
+ "session_id": "11111111-1111-4111-8111-111111111111",
+ "transcript_path": "C:/Users/example/.claude/projects/example-project/11111111-1111-4111-8111-111111111111.jsonl",
+ "cwd": "C:/Users/example/project",
+ "permission_mode": "auto",
+ "tool_name": "Bash",
+ "tool_use_id": "toolu_01DKTDs1wXERCNZFiLU9BGdQ",
+ "tool_input": {
+  "command": "sh \"C:/Users/example/project/.claude/scratch/base-run.sh\""
+ }
+}

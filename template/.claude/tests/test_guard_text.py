@@ -48,6 +48,25 @@ def planted_tool(tmp):
     return os.path.join(tools, "guard_text.py")
 
 
+def planted_cadence_tool(tmp, cadence):
+    """`planted_tool`, plus the shipped guard bodies and a planted `gate_cadence` table.
+
+    The `Your checks` line renders this project's cadence rows, so the proof plants distinct forms
+    and keeps the real `author.md`/`gate.md`/`review.md` text under test."""
+    tool = planted_tool(tmp)
+    guards = os.path.join(tmp, ".claude", "guards")
+    real_guards = os.path.join(os.path.dirname(os.path.dirname(TOOL)), "guards")
+    for name in ("common.md", "author.md", "gate.md", "review.md"):
+        shutil.copyfile(os.path.join(real_guards, name), os.path.join(guards, name))
+    shutil.copyfile(os.path.join(os.path.dirname(TOOL), "adaptation.py"),
+                    os.path.join(tmp, ".claude", "tools", "adaptation.py"))
+    subsystems = os.path.join(tmp, ".claude", "skills", "project_subsystems")
+    os.makedirs(subsystems)
+    with open(os.path.join(subsystems, "adaptation.json"), "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"gate_cadence": cadence}, fh)
+    return tool
+
+
 def run(tool, *args, env=None):
     r = subprocess.run([sys.executable, tool, *args], capture_output=True, timeout=30, env=env)
     # Text-mode stdout on Windows writes CRLF; the delivered rails are compared as text.
@@ -122,6 +141,29 @@ def main():
                       rc == 0 and out == "[delegate rails — shape 'review', condensed tier; home: .claude/guards/common.md"
                                         " + .claude/guards/review.md]\nCOMMON-CONDENSED\n\nREVIEW-CONDENSED"))
 
+    # The `Your checks` line: the rails' one statement of the checks a job runs (harness plan S2, R16).
+    cadence = {"slice": ["SLICE-ONE edited unit's proof", "SLICE-TWO"], "merge": ["MERGE-ONE"],
+               "close": ["CLOSE-ONE"], "wide": []}
+    with tempfile.TemporaryDirectory(prefix="guard_text_cadence_") as tmp:
+        tool = planted_cadence_tool(tmp, cadence)
+        rc, out, _ = run(tool, "author", "detailed")
+        cases.append(("an author's detailed rails carry every `slice` form and no brief exception",
+                      rc == 0 and "- slice: SLICE-ONE edited unit's proof" in out and "- slice: SLICE-TWO" in out
+                      and "one exception" not in out and "run the edited unit's proof file" not in out
+                      and "rail conflict to report" not in out
+                      and "MERGE-ONE" not in out and "CLOSE-ONE" not in out))
+        rc, out, _ = run(tool, "author", "none")
+        cases.append(("tier `none` still delivers an author's checks line",
+                      rc == 0 and out == "Your checks:\n- slice: SLICE-ONE edited unit's proof\n- slice: SLICE-TWO"))
+        rc, out, _ = run(tool, "gate", "detailed")
+        cases.append(("a gate's rails carry the merge and close forms, not the slice forms",
+                      rc == 0 and "- merge: MERGE-ONE" in out and "- close: CLOSE-ONE" in out
+                      and "SLICE-ONE" not in out and "SLICE-TWO" not in out))
+        rc, out, _ = run(tool, "review", "detailed")
+        cases.append(("a review carries no checks line",
+                      rc == 0 and "Your checks" not in out and "MERGE-ONE" not in out
+                      and "CLOSE-ONE" not in out and "SLICE-ONE" not in out))
+
     live = []
     for shape in ("common", "survey", "review", "author"):
         for tier in ("detailed", "condensed", "minimal"):
@@ -148,6 +190,19 @@ def main():
                   rc == 0 and "mcp__ai-worker__" not in out and "bounded Read or a subagent" in out))
 
     sys.path.insert(0, os.path.dirname(TOOL))
+    import adaptation
+
+    real_claude = os.path.dirname(os.path.dirname(TOOL))
+    live_cadence = adaptation.get(real_claude, "gate_cadence")
+    rc, out, _ = run(TOOL, "author", "detailed")
+    cases.append(("the shipped author rails carry this project's `slice` rows",
+                  rc == 0 and bool(live_cadence.get("slice"))
+                  and all(form in out for form in live_cadence["slice"])))
+    rc, gate_out, _ = run(TOOL, "gate", "detailed")
+    cases.append(("the shipped gate rails carry this project's `merge` and `close` rows",
+                  rc == 0 and all(form in gate_out for key in ("merge", "close")
+                                  for form in live_cadence.get(key, []))))
+
     import guard_text
     redirected = []
     guards = os.path.join(os.path.dirname(os.path.dirname(TOOL)), "guards")

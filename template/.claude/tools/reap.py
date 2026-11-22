@@ -172,7 +172,8 @@ from _win_path import drive_path, native_path  # noqa: E402
 LEDGER = REPO / ".claude" / "logs" / "reap_ledger.jsonl"
 STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # session hook state; watch_records.py reads it
 sys.path.insert(0, str(REPO / ".claude" / "tools"))
-from model_registry import login_dirs, session_projects_dir  # noqa: E402
+from model_registry import (find_session_transcript, login_dirs, session_project_roots,  # noqa: E402
+                            session_projects_dir)
 import sidecar_argv  # noqa: E402
 import cli_usage  # noqa: E402
 
@@ -1067,31 +1068,11 @@ def launched_prompt(sid, prompt):
 
 
 def session_transcript(sid):
-    """This session's main transcript: the single `<projects>/<key>/<sid>.jsonl`, else None.
-
-    One scandir of every project folder builds the map for all sessions in one invocation: a
-    glob per session id cost 90 ms each (a sweep over ~70 ids took 6 s, 2026-11-10)."""
+    """This session's main transcript: the single `<projects>/<key>/<sid>.jsonl`, else None: the current
+    login's own stores first, then the other logins (`find_session_transcript`)."""
     if not sid or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sid):
         return None
-    cache = _RUN.get("transcripts") if _RUN is not None else None
-    if cache is None:
-        cache = {}
-        try:
-            with os.scandir(PROJECTS_ROOT) as projects:
-                for project in projects:
-                    if not project.is_dir():
-                        continue
-                    with os.scandir(project.path) as files:
-                        for entry in files:
-                            if entry.is_file() and entry.name.endswith(".jsonl"):
-                                cache.setdefault(entry.name[:-len(".jsonl")], []).append(
-                                    Path(project.path) / entry.name)
-        except OSError:
-            cache = {}
-        if _RUN is not None:
-            _RUN["transcripts"] = cache
-    hits = cache.get(sid) or []
-    return hits[0] if len(hits) == 1 else None
+    return find_session_transcript(sid, [PROJECTS_ROOT, *session_project_roots()])
 
 
 def orphan_evidence(table, pid):

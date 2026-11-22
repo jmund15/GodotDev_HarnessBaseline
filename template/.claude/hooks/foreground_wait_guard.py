@@ -3,8 +3,7 @@
 Hook: PreToolUse (Bash|PowerShell), run by pre_bash_dispatch — owns how a session waits on a job.
 
 Rule homes: CLAUDE.core.md §Shell Discipline (the orchestrator's wait; no repeated status check) and
-guards/common.md (a never-woken delegate's wait recipe). Evidence for every bound below:
-auto-memory/archive/gotcha_delegate_gets_no_background_wake.md. Counts are per caller (the
+guards/common.md (a never-woken delegate's wait recipe). Counts are per caller (the
 orchestrator, or one subagent by payload `agent_id`; `session_id` is shared with the parent). The wait
 a caller should use depends on whether a backgrounded job wakes it:
 - woken: the interactive session (CLAUDE_CODE_ENTRYPOINT=cli) and an Agent-tool subagent, known by its
@@ -14,7 +13,7 @@ a caller should use depends on whether a backgrounded job wakes it:
   child (CLAUDE_CODE_ENTRYPOINT=sdk-cli: the session ends at its turn's end). A subagent whose kind is
   unknown counts as never woken, the safe side: one bounded foreground call, never a trap.
 
-1. Foreground wait loop (`until`/`while` with `sleep`/`Start-Sleep` inside). An interactive
+1. Foreground wait loop (`until`/`while`/`for` with `sleep`/`Start-Sleep` inside). An interactive
    orchestrator's timeout above SUBAGENT_WAIT_MS becomes `run_in_background: true`; a shorter loop
    stays foreground to avoid the extra dispatch and wake. That orchestrator's backgrounded Bash loop, its own or
    rewritten, runs under a `timeout` wrapper of ORCHESTRATOR_WAIT_MS whatever its timeout field says, so its wake
@@ -47,8 +46,11 @@ a caller should use depends on whether a backgrounded job wakes it:
 6. Raised foreground timeout (rewrite, interactive orchestrator only). A foreground call that is not a wait loop,
    whose timeout exceeds BASH_DEFAULT_MS, becomes `run_in_background: true` with a note: the raise says the job may
    run long, and a raised call holds every other wake. The one exception is a proof batch whose every proof has a
-   recorded time summing within the timeout (`_timed_fit`), the only job length the harness records. A delegate
-   or print-mode child keeps its timeout: no wake reaches it, so one bounded call is its wait.
+   recorded time summing within the timeout (`_timed_fit`), the only job length the harness records. A subagent's
+   or print-mode child's timeout above SUBAGENT_WAIT_MS is clamped to it instead (rewrite): a longer call returns to
+   an expired 5-minute prompt cache and rewrites the whole context. The client moves a command still running at the
+   clamp to the background and names its output file; a Bash command gets `echo "EXIT $?"` appended, so that file
+   carries the caller's done-test (`EXIT_LINE`).
 5. Blind pipe (background calls only). A `run_in_background` pipeline whose producer stage (a script, a runner, any
    command that is not a short read) reaches a later `tail` or `head` unredirected and unteed is the blind pipe
    (`blind_pipe`): the task's output file already keeps every line, so the stage only holds them until the job exits
@@ -107,7 +109,7 @@ from _win_path import drive_path  # noqa: E402
 # Shell syntax, not prose: a bash `until|while <cond>; do ... sleep ... done` whose `; do` follows the
 # condition on its line, or a PowerShell `while (...) { ... Start-Sleep ... }`.
 _LOOP_SLEEP = re.compile(
-    r"\b(?:until|while)\b[^\n;]*;\s*do\b(?:(?!\bdone\b).)*?\bsleep\b"
+    r"\b(?:until|while|for)\b[^\n;]*;\s*do\b(?:(?!\bdone\b).)*?\bsleep\b"
     r"|\bwhile\s*\([^\n]*\)\s*\{(?:(?!\}).)*?\bStart-Sleep\b",
     re.IGNORECASE | re.DOTALL,
 )
@@ -211,6 +213,15 @@ BATCH_ADVICE = (
 RAISED_NOTE = (
     "[wait] Backgrounded this call: its %d ms timeout says it may run long. Act on its one wake "
     "(CLAUDE.core.md §Shell Discipline)."
+)
+EXIT_LINE = 'echo "EXIT $?"'
+CLAMP_NOTE = (
+    "[wait] Clamped this foreground call's timeout from %d to %d ms: a longer call returns to an expired 5-minute "
+    "prompt cache and rewrites your whole context (guards/common.md)."
+)
+CLAMP_WAIT = (
+    " If it is still running then, the client moves it to the background and names its output file; this call now "
+    "ends with an `EXIT <code>` line there, so wait in `until grep -q '^EXIT ' <that file>; do sleep 30; done` calls."
 )
 DETACHED_ADVICE = (
     "[wait] A trailing `&` detaches this job outside the run_in_background wake (CLAUDE.core.md §Shell Discipline). "
@@ -1047,6 +1058,19 @@ def main():
         if budget > BASH_DEFAULT_MS and not _timed_fit(command, budget):
             _advise(RAISED_NOTE % budget if _first_in_window(payload, "raised") else None,
                     dict(tool_input, run_in_background=True))
+            return 0
+    else:
+        try:
+            budget = int(tool_input.get("timeout") or BASH_DEFAULT_MS)
+        except (TypeError, ValueError):
+            budget = BASH_DEFAULT_MS
+        if budget > SUBAGENT_WAIT_MS:
+            bash_tool = payload.get("tool_name") == "Bash"
+            updated = dict(tool_input, timeout=SUBAGENT_WAIT_MS,
+                           command=command.rstrip() + "\n" + EXIT_LINE if bash_tool else command)
+            _count_poll(payload, command)
+            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'updatedInput': updated,
+                  'additionalContext': CLAMP_NOTE % (budget, SUBAGENT_WAIT_MS) + (CLAMP_WAIT if bash_tool else "")}}))
             return 0
     count = _count_poll(payload, command)
     if count >= POLL_LIMIT:

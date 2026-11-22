@@ -901,6 +901,9 @@ def build_parser():
 
 
 def main(argv=None):
+    # The runner's console may be cp1252 while the gate's log is UTF-8: an echoed test title must never crash the run.
+    for channel in (sys.stdout, sys.stderr):
+        channel.reconfigure(errors="replace")
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.session and not args.rows:

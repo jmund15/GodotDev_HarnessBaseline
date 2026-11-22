@@ -51,9 +51,9 @@ the session's sidecar records and launch transcript, which grows with the drive,
 RATING_DEADLINE_SEC measured from hook start and prints nothing when it is not done by then. A client
 that cancels the hook at its timeout discards every line, the owner messages included.
 
-`plan` lays both parts out and `whole_ids` names the messages either prints in full. The PreCompact
-ledger (`compact_directive_ledger.py`) calls the same `plan` before the compaction, so the summary's holds
-lines carry only ID, status and scope for those messages and never duplicate the words printed here.
+`plan` lays both parts out and `whole_ids` names the messages either prints in full for layout
+checks. The PreCompact ledger keeps each holds line to ID, status and scope; this hook owns the
+verbatim words and their --show recovery, including messages clipped or omitted from injection.
 
 The intro names what the summary cannot replace: where the summary words or rates a message differently,
 the message's own words hold. It asserts nothing about the summary's sections, which depend on whether
@@ -580,9 +580,8 @@ def plan(transcript: Path, sid: str, project: Path, messages: list, where: str, 
     """Everything both parts print, each laid out inside its own TOTAL_BYTES. The opening part: its intro,
     the opening messages `fit_opening` prints and the required read of the ones that did not fit whole. The
     later part: the intro lines, the kept later messages with their clip levels, the clipped and omitted
-    ones, and the record block. `compact_directive_ledger.py` calls it before the compaction with
-    `rating_line` standing in for the count, so the ledger and this hook decide from one layout which
-    messages print whole (`whole_ids`)."""
+    ones, and the record block. `rating_line` supplies a fixed debt line for callers checking the layout
+    without running the optional live count."""
     lines = [intro_line(where)]
     refs = referenced_sessions(messages, transcript, sid)
     if refs:

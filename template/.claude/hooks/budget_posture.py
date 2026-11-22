@@ -102,8 +102,10 @@ TOOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def cold_plans():
-    """The plan-quota transports worth a warm: no fresh cached reading and no stated reason. A plan
-    whose reader said why it cannot read is never warmed, because no warm can change that reason."""
+    """The plan-quota transports worth a warm, from provider_capacity's cache only: no fresh cached reading,
+    or a fresh reading that refuses work (an owner's quota change makes a cached refusal false, and the warm
+    confirms it live). A plan whose reader said why it cannot read is never warmed, because no warm can
+    change that reason."""
     try:
         sys.path.insert(0, TOOLS)
         import model_registry
@@ -112,7 +114,8 @@ def cold_plans():
         data = model_registry.load()
         cold = []
         for name in provider_bands.plan_quota_transports(data):
-            if provider_capacity.cached(name, data=data) is not None:
+            fresh = provider_capacity.cached(name, data=data)
+            if fresh is not None and fresh.get("status") not in provider_capacity.BLOCKING:
                 continue
             last = provider_capacity.last_cached(name, data=data)
             if isinstance(last, dict) and last.get("status") == "unknown":

@@ -1,4 +1,4 @@
-"""Sentence-level comparison of two markdown texts, shared by the harness-growth hook and `citers.py`.
+"""Sentence-level comparison of two markdown texts, shared by `triage.py sentences` and `citers.py`.
 
 `sentences` is a file's rule sentences; `removed` is the ones one text lost against another, each marked
 reworded or not; `homes` finds the other file that carries a removed sentence's fragment. Pure functions:

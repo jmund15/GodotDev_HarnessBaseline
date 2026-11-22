@@ -117,7 +117,8 @@ class SizeTests(Plant):
         env.pop("CLAUDE_CODE_SESSION_ID", None)
         env["HARNESS_HOOK_STATE_DIR"] = os.path.join(self.root, "state")
         result = subprocess.run([sys.executable, os.path.join(TOOLS, "dispatch_size.py"), spec],
-                                capture_output=True, text=True, encoding="utf-8", env=env)
+                                capture_output=True, text=True, encoding="utf-8", env=env,
+                                stdin=subprocess.DEVNULL)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines()[0],
                          "dispatch size: 2 jobs (opus·high ×2); reading 151/151 KB; 150 KB read by all 2 (300 KB total); "
@@ -216,7 +217,6 @@ class HookTests(Plant):
             self.assertEqual(decision, guard_proof.ALLOW)
             self.assertNotIn("dispatch size", text)
             self.assertNotIn("names 157 KB", text)
-            self.assertNotIn("gone.md", text)
 
     def test_workflow_hook_exits_0_and_stays_silent_on_args_it_cannot_size(self):
         for args in ({"jobs": "nonsense"}, {"jobs": [42, None]}, "{not json", {"chains": [{"jobs": 3}]}):
@@ -644,6 +644,16 @@ class BucketTests(Plant):
         self.assertEqual([os.path.basename(p) for p in per["searchSources"]], ["huge.jsonl"])
         self.assertEqual(per["searchSources"], [big])
 
+    def test_a_named_file_the_job_lists_as_a_search_source_counts_zero_in_both_numbers(self):
+        drawing = self.file("drawing.html", 300)
+        self.file("ref.md", 10)
+        per = self.sized("Grep `drawing.html` for a screen; read `ref.md`.", searchSources=["drawing.html"])["perJob"][0]
+        self.assertLess(per["upperTokens"], 10 * KB / 2.5 + 1000)
+        self.assertEqual(per["searchSources"], [drawing])
+        unlisted = self.sized("Grep `drawing.html` for a screen; read `ref.md`.")["perJob"][0]
+        self.assertGreater(unlisted["lowerTokens"], 300 * KB / 2.5)
+        self.assertEqual(unlisted["searchSources"], [])
+
     def test_the_fit_line_names_the_largest_files_and_says_ceiling_over_when_only_the_upper_number_is_over(self):
         for name in ("m1.py", "m2.py", "m3.py"):
             self.file(name, 400)
@@ -846,6 +856,17 @@ class PreflightTests(Plant):
         self.assertEqual(self.lines([self.workflow_job("Follow `.claude/skills/product_ui/SKILL.md`.")]),
                          ["preflight: clean: every launch precondition is met"])
 
+    def test_a_brief_ordering_a_wide_run_is_a_preflight_unmet_line(self):
+        os.makedirs(os.path.join(self.root, ".claude", "skills", "project_subsystems"))
+        self.text(".claude/skills/project_subsystems/adaptation.json", json.dumps(
+            {"gate_cadence": {"wide": [{"runner": r"npm\s+run\s+verify\b", "exempt": [], "narrow": None}]}}))
+        lines = self.lines([self.workflow_job("Run `npm run verify` before you finish.\n")])
+        unmet = [line for line in lines if line.startswith("preflight: unmet:") and "npm run verify" in line]
+        self.assertEqual(len(unmet), 1, lines)
+        self.assertIn("gate", unmet[0])
+        gate = dict(self.workflow_job("Run `npm run verify` before you finish.\n"), kind="gate")
+        self.assertFalse(any("npm run verify" in line for line in self.lines([gate])))
+
     def test_a_credited_tier_and_skill_report_one_clean_line(self):
         import _hook_state
         _hook_state.mark_ladder_slice(self.sid, ["executor"])
@@ -896,6 +917,17 @@ class PreflightTests(Plant):
         job["promptPath"] = self.file("fits.md", 40)
         self.assertEqual(self.lines([job]), ["preflight: clean: every launch precondition is met"])
 
+    def test_a_project_without_the_ui_round_tool_stays_clean(self):
+        import _hook_state
+        _hook_state.mark_ladder_slice(self.sid, ["executor"])
+        _hook_state.mark_skill_in_context(self.sid, "orchestration")
+        saved = sys.modules.get("ui_round")
+        sys.modules["ui_round"] = None  # the import raises ModuleNotFoundError, as in a consumer without the file
+        self.addCleanup(lambda: sys.modules.__setitem__("ui_round", saved) if saved is not None
+                        else sys.modules.pop("ui_round", None))
+        self.assertEqual(self.lines([self.workflow_job("Do the work.")]),
+                         ["preflight: clean: every launch precondition is met"])
+
     def test_without_a_session_id_the_credit_checks_are_not_checked_never_clean(self):
         saved = os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         self.addCleanup(lambda: os.environ.__setitem__("CLAUDE_CODE_SESSION_ID", saved) if saved else None)
@@ -903,6 +935,42 @@ class PreflightTests(Plant):
         self.assertTrue(any(line.startswith("preflight: not checked: ladder and skill credit") for line in lines),
                         lines)
         self.assertFalse(any(line.startswith("preflight: clean") for line in lines), lines)
+
+
+class AttributionTests(Plant):
+    BARE = "The owners' map rule: ticking or finishing a task never repacks the map (src/features/map/focus.ts line 178)."
+
+    def flags(self, body):
+        job = {"label": "j1", "promptPath": self.text("p.md", body), "model": "opus", "effort": "high"}
+        return dispatch_size.attribution_lines([job], root=self.root)
+
+    def test_a_decision_attributed_to_the_owners_without_a_source_id_is_flagged(self):
+        lines = self.flags(self.BARE + "\n")
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith("advisory: "), lines)
+        self.assertIn("j1", lines[0])
+
+    def test_the_same_sentence_with_an_owner_source_id_is_not_flagged(self):
+        for source in ("(U16365)", "(thread M9c4f2a10-0042)", "[2026-10-26 decision playtest-mvp2]"):
+            body = self.BARE.replace("(src/features/map/focus.ts line 178)", source)
+            self.assertEqual(self.flags(body + "\n"), [], source)
+
+    def test_an_id_in_another_sentence_does_not_cover_the_attribution(self):
+        self.assertEqual(len(self.flags("See U16365. " + self.BARE + "\n")), 1)
+
+    def test_a_sentence_with_no_attribution_is_not_flagged(self):
+        self.assertEqual(self.flags("Decided from facts in the job: the brief sizes the read.\nLock the file first.\n"), [])
+
+    def test_main_prints_the_advisory_and_still_exits_zero(self):
+        path = os.path.join(self.root, "jobs.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"jobs": [{"label": "j1", "promptPath": self.text("p.md", self.BARE + "\n"),
+                                 "model": "opus", "effort": "high"}]}, fh)
+        done = subprocess.run([sys.executable, os.path.join(TOOLS, "dispatch_size.py"), path], capture_output=True,
+                              text=True, encoding="utf-8", stdin=subprocess.DEVNULL, cwd=self.root,
+                              env=dict(os.environ, HARNESS_HOOK_STATE_DIR=self.root))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertTrue(any(line.startswith("advisory: ") for line in done.stdout.splitlines()), done.stdout)
 
 
 if __name__ == "__main__":

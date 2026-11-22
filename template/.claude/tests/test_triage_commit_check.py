@@ -63,6 +63,42 @@ output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
 check("an unreadable Triage trailer is advised as unreadable",
       rc == 0 and "trailer unreadable" in output.get("additionalContext", ""), out + err)
 
+MESSAGE_FILE = os.path.join(STATE, "message.txt").replace("\\", "/")
+
+
+def _write_message(text):
+    with open(MESSAGE_FILE, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
+def _read_message():
+    with open(MESSAGE_FILE, encoding="utf-8") as fh:
+        return fh.read()
+
+
+_write_message("proof note\n")
+command = 'git commit -q -F "%s"' % MESSAGE_FILE
+rc, out, err = run(command)
+output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
+check("a -F commit leaves the reviewed command unchanged", rc == 0 and "updatedInput" not in output, out + err)
+check("a -F commit gets its Triage-Derived trailer appended into the message file",
+      _read_message() == "proof note\n\nTriage-Derived: reach=local oracle=none\n", _read_message())
+rc, out, err = run(command)
+check("a second -F run adds no second trailer", _read_message().count("Triage-Derived:") == 1, _read_message())
+
+_write_message("proof note\n\nClaude-Session: https://example.invalid/s\n")
+run(command)
+check("a -F trailer joins an existing trailer block",
+      _read_message() == "proof note\n\nClaude-Session: https://example.invalid/s\nTriage-Derived: reach=local oracle=none\n",
+      _read_message())
+
+missing = os.path.join(STATE, "absent.txt").replace("\\", "/")
+rc, out, err = run('git commit -q -F "%s"' % missing)
+output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
+check("a -F file that is not readable yet keeps the -m-style command rewrite",
+      rc == 0 and "Triage-Derived:" in output.get("updatedInput", {}).get("command", ""), out + err)
+
+
 rc, out, err = run("ls -la")
 check("a non-commit command passes silently", rc == 0 and out.strip() == "{}", out + err)
 
@@ -121,7 +157,42 @@ check("a commit with no trailer under a session triage carries that triage as it
 rc, out, err = run('git commit -q -m "proof note" -m "Triage: reach=local design=settled grounding=verified oracle=none size=one-context"')
 check("a commit that writes its own Triage trailer keeps it and gets none added",
       rc == 0 and "--trailer" not in (out or ""), out)
+_write_message("proof note\n")
+rc, out, err = run('git commit -q -F "%s"' % MESSAGE_FILE)
+output = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
+check("a -F commit under a session triage gets its Triage trailer in the file, command unchanged",
+      rc == 0 and "updatedInput" not in output and "\nTriage: " in _read_message()
+      and "Triage-Derived:" not in _read_message(), (_read_message(), out, err))
 os.remove(os.path.join(RECORDS, "proof-task.json"))
+
+
+class _Adm:
+    admitted = True
+
+
+def _premises_note(message, session):
+    saved = (tcc.triage.admits, tcc.commit_message)
+    tcc.triage.admits = lambda *a, **k: _Adm()
+    tcc.commit_message = lambda rest, cwd: message
+    try:
+        inv = type("Inv", (), {"rest": [], "cwd": PROJECT, "git_env": None})()
+        return tcc._premises(inv, session, None)
+    finally:
+        tcc.triage.admits, tcc.commit_message = saved
+
+
+note = _premises_note("x\n\n```premises\nthis is not json\n```\n", "premises-bad-1") or ""
+check("a premises block that is not one JSON object per line is named malformed, not unavailable",
+      "malformed" in note and "evidence_contract.md" in note and "unavailable" not in note, note)
+import verify_claims  # noqa: E402
+orig_check = verify_claims.check_claims
+verify_claims.check_claims = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+try:
+    note = _premises_note('x\n\n```premises\n{"claim": "c"}\n```\n', "premises-crash-2") or ""
+finally:
+    verify_claims.check_claims = orig_check
+check("a crash inside verify_claims still reads as check unavailable",
+      "check unavailable: RuntimeError" in note, note)
 
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:

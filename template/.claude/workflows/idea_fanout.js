@@ -23,13 +23,13 @@ try {
 } catch (e) {
   return { error: 'idea-fanout: args must be JSON-serializable {generators: [{key, instr, model, effort}, ...], contextPrefix}. Received a non-JSON string. ' + ((e && e.message) || '') }
 }
-// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge) for every child it spawns;
+// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge|gate) for every child it spawns;
 // hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
 // child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
 // entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
 const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
 if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
-  return { error: 'idea-fanout: args.kind is required (scout|lens|reviewer|author|judge), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. Every generator and critic runs as that kind; ideation returns structured data and writes nothing.' }
+  return { error: 'idea-fanout: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. Every generator and critic runs as that kind; ideation returns structured data and writes nothing.' }
 }
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 const generators = Array.isArray(A.generators) ? A.generators : []

@@ -20,12 +20,12 @@ launcher resumes by itself; a record's `stalled` journal row appearing while its
 (`USAGE-LIMIT <label> <transport> resets <UTC time|unknown>`, the launcher's first usage-limit retry; the job's DONE is the wake); a running record whose stream (`<record>.stream`, else `<label>.stream`) has sat on a result written
 after its launch for `sidecar_resume_check.RESULT_LINGER_S` (`LINGERING <label>`, the reading `sidecar_fanout.py --status`
 gives the same run); a fan-out's own process gone while it still lists jobs
-that will never start; or every record of one dispatch unit (one `wakeWith` group of a fan-out, one benchmark campaign, or one
-direct launch) ending; or, while work still runs, `CHECKIN_SECONDS` after the later of the arm and the session transcript's last write (50 min by default, inside the
-orchestrator's one-hour prompt cache and before its idle compaction (`_hook_state.ORCHESTRATOR_CHECKIN_SECONDS`); `WATCH_RECORDS_CHECKIN_SEC` overrides it), printing a
-`RUNNING` line per job with its age and last write, a `progress:` clause line under it (`agent_progress.clause`: the measures its
-stream shows, `progress unreadable` when the stream cannot be parsed) and `CHECKIN_RULE`, the sentence that says how to judge
-each clause. `--digest <record|stream|transcript>` prints the whole-run view the clause summarizes (`agent_progress.digest`).
+that will never start; or every record of one dispatch unit (one `wakeWith` group or ungrouped job of a fan-out, one benchmark campaign, or one
+direct launch) ending; or, while work still runs, `CHECKIN_SECONDS` after the later of the arm and the session transcript's last turn (its newest
+timestamped row, `_last_turn`; 50 min by default, inside the orchestrator's one-hour prompt cache and before its idle compaction
+(`_hook_state.ORCHESTRATOR_CHECKIN_SECONDS`); `WATCH_RECORDS_CHECKIN_SEC` overrides it), printing `CHECKIN_RULE`, the sentence that says how
+to judge each clause. Every wake with work still live prints a `RUNNING` line per job with its age and last write, and a `progress:`
+clause line under it (`agent_progress.clause`: the measures its stream shows, `progress unreadable` when the stream cannot be parsed). `--digest <record|stream|transcript>` prints the whole-run view the clause summarizes (`agent_progress.digest`).
 The live set also holds this session's running
 Bash/PowerShell background tasks (a main-session launch row with no `<task-notification>` yet, read by `wake_digest.running_shells`; a task that ran this watcher is skipped), each printed as `RUNNING shell <id>`, and its running
 Workflow runs (a pending `workflow` entry whose host record `<session>/workflows/<id>.json` is absent or not
@@ -882,8 +882,19 @@ def superseded(entry, pending, live_ids=frozenset(), resolve=None):
         return False
     if time.time() - issued <= UNRESOLVED_GRACE_SECONDS:
         return False
+    return taken_over(label, issued, pending, resolve, skip=entry)
+
+
+def taken_over(label, issued, pending, resolve=None, skip=None, launches=()):
+    """True when a later run of `label` is launched: a pending entry issued after `issued` has a record, or a
+    clean launch row (`clean_launch_rows`) of the label is stamped after `issued`, which answers for a run whose
+    entry already left the table. An earlier call's claim on the label is then answered. `resolve` finds an
+    entry's record, else its own `record` field. One test for a sidecar entry (`superseded`, pending entries only)
+    and a native hand-off (the Stop hook's `_handoff_labels_left`)."""
+    if any(row.get("label") == label and epoch(row.get("timestamp")) > issued for row in launches):
+        return True
     for other in pending:
-        if other is entry or job_identity(other) != label:
+        if other is skip or job_identity(other) != label:
             continue
         other_issued = _launch_time(other)
         record = (resolve or (lambda item: item.get("record")))(other)
@@ -2208,14 +2219,52 @@ def _still_running(live, settle=None):
         print("RE-ARM NOW: %s %s" % (ARM_COMMAND, ARM_CALL), flush=True)
 
 
+_TURN_CACHE = {}
+
+
+def _last_turn(path, chunk=65536):
+    """Epoch seconds of the transcript's newest timestamped row, or None. Read backward from the end, and once per
+    (size, mtime). The client also appends untimestamped metadata rows (an artifact view, the title, the bridge row)
+    while the session is idle; they move the file's mtime but spend no prompt cache, so mtime is not the clock."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    key = (stat.st_size, stat.st_mtime_ns)
+    if _TURN_CACHE.get(path, (None,))[0] == key:
+        return _TURN_CACHE[path][1]
+    found, carry = None, b""
+    try:
+        with open(path, "rb") as fh:
+            end = stat.st_size
+            while end > 0 and found is None:
+                start = max(0, end - chunk)
+                fh.seek(start)
+                lines = (fh.read(end - start) + carry).split(b"\n")
+                carry, lines = (lines[0], lines[1:]) if start else (b"", lines)
+                for line in reversed(lines):
+                    if b'"timestamp"' not in line:
+                        continue
+                    try:
+                        stamp = json.loads(line).get("timestamp")
+                    except (ValueError, AttributeError):
+                        continue
+                    if stamp:
+                        found = epoch(stamp) or None
+                        break
+                end = start
+    except OSError:
+        return None
+    _TURN_CACHE[path] = (key, found)
+    return found
+
+
 def _idle_since(source, armed):
-    """When the orchestrator last spent its prompt cache: the later of the arm and its transcript's last write.
+    """When the orchestrator last spent its prompt cache: the later of the arm and its transcript's last turn.
     A turn taken after the arm (an owner prompt) already refreshed the cache, so the check-in waits from that turn."""
     path = getattr(getattr(source, "shells", None), "path", None)
-    try:
-        return max(armed, os.path.getmtime(path)) if path else armed
-    except OSError:
-        return armed
+    turn = _last_turn(path) if path else None
+    return max(armed, turn) if turn else armed
 
 
 def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregister=None, lifetime=None,
@@ -2259,13 +2308,19 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
             shells.persist()
         return code
 
-    def rearm(live):
+    def rearm(live, grouped, checkin=None):
+        """Every wake with work still live names each running job, its age and last write (`checkin_lines`), so a
+        job running far past its expected time shows at the first wake, not only at the check-in."""
         def settle():
             leave()
             if unregister:
                 unregister()
             if live and inflight:
                 inflight()
+        for text in (checkin_lines(grouped) if live else ()):
+            print(text, flush=True)
+        if checkin is not None:
+            print("CHECKIN after %d min: %s" % (checkin // 60, CHECKIN_RULE), flush=True)
         _still_running(live, settle)
         return 0
 
@@ -2334,13 +2389,10 @@ def wake_loop(source, *, ack_path=None, await_launch=0.0, closing=None, unregist
                 return leave()
         elif woke:
             release(deferred, lines, standing, live)
-            return rearm(live)
+            return rearm(live, grouped)
         elif live and time.time() - _idle_since(source, armed) >= CHECKIN_SECONDS:
             release(deferred, lines, standing, live)
-            for text in checkin_lines(grouped):
-                print(text, flush=True)
-            print("CHECKIN after %d min: %s" % ((time.time() - _idle_since(source, armed)) // 60, CHECKIN_RULE), flush=True)
-            return rearm(live)
+            return rearm(live, grouped, checkin=time.time() - _idle_since(source, armed))
         elif not live:
             release(deferred, lines, standing)
             print("NONE", flush=True)

@@ -134,7 +134,7 @@ const EFF = (e) => e
 const VALID_MODELS = transport.ids
 // Undefined when the transport declares no effort vocabulary: effort is then not a required pin.
 const VALID_EFFORTS = transport.efforts
-// KIND PROFILES. Each job names a `kind` (scout|lens|reviewer|author|judge); hooks/workflow_provider_guard.py
+// KIND PROFILES. Each job names a `kind` (scout|lens|reviewer|author|judge|gate); hooks/workflow_provider_guard.py
 // resolves that row of guards/tool_profiles.json into args.__toolProfiles[label]: agentType, tier, guard,
 // built-ins. A Workflow script cannot read the table, and no tool set is inferred from a brief or a type name.
 // A native child INHERITS the session's MCP set, so the recorded entry says `effectiveMcp` from the agent file.
@@ -176,7 +176,7 @@ if (retired.length > 0) {
 const bad = jobs.filter(j => !j || !j.label || !j.promptPath || !kindOk(j))
 if (jobs.length === 0 || bad.length > 0) {
   return {
-    error: 'Every job needs {label, promptPath, model, effort, kind} with ' + pinVocab + ' and kind in [scout|lens|reviewer|author|judge], resolved by the guard into args.__toolProfiles. State kind, never omit it: a job that writes is an author, and no tool set is inferred. Write each prompt to a scratchpad file and pass its path — never inline large prompts into args (gotcha_workflow_args_generation_fidelity).',
+    error: 'Every job needs {label, promptPath, model, effort, kind} with ' + pinVocab + ' and kind in [scout|lens|reviewer|author|judge|gate], resolved by the guard into args.__toolProfiles. State kind, never omit it: a job that writes is an author, and no tool set is inferred. Write each prompt to a scratchpad file and pass its path — never inline large prompts into args (gotcha_workflow_args_generation_fidelity).',
     badJobs: bad.map(j => (j && j.label) || '(unlabeled)'),
   }
 }

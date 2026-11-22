@@ -25,7 +25,7 @@ import sys as _cli_usage_sys
 from pathlib import Path as _cli_usage_path
 _cli_usage_sys.path.insert(0, str(_cli_usage_path(__file__).resolve().parent))
 from cli_usage import usage
-from model_registry import login_dirs
+from model_registry import session_project_roots, session_transcript_hits
 import argparse
 import hashlib
 import json
@@ -99,11 +99,11 @@ def projects_dir(cwd: str) -> Path:
 
 
 def project_dirs(cwd: str) -> list[Path]:
-    """The transcript folders of every checkout of `cwd`'s repository: `cwd` first, then the main
-    checkout and each linked worktree from `git worktree list`, which prints one set from any of them.
+    """Transcript folders for every checkout, grouped by login with the current login first.
 
-    Claude Code keys a session's store on the directory it was launched in, which a tool running from
-    another checkout cannot derive from its own path or cwd. A directory outside git has only its own."""
+    Within each login, `cwd` leads the main checkout and linked worktrees. Constructing these paths
+    does not inspect another login's store; identity callers stop at their first matching login.
+    A directory outside git contributes only its own checkout slug per login."""
     roots = [cwd]
     try:
         listing = subprocess.run(["git", "-C", cwd, "worktree", "list", "--porcelain"], capture_output=True,
@@ -111,12 +111,11 @@ def project_dirs(cwd: str) -> list[Path]:
         roots += [line[len("worktree "):].strip() for line in listing.splitlines() if line.startswith("worktree ")]
     except (OSError, subprocess.SubprocessError):
         pass
-    stores = []
-    for root in roots:
-        store = projects_dir(root)
-        if store not in stores:
-            stores.append(store)
-    return stores
+    stores = list(dict.fromkeys(projects_dir(root) for root in roots))
+    login_roots = iter(session_project_roots())
+    next(login_roots)
+    names = list(dict.fromkeys(store.name for store in stores))
+    return list(dict.fromkeys(stores + [Path(root) / name for root in login_roots for name in names]))
 
 
 def sibling_stores(pdir: Path, cwd: str | None = None) -> list[Path]:
@@ -126,12 +125,38 @@ def sibling_stores(pdir: Path, cwd: str | None = None) -> list[Path]:
     return [pdir] + [store for store in stores if store != pdir] if pdir in stores else [pdir]
 
 
+def searched_stores(stores: list[Path], logins: bool = False) -> list[Path]:
+    """`stores` (the checkouts of one repository), then with `logins` the same project folders under each
+    other login `session_project_roots` declares."""
+    if not logins:
+        return list(stores)
+    names = list(dict.fromkeys(store.name for store in stores))
+    return list(dict.fromkeys(list(stores) + [Path(root) / name for root in session_project_roots()
+                                              for name in names]))
+
+
+def store_transcripts(stores: list[Path], session: str, prefix: bool = False, logins: bool = False) -> list[Path]:
+    """`model_registry.session_transcript_hits` over the roots holding `searched_stores(stores, logins)`,
+    keeping only hits inside those stores: a session of another project is not this repository's. The login
+    of `stores[0]` answers first and alone; the other logins are one pool, so a match in two of them is
+    ambiguous. One path is the session's, two or more are ambiguous."""
+    allowed = searched_stores(stores, logins)
+    roots = list(dict.fromkeys(str(store.parent) for store in allowed))
+    for roots in (roots[:1], roots[1:]):
+        hits = sorted({path for root in roots for path in session_transcript_hits(session, [root], prefix)
+                       if path.parent in allowed})
+        if hits:
+            return hits
+    return []
+
+
 def session_store(cwd: str, session: str | None = None) -> Path:
     """The folder holding `session` (default: this session, `CLAUDE_CODE_SESSION_ID`) among the stores
-    of `cwd`'s checkouts; `cwd`'s own when no store holds it."""
+    of `cwd`'s checkouts; `cwd`'s own when no store holds it or two do."""
     session = session or (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
     stores = project_dirs(cwd)
-    return next((store for store in stores if session and (store / f"{session}.jsonl").is_file()), stores[0])
+    hits = store_transcripts(stores, session) if session else []
+    return hits[0].parent if len(hits) == 1 else stores[0]
 
 
 def _rows(path: Path, kind: str, include_sidechain: bool = False):
@@ -884,11 +909,6 @@ def list_sessions(pdir: Path, n: int) -> str:
     return "\n".join(out)
 
 
-def _login_roots():
-    """Every login (config) dir the registry declares (`model_registry.login_dirs`) that exists."""
-    return [Path(p) for p in login_dirs() if Path(p).is_dir()]
-
-
 def _session_hits(files, session):
     exact = [path for path in files if path.stem == session]
     return exact or [path for path in files if path.stem.startswith(session)]
@@ -909,14 +929,12 @@ def pick_transcript(pdir: Path, session: str | None, prompt_tail: str | None, pr
             if len(hits) != 1:
                 sys.exit(f'{len(hits)} transcripts match {session!r}; pass an exact session id')
             return hits[0]
-        others = [root / "projects" / store.name for root in _login_roots() for store in sibling_stores(pdir, cwd)]
-        others = [d for d in others if d.is_dir() and d.resolve() != pdir.resolve()]
-        hits = [h for d in others for h in _session_hits(sorted(d.glob('*.jsonl')), session)]
-        if len(hits) != 1:
-            stores = ", ".join(str(d) for d in [pdir, *others])
-            sys.exit(f'{len(hits)} transcripts match {session!r} under {stores}; pass an exact session id')
-        print(f'session {hits[0].stem} found in another login or checkout store: {hits[0].parent}', file=sys.stderr)
-        return hits[0]
+        stores = sibling_stores(pdir, cwd)
+        hits = store_transcripts(stores, session, prefix=True, logins=True)
+        if len(hits) == 1:
+            return hits[0]
+        searched = ", ".join(map(str, searched_stores(stores, logins=True)))
+        sys.exit(f'{len(hits)} transcripts match {session!r} under {searched}; pass an exact session id')
     if previous:
         active = (os.environ.get('CLAUDE_CODE_SESSION_ID') or '').strip()
         anchor = next((path for path in files if path.stem == active), None)

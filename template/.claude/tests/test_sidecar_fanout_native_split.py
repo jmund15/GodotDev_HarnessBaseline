@@ -165,10 +165,10 @@ for flag in (["--max-parallel", "2"], ["--authorize"], ["--compare"]):
     case("%s keeps every job a sidecar" % " ".join(flag), lambda: read(out, "native.args.json") is None)
 
 parser = sf.build_parser()
-case("--review, --fold, --refold keep the whole run a sidecar (split_enabled)",
-     lambda: all(not sf.split_enabled(parser.parse_args(["j.json", *flags]))[0] for flags in (
-         ["--review"], ["--review", "--fold-alias", "a", "--fold-effort", "e", "--fold-subject", "r::m::f"],
-         ["--out-dir", "x", "--refold"])))
+case("--refold keeps the whole run a sidecar; --review and --fold split (test_sidecar_fanout_review_split.py owns them)",
+     lambda: not sf.split_enabled(parser.parse_args(["j.json", "--out-dir", "x", "--refold"]))[0]
+     and all(sf.split_enabled(parser.parse_args(["j.json", *flags]))[0] for flags in (
+         ["--review"], ["--review", "--fold-alias", "a", "--fold-effort", "e", "--fold-subject", "r::m::f"])))
 case("a plain run is eligible to split", lambda: sf.split_enabled(parser.parse_args(["j.json"]))[0] is True)
 
 # ---- a job only a process can run stays a sidecar, on the session plan ----------------------------------------

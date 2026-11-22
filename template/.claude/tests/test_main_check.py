@@ -110,6 +110,7 @@ sys.exit(1)
 GATE_STUB = r'''[CmdletBinding()]
 param([string] $Repo = '', [switch] $NoBaselineUpdate, [switch] $RetryOnly, [switch] $NoReuse, [switch] $StaticOnly,
       [int] $WaitSec = 1800, [switch] $Detach)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $root = (& git rev-parse --show-toplevel).Trim()
 $scratch = Join-Path $root '.claude/scratch'
 $plan = @(Get-Content -Raw (Join-Path $scratch 'gate_plan.json') | ConvertFrom-Json)
@@ -277,7 +278,7 @@ class MainCheckCase(RepoCase):
     def mc(self, *args, env=None):
         full = dict(os.environ, **(env or {}))
         result = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True, env=full, timeout=600,
-                                cwd=str(self.repo))
+                                cwd=str(self.repo), encoding='utf-8', errors='replace')
         return result.returncode, result.stdout + result.stderr
 
     def stage(self, name, run_id='run1', *extra, env=None):
@@ -520,6 +521,20 @@ class GateStage(MainCheckCase):
         self.assertEqual({(r['commit'], r['session'], r['platform']) for r in rows}, {(culprit, 'sess-p', PLATFORM)})
         self.assertEqual(self.remote_state()['checkedTo'], culprit, out)
         self.assertEqual(self.remote_state()['run']['outcome'], 'red', out)
+
+    def test_a_failed_test_name_the_console_cannot_encode_still_records_its_row(self):
+        """The Windows runner's console is cp1252: a test title holding a character it lacks must stream and record, not crash."""
+        culprit = self.project_range()
+        self.plan_close('green')
+        name = '[desktop] › labels.spec.ts:137:1 › opens the ▾ menu'
+        self.plan_gate(self.gate_step('FAIL', '20261121-000010-10', failed=[name]))
+        console = {'PYTHONIOENCODING': 'cp1252'}
+        outs = [self.stage(stage, 'r1', env=console) for stage in ('close', 'gate', 'finalize')]
+        self.last_out = '\n'.join(o[1] for o in outs)
+        self.assertNotIn('UnicodeEncodeError', self.last_out)
+        rows = [r for r in self.remote_state()['rows'] if r['kind'] == 'gate']
+        self.assertEqual([r['name'] for r in rows], [name], self.last_out)
+        self.assertEqual(self.remote_state()['checkedTo'], culprit, self.last_out)
 
     def test_a_later_full_pass_clears_every_gate_row(self):
         self.project_range()

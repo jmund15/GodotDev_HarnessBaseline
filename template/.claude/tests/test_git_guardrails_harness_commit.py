@@ -919,12 +919,6 @@ def inline_cases():
         run_hook('git commit -F msg -- .claude', repo, skill_env), ALLOW,
         ("skills/instruction_quality/SKILL.md", "Load the skill, check the edits")))
     mark_loaded(skill_state, ["instruction_quality"])
-    write(repo, ".claude/hooks/guide.md", "# guide\n\n**A packed rule.** " + ("padding words " * 40) + "\n")
-    git(repo, ["add", ".claude/hooks/guide.md"])
-    failures.append(case(
-        "a staged .md unit over the audit trigger is allowed with an advisory, never denied",
-        run_hook('git commit -F msg -- .claude', repo, skill_env), ALLOW,
-        ("audit trigger", ".claude/hooks/guide.md")))
     # 2c. The skill advisory names harness surfaces: a plan, a memory or the worklog mirror is not one
     #     (harness_edit_skill_reminder.is_harness_file), though the commit still runs its bound proofs.
     mark_loaded(skill_state, ["something_else"])
@@ -1494,36 +1488,6 @@ def baseline_owned_cases():
         "B4 block arm: -a publishes a working copy that differs from the lock row -> deny",
         run_hook("git commit -a -F msg", repo), DENY, "synced_hook.py"))
 
-    dense_md = "# guide\n\n**A packed rule.** " + ("padding words " * 40) + "\n"
-
-    def dense_repo(content):
-        repo = make_repo()
-        write(repo, ".gitignore", ".claude/.cache/\n")
-        commit = baseline_cache(repo, ".claude/hooks/guide.md", dense_md)
-        row = {"status": "tracked", "layer": "pure"}
-        write(repo, ".claude/baseline.lock.json",
-              json.dumps({"schema": 2, "synced_commit": commit, "files": {".claude/hooks/guide.md": row}}))
-        write(repo, ".claude/hooks/guide.md", content)
-        git(repo, ["add", "-A"])
-        return repo
-
-    verdict, text = run_hook("git commit -F msg", dense_repo(dense_md))
-    failures.append(case("B5 a dense .md byte-equal to its tracked lock row draws no density advisory",
-                         (verdict, text), ALLOW) or ("" if "audit trigger" not in text
-                         else "B5: density advisory printed for an unchanged baseline .md"))
-    failures.append(case("B6 block arm: the same dense .md differing from its lock row still advises",
-                         run_hook("git commit -F msg", dense_repo(dense_md + "extra\n")), ALLOW,
-                         ("audit trigger", ".claude/hooks/guide.md")))
-
-    # A pull commit: HEAD holds the old row and file, the worktree the pulled ones, nothing staged.
-    repo = dense_repo("old\n")
-    git(repo, ["add", "-A"])
-    git(repo, ["commit", "-q", "-m", "adopt"])
-    write(repo, ".claude/hooks/guide.md", dense_md)
-    verdict, text = run_hook("git commit -F msg -- .claude/baseline.lock.json .claude/hooks/guide.md", repo)
-    failures.append(case("B7 a pathspec pull commit judges pulled rows by the worktree lock: no density advisory",
-                         (verdict, text), ALLOW) or ("" if "audit trigger" not in text
-                         else "B7: density advisory printed for a pulled baseline .md"))
     return failures
 
 

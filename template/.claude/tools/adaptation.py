@@ -53,6 +53,16 @@ default branch, with no proof run (empty: no runner), read by `hooks/git_guardra
 `regenerable_ignored` lists the project's ignored build outputs that a delete of an orphaned or retired worktree may
 discard: paths from the worktree root, `fnmatch` patterns, a listed directory covering everything under it; read by
 `hooks/_regenerable_clone.py` from the project root it judges for (empty: only the shared caches).
+`gate_cadence` is a job's cadence data: `slice`, `merge` and `close` are command forms a rails' `Your checks` line
+prints verbatim, and `wide` holds one row per wide runner (invocation regex, exempt arguments, optional narrow rule,
+optional `hint` the deny prints as the narrow form to write instead). `reach` ({name, paths: [glob], cmd}),
+`reach_exempt` (globs) and `reach_fallback` (the full form) are the table `tools/reach_run.py` runs a slice from;
+`reach` and `reach_exempt` union across layers, so the harness layer's `.claude/**` entry reaches every consumer.
+`gate_cadence_errors` validates the merged table; `hooks/_dispatch_checks.py` and `hooks/wide_test_guard.py`
+read it through `hooks/_wide_runs.py`, `tools/guard_text.py` reads `slice`, `merge` and `close` directly for
+its `Your checks` line, and a malformed row fails `get gate_cadence` (exit 1).
+
+`drift_scan` is the config of `tools/drift_scan.py` ({sources, consumers, min_length, ignore}; empty: not configured).
 
 `gate_cadence` is a job's cadence data: `slice`, `merge` and `close` are command forms a rails' `Your checks` line
 prints verbatim, and `wide` holds one row per wide runner (invocation regex, exempt arguments, optional narrow rule,

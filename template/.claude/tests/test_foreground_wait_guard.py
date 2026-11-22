@@ -120,6 +120,55 @@ for label, command, background in (
     rc, hso, detail = decision_of(command, background)
     check(label + " is not denied", rc == 0 and hso.get("permissionDecision") != "deny", detail)
 
+
+# A caller no wake reaches (a print-mode child, a Workflow agent) has a 5-minute prompt cache: a foreground call
+# longer than SUBAGENT_WAIT_MS returns to a cold cache and rewrites the whole context. Its timeout is clamped,
+# the client moves a command still running at the clamp to the background, and the appended EXIT line in that
+# command's output file is the caller's done-test.
+SUBAGENT_WAIT_MS = 270000
+
+
+def timed(command, timeout, **caller):
+    payload = {"session_id": "proof-fwg-3", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+               "tool_input": {"command": command, "timeout": timeout}}
+    payload.update(caller)
+    return payload
+
+
+def rewrite(payload, entrypoint):
+    env = dict(os.environ, CLAUDE_CODE_ENTRYPOINT=entrypoint)
+    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
+                       text=True, encoding="utf-8", timeout=30, env=env)
+    hso = json.loads(r.stdout).get("hookSpecificOutput", {}) if r.stdout.strip() else {}
+    return r.returncode, hso.get("updatedInput"), hso.get("permissionDecision"), r.stdout + r.stderr
+
+
+RENDER = "node design/live/frames.mjs --out /tmp/a1"
+for label, payload, entrypoint in (
+        ("a print-mode child's", timed(RENDER, 600000), "sdk-cli"),
+        ("a Workflow agent's", timed(RENDER, 590000, agent_id="a1", agent_type="workflow-subagent"), "cli")):
+    rc, updated, verdict, detail = rewrite(payload, entrypoint)
+    check(label + " long foreground command is clamped to the cache bound with an EXIT done line",
+          rc == 0 and verdict is None and updated is not None
+          and updated.get("timeout") == SUBAGENT_WAIT_MS and not updated.get("run_in_background")
+          and updated.get("command", "").startswith(RENDER)
+          and updated.get("command", "").rstrip().endswith('echo "EXIT $?"'), detail)
+
+rc, updated, verdict, detail = rewrite(timed(RENDER, 200000), "sdk-cli")
+check("a print-mode child's command inside the cache bound passes untouched",
+      rc == 0 and updated is None and verdict is None, detail)
+
+rc, updated, verdict, detail = rewrite(timed(RENDER, 600000), "cli")
+check("the interactive orchestrator's raised timeout is still backgrounded, not clamped",
+      rc == 0 and updated is not None and updated.get("run_in_background") is True
+      and updated.get("command") == RENDER, detail)
+
+LOOP = "for i in $(seq 1 40); do grep -q 'facts in' a2.log && break; sleep 20; done"
+rc, updated, verdict, detail = rewrite(timed(LOOP, 600000), "sdk-cli")
+check("a for-loop wait is a wait loop: clamped, with no EXIT line added",
+      rc == 0 and updated is not None and updated.get("timeout") == SUBAGENT_WAIT_MS
+      and updated.get("command") == LOOP, detail)
+
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:
     print("  " + f)

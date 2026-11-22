@@ -13,6 +13,11 @@ window only extends the lockout, so a `rate-limit` failure puts its transport in
 probe starts until `_rateLimitedUntil[transport]`, and until then the last reading is served as a
 cache fallback up to `STALE_FALLBACK_SECONDS` old. A read that answers clears the cooldown.
 
+A cached `exhausted` or `dispatch-floor` reading (`BLOCKING`) is the one that stops work and the one an
+owner's manual quota change makes false, so `reading()` confirms it live like a miss, and never serves
+it as a fallback when the confirmation fails: an unconfirmed refusal reads as a failed probe. `cached()`
+still returns it, for display; a cache-only admission reader defers it to the launcher's own preflight.
+
 A reader that knows why it cannot read emits status `unknown` with that reason, and the reading
 caches and serves like any other: a consumer prints `reason_text` instead of probing again, and an
 owner action that clears the reason calls `forget`."""
@@ -53,6 +58,9 @@ STATUSES = {
 }
 SOURCE_KINDS = {"live", "cache", "unsupported"}
 CACHEABLE = {"available", "exhausted", "dispatch-floor", "insufficient", "unknown"}
+# A cached reading in one of these refuses work, so a reader confirms it live before acting on it: the
+# plan may have been reset or topped up since it was read, and nothing in the cache says so.
+BLOCKING = {"exhausted", "dispatch-floor"}
 FAILURE_STATUSES = {"auth-error", "network-error", "malformed"}
 # The failure kinds a cache fallback may carry: the live probe's fault, or the endpoint's own
 # rate limit.
@@ -287,6 +295,14 @@ def _fresh(path, transport, cost_model, now):
     """`_read_cache` within the TTL, minus a reading whose window has reset since."""
     entry = _read_cache(path, transport, cost_model, now)
     if entry is None or _reset_passed(entry, now):
+        return None
+    return entry
+
+
+def _fallback_cache(path, transport, cost_model, now):
+    """The stale reading a failed probe or a cooldown may serve, never a blocking one."""
+    entry = _read_cache(path, transport, cost_model, now, STALE_FALLBACK_SECONDS)
+    if entry is not None and entry.get("status") in BLOCKING:
         return None
     return entry
 
@@ -551,6 +567,14 @@ def cached(transport, data=None, now=None, cache_path=None):
     return _fresh(cache_path or _cache_path(), transport, cfg.get("costModel"), now)
 
 
+def _observed_before(entry, newer_than):
+    """Whether `entry` was observed before `newer_than`: it cannot say what happened since."""
+    if newer_than is None:
+        return False
+    observed = _epoch(entry.get("observedAt"))
+    return observed is None or observed < newer_than
+
+
 def last_cached(transport, data=None, now=None, cache_path=None):
     """The transport's newest cached reading whatever its age, or None when none validates or its
     window has already reset. A stale band and its age are facts a cold plan's clause prints."""
@@ -585,7 +609,9 @@ def forget(transport, cache_path=None):
     return written
 
 
-def reading(transport, data=None, now=None, cache_path=None, runner=None):
+def reading(transport, data=None, now=None, cache_path=None, runner=None, newer_than=None):
+    """`transport`'s reading. A caller whose decision turns on what happened after `newer_than` (an epoch)
+    passes it: a cached reading observed earlier is a miss, so the answer is live or a failed read."""
     data = data if data is not None else model_registry.load()
     now = time.time() if now is None else now
     cfg = (data.get("transports") or {}).get(transport)
@@ -594,7 +620,7 @@ def reading(transport, data=None, now=None, cache_path=None, runner=None):
     cost_model = cfg.get("costModel")
     cache_path = cache_path or _cache_path()
     fresh = _fresh(cache_path, transport, cost_model, now)
-    if fresh is not None:
+    if fresh is not None and fresh.get("status") not in BLOCKING and not _observed_before(fresh, newer_than):
         return fresh
     if cfg.get("capacityUnsupported") is not None:
         return {
@@ -621,7 +647,8 @@ def reading(transport, data=None, now=None, cache_path=None, runner=None):
         return _failed_read(transport, cost_model, cache_path, now, "another process is reading %s capacity" % transport)
     try:
         fresh = _fresh(cache_path, transport, cost_model, now)
-        if fresh is not None:
+        if fresh is not None and not _observed_before(fresh, newer_than) and (
+                fresh.get("status") not in BLOCKING or (_epoch(fresh.get("observedAt")) or 0) >= now - 2):
             return fresh
         cooling = _cooldown_answer(cache_path, transport, cost_model, now)
         if cooling is not None:
@@ -653,7 +680,7 @@ def _cooldown_answer(cache_path, transport, cost_model, now):
     until = _rate_limited_until(cache_path, transport)
     if until is None or until <= now:
         return None
-    cached = _read_cache(cache_path, transport, cost_model, now, STALE_FALLBACK_SECONDS)
+    cached = _fallback_cache(cache_path, transport, cost_model, now)
     if cached is not None:
         return _cache_fallback(cached, "rate-limit", now, "rate limited until " + _utc(until))
     return _cooldown_reading(transport, cost_model, until, now)
@@ -674,7 +701,7 @@ def _settle(live, transport, cost_model, cache_path, now):
         kind = (live.get("error") or {}).get("kind")
         if kind == "rate-limit":
             _record_rate_limit(cache_path, transport, now + RATE_LIMIT_COOLDOWN_SECONDS)
-        cached = _read_cache(cache_path, transport, cost_model, now, STALE_FALLBACK_SECONDS)
+        cached = _fallback_cache(cache_path, transport, cost_model, now)
         if cached is not None:
             fallback = _cache_fallback(cached, kind, now, (live.get("error") or {}).get("message"))
             if validate_reading(fallback, transport, cost_model):

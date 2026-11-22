@@ -193,9 +193,11 @@ Scope:        <clean | <N> advisory signal(s) — see Scope Signals below>
 - File-list-bounded gate (per arch_brainstorm Step 5 handoff requirement) —
   the plan's enumerated file list MUST be bounded; "...and possibly others"
   is the HARD-STOP signal to kick back to arch-rework.
-- Design is approved — DO NOT redesign. If design re-evaluation surfaces
-  during plan composition, STOP and signal arch-rework instead of working
-  around it in the plan.
+- Design is approved for the situations it states — DO NOT redesign. A
+  situation it does not state is the plan's to specify
+  (`architecture_philosophy` §Behaviour per situation). If design
+  re-evaluation surfaces during plan composition, STOP and signal arch-rework
+  instead of working around it in the plan.
 - Micro drift findings above are yours to resolve during plan drafting.
   Macro drift would have already kicked back before this briefing emitted.
 - Plan file MUST start with header line: `**Roadmap:** <path> — Part **<ID>**`

@@ -662,9 +662,10 @@ def history(plan="p", periods=3, per_period=6, usd=(4.0,), rate=2.0, model="m-1"
 
 def drain_cases(case):
     """The expected drain of one job on one plan: the plan's recorded points per list-price dollar times the
-    0.75 quantile of what finished jobs of its model, effort and shape cost; `JOB_DRAIN_PCT` where no history says."""
+    0.75 quantile of what finished jobs of its model, effort and shape cost inside the window being priced (the
+    whole history when fewer than `RECENT_MIN_JOBS` have); `JOB_DRAIN_PCT` where no history says."""
     jobs, samples = history()
-    got = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=jobs, samples=samples)
+    got = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=jobs, samples=samples, now=NOW)
     case("a job's drain is the plan's recorded rate times the 0.75 quantile of its group's cost",
          got.get("basis") == "measured" and round(got["pct"], 2) == 8.0 and round(got["usd"], 2) == 4.0
          and round(got["rate"], 2) == 2.0, repr(got))
@@ -672,31 +673,82 @@ def drain_cases(case):
     case("no history falls back to JOB_DRAIN_PCT and says so", none["pct"] == pb.JOB_DRAIN_PCT
          and none["basis"] == "default" and none.get("why"), repr(none))
     mixed_jobs, mixed_samples = history(per_period=8, usd=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0))
-    mixed = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=mixed_jobs, samples=mixed_samples)
+    mixed = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=mixed_jobs, samples=mixed_samples, now=NOW)
     case("the cost quoted is the 0.75 quantile of the group, not its mean (4.5) or its maximum (8)",
          mixed["basis"] == "measured" and mixed["usd"] == 7.0 and round(mixed["rate"], 2) == 2.0, repr(mixed))
     short_jobs, short_samples = history(periods=pb.RATE_MIN_PERIODS - 1)
-    short = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=short_jobs, samples=short_samples)
+    short = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=short_jobs, samples=short_samples, now=NOW)
     case("fewer reset periods than RATE_MIN_PERIODS state no rate", short["basis"] == "default"
          and "period" in short["why"], repr(short))
-    other = pb.job_drain("p", "five_hour", "m-1", "high", "survey", jobs=jobs, samples=samples)
+    other = pb.job_drain("p", "five_hour", "m-1", "high", "survey", jobs=jobs, samples=samples, now=NOW)
     case("a shape with no recorded group takes the model's wider group, never the default",
          other["basis"] == "measured" and round(other["usd"], 2) == 4.0, repr(other))
     thin_jobs = [dict(j, effort="low") for j in jobs[:pb.GROUP_MIN_JOBS - 1]] + jobs
-    thin = pb.job_drain("p", "five_hour", "m-1", "low", "author", jobs=thin_jobs, samples=samples)
+    thin = pb.job_drain("p", "five_hour", "m-1", "low", "author", jobs=thin_jobs, samples=samples, now=NOW)
     case("a group under GROUP_MIN_JOBS widens to the next group instead of quoting an anecdote",
          thin["basis"] == "measured" and round(thin["usd"], 2) == 4.0, repr(thin))
-    unknown = pb.job_drain("p", "five_hour", "m-2", "high", "author", jobs=jobs, samples=samples)
+    unknown = pb.job_drain("p", "five_hour", "m-2", "high", "author", jobs=jobs, samples=samples, now=NOW)
     case("a model with no finished jobs falls back to the default", unknown["basis"] == "default", repr(unknown))
-    elsewhere = pb.job_drain("p", "seven_day", "m-1", "high", "author", jobs=jobs, samples=samples)
+    elsewhere = pb.job_drain("p", "seven_day", "m-1", "high", "author", jobs=jobs, samples=samples, now=NOW)
     case("a window with no samples of its own states no rate", elsewhere["basis"] == "default", repr(elsewhere))
     clipped = [dict(j, truncated=True) for j in jobs[:6]] + jobs[6:]
     case("jobs a usage limit cut short are excluded from a group's cost but not from the rate",
          pb.job_usd("m-1", "high", "author", [dict(j, usd=0.1, truncated=True) for j in jobs] + jobs) == 4.0
-         and pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=clipped, samples=samples)["basis"] == "measured")
+         and pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=clipped, samples=samples, now=NOW)["basis"] == "measured")
     case("a job whose period it never sat inside adds no cost to that period's rate",
          round(pb.plan_rate("p", "five_hour", jobs + [dict(jobs[0], start=NOW - 99999, end=NOW - 99000, usd=500)],
                             samples)[0], 2) == 2.0)
+
+    def window_history(recent_usd=None, recent_count=3, recent_age=600.0, window="five_hour",
+                       old_usd=4.0, old_age_days=30.0, rate=2.0):
+        """(jobs, samples) whose rate is `rate`: three reset periods `old_age_days` back, each holding six jobs
+        of `old_usd`, plus `recent_count` jobs of `recent_usd` that ended `recent_age` seconds before now."""
+        base = time.time()
+        jobs, samples = [], []
+        for k in range(3):
+            t0 = base - old_age_days * 86400.0 + k * 20000.0
+            reset = t0 + 18000
+            for i in range(6):
+                jobs.append({"plan": "p", "start": t0 + 600 + i * 600, "end": t0 + 1000 + i * 600, "usd": old_usd,
+                             "model": "m-1", "effort": "high", "shape": "author", "truncated": False})
+            for ts, used in ((t0, 0.0), (t0 + 7200, rate * 6 * old_usd)):
+                samples.append({"ts": ts, "plan": "p", "provider": "p", "window": window, "used": used,
+                                "resets_at": reset})
+        for i in range(recent_count if recent_usd is not None else 0):
+            end = base - recent_age - i * 60
+            jobs.append({"plan": "p", "start": end - 100, "end": end, "usd": recent_usd,
+                         "model": "m-1", "effort": "high", "shape": "author", "truncated": False})
+        return jobs, samples
+
+    recent_jobs, recent_samples = window_history(recent_usd=0.5)
+    got = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=recent_jobs, samples=recent_samples)
+    case("a job is priced by its group's jobs finished inside the plan window, not the whole history",
+         got["basis"] == "measured" and got["usd"] == 0.5 and round(got["pct"], 2) == 1.0, repr(got))
+    no_recent = window_history(recent_usd=None)
+    got = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=no_recent[0], samples=no_recent[1])
+    case("a group with no finished job inside the window takes its whole history",
+         got["basis"] == "measured" and got["usd"] == 4.0 and round(got["pct"], 2) == 8.0, repr(got))
+    five = pb.job_drain("p", "five_hour", "m-1", "high", "author", *window_history(
+        recent_usd=1.0, recent_age=6 * 3600.0))
+    seven = pb.job_drain("p", "seven_day", "m-1", "high", "author", *window_history(
+        recent_usd=1.0, recent_age=6 * 3600.0, window="seven_day"))
+    case("the horizon is the window's own: five hours ignores a six-hour-old job that a week prices",
+         five["usd"] == 4.0 and seven["usd"] == 1.0, repr((five, seven)))
+    one = window_history(recent_usd=0.5, recent_count=1)
+    got = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=one[0], samples=one[1])
+    case("one finished job inside the window is an anecdote: the whole history prices it",
+         got["usd"] == 4.0, repr(got))
+    other_shape = window_history(recent_usd=0.5)
+    for job in other_shape[0][-3:]:
+        job["shape"] = "survey"
+    got = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=other_shape[0], samples=other_shape[1])
+    case("a shape with no job inside the window takes its effort's jobs there",
+         got["usd"] == 0.5, repr(got))
+    clipped_recent = window_history(recent_usd=0.5, recent_count=2)
+    for job in clipped_recent[0][-2:]:
+        job["truncated"] = True
+    got = pb.job_drain("p", "five_hour", "m-1", "high", "author", jobs=clipped_recent[0], samples=clipped_recent[1])
+    case("a recent job a usage limit cut short does not price the group", got["usd"] == 4.0, repr(got))
 
     def cached_drain_follows_reread():
         saved = dict(pb._LEDGER_CACHE), dict(pb._SAMPLES_CACHE), pb._samples
