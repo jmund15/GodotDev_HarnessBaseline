@@ -11,7 +11,7 @@ One holistic reviewer reads a plan or a diff against the system it lands in. Its
 
 - **Plan mode** runs on a plan before its first slice lands, because landed work reads to a reviewer as a premise. `/plan` sends its plan here before the owner's approval.
 - **Small, local, reversible work skips plan review.** A fix to a file in the top 5% by fix commits (the redesign rule in `CLAUDE.core.md`) or to a shared contract (a floor module, a shared command, tool or skill) is not small. It goes through `/plan` and `/review`, because its reach is wide.
-- **Diff mode** runs when the owner or a drive asks for a second look. It is also the review step of `/review_pr`, `/pr_ready` and `/pr_pipeline`.
+- **Diff mode** runs when the owner or a drive asks for a second look. It is also the review step of `/review_pr` (which `/pr_pipeline` runs per PR) and `/pr_ready`.
 
 ## Arguments
 
