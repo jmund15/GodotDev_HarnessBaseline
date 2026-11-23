@@ -24,7 +24,7 @@ The next step depends on an external fact: engine or library behavior, a version
 
 **Shape A (default)** — the questions are settled-fact lookups against P1 sources.
 
-**Shape B (`--wide`)** — pick it only when [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Mandate admission admits it, and name the fired fact in the report.
+**Shape B (`--wide`)** — pick it only when a question needs more than one source class to settle: the docs are silent on it, or a field report or the implementation is likely to contradict them. Name that fact in the report.
 
 ### 1c. Choose the URL set yourself
 
