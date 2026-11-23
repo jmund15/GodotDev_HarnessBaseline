@@ -9,7 +9,7 @@ description: >-
 
 ## Gate cadence
 
-This file says when each check runs and why. The commands are the project's: `skills/project_subsystems/adaptation.json` `gate_cadence` holds them, one key per row below.
+This file says when each check runs and why. The commands are the project's: `skills/project_subsystems/adaptation.json` `gate_cadence` holds them, one key per row below (`adaptation.py` `CADENCE_KEYS` owns the set).
 
 The gate asks whether a change broke anything outside the scope it was made in. That question has no answer until work in that scope stops, so the unit is the commit, never the slice.
 
@@ -17,9 +17,10 @@ The gate asks whether a change broke anything outside the scope it was made in. 
 |---|---|---|
 | Inside a slice, a delegate's whole job included | `slice`: the changed unit's own tests; after a failure, only the failed tests | Fast feedback on the unit; a wider run here re-proves code nobody changed |
 | Once at a drive's close, before the push | `close`: the scoped run over the drive's accumulated changes | Catches interactions between earlier slices and later edits to shared code |
-| After each land on the default branch | `main`: the full gate, run by the main check (`adaptation.json` `main_check`) | The full gate costs minutes; after the land it costs the session nothing |
+| Before a merge | `merge`: the scoped run over what the merge brings in | Proves the joined result, which no slice saw |
 
 - **A harness change** runs its own unit's test file and nothing wider; the shared repository's CI runs the whole harness suite on every push.
+- **The full gate runs after each land on the default branch**, by the main check (`adaptation.json` `main_check`, not a cadence key): it costs minutes, and after the land it costs the session nothing.
 - **A session runs the full gate itself** only to reproduce a red the main check found.
 - **A skipped check names the trigger that brings it back.** An unnamed skip reads the same as a broken check.
 

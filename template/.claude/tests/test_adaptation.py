@@ -221,6 +221,13 @@ def test_cli_run_executes_each_entry_and_reports_a_failure(tmp_path, capsys):
     assert "exit 3" in capsys.readouterr().err
 
 
+def test_the_change_control_table_names_exactly_the_cadence_keys():
+    skill = (Path(TOOL).parent.parent / "skills" / "change_control" / "SKILL.md").read_text(encoding="utf-8")
+    rows = [line for line in skill.splitlines() if line.startswith("| ") and "`:" in line]
+    keys = {line.split("|")[2].split("`")[1] for line in rows}
+    assert keys == set(adaptation.CADENCE_KEYS)
+
+
 def test_the_key_list_is_the_kept_callers_keys():
     assert adaptation.CADENCE_KEYS == ("slice", "merge", "close")
     assert "usage_reset" not in adaptation.DEFAULTS
