@@ -18,7 +18,9 @@ line prints verbatim. `gate_cadence_errors` validates the table; a malformed row
 `pre_bash` is the floor's project data: `protected` rows ({pattern, why}: a command whose kill is denied) and
 `router_entrypoints` rows ({name, redirect?, detach_flag?}: a script the call router runs from main's copy unless
 `redirect` is false, backgrounds for a delegate, and backgrounds for every caller without its `detach_flag`). A
-malformed row is dropped with one stderr line. `scratch_keep` names the top-level scratch folders `tools/scratch_prune.py` never prunes.
+malformed row is dropped with one stderr line. `pr_pipeline` holds the shared batch PR loop's hook points
+(`discover`, `sync`, `pre_review`, `gate`, `checklist`, `post_merge`), each a list of command lines or `/command` names; a
+point with a blank or non-string entry, and an unknown point, is dropped with one stderr line. `scratch_keep` names the top-level scratch folders `tools/scratch_prune.py` never prunes.
 """
 from __future__ import annotations
 
@@ -98,6 +100,9 @@ DEFAULTS: dict = {
     # hooks/_optional_hooks.py members(): {pre_edit, post_edit, pre_read, post_read, prompt: [module]}, the project-local
     # members each dispatcher runs after `_chain.EVENTS`' shared members.
     "hook_members": {},
+    # commands/pr_pipeline.md (`get pr_pipeline.<point>`): the project's steps of the shared batch PR loop, one list per
+    # hook point; an entry is a command line or a `/command` name.
+    "pr_pipeline": {"discover": [], "sync": [], "pre_review": [], "gate": [], "checklist": [], "post_merge": []},
 }
 
 # Expected Python type of each known key; a known key of the wrong type falls back to its default.
@@ -109,6 +114,7 @@ _SUB_TYPES: dict = {
     "dispatch": {"pre_launch": str, "post_return": str},
     "pr_ready": {"checks": list},
     "pre_bash": {"protected": list, "router_entrypoints": list},
+    "pr_pipeline": {point: list for point in DEFAULTS["pr_pipeline"]},
 }
 
 _MISSING = object()
@@ -195,7 +201,21 @@ def _read_file(path: Path) -> dict:
         values[key] = _sub_values(path, key, value) if key in _SUB_TYPES else value
     if "pre_bash" in values:
         values["pre_bash"] = _pre_bash_rows(path, values["pre_bash"])
+    if "pr_pipeline" in values:
+        values["pr_pipeline"] = _pipeline_rows(path, values["pr_pipeline"], raw["pr_pipeline"])
     return values
+
+
+def _pipeline_rows(path: Path, table: dict, raw: dict) -> dict:
+    """`table` with each hook point holding a blank or non-string entry reset to empty, and each unknown hook
+    point named once, one stderr line apiece."""
+    for point in sorted(set(raw) - set(table)):
+        _warn(path, "pr_pipeline.%s" % point, "is not a hook point")
+    for point, entries in table.items():
+        if not all(isinstance(entry, str) and entry.strip() for entry in entries):
+            _warn(path, "pr_pipeline.%s" % point, "holds an entry that is not a non-empty string")
+            table[point] = []
+    return table
 
 
 def _pre_bash_rows(path: Path, table: dict) -> dict:
