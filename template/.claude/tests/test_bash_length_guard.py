@@ -6,12 +6,14 @@ names the write-to-file route and its rule's home.
 Must-allow arms: a command at the limit, a short quoted heredoc mixing a quote with a backtick, a plain heredoc,
 a here-string, and a non-Bash tool.
 
-    python3 .claude/tests/test_bash_length_guard.py
+    python -m pytest .claude/tests/test_bash_length_guard.py -q
 """
 import json
 import os
 import subprocess
 import sys
+
+import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS_DIR = os.path.normpath(os.path.join(HERE, "..", "hooks"))
@@ -34,6 +36,7 @@ def hazard_body():
     return 'print("it' + "'" + "s " + BT + "date" + BT + '")'
 
 
+# (id, command, denied)
 CASES = [
     ("deny: quoted heredoc past the limit",
      padded("python3 - <<'EOF'" + NL + hazard_body() + NL, NL + "EOF", LIMIT + 1), True),
@@ -52,9 +55,13 @@ CASES = [
 ]
 
 
-def run_dispatch(payload_text):
-    return subprocess.run([sys.executable, DISPATCH], input=payload_text, capture_output=True,
+def run_dispatch(command, tool="Bash"):
+    payload = {"tool_name": tool, "tool_input": {"command": command} if tool == "Bash" else {"file_path": "x"},
+               "cwd": REPO}
+    proc = subprocess.run([sys.executable, DISPATCH], input=json.dumps(payload), capture_output=True,
                           text=True, timeout=120, encoding="utf-8", cwd=REPO)
+    assert proc.returncode in (0, 2), "CRASH exit %s %s" % (proc.returncode, proc.stderr[-400:])
+    return decision(proc)
 
 
 def decision(proc):
@@ -62,47 +69,20 @@ def decision(proc):
     text = proc.stdout.strip()
     if not text:
         return "", ""
-    try:
-        parsed = json.loads(text)
-    except ValueError:
-        return "<unparseable stdout>", ""
+    parsed = json.loads(text)
     hso = parsed.get("hookSpecificOutput", {}) if isinstance(parsed, dict) else {}
     return hso.get("permissionDecision", "") or "", hso.get("permissionDecisionReason", "") or ""
 
 
-def main():
-    failures = []
-    for label, command, want in CASES:
-        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": REPO})
-        proc = run_dispatch(payload)
-        if proc.returncode not in (0, 2):
-            failures.append("CRASH %s: exit %s %s" % (label, proc.returncode, proc.stderr[-400:]))
-            continue
-        denied = decision(proc)[0] == "deny"
-        if denied != want:
-            failures.append("%s: expected deny=%s, got %s" % (label, want, denied))
-        else:
-            print("ok   %s" % label)
-
-    reason = decision(run_dispatch(json.dumps({"tool_name": "Bash", "tool_input": {"command": CASES[0][1]},
-                                               "cwd": REPO})))[1]
-    if ".claude/scratch" not in reason or "CLAUDE.core.md" not in reason:
-        failures.append("deny does not name the write-to-file path and its rule's home: %r" % reason[:300])
-
-    other = json.dumps({"tool_name": "Read", "tool_input": {"file_path": "x"}, "cwd": REPO})
-    if decision(run_dispatch(other))[0] == "deny":
-        failures.append("non-Bash tool got the length deny")
-
-    for line in failures:
-        print("FAIL " + line)
-    print("%d/%d cases passed" % (len(CASES) + 2 - len(failures), len(CASES) + 2))
-    return 1 if failures else 0
+@pytest.mark.parametrize("label,command,want", CASES, ids=[c[0] for c in CASES])
+def test_the_length_deny_fires_past_the_limit_only(label, command, want):
+    assert (run_dispatch(command)[0] == "deny") == want
 
 
+def test_the_deny_names_the_write_to_file_route_and_its_rules_home():
+    reason = run_dispatch(CASES[0][1])[1]
+    assert ".claude/scratch" in reason and "CLAUDE.core.md" in reason, reason[:300]
 
-def test_proof():
-    assert main() in (None, 0)
 
-
-if __name__ == "__main__":
-    sys.exit(main())
+def test_a_non_bash_tool_gets_no_length_deny():
+    assert run_dispatch("", tool="Read")[0] != "deny"

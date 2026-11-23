@@ -18,7 +18,7 @@ holding a v1 case's several asserts).
 | `test_dangerous_shell_guard_cache_cleanup.py` | 80 | 80 | `test_floor_delete.py` |
 | `test_dangerous_shell_guard_owned_temp_cleanup.py` | 22 | 22 | `test_floor_delete.py` |
 | `test_dangerous_shell_guard_session_dir.py` | 13 | 13 | `test_floor_delete.py` |
-| `test_regenerable_clone.py` (3 parts), `test_conformance_j8.py`'s two nested-submodule retirement cases | whole | whole | `test_floor_retire.py` (166) |
+| `test_regenerable_clone.py` (3 parts), `test_conformance_j8.py`'s two nested-submodule retirement cases | whole | whole | `test_floor_retire.py` (180) |
 | `test_git_guardrails_advice.py` (sections 0-3) | 95 | 95 + 11 stash-held | `test_floor_git_discard.py` (107, with the one-row-per-case table check) |
 | `test_git_guardrails_amend.py` | 6 | 6 | `test_floor_peer_loss.py` (21) |
 | `test_git_guardrails_revert_lane.py` | 8 | 8 | `test_floor_peer_loss.py` |
@@ -28,7 +28,7 @@ holding a v1 case's several asserts).
 | `test_git_guardrails_scratch_branch_delete.py` | 10 | 10 | `test_floor_git_owner.py` |
 | `test_git_guardrails_checkout_own_worktree.py`, `test_pattern_enforcer_own_worktree*.py` (4 parts) | 118 | 118, launcher and loose-file rows differ (D-LB, D-LS) | `test_floor_own_worktree.py` (119) |
 | `test_git_guardrails_index_fold.py` (fold and index-write rows) | 34 | — | `test_floor_index_fold.py` (34) |
-| `test_git_guardrails_harness_commit.py` (sections W, G1, G2, G3, S, M) | 44 | 44 + `-C $UNSET` | `test_floor_commit_index.py` (61, with the D-IW rows) |
+| `test_git_guardrails_harness_commit.py` (sections W, G1, G2, G3, S, M) | 44 | 44 + `-C $UNSET` | `test_floor_commit_index.py` (62, with the D-IW rows) |
 | `test_git_commit_msg_hook.py` | 16 | 16 | `test_floor_commit_msg.py` (17, plus the S5 CLI row) |
 | `test_kill_guard.py` | 73 | 73 | `test_floor_kill.py` (154) |
 | `test_reap.py`, `test_reap_native_env.py` | 190 checks + 3 | same | `test_floor_reap.py` (73), with the small stop tool (S5d, below) |
@@ -51,7 +51,7 @@ repositories (D-TT).
 
 | id | v1 case | ruling | rows |
 |---|---|---|---|
-| D-IW | the index-write deny: a commit that `git add`/`rm`/`reset`/`stash`/`apply --cached` precedes in the same command (`SAME_COMMAND_WRITE`) | Narrowed to what git's commit-msg hook cannot re-check: the call skips hooks (`-n`, `--no-verify`, a bundled `n`), the command overrides git config (`core.hooksPath`, `GIT_CONFIG_*`), the repository's `core.hooksPath` is not `.claude/githooks` or its `commit-msg` is missing, or the publication amends (the hook re-runs the stage-record and peer-revert checks, not the amend check: `COMMIT_CHECKS`). | `test_floor_commit_index.py` `test_an_index_write_before_a_hooked_commit_allows`, `..._that_skips_the_hook_denies`, `test_a_head_move_before_an_amend_denies_even_when_hooked`, `test_a_hooks_path_without_the_commit_msg_hook_denies` |
+| D-IW | the index-write deny: a commit that `git add`/`rm`/`reset`/`stash`/`apply --cached` precedes in the same command (`SAME_COMMAND_WRITE`) | Narrowed to what git's commit-msg hook cannot re-check: the call skips hooks (`-n`, `--no-verify`, a bundled `n`), the command overrides git config (`core.hooksPath`, `GIT_CONFIG_*`), the repository's `core.hooksPath` is not `.claude/githooks` or its `commit-msg` is missing, the publication amends (the hook re-runs the stage-record and peer-revert checks, not the amend check: `COMMIT_CHECKS`), or it closes a merge (`merge --continue`, or a commit while `MERGE_HEAD` exists: `commit_msg_check` returns early for a merge, so the hook re-checks nothing). | `test_floor_commit_index.py` `test_an_index_write_before_a_hooked_commit_allows`, `..._that_skips_the_hook_denies`, `test_a_head_move_before_an_amend_denies_even_when_hooked`, `test_an_index_write_before_the_commit_that_closes_a_merge_denies_even_when_hooked`, `test_a_hooks_path_without_the_commit_msg_hook_denies` |
 | D-TT | a recursive delete of a temp tree holding git repositories (S4's `v2s4_s4b`) | Allowed: the core doctrine exempts temp dirs. The protected checkout, a worktree registered to it, and any path strictly inside the checkout (wherever the temp dir sits) keep their rules. | `test_floor_delete.py` `test_s4_a_temp_tree_holding_git_repositories_allows` and its project-root deny |
 | D-LB | PP's allow of an own-worktree discard inside a shell launcher (`bash -c`, `sh -c`, `eval`, `env … bash -c`) | Kept MM's deny: a launcher-body call borrows no worktree ownership (`git_verdict`); stored-bytes evidence still allows inside a launcher. | `test_floor_own_worktree.py` launcher rows |
 | D-LS | PP's allow of a loose file directly in a worktree's or scratch clone's `.claude/scratch/` | Kept MM's deny: a loose scratch file is evidence, not a job's output folder. | `test_floor_own_worktree.py` and `test_floor_retire.py` loose-file rows |
@@ -66,6 +66,9 @@ repositories (D-TT).
   saved bundle (`test_a_saved_bundle_no_longer_retires_an_unpushed_worktree`). The rule reads "who created the worktree
   does not change the answer", so a submodule whose admin directory is gone now denies in an owned worktree too
   (`test_a_submodule_whose_admin_directory_is_gone_denies`). Tar and patch saved copies go with the bundle.
+- A submodule whose path holds a space (D18): the old floor split `submodule status` on whitespace and skipped it
+  unchecked; the rule now judges it, so a dirty one denies and a clean one retires (`test_floor_retire.py`
+  `..._submodule_path_holds_a_space_...` rows, worktree and orphan).
 - Two new allows of the command's own `NAME=$(mktemp -d)` directories (temp trees, D-TT's reason): a multi-line
   script (v1's chain splitter missed newlines) and two mktemp variables in one `rm` (`test_floor_delete.py`
   `OWNED_PASS`).
