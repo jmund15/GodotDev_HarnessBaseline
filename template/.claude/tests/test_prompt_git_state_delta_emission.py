@@ -31,7 +31,7 @@ def _run_cases(results):
             tempfile.TemporaryDirectory(prefix="gsd_cache_") as cache:
         repo = os.path.join(root, "repo")
         os.mkdir(repo)
-        subprocess.run(["git", "init", "-q", repo], check=True, stdin=subprocess.DEVNULL)
+        subprocess.run(["git", "init", "-q", repo], check=True, stdin=subprocess.DEVNULL, capture_output=True)
         _git(repo, "config", "user.email", "a@example.com")
         _git(repo, "config", "user.name", "a")
         tracked = os.path.join(repo, "f.txt")
