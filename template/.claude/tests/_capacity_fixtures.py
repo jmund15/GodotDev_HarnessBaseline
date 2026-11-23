@@ -29,3 +29,20 @@ def write_capacity_cache(path, data):
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         json.dump(blob, fh)
     return path
+
+
+def anthropic_payload(five=None, seven=None):
+    """A planted OAuth usage response (`/api/oauth/usage`): a window is present when its used percent is given."""
+    payload = {}
+    if five is not None:
+        payload["five_hour"] = {"utilization": five, "resets_at": "2026-11-23T18:00:00Z"}
+    if seven is not None:
+        payload["seven_day"] = {"utilization": seven, "resets_at": "2026-11-29T18:00:00Z"}
+    return payload
+
+
+def agy_usage_text(five_left=50.0, weekly_left=50.0, other_bucket_only=False):
+    """Planted `agy -p /usage` stdout: tab rows `<bucket>\\t<label>\\t<N>% left\\t<reset>` for the Antigravity bucket."""
+    bucket = "Claude and GPT models" if other_bucket_only else "Gemini Models"
+    return (f"{bucket}\tFive Hour\t{five_left:.1f}%\t2026-11-23T18:00:00Z\n"
+            f"{bucket}\tWeekly\t{weekly_left:.1f}%\t2026-11-29T18:00:00Z\n")
