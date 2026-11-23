@@ -6,13 +6,15 @@ claude dir are planted (tmp_path, monkeypatch), so no case reads the live seats 
 that raises denies the call: a fault never lets an unchecked dispatch through.
 """
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-HOOKS = Path(__file__).resolve().parents[1] / "hooks"
+CLAUDE = Path(__file__).resolve().parents[1]
+HOOKS = CLAUDE / "hooks"
 sys.path.insert(0, str(HOOKS))
 import pre_workflow_dispatch as pwd  # noqa: E402
 import workflow_transport as wt  # noqa: E402
@@ -22,6 +24,16 @@ from test_workflow_transport import plant  # noqa: E402
 @pytest.fixture(autouse=True)
 def not_a_delegate(monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_SIDECAR", raising=False)
+
+
+@pytest.fixture
+def spawned_entry(tmp_path):
+    """The entry's path inside a planted copy of the harness. A spawned entry reads the `adaptation.json` beside its own
+    hooks/, so running the live file would read a project's `dispatch.pre_launch` / `dispatch.post_return`. The copy has
+    no project adaptation: the project keys are unset, and a case sees no project hook."""
+    root = tmp_path / "harness" / ".claude"
+    shutil.copytree(CLAUDE, root, ignore=shutil.ignore_patterns("tests", "__pycache__", "project_subsystems"))
+    return root / "hooks" / "pre_workflow_dispatch.py"
 
 
 @pytest.fixture
@@ -114,8 +126,8 @@ def test_a_native_payload_passes_on_the_shipped_seats_file(tmp_path, monkeypatch
     assert hso["updatedInput"]["args"]["__transport"]["ids"] == ["fable", "opus", "sonnet", "haiku"]
 
 
-def test_the_spawned_entry_passes_a_native_payload(tmp_path):
-    done = subprocess.run([sys.executable, str(HOOKS / "pre_workflow_dispatch.py")],
+def test_the_spawned_entry_passes_a_native_payload(tmp_path, spawned_entry):
+    done = subprocess.run([sys.executable, str(spawned_entry)],
                           input=json.dumps(native_payload(tmp_path)), capture_output=True, text=True,
                           cwd=str(tmp_path), timeout=60)
     assert done.returncode == 0, done.stderr
@@ -181,9 +193,9 @@ def test_post_return_checks_the_jobs_of_a_call_that_carried_only_a_file(tmp_path
     assert out["decision"] == "block" and "r: dispatch.post_return refused: answer-rejected" in out["reason"]
 
 
-def test_the_spawned_entry_is_silent_after_a_workflow_with_no_post_return_hook(tmp_path):
+def test_the_spawned_entry_is_silent_after_a_workflow_with_no_post_return_hook(tmp_path, spawned_entry):
     payload = {"hook_event_name": "PostToolUse", "tool_name": "Workflow", "cwd": str(tmp_path), "tool_response": {},
                "tool_input": {"script": "dispatch.js", "args": {"jobs": [job_with_targets(tmp_path, "reviewer")]}}}
-    done = subprocess.run([sys.executable, str(HOOKS / "pre_workflow_dispatch.py")], input=json.dumps(payload),
+    done = subprocess.run([sys.executable, str(spawned_entry)], input=json.dumps(payload),
                           capture_output=True, text=True, cwd=str(tmp_path), timeout=60)
     assert done.returncode == 0 and done.stdout == "", done.stderr
