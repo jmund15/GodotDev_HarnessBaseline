@@ -63,7 +63,7 @@ DEFAULTS: dict = {
     "drift_scan": {},
     # commands/commit_push.md: the branch prefix a land runner integrates; empty means none.
     "land_prefix": "",
-    # commands/commit_push.md step 6: the command that waits on a land and reports it; empty means none.
+    # commands/commit_push.md step 4: the command that waits on a land and reports it; empty means none.
     "land_watch": "",
     # scripts/main_check.py: the workflow that proves the default branch after each push; empty means none.
     "main_check": "",
