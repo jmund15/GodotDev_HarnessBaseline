@@ -2,7 +2,7 @@
 // Prove every engine's verifier spawn retries once as general-purpose when its generated agent type is
 // not loaded in the session, and still throws on any other error. The helper is copied per engine.
 const fs = require('fs'), path = require('path')
-const ENGINES = ['dispatch', 'dispatch_chains', 'doc_architecture_audit', 'review_fanout', 'worklog_relevance']
+const ENGINES = ['doc_architecture_audit', 'review_fanout', 'worklog_relevance']
 let pass = 0, fail = 0
 const ck = (n, c, d) => { if (c) { console.log('  PASS  ' + n); pass++ } else { console.log('  FAIL  ' + n + (d ? '\n        ' + d : '')); fail++ } }
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor

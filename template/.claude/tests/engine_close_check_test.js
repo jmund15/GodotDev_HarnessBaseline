@@ -8,7 +8,7 @@ const { load } = require('./_engine_run')
 const root = path.resolve(__dirname, '../..')
 // A lane installs only the engines its adopted layers ship: explore_fanout is coding, key_reachability
 // project-only. A case over an engine this tree does not hold is skipped, as its sibling proof does.
-const ENGINES = ['dispatch', 'dispatch_chains', 'explore_fanout', 'review_fanout', 'doc_architecture_audit', 'key_reachability', 'worklog_relevance']
+const ENGINES = ['explore_fanout', 'review_fanout', 'doc_architecture_audit', 'key_reachability', 'worklog_relevance']
   .filter(name => fs.existsSync(path.join(root, '.claude/workflows/' + name + '.js')))
 const script = path.join(root, '.claude/workflows/dispatch.js')
 const run = load(script, source => process.env.CLOSE_CHECK_DELETE_APPLY
@@ -46,40 +46,6 @@ const base = {
     tracer: { kind: 'lens', builtins: ['Read', 'Glob', 'Grep'], mcpServers: [], add: [], remove: [], agentType: 'lane-survey', tier: 'fanout', guard: 'survey' } },
 }
 const reportPaths = new Set()
-async function check(failure, declared = true) {
-  let verifierCalls = 0
-  const args = JSON.parse(JSON.stringify(base))
-  if (!declared) delete args.__returns
-  const result = await run(args, async (prompt, opts) => {
-    if (opts.label === 'tracer') return text
-    verifierCalls++
-    assert.equal(opts.agentType, 'lane-verify')
-    assert.equal(opts.model, 'test-verifier')
-    assert.equal(opts.effort, 'low')
-    assert.ok(opts.schema)
-    assert.ok(prompt.includes('--run-label ' + opts.label))
-    const reportPath = prompt.match(/--out (\S+)/)[1]
-    if (reportPaths.size) assert.ok(reportPaths.has(reportPath), 'resumed inputs must reuse their report path')
-    reportPaths.add(reportPath)
-    if (failure === 'throw') throw Error('verifier unavailable')
-    if (failure === 'missing') return null
-    const out = path.join(temp, 'report.json')
-    const events = [Object.assign({}, start, { agentId: 'producer', label: 'tracer' }), { type: 'result', agentId: 'producer', result: text }, Object.assign({}, start, { agentId: 'verifier', label: opts.label })]
-    fs.writeFileSync(path.join(directory, 'journal.jsonl'), events.map(JSON.stringify).join('\n') + '\n')
-    const done = spawnSync('python3', ['-c', postCheck, 'claims', '--run-label', opts.label, '--out', out], { cwd: checkout, env: Object.assign({}, process.env, { CLAUDE_CONFIG_DIR: temp }), encoding: 'utf8' })
-    assert.equal(done.status, 1, done.stdout + done.stderr)
-    const report = JSON.parse(fs.readFileSync(out, 'utf8'))
-    if (failure === 'counts') report.counts.VERIFIED = 999
-    return { status: report.status, counts: report.counts, verdicts: Object.fromEntries(Object.entries(report.verdicts).map(([k, v]) => [k, v.verdict])), report: reportPath }
-  }, tasks => Promise.all(tasks.map(f => f())), () => {}, () => {})
-  assert.equal(verifierCalls, 1)
-  const rows = result.tracer.match(/```claims\n([\s\S]*?)```/)[1].trim().split('\n').map(JSON.parse)
-  assert.equal(result.verification.status, failure ? 'unavailable' : 'fail')
-  assert.deepEqual(rows.map(c => c.verdict), failure ? ['UNCHECKED', 'UNCHECKED', 'UNCHECKED'] : ['VERIFIED', 'UNVERIFIED', 'UNCHECKED'])
-  assert.deepEqual(rows.map(c => c.confidence), failure ? ['unverified', 'unverified', 'unverified'] : ['verified', 'unverified', 'unverified'])
-  assert.equal(result.verification.counts.UNCHECKED, failure ? 3 : 1)
-  if (failure) assert.deepEqual(result.verification.verdicts, { true: 'UNCHECKED', false: 'UNCHECKED', empty: 'UNCHECKED' })
-}
 async function refused(args, pattern, message) {
   let calls = 0
   const result = await run(args, async () => { calls++; return text },
@@ -223,29 +189,6 @@ async function slice4b() {
       console.log('PASS ' + name + ' verifier PINS and UNCHECKED consistency')
     } catch (e) { failures.push(e.message) }
   }
-  for (const declaration of [
-    {ledger:{stage:'candidate', subject:'doc:x', roster:'roster.json', scopeJson:'scope.json'}},
-    {fold:{findings:'findings.json', digest:'digest.json', snapshot:'snapshot.json'}},
-  ]) {
-    const args = JSON.parse(JSON.stringify(base))
-    Object.assign(args.jobs[0], declaration)
-    delete args.__returns
-    let prompt
-    await run(args, async (p, opts) => {
-      if (opts.label === 'tracer') return 'digest without a claims fence'
-      prompt = p
-      throw Error('fixture unavailable')
-    }, tasks => Promise.all(tasks.map(f => f())), () => {}, () => {})
-    try {
-      assert.match(prompt || '', /post_check.py review /)
-      for (const [field, value] of Object.entries(declaration.ledger || declaration.fold)) {
-        const flag = field === 'scopeJson' ? 'scope-json' : field
-        assert.ok(prompt.includes('--' + flag + " '" + value + "'"), 'missing ' + flag)
-      }
-      if (declaration.fold) assert.ok(!prompt.includes('--run-label'), 'standalone findings exclude journal source')
-      console.log('PASS dispatch review ' + Object.keys(declaration)[0] + ' flags and trigger')
-    } catch (e) { failures.push(e.message) }
-  }
   assert.deepEqual(failures, [])
 }
 // S9: `pick` (why this pin) and `spec` (whether the slice's test intent is clearly defined) are optional
@@ -299,37 +242,7 @@ async function pickSpec() {
     await reportNote()
     await slice4b()
     await pickSpec()
-    await check(null)
-    await check(null, false)
-    await check('throw')
-    await check('missing')
-    await check('counts')
-    console.log('PASS dispatch close-check: real checker verdicts, auto-fence trigger, failed and missing verifier')
-    for (const mutation of [a => delete a.checker, a => { a.checker.model = 'other-transport' },
-      a => { a.checker.effort = 'xhigh' }, a => { a.checker.effort = undefined }]) {
-      const args = JSON.parse(JSON.stringify(base))
-      mutation(args)
-      await refused(args, /args\.checker/, 'an unpinned or illegal args.checker must not start any agent')
-    }
-    console.log('PASS args.checker gate: missing, outside ids, or illegal effort returns before any agent call')
-    {
-      // An undeclared claims fence with no args.checker: the run returns every claim UNCHECKED and names why,
-      // and never throws after its jobs have spent.
-      const args = JSON.parse(JSON.stringify(base))
-      delete args.__returns
-      delete args.checker
-      let verifierCalls = 0
-      const result = await run(args, async (_prompt, opts) => { if (opts.label === 'tracer') return text; verifierCalls++; return null },
-        tasks => Promise.all(tasks.map(f => f())), () => {}, () => {})
-      const rows = result.tracer.match(/```claims\n([\s\S]*?)```/)[1].trim().split('\n').map(JSON.parse)
-      assert.equal(verifierCalls, 0)
-      assert.equal(result.verification.status, 'unavailable')
-      assert.match(result.verification.report, /args\.checker/)
-      assert.deepEqual(rows.map(c => c.verdict), ['UNCHECKED', 'UNCHECKED', 'UNCHECKED'])
-    }
-    console.log('PASS undeclared fence without args.checker: claims return UNCHECKED, no throw, no verifier')
     for (const [name, build, pattern] of [
-      ['dispatch', extra => ({ jobs: [{ label: 'j', promptPath: 'brief.md', effort: 'low', kind: 'reviewer' }], ...extra }), /every job/],
       ['review_fanout', extra => ({ agents: [{ key: 'k', promptPath: 'brief.md', effort: 'low', kind: 'reviewer', mustRead: [{ path: 'source.txt', lines: 1 }] }], ...extra }), /every job/],
       ['explore_fanout', extra => ({ lenses: [{ key: 'k', promptPath: 'brief.md', kind: 'reviewer' }], ...extra }), /every job/],
       ['idea_fanout', extra => ({ generators: [{ key: 'one', instr: 'x', effort: 'low' }, { key: 'two', instr: 'y', model: 'test-producer', effort: 'low' }], contextPrefix: 'ctx', kind: 'lens', __kindProfile: { kind: 'lens', agentType: 'lane-survey', builtins: ['Read', 'Glob', 'Grep'], mcpServers: [] }, ...extra }), /every job/],
@@ -344,42 +257,11 @@ async function pickSpec() {
       assert.deepEqual(started, [], name + ' must start no agent for an unpinned job')
       console.log('PASS ' + name + ' job with no model: refused before any agent starts')
     }
-    const override = JSON.parse(JSON.stringify(base))
-    override.__toolProfiles.verify.model = 'other-transport'
-    override.__toolProfiles.verify.effort = 'none'
-    let resolved
-    await run(override, async (prompt, opts) => {
-      if (opts.label === 'tracer') return text
-      resolved = opts
-      throw Error('fixture unavailable')
-    }, tasks => Promise.all(tasks.map(f => f())), () => {}, () => {})
-    assert.equal(resolved.model, 'test-verifier')
-    assert.equal(resolved.effort, 'low')
-    console.log('PASS verifier pin: args.checker model and effort; missing row/rungs refused; caller pins ignored')
     for (const expression of ['Date.now()', 'new Date()', 'Math.random()']) {
       await assert.rejects(load(script, () => 'return ' + expression)(),
         expression === 'Math.random()' ? /Math.random\(\).*breaks resume/ : /Date.now\(\) \/ new Date\(\) are unavailable/)
     }
     assert.equal(await load(script, () => 'return Math.imul(3, 7)')(), 21)
     console.log('PASS Workflow loader: Date.now, Date constructor and Math.random blocked; pure Math works')
-    const names = load(script, source => 'const A = args;\n'
-      + source.match(/\/\/ CLOSE-CHECK-BEGIN([\s\S]*?)\/\/ CLOSE-CHECK-END/)[1]
-      + '\nreturn Promise.all(args.checks.map(check => closeCheck(check.mode, {items: check.keys, keyOf: key => key, out: "report.json"})))')
-    const checks = [
-      { mode: 'claims', keys: ['alpha', 'beta'] },
-      { mode: 'claims', keys: ['alpha', 'beta'] },
-      { mode: 'claims', keys: ['alpha', 'gamma'] },
-      { mode: 'findings', keys: ['alpha', 'beta'] },
-      { mode: 'claims', keys: ['a,b', 'c'] },
-      { mode: 'claims', keys: ['a', 'b,c'] },
-    ]
-    const reports = (await names(Object.assign({}, base, { checks }), async () => { throw Error('fixture unavailable') }))
-      .map(result => result.verification.report)
-    assert.equal(reports[0], reports[1])
-    assert.equal(new Set(reports).size, checks.length - 1)
-    const resumed = (await names(Object.assign({}, base, { checks }), async () => { throw Error('fixture unavailable') }))
-      .map(result => result.verification.report)
-    assert.deepEqual(resumed, reports)
-    console.log('PASS dispatch close-check names: concurrent keys and modes differ; resumed inputs reuse paths; key boundaries preserved')
   } finally { fs.rmSync(temp, { recursive: true, force: true }) }
 })().catch(e => { console.error(e); process.exitCode = 1 })

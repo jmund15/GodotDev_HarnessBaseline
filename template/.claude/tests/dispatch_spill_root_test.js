@@ -40,7 +40,7 @@ async function run(script, args) {
   const parallel = async thunks => Promise.all(thunks.map(fn => Promise.resolve().then(fn)))
   let result
   try {
-    result = await new AsyncFunction('args', 'agent', 'parallel', 'phase', 'log', body(script))(
+    result = await new AsyncFunction('args', 'agent', 'parallel', 'phase', 'log', body('dispatch.js'))(
       { __transport: HOST, __toolProfiles: profilesOf(args), ...args }, agent, parallel, () => {}, line => logs.push(String(line)))
   } catch (e) {
     result = { crash: String((e && e.stack) || e) }
@@ -49,12 +49,12 @@ async function run(script, args) {
 }
 
 const job = (label, kind) => ({ label, promptPath: label + '.md', model: 'model-a', effort: 'low', kind: kind || 'author' })
-const argsFor = (script, spillDir, jobs) => script === 'dispatch.js'
+const argsFor = (script, spillDir, jobs) => script === 'jobs'
   ? { spillDir, jobs }
   : { spillDir, chains: [{ name: 'lane', jobs }] }
 
 ;(async () => {
-  for (const script of ['dispatch.js', 'dispatch_chains.js']) {
+  for (const script of ['jobs', 'chains']) {
     const refused = [
       ['absolute POSIX path', '/tmp/spill'],
       ['absolute Windows path under scratch', 'C:/repo/.claude/scratch/spill'],
@@ -85,7 +85,7 @@ const argsFor = (script, spillDir, jobs) => script === 'dispatch.js'
   }
 
   // A call carrying only `jobsFile` reaches the engine unexpanded when the PreToolUse chain did not run: say so.
-  for (const script of ['dispatch.js', 'dispatch_chains.js']) {
+  for (const script of ['jobs', 'chains']) {
     const r = await run(script, { jobsFile: '.claude/scratch/x/native.args.json' })
     check(script + ' names the unexpanded jobsFile when it gets no jobs',
       !r.result.crash && typeof r.result.error === 'string' && r.result.error.includes('jobsFile')
@@ -111,21 +111,21 @@ const argsFor = (script, spillDir, jobs) => script === 'dispatch.js'
   // A writing job names the units its brief or plan did not state (orchestration §4 `choices`), so
   // review can route them as design no reviewer saw; a job that cannot write is never asked.
   const asksChoices = (prompt) => /```choices/.test(prompt) && /"unit"/.test(prompt) && /"why"/.test(prompt)
-  for (const script of ['dispatch.js', 'dispatch_chains.js']) {
+  for (const script of ['jobs', 'chains']) {
     const r = await run(script, argsFor(script, '.claude/scratch/spill', [job('writer'), job('reader', 'lens')]))
     check(script + ' asks a writing job for its choices block', !r.result.crash && asksChoices(r.prompts[0] || ''), r.prompts[0])
     check(script + ' never asks a no-write agent for choices', !r.result.crash && r.prompts[1] && !asksChoices(r.prompts[1]), r.prompts[1])
   }
   // A job whose profile cannot write returns inline; the run names the tool that lands it at <spillDir>/<label>.md.
   const exempt = await run('dispatch.js', argsFor('dispatch.js', '.claude/scratch/spill', [job('writer'), job('reader', 'lens')]))
-  check('dispatch.js hands a no-write job to dispatch_result.py',
-    !exempt.result.crash && exempt.logs.some(line => line.includes('SPILL-EXEMPT') && line.includes('dispatch_result.py')), exempt.logs.join(' | '))
-  // The result leads with that recovery route: a truncated result preview still shows it.
-  for (const script of ['dispatch.js', 'dispatch_chains.js']) {
+  check('dispatch.js logs a no-write job as SPILL-EXEMPT',
+    !exempt.result.crash && exempt.logs.some(line => line.includes('SPILL-EXEMPT') && line.includes('reader')), exempt.logs.join(' | '))
+  // The result leads with the inline note: a truncated result preview still shows which labels came back inline.
+  for (const script of ['jobs', 'chains']) {
     const r = await run(script, argsFor(script, '.claude/scratch/spill', [job('writer'), job('reader', 'lens')]))
     const first = r.result && !r.result.crash ? Object.keys(r.result)[0] : ''
-    check(script + ' result leads with the inline recovery route',
-      first === 'inlineRecover' && String(r.result.inlineRecover).includes('dispatch_result.py')
+    check(script + ' result leads with the inline note',
+      first === 'inlineRecover' && String(r.result.inlineRecover).includes('came back inline')
         && String(r.result.inlineRecover).includes('reader'), JSON.stringify(r.result).slice(0, 300))
     const all = await run(script, argsFor(script, '.claude/scratch/spill', [job('writer')]))
     check(script + ' carries no recovery route when every job spills',
@@ -135,7 +135,7 @@ const argsFor = (script, spillDir, jobs) => script === 'dispatch.js'
   const rv = await run('dispatch.js', { jobs: [job('rv', 'reviewer')] })
   check('dispatch.js never asks a reviewer for choices', !rv.result.crash && rv.prompts[0] && !asksChoices(rv.prompts[0]), rv.prompts[0])
   // A job names its tools by kind alone: a kindless job and a retired key are refused before any agent starts.
-  for (const script of ['dispatch.js', 'dispatch_chains.js']) {
+  for (const script of ['jobs', 'chains']) {
     const kindless = Object.assign(job('k'), { kind: undefined })
     const none = await run(script, argsFor(script, undefined, [kindless]))
     check(script + ' refuses a kindless job before any agent starts',
@@ -153,7 +153,7 @@ const argsFor = (script, spillDir, jobs) => script === 'dispatch.js'
   }
 
   // A job dispatched from a linked worktree reports under the project root, not the worktree.
-  for (const script of ['dispatch.js', 'dispatch_chains.js']) {
+  for (const script of ['jobs', 'chains']) {
     const spill = { ...argsFor(script, '.claude/scratch/spill', [job('writer')]) }
     const from = async root => run(script, { ...spill, __repoRoot: root })
     const wt = await from('C:/proj/.claude/worktrees/wt-a')

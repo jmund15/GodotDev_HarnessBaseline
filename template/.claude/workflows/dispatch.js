@@ -1,9 +1,8 @@
 export const meta = {
   name: 'dispatch',
-  description: 'Run independent pinned jobs in parallel; use instead of bare Agent-tool fan-outs',
-  phases: [{ title: 'Dispatch', detail: 'all jobs concurrent (engine queues past the concurrency cap)' }],
+  description: 'Run pinned jobs in parallel, or chains of jobs in parallel lanes with each lane in order; use instead of bare Agent-tool fan-outs',
+  phases: [{ title: 'Dispatch', detail: 'jobs run concurrently; a chain runs its jobs in order inside its lane (the engine queues past the concurrency cap)' }],
 }
-// Claims/findings jobs close with an independent deterministic verification stage.
 
 // Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
 // string is a caller mistake, but an uncaught SyntaxError names neither this workflow nor the
@@ -14,116 +13,32 @@ let A
 try {
   A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
 } catch (e) {
-  return { error: 'dispatch: args must be JSON-serializable {jobs: [{label, promptPath, model, effort}, ...]}. Received a non-JSON string. ' + ((e && e.message) || '') }
+  return { error: 'dispatch: args must be JSON-serializable {jobs: [{label, promptPath, model, effort, kind}, ...]} or {chains: [{name, jobs: [...]}, ...]}. Received a non-JSON string. ' + ((e && e.message) || '') }
 }
-// EVIDENCE-SSOT-BEGIN
-const EVIDENCE_SCHEMA = {
-  "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
-  "type": "array",
-  "items": {
-    "oneOf": [
-      {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "file",
-          "quote"
-        ],
-        "description": "A quote from a local file. VERIFIED when the quote (case-folded, in-order `...` gaps allowed, a leading `path:N:` or `N:` grep prefix stripped) occurs in the file; UNVERIFIED when the file is readable and lacks it or does not exist; UNCHECKED when the file cannot be read.",
-        "properties": {
-          "file": {
-            "type": "string",
-            "description": "repository-relative or absolute path, optionally with :N or :N-M; the line range is reported, never decisive"
-          },
-          "quote": {
-            "type": "string",
-            "description": "the file's raw bytes, copied verbatim; one source per item"
-          }
-        }
-      },
-      {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "command",
-          "output"
-        ],
-        "description": "The stdout of a read-only git command from the allow-list (git grep, ls-files, ls-tree, log, show, branch, check-ignore, cat-file, rev-parse, diff --stat or --name-only, status --short), run without a shell from the repository root. VERIFIED when stdout holds the output, or when output is empty, stdout is empty and every pathspec the command names matches a tracked path. Any other command, a shell metacharacter, an unlisted flag or a timeout is UNCHECKED. One leading `git -C <dir>` (an existing repository-relative directory, where the command then runs) and `check-ignore --no-index` are allowed.",
-        "properties": {
-          "command": {
-            "type": "string",
-            "description": "one git command, no pipe, redirect or substitution"
-          },
-          "output": {
-            "type": "string",
-            "description": "a verbatim run of the command's stdout, or the empty string for an absent claim"
-          }
-        }
-      },
-      {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "owner"
-        ],
-        "description": "The owner's verbatim words. VERIFIED when an owner turn of the session transcript holds them (an AskUserQuestion answer is an owner turn when the item also carries its `question`; a runtime envelope is not), or when a row of the named task record holds them and still resolves. A delegate-recorded, missing or unresolved row, or an unreadable transcript, is UNCHECKED.",
-        "properties": {
-          "owner": {
-            "type": "string",
-            "description": "the owner's words, verbatim"
-          },
-          "question": {
-            "type": "string",
-            "description": "the AskUserQuestion question the owner answered; required when the quote is a picked option label"
-          },
-          "task": {
-            "type": "string",
-            "description": "a task record id whose condition rows may hold the words when this session's transcript does not"
-          }
-        }
-      },
-      {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "url",
-          "quote"
-        ],
-        "description": "A quote from an external page. A fetched artifact (fetch_source.sh manifest) is checked like a file; without one the item is UNCHECKED.",
-        "properties": {
-          "url": {
-            "type": "string",
-            "description": "the page the quote was read from"
-          },
-          "quote": {
-            "type": "string",
-            "description": "verbatim from the fetched bytes"
-          },
-          "artifact": {
-            "type": "string",
-            "description": "local path of the fetched bytes"
-          }
-        }
-      }
-    ]
-  }
+
+// ONE PATH. `jobs` is a flat list: each job is its own lane, so the jobs run concurrently. `chains` is
+// a list of lanes: lanes run concurrently and the jobs inside a lane run in order, each seeing the tree
+// its predecessors changed (a dependent hop with no judgment between it and the next costs a parent turn
+// otherwise). Both at once is refused: the caller states one shape.
+const flat = Array.isArray(A.jobs) ? A.jobs : []
+const chainsIn = Array.isArray(A.chains) ? A.chains : []
+if (flat.length > 0 && chainsIn.length > 0) {
+  return { error: 'dispatch: pass either jobs (a flat list, each job its own lane) or chains (lanes of jobs run in order), not both.' }
 }
-const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
-// EVIDENCE-SSOT-END
+const lanes = chainsIn.length > 0
+  ? chainsIn
+  : flat.map(j => ({ name: (j && j.label) || '(unlabeled)', jobs: [j] }))
+const jobs = lanes.flatMap(c => (c && Array.isArray(c.jobs)) ? c.jobs : [])
 
-const jobs = Array.isArray(A.jobs) ? A.jobs : []
-
-// Model vocabulary comes only from args.__transport, which hooks/workflow_provider_guard.py injects on
-// every Workflow call: {name, ids, efforts?}. This engine holds no model list, so a
-// call the guard did not rewrite fails closed. `efforts` is absent when the transport declares none.
-// args.checker = {model, effort}: the pin for the verifier this engine starts itself (closeCheck). Required
-// only when the run reaches that step, and validated before any agent starts. No engine supplies a default pin.
-const transport = A.__transport
+// Model vocabulary comes only from args.__transport, which hooks/pre_workflow_dispatch.py injects on
+// every Workflow call: {name, ids, efforts?}. This engine holds no model list, so a call the entry did
+// not rewrite fails closed. `efforts` is absent when the transport declares none.
 const validStrings = values => Array.isArray(values) && values.length > 0
   && values.every(value => typeof value === 'string' && value.trim())
+const transport = A.__transport
 if (!transport || typeof transport !== 'object' || !validStrings(transport.ids)
   || (transport.efforts !== undefined && !validStrings(transport.efforts))) {
-  return { error: 'dispatch: args.__transport is missing or malformed. hooks/workflow_provider_guard.py injects the endpoint\'s model vocabulary (non-empty string array `ids`, optional non-empty `efforts`); without it this engine has no legal pins and refuses to guess.' }
+  return { error: 'dispatch: args.__transport is missing or malformed. hooks/pre_workflow_dispatch.py injects the endpoint\'s model vocabulary (non-empty string array `ids`, optional non-empty `efforts`); without it this engine has no legal pins and refuses to guess.' }
 }
 // ENGINE-BLOCK-BEGIN PIN
 const PIN = (m) => m
@@ -134,22 +49,20 @@ const EFF = (e) => e
 const VALID_MODELS = transport.ids
 // Undefined when the transport declares no effort vocabulary: effort is then not a required pin.
 const VALID_EFFORTS = transport.efforts
-// KIND PROFILES. Each job names a `kind` (scout|lens|reviewer|author|judge|gate); hooks/workflow_provider_guard.py
-// resolves that row of guards/tool_profiles.json into args.__toolProfiles[label]: agentType, tier, guard,
-// built-ins. A Workflow script cannot read the table, and no tool set is inferred from a brief or a type name.
-// A native child INHERITS the session's MCP set, so the recorded entry says `effectiveMcp` from the agent file.
+
+// KIND PROFILES. Each job names a `kind` (scout|lens|reviewer|author|judge|gate); the entry resolves that
+// row of guards/tool_profiles.json into args.__toolProfiles[label]: agentType, tier, guard, mcpServers, builtins.
+// A Workflow script cannot read the table, and no tool set is inferred from a brief or a type name.
 // ENGINE-BLOCK-BEGIN TOOLP
 const TOOLP = (A.__toolProfiles && typeof A.__toolProfiles === 'object') ? A.__toolProfiles : {}
 // ENGINE-BLOCK-END TOOLP
 const profileOf = (j) => (j && TOOLP[j.label]) || null
-// A job's own `tier` wins; one that writes none takes its kind row's tier (args.__toolProfiles, injected by
-// hooks/workflow_provider_guard.py). The PINS row must record the tier the guard checked against the pin.
+// A job's own `tier` wins; one that writes none takes its kind row's tier.
 const tierOfJob = (j) => j.tier || (profileOf(j) || {}).tier || A.tier || '-'
 
 // REQUIRED `kind` on every job, with no default: this engine mixes read-only and authoring jobs in one
-// run, so any default would silently buy the wrong tool set. The kind row sets the agent type, the tools
-// and the tier; a job that writes is an `author`. A job still carrying `agentType`, `shape` or `readOnly`
-// is refused with the replacement named, and the hook never infers a tool from the brief's wording.
+// run, so any default would silently buy the wrong tool set. A job still carrying `agentType`, `shape` or
+// `readOnly` is refused with the replacement named.
 const RETIRED_KEYS = { agentType: 'the kind row sets the agent type', shape: 'use kind', readOnly: 'a job that writes is kind author; the other kinds cannot write' }
 const retiredOn = (j) => Object.keys(RETIRED_KEYS).filter(k => !!j && k in j)
 const kindOk = (j) => !!j && typeof j.kind === 'string' && !!j.kind.trim() && !!profileOf(j) && profileOf(j).kind === j.kind && !!profileOf(j).agentType
@@ -159,12 +72,12 @@ const pinVocab = 'model in [' + VALID_MODELS.join('|') + ']' + (VALID_EFFORTS ? 
 const unpinned = jobs.filter(j => !!j && (!VALID_MODELS.includes(j.model) || (VALID_EFFORTS !== undefined && !VALID_EFFORTS.includes(j.effort))))
 if (unpinned.length > 0) {
   return {
-    error: 'dispatch: pin model and effort on every job (orchestration §5). Unpinned or illegal: ' + unpinned.map(j => j.label || '(unlabeled)').join(', ') + '. Each job needs ' + pinVocab + '.',
-    badJobs: unpinned.map(j => j.label || '(unlabeled)'),
+    error: 'dispatch: pin model and effort on every job (orchestration §5). Unpinned or illegal: ' + unpinned.map(j => (j && j.label) || '(unlabeled)').join(', ') + '. Each job needs ' + pinVocab + '.',
+    badJobs: unpinned.map(j => (j && j.label) || '(unlabeled)'),
   }
 }
 if (jobs.length === 0 && A.jobsFile) {
-  return { error: 'dispatch: args.jobsFile is set (' + A.jobsFile + ') and args.jobs is empty. hooks/pre_workflow_dispatch.py expands the file into args.jobs before the engine runs; it did not, so this call skipped the PreToolUse chain or the file holds no jobs. Re-issue the call once; if it repeats, read the file.' }
+  return { error: 'dispatch: args.jobsFile is set (' + A.jobsFile + ') and args.jobs and args.chains are empty. hooks/pre_workflow_dispatch.py expands the file before the engine runs; it did not, so this call skipped the PreToolUse entry or the file holds no jobs. Re-issue the call once; if it repeats, read the file.' }
 }
 const retired = jobs.filter(j => retiredOn(j).length > 0)
 if (retired.length > 0) {
@@ -173,19 +86,23 @@ if (retired.length > 0) {
     badJobs: retired.map(j => j.label || '(unlabeled)'),
   }
 }
+const badLane = lanes.filter(c => !c || !c.name || !Array.isArray(c.jobs) || c.jobs.length === 0)
 const bad = jobs.filter(j => !j || !j.label || !j.promptPath || !kindOk(j))
-if (jobs.length === 0 || bad.length > 0) {
+if (jobs.length === 0 || badLane.length > 0 || bad.length > 0) {
   return {
-    error: 'Every job needs {label, promptPath, model, effort, kind} with ' + pinVocab + ' and kind in [scout|lens|reviewer|author|judge|gate], resolved by the guard into args.__toolProfiles. State kind, never omit it: a job that writes is an author, and no tool set is inferred. Write each prompt to a scratchpad file and pass its path — never inline large prompts into args (gotcha_workflow_args_generation_fidelity).',
+    error: 'Every job needs {label, promptPath, model, effort, kind} with ' + pinVocab + ' and kind in [scout|lens|reviewer|author|judge|gate], resolved by the entry into args.__toolProfiles; every chain needs {name, jobs: [...]} with at least one job. State kind, never omit it: a job that writes is an author, and no tool set is inferred. Write each prompt to a scratchpad file and pass its path — never inline large prompts into args (gotcha_workflow_args_generation_fidelity).',
     badJobs: bad.map(j => (j && j.label) || '(unlabeled)'),
   }
 }
-// OPTIONAL launch facts, recorded on the job: `pick` says WHY this pin was chosen
-// (`cell|room|owner|default`), `spec` whether the slice's test intent is clearly defined
-// (`tight|judged`, orchestration §5). They are optional and independent -- an omitted field is a
-// real answer the readouts count as unrecorded (`pins.spec-unrecorded.all`), and the reason is lost
-// if it waits for the rating, which comes after compaction. A value outside the enum is refused
-// before any agent starts: a reason recorded wrongly is worse than one recorded as absent.
+const labelCount = {}
+for (const j of jobs) labelCount[j.label] = (labelCount[j.label] || 0) + 1
+const dupLabels = Object.keys(labelCount).filter(l => labelCount[l] > 1)
+if (dupLabels.length > 0) {
+  return { error: 'dispatch: job labels must be unique across every lane; their results are keyed by label. Duplicates: ' + dupLabels.join(', ') }
+}
+// OPTIONAL launch facts, recorded on the job: `pick` says WHY this pin was chosen (`cell|room|owner|default`),
+// `spec` whether the slice's test intent is clearly defined (`tight|judged`, orchestration §5). A value outside
+// the enum is refused before any agent starts: a reason recorded wrongly is worse than one recorded as absent.
 // ENGINE-BLOCK-BEGIN VALID_PICKS
 const VALID_PICKS = ['cell', 'room', 'owner', 'default']
 // ENGINE-BLOCK-END VALID_PICKS
@@ -196,7 +113,6 @@ const VALID_SPECS = ['tight', 'judged']
 const basisFaults = []
 // ENGINE-BLOCK-END basisFaults
 for (const j of jobs) {
-  if (!j) continue
   if (j.pick !== undefined && !VALID_PICKS.includes(j.pick)) basisFaults.push({ job: j, field: 'pick' })
   if (j.spec !== undefined && !VALID_SPECS.includes(j.spec)) basisFaults.push({ job: j, field: 'spec' })
 }
@@ -206,14 +122,6 @@ if (basisFaults.length > 0) {
       + basisFaults.map(f => (f.job.label || '(unlabeled)') + ' ' + f.field + '=' + JSON.stringify(f.job[f.field])).join(', ') + '. Omit either field to record none.',
     badJobs: basisFaults.map(f => f.job.label || '(unlabeled)'),
   }
-}
-// The closeCheck verifier starts only when the run declares returns or a job carries fold or ledger (the
-// fence-only path is runtime and is guarded again inside closeCheck). Validate its pin before any agent starts.
-const closeReachable = !!(A.__returns && Object.keys(A.__returns).length > 0) || jobs.some(j => j.fold || j.ledger)
-const checkerOk = !!A.checker && typeof A.checker === 'object' && VALID_MODELS.includes(A.checker.model)
-  && (VALID_EFFORTS === undefined || VALID_EFFORTS.includes(A.checker.effort))
-if (closeReachable && !checkerOk) {
-  return { error: 'dispatch: args.checker = {model, effort} is required because this run reaches the closeCheck verifier; args.checker must pin ' + pinVocab + '. Refusing before any agent starts.' }
 }
 
 // ENGINE-BLOCK-BEGIN pinBasis
@@ -228,46 +136,38 @@ if (Object.keys(justified).length) log('JUSTIFICATION ' + JSON.stringify(justifi
 log('ENDPOINT: ' + transport.name + ' — pins are that transport\'s registry pins')
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
-// Concurrency safety: with >1 concurrent job, the project's test runners, builds and language servers
-// are single-flight (per machine or per checkout) (gotcha_workflow_single_flight_concurrency); the delegate rails name
-// them. A single job has no concurrent peer, so it gets no such restriction. The text is .claude/guards/single_flight.json, which
-// tools/sidecar_fanout.py renders for its children; a Workflow script cannot read files, so this copy
-// is held equal to it by tests/dispatch_spill_root_test.js.
-const concurrencyGuard = (j) => jobs.length > 1 ? [
-  '',
-  '=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===',
-  'Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. Your delegate rails name this project\'s others; a build, typecheck or test command they do not name is not single-flight, so run your brief\'s own checks with it. Python and Node proofs under .claude/tests/ are not single-flight'
-    + (noShell(j) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s proof file through `python3 .claude/tools/machine_slots.py run -- <proof command>` before you return (rules/harness_tooling.md).')
-    + ' If your task file mandates a single-flight run, STOP and report that it needs a serialized dispatch.',
-].join('\n') : ''
+// Concurrency safety: with more than one lane, the project's test runners, builds and language servers
+// are single-flight (per machine or per checkout). A lane names what it owns outright (`exclusiveResource`);
+// `A.sharedSingleFlight` lists what no lane may touch (the runtime test slots, a language-server wrapper).
+// The text is the delegate rails' own (.claude/guards/), so a job reads the same rule on every route.
+const SHARED = Array.isArray(A.sharedSingleFlight) ? A.sharedSingleFlight : []
+const guardFor = (lane, j) => {
+  if (lanes.length < 2 && SHARED.length === 0) return ''
+  const lines = ['', '=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===',
+    'Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. Your delegate rails name this project\'s others; a build, typecheck or test command they do not name is not single-flight, so run your brief\'s own checks with it. Python and Node proofs under .claude/tests/ are not single-flight'
+      + (noShell(j) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s own test file (`python -m pytest <file> -q`) before you return (rules/harness_tooling.md).')
+      + ' If your task file mandates a single-flight run, STOP and report that it needs a serialized dispatch.']
+  if (lanes.length > 1 && lane.exclusiveResource) lines.push('You are the ONLY agent in your own lane (' + lane.exclusiveResource + '), which you own outright for the duration of your task.')
+  if (SHARED.length > 0) lines.push('MACHINE-WIDE single-flight — do NOT use these under any circumstances, even though you own your lane: ' + SHARED.join('; ') + '.')
+  return lines.join('\n')
+}
 
-// Delegate rails — ONE home (.claude/guards/), assembled by tools/guard_text.py for every route: the
-// Workflow hook inlines it for all four engines (below), hooks/session_model_rails.py for a sidecar
-// `claude` child, scripts/lib/sidecar_common.sh on the -D bare/pointer tiers. No engine holds a copy.
-// Every route carries the SAME two sections — common.md's plus the kind's guard file. The Read pointer is
-// only the fallback: delegates followed it in about half of measured cells
+// Delegate rails — ONE home (.claude/guards/). The entry injects the assembled text as `args.__railsText`,
+// because this script cannot read files. Every route carries the SAME two sections: common.md's plus the kind's guard file.
+// The Read pointer is only the fallback: delegates followed it in about half of measured cells
 // (gotcha_delegate_rails_pointer_followed_half_the_time).
-// The kind's `guard` decides which rule families are reachable; the job's own `model` decides how much is
-// spelled out (instruction_quality §3, "tier rails by the model that RECEIVES them").
-// Guard tier per RECEIVING model is registry data (`railTier`), injected as `args.__rails` by
-// hooks/workflow_provider_guard.py because a Workflow script cannot read files. A model the map
-// does not name, or a call the hook did not rewrite, reads `detailed`: the fail-safe direction.
+// Guard tier per RECEIVING model is injected as `args.__rails`; a model the map does not name reads `detailed`.
 // ENGINE-BLOCK-BEGIN RAILS
 const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
 // ENGINE-BLOCK-END RAILS
 const guardOf = (j) => profileOf(j).guard
-// A job's own `railTier` wins over the map: it holds the model fixed while the tier varies, which is
-// how /rail_battery measures a tier through this exact prompt. `none` sends no rails block.
+// A job's own `railTier` wins over the map: it holds the model fixed while the tier varies. `none` sends no rails block.
 const VALID_RAIL_TIERS = ['detailed', 'condensed', 'minimal', 'none']
 const badTier = jobs.filter(j => j.railTier !== undefined && !VALID_RAIL_TIERS.includes(j.railTier))
 if (badTier.length > 0) {
   return { error: 'railTier must be one of [' + VALID_RAIL_TIERS.join('|') + '] when set.', badJobs: badTier.map(j => j.label) }
 }
 const tierOf = (j) => j.railTier || RAILS[j.model] || 'detailed'
-// Rails text per (guard, tier) is assembled from .claude/guards/ by tools/guard_text.py and injected as
-// `args.__railsText` by hooks/workflow_provider_guard.py, because this script cannot read files. The
-// inline text reaches every delegate; the Read pointer is only the fallback when the hook supplied
-// none, and a present map missing a job's pair logs RAILS-FALLBACK so a key disagreement is visible.
 // ENGINE-BLOCK-BEGIN RAILS_TEXT
 const RAILS_TEXT = (A.__railsText && typeof A.__railsText === 'object') ? A.__railsText : {}
 // ENGINE-BLOCK-END RAILS_TEXT
@@ -302,28 +202,24 @@ const railsRef = (j) => {
   return [
     '',
     '=== DELEGATE RAILS ===',
-    'Read ' + files + ' with the Read tool, plus each layer overlay beside them (.claude/guards/<name>.<layer>.md) that exists, and follow the `## ' + tier + '` section of each. Read ONLY that section — the other tiers are for other models.',
+    'Read ' + files + ' with the Read tool and follow the `## ' + tier + '` section of each. Read ONLY that section — the other tiers are for other models.',
   ].join('\n')
 }
 log('KINDS ' + JSON.stringify(Object.fromEntries(jobs.map(j => [j.label, j.kind + '/' + tierOf(j)]))))
 
 // TOOL PROFILES — what each child of this run launches with. Every job runs as its kind row's generated
-// agent type, whose `tools` frontmatter is the whole inventory, so an entry is `agent-type`; the runtime
-// restricts no per-child MCP server, so effectiveMcp is the row's list.
+// agent type, whose `tools` frontmatter is the whole inventory, so an entry is `agent-type`.
 const RECORDED = Object.fromEntries(jobs.map(j => [j.label, Object.assign({}, profileOf(j),
   { enforcement: 'agent-type', effectiveMcp: (profileOf(j).mcpServers || []).join(', ') })]))
 log('TOOL-PROFILES ' + JSON.stringify(RECORDED))
 
-// Return-path spill (optional): every agent's final text lands in ORCHESTRATOR context permanently,
-// so a wide fan-out of verbose deliverables is the dominant driver of context growth per turn. With
-// args.spillDir set, each agent writes its full deliverable to disk and returns only a bounded digest;
-// the orchestrator Reads the file only for the jobs it actually acts on. Absent spillDir, the inline-
-// return contract is unchanged (callers that need the full text in-context keep working untouched).
+// Return-path spill (optional): every agent's final text lands in ORCHESTRATOR context permanently, so a wide
+// fan-out of verbose deliverables is the dominant driver of context growth per turn. With args.spillDir set, each
+// agent writes its full deliverable to disk and returns only a bounded digest; the orchestrator Reads the file
+// only for the jobs it acts on. Absent spillDir, the inline-return contract is unchanged.
 // ENGINE-BLOCK-BEGIN SPILL_REL
 const SPILL_REL = (typeof A.spillDir === 'string' && A.spillDir.trim()) ? A.spillDir.replace(/[\\/]+$/, '') : null
 // ENGINE-BLOCK-END SPILL_REL
-// Spill files live under .claude/scratch/, the rule review_fanout.js and explore_fanout.js enforce:
-// a repository-relative path with no `..` segment.
 // ENGINE-BLOCK-BEGIN NORMAL_SPILL_DIR
 const NORMAL_SPILL_DIR = SPILL_REL ? SPILL_REL.replace(/\\/g, '/') : null
 // ENGINE-BLOCK-END NORMAL_SPILL_DIR
@@ -338,21 +234,24 @@ const DIGEST_WORDS = Number.isFinite(A.spillDigestWords) ? A.spillDigestWords : 
 // ENGINE-BLOCK-BEGIN projectRootOf
 const projectRootOf = (a) => repoRootOf(a).replace(/\/\.claude\/worktrees\/[^/]+$/, '')
 // ENGINE-BLOCK-END projectRootOf
+// ENGINE-BLOCK-BEGIN repoRootOf
+function repoRootOf(a) {
+  const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
+  return /^([A-Za-z]:)?\//.test(root) ? root : ''
+}
+// ENGINE-BLOCK-END repoRootOf
 const SPILL_DIR = SPILL_REL && projectRootOf(A) ? projectRootOf(A) + '/' + NORMAL_SPILL_DIR : SPILL_REL
 const spillPath = (label) => SPILL_DIR + '/' + String(label).replace(/[^A-Za-z0-9._-]/g, '_') + '.md'
 
 // A kind without Edit/Write cannot create its spill file, so the spill contract would ask for a write it cannot
-// perform and the agent would return the full deliverable inline, the outcome spillDir exists to prevent. Rejecting
-// the run is the wrong remedy: spill is a context optimization, not a correctness invariant (unlike the label
-// collision below, which is data loss), so a kind with no Write tool degrades to the inline contract and the
-// omission is REPORTED. `tools/dispatch_result.py` writes their journaled result to the same <spillDir>/<label>.md a spilling job lands at.
+// perform. Spill is a context optimization, not a correctness invariant, so such a kind degrades to the inline
+// contract and the omission is REPORTED (the label lands in inlineLabels on the return).
 const hasTool = (j, t) => (profileOf(j).builtins || []).includes(t)
 const canWrite = (j) => ['Edit', 'Write', 'NotebookEdit'].some(t => hasTool(j, t))
 const noShell = (j) => !hasTool(j, 'Bash')
 const spills = (j) => !!SPILL_DIR && !j.schema && hasTool(j, 'Write')
 
-// A kind with no Edit/Write that still holds Bash (a reviewer with a +Bash variant) can write through the shell,
-// so its prompt carries the line; the tool set is what keeps the promise for every other no-write kind.
+// A kind with no Edit/Write that still holds Bash can write through the shell, so its prompt carries the line.
 const shellWriteGuard = (j) => (!canWrite(j) && !noShell(j))
   ? '\n=== READ-ONLY: do NOT modify, create, or delete any file, through the shell either. ==='
   : ''
@@ -365,12 +264,12 @@ const spillContract = (j) => spills(j) ? [
   'Do NOT restate the full deliverable in your final message. If you could not write the file, say so in the digest instead of pasting the content.',
 ].join('\n') : ''
 
-// A writing job names what it wrote beyond its spec, so review routes those units as design no
-// reviewer saw (orchestration §2 *Later rounds*); `dispatch_result.py check --block choices=unit,why` validates it.
+// A writing job names what it wrote beyond its spec, so review routes those units as design no reviewer saw
+// (orchestration §2 *Later rounds*).
 const choicesContract = (j) => (j.schema || !canWrite(j)) ? '' : [
   '',
   '=== CHOICES (orchestration/reference/writer_returns.md) ===',
-  'End your deliverable with a fenced block opened by ```choices holding one JSON object per line, {"unit": "<what you wrote>", "why": "<its reason>"}, for each unit whose content your brief or plan does not state. Leave the block empty when there is none. With Bash, run `python3 .claude/tools/dispatch_result.py check <your deliverable file> --block choices=unit,why` before returning; the parent runs it otherwise, and a missing block fails it.',
+  'End your deliverable with a fenced block opened by ```choices holding one JSON object per line, {"unit": "<what you wrote>", "why": "<its reason>"}, for each unit whose content your brief or plan does not state. Leave the block empty when there is none.',
 ].join('\n')
 
 // Two labels that sanitize to the same filename would silently overwrite each other's deliverable —
@@ -379,7 +278,7 @@ const choicesContract = (j) => (j.schema || !canWrite(j)) ? '' : [
 const INLINE_LABELS = SPILL_DIR ? jobs.filter(j => !spills(j)).map(j => j.label) : []
 if (SPILL_DIR) {
   const seen = {}
-  const collided = jobs.filter(j => spills(j)).filter(j => { const p = spillPath(j.label); const dup = !!seen[p]; seen[p] = true; return dup })
+  const collided = jobs.filter(j => spills(j)).filter(j => { const p = spillPath(j.label).toLowerCase(); const dup = !!seen[p]; seen[p] = true; return dup })
   if (collided.length > 0) {
     return {
       error: 'args.spillDir is set, but these labels collide after filename sanitization ([^A-Za-z0-9._-] -> _) and would overwrite each other: '
@@ -388,50 +287,78 @@ if (SPILL_DIR) {
   }
   log('SPILL-DIR ' + SPILL_DIR + ' (digest cap ' + DIGEST_WORDS + ' words/job)')
   if (INLINE_LABELS.length > 0) {
-    log('SPILL-EXEMPT (these kinds have no Write tool and a job with a schema returns its object; these return in full INLINE and cost orchestrator context; python3 .claude/tools/dispatch_result.py <transcriptDir> writes each to ' + SPILL_DIR + '/<label>.md): ' + INLINE_LABELS.join(', '))
+    log('SPILL-EXEMPT (these kinds have no Write tool and a job with a schema returns its object; these return in full INLINE and cost orchestrator context): ' + INLINE_LABELS.join(', '))
   }
 }
+
+// A later job in a chain runs against the tree its predecessors already changed, which is the whole point of
+// chaining — so tell it that, and name the predecessors it must not silently contradict.
+const handoff = (c, idx) => idx === 0 ? '' : ['',
+  '=== CHAIN POSITION ===',
+  'You are step ' + (idx + 1) + ' of ' + c.jobs.length + ' in lane `' + c.name + '`. Earlier steps in this lane ('
+  + c.jobs.slice(0, idx).map(p => '`' + p.label + '`').join(', ')
+  + ') have ALREADY edited this working tree and their changes are present. Read the current file bytes rather than assuming the pre-chain state, and if a change of yours would revert or contradict an earlier step, report the conflict instead of silently overwriting it.',
+].join('\n')
 
 // The platform relays the triggering user message to every agent as authoritative; a job whose
 // brief looks unrelated can answer that message instead of its brief.
 // ENGINE-BLOCK-BEGIN RELAY_LINE
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
 // ENGINE-BLOCK-END RELAY_LINE
-// The key hooks/amend_delivery.py reads to deliver a parent's amendment to a running author job.
-// ENGINE-BLOCK-BEGIN AMEND_LINE
-const AMEND_LINE = (promptPath) => 'Amendments: the harness delivers ' + promptPath + '.amend.md to you when your parent writes or changes it; a delivered amendment overrides the brief, and your report names what you applied.'
-// ENGINE-BLOCK-END AMEND_LINE
 
-phase('Dispatch')
-const results = await parallel(jobs.map(j => () => {
-  const ctx = [A.contextPath].concat(Array.isArray(j.contextPaths) ? j.contextPaths : []).filter(p => typeof p === 'string' && p)
-    .map(p => 'SHARED CONTEXT for this dispatch is at: ' + p + ' — read it with the Read tool FIRST (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it).\n\n')
-    .join('')
-  const prompt = ctx
-    + 'Evidence: ' + EVIDENCE_RULES + '\n'
-    + 'Your full task brief is at: ' + j.promptPath + ' — read it with the Read tool and execute it exactly (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it). Your final message is the deliverable: return the result the brief asks for, self-contained, no meta-commentary.'
-    + '\n' + RELAY_LINE
-    + (j.kind === 'author' ? '\n' + AMEND_LINE(rootedPath(A, j.promptPath)) : '')
-    + shellWriteGuard(j)
-    + concurrencyGuard(j)
-    + guardRef(j)
-    + spillContract(j)
-    + choicesContract(j)
-  const opts = { label: j.label, phase: 'Dispatch', model: PIN(j.model), effort: EFF(j.effort) }
-  if (j.schema) opts.schema = j.schema
-  opts.agentType = profileOf(j).agentType
-  return agent(prompt, opts).then(r => [j.label, r])
+// Evidence: a claim a job makes is checked by its caller, not here. /review runs tools/quote_check.py over the
+// findings file; this engine returns the job's text unchanged.
+const EVIDENCE_RULES = 'Cite each claim with its source: a file quote, a read-only git command and its output, or the owner\'s verbatim words. Do not paraphrase a quote.'
+
+phase(chainsIn.length > 0 ? 'Chains' : 'Dispatch')
+// Labels after a lane stop: they never ran, so they have no entry and are not dead.
+const notRun = []
+const results = await parallel(lanes.map(c => async () => {
+  const laneOut = []
+  for (let i = 0; i < c.jobs.length; i++) {
+    const j = c.jobs[i]
+    const ctx = [A.contextPath].concat(Array.isArray(j.contextPaths) ? j.contextPaths : []).filter(p => typeof p === 'string' && p)
+      .map(p => 'SHARED CONTEXT for this dispatch is at: ' + p + ' — read it with the Read tool FIRST (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it).\n\n')
+      .join('')
+    const prompt = ctx
+      + 'Evidence: ' + EVIDENCE_RULES + '\n'
+      + 'Your full task brief is at: ' + j.promptPath + ' — read it with the Read tool and execute it exactly (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it). Your final message is the deliverable: return the result the brief asks for, self-contained, no meta-commentary.'
+      + '\n' + RELAY_LINE
+      + handoff(c, i)
+      + shellWriteGuard(j)
+      + guardFor(c, j)
+      + guardRef(j)
+      + spillContract(j)
+      + choicesContract(j)
+    const opts = { label: j.label, phase: chainsIn.length > 0 ? 'Chains' : 'Dispatch', model: PIN(j.model), effort: EFF(j.effort), agentType: profileOf(j).agentType }
+    if (j.schema) opts.schema = j.schema
+    // A rejected agent names the rejection and, in a lane, the later steps it stopped. A null result is a dead
+    // or stalled agent: it lands as label: null, which NO-RETURN names with its salvage route.
+    let r = null
+    try {
+      r = await agent(prompt, opts)
+    } catch (e) {
+      const later = i < c.jobs.length - 1 ? '; remaining jobs in lane `' + c.name + '` were not run' : ''
+      laneOut.push([j.label, { error: 'dispatch: agent rejected (' + ((e && e.message) || String(e)) + ')' + later }])
+      log('lane ' + c.name + ': stopped at ' + (i + 1) + '/' + c.jobs.length + ' (rejected result from ' + j.label + ')')
+      break
+    }
+    laneOut.push([j.label, r])
+    if (r == null) {
+      log('lane ' + c.name + ': stopped at ' + (i + 1) + '/' + c.jobs.length + ' (no result from ' + j.label + ')')
+      break
+    }
+    log('lane ' + c.name + ': ' + (i + 1) + '/' + c.jobs.length + ' done (' + j.label + ')')
+  }
+  for (const rest of c.jobs.slice(laneOut.length)) notRun.push(rest.label)
+  return laneOut
 }))
 
-// `inlineLabels` rides the RETURN value, not just log(): the caller reads this object, and an
-// exemption visible only in the progress narrator is the same silent omission this guard exists to end.
-const out = Object.fromEntries(results.filter(Boolean))
-// A null result is a dead or stalled agent, not an empty deliverable. Name it and the recovery
-// route in the RETURN value: the work it paid for sits in its spill file or transcript, and
-// `/salvage_fanout` lives in commands/, which a caller reaching this engine directly never read.
-// A dead agent still yields the truthy pair [label, null], so filter(Boolean) keeps it and it
-// lands in `out` as label: null — test the VALUE, not membership.
-const NO_RETURN_JOBS = jobs.filter(j => !(j.label in out) || out[j.label] == null)
+const out = Object.fromEntries(results.flat().filter(Boolean))
+
+// A null result is a dead or stalled agent, not an empty deliverable. Name it and the recovery route in the
+// RETURN value: the work it paid for sits in its spill file or transcript.
+const NO_RETURN_JOBS = jobs.filter(j => !notRun.includes(j.label) && (!(j.label in out) || out[j.label] == null))
 const NO_RETURN = NO_RETURN_JOBS.map(j => j.label)
 let noReturn = null
 if (NO_RETURN.length > 0) {
@@ -439,232 +366,12 @@ if (NO_RETURN.length > 0) {
   log('NO-RETURN ' + NO_RETURN.join(', ') + ' — recover before re-dispatching: ' + route)
   noReturn = { labels: NO_RETURN, recover: route }
 }
-// `noReturn` rides beside spillDir/digests, never inside `digests` (callers iterate it as labels).
-// The recovery route leads the result, so a truncated preview still shows how to land inline returns.
 const inlineRecover = INLINE_LABELS.length > 0
-  ? 'No Write tool or a schema return for ' + INLINE_LABELS.join(', ') + ': their deliverables came back inline. Land them with: python3 .claude/tools/dispatch_result.py <this run\'s transcript dir> --out-dir ' + SPILL_DIR
+  ? 'No Write tool or a schema return for ' + INLINE_LABELS.join(', ') + ': their deliverables came back inline in this return value.'
   : null
 
-
-// CLOSE-CHECK-BEGIN
-// ENGINE-BLOCK-BEGIN repoRootOf
-function repoRootOf(a) {
-  const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
-  return /^([A-Za-z]:)?\//.test(root) ? root : ''
-}
-// ENGINE-BLOCK-END repoRootOf
-// ENGINE-BLOCK-BEGIN rootedPath
-function rootedPath(a, p) {
-  const root = repoRootOf(a)
-  return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
-}
-// ENGINE-BLOCK-END rootedPath
-// ENGINE-BLOCK-BEGIN cdRootPrefix
-function cdRootPrefix(a) {
-  const root = repoRootOf(a)
-  return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
-}
-// ENGINE-BLOCK-END cdRootPrefix
-// ENGINE-BLOCK-BEGIN VERDICTS
-const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
-// ENGINE-BLOCK-END VERDICTS
-// ENGINE-BLOCK-BEGIN applyVerdicts
-const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
-  const supplied = verdicts[keyOf(item)]
-  const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
-  return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
-})
-// ENGINE-BLOCK-END applyVerdicts
-const boundedVerification = verification => ({
-  status: verification.status, counts: verification.counts, report: verification.report,
-  ...(verification.note ? { note: verification.note } : {}),
-  nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
-})
-// A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
-// ENGINE-BLOCK-BEGIN verifierAgent
-const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
-  const msg = String((e && e.message) || e)
-  if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-  log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
-  return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
-})
-// ENGINE-BLOCK-END verifierAgent
-// ENGINE-BLOCK-BEGIN closeCheck
-const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, expectTotal, expectSources, ledger, fold, seats = [] }) => {
-  const keys = items.map(keyOf)
-  if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
-    || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
-  const quoteArg = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'"
-  // The verifier finds its journal by this label, and every review numbers its findings F1..Fn: the run's own report
-  // path keeps two runs with the same ids apart, and a resumed run keeps its label.
-  const identity = JSON.stringify([mode, out, items.map(keyOf)])
-  let hash = 2166136261
-  for (let i = 0; i < identity.length; i++) hash = Math.imul(hash ^ identity.charCodeAt(i), 16777619)
-  const label = 'verify-' + (hash >>> 0).toString(36)
-  out = rootedPath(A, out.replace(/\.json$/, '-' + label + '.json'))
-  // The verifier may report --out resolved (absolute, either separator) and may trail prose; the report must LEAD with the file.
-  const reportsOut = report => {
-    const lead = String(report).replace(/\\/g, '/').trim().match(/^(.*?\.json)(?![\w-])/), o = out.replace(/\\/g, '/').replace(/^\.\//, '')
-    return !!lead && (lead[1] === o || lead[1].endsWith('/' + o))
-  }
-  const profile = A.__toolProfiles && A.__toolProfiles.verify
-  const transport = A.__transport
-  const checker = A.checker || {}
-  const model = checker.model
-  const effort = checker.effort
-  if (typeof model !== 'string' || !Array.isArray(transport.ids) || !transport.ids.includes(model)) {
-    throw new Error('closeCheck: args.checker.model is missing or outside args.__transport.ids; refusing the checked route')
-  }
-  if (Array.isArray(transport.efforts) && !transport.efforts.includes(effort)) {
-    throw new Error('closeCheck: args.checker.effort is missing or outside args.__transport.efforts; refusing the checked route')
-  }
-  const schema = {
-    type: 'object', required: ['status', 'counts', 'verdicts', 'report'], additionalProperties: false,
-    properties: {
-      status: { type: 'string', enum: ['pass', 'fail', 'unavailable'] },
-      counts: { type: 'object', required: VERDICTS, additionalProperties: false,
-        properties: Object.fromEntries(VERDICTS.map(v => [v, { type: 'integer', minimum: 0 }])) },
-      verdicts: { type: 'object', additionalProperties: { type: 'string', enum: VERDICTS } },
-      report: { type: 'string' },
-      note: { type: 'string' },
-    },
-  }
-  let verification
-  try {
-    if (!profile || !profile.agentType || profile.tier !== 'fanout') throw new Error('missing verifier fanout profile')
-    let command = 'python3 .claude/tools/post_check.py ' + mode
-      + (fold && fold.findings ? ' --findings ' + quoteArg(fold.findings) : ' --run-label ' + label)
-      + ' --out ' + (/^[\w./:-]+$/.test(out) ? out : quoteArg(out))
-    if (fold && fold.findings) {
-      if (fold.digest) command += ' --digest ' + quoteArg(fold.digest)
-      if (fold.snapshot) command += ' --snapshot ' + quoteArg(fold.snapshot)
-    }
-    // A subject the fold skipped writes no digest, so each subject's snapshot also names the files the review read.
-    for (const subject of (fold && !fold.findings && Array.isArray(fold.subjects) ? fold.subjects : [])) {
-      if (subject && subject.snapshot) command += ' --reviewed-snapshot ' + quoteArg(subject.snapshot)
-    }
-    if (root) command += ' --root ' + quoteArg(root)
-    if (spillDir) command += ' --spill-dir ' + quoteArg(rootedPath(A, spillDir))
-    if (expectTotal !== undefined) command += ' --expect-total ' + expectTotal
-    if (expectSources !== undefined) command += ' --expect-sources ' + expectSources
-    if (ledger) {
-      for (const [field, flag] of Object.entries({stage: 'stage', subject: 'subject', roster: 'roster', scopeJson: 'scope-json', task: 'task', premiseCommits: 'premise-commits', head: 'head', blobs: 'blobs'})) {
-        if (ledger[field]) command += ' --' + flag + ' ' + quoteArg(ledger[field])
-      }
-      if (ledger.noNewDecision) command += ' --no-new-decision'
-    }
-    const seatsFile = out.replace(/\.json$/, '.seats.json')
-    const launched = Object.fromEntries(seats.map(seat => [seat.label, {
-      model: seat.model, effort: seat.effort, tier: seat.tier || null,
-      mandates: seat.mandates || [], mustRead: seat.mustRead || [],
-    }]))
-    if (new Set(seats.map(seat => seat.label)).size !== seats.length) throw new Error('duplicate launched seat label')
-    // The agent Bash route cuts a command near 8K characters mid-quote, so the seats file is written in parts.
-    const COMMAND_BUDGET = 6000
-    const writer = 'import sys; from pathlib import Path; p=Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); f=p.open(sys.argv[2], encoding="utf-8", newline=""); f.write(sys.argv[3]); f.close()'
-    const writes = []
-    for (let rest = JSON.stringify(launched); rest.length;) {
-      const prefix = cdRootPrefix(A) + 'python3 -c ' + quoteArg(writer) + ' ' + quoteArg(seatsFile) + ' ' + (writes.length ? 'a' : 'w') + ' '
-      if ((prefix + "'{}'").length > COMMAND_BUDGET) throw new Error('verifier seats-file path leaves no room within the command budget')
-      let size = rest.length
-      while ((prefix + quoteArg(rest.slice(0, size))).length > COMMAND_BUDGET) size = Math.max(1, Math.floor(size * 0.9))
-      if (size < rest.length && /[\uD800-\uDBFF]/.test(rest[size - 1])) size -= 1
-      writes.push(prefix + quoteArg(rest.slice(0, size)))
-      rest = rest.slice(size)
-    }
-    if (mode === 'review') command += ' --seats-file ' + quoteArg(seatsFile)
-    const printer = 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps({"status": r["status"], "counts": r["counts"], "verdicts": {k: v["verdict"] for k, v in r["verdicts"].items()}}))'
-    command = cdRootPrefix(A) + command + ' ; python3 -c ' + quoteArg(printer) + ' ' + quoteArg(out)
-    log('PINS ' + JSON.stringify({[label]: model + '/' + effort + '/' + profile.agentType + ' tier:fanout'}))
-    verification = await verifierAgent('Run each seats-file write below with Bash first, one call per line, in order:\n' + writes.join('\n')
-      + '\nRun exactly this command with Bash: ' + command
-      + '\nIts last output line is one JSON object holding status, counts and verdicts, read from the --out file; it prints even when the check exits 1.'
-      + ' Return ONLY {status, counts, verdicts, report, note}: copy status, counts and verdicts from that line unchanged. Set report to the --out path and nothing else; put any observation in note (optional).'
-      + ' Do not check evidence yourself, change permissions, or run any other command.',
-    { label, phase: 'Verify', agentType: profile.agentType, model, effort, schema })
-    if (!verification || !['pass', 'fail'].includes(verification.status) || !reportsOut(verification.report)
-      || !verification.verdicts || !verification.counts
-      || items.some(item => !VERDICTS.includes(verification.verdicts[keyOf(item)]))) throw new Error('incomplete verifier report')
-    const reported = Object.values(verification.verdicts)
-    if (reported.some(v => !VERDICTS.includes(v))) throw new Error('illegal verifier verdict')
-    const observed = Object.fromEntries(VERDICTS.map(v => [v, reported.filter(verdict => verdict === v).length]))
-    if (VERDICTS.some(v => verification.counts[v] !== observed[v])
-      || new Set(items.map(keyOf)).size !== items.length
-      || (verification.status === 'pass' && (observed.UNVERIFIED > 0 || observed.UNCHECKED > 0))) throw new Error('inconsistent verifier report')
-    verification.report = out  // the checker's text only proves it read this file; readers open the engine's own path
-  } catch (e) {
-    verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-      verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: out,
-      note: String((e && e.message) || e) }
-  }
-  return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
-}
-// ENGINE-BLOCK-END closeCheck
-// CLOSE-CHECK-END
-
-// ENGINE-BLOCK-BEGIN CLAIM_FENCE
-const CLAIM_FENCE = /```(?:claims|findings)[ \t]*\r?\n([\s\S]*?)```/g
-// ENGINE-BLOCK-END CLAIM_FENCE
-// ENGINE-BLOCK-BEGIN inlineClaims
-const inlineClaims = []
-// ENGINE-BLOCK-END inlineClaims
-for (const [label, result] of Object.entries(out)) {
-  if (typeof result !== 'string') continue
-  let index = 0
-  for (const match of result.matchAll(CLAIM_FENCE)) {
-    for (const line of match[1].split(/\r?\n/).filter(line => line.trim())) {
-      index++
-      try {
-        const claim = JSON.parse(line)
-        if (claim && typeof claim === 'object' && !Array.isArray(claim)) inlineClaims.push({ label, index, claim })
-      } catch (e) { /* The deterministic report records malformed rows. */ }
-    }
-  }
-}
-const reviewJob = jobs.find(job => job.fold || job.ledger)
-// ENGINE-BLOCK-BEGIN declared
-const declared = A.__returns && Object.keys(A.__returns).length > 0
-// ENGINE-BLOCK-END declared
-// ENGINE-BLOCK-BEGIN hasFence
-const hasFence = Object.values(out).some(value => typeof value === 'string' && /```(?:claims|findings)[ \t]*\r?\n/.test(value))
-// ENGINE-BLOCK-END hasFence
-let verification = null
-if (declared || hasFence || reviewJob) {
-  const claimItems = inlineClaims.map(row => Object.assign({}, row.claim, { __key: String(row.claim.id || row.label + '#' + row.index) }))
-  // A fence no job declared reaches here without a validated args.checker: the run still returns, every claim
-  // UNCHECKED and the reason named, instead of throwing after every job has spent.
-  const unpinnedVerifier = !checkerOk && {
-    items: applyVerdicts(claimItems, Object.fromEntries(claimItems.map(item => [item.__key, 'UNCHECKED'])), claim => claim.__key),
-    verification: { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: claimItems.length },
-      verdicts: Object.fromEntries(claimItems.map(item => [item.__key, 'UNCHECKED'])),
-      report: 'no verifier ran: a job returned a claims fence and args.checker was not pinned (orchestration §5)' },
-  }
-  const checked = unpinnedVerifier || await closeCheck(reviewJob ? 'review' : 'claims', {
-    items: claimItems,
-    keyOf: claim => claim.__key,
-    out: (SPILL_DIR || '.claude/scratch') + (reviewJob ? '/post_check_review.json' : '/post_check_claims.json'),
-    spillDir: SPILL_DIR,
-    fold: reviewJob && reviewJob.fold,
-    ledger: reviewJob && reviewJob.ledger,
-    seats: jobs.map(j => Object.assign({}, j, { tier: tierOfJob(j) })),
-  })
-  verification = checked.verification
-  let position = 0
-  for (const [label, result] of Object.entries(out)) {
-    if (typeof result !== 'string') continue
-    out[label] = result.replace(CLAIM_FENCE, (fence, body) => fence.replace(body, body.split(/\r?\n/).map(line => {
-      if (!line.trim()) return line
-      try {
-        const claim = JSON.parse(line)
-        if (!claim || typeof claim !== 'object' || Array.isArray(claim)) return line
-        const applied = Object.assign({}, checked.items[position++])
-        delete applied.__key
-        return JSON.stringify(applied)
-      } catch (e) { return line }
-    }).join('\n')))
-  }
-}
+// `noReturn` rides beside spillDir/digests, never inside `digests` (callers iterate it as labels).
 const returned = SPILL_DIR
   ? Object.assign(inlineRecover ? { inlineRecover } : {}, { spillDir: SPILL_DIR, digests: out }, INLINE_LABELS.length > 0 ? { inlineLabels: INLINE_LABELS } : {}, noReturn ? { noReturn } : {})
   : (noReturn ? Object.assign({ noReturn }, out) : out)
-return verification ? Object.assign(returned, { verification }) : returned
+return returned

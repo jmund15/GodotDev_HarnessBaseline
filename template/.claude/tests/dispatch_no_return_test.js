@@ -5,21 +5,22 @@
 const fs = require('fs'), path = require('path')
 const SRC = path.join(__dirname, '..', 'workflows', 'dispatch.js')
 const src = fs.readFileSync(SRC, 'utf8')
-const a = src.indexOf('const out = Object.fromEntries(results.filter(Boolean))')
+const a = src.indexOf('const out = Object.fromEntries(results.flat().filter(Boolean))')
 if (a < 0) { console.error('CANNOT RUN: the return-assembly block was not found in dispatch.js'); process.exit(2) }
 const block = src.slice(a)
 
 let pass = 0, fail = 0
 const ck = (n, c, d) => { if (c) { console.log('  PASS  ' + n); pass++ } else { console.log('  FAIL  ' + n + (d ? '\n        ' + d : '')); fail++ } }
 
-// The block reads jobs/results/spills/spillPath/SPILL_DIR/INLINE_LABELS/log/A/checkerOk from the engine scope.
+// The block reads jobs/results/notRun/spills/spillPath/SPILL_DIR/INLINE_LABELS/log/A from the engine scope.
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 const run = async ({ jobs, results, spillDir }) => {
   const logs = []
   const spillPath = (label) => spillDir + '/' + String(label).replace(/[^A-Za-z0-9._-]/g, '_') + '.md'
   const spills = (j) => !!spillDir && !['Explore', 'Plan'].includes(j.agentType)
-  const fn = new AsyncFunction('jobs', 'results', 'spills', 'spillPath', 'SPILL_DIR', 'INLINE_LABELS', 'log', 'A', 'checkerOk', block)
-  const ret = await fn(jobs, results, spills, spillPath, spillDir || null, [], (s) => logs.push(s), {}, false)
+  const fn = new AsyncFunction('jobs', 'results', 'notRun', 'spills', 'spillPath', 'SPILL_DIR', 'INLINE_LABELS', 'log', 'A', block)
+  // Results arrive one lane per entry, as the lanes' parallel() returns them.
+  const ret = await fn(jobs, results.map(pair => [pair]), [], spills, spillPath, spillDir || null, [], (s) => logs.push(s), {})
   return { ret, logs }
 }
 const J = (label, agentType) => ({ label, agentType: agentType || 'general-purpose' })

@@ -27,7 +27,7 @@ async function run(script, args) {
   const parallel = async thunks => Promise.all(thunks.map(fn => Promise.resolve().then(fn)))
   let result
   try {
-    result = await new AsyncFunction('args', 'agent', 'parallel', 'phase', 'log', body(script))(
+    result = await new AsyncFunction('args', 'agent', 'parallel', 'phase', 'log', body('dispatch.js'))(
       require('./_engine_run').withKinds({ __transport: HOST, ...args }), agent, parallel, () => {}, () => {})
   } catch (e) {
     result = { crash: String((e && e.stack) || e) }
@@ -37,11 +37,11 @@ async function run(script, args) {
 
 const job = (label, extra) => Object.assign({ label, promptPath: label + '.md', model: 'model-a', effort: 'low', kind: 'author' }, extra)
 const argsFor = (script, jobs, extra) => Object.assign({ spillDir: '.claude/scratch/s7/spill', contextPath: 'shared.md' },
-  script === 'dispatch.js' ? { jobs } : { chains: [{ name: 'lane', jobs }] }, extra)
+  script === 'jobs' ? { jobs } : { chains: [{ name: 'lane', jobs }] }, extra)
 const readLine = (p) => 'SHARED CONTEXT for this dispatch is at: ' + p + ' — read it with the Read tool FIRST'
 
 ;(async () => {
-  for (const script of ['dispatch.js', 'dispatch_chains.js']) {
+  for (const script of ['jobs', 'chains']) {
     const r = await run(script, argsFor(script, [
       job('sch', { schema: SCHEMA, contextPaths: ['a.md', 'b.md'] }), job('plain')]))
     const sch = r.calls.findIndex(o => o.label === 'sch')
