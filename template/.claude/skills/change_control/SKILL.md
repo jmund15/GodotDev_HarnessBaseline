@@ -5,7 +5,9 @@ description: >-
   SKIP writing or judging tests (testing).
 ---
 
-# Change Control — gate cadence
+# Change Control
+
+## Gate cadence
 
 This file says when each check runs and why. The commands are the project's: `skills/project_subsystems/adaptation.json` `gate_cadence` holds them, one key per row below.
 
@@ -21,6 +23,6 @@ The gate asks whether a change broke anything outside the scope it was made in. 
 - **A session runs the full gate itself** only to reproduce a red the main check found.
 - **A skipped check names the trigger that brings it back.** An unnamed skip reads the same as a broken check.
 
-## A red after the land
+## A red on main
 
 Landing first moves the full gate after the push, so its red needs an owner. The session whose commits a red names fixes it before its turn ends; once that session has ended, the next session working in that area fixes it. A red blocks no other work: later checks read it as pre-existing, which excuses only the same failures. A red in another repository's CI that tests this one at its default branch is a red here, owned by whoever landed the range since that CI's last green.
