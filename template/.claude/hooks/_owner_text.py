@@ -34,12 +34,10 @@ Cells:
   plumbing (meta, command, envelope, injection *into* the transcript), a peer's cross-session or
   agent message, and tool results. A quote found only in a dropped row does not lift a deny, so a
   peer quoting the owner's words cannot name the transport.
-- owner_turns (`owner_turn_text`): the record `tools/verify_claims.py` owner items read, to bind a
-  recorded owner quote to its turn's uuid. `text` is the provider_guard projection; `label` is an
+- owner_turns (`owner_turn_text`): the record that binds a recorded owner quote to its turn's uuid. `text` is the provider_guard projection; `label` is an
   answer's picked labels, one per line (`owner_answer_text`); `args` is the arguments the owner typed
   after a slash command (`owner_command_text`). The `ARGUMENTS:` meta companion of a typed command
   repeats the same words and a model's `Skill` call leaves its own meta row, so both stay `drop`.
-  `tools/task_record.py::_owner_turns` reads the same projection for task conditions.
 - digest (`TranscriptSummaryBuilder._process_user_message` with `full_evidence=True`, plus
   `session_digest.recover_meta_command_prompts` and `recover_question_answers`, merged by
   `session_digest.owner_prompts`): `text` is the row's text blocks joined with a space; `name args` is
@@ -251,8 +249,7 @@ def owner_turns(path):
     (`owner_command_text`). None when the file cannot be read.
 
     An unreadable transcript must not read like one that carries nothing: both deny, but a reader of
-    this proof has to be able to tell the two apart. `tools/verify_claims.py` reads the owner through
-    this; the provider guard reads `owner_quote_rows`, which drops answers and command arguments.
+    this proof has to be able to tell the two apart. The provider guard reads `owner_quote_rows`, which drops answers and command arguments.
     """
     return _turns(path, owner_turn_text)
 

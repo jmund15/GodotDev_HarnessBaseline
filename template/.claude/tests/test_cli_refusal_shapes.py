@@ -135,36 +135,6 @@ def main():
                   and all(reason in posted for reason in reap_mod.REASONS),
                   repr((sorted(labelled), unregistered))))
 
-    # orchestration_metrics: a short --rate refuses; a flat mandates names the object shape.
-    refusal_cases(cases, "orchestration_metrics",
-                  call("orchestration_metrics.py", "--rate", "only-one-argument"),
-                  parser_for("orchestration_metrics"))
-    try:
-        module = load("orchestration_metrics")
-        spec, refusal = module._rating_spec({"label": "review:x", "outcome": "clean",
-                                             "mandates": '{"x": "findings"}'})
-        names_shape = (spec is None
-                       and "{mandate: {outcome: findings|clean|not-reached, unique, duplicate}}" in refusal
-                       and "x" in refusal)
-    except BaseException as exc:
-        refusal, names_shape = repr(exc), False
-    cases.append(("orchestration_metrics: --mandates refusal names the object shape it accepts",
-                  names_shape, repr(refusal)))
-    # The root parser serves every mode, so a usage error outside --rate states the mode list, never
-    # --rate's own flags.
-    modes = call("orchestration_metrics.py", "--pricier-pins", "not-a-number")
-    modes_accepts, modes_example = shape_of(modes.stderr)
-    parsed_modes = None
-    if modes_example:
-        try:
-            parsed_modes = parser_for("orchestration_metrics")(example_argv(modes_example))
-        except BaseException as exc:  # a parse failure IS the case's fact
-            parsed_modes = exc
-    cases.append(("orchestration_metrics: a non-rate usage error names the modes, not another mode's flags",
-                  modes.returncode != 0 and bool(modes_accepts) and "--rollup" in modes_accepts
-                  and "--mandates" not in modes_accepts and parsed_modes is not None
-                  and not isinstance(parsed_modes, BaseException), modes.stderr[-500:]))
-
     failures = [label for label, ok, _ in cases if not ok]
     for label, ok, detail in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))

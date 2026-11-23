@@ -5,7 +5,7 @@ projection matches the shape x consumer table in the module docstring.
 Consumers: harness_growth_guard (turn start), the
 session digest's owner-prompt record (session_digest.owner_prompts, built on
 _transcript_summary.TranscriptSummaryBuilder), the provider guard's `owner:` quote
-(`owner_quote_text`/`owner_quote_rows`) and the `owner_turns` record `tools/verify_claims.py` reads. The
+(`owner_quote_text`/`owner_quote_rows`) and the `owner_turns` record. The
 table is parsed from `_owner_text.__doc__`, so a projection change that is not written into the table
 fails here.
 
@@ -343,44 +343,6 @@ def main():
     cases.append(("an empty-args command (`/compact`) is no owner turn", LIVE["empty_args_command"]["uuid"] not in live_ids))
     cases.append(("the provider guard's quote projection still drops command arguments",
                   not any(COMMAND_WORDS in text for text in live_quotes)))
-
-    # End to end through tools/verify_claims.py over a planted session store holding the live rows.
-    try:
-        vc = load("vc", TOOLS / "verify_claims.py")
-    except Exception as exc:
-        vc = None
-        print("     verify_claims did not import: %s: %s" % (type(exc).__name__, exc))
-    if vc is None:
-        cases.append(("verify_claims imports", False))
-    else:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp) / "project"
-            project.mkdir()
-            store = Path(tmp) / "cfg" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(project))
-            store.mkdir(parents=True)
-            (store / (LIVE_SESSION + ".jsonl")).write_text("\n".join(live_lines) + "\n", encoding="utf-8")
-            env = {"CLAUDE_CONFIG_DIR": str(Path(tmp) / "cfg"), "CLAUDE_PROJECT_DIR": str(project)}
-            saved = {key: os.environ.get(key) for key in list(env) + ["CLAUDE_CODE_SESSION_ID"]}
-            os.environ.update(env)
-            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
-            try:
-                def verdict(item):
-                    result = vc.check_claims([{"id": "x", "evidence": [item]}], root=tmp, session_id=LIVE_SESSION)
-                    entry = result["verdicts"]["x"]
-                    return entry["verdict"], entry["items"][0].get("reason")
-                typed = verdict({"owner": COMMAND_WORDS})
-                quoted_summary = verdict({"owner": SUMMARY_WORDS})
-                typed_prompt = verdict({"owner": " ".join(prompt_row["message"]["content"].split()[:4])})
-            finally:
-                for key, value in saved.items():
-                    if value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = value
-        cases.append(("verify_claims: words typed as command arguments are VERIFIED (%s)" % (typed,), typed[0] == "VERIFIED"))
-        cases.append(("verify_claims: words only a compaction summary quotes are UNVERIFIED (%s)" % (quoted_summary,),
-                      quoted_summary == ("UNVERIFIED", "quote-absent")))
-        cases.append(("verify_claims: a real owner prompt is still VERIFIED (%s)" % (typed_prompt,), typed_prompt[0] == "VERIFIED"))
 
     holds = getattr(ot, "holds_token", None)
     cases.append(("holds_token finds the word-bounded --token", bool(holds) and holds("use --lean now", "lean")))
