@@ -562,8 +562,14 @@ def _live_shape(folder):
             '&& unzip -q artifact.zip && rm artifact.zip' % _msys(folder))
 
 
+def _derived(sid, *entries):
+    return {"type": "derived-from", "v": 1, "sessionId": sid,
+            "sessions": [{"type": "claude_code_session", "id": i, "via": v} for i, v in entries]}
+
+
 SESSION_DIR_CASES = ["live_msys", "live_windows", "chained", "mixed", "flag_p", "older", "errored", "sidechain",
-                     "heredoc", "withgit", "parent", "other", "no_transcript"]
+                     "heredoc", "withgit", "parent", "other", "no_transcript", "lineage_parent", "lineage_resume",
+                     "lineage_after_child"]
 
 
 @pytest.mark.parametrize("label", SESSION_DIR_CASES)
@@ -619,6 +625,17 @@ def test_session_made_dir(plant, tmp_path, label):
     elif label == "other":
         folder, tx = made("other", plain)
         command, want = 'rm -r "%s"' % _msys(downloads), "deny"
+    elif label.startswith("lineage_"):
+        folder, parent = made(label, plain)
+        if label == "lineage_resume":
+            rows = parent.read_text(encoding="utf-8")
+            parent.write_text(json.dumps(_derived(label, (label, "resume"))) + "\n" + rows, encoding="utf-8", newline="\n")
+        began = time.time() - 60 if label == "lineage_after_child" else time.time() + 60
+        tx = Path(tmp_path, "child_" + label + ".jsonl")
+        tx.write_text(json.dumps(_derived(tx.stem, (label, "clear"))) + "\n" + json.dumps(
+            {"type": "user", "timestamp": _iso(began), "message": {"role": "user", "content": "go"}}) + "\n",
+            encoding="utf-8", newline="\n")
+        command, want = 'rm -r "%s"' % _msys(folder), "allow" if label == "lineage_parent" else "deny"
     else:
         folder, _ = made("notx", plain)
         command, want, tx = 'rm -r "%s"' % _msys(folder), "deny", None

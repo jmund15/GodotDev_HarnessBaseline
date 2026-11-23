@@ -139,7 +139,6 @@ def own(tmp_path, monkeypatch, _own_template):
         monkeypatch.delenv(k)
     fixture = _own_template.copy_to(tmp_path)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fixture.root))
-    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     return fixture
 
 
@@ -555,11 +554,46 @@ def test_loop_with_a_failure_line_or_foreign_timestamp_stays_unproven(own):
     assert own.blocked([early, own.result_row("")])
 
 
-def test_creation_in_the_sessions_earlier_transcript_counts(own, monkeypatch):
+def _derived(sid, *entries):
+    return {"type": "derived-from", "v": 1, "sessionId": sid,
+            "sessions": [{"type": "claude_code_session", "id": i, "via": v} for i, v in entries]}
+
+
+def _lineage_blocked(own, entries=(("parent", "clear"),), parent_head=(), began=60):
+    """True when the ownership probe is denied in `child.jsonl`, which lists `entries` as its `derived-from` row and
+    whose first row is stamped `began` seconds after the worktree was created; `parent.jsonl` holds the creation
+    (after `parent_head` rows)."""
+    parent = [*parent_head, own.created_row(), own.result_row()]
+    (own.tmp / "parent.jsonl").write_text("".join(json.dumps(r) + "\n" for r in parent), encoding="utf-8")
+    first = datetime.fromisoformat(own.finished) + timedelta(seconds=began)
+    child = [_derived("child", *entries), {"type": "user", "timestamp": first.isoformat(), "message": {"role": "user", "content": "go"}}]
+    (own.tmp / "child.jsonl").write_text("".join(json.dumps(r) + "\n" for r in child), encoding="utf-8")
+    return bash(PROBE, own.root, session_id="own-discard", transcript_path=own.tmp / "child.jsonl").denied
+
+
+def test_creation_in_the_clear_parent_transcript_counts(own):
+    assert not _lineage_blocked(own)
+    assert not _lineage_blocked(own, (("parent", "clear"), ("child", "compact")))
+
+
+def test_an_env_var_alone_reaches_no_earlier_transcript(own, monkeypatch):
     (own.tmp / "sid-earlier.jsonl").write_text(
         json.dumps(own.created_row()) + "\n" + json.dumps(own.result_row()) + "\n", encoding="utf-8")
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sid-earlier")
-    assert not own.blocked([])
+    assert own.blocked([])
+
+
+@pytest.mark.parametrize("label,entries,head", [
+    ("a resume entry between the clear and the parent", (("parent", "clear"), ("parent", "resume"), ("child", "compact")), ()),
+    ("a parent that was itself resumed", (("parent", "clear"),), [_derived("parent", ("parent", "resume"))]),
+    ("a parent reached by a subprocess entry", (("parent", "subprocess"), ("child", "compact")), ()),
+])
+def test_creation_behind_a_resume_is_another_processs(own, label, entries, head):
+    assert _lineage_blocked(own, entries, head)
+
+
+def test_creation_stamped_after_the_child_began_is_another_processs(own):
+    assert _lineage_blocked(own, began=-60)
 
 
 def test_other_full_path_with_same_basename_is_not_ours(own):

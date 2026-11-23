@@ -13,7 +13,7 @@ holding a v1 case's several asserts).
 
 | v1 file | PP | MM | v2 file (items) |
 |---|---|---|---|
-| `test_dangerous_shell_guard_rm_scope.py` | 66 | 66 | `test_floor_delete.py` (228, with S4's 7 rows and the D-TT and mktemp rows) |
+| `test_dangerous_shell_guard_rm_scope.py` | 66 | 66 | `test_floor_delete.py` (231, with S4's 7 rows, the D-TT and mktemp rows and 3 session-lineage rows) |
 | `test_dangerous_shell_guard_absent_target.py` | 36 | 36 | `test_floor_delete.py` |
 | `test_dangerous_shell_guard_cache_cleanup.py` | 80 | 80 | `test_floor_delete.py` |
 | `test_dangerous_shell_guard_owned_temp_cleanup.py` | 22 | 22 | `test_floor_delete.py` |
@@ -26,11 +26,11 @@ holding a v1 case's several asserts).
 | `test_git_guardrails_owner_branch_delete.py` | 12 | 12 | `test_floor_git_owner.py` (42) |
 | `test_git_guardrails_owner_discard.py` | 17 | 17 + 3 deleted-file | `test_floor_git_owner.py` |
 | `test_git_guardrails_scratch_branch_delete.py` | 10 | 10 | `test_floor_git_owner.py` |
-| `test_git_guardrails_checkout_own_worktree.py`, `test_pattern_enforcer_own_worktree*.py` (4 parts) | 118 | 118, launcher and loose-file rows differ (D-LB, D-LS) | `test_floor_own_worktree.py` (119) |
+| `test_git_guardrails_checkout_own_worktree.py`, `test_pattern_enforcer_own_worktree*.py` (4 parts) | 118 | 118, launcher and loose-file rows differ (D-LB, D-LS) | `test_floor_own_worktree.py` (124, the earlier-transcript row now 6 lineage rows) |
 | `test_git_guardrails_index_fold.py` (fold and index-write rows) | 34 | — | `test_floor_index_fold.py` (34) |
 | `test_git_guardrails_harness_commit.py` (sections W, G1, G2, G3, S, M) | 44 | 44 + `-C $UNSET` | `test_floor_commit_index.py` (62, with the D-IW rows) |
 | `test_git_commit_msg_hook.py` | 16 | 16 | `test_floor_commit_msg.py` (17, plus the S5 CLI row) |
-| `test_kill_guard.py` | 73 | 73 | `test_floor_kill.py` (154) |
+| `test_kill_guard.py` | 73 | 73 | `test_floor_kill.py` (169, with 15 TaskStop-on-the-lineage rows) |
 | `test_reap.py`, `test_reap_native_env.py` | 190 checks + 3 | same | `test_floor_reap.py` (73), with the small stop tool (S5d, below) |
 | `test_bash_backslash_fidelity.py` (backslash class) | 69 checks | — | `test_floor_backslash.py` (40), every row through `_floor.decide` (S5d) |
 | `test_run_call_router.py` (deleted by B16 with its dispatcher) | 59 checks | — | `test_floor_run_router.py` (47), every row through `_floor.decide` (S5d) |

@@ -1,0 +1,4 @@
+{"type": "derived-from", "v": 1, "sessionId": "b9a508a5-bcd1-46de-a460-e64e9c86d48e", "sessions": [{"type": "claude_code_session", "id": "42d095c1-6b20-4d85-9eac-b39a51e8750c", "via": "clear"}]}
+{"type": "derived-from", "v": 1, "sessionId": "b9a508a5-bcd1-46de-a460-e64e9c86d48e", "sessions": [{"type": "claude_code_session", "id": "42d095c1-6b20-4d85-9eac-b39a51e8750c", "via": "clear"}, {"type": "claude_code_session", "id": "b9a508a5-bcd1-46de-a460-e64e9c86d48e", "via": "compact"}]}
+{"type": "attachment", "isSidechain": false, "timestamp": "2026-11-23T16:54:56.952Z"}
+{"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-23T21:04:28.065Z", "content": "<task-notification>\n<task-id>b8ge4s8dr</task-id>\n<tool-use-id>toolu_01BSJLar3YqsLLievSQFnmch</tool-use-id>\n<output-file>tasks/b8ge4s8dr.output</output-file>\n<status>failed</status>\n<summary>Background task failed</summary>\n</task-notification>"}

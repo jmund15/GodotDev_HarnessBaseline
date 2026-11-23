@@ -102,17 +102,27 @@ def test_an_entry_that_is_not_the_same_process_stops_the_walk(folder, via):
     assert ids(sl.lineage(new)) == ["new"]
 
 
-def test_a_cleared_parent_that_was_itself_resumed_ends_at_its_resume(folder):
+@pytest.mark.parametrize("head", [("grand", "resume"), ("middle", "resume"), ("grand", "subprocess")])
+def test_a_cleared_parent_that_was_itself_resumed_is_not_yielded(folder, head):
+    """Its rows before the resume are an earlier process's, and its derived-from row has no stamp to split them by."""
     folder.put("grand", stamped(1))
-    folder.put("middle", derived("middle", ("grand", "resume")), stamped(2))
+    folder.put("middle", derived("middle", head), stamped(2))
     new = folder.put("new", derived("new", ("middle", "clear")), stamped(3))
-    assert ids(sl.lineage(new)) == ["new", "middle"]
+    assert ids(sl.lineage(new)) == ["new"]
+    assert ids(sl.lineage(folder.path("middle"))) == ["middle"]
+
+
+def test_a_parent_whose_row_ends_in_a_same_process_entry_after_a_resume_is_not_yielded(folder):
+    folder.put("middle", derived("middle", ("middle", "resume"), ("middle", "compact")), stamped(2))
+    new = folder.put("new", derived("new", ("middle", "clear")), stamped(3))
+    assert ids(sl.lineage(new)) == ["new"]
 
 
 # --- laziness and failure ----------------------------------------------------------------------------------------
 def test_no_ancestor_file_is_opened_before_the_caller_asks_for_it(folder, monkeypatch):
-    folder.put("a", derived("a", ("grand", "clear")), stamped(1))
-    new = folder.put("new", derived("new", ("a", "clear")), stamped(2))
+    folder.put("b", stamped(1))
+    folder.put("a", derived("a", ("b", "clear")), stamped(2))
+    new = folder.put("new", derived("new", ("a", "clear")), stamped(3))
     opened = []
     real = builtins.open
 
@@ -123,8 +133,9 @@ def test_no_ancestor_file_is_opened_before_the_caller_asks_for_it(folder, monkey
     monkeypatch.setattr(builtins, "open", recording)
     walk = iter(sl.lineage(new))
     assert os.path.basename(next(walk)[0]) == "new.jsonl" and opened == []
-    assert os.path.basename(next(walk)[0]) == "a.jsonl" and opened == ["new.jsonl"]
-    assert list(walk) == [] and opened == ["new.jsonl", "a.jsonl"]
+    assert os.path.basename(next(walk)[0]) == "a.jsonl" and opened == ["new.jsonl", "a.jsonl"]
+    assert os.path.basename(next(walk)[0]) == "b.jsonl" and opened == ["new.jsonl", "a.jsonl", "b.jsonl"]
+    assert list(walk) == [] and opened == ["new.jsonl", "a.jsonl", "b.jsonl"]
 
 
 def test_a_cycle_ends_cleanly(folder):

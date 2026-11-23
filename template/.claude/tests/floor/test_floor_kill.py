@@ -6,6 +6,7 @@ PID resolution is planted (`kill_guard.commandline`), and name kills read a plan
 """
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -479,6 +480,144 @@ def test_taskstop_ended_tasks_pass(tmp_path):
     assert stop(tmp_path, [_ended_row("aended01")], "aended01").kind == "allow"
     rows = _launch_rows("bgended1", "bash .claude/scripts/seat.sh claude-secondary brief.md out.md")
     assert stop(tmp_path, rows + [_ended_row("bgended1", "failed")], "bgended1").kind == "allow"
+
+
+# --- TaskStop follows the session lineage ------------------------------------------------------------------------
+# A `/clear` or a compaction keeps the claude.exe process and its tasks but starts a new session id and transcript;
+# the new file's `derived-from` row names the old one (`_session_lineage`). A launch in an ancestor counts when the
+# row is stamped before the child began. Folder shape: `<id>.jsonl` beside each other.
+LINEAGE_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "session_lineage"
+
+
+def _day(n):
+    return "2026-11-%02dT10:00:00.000Z" % n
+
+
+def _at(rows, day):
+    return [{**row, "timestamp": _day(day)} for row in rows]
+
+
+def _derived(sid, *entries):
+    return {"type": "derived-from", "v": 1, "sessionId": sid,
+            "sessions": [{"type": "claude_code_session", "id": i, "via": v} for i, v in entries]}
+
+
+def _file(tmp_path, sid, *rows):
+    path = tmp_path / (sid + ".jsonl")
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    return path
+
+
+def _chain(tmp_path, origin_rows, *, middle_entries=(("origin", "clear"),), middle_head=(), new_rows=(), middle_rows=()):
+    """origin <- middle <- new, each cleared from the one before; `taskstop` reads the returned `new` file."""
+    _file(tmp_path, "origin", *middle_head, *origin_rows)
+    _file(tmp_path, "middle", _derived("middle", *middle_entries), *_at([_text_row("ok")], 2), *middle_rows)
+    return _file(tmp_path, "new", _derived("new", ("middle", "clear")), *_at([_text_row("ok")], 3), *new_rows)
+
+
+def _workflow_rows(task):
+    rows = _launch_rows(task, "unused", name="Workflow")
+    rows[1]["message"]["content"][0]["input"] = {"script": "export const meta = {}"}
+    rows[2]["toolUseResult"] = {"taskId": task}
+    return rows
+
+
+def test_taskstop_of_an_own_launch_two_clears_back_passes(tmp_path):
+    new = _chain(tmp_path, _at(_launch_rows("bgclear1", "sleep 600"), 1))
+    assert taskstop("bgclear1", new).kind == "allow"
+
+
+def test_taskstop_of_a_paid_launch_two_clears_back_asks(tmp_path):
+    new = _chain(tmp_path, _at(_workflow_rows("wfclear1"), 1))
+    assert taskstop("wfclear1", new).kind == "ask"
+
+
+def test_taskstop_of_a_task_ended_in_an_ancestor_passes(tmp_path):
+    rows = _at(_launch_rows("bgclear2", "bash .claude/scripts/seat.sh claude-secondary brief.md out.md"), 1)
+    new = _chain(tmp_path, rows + _at([_ended_row("bgclear2")], 1))
+    assert taskstop("bgclear2", new).kind == "allow"
+
+
+def test_taskstop_launch_in_a_file_the_clear_chain_reaches_through_a_resume_denies(tmp_path):
+    new = _chain(tmp_path, _at(_launch_rows("bgresume1", "sleep 600"), 1), middle_entries=(("origin", "resume"),))
+    got = taskstop("bgresume1", new)
+    assert got.denied and "no launch of task" in got.reason
+
+
+def test_taskstop_launch_between_a_resume_and_the_next_clear_denies(tmp_path):
+    new = _chain(tmp_path, [], middle_entries=(("middle", "resume"),), middle_rows=_at(_launch_rows("bgresume2", "sleep 600"), 2))
+    got = taskstop("bgresume2", new)
+    assert got.denied and "no launch of task" in got.reason
+
+
+def test_taskstop_launch_stamped_after_the_child_began_denies(tmp_path):
+    new = _chain(tmp_path, _at(_launch_rows("bglate01", "sleep 600"), 5))
+    got = taskstop("bglate01", new)
+    assert got.denied and "no launch of task" in got.reason
+
+
+def test_taskstop_an_unstamped_ancestor_row_is_no_proof(tmp_path):
+    new = _chain(tmp_path, _launch_rows("bgbare01", "sleep 600"))
+    assert taskstop("bgbare01", new).denied
+
+
+def test_taskstop_a_peers_launch_in_a_file_beside_the_chain_denies(tmp_path):
+    _file(tmp_path, "peer", *_at(_launch_rows("bgpeer01", "sleep 600"), 1))
+    new = _chain(tmp_path, _at(_launch_rows("bgmine01", "sleep 600"), 1))
+    assert taskstop("bgpeer01", new).denied and taskstop("bgmine01", new).kind == "allow"
+
+
+def test_taskstop_a_launch_in_the_current_file_still_beats_an_unreadable_ancestor(tmp_path):
+    new = _file(tmp_path, "new", _derived("new", ("gone", "clear")), *_at(_launch_rows("bgnow001", "sleep 600"), 3))
+    assert taskstop("bgnow001", new).kind == "allow"
+
+
+def test_taskstop_long_transcripts_along_the_chain_still_decide(tmp_path):
+    new = _chain(tmp_path, _at(_launch_rows("bgbig001", "sleep 600") + _padding(10), 1), new_rows=_padding(10))
+    assert taskstop("bgbig001", new).kind == "allow"
+
+
+def test_taskstop_deny_names_the_transcripts_it_read(tmp_path):
+    new = _chain(tmp_path, [])
+    got = taskstop("peer-task-78", new)
+    assert "(read: 3)" in got.reason and "depth limit" not in got.reason and got.reason.count("Stop it from") == 1
+
+
+def test_taskstop_deny_says_when_the_walk_hit_the_depth_limit(tmp_path):
+    _file(tmp_path, "s0", *_at(_launch_rows("bgdeep001", "sleep 600"), 1))
+    for n in range(1, 19):
+        last = _file(tmp_path, "s%d" % n, _derived("s%d" % n, ("s%d" % (n - 1), "clear")), *_at([_text_row("ok")], 2))
+    got = taskstop("bgdeep001", last)
+    assert got.denied and "depth limit" in got.reason and "(read: 17; the walk stopped at the depth limit" in got.reason
+
+
+def _lineage_copy(tmp_path, *, notices=True, only=None):
+    """The committed b8ge4s8dr fixture (`fixtures/build_lineage_fixture.py`), copied into `tmp_path`; `notices` False
+    drops the ended notice from the newest file; `only` keeps the named session files."""
+    for source in LINEAGE_FIXTURE.glob("*.jsonl"):
+        if only is None or source.name[:8] in only:
+            lines = source.read_text(encoding="utf-8").splitlines(keepends=True)
+            (tmp_path / source.name).write_text(
+                "".join(l for l in lines if notices or '"queue-operation"' not in l), encoding="utf-8", newline="")
+    return tmp_path / "b9a508a5-bcd1-46de-a460-e64e9c86d48e.jsonl"
+
+
+def test_taskstop_of_b8ge4s8dr_from_the_recorded_chain(tmp_path):
+    """The incident: b8ge4s8dr was launched in 42d095c1, two files before the session that stopped it."""
+    new = _lineage_copy(tmp_path)
+    assert taskstop("b8ge4s8dr", new).kind == "allow"
+    assert taskstop("bja4ocpj5", new).denied
+
+
+def test_taskstop_of_b8ge4s8dr_before_its_ended_notice_follows_the_lineage(tmp_path):
+    new = _lineage_copy(tmp_path, notices=False)
+    assert taskstop("b8ge4s8dr", new).kind == "allow"
+
+
+def test_taskstop_of_b8ge4s8dr_denies_when_the_launch_file_is_not_beside_the_newest(tmp_path):
+    new = _lineage_copy(tmp_path, notices=False, only=("b9a508a5", "76ed7baa"))
+    got = taskstop("b8ge4s8dr", new)
+    assert got.denied and "no launch of task" in got.reason
 
 
 def test_a_non_object_payload_fails_closed():

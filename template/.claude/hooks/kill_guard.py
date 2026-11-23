@@ -16,7 +16,10 @@ substitution operand, `_unnamed_pid_kills`). A kill whose every match is unprote
 
 TaskStop decides on facts it observes in the transcript, never on owner wording (a stop verb, a keep word, an
 AskUserQuestion answer): it passes a task whose completion notice is already there (it stops nothing) and an
-unpaid task this session's main thread launched. Running paid work this session launched (a Workflow, an Agent,
+unpaid task this session's main thread launched. "This session's" spans the transcripts of its lineage
+(`_session_lineage`): a `/clear` or compaction keeps the process and its tasks but starts a new transcript, so the
+walk reads the hook's file, then each earlier file of the same process, counting an ancestor's rows only when stamped
+before its child began. Running paid work this session launched (a Workflow, an Agent,
 a shell running the seat launcher) returns `ask`: the stop is the owner's call (CLAUDE.core.md §Shell Discipline),
 and reading the owner's words for consent failed repeatedly, so the permission prompt asks the owner directly.
 A task this session did not launch (a subagent's, a peer's) is denied: its own launcher or session stops it.
@@ -44,6 +47,7 @@ import _background_tasks  # noqa: E402
 import _delete_rule  # noqa: E402
 import _git_run  # noqa: E402
 import _msys  # noqa: E402
+import _session_lineage  # noqa: E402
 import _shell_lex  # noqa: E402
 from _win_path import native_path  # noqa: E402
 
@@ -86,44 +90,62 @@ MAX_SCRIPT_BYTES = 512 * 1024
 # afford resolves nothing, so the kill fails closed instead of the hook timing out open.
 HOOK_BUDGET_S = 15.0
 SUBPROCESS_TIMEOUT_S = 5
-NOT_LAUNCHED = ("BLOCKED TaskStop (CLAUDE.core.md §Shell Discipline) — no launch of task %s by this session's main thread is in the transcript "
-                "(a peer's or a subagent's task, or a transcript the hook cannot read). Stop it from the session or launcher that owns it.")
+NOT_LAUNCHED = ("BLOCKED TaskStop (CLAUDE.core.md §Shell Discipline) — no launch of task %s by this session's main thread is in its "
+                "transcripts (read: %d%s). A peer's or a subagent's task, or a transcript the hook cannot read, is not this "
+                "session's. Stop it from the session or launcher that owns it.")
+WALK_CUT = "; the walk stopped at the depth limit, so older ones went unread"
 PAID_RUNNING = ("Stop running paid work %s (%s)? Its finished agents' results stay on disk; its in-flight work is lost. "
                 "A stop of a running dispatch is the owner's call (CLAUDE.core.md §Shell Discipline).")
 
 
-def _launch_of(transcript_path, task_id):
-    """(tool name, tool input, launch timestamp or None) of the main-session call that launched background
-    task `task_id`, else None.
+def _before(row, until):
+    """True when a row of an ancestor transcript is stamped before its child began (`until` None: the hook's own file,
+    whose rows all count). An unstamped ancestor row proves nothing."""
+    if until is None:
+        return True
+    stamp = _session_lineage.row_stamp(row)
+    return stamp is not None and stamp < until
+
+
+def _task_facts(transcript_path, task_id, until):
+    """(the task's completion notice is in the file, the tool_use id the file's launch result names or None), one pass
+    over the lines naming `task_id`.
 
     The launch is the tool_result row whose `toolUseResult` names the id (`_background_tasks.launched_task_id`:
-    Bash/PowerShell, Monitor, Workflow, a background Agent); its tool_use_id names the assistant tool_use. Either
-    row on a sidechain (a subagent) is not this session's launch."""
-    if not transcript_path or not task_id:
-        return None
-    use_id = None
+    Bash/PowerShell, Monitor, Workflow, a background Agent); a sidechain row (a subagent's) is not this session's."""
+    ended, use_id = False, None
     for line in _lines_holding(transcript_path, task_id):
         try:
             row = json.loads(line)
         except ValueError:
             continue
+        if not isinstance(row, dict) or not _before(row, until):
+            continue
+        if any(notice["task_id"] == task_id for notice in _background_tasks.ended_notices(row)):
+            ended = True
         if row.get("isSidechain") or _background_tasks.launched_task_id(row) != task_id:
             continue
         for item in (row.get("message") or {}).get("content") or []:
             if isinstance(item, dict) and item.get("type") == "tool_result":
                 use_id = item.get("tool_use_id")
-    if not use_id:
-        return None
+    return ended, use_id
+
+
+def _launch_call(transcript_path, use_id, until):
+    """(tool name, tool input) of the main-session `tool_use` row `use_id` names, else None. A sidechain row is not
+    this session's launch."""
     for line in _lines_holding(transcript_path, use_id, '"tool_use"'):
         try:
             row = json.loads(line)
         except ValueError:
             continue
+        if not isinstance(row, dict) or not _before(row, until):
+            continue
         if row.get("isSidechain"):
             return None
         for item in (row.get("message") or {}).get("content") or []:
             if isinstance(item, dict) and item.get("type") == "tool_use" and item.get("id") == use_id:
-                return item.get("name"), item.get("input") or {}, row.get("timestamp")
+                return item.get("name"), item.get("input") or {}
     return None
 
 
@@ -139,21 +161,6 @@ def _lines_holding(transcript_path, *needles):
                     yield line.decode("utf-8", errors="replace")
     except (OSError, TypeError, ValueError):
         return
-
-
-def _task_ended(transcript_path, task_id):
-    """True when a `<task-notification>` row of the transcript names `task_id`: the task already ended, so a
-    stop discards nothing."""
-    if not transcript_path or not task_id:
-        return False
-    for line in _lines_holding(transcript_path, task_id, "<task-notification>"):
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if any(notice["task_id"] == task_id for notice in _background_tasks.ended_notices(row)):
-            return True
-    return False
 
 
 def _local_path(token, cwd):
@@ -215,18 +222,21 @@ def _paid(launch):
 
 
 def taskstop_decision(transcript_path, tool_input):
-    """(decision, reason), or None to pass. Passes a task whose completion notice is in the transcript and an
-    unpaid task this session's main thread launched; asks the owner for running paid work this session launched;
-    denies any other task."""
+    """(decision, reason), or None to pass. Walks the session's transcript lineage newest first and decides at the
+    first file that settles the task: passes a task whose completion notice is there and an unpaid task this
+    session's main thread launched; asks the owner for running paid work this session launched; denies a task no
+    file of the lineage shows launched."""
     task_id = (tool_input or {}).get("task_id") if isinstance(tool_input, dict) else None
-    if _task_ended(transcript_path, task_id):
-        return None
-    launch = _launch_of(transcript_path, task_id)
-    if not launch:
-        return "deny", NOT_LAUNCHED % (task_id or "(no task id)")
-    if _paid(launch):
-        return "ask", PAID_RUNNING % (task_id, launch[0])
-    return None
+    walk, read = _session_lineage.lineage(transcript_path if task_id else None), 0
+    for path, until in walk:
+        read += 1
+        ended, use_id = _task_facts(path, task_id, until)
+        if ended:
+            return None
+        launch = _launch_call(path, use_id, until) if use_id else None
+        if launch:
+            return ("ask", PAID_RUNNING % (task_id, launch[0])) if _paid(launch) else None
+    return "deny", NOT_LAUNCHED % (task_id or "(no task id)", read, WALK_CUT if walk.cut else "")
 
 
 def pid_forms(cmd):

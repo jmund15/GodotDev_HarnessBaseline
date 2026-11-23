@@ -15,11 +15,13 @@ new process (the harness marks the earlier process's tasks stopped, and an in-pl
 the session itself), and `subprocess` is another process's session; neither is this session's. An unknown value is
 not followed either.
 
-Fail closed: an ancestor is yielded only when the child has a top-level timestamped row (no bound could hold a
-peer's rows), an id is followed only when it is a plain session id, a missing ancestor file skips that entry, a
-cycle ends, and `max_depth` ancestors bound the walk (`cut` is set when a same-process ancestor file exists and the
-limit blocks it; the longest real chain on this machine is two hops). Nothing is read until the caller asks for the
-next pair. Standard library only: the floor imports it.
+Fail closed: an ancestor is yielded only when the child has a top-level timestamped row (without it no bound could
+keep a peer's rows out) and its own last row reaches no boundary entry (a resumed file mixes an earlier process's rows
+with this one's, and its `derived-from` row carries no stamp to split them by). An id is followed only when it is a
+plain session id, a missing ancestor file skips that entry, a cycle ends, and `max_depth` ancestors bound the walk
+(`cut` is set when a same-process ancestor file exists and the limit blocks it; the longest real chain on this
+machine is two hops). A file is read only when the caller asks for the pair that needs it. Standard library only:
+the floor imports it.
 """
 from __future__ import annotations
 
@@ -75,6 +77,21 @@ def _scan(path: str) -> tuple[list | None, float | None, str | None]:
     return entries, first, own
 
 
+def _reach(path: str) -> tuple[list[str], bool, float | None]:
+    """(ids of the same-process entries of the file's last `derived-from` row, newest first; whether the scan hit a
+    boundary entry; the file's first timestamp)."""
+    entries, first, own = _scan(path)
+    mine = {os.path.splitext(os.path.basename(path))[0], own}
+    kept = []
+    for entry in reversed(entries or []):
+        if not isinstance(entry, dict) or entry.get("via") not in SAME_PROCESS:
+            return kept, True, first
+        sid = entry.get("id")
+        if sid not in mine and isinstance(sid, str) and _ID.fullmatch(sid):
+            kept.append(sid)
+    return kept, False, first
+
+
 class Lineage:
     """The walk, iterable once per `for`; `cut` reads True after a walk the depth limit blocked."""
 
@@ -93,17 +110,9 @@ class Lineage:
         return os.path.normcase(os.path.normpath(path))
 
     def _ancestors(self, path: str, seen: set, depth: int):
-        entries, first, own = _scan(path)
-        if first is None or not entries:
+        kept, _bounded, first = _reach(path)
+        if first is None:
             return
-        mine = {os.path.splitext(os.path.basename(path))[0], own}
-        kept = []
-        for entry in reversed(entries):
-            if not isinstance(entry, dict) or entry.get("via") not in SAME_PROCESS:
-                break
-            sid = entry.get("id")
-            if sid not in mine and isinstance(sid, str) and _ID.fullmatch(sid):
-                kept.append(sid)
         for sid in kept:
             parent = os.path.join(os.path.dirname(path), sid + ".jsonl")
             if self._key(parent) in seen or not os.path.isfile(parent):
@@ -112,6 +121,8 @@ class Lineage:
                 self.cut = True
                 continue
             seen.add(self._key(parent))
+            if _reach(parent)[1]:
+                continue
             yield parent, first
             yield from self._ancestors(parent, seen, depth + 1)
 
