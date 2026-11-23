@@ -59,25 +59,65 @@ import _git_run  # noqa: E402
 from _transcript_calls import Call, Result, session_events  # noqa: E402
 
 
-# Each delete the floor blocks, in the order its message is chosen, and its deny text. `_delete_kind` reads each from
-# the parsed words of its command (applied to the Bash and PowerShell tools alike; PowerShell text also reaches Bash
-# through `powershell -Command "..."`). Plain `rm -f <file>` is a single-file delete and is not blocked; `git rm` is
-# version-controlled and recoverable.
-DELETES = (
-    ("del", "BLOCKED: Dangerous recursive delete (del /s or /q)"),
-    ("rd", "BLOCKED: Dangerous recursive directory removal (rd /s)"),
-    ("rmdir", "BLOCKED: Dangerous recursive directory removal (rmdir /s)"),
-    ("format", "BLOCKED: Format drive command detected"),
-    ("remove-item", "BLOCKED: Dangerous recursive delete (Remove-Item -Recurse)"),
-    ("rm", "BLOCKED: Dangerous recursive delete (rm -r / -R / -rf)"),
-    ("rm-long", "BLOCKED: Dangerous recursive delete (rm --recursive)"),
-)
-_RECURSIVE = frozenset(key for key, message in DELETES if "recursive" in message.lower())
+def _forces_removal(args: list[str]) -> bool:
+    """True when a flag stops the delete reporting an absent operand, so deleting nothing exits 0
+    (`rm -f`, `-rf`, `-fr`, `--force`). Only then does `true` stand in for the segment."""
+    return any(a.lower() == '--force' or (re.fullmatch(r'-[A-Za-z]+', a) and 'f' in a.lower())
+               for a in args)
+
+
 # GNU rm's long options, so a typed prefix (`--rec`) resolves as rm resolves it.
 _RM_LONG = ("force", "interactive", "one-file-system", "no-preserve-root", "preserve-root", "recursive", "dir",
             "verbose", "help", "version")
-# PowerShell's names for Remove-Item; `-Recurse` may be spelled by any prefix (`-r`), as PowerShell binds it.
-_PS_REMOVE = frozenset(("remove-item", "ri", "del", "erase", "rd", "rmdir", "rm"))
+
+
+def _rm_flags(args):
+    return options(args, long=_RM_LONG).flags
+
+
+def _cmd_tree(args):
+    """A cmd.exe delete of a tree or without confirmation: a `/s` or `/q` switch."""
+    return any(sw[:1] in ("s", "q") for sw in cmd_switches(args))
+
+
+@dataclass(frozen=True)
+class Delete:
+    """One delete the floor blocks, judged from the parsed words of its command (Bash and PowerShell alike; PowerShell
+    text also reaches Bash through `powershell -Command "..."`). `names` are the program names it runs under
+    (`_shell_lex.base`); `runs(args)` is True when the words after the name make it this delete; `message` is its deny
+    text. A `tree` delete passes when every target it names is proved to lose nothing (`_deletable`), and its deny
+    names what the floor allows; `judged` lists the names, as typed at the head of a segment, whose operands are those
+    targets (none: the floor cannot read its operands, so it always denies); `absent_ok(args)` is True when a run
+    that removes nothing exits 0, so a delete whose every target is absent from scratch is rewritten to `true`. A new
+    delete is one row and its table test."""
+    key: str
+    names: tuple
+    runs: object
+    message: str
+    judged: tuple = ()
+    absent_ok: object = None
+    tree: bool = True
+
+
+# Each delete, in the order its deny is chosen; a word two rows' names share is the first matching row's. Plain
+# `rm -f <file>` is a single-file delete and is not blocked; `git rm` is version-controlled and recoverable.
+DELETES = (
+    Delete("del", ("del", "erase"), _cmd_tree, "BLOCKED: Dangerous recursive delete (del /s or /q)",
+           judged=("del", "erase")),
+    Delete("rd", ("rd",), _cmd_tree, "BLOCKED: Dangerous recursive directory removal (rd /s)"),
+    Delete("rmdir", ("rmdir",), _cmd_tree, "BLOCKED: Dangerous recursive directory removal (rmdir /s)"),
+    Delete("format", ("format",), lambda args: any(re.match(r"[A-Za-z]:", a) for a in args),
+           "BLOCKED: Format drive command detected", tree=False),
+    Delete("rm", ("rm",), lambda args: bool(_rm_flags(args) & {"r", "R"}),
+           "BLOCKED: Dangerous recursive delete (rm -r / -R / -rf)", judged=("rm",), absent_ok=_forces_removal),
+    Delete("rm-long", ("rm",), lambda args: "recursive" in _rm_flags(args),
+           "BLOCKED: Dangerous recursive delete (rm --recursive)", judged=("rm",), absent_ok=_forces_removal),
+    # PowerShell's names for Remove-Item; `-Recurse` may be spelled by any prefix (`-r`), as PowerShell binds it.
+    Delete("remove-item", ("remove-item", "ri", "del", "erase", "rd", "rmdir", "rm"),
+           lambda args: any(ps_param(a, "recurse") for a in args),
+           "BLOCKED: Dangerous recursive delete (Remove-Item -Recurse)",
+           judged=("remove-item", "ri", "del", "erase", "rm")),
+)
 
 
 def _git_subcommand(words, k):
@@ -91,35 +131,23 @@ def _git_subcommand(words, k):
     return False
 
 
-def _delete_kind(words, k):
-    """The `DELETES` key of the delete `words[k]` runs with the words after it in its segment, or None. Every word
+def _delete_row(words, k):
+    """The `DELETES` row of the delete `words[k]` runs with the words after it in its segment, or None. Every word
     is a candidate, not only the command position: a delete behind `sudo`, `xargs`, `find -exec` or any other
-    runner is still judged, and a quoted argument (`grep "rm -rf"`) is one word, never a delete."""
+    runner is still judged, and a quoted argument (`grep "rm -rf"`) is one word, never a delete. A git subcommand
+    (`git rm`) is git's own, and version-controlled."""
     name, args = base(words[k]), words[k + 1:]
-    if name == "rm" and _git_subcommand(words, k):
-        return None
-    if name == "rm":
-        flags = options(args, long=_RM_LONG).flags
-        if flags & {"r", "R"}:
-            return "rm"
-        if "recursive" in flags:
-            return "rm-long"
-    if name in ("del", "erase", "rd", "rmdir") and any(sw[:1] in ("s", "q") for sw in cmd_switches(args)):
-        return "del" if name == "erase" else name
-    if name == "format" and any(re.match(r"[A-Za-z]:", a) for a in args):
-        return "format"
-    if name in _PS_REMOVE and any(ps_param(a, "recurse") for a in args):
-        return "remove-item"
-    return None
+    row = next((row for row in DELETES if name in row.names and row.runs(args)), None)
+    return None if row is None or _git_subcommand(words, k) else row
 
 
 def _deletes(command):
-    """[(key, depth, segment, index)] for each delete in `command` and every body it runs (`_shell_lex.walk`)."""
+    """[(row, depth, segment, index)] for each delete in `command` and every body it runs (`_shell_lex.walk`)."""
     found = []
     for _kind, _text, segments, depth in walk(command):
         for seg in segments:
             values = [w.value for w in seg.words]
-            found += [(key, depth, seg, k) for k in range(len(values)) for key in [_delete_kind(values, k)] if key]
+            found += [(row, depth, seg, k) for k in range(len(values)) for row in [_delete_row(values, k)] if row]
     return found
 
 
@@ -333,13 +361,6 @@ def _deletable_by_fact(target: str, here: str | None = None, transcript_path: st
             or _session_made_dir(target, here, transcript_path))
 
 
-def _forces_removal(args: list[str]) -> bool:
-    """True when a flag stops the delete reporting an absent operand, so deleting nothing exits 0
-    (`rm -f`, `-rf`, `-fr`, `--force`). Only then does `true` stand in for the segment."""
-    return any(a.lower() == '--force' or (re.fullmatch(r'-[A-Za-z]+', a) and 'f' in a.lower())
-               for a in args)
-
-
 def _absent_scratch_target(value: str | None, here: str | None) -> bool:
     """True when `value` names a literal path strictly inside this project's `.claude/scratch/` that
     does not exist, with no link escaping scratch: `realpath` resolves every existing ancestor, so a
@@ -356,14 +377,14 @@ def _absent_scratch_target(value: str | None, here: str | None) -> bool:
 
 
 def rewrite_absent_forced_deletes(command: str, cwd: str | None = None) -> str | None:
-    """`command` with every forced recursive delete whose targets are all proven-absent paths under
+    """`command` with every forced tree delete whose targets are all proven-absent paths under
     this project's `.claude/scratch/` replaced by `true`, or None when any delete is not provable.
 
     `rm -rf <absent>` exits 0 and removes nothing, so the setup idiom `rm -rf target; mkdir target`
     needs no owner approval for an absent target. The segment is rewritten rather than approved: a
     bare allow would also cover whatever appears at that path between this check and the run. A
     command with any other recursive delete -- an existing path, a glob, an unresolved variable, a
-    `..`, a non-`rm` delete, or a segment the parser cannot isolate -- returns None and keeps its
+    `..`, a delete whose row has no `absent_ok`, or a segment the parser cannot isolate -- returns None and keeps its
     normal denial.
     """
     spans = list(executable_spans(command))
@@ -373,7 +394,7 @@ def rewrite_absent_forced_deletes(command: str, cwd: str | None = None) -> str |
     here = cwd or _project_root()
     elisions, found = [], False
     for start, end, segment in spans:
-        delete_shape = any(key in _RECURSIVE for key, *_ in _deletes(segment))
+        delete_shape = any(row.tree for row, *_ in _deletes(segment))
         parsed = command_words(segment)
         if parsed is None:
             if delete_shape:
@@ -386,7 +407,9 @@ def rewrite_absent_forced_deletes(command: str, cwd: str | None = None) -> str |
                 here = (resolve_cd(here, moved)
                         if here is not None and moved and not _GLOB_CHARS.search(moved) else None)
             continue
-        if here is None or words[0].lower() != "rm" or not _forces_removal(words[1:]):
+        row = _delete_row(words, 0)
+        if (here is None or row is None or row.absent_ok is None or words[0].lower() not in row.judged
+                or not row.absent_ok(words[1:])):
             return None
         targets = [t for t in words[1:] if not t.startswith("-")]
         if not targets or not all(_absent_scratch_target(expand_literal(t, assignments), here)
@@ -407,7 +430,6 @@ def rewrite_absent_forced_deletes(command: str, cwd: str | None = None) -> str |
 
 # A4: `NAME=$(mktemp -d)` (or `-t <template>` with no `/` in the template) is ownership evidence a
 # literal path never carries; a delete target that is exactly `$NAME` of such a variable is the command's own.
-_DELETE_CMD_NAMES = frozenset({'rm', 'del', 'erase', 'ri', 'remove-item'})
 _VAR_TOKEN_RE = re.compile(r'^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$')
 # The value must END at the substitution: a suffix (`$(mktemp -d)/..`, `/*`) points outside the directory.
 _MKTEMP_ASSIGN_VALUE_RE = re.compile(r'\$\(\s*mktemp\s+-d(?:\s+-t\s+[^\s)/]+)?\s*\)(?=[\s;&|]|$)')
@@ -565,12 +587,12 @@ def _delete_targets(raw: str, cwd: str | None):
     delete removes, expanded through assignments the command makes and resolved later against the tracked `cd`
     `here`, or its directory for a glob in the last part; None when it cannot be proved (an unexpanded value, `~`,
     `%`, a glob in a directory part, an unknown cwd). None for the whole command when a delete does not head its
-    segment (inside `$(...)`, backticks, a launcher body, behind `sudo`/`xargs`) or names no target, or when no
-    segment deletes."""
-    deletes = [d for d in _deletes(raw) if d[0] in _RECURSIVE]
-    if any(depth or k for _key, depth, _seg, k in deletes):
+    segment (inside `$(...)`, backticks, a launcher body, behind `sudo`/`xargs`), is typed as a name whose operands
+    its row does not judge, or names no target, or when no segment deletes."""
+    deletes = [d for d in _deletes(raw) if d[0].tree]
+    if any(depth or k for _row, depth, _seg, k in deletes):
         return None
-    heads = {seg.start for _key, _depth, seg, _k in deletes}
+    heads = {seg.start: row for row, _depth, seg, _k in deletes}
     assignments = literal_assignments(executable_text(raw))
     here = cwd or _project_root()
     found = []
@@ -583,7 +605,7 @@ def _delete_targets(raw: str, cwd: str | None):
             continue
         if seg.start not in heads:
             continue
-        if tokens[0].lower() not in _DELETE_CMD_NAMES or seg.substitutions:
+        if tokens[0].lower() not in heads[seg.start].judged or seg.substitutions:
             return None
         targets = [t for t in tokens[1:] if not t.startswith('-')]
         if not targets:
@@ -646,18 +668,18 @@ def check_bash_command(command: str, cwd: str | None = None,
 
 
 def _check_bash_command(command: str, cwd: str | None, transcript_path: str | None) -> tuple[bool, str]:
-    found = {key for key, *_ in _deletes(command)}
-    for key, message in DELETES:
-        if key not in found:
+    found = {row.key for row, *_ in _deletes(command)}
+    for row in DELETES:
+        if row.key not in found:
             continue
-        # A recursive delete confined to regenerable harness scratch, or to a `NAME=$(mktemp -d)` directory this same
+        # A tree delete confined to regenerable harness scratch, or to a `NAME=$(mktemp -d)` directory this same
         # command owns, passes; a drive format never does.
-        if key != "format" and _deletable(command, cwd, transcript_path):
+        if row.tree and _deletable(command, cwd, transcript_path):
             continue
-        if key in _RECURSIVE:
-            return True, (message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
-                          + _CACHE_HINT + _delete_reason(command, cwd, transcript_path))
-        return True, message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
+        message = row.message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
+        if row.tree:
+            message += _CACHE_HINT + _delete_reason(command, cwd, transcript_path)
+        return True, message
     return False, ""
 
 
@@ -1528,7 +1550,7 @@ def check(payload):
     blocked, message = check_bash_command(command, cwd, transcript)
     if blocked:
         rewritten = None
-        if payload.get("tool_name") == "Bash" and "recursive" in message.lower():
+        if payload.get("tool_name") == "Bash":
             rewritten = rewrite_absent_forced_deletes(command, cwd)
         if rewritten is None or check_bash_command(rewritten, cwd, transcript)[0]:
             return _output("deny", message)

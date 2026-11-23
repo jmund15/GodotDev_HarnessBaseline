@@ -666,3 +666,21 @@ def test_s4_a_temp_tree_holding_the_project_or_its_worktree_stays_denied(plant, 
     outside = Path(_tempfile.mkdtemp(prefix="v2s4_wt_", dir=str(plant.parent)))
     git(plant, "worktree", "add", "-q", (outside / "lane").as_posix(), "HEAD")
     assert bash('rm -rf "%s"' % outside.as_posix(), plant).denied
+
+
+# --- R3: a delete verb is one `DELETES` row ---------------------------------------------------------------------
+def test_a_crafted_delete_verb_is_one_row(plant, tmp_path, monkeypatch):
+    """One row teaches the floor a verb: its flag shape denies with the row's text, a bare call passes, an operand the
+    floor proves a cache passes, and a forced run on an absent, otherwise denied scratch path is rewritten to `true`."""
+    import dangerous_shell_guard as dsg
+    row = dsg.Delete("wipe", names=("wipe",), runs=lambda args: "-r" in args, message="BLOCKED: crafted wipe -r",
+                     judged=("wipe",), absent_ok=lambda args: "-f" in args)
+    monkeypatch.setattr(dsg, "DELETES", dsg.DELETES + (row,))
+    denied = bash("wipe -r src", plant)
+    assert denied.denied and "crafted wipe -r" in denied.reason
+    assert bash("wipe src", plant).kind == "allow"
+    assert bash("wipe -r .claude/.cache/x", plant).kind == "allow"
+    transcript = tmp_path / (SID + ".jsonl")
+    transcript.write_text("", encoding="utf-8")
+    peer_absent = "wipe -r -f .claude/scratch/session_end/%s/p1" % OTHER
+    assert bash(peer_absent, plant, transcript_path=transcript).updated["command"] == "true"
