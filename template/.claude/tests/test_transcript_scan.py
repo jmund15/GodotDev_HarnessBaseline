@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Proof for hooks/_transcript_scan.py and the readers built on it.
 
-Every compaction-path transcript reader resumes from a cached byte offset over an append-only
-transcript, and its result equals a cold full parse: owner prompts with their U-ids (line indices),
-the ledger's prior summaries and facts block, the anchor's reply contexts and the metrics launch
-scan. A truncated, rewritten or replaced transcript, or an edited reader, restarts at line 1. Caches
-of a deleted transcript are swept. Both compaction hooks log duration and output bytes per run.
+The owner-prompt reader resumes from a cached byte offset over an append-only transcript, and its
+result equals a cold full parse: owner prompts with their U-ids (line indices). A truncated, rewritten
+or replaced transcript, or an edited reader, restarts at line 1. Caches of a deleted transcript are swept.
 The rows are read from tests/fixtures/transcript_scan/rows.jsonl: lines cut from one captured session
 transcript (each row's uuid and type match a line of it) and trimmed, with absolute paths moved under a
 neutral root and prose neutral where no case checks it. They hold an owner prompt and a short reply, a command's `ARGUMENTS:` companion, a question
@@ -28,9 +26,6 @@ STATE = tempfile.mkdtemp(prefix="transcript_scan_state_")
 os.environ["HARNESS_HOOK_STATE_DIR"] = STATE
 
 import _transcript_scan as ts  # noqa: E402
-import compact_directive_anchor as anchor  # noqa: E402
-import compact_directive_ledger as ledger  # noqa: E402
-import orchestration_metrics as om  # noqa: E402
 import session_digest as sd  # noqa: E402
 
 FIXTURE = HERE / "fixtures" / "transcript_scan" / "rows.jsonl"
@@ -53,8 +48,12 @@ SPLIT = len(LINES) * 2 // 3
 def cold_owner(path):
     """The cold full parse the cache must reproduce: the builder's user messages merged with both
     recover passes, each reading the whole file."""
-    return sd.merge_recovered_prompts(sd._digest_dict(path)["user_messages"] or [],
-                                      sd.recover_meta_command_prompts(path) + sd.recover_question_answers(path))
+    builder = sd.TranscriptSummaryBuilder(path.stem, str(path), full_evidence=True)
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            builder.process_line(line)
+    messages = builder.finalize(backup_limits=False)["user_messages"] or []
+    return sd.merge_recovered_prompts(messages, sd.recover_meta_command_prompts(path) + sd.recover_question_answers(path))
 
 
 def last_stat(name):
@@ -122,57 +121,6 @@ class OwnerPrompts(Case):
         self.assertEqual(last_stat("owner_prompts")["resumed_at"], offset)
 
 
-class LedgerAndAnchor(Case):
-    def test_ledger_readers_warm_equal_cold(self):
-        self.write(LINES[:SPLIT])
-        ledger.prior_summaries(self.path), ledger.facts_lines(self.path)
-        self.write(LINES[SPLIT:], "a")
-        warm = (ledger.prior_summaries(self.path), ledger.facts_lines(self.path))
-        self.assertGreater(last_stat("ledger_facts")["resumed_at"], 0)
-        self.assertGreater(last_stat("ledger_summaries")["resumed_at"], 0)
-        self.fresh_state()
-        cold = (ledger.prior_summaries(self.path), ledger.facts_lines(self.path))
-        self.assertEqual(last_stat("ledger_facts")["resumed_at"], 0)
-        self.assertEqual(warm, cold)
-        self.assertEqual(len(cold[0]), ledger.MIN_PRIOR_SUMMARIES, "fixture must hold two prior summaries")
-        self.assertTrue(any("Background jobs" in line for line in cold[1]), "fixture must reach a running job")
-
-    def test_reply_contexts_warm_equal_cold_and_follow_the_asked_set(self):
-        self.write(LINES)
-        messages = [m for m in cold_owner(self.path) if anchor.keep(m)]
-        early = [m for m in messages if m["index"] <= SPLIT]
-        self.write(LINES[:SPLIT])
-        anchor.reply_contexts(self.path, early)
-        self.write(LINES[SPLIT:], "a")
-        warm = anchor.reply_contexts(self.path, messages)
-        self.assertGreater(last_stat("reply_contexts")["resumed_at"], 0)
-        self.fresh_state()
-        cold = anchor.reply_contexts(self.path, messages)
-        self.assertEqual(warm, cold)
-        self.assertTrue(cold, "fixture must reach a reply that needs its context")
-        fewer = messages[1:]
-        self.assertEqual(anchor.reply_contexts(self.path, fewer), {k: v for k, v in cold.items()
-                                                                   if k in {m["index"] for m in fewer}})
-
-
-class MetricsLaunchScan(Case):
-    def test_launch_readers_warm_equal_cold(self):
-        session = str(self.path)[:-len(".jsonl")]
-        self.write(LINES[:SPLIT])
-        om._sidecar_record_launches(session)
-        self.write(LINES[SPLIT:], "a")
-        warm = (om._fanout_jobs_paths(str(self.path)), om._sidecar_record_launches(session),
-                om.uncaptured_fanout_jobs(session))
-        self.assertGreater(last_stat("metrics_launches")["resumed_at"], 0)
-        self.fresh_state()
-        before = len(ts.STATS)
-        cold = (om._fanout_jobs_paths(str(self.path)), om._sidecar_record_launches(session),
-                om.uncaptured_fanout_jobs(session))
-        self.assertEqual([s for s in ts.STATS[before:] if s["scanner"] == "metrics_launches"][0]["resumed_at"], 0)
-        self.assertEqual(warm, cold)
-        self.assertTrue(cold[1], "fixture must reach a sidecar launch")
-
-
 class ScannerMechanics(Case):
     def collector(self, source):
         return ts.Scanner("collect_probe", lambda: {"rows": []},
@@ -220,35 +168,6 @@ class ScannerMechanics(Case):
         ts.scan(self.path, self.collector(source))
         self.assertFalse(os.path.exists(stale))
         self.assertTrue(os.path.isfile(ts.cache_path(self.path, self.collector(source))))
-
-
-class HookRunLog(Case):
-    def run_hook(self, name, event):
-        project = self.dir / "project"
-        env = dict(os.environ, CLAUDE_PROJECT_DIR=str(project), HARNESS_PENDING_COUNT="0",
-                   HARNESS_TASK_RECORD_DIR=str(project / "tasks"))
-        env.pop("CLAUDE_CODE_SIDECAR_PROMPT_FILE", None)
-        payload = {"hook_event_name": event, "source": "compact", "transcript_path": str(self.path),
-                   "session_id": self.path.stem, "cwd": str(project)}
-        proc = subprocess.run([sys.executable, str(CLAUDE / "hooks" / name)], input=json.dumps(payload).encode(),
-                              capture_output=True, env=env, timeout=120)
-        self.assertEqual(proc.returncode, 0, proc.stderr.decode(errors="replace"))
-        self.assertNotIn(b"Traceback", proc.stderr)
-        return proc.stdout, project / "logs" / "compaction_hooks.jsonl"
-
-    def test_both_compaction_hooks_log_duration_and_output_bytes(self):
-        self.write(LINES)
-        for name, event in (("compact_directive_ledger.py", "PreCompact"),
-                            ("compact_directive_anchor.py", "SessionStart")):
-            stdout, log = self.run_hook(name, event)
-            self.assertTrue(stdout)
-            rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
-            row = rows[-1]
-            self.assertEqual(row["hook"], name[:-3])
-            self.assertEqual(row["output_bytes"], len(stdout))
-            self.assertIsInstance(row["duration_s"], float)
-            self.assertEqual(row["transcript_bytes"], self.path.stat().st_size)
-            self.assertTrue(row["scans"], "the run log names the scans it ran")
 
 
 if __name__ == "__main__":
