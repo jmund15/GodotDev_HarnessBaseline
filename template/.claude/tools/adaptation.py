@@ -14,13 +14,10 @@ Command line (run from the repo root):
     (`playtest-subject-folders`). An unknown id exits 2.
 
 `gate_cadence` is a job's cadence data: `slice`, `merge` and `close` are command forms a rails' `Your checks`
-line prints verbatim, and `wide` holds one row per wide runner (invocation regex, exempt arguments, optional
-narrow rule, optional `hint` the deny prints as the narrow form to write instead). `reach` ({name, paths: [glob],
-cmd}), `reach_exempt` (globs) and `reach_fallback` (the full form) are the table `tools/reach_run.py` runs a slice
-from. `main` ({command, retry_exits, outputs}) is the gate `scripts/main_check.py` runs on the default branch after
-a land: exit 0 passes, exit 1 fails and names each failed test as a `FAILED_TEST=<id>` stdout line, an exit in
-`retry_exits` is rerun once, any other exit is no verdict, and `outputs` are paths the gate writes. `gate_cadence_errors`
-validates the table; a malformed row fails `get gate_cadence` (exit 1).
+line prints verbatim. `gate_cadence_errors` validates the table; a malformed row fails `get gate_cadence` (exit 1).
+`pre_bash` is the floor's project data: `protected` rows ({pattern, why}: a command whose kill is denied) and
+`router_entrypoints` (script names whose run the call router sends to a delegate). A malformed row is dropped
+with one stderr line. `scratch_keep` names the top-level scratch folders `tools/scratch_prune.py` never prunes.
 """
 from __future__ import annotations
 
@@ -63,8 +60,6 @@ DEFAULTS: dict = {
     "doc_roots": [],
     # tools/drift_scan.py (MaddManager): {sources, consumers, min_length, ignore}; empty means not configured.
     "drift_scan": {},
-    # tools/usage_report.py: the weekly quota reset ({weekday, hour}, machine-local).
-    "usage_reset": {"weekday": "sunday", "hour": 13},
     # commands/commit_push.md: the branch prefix a land runner integrates; empty means none.
     "land_prefix": "",
     # commands/commit_push.md step 6: the command that waits on a land and reports it; empty means none.
@@ -73,10 +68,15 @@ DEFAULTS: dict = {
     "main_check": "",
     # hooks/_delete_rule.py: ignored build outputs a worktree delete may discard (fnmatch; a directory covers its contents).
     "regenerable_ignored": [],
-    # hooks/_wide_runs.py, hooks/wide_test_guard.py, tools/guard_text.py, tools/reach_run.py, scripts/main_check.py.
-    # The shared default holds the harness slice row; a project's table replaces it whole, so it restates its own rows.
+    # skills/change_control/SKILL.md, the rails' `Your checks` line. The shared default holds the harness slice
+    # row; a project's table replaces it whole, so it restates its own rows.
     "gate_cadence": {"slice": ["for `.claude/**` units: the edited unit's proof file, run directly"],
-                     "merge": [], "close": [], "wide": []},
+                     "merge": [], "close": []},
+    # hooks/kill_guard.py (`protected`: {pattern, why} rows of commands a kill is denied for), hooks/run_call_router.py
+    # (`router_entrypoints`: script names run as a delegate's one job): the project's values in the floor's code.
+    "pre_bash": {"protected": [], "router_entrypoints": []},
+    # tools/scratch_prune.py: top-level scratch folders a tool keeps across sessions; the prune never counts them.
+    "scratch_keep": [],
     # commands/reindex_search.md (`run`): the commands its Step 3 runs.
     "index_prebuild": [],
     # commands/worklog.md, skills/worklog_reference/SKILL.md: [long form, short form] pairs; `get worklog_domains`.
@@ -106,24 +106,12 @@ _SUB_TYPES: dict = {
     "review": {"checklists": list},
     "dispatch": {"pre_launch": str, "post_return": str},
     "pr_ready": {"checks": list},
+    "pre_bash": {"protected": list, "router_entrypoints": list},
 }
 
 _MISSING = object()
 
-CADENCE_KEYS = ("slice", "merge", "close", "wide", "reach", "reach_exempt", "reach_fallback", "main")
-
-
-def _regex_error(pattern, where: str, one_group: bool = False):
-    """The error for a value that must be a compiling regex, or [] when it is one."""
-    if not isinstance(pattern, str) or not pattern.strip():
-        return ["%s is not a non-empty string" % where]
-    try:
-        compiled = re.compile(pattern)
-    except re.error as exc:
-        return ["%s does not compile: %s" % (where, exc)]
-    if one_group and compiled.groups != 1:
-        return ["%s needs exactly one capturing group, has %d" % (where, compiled.groups)]
-    return []
+CADENCE_KEYS = ("slice", "merge", "close")
 
 
 def _cadence_list(value, key: str) -> list:
@@ -132,111 +120,6 @@ def _cadence_list(value, key: str) -> list:
         return ["%s is not a list" % key]
     return ["%s[%d] is not a non-empty string" % (key, index)
             for index, row in enumerate(rows) if not isinstance(row, str) or not row.strip()]
-
-
-def _wide_row_errors(index: int, row) -> list:
-    where = "wide[%d]" % index
-    if not isinstance(row, dict):
-        return ["%s is not an object" % where]
-    errors = []
-    unknown = sorted(set(row) - {"runner", "exempt", "narrow", "hint"})
-    if unknown:
-        errors.append("%s has unknown keys %s" % (where, ", ".join(unknown)))
-    if "hint" in row and (not isinstance(row["hint"], str) or not row["hint"].strip()):
-        errors.append("%s.hint is not a non-empty string" % where)
-    errors += _regex_error(row.get("runner"), where + ".runner")
-    exempt = row.get("exempt", [])
-    if not isinstance(exempt, list):
-        errors.append("%s.exempt is not a list" % where)
-    else:
-        for at, pattern in enumerate(exempt):
-            errors += _regex_error(pattern, "%s.exempt[%d]" % (where, at))
-    narrow = row.get("narrow")
-    if narrow is None:
-        return errors
-    if not isinstance(narrow, dict):
-        return errors + ["%s.narrow is not an object or null" % where]
-    if set(narrow) not in ({"requires"}, {"declared"}):
-        return errors + ["%s.narrow needs exactly one of requires|declared" % where]
-    if "requires" in narrow:
-        terms = narrow["requires"]
-        if not isinstance(terms, list) or not terms:
-            return errors + ["%s.narrow.requires is not a non-empty list" % where]
-        for at, pattern in enumerate(terms):
-            errors += _regex_error(pattern, "%s.narrow.requires[%d]" % (where, at))
-        return errors
-    declared = narrow["declared"]
-    if not isinstance(declared, dict):
-        return errors + ["%s.narrow.declared is not an object" % where]
-    unknown = sorted(set(declared) - {"arg", "glob", "decl", "admit"})
-    if unknown:
-        errors.append("%s.narrow.declared has unknown keys %s" % (where, ", ".join(unknown)))
-    for field in ("arg", "glob"):
-        if not isinstance(declared.get(field), str) or not declared[field].strip():
-            errors.append("%s.narrow.declared.%s is not a non-empty string" % (where, field))
-    decl = declared.get("decl")
-    if not isinstance(decl, list) or not decl:
-        errors.append("%s.narrow.declared.decl is not a non-empty list" % where)
-    else:
-        for at, pattern in enumerate(decl):
-            errors += _regex_error(pattern, "%s.narrow.declared.decl[%d]" % (where, at), one_group=True)
-    admit = declared.get("admit")
-    if not isinstance(admit, list):
-        errors.append("%s.narrow.declared.admit is not a list" % where)
-    else:
-        for at, pattern in enumerate(admit):
-            errors += _regex_error(pattern, "%s.narrow.declared.admit[%d]" % (where, at))
-    return errors
-
-
-def _reach_errors(value) -> list:
-    errors = []
-    rows = value.get("reach", [])
-    if not isinstance(rows, list):
-        return ["reach is not a list"]
-    for index, row in enumerate(rows):
-        where = "reach[%d]" % index
-        if not isinstance(row, dict):
-            errors.append("%s is not an object" % where)
-            continue
-        unknown = sorted(set(row) - {"name", "paths", "cmd"})
-        if unknown:
-            errors.append("%s has unknown keys %s" % (where, ", ".join(unknown)))
-        for field in ("name", "cmd"):
-            if not isinstance(row.get(field), str) or not row[field].strip():
-                errors.append("%s.%s is not a non-empty string" % (where, field))
-        paths = row.get("paths")
-        if not isinstance(paths, list) or not paths or not all(isinstance(g, str) and g.strip() for g in paths):
-            errors.append("%s.paths is not a non-empty list of globs" % where)
-    exempt = value.get("reach_exempt", [])
-    if not isinstance(exempt, list) or not all(isinstance(g, str) and g.strip() for g in exempt):
-        errors.append("reach_exempt is not a list of globs")
-    fallback = value.get("reach_fallback", "")
-    if not isinstance(fallback, str):
-        errors.append("reach_fallback is not a string")
-    return errors
-
-
-def _main_errors(value) -> list:
-    if "main" not in value:
-        return []
-    main = value["main"]
-    if not isinstance(main, dict):
-        return ["main is not an object"]
-    errors = []
-    unknown = sorted(set(main) - {"command", "retry_exits", "outputs"})
-    if unknown:
-        errors.append("main has unknown keys %s" % ", ".join(unknown))
-    command = main.get("command")
-    if not isinstance(command, list) or not command or not all(isinstance(a, str) and a.strip() for a in command):
-        errors.append("main.command is not a non-empty argv list of strings")
-    exits = main.get("retry_exits", [])
-    if not isinstance(exits, list) or not all(isinstance(e, int) and not isinstance(e, bool) for e in exits):
-        errors.append("main.retry_exits is not a list of integers")
-    outputs = main.get("outputs", [])
-    if not isinstance(outputs, list) or not all(isinstance(o, str) and o.strip() for o in outputs):
-        errors.append("main.outputs is not a list of paths")
-    return errors
 
 
 def gate_cadence_errors(value) -> list:
@@ -249,16 +132,8 @@ def gate_cadence_errors(value) -> list:
     unknown = sorted(set(value) - set(CADENCE_KEYS))
     if unknown:
         errors.append("has unknown keys %s" % ", ".join(unknown))
-    for key in ("slice", "merge", "close"):
+    for key in CADENCE_KEYS:
         errors += _cadence_list(value, key)
-    errors += _reach_errors(value)
-    errors += _main_errors(value)
-    wide = value.get("wide", [])
-    if not isinstance(wide, list):
-        errors.append("wide is not a list")
-    else:
-        for index, row in enumerate(wide):
-            errors += _wide_row_errors(index, row)
     return errors
 
 
@@ -316,7 +191,38 @@ def _read_file(path: Path) -> dict:
             _warn(path, key, f"is wrong-typed (want {expected.__name__})")
             continue
         values[key] = _sub_values(path, key, value) if key in _SUB_TYPES else value
+    if "pre_bash" in values:
+        values["pre_bash"] = _pre_bash_rows(path, values["pre_bash"])
     return values
+
+
+def _pre_bash_rows(path: Path, table: dict) -> dict:
+    """`table` with each malformed row of `protected` and `router_entrypoints` dropped, one stderr line per row."""
+    for sub, ok in (("protected", _protected_row_ok), ("router_entrypoints", _entrypoint_ok)):
+        kept = []
+        for index, row in enumerate(table[sub]):
+            if ok(row):
+                kept.append(row)
+            else:
+                _warn(path, "pre_bash.%s[%d]" % (sub, index), "is malformed")
+        table[sub] = kept
+    return table
+
+
+def _protected_row_ok(row) -> bool:
+    if not isinstance(row, dict) or set(row) != {"pattern", "why"}:
+        return False
+    if not all(isinstance(row[k], str) and row[k].strip() for k in row):
+        return False
+    try:
+        re.compile(row["pattern"])
+    except re.error:
+        return False
+    return True
+
+
+def _entrypoint_ok(name) -> bool:
+    return isinstance(name, str) and bool(name.strip())
 
 
 def _sub_values(path: Path, key: str, value: dict) -> dict:

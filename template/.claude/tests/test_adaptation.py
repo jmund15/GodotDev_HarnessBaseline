@@ -24,9 +24,7 @@ import adaptation  # noqa: E402
 GOOD_CADENCE = {
     "slice": ["run the edited unit's proof file"],
     "merge": ["npm run verify:merge"],
-    "close": ["python3 .claude/scripts/harness_tests.py --close"],
-    "wide": [{"runner": "(?:python3?\\s+)?\\S*harness_tests\\.py\\b", "exempt": ["^--help$"], "narrow": None},
-             {"runner": "npm run verify\\b", "exempt": [], "narrow": {"requires": ["^--reach$", "\\.spec\\.ts$"]}}],
+    "close": ["npm run verify:close"],
 }
 
 
@@ -148,13 +146,11 @@ def test_tag_paths_is_none_when_no_registry_is_set(tmp_path):
 def test_gate_cadence_good_table_validates_and_bad_rows_are_named():
     assert adaptation.gate_cadence_errors(GOOD_CADENCE) == []
     bad = [
-        ("wide[0].hint", dict(GOOD_CADENCE, wide=[dict(GOOD_CADENCE["wide"][0], hint=5)])),
         ("slice", dict(GOOD_CADENCE, slice="run")),
-        ("wide[0].runner", dict(GOOD_CADENCE, wide=[{"runner": "[", "exempt": [], "narrow": None}])),
-        ("wide[0].narrow", dict(GOOD_CADENCE, wide=[{"runner": "x", "exempt": [], "narrow": {}}])),
-        ("reach[0].cmd", {"reach": [{"name": "a", "paths": ["x/**"]}]}),
-        ("main.command", {"main": {"command": "run it"}}),
-        ("main.retry_exits", {"main": {"command": ["x"], "retry_exits": [True]}}),
+        ("merge[0]", dict(GOOD_CADENCE, merge=[""])),
+        ("unknown keys wide", dict(GOOD_CADENCE, wide=[])),
+        ("unknown keys reach", dict(GOOD_CADENCE, reach=[])),
+        ("unknown keys main", dict(GOOD_CADENCE, main={})),
     ]
     for needle, value in bad:
         errors = adaptation.gate_cadence_errors(value)
@@ -191,15 +187,15 @@ def test_cli_get_prints_a_scalar_through_a_spawned_process(tmp_path):
 
 def test_cli_verbs_in_process(tmp_path, monkeypatch, capsys):
     claude = _claude_dir(tmp_path, {
-        "index_prebuild": [], "usage_reset": {"weekday": "monday", "hour": 2},
+        "index_prebuild": [], "scratch_keep": ["boot"],
         "sensitivity_tags": [{"id": "playtest-subject-folders", "paths": ["NPCs/**"], "sets": {}, "source": "s"}],
         "gate_cadence": GOOD_CADENCE}, name="cli")
     spec = importlib.util.spec_from_file_location("adaptation_cli", TOOL)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.__file__ = str(Path(claude) / "tools" / "adaptation.py")  # claude_dir is the file's grandparent
-    assert module.main(["get", "usage_reset"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"weekday": "monday", "hour": 2}
+    assert module.main(["get", "scratch_keep"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["boot"]
     assert module.main(["tag", "playtest-subject-folders"]) == 0
     assert capsys.readouterr().out.splitlines() == ["NPCs/**"]
     assert module.main(["tag", "missing"]) == 2
@@ -223,3 +219,43 @@ def test_cli_run_executes_each_entry_and_reports_a_failure(tmp_path, capsys):
     assert module.main(["run", "index_prebuild"]) == 0
     assert open(marker, encoding="utf-8").read() == "x"
     assert "exit 3" in capsys.readouterr().err
+
+
+def test_the_key_list_is_the_kept_callers_keys():
+    assert adaptation.CADENCE_KEYS == ("slice", "merge", "close")
+    assert "usage_reset" not in adaptation.DEFAULTS
+    assert set(adaptation.DEFAULTS["gate_cadence"]) == set(adaptation.CADENCE_KEYS)
+    assert not (Path(TOOL).parent.parent / "skills" / "project_subsystems" / "adaptation.godot.json").exists()
+
+
+def test_pre_bash_and_scratch_keep_default_empty_and_read_back(tmp_path, capsys):
+    assert adaptation.get(_claude_dir(tmp_path, None, name="a"), "pre_bash") == {"protected": [], "router_entrypoints": []}
+    assert adaptation.get(_claude_dir(tmp_path, None, name="b"), "scratch_keep") == []
+    rows = {"protected": [{"pattern": "run_grid\.sh", "why": "a benchmark grid"}], "router_entrypoints": ["verify"]}
+    claude = _claude_dir(tmp_path, {"pre_bash": rows, "scratch_keep": ["boot", "kfm"]}, name="c")
+    assert adaptation.get(claude, "pre_bash.protected") == rows["protected"]
+    assert adaptation.get(claude, "pre_bash.router_entrypoints") == ["verify"]
+    assert adaptation.get(claude, "scratch_keep") == ["boot", "kfm"]
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("bad", [
+    {"protected": [{"pattern": "[", "why": "w"}]},
+    {"protected": [{"pattern": "x"}]},
+    {"protected": [{"pattern": "x", "why": " "}]},
+    {"protected": ["x"]},
+    {"protected": "x"},
+    {"router_entrypoints": [5]},
+], ids=["bad-regex", "no-why", "blank-why", "not-a-row", "not-a-list", "bad-name"])
+def test_a_malformed_pre_bash_row_keeps_the_default_and_names_itself(tmp_path, capsys, bad):
+    claude = _claude_dir(tmp_path, {"pre_bash": bad})
+    assert adaptation.get(claude, "pre_bash") == {"protected": [], "router_entrypoints": []}
+    err = capsys.readouterr().err
+    assert "pre_bash" in err and len(err.strip().splitlines()) == 1
+
+
+def test_a_good_row_beside_a_bad_one_keeps_only_the_good_row(tmp_path, capsys):
+    good = {"pattern": "x", "why": "w"}
+    claude = _claude_dir(tmp_path, {"pre_bash": {"protected": [good, {"pattern": "["}]}})
+    assert adaptation.get(claude, "pre_bash.protected") == [good]
+    assert "pre_bash.protected[1]" in capsys.readouterr().err
