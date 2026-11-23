@@ -1,0 +1,29 @@
+{
+  "_comment": "The external seat table, read by scripts/seat.sh (through tools/launch_check.py seat) and by the usage and capacity tools. Seat: adapter (a script under .claude/scripts, one per CLI), writes (yes: the seat may edit files in its own linked worktree; no: it returns its answer on stdout and seat.sh writes <out.md>), max_concurrent (jobs of this seat that may run at once on this machine), configDir (the login's config dir, ~ expands; empty for none). Model: the id the seat runs and its list price per 1M tokens, which prices the record only (the seat spends a plan's quota). Add a seat: one row here and one adapter; add a model: one row under models. Prices copied from reference/external_models.json on 2026-11-22.",
+  "seats": {
+    "claude-secondary": {
+      "adapter": "scripts/seat_claude.sh",
+      "writes": "yes",
+      "max_concurrent": 1,
+      "configDir": "~/.claude-secondary",
+      "model": "claude-sonnet-5-5"
+    },
+    "antigravity": {
+      "adapter": "scripts/seat_agy.sh",
+      "writes": "no",
+      "max_concurrent": 1,
+      "configDir": "",
+      "model": "antigravity/gemini-4-neon"
+    }
+  },
+  "models": {
+    "claude-sonnet-5-5": {
+      "price": {"cacheMissPer1M": 2, "cacheHitPer1M": 0.1, "outputPer1M": 10, "currency": "USD", "asOf": "2026-10-09",
+                "source": "platform.claude.com/docs/en/about-claude/pricing (list price, copied from external_models.json antigravity/claude-sonnet-5-5)"}
+    },
+    "antigravity/gemini-4-neon": {
+      "price": {"cacheMissPer1M": 3, "cacheHitPer1M": 0.15, "outputPer1M": 15, "currency": "USD", "asOf": "2026-11-21",
+                "source": "aistudio.google.com/docs/pricing (list price, copied from external_models.json antigravity/gemini-4-neon)"}
+    }
+  }
+}
