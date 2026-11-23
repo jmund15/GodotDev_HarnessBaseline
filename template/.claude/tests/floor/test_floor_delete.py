@@ -593,10 +593,26 @@ def test_s4_a_temp_tree_this_session_made_holding_no_repository_allows(plant):
     assert bash('rm -rf "%s"' % tree.as_posix(), plant).kind == "allow"
 
 
-def test_s4_a_temp_tree_holding_git_repositories_stays_denied_for_the_owner_to_rule(plant):
-    """v1 denies; CLAUDE.core.md's temp-dir exemption is ambiguous for a tree holding repositories, so the row
-    states v1's answer and the owner rules (`test_floor_ported.md` drop list, D-TT)."""
+def test_s4_a_temp_tree_holding_git_repositories_allows(plant):
+    """D-TT (owner, 2026-11-23): the core doctrine exempts temp dirs, repositories inside them included."""
     tree = Path(tempfile.mkdtemp(prefix="v2s4_"))
     (tree / "repo").mkdir()
     git(tree / "repo", "init", "-q")
-    assert bash('rm -rf "%s"' % tree.as_posix(), plant).denied
+    write(tree, "repo/work.txt")
+    assert bash('rm -rf "%s"' % tree.as_posix(), plant).kind == "allow"
+
+
+def test_s4_a_repository_outside_temp_stays_denied(plant, tmp_path):
+    (tmp_path / "elsewhere" / "repo").mkdir(parents=True)
+    git(tmp_path / "elsewhere" / "repo", "init", "-q")
+    assert bash('rm -rf "%s"' % (tmp_path / "elsewhere").as_posix(), plant).denied
+
+
+def test_s4_a_temp_tree_holding_the_project_or_its_worktree_stays_denied(plant, monkeypatch):
+    """The temp exemption never reaches the checkout the floor protects or a worktree registered to it."""
+    import tempfile as _tempfile
+    monkeypatch.setattr(_tempfile, "tempdir", str(plant.parent))
+    assert bash('rm -rf "%s"' % plant.as_posix(), plant).denied
+    outside = Path(_tempfile.mkdtemp(prefix="v2s4_wt_", dir=str(plant.parent)))
+    git(plant, "worktree", "add", "-q", (outside / "lane").as_posix(), "HEAD")
+    assert bash('rm -rf "%s"' % outside.as_posix(), plant).denied
