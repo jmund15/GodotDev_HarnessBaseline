@@ -13,6 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _case_pool import emit_section, run_cases, run_sections, run_sharded, unittest_cases  # noqa: E402
+import _case_pool_units  # noqa: E402
 
 
 def _timed(name):
@@ -62,31 +63,6 @@ def case_exits():
 
 def case_fails_with_log():
     raise AssertionError("roster did not end: the reason\nGRID START\nGRID COMPLETE")
-
-
-class PlantedUnit(unittest.TestCase):
-    def setUp(self):
-        self.ready = True
-
-    def test_passes(self):
-        self.assertTrue(self.ready)
-
-    def test_fails(self):
-        self.fail("planted")
-
-
-class FixtureUnit(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.shared = "planted"
-
-    @classmethod
-    def tearDownClass(cls):
-        with open(os.path.join(os.environ["POOL_SPANS"], "teardown_class"), "a", encoding="utf-8") as fh:
-            fh.write("x")
-
-    def test_sees_the_class_fixture(self):
-        self.assertEqual(self.shared, "planted")
 
 
 SECTION_CHILD = """
@@ -199,7 +175,7 @@ def main():
         failures.append("multi-line failure line: %r" % line)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        rc = run_cases(unittest_cases(PlantedUnit), jobs=2)
+        rc = run_cases(unittest_cases(_case_pool_units.PlantedUnit), jobs=2)
     named = [line.split()[1].rstrip(":") for line in out.getvalue().splitlines() if line.startswith("FAIL ")]
     ok = rc == 1 and named == ["PlantedUnit.test_fails"] and "ok PlantedUnit.test_passes" in out.getvalue()
     print("%-4s a unittest method runs as a case with setUp; its failure is the only one named: %s" % ("ok" if ok else "FAIL", named))
@@ -207,7 +183,7 @@ def main():
         failures.append("unittest cases: rc=%s named=%s" % (rc, named))
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        rc = run_cases(unittest_cases(FixtureUnit), jobs=1)
+        rc = run_cases(unittest_cases(_case_pool_units.FixtureUnit), jobs=1)
     torn = os.path.exists(os.path.join(spans, "teardown_class"))
     ok = rc == 0 and torn
     print("%-4s a unittest method runs inside its class's setUpClass and tearDownClass" % ("ok" if ok else "FAIL"))
@@ -242,6 +218,10 @@ def main():
         failures.append("long shard: rc=%s %s" % (rc, out.getvalue().strip()[-200:]))
     print("%d failure(s)" % len(failures))
     return 1 if failures else 0
+
+
+def test_proof():
+    assert main() == 0
 
 
 if __name__ == "__main__":
