@@ -188,6 +188,50 @@ class PeerMessageGuardTests(unittest.TestCase):
         self.assertFalse(guard.is_warm({"status": "idle"}, guard.WARM_SEC))
         self.assertFalse(guard.is_warm({"status": "idle"}, None))
 
+    def fixture_checkout(self, label, seats):
+        """A copy of the guard with its own seats.json (or none): the hook reads the table beside it."""
+        root = self.home / label / ".claude"
+        for sub, names in (("hooks", ("peer_message_guard.py", "_hook_state.py")), ("tools", ("launch_check.py",))):
+            (root / sub).mkdir(parents=True)
+            for name in names:
+                src = Path(__file__).resolve().parents[1] / sub / name
+                (root / sub / name).write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        if seats is not None:
+            (root / "seats.json").write_text(json.dumps({"seats": seats, "models": {}}), encoding="utf-8")
+        return root / "hooks" / "peer_message_guard.py"
+
+    def run_fixture(self, hook, to):
+        payload = {"tool_name": "SendMessage", "session_id": "this-sid", "tool_input": {"to": to, "message": "fyi"}}
+        result = subprocess.run([sys.executable, str(hook)], input=json.dumps(payload), text=True,
+                                capture_output=True, env=self.env(), timeout=60)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        return json.loads(result.stdout) if result.stdout.strip() else {}, result.stderr
+
+    def test_a_seats_json_login_is_read_and_a_fixture_without_one_is_not(self):
+        fixture_login = self.home / "fixture-login"
+        (fixture_login / "sessions").mkdir(parents=True)
+        doc = {"pid": 3, "sessionId": "dddd0000-0000-0000-0000-000000000000", "name": "peer-fixture",
+               "status": "idle", "kind": "interactive"}
+        (fixture_login / "sessions" / "3.json").write_text(json.dumps(doc), encoding="utf-8")
+        listed = self.fixture_checkout("listed", {"ext": {"adapter": "scripts/x.sh", "writes": "no", "max_concurrent": 1,
+                                                "configDir": str(fixture_login), "model": "m"}})
+        out, err = self.run_fixture(listed, "peer-fixture")
+        self.assertEqual("deny", out.get("hookSpecificOutput", {}).get("permissionDecision"), err)
+        unlisted = self.fixture_checkout("unlisted", {})
+        out, _ = self.run_fixture(unlisted, "peer-fixture")
+        self.assertEqual({}, out, "a login no seats.json row names is not read")
+
+    def test_a_missing_seats_json_is_named_and_the_own_login_is_still_checked(self):
+        own = self.home / ".claude" / "sessions"
+        doc = {"pid": 4, "sessionId": "eeee0000-0000-0000-0000-000000000000", "name": "peer-own",
+               "status": "idle", "kind": "interactive"}
+        (own / "4.json").write_text(json.dumps(doc), encoding="utf-8")
+        hook = self.fixture_checkout("missing", None)
+        out, err = self.run_fixture(hook, "peer-own")
+        self.assertIn("seats.json not read", err)
+        self.assertEqual("deny", out.get("hookSpecificOutput", {}).get("permissionDecision"))
+
     def test_other_tools_and_bad_input_pass(self):
         self.peer(1, "peer-d7", "idle")
         self.assertEqual("allow", self.decide("peer-d7", tool="Bash")[0])
