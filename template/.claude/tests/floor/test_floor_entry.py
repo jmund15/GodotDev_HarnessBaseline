@@ -129,6 +129,22 @@ def test_a_floor_dispatcher_whose_decide_raises_denies_through_the_stub(tree, br
     assert spawn(tree, shell("ls", tmp_path))[0] == "deny"
 
 
+def test_the_floor_imports_only_its_own_modules(tree):
+    """A floor module's import chain is the floor's: a per-session state module or a v1 tool a later slice reshapes
+    must not be able to break the import, which would deny every call (review finding 5)."""
+    probe = "import sys; sys.path.insert(0, %r); import _floor; print(' '.join(sorted(sys.modules)))" % str(
+        tree / "hooks")
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "BASH_ENV", "PYTHONSTARTUP")}
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=env, timeout=60)
+    assert done.returncode == 0, done.stderr
+    loaded = set(done.stdout.split())
+    assert not loaded & {"_hook_state", "cli_usage", "index_commit", "reap"}, loaded
+
+
+def test_every_floor_member_has_its_broken_import_case():
+    assert set(FLOOR_MODULES) == {name for name, _matches, _action in _floor.FLOOR_MEMBERS}
+
+
 # --- in process: the dispatcher's own rules -----------------------------------------------------------------------
 def test_the_matcher_registers_every_tool_the_floor_judges():
     assert set(_floor.MATCHER.split("|")) == {"Bash", "PowerShell", "Monitor", "TaskStop"}

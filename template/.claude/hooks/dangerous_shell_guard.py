@@ -37,9 +37,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
-for _d in (os.path.join(os.path.dirname(_HOOKS_DIR), "tools"), _HOOKS_DIR):
-    if _d not in sys.path:
-        sys.path.insert(0, _d)
+if _HOOKS_DIR not in sys.path:
+    sys.path.insert(0, _HOOKS_DIR)
 from _command_text import executable_text, executable_spans, command_words, _REDIRECTION  # noqa: E402
 from _regenerable_clone import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
                                 is_plant_exhaust, is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
@@ -50,11 +49,10 @@ if _git_commit.executable_index is None or _git_commit.command_substitutions is 
 from _git_commit import (literal_assignments, expand_literal, resolve_cd, segments,  # noqa: E402
                          git_invocations, run_git, resolve_index, in_project, parse_commit_args, _pathspec_file,
                          _SHORT_VALUE_LETTERS)
-from _commit_scope import publishes_index, writes_index  # noqa: E402
+from _commit_scope import publishes_index, stage_record_base, stage_record_path, writes_index  # noqa: E402
 from _checkout_root import worktree_chain  # noqa: E402
 import _git_run  # noqa: E402
 from _transcript_calls import Call, Result, session_events  # noqa: E402
-from index_commit import stage_record_base, stage_record_path  # noqa: E402
 
 
 # Dangerous command patterns — applied to BOTH the Bash and PowerShell tools
