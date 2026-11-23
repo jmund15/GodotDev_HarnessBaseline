@@ -5,59 +5,49 @@ description: Recover a failed fan-out lens
 
 # /salvage_fanout — transient lens recovery
 
-Recover a failed lens only after proving what the engine actually ran. The run receipt and journal are the
-source of truth; a timeout, output-file presence, or empty search does not prove that a lens died.
+Recover a failed lens only after proving what the engine actually ran. The run's journal is the source of
+truth. A timeout, a present output file or an empty search does not prove that a lens died.
 
 ## Inputs
 
-`/salvage_fanout <transcriptDir-or-run-receipt> <lens-key> [--kind explore|review|dispatch] [--spill-dir <path>]`
+`/salvage_fanout <run dir> <lens-key>`
 
-- `<transcriptDir-or-run-receipt>` is the exact Workflow transcript directory or the engine run receipt.
-- `<lens-key>` is the selected lens/job key from the run's started row.
-- `--kind` is optional only when the run receipt identifies exactly one workflow kind.
-- `--spill-dir <path>` is required with a bare transcript directory; omit it only when the run receipt carries
-  the engine's `spillDir` or per-lens `spillMetadata`.
+- `<run dir>` is the Workflow run's transcript directory, the one holding its `journal.jsonl`.
+- `<lens-key>` is the lens or job key from the run's started row.
 
-Reject missing or unknown workflow kind, missing or unknown lens key, an absent or ambiguous transcript/run
-receipt, missing spill metadata, and malformed journals before reading a deliverable. Do not guess a path
-from a key. Resolve the engine kind, run ID, journal hash, schema, started/terminal rows, and exact spill
-path from the run receipt plus validated journal; the journal alone does not carry spill metadata.
+Reject an absent run directory, a malformed journal, or a key with no started row, before reading any
+deliverable. Never guess a path from a key.
 
 ## Procedure
 
-1. **Validate the run receipt.** For the exploration or review kind, build the journal manifest with:
-
-   ```bash
-   python3 .claude/tools/session_digest.py --workflow-dir "<transcriptDir>" --workflow-kind <explore|review> --workflow-manifest
-   ```
-
-   `session_digest` supports only explore and review. A `dispatch` reads `journal.jsonl` directly, computes
-   its SHA-256, and validates the `launched`, selected `started`, and terminal rows; never call the unsupported
-   `--workflow-kind dispatch`. Use the selected started row's `agentId` to read the exact
-   `agent-<agentId>.jsonl`; never search every transcript and treat an empty Grep as absence. Bind the exact
-   spill path from the run receipt or `--spill-dir` plus the engine-reported sanitizer.
-2. **Prove terminal state.** Require the engine's terminal row for the selected key. If no terminal row exists,
-   report **still running** and wait for the harness notification. For a sidecar, also require its `.exit`/record and process-state answer. For a manual Agent,
-   require the harness task's terminal notification.
-3. **Recover a completed payload.** Prefer the exact engine-reported spill path, then the final payload in the
-   transcript. Validate against the resolved schema: the exploration kind uses `claims` (per-lens journal row, engine-reported spill sanitizer), `review` uses `findings` (preserve every source finding), and
-   `dispatch` uses its free-form job result (exact spill/digest metadata, the engine's PINS and terminal row). Never infer a result from a missing structured return; consolidation never turns a missing lens into a clean panel. Write a recovered result only to the engine-reported
-   `<spillDir>/<sanitized-key>.salvaged.md` path, with the run ID, journal hash, source path, and lens key.
-   A spill or payload is **recovered**, not verified; recheck every empirical claim first-party before using it.
-4. **Handle a transient reset.** If the receipt contains a real resumable session ID and that transport
-   documents resume, use that documented resume path for a sidecar or manual Agent/session only. Native
-   Workflow child IDs are not SendMessage sessions; never promise `SendMessage` can resume one. A native
-   Workflow child, or a missing session receipt, may use parent reconstruction only when the transcript has
-   a complete tool-result for every started tool call and the mandate's required inputs/search roots show
-   engagement. Recheck each reconstructed empirical claim first-party and write `.salvaged.md`.
-5. **Recover incomplete evidence.** If complete tool results or mandate engagement are missing, run a failed-lens-only dispatch over the named missing scope; a recovery that leaves the evidence incomplete is spine H5 non-convergence, not another dispatch. Announce the dispatch in the one line `orchestration` §Pre-Dispatch Checklist names, record it as a task-record job row (`task_record.py job`), and compare the journal's PINS rows with the announcement after
-   return. Do not redispatch a completed lens or the whole panel.
-6. **Return the typed ledger.** Emit exactly one row for the selected lens with state `recovered`, `uncovered`,
-   or `redispatched`, the evidence path and verification status. Always emit `accounted lenses N/N`; until
-   N/N the panel remains **UNCOVERED**. A salvaged row stays uncovered until its first-party checks pass.
+1. **Read the journal.** Run `/session_digest workflow <run dir>`, which runs
+   `python3 .claude/tools/session_digest.py --workflow-dir "<run dir>"`. It prints the run's engine,
+   each key's started and terminal rows, the agent id and the spill path. Take the selected key's rows
+   from it. Read that agent's `agent-<agentId>.jsonl` by its exact name. An empty Grep across every
+   transcript is not absence.
+2. **Prove terminal state.** No terminal row for the key means **still running**: wait for the
+   Workflow's completion notification.
+3. **Recover a completed payload.** Take the spill path the journal names first, then the final payload in
+   the agent transcript. Check it against the engine's result shape: an explore lens returns `claims`, a
+   `dispatch.js` job its free-form result. A missing structured return is never read as an empty result,
+   and consolidation never turns a missing lens into a clean panel. Write the recovered result to
+   `<spill dir>/<key>.salvaged.md` with the run directory, the key and the source path. A recovered
+   payload is not verified: recheck every empirical claim first-party before using it.
+4. **Reconstruct after a transient reset.** A native Workflow child is not a resumable session, so
+   `SendMessage` cannot resume it. Reconstruct from the agent transcript only when every started tool call
+   has its result and the mandate's required inputs and search roots show engagement. Recheck each
+   reconstructed empirical claim first-party, then write `.salvaged.md`.
+5. **Re-dispatch the missing scope once.** When tool results or mandate engagement are missing, run one
+   `/delegate` job over the named missing scope of the failed lens only, never a completed lens or the
+   whole panel. When the work has a state file, record the job there. A re-dispatch that still leaves the
+   evidence incomplete is non-convergence: report the lens uncovered and stop.
+6. **Return the typed ledger.** Emit one row for the selected lens with state `recovered`, `uncovered`
+   or `redispatched`, the evidence path and the verification status. Always emit `accounted lenses N/N`.
+   Until N/N, the panel stays **UNCOVERED**. A salvaged row stays uncovered until its first-party checks
+   pass.
 
 ## Output contract
 
-The final report names the resolved kind, key, terminal evidence, exact spill path or final path, schema validation,
-row state, first-party checks, and the `accounted lenses N/N` receipt. If a required proof is absent, state
+The final report names the engine, key, terminal evidence, spill or final path, result-shape check, row
+state, first-party checks and the `accounted lenses N/N` receipt. When a required proof is absent, state
 `couldNotSatisfy` with the missing artifact and leave the panel UNCOVERED.

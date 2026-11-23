@@ -36,25 +36,17 @@ Name the pages before dispatching, seeded from the P1 lists in `source_trust.md`
 
 ### Shape A — deterministic fetch, then digest
 
-Land the bytes first. A question the project's version-pinned local docs cache covers resolves against that cache, at the path and with the builder the stack sibling of `source_trust.md` names. Everything else goes through `.claude/scripts/fetch_source.sh --dir <scratch> <1d urls...>`, which writes the artifacts and the TSV manifest Phase 3 verifies against. Answer `QUESTIONS` by quoting the landed artifacts with bounded `Grep`/`Read`, in `source_trust.md`'s claim shape — `file` = the URL cited, `artifact` = the local path quoted from.
+Land the bytes first. A question the project's version-pinned local docs cache covers resolves against that cache, at the path and with the builder the stack sibling of `source_trust.md` names. Everything else goes through `.claude/scripts/fetch_source.sh --dir <scratch> <1c urls...>`, which writes the artifacts and the TSV manifest Phase 3 verifies against. Answer `QUESTIONS` by quoting the landed artifacts with bounded `Grep`/`Read`, in `source_trust.md`'s claim shape — `file` = the URL cited, `artifact` = the local path quoted from.
 
 Use `mcp__ai-worker__read_web(urls=[...], question=...)` when the answer needs cross-page synthesis. Consume its bounded answer and per-URL preflight; a summary is not a verbatim citation. The tool cannot write an arbitrary requested artifact. Preserve quotable page bytes through `fetch_source.sh` first.
 
-If that route is unavailable, choose another eligible route explicitly or report the coverage gap. `orchestration` owns model, currency and budget checks.
+If that route is unavailable, choose another eligible route explicitly or report the coverage gap. `orchestration`'s model table owns the pick.
 
-### Shape B — three source-class lenses through the explore path
+### Shape B — three source-class lenses through the explore route
 
-`explore_result.py` already does corroboration merge, cross-lens contradiction detection, and unbacked-confidence downgrade. That IS the trust machinery — a claim asserted by `res-field` alone and contradicted by `res-official` surfaces as a contradiction the orchestrator must settle, which is exactly what a tier hierarchy is for.
+The explore engine already merges corroboration, flags cross-lens contradictions and checks evidence. That is the trust machinery: a claim `res-field` asserts alone and `res-official` contradicts surfaces as a contradiction the orchestrator must settle, which is what a tier hierarchy is for.
 
-The lenses are fan-out jobs, dispatched exactly as `/explore` Phase 2 does (`prepare`, `sidecar_fanout.py --detach`, then `explore_result.py`), with `"prefix": "research"` and each lens a manual seat:
-
-```json
-{"key": "<lens key>", "brief": "<scratchpad file of its mandate>", "kind": "author", "tier": "<tier>", "rows": {"<row>": "<rung>"}}
-```
-
-Consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5, except that Phase 3 step 1 rules UNCHECKED external claims.
-
-Write each resolved mandate below to its own scratchpad file and name it as the seat's `brief`. Each lens's `tier` is the model tier its pin serves (`orchestration` §5), not the source-class tier in the table. The CONTEXT file carries `QUESTIONS`, the 1d URL set, and the version pins (engine per `.claude/reference/project_stack.md`, .NET 9) — seeds, never caps.
+Dispatch the lenses as [`/explore`](explore.md) Step 2 does: one `Workflow` call to the explore engine, run directory `.claude/scratch/research_<slug>/`. Write each mandate below to its own file there and name it as that lens's `promptPath`, with `"kind": "lens"`. The context file (`contextPrefixPath`) carries `QUESTIONS`, the 1c URL set and the version pins `.claude/reference/project_stack.md` names: seeds, never caps. Consolidate as `/explore` Step 3 does; Phase 3 step 1 below settles the claims the engine could not verify.
 
 | Lens | Source class | Tier |
 |---|---|---|
@@ -62,7 +54,7 @@ Write each resolved mandate below to its own scratchpad file and name it as the 
 | `res-source` | first-party source, release notes, changelog | P1 |
 | `res-field` | issues, proposals, forums, prior-art write-ups | P3 |
 
-Resolve one suitable arm per lens through `orchestration`; `res-field` needs a qualified judgment role to weigh conflicting reports.
+Pin each lens from `orchestration`'s model table. The P tier in the table is the source class, never the model. `res-field` needs a model that can weigh conflicting reports.
 
 ### Lens mandates
 
@@ -84,8 +76,6 @@ You are res-official. You establish what the OFFICIAL documentation says about e
 ## Reporting Filter
 - Do NOT return general API tutorials. Only the behaviors the questions name.
 - Do NOT paraphrase a doc sentence into `evidence`. Quote it.
-
-{{CONTEXT}}
 ```
 
 ```
@@ -106,8 +96,6 @@ You are res-source. You establish what the IMPLEMENTATION does — first-party s
 ## Reporting Filter
 - Do NOT infer behavior from a function name. Quote the body or say you could not read it.
 - DO use the same `subject` string `res-official` would use for the same API — the engine groups on it to detect corroboration and contradiction.
-
-{{CONTEXT}}
 ```
 
 ```
@@ -128,21 +116,19 @@ You are res-field. You establish what practitioners REPORT — issues, proposals
 ## Reporting Filter
 - Do NOT return a claim whose only backing is a forum post asserted as fact.
 - Do NOT report volume of discussion. Report the behavior and what owns it.
-
-{{CONTEXT}}
 ```
 
 ---
 
 ## Phase 3: Verify & Record
 
-1. **Audit the citations.** Run `python .claude/tools/verify_claims.py <claims.json> --manifest <manifest.tsv>` over the Phase 2 fetch manifest. VERIFIED needs nothing further. **UNVERIFIED is escalate-and-read, never auto-gap** — a composed or cross-element quote fails a substring test exactly as a fabrication does, so open that artifact yourself and settle it. UNCHECKED (context7, WebSearch, no local artifact) has no machine verdict and is not a defect; it is never VERIFIED either (`reference/evidence_contract.md`). A citation that lands on a summary of the thing rather than the thing means the run failed at its one job — re-dispatch, do not report.
+1. **Audit the citations.** Write every claim that has an `artifact` as one `{"file": "<artifact>", "quote": "<evidence>"}` item in a findings file shaped as [`/review`](review.md) §The findings file describes, then run `python3 .claude/tools/quote_check.py <findings file> --root <repo root>`. The artifact paths are relative to that root, and the fetch manifest maps each one to its URL. A quote it does not print is verified. **A printed miss is escalate-and-read, never auto-gap**: a composed or cross-element quote fails a substring test exactly as a fabrication does, so open that artifact yourself and settle it. A claim with no artifact (context7, `WebSearch`) has no machine check. That is not a defect, and the claim is never reported as verified. A citation that lands on a summary of the thing rather than the thing means the run failed at its one job: re-dispatch, do not report.
 2. **Adjudicate contradictions.** Read both sides, settle first-party, and name the losing lens. Tier breaks the tie: a P1 quote beats any number of P3 reports, and a P3 that survives contradiction by P1 is a gap, not a winner.
 3. **Check the stopping criterion.** Every question in `QUESTIONS` is P1/P2-answered or recorded as a gap. An unanswered question that is neither is the failure this command exists to prevent.
 
 ### Artifact
 
-Write `Claude/Research/<slug>.md` in the vault — `{{PROJECT_NAME}}/` by default, `Jmodot/` when the finding would be useful in another game built on Jmodot. Frontmatter carries `researched:`, `questions:`, and `expires-with:` (the version the answers are true for — the engine pin from `.claude/reference/project_stack.md`, `.NET 9`, `GdUnit4 5.x`). Every claim line ends `— [title](url) [P1] · fetched <date>`. Gaps get their own section; a research file that hides its gaps is worse than one that reports none. Scratchpad instead of the vault only when the run is consumed in-session and nothing durable comes out of it.
+Write `<vault_root>/DevProjects/<project_name>/Claude/Research/<slug>.md`, each value printed by `python3 .claude/tools/adaptation.py get <key>`. When the finding concerns a repo in `adaptation.json` `paired_repos`, write it under that repo's vault folder instead, so other projects built on it find it. Frontmatter carries `researched:`, `questions:`, and `expires-with:` (the versions the answers are true for, from the pins `.claude/reference/project_stack.md` names). Every claim line ends `— [title](url) [P1] · fetched <date>`. Gaps get their own section; a research file that hides its gaps is worse than one that reports none. Scratchpad instead of the vault only when the run is consumed in-session and nothing durable comes out of it.
 
 ### Lifecycle
 
