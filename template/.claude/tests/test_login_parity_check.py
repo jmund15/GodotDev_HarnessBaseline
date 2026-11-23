@@ -239,6 +239,28 @@ def main():
          "ran past 2 s" in (line or "") and elapsed < 5 and not marker.exists() and not spawned,
          repr((line, round(elapsed, 1), marker.exists(), spawned)))
 
+    root = new_root()
+    module = load()
+    module.CHECK_ARGV = plant(root, DRIFT, 1)
+    module.LOGS = root / "logs"
+    module.spawn = lambda argv, log: None
+    saved_sidecar = os.environ.pop("CLAUDE_CODE_SIDECAR", None)   # a sidecar child decides nothing; test the owner's path
+    module._seat_rows = lambda: {"only-local": {"adapter": "scripts/seat_agy.sh", "writes": "no",
+                                                "max_concurrent": 1, "configDir": "", "model": "m"}}
+    line = decide_or_crash(module)
+    case("a seats.json with no external login runs no check and injects no line",
+         line is None and not (root / "check_ran").exists(), repr((line, (root / "check_ran").exists())))
+
+    def unreadable():
+        raise OSError("fixture unreadable")
+
+    module._seat_rows = unreadable
+    line = decide_or_crash(module)
+    if saved_sidecar is not None:
+        os.environ["CLAUDE_CODE_SIDECAR"] = saved_sidecar
+    case("an unreadable seats.json names the fault and runs no check",
+         line is not None and "seats.json not read" in line and not (root / "check_ran").exists(), repr(line))
+
     proc = subprocess.run([sys.executable, str(HOOK)], input="{}", capture_output=True, text=True,
                           env={**os.environ, "CLAUDE_CODE_SIDECAR": "1"}, timeout=60)
     case("the hook imports and exits 0 as SessionStart runs it (a sidecar child, so nothing is checked)",
