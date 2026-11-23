@@ -129,7 +129,7 @@ import json  # noqa: E402,F811
 import re  # noqa: E402
 import tempfile  # noqa: E402
 
-from amend_delivery import HOOK_TEXT_CAP  # noqa: E402
+from _hook_parts import HOOK_TEXT_CAP  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 UNREGISTERED = "unregistered-model-for-the-detailed-tier"  # no registry row: the longest (detailed) rails

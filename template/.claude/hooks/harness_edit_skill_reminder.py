@@ -40,7 +40,7 @@ import sys
 
 from _claude_scope import harness_tail
 from _hook_state import fire_once_since_compaction, skill_in_context, spent_mark, unspend
-from amend_delivery import HOOK_TEXT_CAP
+from _hook_parts import HOOK_TEXT_CAP
 
 # Key in the per-session routing state file that the other routing hooks share.
 STATE_KEY = "harness_edit_reminder"

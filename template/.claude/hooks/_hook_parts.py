@@ -15,8 +15,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from amend_delivery import HOOK_TEXT_CAP  # noqa: E402
 
+# The client's cap on hook text it injects (additionalContext, stdout); past it the client shows a 2,000-character
+# preview and a saved-file path instead (code.claude.com/docs/en/hooks).
+HOOK_TEXT_CAP = 10_000
 NL = chr(10)
 
 

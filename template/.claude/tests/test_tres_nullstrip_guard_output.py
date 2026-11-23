@@ -23,7 +23,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK = os.path.join(HERE, "..", "hooks", "tres_nullstrip_guard.py")
 sys.path.insert(0, os.path.join(HERE, "..", "hooks"))
-from amend_delivery import HOOK_TEXT_CAP  # noqa: E402
+from _hook_parts import HOOK_TEXT_CAP  # noqa: E402
 
 CS = (
     "using Godot;\n"
