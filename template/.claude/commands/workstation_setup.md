@@ -151,9 +151,11 @@ its old value; start a new one after a change.
    funded cloud alias for its roles.
 4. **An armless ai-worker is a valid end state** → DEGRADED, never BLOCKED-ON-USER. Bulk reads then
    go to direct reads or a `/delegate` scout (`CLAUDE.core.md` §9 Tool Routing).
-5. **Single-GPU concurrency env — report, don't set.** Each session runs its own ai-worker, and
-   nothing queues across them. Report a value other than `1` for `OLLAMA_NUM_PARALLEL` (requests per
-   loaded model) or `OLLAMA_MAX_LOADED_MODELS` (default 3× the GPU count).
+5. **Single-GPU concurrency env — report, don't set.** Each session runs its own ai-worker; a
+   cross-process lock (`~/.claude/ai_worker_backends/local_gpu.lock`) queues their local calls, but
+   Ollama's own settings still decide what it holds resident. Report a value other than `1` for
+   `OLLAMA_NUM_PARALLEL` (requests per loaded model) or `OLLAMA_MAX_LOADED_MODELS` (default 3× the GPU
+   count).
 6. **`OLLAMA_KV_CACHE_TYPE` must be `q4_0`** — BLOCKED-ON-USER otherwise. The pinned `qwen-local`
    build degenerates under `q8_0`; higher precision is not safer here (evidence: the `qwen-local`
    block in `models.yaml`). The value takes effect only after an Ollama restart, so confirm it
