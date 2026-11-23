@@ -1,94 +1,74 @@
 ---
-allowed-tools: Bash(git ls-files:*), Bash(git ls-tree:*), Bash(git branch:*), Bash(git grep:*), Bash(git check-ignore:*), Bash(python3 .claude/tools/lens.py:*), Bash(node:*), Bash(bash:*), Glob, Grep, Read, Write, Workflow
+allowed-tools: Bash(git ls-files:*), Bash(git ls-tree:*), Bash(git branch:*), Bash(git grep:*), Bash(git log:*), Bash(git check-ignore:*), Glob, Grep, Read, Write, Workflow
 description: Ground a design: map what exists, its owners, constraints and consumers, with explicit coverage
 ---
 
-# Explore
+# /explore
 
-Establish what exists before proposing a design. Return evidence-backed claims, not approval or recommendations.
+Establish what exists before a design is proposed: read-only lenses survey one topic in parallel and return evidence-backed claims, never recommendations. `/plan` consumes the result. A breadth map with no design question is a `/delegate` scout, not an explore.
 
-## When to invoke
+## Arguments
 
-Run when grounding is admitted (`_brainstorm_shared/execution_depth.md` §Admission table). Revisit only changed or uncovered dimensions.
+- `/explore <topic>`: the lenses the roster below selects.
+- `/explore --make-this-easy <one named change>`: adds `exp-change-ease`; a vague topic is not enough for it.
+- No argument, or a design question too vague to set coverage: ask one clarifying question and stop.
 
-`/explore <topic>` uses the trigger-selected lenses. `--make-this-easy <specific change>` adds the change-friction lens; a vague topic is not enough.
+## Step 1 — Scope
 
-## Phase 1: Scope & Seed
+1. State the topic in the owner's words, verbatim, with the capability or files it concerns, the intended change, and each owner-stated constraint or exclusion. A fact inherited from another session is a claim to check, never ground truth.
+2. Pick the lenses from the roster: every lens whose trigger holds runs, and each runs alone (one lens per seat, never merged). Skip a lens only when existing evidence answers the topic's questions from sources still unchanged; cite that evidence. Record why each lens ran or was skipped.
+3. Map each question to the lens that owns it. A question one command can enumerate (every call site, every file holding a field, every test naming a symbol) is answered by that command now: write its output to a file in the run directory, sort the hits a fact decides (path class, declaration or use, test or production), and hand the file to the owning lens to judge the rest. A question no lens owns and no command answers gets a bespoke lens (roster, last paragraph).
 
-### 1a. State the topic
-Name the capability/files and intended change; a breadth map with no design question is a `/delegate` scout (`CLAUDE.core.md` §9); a design question too vague to set coverage gets a clarifying question. Record actual constraints and exclusions. Facts inherited from another session are claims to check, not ground truth.
+**Done:** the run directory `.claude/scratch/explore_<slug>/` holds the brief (context.md), with the lens selection and its reasons.
 
-### 1b. Select resources
-Load `orchestration`; choose each lens's row and paying plan by the ladder's selection line. Every lens is `fanout`-tier work (a read-heavy survey); resolve the tier per `orchestration` §5, which owns when to declare it. Use one suitable arm per independently needed lens: `/explore` runs one seat per mandate and never merges (`orchestration` §2 *Sizing the width*), because `explore_result.py` stamps each claim with its seat key. Provider availability does not create more jobs. Explicit comparisons are separate, frozen and budgeted.
+### Roster
 
-### 1c. Infer domains
-Use actual scope and `reference/memory_domains.md`; meta work does not need gameplay domains. Search memory by separate relevant facets, not one broad union query.
+| Lens | Runs when |
+|---|---|
+| `exp-memory` | relevant memory constraints and gotchas are unverified |
+| `exp-prior-art` | relevant existing owners or families are unverified |
+| `exp-integration-surface` | the topic names an existing type, file, scene, global singleton or blackboard key |
+| `exp-design-source` | the topic is design-loaded, or names a system, roadmap Part or formula; never for harness or process topics |
+| `exp-harness-governance` | the topic is process- or tooling-shaped, edits `.claude/`, or comes from a drive |
+| `exp-external-truth` | the topic's correctness rests on engine, library, framework or runtime behaviour |
+| `exp-empirical-state` | the topic touches tested logic code or authored data files |
+| `exp-change-ease` | `--make-this-easy` was given; it adds to the others, since its friction claims read against theirs |
 
-### 1d. Select lenses
-Run `python3 .claude/tools/lens.py shared explore` for selection and evidence-reuse rules, then `get <keys>` for selected mandates. Keep every independently needed dimension its trigger table admits. `--make-this-easy` adds `exp-change-ease`, never replaces another lens. Record why each lens ran or was omitted. Resolve current pins through orchestration/registry, not historical vendor examples in a catalog.
+Each lens's mandate is `.claude/commands/agents/explore/<lens>.md`; every lens also reads [`agents/explore_agents.md`](agents/explore_agents.md). A bespoke lens is a new file there, written for this topic's risk with a named failure mode it hunts; a lens a selected mandate already contains extends that mandate instead.
 
-### 1e. Assemble context
-Put topic, questions, domains, exclusions, evidence handles and starting paths in one run-specific scratch file. Push orientation, not conclusions. A seed is not a search boundary. Do not inline whole source sets or unrelated skills. `prepare` (Phase 2) writes every `kfm: index` seat's run snapshot and names its index in that seat's brief.
+## Step 2 — Brief and dispatch
 
-Map each question to the selected lens whose mandate owns it, and write the map into the context file. A question one command or script can enumerate (every call site, every file holding a field, every test naming a symbol) is answered by that script before dispatch, whichever lens owns it: the script also sorts each hit where a fact decides it (path class, declaration or use, test or production), and the owning lens receives the output file and judges only the hits the script could not sort. A question no selected mandate owns and no script answers returns to §1d for a bespoke lens (`commands/agents/explore_agents.md` *Extending the roster*). A script's output file is an evidence handle in the context, and its answer goes in the report.
+The brief is open: the owner's words verbatim, the raw source paths, the owner-tagged constraints, the question map and the enumeration files, and the deliverable. It carries no conclusion of yours and no condensed or pre-filtered input; the lenses read the sources.
 
-## Phase 2: Dispatch
-
-Invoking `/explore` is this fan-out's authorization (`orchestration` §0). Every lens is a pinned job, so `tools/sidecar_fanout.py` places it: each lens runs on the plan the ladder's selection line picks, as a native `dispatch.js` agent when that is the session's own plan and as a sidecar otherwise. `prepare` never picks the plan. One `prepare` call writes the briefs, the context and the fan-out's jobs file and prints the next calls. Write `<run dir>/spec.json`:
+Invoking `/explore` authorizes the fan-out. Issue one `Workflow` call to `.claude/workflows/explore_fanout.js` with:
 
 ```json
 {
-  "mode": "explore",
-  "prefix": "explore",
-  "topic": "<topic>",
-  "questions": {"<seat key>": ["<question it owns>"]},
-  "seats": [{"key": "<lens key>", "rows": {"<row>": "<rung>"}}],
-  "subjectFiles": ["<evidence handles the lens reads>"],
-  "context": "<absolute context.md from 1e>"
+  "lenses": [{"key": "<lens>", "promptPath": ".claude/commands/agents/explore/<lens>.md", "kind": "lens", "model": "<pin>", "effort": "<effort>"}],
+  "contextPrefixPath": ".claude/scratch/explore_<slug>/context.md",
+  "spillDir": ".claude/scratch/explore_<slug>/",
+  "checker": {"model": "<pin>", "effort": "<effort>"}
 }
 ```
 
-A seat's `rows` lists every row that meets its bar, each with its effort (`orchestration` Pre-Dispatch Checklist); `pin` and `effort` name one row, and `pins.panel` with `efforts.panel` default both. A seat may add `kind` (default `lens`) and `tier`.
+Each pin comes from `orchestration`'s table for a read-heavy survey. The engine runs the lenses, stamps each claim with its lens, groups claims by subject, flags contradictions and corroboration, checks evidence, and returns once for the whole set. Builds, tests and language-server calls stay with the parent and run serially; lenses never run them.
 
-```bash
-python3 .claude/tools/lens_briefs.py prepare --spec <run dir>/spec.json --out <run dir>
-python3 .claude/tools/sidecar_fanout.py <run dir>/jobs_explore.json --detach
-```
+**Done:** the engine returned, and its result and each lens's spill file are in the run directory.
 
-The fan-out prints one `NATIVE` line holding the `Workflow` call for the lenses it placed on the session's own plan, and hands the rest to its driver; issue the call and keep its `transcriptDir`. Never pass `name`: a named call can run a cached older engine. The session watcher (`reference/sidecar_dispatch.md` step 6) wakes you when the sidecar lenses end. Once every lens has ended, one call consolidates both kinds the same way:
+## Step 3 — Consolidate and report
 
-```bash
-python3 .claude/tools/explore_result.py <run dir>/jobs_explore.json [--workflow-dir <transcriptDir> ...]
-```
+- Account for every selected lens: one that did not run or returned nothing leaves its dimension UNCOVERED, never clean. Recover a missing lens from its spill file or with `/session_digest --workflow-dir <transcript dir>` before anything else.
+- Account for every question: name the claims that answer it; a question with none is UNCOVERED.
+- Read the cited source of every claim the engine did not mark verified before it enters the report. Re-run the `{command, output}` evidence of an `absent` claim a design decision will rest on.
+- Verify a premise contradiction first-party. Settle conflicting claims on their evidence, never on order or count.
 
-Each lens carries `tier: "fanout"`; `prepare` refuses a seat that does not fit its pin's window, naming the seat and tokens.
+Report the topic, lenses run and skipped, counts and the run directory briefly, then the material claims:
 
-Lenses are read-only; `orchestration` §5b owns the capability preflight and §4 the return contract. Keep completed evidence recoverable before the final response. Tests/builds/shared LSP operations stay serialized by the parent; cheap independent searches remain part of each lens's work.
-
-Every claim has a subject, polarity, bearing, source/quote and verification status. `absent` needs git-aware proof within a named scope; when the seat has neither Bash nor a supplied enumeration, report `unclear` and the missing check. Return a short decision digest and artifact handles; do not reject full evidence to satisfy a presentation cap.
-
-`explore_result.py` stamps each claim with its lens and a place id, groups on the subject, flags contradictions and corroboration, checks every claim's evidence through `verify_claims.py`, and writes the full result to `<run dir>/explore_result.json`. Its printed summary is bounded to counts, flags and UNCOVERED lenses; a dossier built from the summary alone is an undercount, not a short run, so read the file for the claims. Consume the checked claims per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5 before they enter the dossier.
-
-## Phase 3: Consolidate & Report
-
-- Account for every required lens. A `flags` entry of kind `lens-did-not-run` or `lens-no-return` is an UNCOVERED dimension, not a clean one; recover from the lens's `<label>.md`, stream and record in the fan-out out dir first.
-- Account for every context question: name the claims that answer it. A question with none is UNCOVERED, like a lens that did not run.
-- For an `absent` claim a design or plan decision will rest on, its `{command, output: ""}` evidence is rerun in-run (`reference/evidence_contract.md`); per protocol Step 1.5, rerun first-party only when the claim is not VERIFIED.
-- Verify premise contradictions first-party. Reconcile conflicting claims against evidence, never sort order or vote count.
-- Preserve every material claim/provenance when grouping. Report uncovered scope before any clean-sounding summary.
-
-Report topic, domains, lenses/omissions, transport/currency, counts and artifacts briefly, then the material claims:
 1. Premise contradictions that change the task.
-2. Existing owners/families, their actual coverage and relevant consumers, and the real integration target with its type contract.
+2. Existing owners and families, their real coverage and consumers, and the real integration target with its type contract.
 3. Constraints and blast radius.
-4. Resolved contradictions and remaining gaps.
+4. Resolved contradictions, then the remaining gaps and UNCOVERED dimensions.
 
-For `--make-this-easy`, include verified change friction. The parent derives the smallest restructuring from that evidence and names what not to touch — the invariants and settled decisions the friction claims identified; a lens does not author the design. Do not expand a narrow change into speculative infrastructure.
+With `--make-this-easy`, add the verified friction; derive from it the smallest restructuring and name what it must not touch (the invariants and settled decisions the claims found). That restructuring becomes the plan's first slice, or goes to the owner as a preparatory Part when it outgrows one. Never expand a narrow change into speculative infrastructure.
 
-## Handoff
-
-Carry constraints into the plan, existing-owner claims into its family inventory, and gaps into its unresolved scope. A plan/check consumes the dossier; do not regenerate it merely to start the next procedure. In `--make-this-easy` mode the derived minimal restructuring becomes the plan's first slice, or goes back to the user as a preparatory Part when it outgrows one.
-
-## Constraints
-
-Read-only status is a contract, not proof of sandbox enforcement. Cite what was actually verified. Keep declared coverage, explicit pins and recovery. No verdict, no duplicated survey because a task returned late.
+Carry constraints into the plan, owner claims into its inventory of existing families, and gaps into its open scope. A plan consumes this result; it does not regenerate it.

@@ -2,30 +2,33 @@
 disable-model-invocation: true
 ---
 
-# `/worklog` — call shorthands and entry formats
+# `/worklog` — entry and mirror formats
 
-`commands/worklog.md` owns the Forms table, the tier model and the cross-cutting rules; mirror-patch mechanics live in `worklog_mirror.md`.
+Read at a `/worklog` write that `tools/worklog.py` does not make. `commands/worklog.md` owns the files, tiers and forms; `tools/worklog.py` parses these same formats.
 
-**Call shorthands** used below — expand literally when invoking. `<Doc>` is `Worklog.md` / `Worklog-Archive.md` / `User-Tasks.md`; `P` = `DevProjects/{{PROJECT_NAME}}/Claude/TODO/<Doc>` (vault-relative, resolved under the vault root).
-- `SR(<Doc>, search, replace)` = `Edit(P, old_string=search, new_string=replace)`
-- `READ(<Doc>)` = `Read(P)`
-- `FM(<Doc>)` = `Edit(P, old_string="last_updated: <current date>", new_string="last_updated: YYYY-MM-DD")` — bump the frontmatter `last_updated:` line
-- `APPEND(<Doc>, content)` = `Edit(P, old_string=<last line before the insertion point>, new_string=<same line> + content)` — append at the stated anchor
+## Entries
 
-**Entry formats** referenced by name below. Omit an inapplicable sub-bullet's line entirely — never leave a placeholder.
-- `BLOCK` — an open Worklog item (ready in Active or waiting in Ledger):
+Leave out a sub-bullet that does not apply; never write a placeholder. Class and scope are required on every `BLOCK` and `FSLINE`; infer them from `worklog_reference` when the text does not give them, and report the inferred values.
+
+- `BLOCK`, an open item in Active or Ledger:
   ```
   - [ ] **<Title>** — `<class>` · scope `<n>` · added YYYY-MM-DD
-    - Context: <one-line>
-    - Where: <path-if-any>
-    - Source: <ref-if-any>
-    - Session: <runtime session id>          (`add` writes it; omit if none or Source is it)
-    - When: after <condition> | future        (omit if ready)
+    - Context: <one line>
+    - Where: <path>
+    - Source: <session, PR or commit>
+    - Session: <runtime session id>          (omit when Source is that session)
+    - When: after <condition> | future        (omit when ready)
     - Plan doc: [[<Doc Title>]]               (scope 4 only)
     - Quick-win: flagged YYYY-MM-DD           (triage only)
   ```
-- `FSLINE` — a Future Scope one-liner, `> `-prefixed, no sub-bullets; the parenthetical replaces them with concise context: ``> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>) · session <runtime session id>`` (`add` writes the tag)
-- `XLINE` — an archive completion line: ``- [x] `<class>` · scope `<n>` · <Title> (completed YYYY-MM-DD, <ref>)``
-- `UTLINE` — a User-Tasks entry: `- YYYY-MM-DD — <Title> — <one-line context>`
+- `FSLINE`, a Future Scope line inside the `> [!example]- Future Scope (N items)` callout, every line `> `-prefixed, no sub-bullets: ``> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>) · session <runtime session id>``
+- `XLINE`, an archive line: ``- [x] `<class>` · scope `<n>` · <Title> (completed YYYY-MM-DD, <ref>)``
+- `UTLINE`, a User-Tasks.md line: `- YYYY-MM-DD — <Title> — <one-line context>`
 
-**Class + scope are required** on every `BLOCK` and every `FSLINE`. If the `add` text doesn't make them obvious, infer them (`worklog_reference` classification) and write; the report names the inferred values.
+## Mirror
+
+`.claude/worklog-titles.md` holds two sections, `## Active (<count>)` then `## Ledger (<count>)`, each with `### <domain>` headings and one line per open item beneath: `- <class> · <scope> · <title>`. The domain lives in the heading, never on the line. Add a heading when a domain's first item arrives and remove it when its last leaves; correct the section count on every add and removal. Then set `Last synced:` to today's date, with no narrative.
+
+- A `When: after <condition>` item takes the suffix ` [after: <condition>]`; a `Quick-win:` item takes ` [quick-win]`; both stack in that order.
+- `[x]` items and Future Scope items never appear.
+- A copy you cannot patch with certainty (another edit landed, a patch failed) is rebuilt from a full read of Worklog.md.

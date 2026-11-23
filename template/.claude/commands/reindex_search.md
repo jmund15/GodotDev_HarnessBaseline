@@ -4,14 +4,14 @@ description: Refresh semantic search after file changes or index drift
 
 # Re-index Semantic Search
 
-Refreshes the DreB semantic-search index (`.search-index/search.db`) so subsequent
+Refreshes the DreB semantic-search index (.search-index/search.db) so subsequent
 `mcp__plugin_semantic-search_semantic-search__search` queries reflect the current code state.
 For indexed file types and tool guidance, see CLAUDE.core.md §9.
 
 ## When to run
 
 - After a meaningful code shift (rebase, branch switch, large multi-file edit, large `.tres` re-save).
-- Automatically as Phase 8 of `/session_end` (kept fresh per work block — see `session_end.md`).
+- From `/close`, when the session changed the indexed scope.
 - On demand if `mcp__plugin_semantic-search_semantic-search__search` returns stale-looking results or has been silently degraded by index drift.
 
 ## Procedure
@@ -27,22 +27,22 @@ For indexed file types and tool guidance, see CLAUDE.core.md §9.
 
 3. Run the project's index prebuild commands — generated files that go stale on the same window as the index:
    ```bash
-   python3 "$CLAUDE_PROJECT_DIR/.claude/tools/adaptation.py" run index_prebuild
+   python3 .claude/tools/adaptation.py run index_prebuild
    ```
    Report the counts the commands print and any failing command; neither blocks the re-index.
 
 4. Report composition — what the corpus is now made of, top buckets by chunk count plus
    `.claude/auto-memory`'s share, read straight from the refreshed db:
    ```bash
-   python3 "$CLAUDE_PROJECT_DIR/.claude/tools/index_composition.py"
+   python3 .claude/tools/index_composition.py
    ```
    Print the table as-is. It is the only routine signal that the corpus has drifted; recall
    degrades silently otherwise, so a number every refresh is what makes drift visible.
-   Flag a bucket that has become disproportionate against §Corpus hygiene below. Run `python3 "$CLAUDE_PROJECT_DIR/.claude/tools/index_composition.py" --set-baseline` when it prints `no baseline set`, or when a flag traces to an intended scope change (a newly indexed file type), and the corpus passes §Corpus hygiene.
+   Flag a bucket that has become disproportionate against §Corpus hygiene below. Run `python3 .claude/tools/index_composition.py --set-baseline` when it prints `no baseline set`, or when a flag traces to an intended scope change (a newly indexed file type), and the corpus passes §Corpus hygiene.
 
 5. Report:
    - Time elapsed
-   - Whether the index took the session's changes: the search response carries no error, and `search.db`'s mtime (`ls -la .search-index/`) is *now* when any indexed file changed since the last search. An unchanged mtime after changed files means the refresh failed and the stale db stands.
+   - Whether the index took the session's changes: the search response carries no error, and `search.db`'s mtime (`ls -la .search-index`) is *now* when any indexed file changed since the last search. An unchanged mtime after changed files means the refresh failed and the stale db stands.
    - Any obvious errors from the search response
 
 ## Corpus hygiene — ranking is competitive
@@ -55,8 +55,7 @@ they displace real answers.
 **The invariant:** a directory of generated, per-session, or duplicated artifacts gets its
 `.gitignore` entry when it is created, not after recall degrades. A tracked path that git must
 keep but search should not (tests, frozen fixtures, vendored code) goes in `.searchignore` instead;
-a harness path goes in `.claude/searchignore.harness`, which `baseline_sync.py pull` writes into
-`.searchignore`'s harness block. The indexer honors `.gitignore` and `.searchignore`, and they are the whole control surface. Anything genuinely worth searching
+a harness path goes in `.claude/searchignore.harness`, the harness's block of `.searchignore`. The indexer honors `.gitignore` and `.searchignore`, and they are the whole control surface. Anything genuinely worth searching
 stays tracked — the test is whether a *future* session would want to find it, not whether it
 was expensive to produce.
 
@@ -74,10 +73,9 @@ is repaired — check composition first.
   2. Report the holders and the db's mtime, record the phase blocked, and continue. The next run after the holder's session exits refreshes.
   3. A true orphan (`ParentAlive=False`) that keeps the lock across sessions is the owner's to stop; name its PID in the report.
 - **`FOREIGN KEY constraint failed`** — a stale rowid, not corruption: one indexer captured a file's id while another re-indexed that file (delete + re-insert allocates a new one). Retry; the next pass re-resolves it. `foreign_key_check` stays clean, and a genuine lock says `database is locked` instead. Repeats ⇒ enumerate holders as for EBUSY above. Report contention, never a broken capability.
-- **`.search-index/` permission errors:** check that `.search-index/` is in `.gitignore`. Distinguish from the EBUSY case above — a true ACL error names a denial, not a busy resource.
+- **.search-index/ permission errors:** check that .search-index/ is in `.gitignore`. Distinguish from the EBUSY case above — a true ACL error names a denial, not a busy resource.
 - **The client aborts the call after its MCP idle timeout** (`sent no response or progress for <N>s`): the backend keeps indexing. Check `search.db`'s mtime later; a moved mtime with no error means the refresh finished, and an unmoved one after the backend exits is a failed refresh.
 
 ## Cross-references
 
-- Memory entity `Semantic_Search_Composition_Pattern` — canonical pointer for subagent contexts.
 - Upstream SKILL.md at `~/.claude/plugins/cache/dreb/semantic-search/<version>/skills/search/SKILL.md` — for parameter details and ranking model.

@@ -12,12 +12,12 @@ Read at Steps 6 through 9 of [`update_roadmap.md`](../update_roadmap.md). Not au
 
 **Keep (load-bearing):** one line per transition. Include the changed Part/state or rename/split/spawn/retire and one short reason or commit reference. Cross-roadmap/text-only edits name the Part and the one value that changed.
 
-**Cut (derivable elsewhere — never in the log):** test/gate counts (`Logic X / Integration Y`), file-by-file shipped manifests, plan divergences/deviations, `session_audit` findings, auto-memory pins, "Mermaid reclassed `:::complete`" (mechanical — always happens), unblock-cascade narration ("now Currently-ready" — the derived views already show readiness), multi-sentence design rationale (belongs in the arch doc).
+**Cut (derivable elsewhere — never in the log):** test/gate counts (`Logic X / Integration Y`), file-by-file shipped manifests, plan divergences/deviations, review findings, auto-memory pins, "Mermaid reclassed `:::complete`" (mechanical — always happens), unblock-cascade narration ("now Currently-ready" — the derived views already show readiness), multi-sentence design rationale (belongs in the arch doc).
 
 **Format:** `- YYYY-MM-DD — <Part>: <old-state> → <new-state> (<commit-ref OR concise why>).`
 
 **Idiomatic forms:**
-- `- 2026-05-13 — Initial roadmap from arch.md. 7 Parts sequenced (Pos 1–7), 12 un-sequenced.`
+- `- 2026-05-13 — Initial roadmap from <design doc>. 7 Parts sequenced (Pos 1–7), 12 un-sequenced.`
 - `- 2026-05-15 — <Part>: <old-state> → <new-state> (<reason>).`
 - `- 2026-05-15 — <Part>: plan-pending → complete (<commit-ref>).`
 - `- 2026-05-15 — Spawned `<child-doc>` from Part <name> (<same-folder | child-subfolder | sibling-folder> per §5.1).`
@@ -34,7 +34,7 @@ Append to the `## Revision Log` section of the rendered document; the generator 
 
 ## Step 7 — Present batch diff
 
-Show the user the proposed diff — `roadmap.md` against the rendered document (the candidate when there is no generator) — covering:
+Show the user the proposed diff — roadmap.md against the rendered document (the candidate when there is no generator) — covering:
 1. Frontmatter changes (only `last_revised` typically)
 2. Parts table updates (additions, transitions, splits, renames)
 3. Mermaid block regeneration
@@ -51,11 +51,11 @@ The user can redirect ("revise Mermaid", "split this transition into two log lin
 
 If the batch diff (Step 7) is empty — proposed edits reduce to no changes — report *"No roadmap changes needed"* and skip to Step 9 without prompting for approval.
 
-Otherwise: replace `roadmap.md` with the approved document (create it when new); the approved bytes are the applied bytes. `last_revised` was bumped to today at Step 2.
+Otherwise: replace roadmap.md with the approved document (create it when new); the approved bytes are the applied bytes. `last_revised` was bumped to today at Step 2.
 
 ## Step 9 — Regenerate the cross-roadmap index
 
-When the project generates a cross-roadmap index (`_brainstorm_shared/roadmap_triggers_mvp.md` §6.13), run its generator in render mode; the project's own roadmap-index command names it. No index → skip this step.
+When the project generates a cross-roadmap index (`.claude/skills/_brainstorm_shared/roadmap_triggers_mvp.md` §6.13), run its generator in render mode; the project's own roadmap-index command names it. No index → skip this step.
 
 Runs on **every invocation that reaches Step 8, the empty-diff path included** — the index can be stale
 from roadmap edits made outside this command, so the no-op case is exactly the one a "only when Step 8
