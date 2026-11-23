@@ -22,7 +22,7 @@ spec = importlib.util.spec_from_file_location("rseg", HOOK)
 g = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(g)
 
-S = ".claude/scripts/opencode_sidecar.sh"
+S = ".claude/scripts/seat_claude.sh"
 ME = str(os.getpid())
 TABLE = "\n".join([
     f'100|1|"C:\\Program Files\\Git\\usr\\bin\\bash.exe" {S} -m muse -e max -D pointer',
@@ -38,7 +38,7 @@ TABLE = "\n".join([
 
 
 def is_invocation(cmd):
-    return g._is_invocation(cmd, "opencode_sidecar.sh")
+    return g._is_invocation(cmd, "seat_claude.sh")
 
 
 @pytest.mark.parametrize("cmd", [
@@ -65,32 +65,32 @@ def test_a_mention_of_the_script_is_not_an_invocation(cmd):
 
 def test_only_the_true_still_alive_invocations_survive():
     """Planted table + planted probe: 104 exited after the snapshot; this process's own row is an ancestor."""
-    hits = g.find_live_instances("opencode_sidecar.sh", scan=lambda: TABLE,
+    hits = g.find_live_instances("seat_claude.sh", scan=lambda: TABLE,
                                  alive=lambda pids: set(pids) - {"104"})
     pids = sorted(h.split(" ", 1)[0] for h in hits)
     assert pids == ["100", "105", "106"], pids
 
 
 def test_the_wrapper_the_grep_the_tool_argument_and_the_git_mention_are_dropped():
-    hits = g.find_live_instances("opencode_sidecar.sh", scan=lambda: TABLE, alive=lambda pids: set(pids))
+    hits = g.find_live_instances("seat_claude.sh", scan=lambda: TABLE, alive=lambda pids: set(pids))
     pids = [h.split(" ", 1)[0] for h in hits]
     assert not any(p in pids for p in ("101", "102", "103", "107"))
 
 
 def test_a_row_that_died_between_scan_and_warning_is_dropped():
-    hits = g.find_live_instances("opencode_sidecar.sh", scan=lambda: TABLE,
+    hits = g.find_live_instances("seat_claude.sh", scan=lambda: TABLE,
                                  alive=lambda pids: set(pids) - {"104"})
     assert "104" not in [h.split(" ", 1)[0] for h in hits]
 
 
 def test_the_hooks_own_ancestor_chain_is_excluded():
-    hits = g.find_live_instances("opencode_sidecar.sh", scan=lambda: TABLE, alive=lambda pids: set(pids))
+    hits = g.find_live_instances("seat_claude.sh", scan=lambda: TABLE, alive=lambda pids: set(pids))
     assert ME not in [h.split(" ", 1)[0] for h in hits]
 
 
 def test_no_candidates_means_the_liveness_probe_is_never_spawned():
     probe_calls = []
-    g.find_live_instances("opencode_sidecar.sh", scan=lambda: "102|1|grep x " + S,
+    g.find_live_instances("seat_claude.sh", scan=lambda: "102|1|grep x " + S,
                           alive=lambda pids: probe_calls.append(pids) or set(pids))
     assert probe_calls == []
 
@@ -105,7 +105,7 @@ def test_a_script_that_does_not_exist_yet_is_never_scanned_for(tmp_path):
     """No running instance can exist for a file not yet written, so the process-table query (about a second
     on Windows) is never paid for it."""
     scans = []
-    absent = os.path.join(str(tmp_path), ".claude", "scripts", "opencode_sidecar.sh")
+    absent = os.path.join(str(tmp_path), ".claude", "scripts", "seat_claude.sh")
     os.makedirs(os.path.dirname(absent))
     g.process({"tool_name": "Write", "tool_input": {"file_path": absent}},
               scan=lambda: scans.append(1) or TABLE, alive=lambda p: set(p))
@@ -114,7 +114,7 @@ def test_a_script_that_does_not_exist_yet_is_never_scanned_for(tmp_path):
 
 def test_an_existing_script_is_scanned_and_its_live_instances_reported(tmp_path):
     scans = []
-    existing = os.path.join(str(tmp_path), ".claude", "scripts", "opencode_sidecar.sh")
+    existing = os.path.join(str(tmp_path), ".claude", "scripts", "seat_claude.sh")
     os.makedirs(os.path.dirname(existing))
     with open(existing, "w", encoding="utf-8") as fh:
         fh.write("#!/bin/bash\n")

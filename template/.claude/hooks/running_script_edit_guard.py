@@ -12,11 +12,8 @@ Why:
   alike. Sanctioned fixes are (a) kill the whole subtree first, or (c) version the
   filename and point only NEW dispatches at it. Moving a copy over the live path
   is NOT a fix: it replaces the same bytes the running shell is still reading.
-- SCOPE, since 2026-09-08: launchers that call `sc_reexec_snapshot` (anthropic, codex_proxy,
-  deepseek) execute a $TEMP copy named `<script>.sh.<pid>.sh`, so their source file is no longer
-  corruptible AND no live command line names it — this guard deliberately does not fire for them.
-  It covers every other `.claude/scripts/**.sh`, including launchers that have not adopted the
-  snapshot re-exec (opencode_sidecar.sh).
+- SCOPE: every `.claude/scripts/**.sh`. A launcher that re-execs from a $TEMP snapshot has no live command line
+  naming its source, so the process scan finds nothing and the guard stays silent for it.
 - The rule was already memorized (`gotcha_editing_shell_script_corrupts_running_instances.md`)
   and still violated — recall alone does not survive a routine-looking edit.
   This converts it into a call-time nudge. The rule's canonical home stays the

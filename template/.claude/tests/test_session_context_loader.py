@@ -2,8 +2,8 @@
 """Re-runnable proof for hooks/session_context_loader.py, the generic SessionStart steps: sidecar
 probes only for available off-transport routes, the due line, the git and upstream-drift context, the
 memory index, the setup stamp, and the step-module seam (an absent module is skipped, a present one is
-called, a faulty one is reported and never blocks). The engine and language-server steps are proven in
-test_session_context_loader_godot.py and test_session_context_loader_csharp.py. Pure in-process — no
+called, a faulty one is reported and never blocks). The language-server step is proven in
+test_session_context_loader_csharp.py; a project's own step modules are proven in that project. Pure in-process — no
 git or toolchain spawn, except the one drift case that plants a real clone.
 
     python -m pytest .claude/tests/test_session_context_loader.py -q
