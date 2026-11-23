@@ -4,8 +4,6 @@ Doctrine for any claim about behavior **inside this repo**. The sibling axis is 
 grades *source authority* on claims about behavior outside it — engine, library, spec. Different axis:
 that one asks *who says so*, this one asks *how far you are from having seen it*.
 
-Loaded by reference, not by path. `guards/common.md` and `guards/review.md` cite it; neither carries a copy.
-
 ## The ladder
 
 Every claim sits on one rung. State the rung's phrasing, not a stronger one.
@@ -21,9 +19,8 @@ Every claim sits on one rung. State the rung's phrasing, not a stronger one.
 **The framing question:** *name the one fact this claim is safe because of.* Can't name it, or the fact is
 "it looked right" → the claim is rung 4 or 5 and must say so.
 
-**The rung grades evidence, not tool choice.** Which search is correct for a given file type is CLAUDE.core.md §9's
-call and is unchanged by this ladder — rung 5 is where you land when you stop at the match, whatever produced
-it. A ladder read as "grep is the baseline" would invert the routing rules it sits beside.
+**The rung grades evidence, not tool choice.** Rung 5 is where you land when you stop at the match, whatever
+search produced it; the ladder does not rank search tools.
 
 ## Carry-confidence words
 
@@ -46,8 +43,8 @@ stops at the declaration is unmeasured, however confident it reads.
 
 ## Where this binds
 
-- **Delegates** — `guards/common.md` (verified vs inferred) and `guards/review.md` (every finding names a
-  `file:line` you actually read) fold this ladder into their rails at both model tiers.
+- **Delegates** — the delegate rails' verified-versus-inferred rule is this ladder in short; a review finding
+  names a `file:line` the reviewer read.
 - **Orchestrators** — a rung-4 or rung-5 claim from a delegate is not promoted by consolidation. Re-verify
   it first-party or report it at the rung it arrived on.
 - **Plans and findings** — a load-bearing claim below rung 2 states its rung inline, so a reader can see
