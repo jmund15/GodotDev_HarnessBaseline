@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rewrite a test, build or gate run before the loss floor judges it.
+"""Floor helper (`_floor.HELPER_NAMES`): rewrite a test, build or gate run, through `check(payload)`.
 
 The rewrite reaches the call as the floor entry's updatedInput, with an additionalContext line naming it:
 - A linked worktree's run_test_suite, verify, regression_gate or run_integration_batched invocation runs
@@ -9,14 +9,15 @@ The rewrite reaches the call as the floor entry's updatedInput, with an addition
   child (CLAUDE_CODE_ENTRYPOINT=sdk-cli). A run with a quick read-only flag, such as
   -SelfTest, is not backgrounded.
 Mentions are not actions: quoted text, comments and heredoc bodies that name a script are left alone.
+The floor's checks judge the call as sent: this changes only which copy of a script runs and whether it runs in the
+background, which no floor check reads. A fault here skips the rewrite (`_floor`: a failing helper is skipped).
+`foreground_wait_guard` and `_hook_state` load on first use, so `import _floor` carries no per-session state module.
 """
 import os
 import re
 from pathlib import Path
 
 import _git_commit
-import foreground_wait_guard
-from _hook_state import fire_once_since_compaction
 
 MAIN = Path(__file__).resolve().parents[2]
 ENTRYPOINTS = frozenset(('run_test_suite', 'verify', 'regression_gate', 'run_integration_batched'))
@@ -130,10 +131,16 @@ def _route_runner(tokens, index, cwd, delegate):
 
 
 def _background_advice(payload):
+    import foreground_wait_guard
     if foreground_wait_guard.never_woken(payload):
         return ('[run] Started in the background. Wait per .claude/guards/rails.md: '
                 '`until <done-test>; do sleep 30; done` in calls of at most 270000 ms.')
     return '[run] Its exit wakes you. See CLAUDE.core.md §Shell Discipline.'
+
+
+def _fire_once(payload, key):
+    from _hook_state import fire_once_since_compaction
+    return fire_once_since_compaction(payload.get('session_id') or '', key)
 
 
 def route(payload):
@@ -183,13 +190,24 @@ def route(payload):
         if rewrite:
             replacement, target = rewrite
             edits.append((lo + tokens[index].start(), lo + tokens[index].end(), replacement))
-            if fire_once_since_compaction(payload.get('session_id') or '', 'run_call_router:redirect'):
+            if _fire_once(payload, 'run_call_router:redirect'):
                 contexts.append('[run] Ran main\'s copy with -Repo ' + target + '; branch data stays in the target checkout.')
     for start, end, replacement in sorted(edits, reverse=True):
         command = command[:start] + replacement + command[end:]
     updated = dict(original, command=command)
     if run and not original.get('run_in_background'):
         updated['run_in_background'] = True
-        if delegate and fire_once_since_compaction(payload.get('session_id') or '', 'run_call_router:background'):
+        if delegate and _fire_once(payload, 'run_call_router:background'):
             contexts.append(_background_advice(payload))
     return (updated if updated != original else {}), contexts
+
+
+def check(payload):
+    """The floor helper's output for one payload: an updatedInput rewrite with its context lines, or None."""
+    updated, contexts = route(payload)
+    if not updated:
+        return None
+    out = {"hookEventName": "PreToolUse", "updatedInput": updated}
+    if contexts:
+        out["additionalContext"] = "\n".join(contexts)
+    return {"hookSpecificOutput": out}

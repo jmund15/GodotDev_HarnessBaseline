@@ -1,6 +1,6 @@
 """The floor's shell lexer (T1): which segments a shell command executes, the nested bodies it runs
-(`$(...)`, backticks, `eval`, `bash -c`, wrapper prefixes), and the `*_sidecar.sh` / `sidecar_fanout.py`
-launcher calls among them. `shell_code` blanks heredoc and inline-program bodies whose reader is not a
+(`$(...)`, backticks, `eval`, `bash -c`, wrapper prefixes), and the seat-launcher
+(`seat.sh`) calls among them. `shell_code` blanks heredoc and inline-program bodies whose reader is not a
 shell. Moved from `tools/sidecar_argv.py` and `hooks/foreground_wait_guard.py`; stdlib only."""
 import os
 import re
@@ -252,9 +252,9 @@ def literal_launcher_body(tokens, index):
 
 
 def launcher_invocations(command):
-    """[Invocation(kind, script, path, args)] for each executed segment that runs a launcher.
-    kind is 'sidecar' or 'fanout', script the lowercase basename, path the invoked token as
-    written, args the launcher's own arguments. Segments inside subshells, brace groups and
+    """[Invocation(kind, script, path, args)] for each executed segment that runs the seat launcher
+    (`seat.sh`, paid external work): kind is 'seat', script the lowercase basename, path the invoked
+    token as written, args the launcher's own arguments. Segments inside subshells, brace groups and
     if/while/until/for bodies count; reserved words, `NAME=value` and wrapper prefixes are stepped
     over; `$(...)`/backtick/`<(...)` bodies (each leaves a `${SUBST}` word in its place, so the surrounding argument keeps its slot), `eval` arguments and `bash -c` / `sh -c` strings (after any
     `-o <option>`) are read as the commands they run. `bash -n` runs nothing."""
@@ -292,16 +292,9 @@ def launcher_invocations(command):
             continue
         path = segment[script_index]
         script = os.path.basename(path.replace('\\', '/')).lower()
-        if script == 'sidecar_fanout.py':
-            calls.append(Invocation('fanout', script, path, segment[script_index + 1:]))
-        elif script.endswith('_sidecar.sh'):
-            calls.append(Invocation('sidecar', script, path, segment[script_index + 1:]))
+        if script == 'seat.sh':
+            calls.append(Invocation('seat', script, path, segment[script_index + 1:]))
     return calls
-
-
-def launcher_calls(command):
-    """(kind, script basename, args) per executed launcher call."""
-    return [(c.kind, c.script, c.args) for c in launcher_invocations(command)]
 
 
 

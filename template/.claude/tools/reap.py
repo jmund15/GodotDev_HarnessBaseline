@@ -1,153 +1,37 @@
 #!/usr/bin/env python3
-"""reap.py — stop a process no other session owns, on the facts the tool observes, on the record.
+"""reap.py — stop a process this session started or the owner named, on the facts the tool observes, on the record.
 
-    python3 .claude/tools/reap.py <pid> [<pid> ...] [--why "<note>"] [--reason <class> [class evidence]] [--dry-run]
+    python3 .claude/tools/reap.py <pid> [<pid> ...] [--why "<note>"] [--dry-run]
 
-A raw kill cannot show what it kills, so the classifier denies it. This tool shows it, and refuses on the
-facts it observes, never on a stated reason (incident:
-auto-memory/archive/feedback_guard_denial_of_justified_work_fix_the_guard.md). Whether the owner ordered a
-stop is the auto-mode classifier's to judge: the pids and the --why note are in the command line it reads,
-beside the whole transcript. The tool reads no transcript for it, no stop verb, no keep word and no name
-(instruction_quality §3).
+The one stop route `hooks/kill_guard.py` admits (T1): a raw kill cannot show what it kills, and a kill of pids the
+call does not name is denied there (K-XA). This tool reads each target and decides on what it observes, never on a
+stated reason. Whether the owner ordered a stop is the auto-mode classifier's to judge on the call, which carries the
+pids and the --why note; --why is a ledger note and never a gate.
 
-  default     no --reason. A target that is not `never` and not another session's is killed: this session's
-              own, and one no session owns (an app the owner launched). The ledger row records the proof,
-              `unclaimed` for the second. --why is a note for the ledger, optional, never a gate.
+Each target, in this order:
+  never      a Claude Code session host (`--session-id`, `--bg-pty-host`, a bare interactive `claude`), a shared
+             MCP or language server, or a codex.exe that ChatGPT.exe runs: refused, with its children. One inside
+             a target's tree is spared with its own subtree, and the rest of the tree dies.
+  mine       it descends from this session's claude.exe (CLAUDE_PID), or its own environment names this session's
+             CLAUDE_CODE_SESSION_ID, the proof that survives a killed wrapper: stopped.
+  unreadable its environment cannot be read, so a session's claim on it cannot be ruled out: refused.
+  another    it runs inside another session's host tree, or its environment names another session that a live
+             host serves or that no host can be ruled out for: refused; that session stops it.
+  dead       its environment names another session that no live host serves, and that session's transcript is
+             in no other project: stopped, as the leftover of a dead session.
+  unclaimed  its environment names no session and no session host sits above it (an app the owner launched):
+             stopped.
+A session is live when a live process's `<login>/sessions/<pid>.json` row names it, or a live session host names it
+after --session-id or --resume. A tool shell, MCP server or console host that only carries the id is a dependent and
+proves nothing: it outlives its session. A live host with no row and no id whose children carry a session id makes
+every session unknown, and the target is refused.
 
-  ownership   any one of (a target none of them covers is "unclaimed", killed unless it is another session's):
-              - it descends from this session's claude.exe (CLAUDE_PID);
-              - its OWN environment names this session's CLAUDE_CODE_SESSION_ID, the proof that
-                survives the launcher wrapper being killed and so covers the hung-run case;
-              - it is a detached sidecar child (launcher scrubs CLAUDE_*, wrapper exits) whose
-                SIDECAR_PARENT_SESSION_ID tag names this session, or, launched before that tag
-                existed, whose CLAUDE_CODE_SIDECAR_PROMPT_FILE is a -f this session's transcript
-                launched;
-              - only when the environment is unreadable, its command line names a dispatch record
-                whose parentSessionId is this session.
-              Another session's: a sidecar prompt file this session never launched, or, with the
-              environment unreadable, a dispatch record whose parentSessionId names a different session.
-              A process is ANOTHER session's, and refused outright, record or no record, when its
-              environment names a DIFFERENT session or a session host (claude.exe --session-id X) of
-              another session is among its ancestors. Only `--reason orphan` on the leftover of a
-              dead session (below) reaches it. A peer's process with an identical command line is never
-              killed.
-  never       a session host (claude.exe --session-id / --bg-pty-host), an MCP server, a shared
-              transport proxy, a codex.exe whose parent is ChatGPT.exe (the app runs it headless, with
-              no window). A proxy is shared when its EXECUTABLE (the image name, never argument text)
-              is claude-code-proxy and its environment carries no SIDECAR_LAUNCH_ID; a text-only shim is
-              never a transport proxy.
-              A never-kill member INSIDE a target's tree is spared and the rest of the tree dies;
-              a never-kill TARGET is refused outright, because its children are its own.
-  reason      optional; one closed class, each verified from evidence, not from prose. A class you name is
-              verified, so omit --reason where none is needed:
-                duplicate   --twin <pid> alive and sharing --key <text> in its command line: the
-                            work continues there, so this copy is pure waste
-                orphan      the target's parent is gone from the process table; for a process carrying
-                            SIDECAR_LAUNCH_ID=X that is not itself a launcher (a seat child), no
-                            launcher of X lives instead (see `launchers` below)
-                stalled     --log <path> untouched for --idle-min minutes (default 30); a sidecar's
-                            `<record>.journal.jsonl` counts by its `stalled` row's idle seconds plus the
-                            time since that row, and a later `resumed` or `ended` row refuses
-                superseded  --artifact <path> exists: the output the target is producing is already on disk,
-                            written by another job. An artifact whose label stem (the name before
-                            its first dot, any case) is in the target tree's command lines is the
-                            job's own in-progress output and refuses.
-                queued      nothing the job runs is in flight: no model client (claude, codex, opencode,
-                            ollama), `*_sidecar.sh` launcher or dispatch shim in its tree, and no live process
-                            outside it carrying its job id (REAP_JOB_ID, or a sidecar's SIDECAR_LAUNCH_ID, set
-                            by its launcher at spawn, so detached members count). A target with no job id
-                            refuses. Stopping it loses no paid or model work, so an owned job waiting its turn
-                            stops on this.
-  dispatch    a DISPATCH SERVER carries SIDECAR_LAUNCH_ID=X and is a claude-code-proxy executable, a
-  servers     text_only_shim.py python process, or the nohup wrapper of either. A sidecar launch starts
-              them detached and stops them in an exit trap, which a TerminateProcess never runs.
-              Ownership is the session proof above, over the server's own environment.
-              orphan on a dispatch server: no live process OTHER than dispatch servers carries X (the
-              launcher and the seat child are gone); a live one refuses, naming it. The parent-gone
-              test does not apply, because a detached server's parent proves nothing.
-              Killing (or dry-running) a process that carries X and is not itself a dispatch server
-              also kills every dispatch server carrying X that the ownership proof covers, printed as
-              `KILLED <pid> ... (dispatch server of launch X)` (`DRY` under --dry-run).
-  launchers   a launcher of X is a live `*_sidecar.sh` bash that carries X, or that is an ancestor of the
-              target: a direct launch exports X after its own bash started, and an MSYS process's block
-              holds only what its native parent gave it, so only a fan-out's launchers carry it. One
-              carrying SIDECAR_SEAT_LAUNCH_ID=X runs inside the seat and is not its launcher.
-  dead        `orphan` also reaches a process of ANOTHER session when it is not a launcher, its owning
-  session     session (SIDECAR_PARENT_SESSION_ID, else CLAUDE_CODE_SESSION_ID) has no live host, and it
-              has no live launcher (a launch id) or no live parent (none): nothing can consume its
-              result. The targets' own trees and console hosts (conhost.exe) inherit the session id and
-              never count as its host. The host test:
-              a session is live when a live SESSION HOST serves it: a live process's
-              `<login>/sessions/<pid>.json` row names it (every login transcript_usage.login_dirs
-              declares), or a live process matching the session-host patterns of `never` names it
-              after --session-id or --resume. A tool shell, MCP server or console host that merely
-              carries the id is a DEPENDENT, never a host: it outlives the session, so counting it
-              kept dead sessions looking alive for days (2026-11-10). A live claude host with no
-              registry row and no id in its command line, whose children carry a
-              CLAUDE_CODE_SESSION_ID, is a session nobody can name: every session is then unknown
-              and the rule refuses.
-              A parent that is alive does not clear a dead session's leftover: a pane watcher's bash
-              wrapper outlives the session that launched it. A leftover whose owner transcript names
-              another project is that project's to stop.
-  ledger      every kill (and every refusal) is appended to .claude/logs/reap_ledger.jsonl.
-
-    python3 .claude/tools/reap.py leftovers
-
-List every live process whose own environment (or a tagged ancestor's) names a session, with the
-facts that decide what each one is: pid, age, cumulative CPU, owner session, whether it is a
-launcher or a member of a launch (with the launch id), its status and command line. A dead
-session's proven leftover of this project is `dead`; the rest are reported with the fact that
-withheld the proof. It stops nothing and takes no --dry-run: a detached launch, a benchmark or a
-long build is built to outlive the session that started it and a later session consumes its
-result, so no fact here shows a process is unwanted. A pid the caller names is stopped by the
-explicit path above, on its proof.
-
-    python3 .claude/tools/reap.py live-launch [--prompt <file>] [--label <name>] [--record <file>]
-                                              [--resume <sid>] [--self <winpid>] [--launch <id>] [--fanout <id>]
-
-The sidecar duplicate-launch scan (scripts/lib/sidecar_common.sh, tools/sidecar_fanout.py): every live
-launcher whose -f names <file> or whose -r is <sid>, and every seat child whose CLAUDE_CODE_SIDECAR_PROMPT_FILE
-is <file> or whose command line resumes <sid>, printed with its launch id, age and the reap command that
-stops it. A prompt match is a duplicate only for the same JOB when the caller names one: a launcher whose -l
-is <name> or whose -R is <file>, or a seat child whose CLAUDE_CODE_SIDECAR_LABEL is <name>. Jobs that share a
-brief under their own label and record (an A/B's arms) are not duplicates; with neither flag the prompt alone
-is the key, and a seat child carrying no label cannot be matched to a named job.
-Never a match: <winpid> with its ancestors and descendants, this scan's own ancestors, a process
-carrying launch <id>, a bash -c wrapper whose launcher's -R record's .pid names launch <id>, and a job of
-fan-out <id> (SIDECAR_FANOUT_ID; siblings share a brief by design). The record exemption covers only -c
-wrappers, never launcher or seat processes: a second launch reusing -R must still refuse.
-Exit 0 none, 3 at least one, 4 process table unreadable (a warning; the caller launches), 2 bad usage.
-
-    python3 .claude/tools/reap.py end-seat <launch id>
-
-A launcher's own stop of its ended seat (scripts/lib/sidecar_common.sh, after the terminal-result grace): every
-process carrying SIDECAR_SEAT_LAUNCH_ID=<launch id> dies, with a ledger row; never-kill members, dispatch servers
-and a nested launch's launcher (its own job) are spared with their subtrees. It finds the seat by tag, not by tree: a seat process whose Windows parent exited (claude.exe after
-the subshell that ran env) is outside every tree walk. Exit 0 none left, 1 a kill failed or the table is
-unreadable, 2 bad usage.
-
-The kill is `taskkill /PID <root> /T /F` — the whole tree. A launcher detaches its headless claude seat
-outside that tree, so killing a process whose tree carries launch X also kills each owned process carrying
-SIDECAR_SEAT_LAUNCH_ID=X (its never-kill members spared), printed `KILLED <pid> ... (seat of launch X)`.
-Exit 0 = every target killed (or dry-run); 2 = at least one target refused (nothing partial
-is hidden: refused targets are listed, killed ones are killed).
-
-    python3 .claude/tools/reap.py inspect <pid> [<pid> ...] [--json] [--sample <s>] [--depth <n>]
-
-Read-only ownership evidence, for when load or a process name suggests a culprit and a wrong peer label
-would send the fix to the wrong session. Per pid it prints the launch id and label, the session tag on
-the process's own environment, the -R dispatch record it or an ancestor names (with that record's
-parentSessionId), the ancestry chain out to --depth links, and one bounded CPU sample of its tree: two
-reads --sample seconds apart, 0 reading the cumulative total once. owner: is MINE only on a proof the
-kill path would accept, PEER only when the target's own tag names another session or the printed chain
-reaches one, and UNKNOWN otherwise -- an unproven peer label is the failure this exists to stop. It
-never kills, changes a permission or polls. Exit 0 reported, 3 a pid absent from the table, 4 the
-process table unreadable.
-
-MSYS pids (what Git Bash `kill` and `ps` print) are mapped to Windows pids through `ps -W`.
+The kill is `taskkill /PID <root> /T /F`, plus each Git Bash child an exec left outside the Windows tree. Every
+refusal, dry run and kill is a row in .claude/logs/reap_ledger.jsonl; a kill's row is written first, and an
+unwritable ledger refuses the kill. MSYS pids (Git Bash `kill`, `ps`) map to Windows pids through `ps -W`.
+Exit 0 every target stopped (or dry-run); 2 a target refused, a kill failed, or a bad call.
 """
 import argparse
-import contextlib
 import datetime
 import json
 import os
@@ -157,98 +41,59 @@ try:
 except ImportError:  # pragma: no cover
     ctypes = None
 import re
-import shutil
 import subprocess
 import sys
 import time
+from collections import namedtuple
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / ".claude" / "hooks"))
 import _msys  # noqa: E402
 import _hook_state  # noqa: E402
-from _win_path import drive_path, native_path  # noqa: E402
-
-LEDGER = REPO / ".claude" / "logs" / "reap_ledger.jsonl"
-STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # session hook state
 sys.path.insert(0, str(REPO / ".claude" / "tools"))
 from transcript_usage import login_dirs  # noqa: E402  the one login list (seats.json configDirs)
 import cli_usage  # noqa: E402
 
-PROJECTS_ROOT = Path(os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")) / "projects"
-REASONS = ("duplicate", "orphan", "stalled", "superseded", "queued")
-RETIRED_REASONS = {"owner": "omit --reason: a target that is not never-kill and not another session's needs none, and "
-                            "whether the owner ordered the stop is judged on the call, not by this tool"}
-REASON_EVIDENCE = (
-    "  duplicate   --twin <surviving pid> --key <text both command lines carry>\n"
-    "  orphan      no extra flag; the environment proves the owning session is gone\n"
-    "  stalled     --log <file it should be writing> [--idle-min N]\n"
-    "  superseded  --artifact <output that already exists>\n"
-    "  queued      no extra flag; nothing in its tree is in flight")
-REAP_ACCEPTS = ("PIDS... [--reason duplicate|orphan|stalled|superseded|queued] [--why TEXT]\n"
-                "a reason, when given, takes its evidence: " + REASON_EVIDENCE)
-REAP_EXAMPLE = "python3 .claude/tools/reap.py 12345 --dry-run"
+LEDGER = REPO / ".claude" / "logs" / "reap_ledger.jsonl"
+ACCEPTS = "PIDS... [--why TEXT] [--dry-run]"
+EXAMPLE = "python3 .claude/tools/reap.py 12345 --dry-run"
+# A retired spelling names its replacement: docs and memory keep the old text.
+RETIRED = {
+    "--reason": "omit --reason: the tool decides on the facts it observes, and a dead session's leftover needs no flag",
+    "inspect": "run `reap.py <pid> --dry-run`: it prints each target's proof or refusal and stops nothing",
+    "leftovers": "name the pid: `reap.py <pid> --dry-run` shows whether it is a dead session's leftover",
+    "live-launch": "the sidecar launchers it served are gone; seat.sh refuses a full seat itself",
+    "end-seat": "the sidecar launchers it served are gone; a seat ends with its seat.sh",
+}
 
-
-def build_parser():
-    ap = cli_usage.ShapeParser(description=__doc__.splitlines()[0],
-                               formatter_class=argparse.RawDescriptionHelpFormatter,
-                               epilog="a reason, when given, takes its evidence:\n" + REASON_EVIDENCE)
-    ap.accepts, ap.example = REAP_ACCEPTS, REAP_EXAMPLE
-    ap.add_argument("pids", nargs="+", type=int, help="Windows or MSYS pids")
-    ap.add_argument("--reason", help="only to stop another session's dead leftover or to have a class verified: " + ", ".join(REASONS))
-    ap.add_argument("--why", default="", help="optional note for the ledger, recorded verbatim; never a gate")
-    ap.add_argument("--twin", type=int, help="duplicate: the surviving copy")
-    ap.add_argument("--key", help="duplicate: text both command lines carry (script + campaign, or the cell)")
-    ap.add_argument("--log", help="stalled: the log the target should be writing")
-    ap.add_argument("--idle-min", type=int, default=30, help="stalled: minutes of silence that qualify")
-    ap.add_argument("--artifact", help="superseded: the output that already exists")
-    ap.add_argument("--dry-run", action="store_true")
-    return ap
-# A tree member doing paid or result-bearing work: a model client, a sidecar launcher, or a dispatch shim.
-IN_FLIGHT_RE = re.compile(r"(?:^|[\\/\s\"'])(?:claude|codex|opencode|ollama)(?:\.exe)?(?=[\s\"']|$)|_sidecar\.sh\b|text_only_shim",
-                          re.I)
-# The id a job's launcher sets in its environment at spawn; every process carrying it is one of the job's.
-JOB_ID_KEYS = (b"REAP_JOB_ID=", b"SIDECAR_LAUNCH_ID=")
-
-# Never a target, whoever owns it: a session host, a background pty host, an MCP server. A shared transport
-# proxy is judged by image name and environment in never_reason, not by command-line text.
+# Never a target, whoever owns it.
 NEVER = (
     (re.compile(r"claude(?:\.exe)?\"?\s+(?:.*\s)?--(?:session-id|bg-pty-host)\b", re.I), "a Claude Code session HOST"),
     (re.compile(r"claude(?:\.exe)?\"?\s*$", re.I), "an interactive Claude Code session HOST"),
     # Executable + server name in any argument (flags may precede the script), not a bare word: `-u ENABLE_LSP_TOOL`
-    # sits in every sidecar's env cleanup.
+    # sits in an env wrapper's cleanup.
     (re.compile(r"(?:node|python3?|pwsh|dotnet)(?:\.exe)?\"?\s+(?:\S+\s+)*?\S*(?:mcp[-_]|[-_]mcp|semantic-search|[\w.-]+-ls(?:\.|\s|$))", re.I),
      "shared INFRA (an MCP/LSP server other sessions use)"),
 )
 HOST_PATTERNS = tuple(pat for pat, _ in NEVER[:2])
-# A headless seat (`claude.exe -p ...`) is a session host for its own session. Its registry row
-# names the session; with no row, its children carrying a session id make the answer unknown
-# (fail closed) instead of proving the session dead.
+# A headless `claude -p` is the host of its own session: its registry row names it.
 SEAT_HOST = re.compile(r"claude(?:\.exe)?\"?\s+(?:.*\s)?-p(?:\s|$)", re.I)
 HOST_SESSION = re.compile(r"--(?:session-id|resume)[=\s]+\"?([A-Za-z0-9_-]+)")
-SEAT_RESUME = re.compile(r"--resume[=\s]+\"?([A-Za-z0-9_-]+)")
-LAUNCHER_SCRIPT = re.compile(r"[\w.-]*_sidecar\.sh\b", re.I)
-PROXY_IMAGE = re.compile(r"^claude-code-proxy[\w.-]*$", re.I)
-SHIM_SCRIPT = re.compile(r"text_only_shim\.py\b", re.I)
-NOHUP_PROXY = re.compile(r"claude-code-proxy[\w.-]*(?:\.exe)?\"?\s+serve\b", re.I)
-LAUNCH_ENV = b"SIDECAR_LAUNCH_ID="
-# Per-invocation caches (environment blocks, `ps -W`, the launch census); None outside main().
-_RUN = None
-# The launcher's -R takes ANY path (docs: "run-record path"), so the matcher must not demand a
-# suffix. 2026-09-18: it required ".record.json" while every real dispatch passed
-# "-R .claude/scratch/plancheck/rec_arch.json", so the record proof never ran and two hung sidecars
-# could not be reaped.
-RECORD_RE = re.compile(r"(?:-R|--record)\s+\"?([^\s\"]+)")
 SID_ENV = b"CLAUDE_CODE_SESSION_ID="
-# A sidecar launcher scrubs CLAUDE_* from its child and detaches it, so the child carries neither this
-# session's id nor its ancestry. The launcher tags the child with its parent session instead; a child
-# launched before the tag existed still names its prompt file, which this session's transcript launched.
-PARENT_ENV = b"SIDECAR_PARENT_SESSION_ID="
-PROMPT_ENV = b"CLAUDE_CODE_SIDECAR_PROMPT_FILE="
-LABEL_ENV = b"CLAUDE_CODE_SIDECAR_LABEL="
-SEAT_ENV = b"SIDECAR_SEAT_LAUNCH_ID="
-FANOUT_ENV = b"SIDECAR_FANOUT_ID="
+
+# This session: its claude.exe pid, its id, and the Claude project folder its transcript sits in.
+Session = namedtuple("Session", "pid sid project")
+
+
+def build_parser():
+    ap = cli_usage.ShapeParser(description=__doc__.splitlines()[0], formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.accepts, ap.example = ACCEPTS, EXAMPLE
+    ap.add_argument("pids", nargs="+", type=int, help="Windows or MSYS pids")
+    ap.add_argument("--why", default="", help="optional note for the ledger, recorded verbatim; never a gate")
+    ap.add_argument("--dry-run", action="store_true", help="print each target's proof or refusal; stop nothing")
+    ap.add_argument("--reason", help=argparse.SUPPRESS)
+    return ap
 
 
 # ----------------------------------------------------------------- process table
@@ -289,7 +134,7 @@ def _on_windows():
 def process_table(timeout=60):
     """{pid: {pid, ppid, name, cmd, start, cpu}} for every process: the Win32 snapshot on Windows (CIM when it
     cannot be read), /proc elsewhere. `cpu` is the cumulative user+kernel seconds the OS reports, or None.
-    Empty dict when unreadable."""
+    Empty dict when unreadable. `kill_guard` resolves a name kill against this table."""
     if not _on_windows():
         return _proc_table()
     return _win32_table() or _cim_table(timeout)
@@ -298,9 +143,8 @@ def process_table(timeout=60):
 def _win32_table():
     """process_table's Windows reader: a Toolhelp snapshot for pid, parent and image, then each process's own
     times and command line (its PEB). About 0.06 s for the whole table, where Get-CimInstance spawns a
-    PowerShell and takes 1 s or more, and every launch and kill check reads the table. A process this user
-    cannot open (system, protected) keeps an empty `cmd`, `start` and None `cpu`; no launcher, seat or
-    harness-owned process is one. {} when unreadable, so the caller falls back to CIM."""
+    PowerShell and takes 1 s or more. A process this user cannot open (system, protected) keeps an empty `cmd`,
+    `start` and None `cpu`. {} when unreadable, so the caller falls back to CIM."""
     if ctypes is None or ctypes.sizeof(ctypes.c_void_p) != 8:
         return {}
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -391,6 +235,7 @@ def _cim_table(timeout=60):
           " | ConvertTo-Json -Compress")
     for exe in ("pwsh", "powershell"):
         try:
+            # errors="replace": a command line that is not valid UTF-8 otherwise leaves stdout None.
             r = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", ps],
                                capture_output=True, text=True, errors="replace", timeout=timeout)
         except Exception:
@@ -398,9 +243,8 @@ def _cim_table(timeout=60):
         if r.returncode != 0 or not (r.stdout or "").strip():
             continue
         try:
-            # strict=False: one process's command line may carry a raw control character (a probe
-            # passing \x1b, a stray \x01). Rejecting the whole document blanks the table, and an
-            # empty table refuses every kill on the machine.
+            # strict=False: one command line may carry a raw control character, and rejecting the whole
+            # document blanks the table, which refuses every kill on the machine.
             rows = json.loads(r.stdout, strict=False)
         except ValueError:
             continue
@@ -415,165 +259,61 @@ def _cim_table(timeout=60):
     return {}
 
 
-def winpid_from_ps(text, msys_pid):
-    """WINPID for an MSYS pid from `ps -W` text, else None."""
-    lines = [ln.split() for ln in (text or "").splitlines() if ln.strip()]
-    if not lines or "WINPID" not in lines[0]:
+# ----------------------------------------------------------------- Git Bash (MSYS) processes
+def ps_text():
+    """Git's `ps -W` output, or None when unreadable. Read once per run and passed on."""
+    try:
+        r = subprocess.run([_msys.tool("ps"), "-W"], capture_output=True, text=True, timeout=15)
+    except Exception:
         return None
-    col = lines[0].index("WINPID")
-    for r in lines[1:]:
-        if r and r[0] == str(msys_pid) and len(r) > col and r[col].isdigit():
-            return int(r[col])
-    return None
+    return r.stdout if r.returncode == 0 else None
 
 
-def resolve_pid(pid, table):
-    """A Windows pid in the table, mapping an MSYS pid through `ps -W` when needed; None when gone."""
+def _ps_rows(text):
+    """[(msys pid, msys ppid, winpid)] from `ps -W` text."""
+    lines = [ln.split() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines or not {"PID", "PPID", "WINPID"} <= set(lines[0]):
+        return []
+    pc, ppc, wc = (lines[0].index(k) for k in ("PID", "PPID", "WINPID"))
+    return [(int(f[pc]), int(f[ppc]), int(f[wc])) for f in lines[1:]
+            if len(f) > max(pc, ppc, wc) and f[pc].isdigit() and f[ppc].isdigit() and f[wc].isdigit()]
+
+
+def winpid_from_ps(text, msys_pid):
+    """The WINPID of an MSYS pid in `ps -W` text, else None."""
+    return next((win for pid, _ppid, win in _ps_rows(text) if pid == msys_pid), None)
+
+
+def msys_pid_for_winpid(winpid, text):
+    """The MSYS pid of a Windows pid in `ps -W` text; None when it is not an MSYS process."""
+    return next((pid for pid, _ppid, win in _ps_rows(text) if win == winpid), None)
+
+
+def resolve_pid(pid, table, text):
+    """A Windows pid in the table, mapping an MSYS pid through `ps -W`; None when gone."""
     if pid in table:
         return pid
-    try:
-        r = subprocess.run([_msys.tool("ps"), "-W"], capture_output=True, text=True, timeout=15)
-        mapped = winpid_from_ps(r.stdout, pid) if r.returncode == 0 else None
-    except Exception:
-        mapped = None
+    mapped = winpid_from_ps(text, pid)
     return mapped if mapped in table else None
-
-
-def ancestors(table, pid):
-    out, seen = [], set()
-    cur = _parent(table.get(pid, {}), table)
-    while isinstance(cur, int) and cur in table and cur not in seen:
-        seen.add(cur)
-        out.append(cur)
-        cur = _parent(table[cur], table)
-    return out
-
-
-def _parent(row, table):
-    """The Windows parent while it lives, else the MSYS parent `link_msys_parents` recorded."""
-    ppid = row.get("ppid")
-    return ppid if ppid in table else row.get("msys_ppid")
-
-
-def outside_windows_tree(table, pid, tree):
-    """Members of `tree` that `taskkill /T` on `pid` cannot reach: no Windows-parent chain to `pid`."""
-    out = []
-    for k in tree:
-        cur, seen = table[k].get("ppid"), set()
-        while isinstance(cur, int) and cur in table and cur != pid and cur not in seen:
-            seen.add(cur)
-            cur = table[cur].get("ppid")
-        if k != pid and cur != pid:
-            out.append(k)
-    return out
-
-
-def descendants(table, pid):
-    out, frontier = [], [pid]
-    while frontier:
-        cur = frontier.pop()
-        for k, r in table.items():
-            if cur in (r.get("ppid"), r.get("msys_ppid")) and k not in out and k != pid:
-                out.append(k)
-                frontier.append(k)
-    return sorted(out)
-
-
-# ----------------------------------------------------------------- the three gates
-def never_reason(row, table=None):
-    """The command line decides: `claude.exe -p ...` is a headless child, `claude.exe --session-id` a host.
-
-    A codex.exe is protected by its parent, which only the process table shows.
-    """
-    for pat, why in NEVER:
-        if pat.search(row.get("cmd") or ""):
-            return why
-    if PROXY_IMAGE.match(row.get("name") or "") and not launch_of(row.get("pid")):
-        return "a transport PROXY other sessions may route through (no SIDECAR_LAUNCH_ID)"
-    parent = (table or {}).get(row.get("ppid")) or {}
-    if (row.get("name") or "").lower() == "codex.exe" and (parent.get("name") or "").lower() == "chatgpt.exe":
-        return "a codex.exe run by ChatGPT.exe"
-    return None
-
-
-def _resolve(path):
-    """The path as this process can open it: MSYS `/c/...` to `C:/...`, and repo-relative to REPO.
-
-    A dispatch passes `-R .claude/scratch/...`, which is relative to the repo, not to reap's cwd.
-    """
-    path = native_path(path)
-    return path if os.path.isabs(path) else str(REPO / path)
-
-
-def _read_json(path):
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, ValueError):
-        return {}
-
-
-def ps_text():
-    """`ps -W` output, read once per invocation; None when unreadable."""
-    if _RUN is not None and "ps" in _RUN:
-        return _RUN["ps"]
-    try:
-        r = subprocess.run([_msys.tool("ps"), "-W"], capture_output=True, text=True, timeout=15)
-        text = r.stdout if r.returncode == 0 else None
-    except Exception:
-        text = None
-    if _RUN is not None:
-        _RUN["ps"] = text
-    return text
 
 
 def link_msys_parents(table, text):
     """Add `msys_ppid` (a Windows pid) to each MSYS process whose MSYS parent is not its Windows parent.
 
-    An MSYS exec replaces the Windows process, so a `bash -c` wrapper's child names a Windows parent
-    that is gone; only `ps -W` keeps the real link. Without it `descendants` misses the child and a
-    reaped wrapper leaves its work running.
-    """
-    lines = [ln.split() for ln in (text or "").splitlines() if ln.strip()]
-    if not lines or not {"PID", "PPID", "WINPID"} <= set(lines[0]):
-        return table
-    pc, ppc, wc = (lines[0].index(k) for k in ("PID", "PPID", "WINPID"))
-    rows = [f for f in lines[1:] if len(f) > max(pc, ppc, wc) and f[pc].isdigit() and f[ppc].isdigit() and f[wc].isdigit()]
-    win = {int(f[pc]): int(f[wc]) for f in rows}
-    for f in rows:
-        child, parent = int(f[wc]), win.get(int(f[ppc]))
+    An MSYS exec replaces the Windows process, so a `bash -c` wrapper's child names a Windows parent that is gone;
+    only `ps -W` keeps the real link. Without it a stopped wrapper leaves its work running."""
+    rows = _ps_rows(text)
+    win = {pid: w for pid, _ppid, w in rows}
+    for _pid, ppid, child in rows:
+        parent = win.get(ppid)
         if child in table and parent in table and parent != child and table[child].get("ppid") != parent:
             table[child]["msys_ppid"] = parent
     return table
 
 
-def msys_pid_for_winpid(winpid):
-    """The MSYS pid for a Windows pid, from `ps -W`; None when it is not an MSYS process.
-
-    `/proc` on Git Bash is MSYS's own filesystem and is keyed by MSYS pid, while the CIM process
-    table is keyed by Windows pid, so the environ read below needs this translation.
-    """
-    text = ps_text()
-    if not text:
-        return None
-    lines = [ln.split() for ln in text.splitlines() if ln.strip()]
-    if not lines or "WINPID" not in lines[0]:
-        return None
-    col = lines[0].index("WINPID")
-    for f in lines[1:]:
-        if len(f) > col and f[col].isdigit() and int(f[col]) == winpid and f[0].isdigit():
-            return int(f[0])
-    return None
-
-
 def git_bash():
-    """Git Bash's bash.exe, never WSL's.
-
-    A bare `bash` from Windows Python resolves to `C:\\Windows\\System32\\bash.exe` -- WSL, a
-    different kernel whose /proc has never heard of our MSYS pids (measured 2026-09-18: `uname`
-    said `microsoft-standard-WSL2` and the read failed `No such file or directory`). `ps` is
-    Git's, so its directory is the reliable anchor.
-    """
+    """Git Bash's bash.exe, never WSL's: a bare `bash` from Windows Python is System32's WSL shim, whose /proc
+    cannot see MSYS pids. Git's `ps` is the anchor."""
     ps = _msys.tool("ps")
     if not os.path.isabs(ps):
         return None
@@ -581,10 +321,24 @@ def git_bash():
     return cand if os.path.exists(cand) else None
 
 
+def msys_environ(pid, text):
+    """The MSYS `/proc` environment block of Windows pid `pid`, or b'' when it is not an MSYS process or the read
+    fails. A Git Bash child of a Git Bash process carries its environment only there: its Windows block is bare."""
+    msys = msys_pid_for_winpid(pid, text)
+    shell = git_bash() if msys is not None else None
+    if not shell:
+        return b""
+    try:
+        # `cat`, not `tr`: quotes and backslashes do not survive CreateProcess's re-quoting.
+        r = subprocess.run([shell, "-c", "/usr/bin/cat /proc/%d/environ" % msys], capture_output=True, timeout=15)
+    except Exception:
+        return b""
+    return r.stdout if r.returncode == 0 else b""
+
+
 def native_environ(pid):
-    """A native Windows process's environment block (NUL-separated, UTF-8), read from its PEB; b'' when
-    unreadable. MSYS `/proc` holds only MSYS processes, so without this a native orphan (Godot, python,
-    dotnet) whose launcher died has no ownership proof at all."""
+    """A process's own environment block (NUL-separated, UTF-8), read from its PEB on Windows and /proc elsewhere;
+    b'' when unreadable."""
     if os.name != "nt":
         try:
             with open("/proc/%d/environ" % pid, "rb") as fh:
@@ -634,390 +388,10 @@ def native_environ(pid):
         k32.CloseHandle(handle)
 
 
-def process_exited(pid, start):
-    """True when Windows pid `pid` no longer runs the process the table read, started at `start`
-    ('yyyy-MM-dd HH:mm:ss', local): it has exited, or the pid now belongs to a newer process. False when
-    it still runs, or when the OS cannot say (access denied), so an unreadable process is never presumed dead."""
-    if os.name != "nt" or ctypes is None:
-        return False
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.OpenProcess.restype = wintypes.HANDLE
-    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
-    k32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
-    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    handle = k32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
-    if not handle:
-        return ctypes.get_last_error() == 87  # ERROR_INVALID_PARAMETER: no process has this pid
-    try:
-        code = wintypes.DWORD()
-        if k32.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value != 259:  # STILL_ACTIVE
-            return True
-        created, _exit, _kernel, _user = (wintypes.FILETIME() for _ in range(4))
-        if not k32.GetProcessTimes(handle, *(ctypes.byref(t) for t in (created, _exit, _kernel, _user))):
-            return False
-        epoch = ((created.dwHighDateTime << 32) | created.dwLowDateTime) / 1e7 - 11644473600
-        try:
-            listed = time.mktime(time.strptime(start or "", "%Y-%m-%d %H:%M:%S"))
-        except ValueError:
-            return False
-        return abs(epoch - listed) > 2
-    finally:
-        k32.CloseHandle(handle)
-
-
-def msys_environ(pid):
-    """The MSYS `/proc` environment block of Windows pid `pid`, or b'' when it is not an MSYS process or
-    the read fails. Windows Python cannot see `/proc`; `ps -W` lists native processes too, but `/proc`
-    holds a block only for MSYS ones."""
-    if _RUN is not None and pid in _RUN.setdefault("msys", {}):
-        return _RUN["msys"][pid]
-    block = _msys_environ_read(pid)
-    if _RUN is not None:
-        _RUN["msys"][pid] = block
-    return block
-
-
-def _msys_environ_read(pid):
-    msys = msys_pid_for_winpid(pid)
-    shell = git_bash() if msys is not None else None
-    if not shell:
-        return b""
-    try:
-        # `cat`, not `tr '\\0' '\\n'`: the quotes and backslashes do not survive CreateProcess's
-        # re-quoting (the shell receives them mangled and the read fails empty). NULs pass through
-        # a binary pipe unharmed, and the caller only does a substring search.
-        r = subprocess.run([shell, "-c", "/usr/bin/cat /proc/%d/environ" % msys], capture_output=True, timeout=15)
-    except Exception:
-        return b""
-    return r.stdout if r.returncode == 0 else b""
-
-
-def environ_of(pid):
-    """The target's environment block, or b''. The MSYS block first, kept only when it carries the
-    `CLAUDE_CODE_SESSION_ID` key; otherwise the process's own PEB."""
-    block = msys_environ(pid)
-    if SID_ENV.split(b"=")[0] in block:
-        return block
-    return native_environ(pid)
-
-
-def _environ(pid):
-    """environ_of, read once per pid per invocation."""
-    if _RUN is None:
-        return environ_of(pid)
-    if pid not in _RUN["env"]:
-        _RUN["env"][pid] = environ_of(pid)
-    return _RUN["env"][pid]
-
-
-def launch_environ(pid):
-    """The block a launch id is read from: the process's PEB. SIDECAR_LAUNCH_ID is inherited at spawn, so
-    the PEB holds it for an MSYS process a native one spawned, and the census reads every process, where
-    environ_of's per-process bash spawn is too slow for a whole-table read. An MSYS process another MSYS
-    process exec'd (a launcher's snapshot re-exec) has a bare PEB; `_ids_block` reads its MSYS block."""
-    return native_environ(pid)
-
-
-def launch_block(pid):
-    """launch_environ, read once per pid per invocation."""
-    if not isinstance(pid, int):
-        return b""
-    if _RUN is None:
-        return launch_environ(pid)
-    if pid not in _RUN["launch"]:
-        _RUN["launch"][pid] = launch_environ(pid)
-    return _RUN["launch"][pid]
-
-
-def launch_of(pid):
-    """The SIDECAR_LAUNCH_ID in the process's own environment, or None."""
-    return _env_value(launch_block(pid), LAUNCH_ENV)
-
-
-def is_launcher(row):
-    """A bash running a `*_sidecar.sh` launcher, or a snapshot copy or fork of one."""
-    return (row.get("name") or "").lower().startswith("bash") and bool(LAUNCHER_SCRIPT.search(row.get("cmd") or ""))
-
-
-def launchers_of(table, launch, pid):
-    """Live launchers of `launch` outside `pid`'s own subtree (module docstring, `launchers`)."""
-    below = set(descendants(table, pid)) | {pid}
-    above = set(ancestors(table, pid))
-    out = []
-    for k in sorted(table):
-        if k in below or not is_launcher(table[k]):
-            continue
-        block = launch_block(k)
-        if k in above or (_env_value(block, LAUNCH_ENV) == launch and _env_value(block, SEAT_ENV) != launch):
-            out.append(k)
-    return out
-
-
-def session_registry_dirs():
-    """Every declared login's `sessions` dir that exists (`transcript_usage.login_dirs`)."""
-    return [Path(p) / "sessions" for p in login_dirs() if (Path(p) / "sessions").is_dir()]
-
-
-def registered_sessions(table):
-    """{live pid: {sessionId, ...}} from every login's session registry, read once per invocation."""
-    if _RUN is not None and _RUN.get("registry") is not None:
-        return _RUN["registry"]
-    out = {}
-    for folder in session_registry_dirs():
-        for path in Path(folder).glob("*.json"):
-            data = _read_json(str(path))
-            pid, session = data.get("pid"), data.get("sessionId")
-            if isinstance(pid, int) and pid in table and isinstance(session, str):
-                out.setdefault(pid, set()).add(session)
-    if _RUN is not None:
-        _RUN["registry"] = out
-    return out
-
-
-def session_live(table, session, exclude=frozenset()):
-    """The verdict of `session_host`: True, False or None."""
-    return session_host(table, session, exclude)[0]
-
-
-def session_host(table, session, exclude=frozenset()):
-    """(verdict, host pid): True when a live host serves `session`, False when none does, None when a live
-    Claude Code host's session cannot be read (module docstring, `dead session`). The pid is the host that
-    decided a True or None verdict, else None. `exclude` holds the targets' own trees.
-
-    Only a HOST proves a session live: its registry row, or a host in its command line. A live tool
-    shell, MCP server or console host that merely carries the id is a DEPENDENT, not a host -- it
-    outlives the session and would keep a dead session looking alive forever (2026-11-10: the
-    eleven watchers' ids were carried by the machine's MCP servers and long-lived shells)."""
-    cache = _RUN.setdefault("live", {}) if _RUN is not None else {}
-    key = (session, exclude)
-    if key in cache:
-        return cache[key]
-    registry = registered_sessions(table)
-    served = [pid for pid, found in registry.items() if session in found]
-    verdict, decider = (False, None) if not served else (True, served[0])
-    if verdict is False:
-        # Only a host can prove a session live (the docstring above), so the walk visits hosts,
-        # not the whole table: a dead session's loops then cost O(hosts), not O(processes).
-        hosts = [pid for pid in sorted(table)
-                 if (table[pid].get("name") or "").lower() != "conhost.exe"
-                 and (any(pat.search(table[pid].get("cmd") or "") for pat in HOST_PATTERNS)
-                      or SEAT_HOST.search(table[pid].get("cmd") or ""))]
-        children = {}
-        for pid, row in table.items():
-            children.setdefault(row.get("ppid"), []).append(pid)
-        for pid in hosts:
-            if pid in exclude:
-                continue
-            cmd = table[pid].get("cmd") or ""
-            named = HOST_SESSION.search(cmd)
-            if named:
-                if named.group(1) == session:
-                    verdict, decider = True, pid
-                    break
-                continue
-            if pid not in registry and any(_env_value(launch_block(k), SID_ENV) for k in children.get(pid, ())):
-                verdict, decider = None, pid
-    cache[key] = (verdict, decider)
-    return verdict, decider
-
-
-def leftover_proof(table, pid, sid, exclude=frozenset()):
-    """The ownership proof for a dead session's leftover (module docstring, `dead session`), else None.
-    The caller has already proven the orphan reason, so a target with no launch id has no live parent."""
-    return leftover_check(table, pid, sid, exclude)[0]
-
-
-def leftover_check(table, pid, sid, exclude=frozenset()):
-    """(proof, blocker): `leftover_proof`'s proof, or None and the observed fact that withheld it."""
-    if is_launcher(table[pid]):
-        return None, "the target is a launcher, which is stopped as its own launch's orphan, never as a leftover"
-    launch = launch_of(pid)
-    owner, _source = owner_of(table, pid)
-    if not owner:
-        return None, "its environment names no owner session"
-    if owner == sid:
-        return None, "its owner session %s is this session" % owner[:8]
-    verdict, host = session_host(table, owner, exclude)
-    if verdict is True:
-        return None, "its owner session %s is live: a live session host serves it (pid %s)" % (owner[:8], host)
-    if verdict is None:
-        return None, ("its owner session %s cannot be ruled live: host pid %s runs with a session that cannot be read, "
-                      "so no session is proven dead while it runs" % (owner[:8], host))
-    mine = (_RUN or {}).get("project_key") if _RUN is not None else None
-    owner_key = project_key_of_session(owner)
-    if owner_key and mine and not same_project(owner_key, mine):
-        return None, "its owner session %s belongs to another project (%s)" % (owner[:8], owner_key)
-    if not launch:
-        return "leftover of dead session %s: no live session host serves it" % owner[:8], None
-    alive = launchers_of(table, launch, pid)
-    if alive:
-        return None, "launch %s has a live launcher (pid %s)" % (launch, alive[0])
-    return ("leftover of dead session %s: no live session host serves it, and launch %s has no live launcher"
-            % (owner[:8], launch)), None
-
-
-def owner_of(table, pid, parent_first=True):
-    """(session id, tag source) the session whose process this is, or (None, None).
-
-    SIDECAR_PARENT_SESSION_ID first (the default): it names the session that launched the process,
-    which is the question every dead-session path asks (`leftover_check`, `dead_leftover_proof`,
-    `leftover_findings`), so they all resolve one owner. CLAUDE_CODE_SESSION_ID is the fallback: it
-    names the session whose shell or seat the process is. `parent_first=False` is the shell-first
-    order; no reap.py path uses it.
-
-    An MSYS snapshot re-exec has a bare PEB (MSYS keeps the inherited tag in its own block), so
-    when neither tag is in the process's own block the nearest ANCESTOR that carries one names its
-    session: a launcher's tree belongs to the shell that started it. `_starts_after` stops the
-    walk at a reused pid. One PEB read per process, once per invocation."""
-    cur, seen = pid, set()
-    for _ in range(12):
-        if cur in seen:
-            break
-        seen.add(cur)
-        block = launch_block(cur)
-        for env_name in ((PARENT_ENV, SID_ENV) if parent_first else (SID_ENV, PARENT_ENV)):
-            value = _env_value(block, env_name)
-            if value:
-                name = env_name.decode().rstrip("=") if isinstance(env_name, bytes) else env_name
-                return value, name if cur == pid else "an ancestor's " + name
-        parent = (table.get(cur) or {}).get("ppid")
-        if parent not in table or _starts_after(table[parent], table[cur]):
-            break
-        cur = parent
-    return None, None
-
-
-def project_key_of_session(sid):
-    """The Claude project folder (`~/.claude/projects/<key>`) holding `sid`'s transcript, or None."""
-    if _RUN is not None:
-        keys = _RUN.setdefault("project_keys", {})
-        if sid in keys:
-            return keys[sid]
-    transcript = session_transcript(sid)
-    key = transcript.parent.name if transcript else None
-    if _RUN is not None:
-        _RUN["project_keys"][sid] = key
-    return key
-
-
-def same_project(a, b):
-    """True when two Claude project keys are the same repository. A checkout and its worktrees share
-    the leading key: `<root>--claude-worktrees-<name>` starts with `<root>--`."""
-    if not a or not b:
-        return False
-    return a == b or a.startswith(b + "--") or b.startswith(a + "--")
-
-
-def dead_leftover_proof(table, pid, sid=None, project_key=None, exclude=frozenset(), require_project=False,
-                        live=None):
-    """The proof that `pid` is a DEAD session's leftover belonging to this project, else None.
-
-    Facts only: its own environment (or a tagged ancestor's) names an owner session other than
-    this one; no live session host serves that owner; the owner's transcript sits in the same
-    project (a worktree of it counts). A sidecar member whose launch still has a live launcher is
-    not a leftover: the launcher can still consume its result. A parent that is alive is not part
-    of the proof -- a pane watcher's bash wrapper lives on after the session that launched it dies.
-
-    `require_project` is for the `leftovers` listing's `dead` status: an owner with NO transcript
-    cannot be attributed to this project. The explicit-pid path keeps the older, narrower rule."""
-    row = table.get(pid)
-    if not row:
-        return None
-    owner, source = owner_of(table, pid)
-    if not owner or owner == sid:
-        return None
-    launch = launch_of(pid)
-    if not is_launcher(row) and launch and launchers_of(table, launch, pid):
-        return None
-    if live is None:
-        live = session_live(table, owner, exclude)
-    if live is not False:
-        return None
-    mine = project_key if project_key is not None else project_key_of_session(sid)
-    owner_key = project_key_of_session(owner)
-    if require_project and not (owner_key and mine and same_project(owner_key, mine)):
-        return None
-    if owner_key and mine and not same_project(owner_key, mine):
-        return None
-    return ("leftover of dead session %s (%s): no live session host serves it"
-            % (owner[:8], source))
-
-
-def is_server_image(row):
-    """A claude-code-proxy executable, a text_only_shim.py python process, or the nohup wrapper of either."""
-    name, cmd = (row.get("name") or "").lower(), row.get("cmd") or ""
-    if PROXY_IMAGE.match(name):
-        return True
-    if name.startswith("python"):
-        return bool(SHIM_SCRIPT.search(cmd))
-    if name in ("nohup", "nohup.exe"):
-        return bool(SHIM_SCRIPT.search(cmd) or NOHUP_PROXY.search(cmd))
-    return False
-
-
-def server_launch(row):
-    """The launch id when the process is a dispatch server, else None."""
-    return launch_of(row.get("pid")) if is_server_image(row) else None
-
-
-def launch_census(table):
-    """{launch id: [pids carrying it]} over the whole table, built once per invocation."""
-    if _RUN is not None and _RUN.get("census") is not None:
-        return _RUN["census"]
-    census = {}
-    for pid in sorted(table):
-        launch = launch_of(pid)
-        if launch:
-            census.setdefault(launch, []).append(pid)
-    if _RUN is not None:
-        _RUN["census"] = census
-    return census
-
-
-def ownership(table, pid, session_pid, sid):
-    """(proof, foreign): a proof string when the target is this session's; `foreign` set when it is
-    positively ANOTHER session's; (None, None) when no session claims it. An empty environment block means the
-    read failed, which the caller treats as unprovable."""
-    if session_pid and session_pid in ancestors(table, pid):
-        return "descends from this session's claude.exe pid %d" % session_pid, None
-    # The target's OWN environment is the decisive evidence: a process launched from this session
-    # inherits CLAUDE_CODE_SESSION_ID, and nothing else can put it there. It is also the only proof
-    # that survives the launcher wrapper being killed -- 2026-09-18, two hung sidecars were
-    # unreapable because their ancestor was gone and the -R record is written only when a run ENDS.
-    env = _environ(pid)
-    mine = (SID_ENV + sid.encode()) if sid else None
-    if env and mine and mine in env:
-        return "its own environment names session %s (launched from this session)" % sid[:8], None
-    parent = _env_value(env, PARENT_ENV)
-    if parent:
-        if sid and parent == sid:
-            return "its sidecar tag names parent session %s (a sidecar this session launched)" % sid[:8], None
-        return None, "its sidecar tag names a DIFFERENT parent session -- a peer's dispatch"
-    if env and SID_ENV in env:
-        return None, "its own environment names a DIFFERENT session -- a peer's process"
-    prompt = _env_value(env, PROMPT_ENV)
-    if prompt:
-        return None, ("its sidecar prompt file %s carries no session tag: nothing proves this session launched it"
-                      % os.path.basename(prompt))
-    # A record on disk is second-hand (a stale -R path can name us while the process is a peer's),
-    # so it is consulted only when the environment was unreadable.
-    cmd = table[pid].get("cmd") or ""
-    m = RECORD_RE.search(cmd)
-    if m and sid:
-        path = m.group(1)
-        named = _read_json(_resolve(path)).get("parentSessionId")
-        if named == sid:
-            return "its dispatch record %s names parentSessionId %s (this session)" % (os.path.basename(path), sid[:8]), None
-        if named:
-            return None, "its dispatch record %s names a DIFFERENT parent session (%s)" % (os.path.basename(path), str(named)[:8])
-    for a in ancestors(table, pid):
-        host = HOST_SESSION.search(table[a].get("cmd") or "") if any(
-            pat.search(table[a].get("cmd") or "") for pat in HOST_PATTERNS) else None
-        if host and host.group(1) != sid:
-            return None, ("NOT OWNED: it runs inside a DIFFERENT session's tree (host pid %d, session %s)"
-                          % (a, host.group(1)[:8]))
-    return None, None
+def environ_of(pid, text=None):
+    """The target's environment block, or b'': its MSYS block when that carries a session id, else its own."""
+    block = msys_environ(pid, text)
+    return block if SID_ENV in block else native_environ(pid)
 
 
 def _env_value(env, key):
@@ -1028,178 +402,176 @@ def _env_value(env, key):
     return None
 
 
-def _same_path(a, b):
-    fix = lambda p: os.path.normcase(os.path.abspath(drive_path(p.replace("\\", "/"))))
-    return fix(a) == fix(b)
-
-
-def session_transcript(sid):
-    """This session's main transcript: the single `<projects>/<key>/<sid>.jsonl`, else None.
-
-    One scandir of every project folder builds the map for all sessions in one invocation: a
-    glob per session id cost 90 ms each (a sweep over ~70 ids took 6 s, 2026-11-10)."""
-    if not sid or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sid):
-        return None
-    cache = _RUN.get("transcripts") if _RUN is not None else None
-    if cache is None:
-        cache = {}
-        try:
-            with os.scandir(PROJECTS_ROOT) as projects:
-                for project in projects:
-                    if not project.is_dir():
-                        continue
-                    with os.scandir(project.path) as files:
-                        for entry in files:
-                            if entry.is_file() and entry.name.endswith(".jsonl"):
-                                cache.setdefault(entry.name[:-len(".jsonl")], []).append(
-                                    Path(project.path) / entry.name)
-        except OSError:
-            cache = {}
-        if _RUN is not None:
-            _RUN["transcripts"] = cache
-    hits = cache.get(sid) or []
-    return hits[0] if len(hits) == 1 else None
-
-
-def orphan_evidence(table, pid):
-    """(ok, evidence) for `--reason orphan`."""
-    row = table[pid]
-    launch = server_launch(row)
-    if launch:
-        live = [k for k in launch_census(table).get(launch, []) if k in table and not is_server_image(table[k])]
-        if live:
-            k = live[0]
-            return False, "launch %s is still live: pid %d (%s)" % (launch, k, (table[k].get("cmd") or "")[:60])
-        return True, "no launcher or seat child of launch %s is alive" % launch
-    launch = launch_of(pid)
-    if launch and not is_launcher(row):
-        live = launchers_of(table, launch, pid)
-        if live:
-            k = live[0]
-            return False, "launcher %d of launch %s is alive (%s)" % (k, launch, (table[k].get("cmd") or "")[:60])
-        return True, "no launcher of launch %s is alive" % launch
-    # A dead session's leftover: no live host serves its owner, so nothing can consume its result.
-    # This reaches the pane watcher whose bash wrapper is still alive, which the parent test below
-    # refused (2026-11-10: five such watchers sat for days while every prompt named them).
-    context = _RUN or {}
-    dead = dead_leftover_proof(table, pid, context.get("sid"), context.get("project_key"))
-    if dead:
-        return True, dead
+# ----------------------------------------------------------------- trees
+def _parent(row, table):
+    """The Windows parent while it lives, else the MSYS parent `link_msys_parents` recorded."""
     ppid = row.get("ppid")
-    if isinstance(ppid, int) and ppid in table:
-        return False, "parent %d is alive (%s)" % (ppid, (table[ppid].get("cmd") or "")[:60])
-    return True, "parent %s is gone" % ppid
+    return ppid if ppid in table else row.get("msys_ppid")
 
 
-def _standing_stall(journal):
-    """The last `stalled` row of a launcher journal, or None when a later `resumed` or `ended` row
-    already cleared it. An unreadable line is skipped; nothing is guessed."""
-    rows = []
-    try:
-        with open(journal, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(row, dict):
-                    rows.append(row)
-    except OSError:
-        return None
-    for row in reversed(rows):
-        event = row.get("event")
-        if event == "stalled":
-            return row
-        if event in ("resumed", "ended"):
-            return None
+def ancestors(table, pid):
+    out, seen = [], set()
+    cur = _parent(table.get(pid, {}), table)
+    while isinstance(cur, int) and cur in table and cur not in seen:
+        seen.add(cur)
+        out.append(cur)
+        cur = _parent(table[cur], table)
+    return out
+
+
+def descendants(table, pid):
+    out, frontier = [], [pid]
+    while frontier:
+        cur = frontier.pop()
+        for k, r in table.items():
+            if cur in (r.get("ppid"), r.get("msys_ppid")) and k not in out and k != pid:
+                out.append(k)
+                frontier.append(k)
+    return sorted(out)
+
+
+def outside_windows_tree(table, pid, tree):
+    """Members of `tree` that `taskkill /T` on `pid` cannot reach: no Windows-parent chain to `pid`."""
+    out = []
+    for k in tree:
+        cur, seen = table[k].get("ppid"), set()
+        while isinstance(cur, int) and cur in table and cur != pid and cur not in seen:
+            seen.add(cur)
+            cur = table[cur].get("ppid")
+        if k != pid and cur != pid:
+            out.append(k)
+    return out
+
+
+# ----------------------------------------------------------------- the facts a verdict reads
+def never_reason(row, table):
+    """Why `row` is never a target, else None. A codex.exe is protected by its parent, which only the table shows."""
+    for pat, why in NEVER:
+        if pat.search(row.get("cmd") or ""):
+            return why
+    parent = table.get(row.get("ppid")) or {}
+    if (row.get("name") or "").lower() == "codex.exe" and (parent.get("name") or "").lower() == "chatgpt.exe":
+        return "a codex.exe run by ChatGPT.exe"
     return None
 
 
-def justification(args, table, pid, targets):
-    """(ok, evidence) for the named reason, verified mechanically; a call naming none needs none."""
-    reason = args.reason
-    if not reason:
-        return True, "no reason named; none is needed for a target that is not another session's"
-    if reason == "duplicate":
-        twin = args.twin
-        if twin is None or twin not in table:
-            return False, "twin %s is not alive; the work would not continue anywhere" % twin
-        if twin in targets:
-            return False, "twin %s is itself a target" % twin
-        key = (args.key or "").strip()
-        if not key or key not in (table[twin].get("cmd") or "") or key not in (table[pid].get("cmd") or ""):
-            return False, "--key %r is not in both command lines" % key
-        return True, "twin %d alive, both run %r" % (twin, key)
-    if reason == "orphan":
-        return orphan_evidence(table, pid)
-    if reason == "stalled":
-        if not args.log or not os.path.isfile(args.log):
-            return False, "--log %r is not a file" % args.log
-        journal = args.log if args.log.endswith(".journal.jsonl") else args.log + ".journal.jsonl"
-        if os.path.isfile(journal):
-            # A launcher's journal: its `stalled` row records the silence the launcher measured, and the
-            # row's age is the silence since. A later `resumed` or `ended` row means no stall stands.
-            row = _standing_stall(journal)
-            if row is None:
-                return False, "%s carries no standing stalled row" % os.path.basename(journal)
+def session_registry_dirs():
+    """Every declared login's `sessions` dir that exists (`transcript_usage.login_dirs`)."""
+    return [Path(p) / "sessions" for p in login_dirs() if (Path(p) / "sessions").is_dir()]
+
+
+def registered_sessions(table):
+    """{live pid: {sessionId, ...}} from every login's session registry."""
+    out = {}
+    for folder in session_registry_dirs():
+        for path in Path(folder).glob("*.json"):
             try:
-                at = datetime.datetime.strptime(str(row.get("ts")), "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=datetime.timezone.utc).timestamp()
-                idle = (int(row["idle"]) + (time.time() - at)) / 60.0
-            except (KeyError, TypeError, ValueError):
-                return False, "%s stalled row carries no readable idle and ts" % os.path.basename(journal)
-        else:
-            idle = (time.time() - os.path.getmtime(args.log)) / 60.0
-        if idle < args.idle_min:
-            return False, "%s idle %.1f min (< %d)" % (os.path.basename(args.log), idle, args.idle_min)
-        return True, "%s idle %.0f min (>= %d)" % (os.path.basename(args.log), idle, args.idle_min)
-    if reason == "superseded":
-        if not args.artifact or not os.path.exists(args.artifact):
-            return False, "--artifact %r does not exist" % args.artifact
-        name = os.path.basename(args.artifact)
-        # A job's outputs share its label stem (<label>.record.json, .out.json, .exit, ...), and
-        # Windows paths ignore case: a stem in the tree's command lines is the job's own output.
-        # A script the tree runs is not an output: its stem names the command, not the job.
-        stem = name.lower().split(".")[0]
-        runnable = name.lower().endswith((".ps1", ".py", ".sh", ".js", ".cmd", ".bat"))
-        if stem and not runnable and any(stem in (table[member].get("cmd") or "").replace("\\", "/").lower()
-                        for member in [pid] + descendants(table, pid)):
-            return False, ("artifact %s is the target's own output, still being written; stop it under "
-                           "--reason queued once nothing in its tree is in flight" % name)
-        return True, "artifact %s exists" % name
-    if reason == "queued":
-        return queued_evidence(table, pid)
-    return False, "unknown reason"
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            pid, session = data.get("pid"), data.get("sessionId")
+            if isinstance(pid, int) and pid in table and isinstance(session, str):
+                out.setdefault(pid, set()).add(session)
+    return out
 
 
-def queued_evidence(table, pid):
-    """(ok, evidence) for `--reason queued`: nothing the job runs is in flight, its detached members included.
-    Those are found by the job id its launcher set at spawn, so a target carrying none refuses: its detached
-    work cannot be seen."""
-    tree = [pid] + descendants(table, pid)
-    busy = [k for k in tree if IN_FLIGHT_RE.search("%s %s" % (table[k].get("name") or "", table[k].get("cmd") or ""))]
-    if busy:
-        return False, ("%s in flight in its tree (%s); wait for that work to end"
-                       % (", ".join(map(str, busy)), (table[busy[0]].get("cmd") or "")[:60]))
-    block = _environ(pid)
-    ids = [(key, _env_value(block, key)) for key in JOB_ID_KEYS if _env_value(block, key)]
-    if not ids:
-        return False, ("it carries no job id (%s), so work it detached cannot be seen"
-                       % ", ".join(k.decode().rstrip("=") for k in JOB_ID_KEYS))
-    since = table[pid].get("start") or ""
-    members = [k for k, row in table.items() if k not in tree and (row.get("start") or "") >= since
-               and any(_env_value(_environ(k), key) == value for key, value in ids)]
-    if members:
-        return False, ("its detached work is live (%s: %s); wait for it to end"
-                       % (", ".join(map(str, members)), (table[members[0]].get("cmd") or "")[:60]))
-    return True, "nothing in flight: no model client or launcher in its tree, and no live process carries its job id"
+def session_host(table, session, registry, exclude, block_of):
+    """(verdict, host pid): True when a live host serves `session`, False when none does, None when a live host's
+    session cannot be read. `exclude` holds the targets' own trees; `block_of` reads a process's own block."""
+    served = [pid for pid, found in sorted(registry.items()) if session in found]
+    if served:
+        return True, served[0]
+    children = {}
+    for pid, row in table.items():
+        children.setdefault(row.get("ppid"), []).append(pid)
+    verdict = (False, None)
+    for pid in sorted(table):
+        row = table[pid]
+        cmd = row.get("cmd") or ""
+        if pid in exclude or (row.get("name") or "").lower() == "conhost.exe":
+            continue
+        if not (any(pat.search(cmd) for pat in HOST_PATTERNS) or SEAT_HOST.search(cmd)):
+            continue
+        named = HOST_SESSION.search(cmd)
+        if named:
+            if named.group(1) == session:
+                return True, pid
+            continue
+        if pid not in registry and any(_env_value(block_of(k), SID_ENV) for k in children.get(pid, ())):
+            verdict = (None, pid)
+    return verdict
 
 
-# ----------------------------------------------------------------- act + record
+def projects_root():
+    """This login's transcript folders: CLAUDE_CONFIG_DIR's `projects`, else ~/.claude/projects."""
+    return Path(os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")) / "projects"
+
+
+def project_keys(root=None):
+    """{session id: [project folder name, ...]} over every transcript under `root` (one scandir per folder)."""
+    keys = {}
+    try:
+        with os.scandir(root or projects_root()) as projects:
+            for project in projects:
+                if not project.is_dir():
+                    continue
+                with os.scandir(project.path) as files:
+                    for entry in files:
+                        if entry.is_file() and entry.name.endswith(".jsonl"):
+                            keys.setdefault(entry.name[:-len(".jsonl")], []).append(project.name)
+    except OSError:
+        return {}
+    return keys
+
+
+def same_project(a, b):
+    """True when two Claude project keys are the same repository: a worktree's key starts with `<root key>--`."""
+    return a == b or a.startswith(b + "--") or b.startswith(a + "--")
+
+
+def judge(table, pid, me, block_of, host_of, project_of):
+    """(proof, None) when `pid` may be stopped, else (None, refusal), in the module docstring's order.
+
+    `block_of(pid)` is the target's environment block; `host_of(session)` is `session_host`'s verdict;
+    `project_of(session)` is the project key of that session's transcript, or None."""
+    row = table[pid]
+    never = never_reason(row, table)
+    if never:
+        return None, "NEVER: %s, not a target, and its own children are not ours to stop" % never
+    if me.pid and me.pid in ancestors(table, pid):
+        return "descends from this session's claude.exe pid %d" % me.pid, None
+    env = block_of(pid)
+    if not env:
+        return None, "its environment is unreadable, so a session's claim on it cannot be ruled out"
+    owner = _env_value(env, SID_ENV)
+    if owner and owner == me.sid:
+        return "its own environment names this session %s" % owner[:8], None
+    for a in ancestors(table, pid):
+        cmd = table[a].get("cmd") or ""
+        named = HOST_SESSION.search(cmd) if any(pat.search(cmd) for pat in HOST_PATTERNS) else None
+        if named and named.group(1) != me.sid:
+            return None, ("it runs inside a DIFFERENT session's tree (host pid %d, session %s): that session stops it"
+                          % (a, named.group(1)[:8]))
+    if not owner:
+        return "unclaimed: its environment names no session and no session host sits above it", None
+    live, host = host_of(owner)
+    if live:
+        return None, ("its environment names a DIFFERENT session %s, which a live session host serves (pid %s): "
+                      "that session stops it" % (owner[:8], host))
+    if live is None:
+        return None, ("its environment names a DIFFERENT session %s that cannot be ruled dead: host pid %s runs with "
+                      "a session that cannot be read" % (owner[:8], host))
+    theirs = project_of(owner)
+    if theirs and me.project and not same_project(theirs, me.project):
+        return None, ("it is the leftover of dead session %s of another project (%s): that project stops it"
+                      % (owner[:8], theirs))
+    return "leftover of dead session %s: no live session host serves it" % owner[:8], None
+
+
+# ----------------------------------------------------------------- the stop
 def taskkill(pid, *, tree=True):
-    """Kill `pid`. tree=True takes its whole tree; tree=False kills only that process, which is what
-    a tree containing never-kill INFRA members needs (see `kill_subtree_sparing_infra`). Success is the
-    target gone: `/T` exits nonzero when a member dies before its turn, though the root is killed."""
+    """Kill `pid` (with its tree by default). Success is the target gone: `/T` exits nonzero when a member dies
+    before its turn, though the root is killed."""
     cmd = ["taskkill", "/PID", str(pid), "/F"] + (["/T"] if tree else [])
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -1212,839 +584,121 @@ def taskkill(pid, *, tree=True):
     return listing.returncode == 0 and '"%d"' % int(pid) not in (listing.stdout or "")
 
 
-def kill_subtree_sparing_infra(table, root, never_pids):
-    """Kill root and its descendants EXCEPT the never-kill members and their own subtrees.
-
-    A tree-kill is refused outright when any member is shared INFRA, which is right -- but it also
-    means a sidecar whose tree merely CONTAINS an MCP server could never be stopped. Enumerating
-    the tree lets both hold: the spared set is every INFRA member plus everything below it, and the
-    rest dies deepest-first so no target is orphaned mid-kill. Returns (killed, failed, spared)."""
-    tree = [root] + descendants(table, root)
+def kill_sparing(table, root, never_pids):
+    """Kill root and its descendants except each never-kill member and its own subtree, deepest first, so no member
+    is orphaned mid-kill. Returns (killed, failed, spared)."""
     spared = set()
     for pid in never_pids:
-        spared.add(pid)
-        spared.update(descendants(table, pid))
-    doomed = [p for p in tree if p not in spared]
-    depth = {p: len(ancestors(table, p)) for p in doomed}
+        spared.update([pid] + descendants(table, pid))
+    doomed = [p for p in [root] + descendants(table, root) if p not in spared]
     killed, failed = [], []
-    for pid in sorted(doomed, key=lambda p: -depth.get(p, 0)):
+    for pid in sorted(doomed, key=lambda p: -len(ancestors(table, p))):
         (killed if taskkill(pid, tree=False) else failed).append(pid)
     return killed, failed, sorted(spared)
 
 
 def record(entry):
-    """Append one ledger row; False when it cannot be written. The kill path refuses on False."""
-    return _hook_state.append_jsonl_rotating(str(LEDGER), [entry], max_bytes=None)
+    """Append one ledger row; False when it cannot be written."""
+    return _hook_state.append_jsonl_rotating(str(LEDGER), [entry])
 
 
-def remember_stop(sid, launch):
-    """Add `launch` to this session's `sidecar_stopped_launches`, so the session watcher reads the end of that
-    job as the session's own stop. Called only after a kill landed; a failed write warns and keeps the kill."""
-    if not sid or launch == "unknown":
-        return
-
-    def add(state):
-        launches = state.get(STOPPED_LAUNCHES_KEY) or []
-        if launch not in launches:
-            state[STOPPED_LAUNCHES_KEY] = (launches + [launch])[-50:]  # the sidecar_watchers cap
-    written, _ = _hook_state.update_json_locked(_hook_state.state_path(sid), add)
-    if not written:
-        print("WARN: could not record launch %s as stopped by this session; its end will wake the session" % launch)
-
-
-def _owned_proof(table, k, session_pid, sid, reason):
-    """`k`'s ownership proof; under `--reason orphan`, else its dead-session leftover proof; else None."""
-    proof, _foreign = ownership(table, k, session_pid, sid)
-    if not proof and reason == "orphan":
-        proof = leftover_proof(table, k, sid)
-    return proof
-
-
-def dispatch_servers_of(table, pid, session_pid, sid, tree, reason=None):
-    """(launch, [(server pid, proof)]): the owned dispatch servers of the launch `pid` carries, when `pid`
-    is not itself one. Servers already inside the target's tree die with it and are not listed."""
-    launch = launch_of(pid)
-    if not launch or is_server_image(table[pid]):
-        return launch, []
-    out = []
-    for k in launch_census(table).get(launch, []):
-        if k in tree or k not in table or not is_server_image(table[k]):
-            continue
-        proof = _owned_proof(table, k, session_pid, sid, reason)
-        if proof:
-            out.append((k, proof))
-    return launch, out
-
-
-def seats_of(table, session_pid, sid, tree, reason=None):
-    """[(seat pid, launch, proof)]: the owned detached seats of every launch the target's tree carries. A
-    launcher detaches its seat, so the seat sits outside the launcher's tree and taskkill /T never reaches
-    it. A seat carries SIDECAR_SEAT_LAUNCH_ID=X; only the topmost carrier of each seat is listed."""
-    launches = set()
-    for k in tree:
-        if k in table and not is_server_image(table[k]):
-            block = launch_block(k)
-            x = _env_value(_ids_block(k, block) if is_launcher(table[k]) else block, LAUNCH_ENV)
-            if x and _env_value(launch_block(k), SEAT_ENV) != x:
-                launches.add(x)
-    census = launch_census(table)
-    found = {k: x for x in launches for k in census.get(x, [])
-             if k in table and k not in tree and not is_launcher(table[k]) and not is_server_image(table[k])
-             and _env_value(launch_block(k), SEAT_ENV) == x}
-    out = []
-    for k in sorted(found):
-        if set(ancestors(table, k)) & set(found):
-            continue
-        proof = _owned_proof(table, k, session_pid, sid, reason)
-        if proof:
-            out.append((k, found[k], proof))
-    return out
-
-
-def _reap_stray(table, k, pid, label, proof, kill, base, args, **fields):
-    """Kill (or dry-run) one stray of the launch `pid` carries, on the record; returns 1 on failure, else 0.
-    The 'killing' row is written before `kill()` runs, and an unwritable ledger refuses the kill."""
-    head = "%d %s :: %s" % (k, table[k].get("name"), (table[k].get("cmd") or "")[:110])
-    entry = dict(base, pid=k, name=table[k].get("name"), cmd=(table[k].get("cmd") or "")[:400], proof=proof,
-                 evidence="%s, whose process %d is being reaped" % (label, pid), **fields)
-    if args.dry_run:
-        print("DRY %s (%s)" % (head, label))
-        entry["result"] = "dry-run"; record(entry)
-        return 0
-    entry["result"] = "killing"
-    if not record(entry):
-        print("REFUSED %s (%s)\n   LEDGER unwritable: %s" % (head, label, LEDGER))
-        return 1
-    done = kill()
-    print("%s %s (%s)" % ("KILLED" if done else "FAILED", head, label))
-    entry["result"] = "killed" if done else "kill-failed"; record(entry)
-    return 0 if done else 1
-
-
-def launch_strays(table, pid, session_pid, sid, tree, reason):
-    """[(stray pid, label, proof, kill, ledger fields)]: the detached seats and dispatch servers of the launch
-    `pid`'s tree carries. Found BEFORE the target dies: a dead launcher's environment names no launch.
-    A seat's never-kill members (its MCP servers) are spared, as inside a target's own tree, and a never-kill
-    topmost carrier (an MCP server that outlived its seat) is no seat at all."""
-    strays = []
-    for k, launch, proof in seats_of(table, session_pid, sid, tree, reason):
-        if never_reason(table[k], table):
-            continue
-        sub = [k] + descendants(table, k)
-        never = [m for m in sub if m != k and never_reason(table[m], table)]
-
-        def kill(k=k, never=never):
-            if not never:
-                return taskkill(k)
-            killed, bad, _spared = kill_subtree_sparing_infra(table, k, never)
-            return k in killed and not bad
-        strays.append((k, "seat of launch %s" % launch, proof, kill, {"tree": sub, "spared_never": never}))
-    launch, servers = dispatch_servers_of(table, pid, session_pid, sid, tree, reason)
-    for k, proof in servers:
-        strays.append((k, "dispatch server of launch %s" % launch, proof,
-                       lambda k=k: taskkill(k, tree=False), {"tree": [k]}))
-    return strays
-
-
-def reap_strays(table, pid, strays, args, base):
-    """Kill (or dry-run) each of `launch_strays`'s strays; returns the failure count."""
-    return sum(_reap_stray(table, k, pid, label, proof, kill, base, args, **fields)
-               for k, label, proof, kill, fields in strays)
-
-
-@contextlib.contextmanager
-def invocation(sid=None, project_key=None):
-    """The per-invocation caches (`launch_block`, `environ_of`, the transcript and registry scans),
-    set up for a read-only caller outside `main()`. A nested use reuses the outer cache."""
-    global _RUN
-    if _RUN is not None:
-        yield _RUN
-        return
-    _RUN = {"env": {}, "launch": {}, "census": None, "sid": sid, "project_key": project_key}
-    try:
-        yield _RUN
-    finally:
-        _RUN = None
+def _stop(table, pid, tree, never):
+    """(result, killed pids) for one judged target."""
+    if never:
+        killed, failed, _spared = kill_sparing(table, pid, never)
+        return ("partial" if killed and failed else "killed" if killed else "kill-failed"), sorted(killed)
+    if not taskkill(pid):
+        return "kill-failed", []
+    rest = outside_windows_tree(table, pid, tree)
+    stopped = [k for k in rest if taskkill(k, tree=False)]
+    return ("killed" if len(stopped) == len(rest) else "partial"), [pid] + stopped
 
 
 def main(argv=None, env=None):
     env = os.environ if env is None else env
-    sid = env.get("CLAUDE_CODE_SESSION_ID") or None
-    with invocation(sid) as run:
-        run["project_key"] = project_key_of_session(sid) if sid else None
-        return _main(argv, env)
-
-
-def live_launches(table, prompt=None, resume=None, self_pid=None, launch=None, fanout=None, label=None, record=None):
-    """[(pid, what)] for each live launcher or seat child already running `prompt` as this job (`label` or
-    `record`; neither means the prompt alone) or resuming `resume` (module docstring, `live-launch`)."""
-    record = _resolve(record) if record else None
-    mine = {os.getpid()} | set(ancestors(table, os.getpid()))
-    if self_pid in table:
-        mine |= {self_pid} | set(ancestors(table, self_pid)) | set(descendants(table, self_pid))
-    hits = []
-    for pid in sorted(table):
-        row = table[pid]
-        if pid in mine:
-            continue
-        cmd = row.get("cmd") or ""
-        if is_launcher(row):
-            block = launch_block(pid)
-            flags = _launcher_flags(launcher_args(cmd))
-            path, session = flags.get("f"), flags.get("r")
-            theirs, their_record = flags.get("l"), flags.get("R")
-        elif (row.get("name") or "").lower().startswith("claude") and re.search(r"\s-p(?:\s|$)", cmd):
-            block = launch_block(pid)  # the PEB read only for a candidate, never for every process
-            path = _env_value(block, PROMPT_ENV)
-            found = SEAT_RESUME.search(cmd)
-            session = found.group(1) if found else None
-            theirs, their_record = _env_value(block, LABEL_ENV), None
-        else:
-            continue
-        same_job = (not (label or record)
-                    or bool(label and theirs == label)
-                    or bool(record and their_record and _same_path(_resolve(their_record), record)))
-        if prompt and same_job and isinstance(path, str) and _same_path(_resolve(path), prompt):
-            what = "runs prompt %s" % path
-        elif resume and session == resume:
-            what = "resumes session %s" % resume
-        else:
-            continue
-        ids = _ids_block(pid, block)
-        if (launch and _env_value(ids, LAUNCH_ENV) == launch) or (fanout and _env_value(ids, FANOUT_ENV) == fanout):
-            continue
-        # Tool wrappers predate the id export; a reused record must not exempt an actual launcher.
-        if (launch and is_launcher(row) and re.match(r'^(?:"[^"]+"|\S+)\s+-c(?:\s|$)', cmd)
-                and _launch_label(table, pid) == launch):
-            continue
-        # The table is a snapshot taken seconds ago: a launcher's command-substitution fork carries the
-        # launcher's command line but exits within moments, and an exiting process's environment reads
-        # empty, so it would not show it a sibling. A process that has exited is no live launch.
-        if process_exited(pid, row.get("start")):
-            continue
-        hits.append((pid, what))
-    return hits
-
-
-def _ids_block(pid, block):
-    """`block` when it carries a launch id, else the process's MSYS block: a snapshot re-exec's PEB is bare
-    (launch_environ). Read only for a matching process, so the per-process bash spawn stays rare."""
-    if _env_value(block, LAUNCH_ENV) or _env_value(block, FANOUT_ENV):
-        return block
-    return msys_environ(pid) or block
-
-
-def _launcher_flags(args):
-    """{letter: value} of the value flags a launcher's reap checks read (-f prompt file, -r resume, -l launch id,
-    -R record); the last repeat wins."""
-    out = {}
-    for flag, value in zip(args, args[1:]):
-        if len(flag) == 2 and flag[0] == "-" and flag[1] in "frlR":
-            out[flag[1]] = value
-    return out
-
-
-def launcher_args(cmd):
-    """The arguments after the `*_sidecar.sh` token of a launcher's command line."""
-    tokens = [tok.strip('"') for tok in re.findall(r'"[^"]*"|\S+', cmd or "")]
-    for index, tok in enumerate(tokens):
-        if LAUNCHER_SCRIPT.search(tok):
-            return tokens[index + 1:]
-    return []
-
-
-def _age(row):
-    try:
-        started = datetime.datetime.strptime(row.get("start") or "", "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return "?"
-    minutes = max(0, int((datetime.datetime.now() - started).total_seconds() // 60))
-    return "%dm" % minutes if minutes < 120 else "%dh%02dm" % divmod(minutes, 60)
-
-
-def _launch_label(table, pid):
-    """The process's launch id, else the one its launcher's `-R` record names in `<record>.pid`."""
-    launch = launch_of(pid)
-    if launch or not is_launcher(table[pid]):
-        return launch or "unknown"
-    record = _launcher_flags(launcher_args(table[pid].get("cmd"))).get("R")
-    try:
-        with open(_resolve(record) + ".pid", encoding="utf-8", errors="replace") as fh:
-            found = re.findall(r"\blaunch=(\S+)", fh.read())
-    except (OSError, TypeError):
-        found = []
-    return found[-1] if found else "unknown"
-
-
-# ----------------------------------------------------------------- ownership report (read-only)
-REPORT_DEPTH = 12
-REPORT_SAMPLE_SEC = 1.0
-REPORT_SAMPLE_MAX = 5.0
-
-
-def cpu_tree_seconds(pid):
-    """CPU seconds `pid` and its live descendants have used (tools/tree_cpu.py), or None when the OS
-    will not say. The report's only CPU reader, so no second scanner appears."""
-    try:
-        import tree_cpu
-        return tree_cpu.tree_cpu(int(pid))
-    except Exception:
-        return None
-
-
-def _cpu_sleep(seconds):
-    time.sleep(seconds)
-
-
-def cpu_samples(pids, seconds, reader=None, sleep=None):
-    """{pid: (tree seconds, percent of one core)} over ONE bounded window, never polling: a read, a
-    wait, a read. `seconds` 0 reads the cumulative total once and reports no percent."""
-    reader = reader or cpu_tree_seconds
-    sleep = sleep or _cpu_sleep
-    pids = list(dict.fromkeys(pids))
-    window = max(0.0, min(float(seconds or 0.0), REPORT_SAMPLE_MAX))
-    first = {pid: reader(pid) for pid in pids}
-    if window <= 0 or all(value is None for value in first.values()):
-        return {pid: (value, None) for pid, value in first.items()}
-    sleep(window)
-    out = {}
-    for pid, before in first.items():
-        after = reader(pid)
-        if before is None or after is None:
-            out[pid] = (after if after is not None else before, None)
-        else:
-            out[pid] = (after, max(0.0, (after - before) / window * 100.0))
-    return out
-
-
-def _starts_after(parent, child):
-    """True when `parent` started after `child`: the pid was reused, so it did not launch it."""
-    p, c = (parent or {}).get("start") or "", (child or {}).get("start") or ""
-    return bool(p and c and p > c)
-
-
-def ancestry_chain(table, pid, depth=REPORT_DEPTH):
-    """([{pid, name, link, start}], gone parent | None, reused parent | None) from `pid` upward.
-
-    Reuses `_parent`, so a link an MSYS exec left in `ps -W` counts. A parent whose start is later
-    than its child's is a reused pid: the walk stops and names it, because a chain without that check
-    attributes a process to a stranger."""
-    chain, seen, cur = [], {pid}, pid
-    parent = _parent(table.get(pid, {}), table)
-    while isinstance(parent, int) and parent in table and parent not in seen and len(chain) < depth:
-        row = table[parent]
-        if _starts_after(row, table[cur]):
-            return chain, None, parent
-        chain.append({"pid": parent, "name": row.get("name") or "",
-                      "link": "msys" if table[cur].get("msys_ppid") == parent else "windows",
-                      "start": row.get("start") or ""})
-        seen.add(parent)
-        cur = parent
-        parent = _parent(row, table)
-    gone = parent if isinstance(parent, int) and parent not in table else None
-    if gone is None:
-        raw = table[chain[-1]["pid"] if chain else pid].get("ppid")
-        gone = raw if isinstance(raw, int) and raw not in table else None
-    return chain, gone, None
-
-
-def _ancestry_session(table, pid, depth=REPORT_DEPTH):
-    """(session, pid, how) of the nearest ancestor that names a session, else None. Evidence only: a
-    process with no readable tag and no session in its command line leaves this unset."""
-    for at in ancestors(table, pid)[:depth]:
-        block = _environ(at)
-        tag = _env_value(block, PARENT_ENV)
-        if tag:
-            return tag, at, "its SIDECAR_PARENT_SESSION_ID"
-        own = _env_value(block, SID_ENV)
-        if own:
-            return own, at, "its CLAUDE_CODE_SESSION_ID"
-        named = HOST_SESSION.search(table[at].get("cmd") or "")
-        if named:
-            return named.group(1), at, "its --session-id/--resume argument"
-    return None
-
-
-def _record_evidence(table, pid, depth=REPORT_DEPTH):
-    """The dispatch record a `-R` in the target's or an ancestor's command line names: its file name,
-    the pid whose line carried it, the launch id its `.pid` keeps, and its parentSessionId."""
-    for at in [pid] + ancestors(table, pid)[:depth]:
-        found = RECORD_RE.search(table[at].get("cmd") or "")
-        if not found:
-            continue
-        resolved = _resolve(found.group(1))
-        launch = None
-        try:
-            with open(resolved + ".pid", encoding="utf-8", errors="replace") as fh:
-                named = re.findall(r"\blaunch=(\S+)", fh.read())
-            launch = named[-1] if named else None
-        except OSError:
-            pass
-        return {"path": os.path.basename(found.group(1)), "by": at, "launch": launch,
-                "parentSessionId": _read_json(resolved).get("parentSessionId")}
-    return None
-
-
-def ownership_report(table, pid, session_pid, sid, depth=REPORT_DEPTH, cpu=(None, None)):
-    """The bounded evidence behind an ownership claim about `pid` (module docstring, `inspect`).
-
-    `verdict` is MINE only on a proof `ownership` accepts, PEER only when the target's own tag names
-    another session or an ancestor in the returned chain does, and UNKNOWN otherwise. Read-only.
-    """
-    block = _environ(pid)
-    tag = _env_value(block, PARENT_ENV)
-    own = _env_value(block, SID_ENV)
-    chain, gone, reused = ancestry_chain(table, pid, depth)
-    proof, foreign = ownership(table, pid, session_pid, sid)
-    if session_pid and pid == session_pid:
-        verdict = "mine"
-        evidence = "this is the session host the caller runs under (CLAUDE_PID %d)" % session_pid
-    elif proof:
-        verdict, evidence = "mine", proof
-    elif foreign and sid:
-        named = tag or own
-        verdict, evidence = "peer", "%s%s" % (foreign, " (%s)" % named[:8] if named else "")
-    elif foreign:
-        named = tag or own
-        verdict = "unknown"
-        evidence = ("its environment names session %s, but this process has no session id to compare "
-                    "it with" % named[:8] if named else foreign)
-    else:
-        found = _ancestry_session(table, pid, depth)
-        if found and sid and found[0] == sid:
-            verdict = "mine"
-            evidence = "descends from session %s at pid %d (%s)" % (found[0][:8], found[1], found[2])
-        elif found and sid:
-            verdict = "peer"
-            evidence = ("descends from session %s at pid %d (%s); its own tags name no session"
-                        % (found[0][:8], found[1], found[2]))
-        elif found:
-            verdict = "unknown"
-            evidence = ("descends from session %s at pid %d (%s), but this process has no session id "
-                        "to compare it with" % (found[0][:8], found[1], found[2]))
-        else:
-            verdict = "unknown"
-            evidence = "no launch tag, no session tag and no ancestor names a session%s" % (
-                "; parent %d is gone" % gone if gone else "")
-    return {"pid": pid, "name": table[pid].get("name") or "",
-            "cmd": (table[pid].get("cmd") or "")[:160], "start": table[pid].get("start") or "",
-            "launch": _launch_label(table, pid), "label": _env_value(block, LABEL_ENV),
-            "sessionTag": {"source": ("SIDECAR_PARENT_SESSION_ID" if tag else
-                                      "CLAUDE_CODE_SESSION_ID" if own else None),
-                           "session": tag or own},
-            "record": _record_evidence(table, pid, depth), "chain": chain, "goneParent": gone,
-            "reusedParent": reused,
-            "cpu": {"treeSeconds": cpu[0], "percentOneCore": cpu[1]},
-            "verdict": verdict, "evidence": evidence}
-
-
-def describe_ownership(rep):
-    """One bounded text block for `ownership_report`'s dict."""
-    cpu = rep["cpu"]
-    if cpu["percentOneCore"] is not None:
-        cpu_line = "%.0f%% of one core over the sample window (tree used %.1fs)" % (
-            cpu["percentOneCore"], cpu["treeSeconds"] or 0.0)
-    elif cpu["treeSeconds"] is not None:
-        cpu_line = "%.1fs used so far (tree, cumulative; no sample window)" % cpu["treeSeconds"]
-    else:
-        cpu_line = "unknown (the OS gave no reading, or the pid is gone)"
-    tag = rep["sessionTag"]
-    links = " <- ".join("%d %s%s" % (n["pid"], n["name"] or "?", " [msys]" if n["link"] == "msys" else "")
-                        for n in [{"pid": rep["pid"], "name": rep["name"], "link": "windows"}] + rep["chain"])
-    lines = ["pid=%d (%s) start=%s launch=%s" % (rep["pid"], rep["name"] or "?", rep["start"] or "?", rep["launch"]),
-             "  cpu: " + cpu_line,
-             "  cmd: " + (rep["cmd"] or "-"),
-             "  label: %s   session tag: %s" % (
-                 rep["label"] or "none",
-                 "%s=%s" % (tag["source"], tag["session"]) if tag["session"] else "none")]
-    if rep["record"]:
-        lines.append("  record: %s (via pid %d, parentSessionId=%s, launch=%s)" % (
-            rep["record"]["path"], rep["record"]["by"], rep["record"]["parentSessionId"] or "none",
-            rep["record"]["launch"] or "none"))
-    lines.append("  chain: " + links)
-    if rep["goneParent"]:
-        lines.append("  parent %d is gone from the process table" % rep["goneParent"])
-    if rep["reusedParent"]:
-        lines.append("  parent %d started AFTER this pid: the number was reused, so the chain stops there"
-                     % rep["reusedParent"])
-    lines.append("  owner: %s -- %s" % (rep["verdict"].upper(), rep["evidence"]))
-    return "\n".join(lines)
-
-
-def inspect_main(argv, env=None):
-    """Read-only ownership report (module docstring, `inspect`); stdout only, no kill, no ledger."""
-    env = os.environ if env is None else env
-    ap = argparse.ArgumentParser(prog="reap.py inspect")
-    ap.add_argument("pids", nargs="+", type=int)
-    ap.add_argument("--json", action="store_true", help="one JSON object per pid, for a status surface")
-    ap.add_argument("--sample", type=float, default=REPORT_SAMPLE_SEC,
-                    help="seconds of one CPU window (0 reads the cumulative total once; max %.0f)"
-                    % REPORT_SAMPLE_MAX)
-    ap.add_argument("--depth", type=int, default=REPORT_DEPTH, help="ancestor links to read")
-    args = ap.parse_args(argv)
-    session_pid = int(env.get("CLAUDE_PID") or 0) or None
-    sid = env.get("CLAUDE_CODE_SESSION_ID") or None
-    table = process_table()
-    if not table:
-        print("inspect: process table unreadable; no ownership is claimed", file=sys.stderr)
-        return 4
-    link_msys_parents(table, ps_text())
-    resolved, missing = [], []
-    for raw in args.pids:
-        pid = resolve_pid(raw, table)
-        (resolved if pid is not None else missing).append(pid if pid is not None else raw)
-    samples = cpu_samples(resolved, args.sample)
-    for pid in resolved:
-        rep = ownership_report(table, pid, session_pid, sid, max(1, args.depth), samples.get(pid, (None, None)))
-        print(json.dumps(rep) if args.json else describe_ownership(rep))
-    for raw in missing:
-        print(json.dumps({"pid": raw, "verdict": "unknown", "evidence": "not in the process table"})
-              if args.json else "pid=%s not in the process table (already gone, or a stale number)" % raw)
-    return 3 if missing else 0
-
-
-def describe_launches(table, hits):
-    """Each live PID with its launch id and age, then one reap command per process tree root."""
-    pids = [pid for pid, _ in hits]
-    lines = ["  pid=%d launch=%s age=%s %s (%s) :: %s" % (pid, _launch_label(table, pid), _age(table[pid]),
-                                                        table[pid].get("name"), what, (table[pid].get("cmd") or "")[:140])
-             for pid, what in hits]
-    roots = [pid for pid in pids if not any(a in pids for a in ancestors(table, pid))]
-    for pid in roots:
-        ok, _evidence = orphan_evidence(table, pid)
-        lines.append("  stop: python3 .claude/tools/reap.py %d %s" % (
-            pid, '--reason orphan --why "a relaunch replaces this run"' if ok
-            else "with no --reason once the owner has ordered it, or --reason queued once nothing it runs is in flight"))
-    return "\n".join(lines)
-
-
-def live_launch_main(argv):
-    ap = argparse.ArgumentParser(prog="reap.py live-launch")
-    ap.add_argument("--prompt")
-    ap.add_argument("--resume")
-    ap.add_argument("--self", type=int, dest="self_pid")
-    ap.add_argument("--launch")
-    ap.add_argument("--fanout")
-    ap.add_argument("--label")
-    ap.add_argument("--record")
-    args = ap.parse_args(argv)
-    if not args.prompt and not args.resume:
-        print("live-launch needs --prompt or --resume", file=sys.stderr)
-        return 2
-    table = process_table()
-    if not table:
-        print("[sidecar] WARN: process table unreadable; the duplicate-launch check is skipped", file=sys.stderr)
-        return 4
-    # A tool's `bash -c` wrapper names this launch's command line; only the `ps -W` link shows it is an ancestor.
-    link_msys_parents(table, ps_text())
-    hits = live_launches(table, args.prompt, args.resume, args.self_pid, args.launch, args.fanout,
-                         args.label, args.record)
-    if not hits:
-        return 0
-    subject = ("prompt %s%s" % (args.prompt, " as job %s" % (args.label or args.record) if args.label or args.record else "")
-               if args.prompt else "session %s" % args.resume)
-    print("DUPLICATE LAUNCH refused: a live launch already runs %s.\n%s\n"
-          "Stop the previous attempt's whole tree (fan-out driver, launchers, seat, servers), confirm none "
-          "remain, then relaunch." % (subject, describe_launches(table, hits)))
-    return 3
-
-
-def leftover_findings(table, sid=None, project_key=None):
-    """Every live process whose own environment (or a tagged ancestor's) names a session, with the
-    facts that classify it: [{pid, owner, status, detail, launch, launcher}].
-
-    status is `dead` (proven: a dead session's leftover of THIS project), `other-project` (its
-    owner's transcript sits in another project), `infra` (a NEVER process or shared infra: never a
-    target, whatever its owner), `live`, or `unproven` (its owner is proven dead, but no proof of
-    this project's ownership holds). Nothing here is stopped: no fact in this table separates a
-    leftover from a detached launch, a benchmark or a build that a later session still consumes.
-
-    The candidate set is the processes whose own environment names a session, so a harness-launched
-    process is covered whatever its command line: a watcher, a pane, a launcher, a seat, a bench
-    daemon, a proof's child. A console host is not a candidate (it inherits the id of its console)."""
-    mine = project_key if project_key is not None else project_key_of_session(sid)
-    findings, liveness = [], {}
-    for pid in sorted(table):
-        row = table[pid]
-        if (row.get("name") or "").lower() == "conhost.exe":
-            continue
-        owner, _source = owner_of(table, pid)
-        if not owner or owner == sid:
-            continue
-        finding = {"pid": pid, "owner": owner, "launch": launch_of(pid), "launcher": is_launcher(row)}
-        # A NEVER target and anything under shared INFRA (an MCP/LSP server, a transport proxy)
-        # are reported, never counted as leftovers: they serve other sessions.
-        infra = next((never_reason(table[a], table) for a in [pid] + ancestors(table, pid)
-                      if never_reason(table[a], table) and "HOST" not in never_reason(table[a], table)), None)
-        if infra:
-            finding.update(status="infra", detail=infra + "; never a target")
-            findings.append(finding)
-            continue
-        # One liveness answer per owner session. With the host-only rule the target's own tree
-        # cannot change it, so distinct per-pid excludes would only recompute it.
-        if owner not in liveness:
-            liveness[owner] = session_live(table, owner)
-        live = liveness[owner]
-        if live is True:
-            finding.update(status="live", detail="its session is live")
-        elif live is None:
-            finding.update(status="unproven",
-                           detail="a live host's session cannot be read, so its owner cannot be proven dead")
-        else:
-            owner_key = project_key_of_session(owner)
-            if owner_key and mine and not same_project(owner_key, mine):
-                finding.update(status="other-project", detail="its session belongs to another project")
-            else:
-                proof = dead_leftover_proof(table, pid, sid, mine,
-                                            frozenset([pid] + descendants(table, pid)),
-                                            require_project=True, live=live)
-                if proof:
-                    finding.update(status="dead", detail=proof)
-                else:
-                    finding.update(status="unproven", detail=(
-                        "its owner's transcript is in no project, so this project's ownership cannot be proven"
-                        if owner_key is None else
-                        "a launcher of its launch is alive, or no ownership proof holds"))
-        findings.append(finding)
-    return findings
-
-
-def _cpu_note(row):
-    """The cumulative CPU the OS reports for the process, the cost that decides whether it matters."""
-    cpu = row.get("cpu")
-    if not isinstance(cpu, (int, float)):
-        return "CPU unknown"
-    if cpu >= 3600:
-        return "%.1f CPU-hours" % (cpu / 3600.0)
-    if cpu >= 60:
-        return "%d CPU-min" % int(cpu // 60)
-    return "%d CPU-sec" % int(cpu)
-
-
-def launch_role(launch, launcher):
-    """How a process relates to its launch, for a report: launcher or member, and the launch id."""
-    if launch:
-        return "%s of launch %s" % ("launcher" if launcher else "member", launch)
-    if launcher:
-        return "launcher, no launch id in its own environment"
-    return "no launch id in its own environment"
-
-
-def describe_leftover(table, finding):
-    """One `leftovers` line: pid, age, CPU, owner session, launch membership, status and command."""
-    row = table.get(finding["pid"]) or {}
-    cmd = re.sub(r"\s+", " ", row.get("cmd") or "")
-    return ("  pid %d  age %s  %s  session %s  %s  [%s] %s :: %s"
-            % (finding["pid"], _age(row), _cpu_note(row), (finding.get("owner") or "")[:8],
-               launch_role(finding.get("launch"), finding.get("launcher")), finding["status"],
-               finding.get("detail") or "", cmd[-110:]))
-
-
-def leftovers_main(argv, env=None):
-    """`reap.py leftovers`: list the processes of sessions with no live host, each with the facts
-    that classify it. It stops nothing; the caller names a pid to reap."""
-    env = os.environ if env is None else env
-    if "--dry-run" in argv:
-        print("REFUSED: leftovers takes no --dry-run; it stops nothing. Name a pid to reap it.")
-        return 2
-    argparse.ArgumentParser(prog="reap.py leftovers").parse_args(argv)
-    sid = env.get("CLAUDE_CODE_SESSION_ID") or None
-    with invocation(sid) as run:
-        key = project_key_of_session(sid) if sid else None
-        if not sid or not key:
-            print("REFUSED: no session id or no transcript for it; the pair tells this project's "
-                  "leftovers from another project's")
-            return 2
-        run["project_key"] = key
-        table = process_table()
-        if not table:
-            print("REFUSED: process table unreadable")
-            return 2
-        findings = leftover_findings(table, sid, key)
-    statuses = {}
-    for finding in findings:
-        statuses[finding["status"]] = statuses.get(finding["status"], 0) + 1
-        if finding["status"] != "live":
-            print(describe_leftover(table, finding))
-    print("leftovers: nothing stopped; %s"
-          % (", ".join("%s=%d" % (k, v) for k, v in sorted(statuses.items())) or "no tagged process"))
-    return 0
-
-
-def end_seat_main(argv):
-    """`end-seat <launch>` (module docstring): stop every process carrying SIDECAR_SEAT_LAUNCH_ID=<launch>."""
-    if len(argv) != 1 or not argv[0]:
-        print("usage: reap.py end-seat <launch id>", file=sys.stderr)
-        return 2
-    launch = argv[0]
-    table = process_table()
-    if not table:
-        print("end-seat: the process table is unreadable", file=sys.stderr)
-        return 1
-    seat = {p for p in table if _env_value(launch_block(p), SEAT_ENV) == launch}
-    killed, failed, spared = [], [], []
-    def kept(row):  # shared infra, a dispatch server, or a nested launch (its own job, ended by its own launcher)
-        return bool(never_reason(row, table)) or is_server_image(row) or is_launcher(row)
-
-    for root in sorted(p for p in seat if table[p].get("ppid") not in seat):
-        if kept(table[root]):
-            spared.append(root)
-            continue
-        never = [m for m in descendants(table, root) if kept(table[m])]
-        k, f, s = kill_subtree_sparing_infra(table, root, never)
-        killed += k
-        failed += f
-        spared += s
-    if seat:
-        record({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(), "reason": "end-seat",
-                "launch": launch, "result": "kill-failed" if failed else "killed",
-                "killed": sorted(killed), "spared": sorted(spared)})
-    print("end-seat %s: killed %s; failed %s; spared %s" % (launch, sorted(killed), sorted(failed), sorted(spared)))
-    return 1 if failed else 0
-
-
-def _main(argv=None, env=None):
-    env = os.environ if env is None else env
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "live-launch":
-        return live_launch_main(argv[1:])
-    if argv and argv[0] == "end-seat":
-        return end_seat_main(argv[1:])
-    if argv and argv[0] == "inspect":
-        return inspect_main(argv[1:], env)
-    if argv and argv[0] == "leftovers":
-        return leftovers_main(argv[1:], env)
-    ap = build_parser()
-    args = ap.parse_args(argv)
-    if args.reason in RETIRED_REASONS:
-        print("REFUSED: --reason %s is retired; %s" % (args.reason, RETIRED_REASONS[args.reason]))
+    if argv and argv[0] in RETIRED:
+        print("REFUSED: `reap.py %s` is retired; %s" % (argv[0], RETIRED[argv[0]]))
         return 2
-    if args.reason and args.reason not in REASONS:
-        print("REFUSED: unknown --reason %r; one of %s, or none" % (args.reason, ", ".join(REASONS)))
+    args = build_parser().parse_args(argv)
+    if args.reason is not None:
+        print("REFUSED: --reason is retired; %s" % RETIRED["--reason"])
         return 2
-
-    def refuse(message, shape=False):
-        """A refusal on an observed fact prints its verdict; only a call missing its evidence repeats the accepted shape."""
-        print(message)
-        if shape:
-            sys.stderr.write(cli_usage.refusal(REAP_ACCEPTS, REAP_EXAMPLE))
-
-    session_pid = int(env.get("CLAUDE_PID") or 0) or None
     sid = env.get("CLAUDE_CODE_SESSION_ID") or None
     table = process_table()
     if not table:
-        refuse("REFUSED: process table unreadable — nothing is killed on a guess")
+        print("REFUSED: process table unreadable; nothing is stopped on a guess")
         return 2
-    link_msys_parents(table, ps_text())
+    ps = ps_text()
+    link_msys_parents(table, ps)
+    keys = project_keys()
 
+    def project_of(session):
+        found = keys.get(session) or []
+        return found[0] if len(found) == 1 else None
+
+    me = Session(int(env.get("CLAUDE_PID") or 0) or None, sid, project_of(sid) if sid else None)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    refused = 0
     targets = []
     for raw in args.pids:
-        pid = resolve_pid(raw, table)
+        pid = resolve_pid(raw, table, ps)
         if pid is None:
-            refuse("REFUSED %s: not in the process table — already gone, or a stale number; re-read the list" % raw)
-            record({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(), "session": sid, "pid": raw,
-                    "reason": args.reason, "why": args.why, "result": "refused", "evidence": "not in table"})
+            print("REFUSED %s: not in the process table, already gone or a stale number; re-read the list" % raw)
+            record({"ts": now, "session": sid, "pid": raw, "why": args.why, "result": "refused",
+                    "refusal": "not in the process table"})
+            refused += 1
             continue
         targets.append(pid)
-
-    refused = len(args.pids) - len(targets)
-    # One kill per tree: a repeated pid, or a target inside another target's tree, is covered by the root.
+    # One stop per tree: a repeated pid, or a target inside another target's tree, goes with its root.
     unique = list(dict.fromkeys(targets))
     covered = {t for t in unique if any(a in unique for a in ancestors(table, t))}
-    for pid in covered:
-        print("COVERED %d: inside another target's tree; killed with it" % pid)
+    for pid in sorted(covered):
+        print("COVERED %d: inside another target's tree; stopped with it" % pid)
     targets = [t for t in unique if t not in covered]
-    target_trees = frozenset(k for t in targets for k in [t] + descendants(table, t))
+    trees = {t: [t] + descendants(table, t) for t in targets}
+    exclude = frozenset(k for tree in trees.values() for k in tree)
+    registry = registered_sessions(table)
+    blocks = {}
+
+    def block_of(pid):
+        if pid not in blocks:
+            blocks[pid] = environ_of(pid, ps)
+        return blocks[pid]
+
+    def host_of(session):
+        return session_host(table, session, registry, exclude, native_environ)
+
     for pid in targets:
-        row = table[pid]
+        row, tree = table[pid], trees[pid]
         head = "%d %s :: %s" % (pid, row.get("name"), (row.get("cmd") or "")[:110])
-        proof, foreign = ownership(table, pid, session_pid, sid)
-        ok, evidence = justification(args, table, pid, set(targets))
-        tree = [pid] + descendants(table, pid)
-        # The NEVER gate is judged on every member, but a member that may never die is SPARED rather
-        # than the whole kill being refused: refusing made any sidecar whose tree merely contains an
-        # MCP server impossible to stop, which is how two hung codex shells survived a stop order.
-        root_never = never_reason(table[pid], table)
-        never = [(k, never_reason(table[k], table)) for k in tree if k != pid and never_reason(table[k], table)]
-        entry = {"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(), "session": sid, "pid": pid,
-                 "name": row.get("name"), "cmd": (row.get("cmd") or "")[:400], "reason": args.reason,
-                 "why": args.why, "proof": proof, "evidence": evidence, "tree": tree,
-                 "spared_never": [k for k, _ in never]}
-        # A never-kill member that is not the ROOT is spared and the rest dies (below). A never-kill
-        # ROOT is refused outright: sparing it and killing its children would destroy a server other
-        # sessions are using, and reporting that as "FAILED" reads as a broken kill, not a refusal.
-        if root_never:
-            refuse("REFUSED %s\n   NEVER: %s — not a target, and its own children are not ours to kill" % (head, root_never))
-            entry["result"] = "refused-never"; record(entry); refused += 1
+        proof, refusal = judge(table, pid, me, block_of, host_of, project_of)
+        never = [k for k in tree if k != pid and never_reason(table[k], table)]
+        entry = {"ts": now, "session": sid, "pid": pid, "name": row.get("name"), "cmd": (row.get("cmd") or "")[:400],
+                 "why": args.why, "proof": proof, "refusal": refusal, "tree": tree, "spared_never": never}
+        if refusal:
+            print("REFUSED %s\n   %s" % (head, refusal))
+            entry["result"] = "refused"
+            record(entry)
+            refused += 1
             continue
-        # A dead session's leftover: no session can consume its result, so any session may stop it.
-        leftover_blocker = None
-        if args.reason == "orphan" and ok and not proof:
-            leftover, leftover_blocker = leftover_check(table, pid, sid, exclude=target_trees)
-            if leftover:
-                proof, foreign = leftover, None
-                entry["proof"] = proof
-        elif args.reason == "orphan" and not ok and not proof:
-            leftover_blocker = "the orphan check failed: %s" % evidence
-        # No session claims it (an app the owner launched): the facts above already cleared it. Whether the
-        # owner ordered the stop is the classifier's to judge on the call, not this tool's.
-        if not proof and not foreign and not _environ(pid):
-            foreign = "its environment is unreadable, so a session's claim on it cannot be ruled out"
-        if not proof and not foreign:
-            proof = "unclaimed: its environment names no session and no session host sits above it"
-            entry["proof"] = proof
-        if not proof:
-            read = "\n   not a dead session's leftover: %s" % leftover_blocker if leftover_blocker else ""
-            refuse("REFUSED %s\n   %s%s\n   Another session's process is stopped only by --reason orphan, on the "
-                   "leftover of a dead session; otherwise it is that session's to stop." % (head, foreign, read))
-            entry["result"] = "refused-foreign" if foreign else "refused-not-owned"
-            record(entry); refused += 1
-            continue
-        if not ok:
-            refuse("REFUSED %s\n   %s: %s" % (head, (args.reason or "").upper(), evidence), shape=True)
-            entry["result"] = "refused-unjustified"; record(entry); refused += 1
-            continue
-        base = {k: entry[k] for k in ("ts", "session", "reason", "why")}
-        # Read before the kill: a dead launcher's environment names no launch.
-        stop_launch = _launch_label(table, pid)
-        strays = launch_strays(table, pid, session_pid, sid, tree, args.reason)
         if args.dry_run:
-            print("DRY %s\n   owned: %s\n   %s: %s\n   tree: %s" % (head, proof, args.reason or "default", evidence, tree))
-            entry["result"] = "dry-run"; record(entry)
-            reap_strays(table, pid, strays, args, base)
+            print("DRY %s\n   proof: %s\n   tree: %s%s" % (head, proof, tree,
+                                                      "\n   spared (never-kill): %s" % never if never else ""))
+            entry["result"] = "dry-run"
+            record(entry)
             continue
-        # The row is written BEFORE the kill: no ledger, no kill.
         entry["result"] = "killing"
         if not record(entry):
-            refuse("REFUSED %s\n   LEDGER unwritable: %s" % (head, LEDGER))
+            print("REFUSED %s\n   LEDGER unwritable: %s; no kill without its row" % (head, LEDGER))
             refused += 1
             continue
-        if never:
-            killed, failed, spared = kill_subtree_sparing_infra(table, pid, [k for k, _ in never])
-            print("%s %s\n   owned: %s\n   %s: %s\n   killed: %s\n   spared (never-kill): %s"
-                  % ("PARTIAL" if (killed and failed) else "KILLED" if killed else "FAILED",
-                     head, proof, args.reason or "default", evidence, sorted(killed), spared))
-            entry["result"] = "partial" if (killed and failed) else "killed" if killed else "kill-failed"
-            entry["killed"], entry["spared"] = sorted(killed), spared
-            record(entry)
-            if pid in killed:
-                remember_stop(sid, stop_launch)
-            if not killed or failed:
-                refused += 1
-            if pid in killed:
-                refused += reap_strays(table, pid, strays, args, base)
-            continue
-        done = taskkill(pid)
-        if done:
-            for k in outside_windows_tree(table, pid, tree):
-                done = taskkill(k, tree=False) and done
-        print("%s %s\n   owned: %s\n   %s: %s\n   tree: %s" % ("KILLED" if done else "FAILED", head, proof, args.reason or "default", evidence, tree))
-        entry["result"] = "killed" if done else "kill-failed"; record(entry)
-        if not done:
-            refused += 1
-        else:
-            remember_stop(sid, stop_launch)
-            refused += reap_strays(table, pid, strays, args, base)
+        result, killed = _stop(table, pid, tree, never)
+        print("%s %s\n   proof: %s\n   killed: %s%s" % (result.upper(), head, proof, killed,
+                                                       "\n   spared (never-kill): %s" % never if never else ""))
+        entry.update(result=result, killed=killed)
+        record(entry)
+        refused += result != "killed"
     return 2 if refused else 0
 
 
