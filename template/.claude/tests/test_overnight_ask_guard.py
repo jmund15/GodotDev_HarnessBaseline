@@ -9,7 +9,6 @@ import time
 import unittest
 from pathlib import Path
 
-import _scan_fixtures as fx
 
 HOOK = Path(__file__).resolve().parents[1] / "hooks/overnight_ask_guard.py"
 
@@ -173,14 +172,16 @@ class OvernightTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertNotEqual(0, self.call("--validate-close", str(self.close_doc(sid="other"))).returncode)
 
+    def plant_overnight_dir(self, folder):
+        adaptation = self.root / ".claude/skills/project_subsystems/adaptation.json"
+        adaptation.parent.mkdir(parents=True, exist_ok=True)
+        adaptation.write_text(json.dumps({"overnight_dir": str(folder)}), encoding="utf-8")
+
     def vault_doc(self, sid="one", rows=()):
-        """Plant the baseline lock and this session's Close doc in the vault Overnight dir it names."""
-        vault = self.root / "vault"
-        folder = vault / "DevProjects/Proj/Claude/TODO/Overnight"
+        """Plant adaptation.json and this session's Close doc in the Overnight dir it names."""
+        folder = self.root / "vault" / "Overnight"
         folder.mkdir(parents=True, exist_ok=True)
-        (self.root / ".claude").mkdir(exist_ok=True)
-        (self.root / ".claude/baseline.lock.json").write_text(json.dumps({"substitutions": {
-            fx.placeholder("VAULT_ROOT"): str(vault), fx.placeholder("PROJECT_NAME"): "Proj"}}), encoding="utf-8")
+        self.plant_overnight_dir(folder)
         (self.root / "settled.txt").write_text("the check settled it\n", encoding="utf-8")
         body = ["## Outcome", "", "- done — proof", "- Next session: anthropic · Opus", "", "## Decisions for you", ""]
         body += list(rows) + ["", "## Left undone", "", "- None.", ""]
@@ -573,15 +574,12 @@ class OvernightTests(unittest.TestCase):
         out = self.questions({})
         self.assertEqual({"docs_scanned": 0, "open": [], "malformed": [], "resolved": [], "unreadable": []}, out)
 
-    def test_open_questions_without_a_dir_reads_the_vault_overnight_dir_from_the_baseline_lock(self):
-        vault = self.root / "vault"
-        folder = vault / "DevProjects/Proj/Claude/TODO/Overnight"
+    def test_open_questions_without_a_dir_reads_the_overnight_dir_from_adaptation_json(self):
+        folder = self.root / "vault" / "Overnight"
         folder.mkdir(parents=True)
         (folder / "a.md").write_text("## Decisions for you\n\n**Q1 — x? Options: O1 a; O2 b. Default: a.**\n",
                                      encoding="utf-8")
-        (self.root / ".claude").mkdir()
-        (self.root / ".claude/baseline.lock.json").write_text(json.dumps(
-            {"substitutions": {fx.placeholder("VAULT_ROOT"): str(vault), fx.placeholder("PROJECT_NAME"): "Proj"}}), encoding="utf-8")
+        self.plant_overnight_dir(folder)
         result = self.call("--open-questions")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(1, json.loads(result.stdout)["docs_scanned"])
@@ -592,10 +590,10 @@ class OvernightTests(unittest.TestCase):
         for path in (HOOK, Path(__file__)):
             self.assertIsNone(pattern.search(path.read_text(encoding="utf-8")), path.name)
 
-    def test_open_questions_without_a_dir_or_a_baseline_lock_fails_with_the_missing_source(self):
+    def test_open_questions_without_a_dir_or_an_overnight_dir_fails_with_the_missing_source(self):
         result = self.call("--open-questions")
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("baseline.lock.json", result.stderr)
+        self.assertIn("overnight_dir", result.stderr)
 
     def test_open_questions_never_touches_markers(self):
         self.arm()

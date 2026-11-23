@@ -48,27 +48,5 @@ class StartupIntegrityTests(unittest.TestCase):
             result = godot.setup_import_cache(self.root)
         self.assertTrue(result.startswith(('UNKNOWN', 'FAILED')))
 
-    def test_registry_failure_never_selects_legacy_fallback_launchers(self):
-        registry = SimpleNamespace(available_models=mock.Mock(side_effect=ValueError('fixture registry')))
-        transport = SimpleNamespace(resolve=lambda: ('codex', 'fixture'))
-        with mock.patch.dict(loader.sys.modules, {'model_registry': registry, '_session_transport': transport}), \
-             mock.patch.object(loader, 'verify_sidecar') as verify:
-            result = loader.sidecar_health(self.root)
-        verify.assert_not_called()
-        self.assertIn('UNKNOWN', result['sidecar_registry'])
-
-    def test_live_registry_probes_only_available_off_seat_routes(self):
-        registry = SimpleNamespace(available_models=lambda: [{'transport': 'codex', 'alias': 'codex-row'},
-                                                             {'transport': 'other', 'alias': 'other-row'}],
-            transports=lambda: ['codex', 'other', 'retired'],
-            transport_meta=lambda name: {'launcher': name + '.sh'})
-        transport = SimpleNamespace(resolve=lambda: ('codex', 'fixture'), session_plan=lambda: 'codex')
-        with mock.patch.dict(loader.sys.modules, {'model_registry': registry, '_session_transport': transport}), \
-             mock.patch.object(loader, 'verify_sidecar', return_value='OK') as verify:
-            result = loader.sidecar_health(self.root)
-        verify.assert_called_once_with(self.root, 'other.sh', 'other-row')
-        self.assertEqual({'sidecar-other': 'OK'}, result)
-
-
 if __name__ == '__main__':
     unittest.main()

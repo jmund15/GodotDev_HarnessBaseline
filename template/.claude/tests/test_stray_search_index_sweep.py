@@ -182,9 +182,9 @@ class StraySearchIndexSweepTests(unittest.TestCase):
                 values = {
                     "get_project_root": root, "is_worktree": False, "is_cloud": False,
                     "setup_submodule": "OK",
-                    "sidecar_launchers": [], "get_git_branch": "main", "get_uncommitted_count": 0,
+                    "get_git_branch": "main", "get_uncommitted_count": 0,
                     "get_recent_commits": [], "roster_health": "UNKNOWN (no logs dir)",
-                    "sidecar_health": {}, "free_catalog_line": "",
+                    "sidecar_health": {},
                 }
                 for name, value in values.items():
                     stack.enter_context(patch.object(scl, name, return_value=value))

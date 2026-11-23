@@ -33,82 +33,6 @@ def main():
         if not cond:
             failures.append(label + (": " + str(detail)[:200] if detail else ""))
 
-    class FakeRegistry:
-        @staticmethod
-        def transports():
-            return ["deepseek", "codex", "opencode", "anthropic"]
-
-        @staticmethod
-        def transport_meta(name):
-            return {"launcher": ".claude/scripts/%s_sidecar.sh" % name}
-
-        @staticmethod
-        def available_models():
-            return [
-                {"transport": "codex", "alias": "codex-row"},
-                {"transport": "opencode", "alias": "opencode-row"},
-                {"transport": "anthropic", "alias": "anthropic-row"},
-            ]
-
-    launchers = scl.sidecar_launchers(FakeRegistry, "codex")
-    check("sidecar checks skip the current and unavailable transports",
-          launchers == [("opencode", "opencode_sidecar.sh", "opencode-row"),
-                        ("anthropic", "anthropic_sidecar.sh", "anthropic-row")], str(launchers))
-
-    # --- self_improvement_advisory: startup-only, silent when nothing is due -----------
-    # Run the live tool against isolated data, without copying its dependency graph.
-    due_root = Path(tempfile.mkdtemp(prefix="scl_due_"))
-    claude_dir = due_root / ".claude"
-    (claude_dir / "tools").mkdir(parents=True)
-    (claude_dir / "logs").mkdir(parents=True)
-    real_claude = Path(__file__).resolve().parents[1]
-    (claude_dir / "tools" / "self_improvement_due.py").write_text(
-        "import runpy, sys\n"
-        + f"sys.path.insert(0, {str(real_claude / 'tools')!r})\n"
-        + f"runpy.run_path({str(real_claude / 'tools/self_improvement_due.py')!r}, run_name='__main__')\n",
-        encoding="utf-8", newline="\n")
-    (claude_dir / "self_evaluate_archive.json").write_text(
-        json.dumps({"structured_entries": [{"session_id": "s1"}, {"session_id": "s2"}]}),
-        encoding="utf-8")
-    (claude_dir / "orchestration_candidates.json").write_text("{}", encoding="utf-8")
-    (claude_dir / "logs" / "eval_dashboard_last.json").write_text(
-        json.dumps({"row_count": 2, "date": "2026-09-14"}), encoding="utf-8")
-
-    for source in ("resume", "compact"):
-        out = scl.self_improvement_advisory(due_root, source)
-        check("%s: self-improvement advisory prints nothing on re-entry" % source, out == "", repr(out))
-
-    out = scl.self_improvement_advisory(due_root, "startup")
-    check("startup: nothing due prints nothing", out == "", repr(out))
-
-    (claude_dir / "self_evaluate_archive.json").write_text(
-        json.dumps({"structured_entries": [{"session_id": "s%d" % i} for i in range(12)]}),
-        encoding="utf-8")
-    out = scl.self_improvement_advisory(due_root, "startup")
-    check("startup: a due condition prints one non-empty line",
-          out.strip() and "\n" not in out and "Self-improvement" in out, repr(out))
-
-    # Startup only: `clear`, a missing source and an empty source print nothing while the line is due.
-    for source in ("clear", None, ""):
-        out = scl.self_improvement_advisory(due_root, source)
-        check("%r: a due line prints nothing outside startup" % (source,), out == "", repr(out))
-
-    # The due tool waits up to its store's 10 s lock; the loader must outwait it.
-    seen = {}
-    real_run = scl.subprocess.run
-
-    def recording_run(*args, **kwargs):
-        seen["timeout"] = kwargs.get("timeout")
-        return real_run(*args, **kwargs)
-
-    scl.subprocess.run = recording_run
-    try:
-        scl.self_improvement_advisory(due_root, "startup")
-    finally:
-        scl.subprocess.run = real_run
-    check("due-line subprocess timeout is 15 s, above the store's 10 s lock wait",
-          seen.get("timeout") == 15, repr(seen))
-
     # The SessionStart proof must exercise the registered script's main() output path, not only
     # inspect a helper string. Every expensive setup branch is planted so the assertion observes
     # the continuation guidance emitted to stdout. No step module is installed for these runs.
@@ -150,7 +74,6 @@ def main():
             "get_uncommitted_count": lambda: 0,
             "get_upstream_drift": lambda: (24, 3, 30.0),
             "get_recent_commits": lambda count=3, cwd=None: [],
-            "self_improvement_advisory": lambda _root, _source: "",
         }
         output = run_main(main_root, patches)
         check("a fresh startup carries no reload reminder (the session_digest listing owns pickup)",
@@ -183,10 +106,6 @@ def main():
               "ahead" not in clean_drift and "Git:" not in clean_drift, clean_drift[:400])
         worktree_out = run_main(main_root, dict(patches, is_worktree=lambda: True))
         check("a linked worktree still reports itself", "Worktree: YES" in worktree_out, worktree_out[:300])
-        due_patches = dict(patches, self_improvement_advisory=lambda _root, _source: "DUE-LINE")
-        check("the due line reaches the owner", "DUE-LINE" in run_main(main_root, due_patches))
-        check("the due line does not reach a sidecar delegate",
-              "DUE-LINE" not in run_main(main_root, due_patches, sidecar=True))
         check("no step module installed: no engine, Jmodot or language-server lines",
               "GODOT_BIN" not in output and "Jmodot" not in output and "lsp-early-load" not in output
               and "Session step modules" not in output, output[-700:])

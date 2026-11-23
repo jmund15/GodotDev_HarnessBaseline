@@ -2,8 +2,8 @@
 """PreToolUse SendMessage guard: a message reaches a local peer session or subagent only while its cache is warm.
 
 Home: CLAUDE.core.md §Core Principles. The recipient resolves through the runtime's local
-registry in every declared login (`model_registry.login_dirs`; <login>/sessions/<pid>.json: name, sessionId,
-messagingSocketPath, status) by name, `name [ref]` sessionId prefix, or socket path. A single match passes while
+registry in every login (the session's own, then each `configDir` in `seats.json`; <login>/sessions/<pid>.json:
+name, sessionId, messagingSocketPath, status) by name, `name [ref]` sessionId prefix, or socket path. A single match passes while
 it is `busy` or its transcript's (<login>/projects/*/<sessionId>.jsonl) newest stamped entry is within WARM_SEC; any
 other single match is denied. A recipient that is this session's subagent id passes while its transcript
 (<login>/projects/*/<session_id>/subagents/agent-<id>.jsonl) was written within SUBAGENT_WARM_SEC.
@@ -13,6 +13,7 @@ Sidecar children register no inbox, so no message reaches them.
 agent to weigh before a send (ListAgents shows no last-turn time).
 Malformed input and hook errors fail open. Proof: tests/test_peer_message_guard.py.
 """
+import glob
 import json
 import os
 import re
@@ -45,24 +46,32 @@ SUBAGENT_REASON = (
 
 
 def _logins():
-    """Every declared login directory; none when the registry cannot load, so the guard fails open."""
+    """The session's own login (CLAUDE_CONFIG_DIR, else ~/.claude) and every `configDir` in `seats.json`, each once.
+    An unreadable or missing seats.json is named on stderr; the own login is still read, so the guard keeps its check."""
+    own = Path(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser()
+    logins = [own]
+    claude = Path(__file__).resolve().parents[1]
     try:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-        from model_registry import session_project_roots
-        return [Path(p).parent for p in session_project_roots()]
-    except Exception:
-        return []
+        sys.path.insert(0, str(claude / "tools"))
+        import launch_check
+        seats = launch_check.seat_rows(claude)
+    except Exception as error:
+        print(f"peer_message_guard: seats.json not read ({type(error).__name__}: {error}); "
+              "external seat logins are not checked", file=sys.stderr)
+        return logins
+    for row in seats.values():
+        if row.get("configDir"):
+            login = Path(row["configDir"]).expanduser()
+            if login not in logins:
+                logins.append(login)
+    return logins
 
 
-def _find_transcript(session_id, allow_dir=False):
-    """The session's transcript (`model_registry.find_session_transcript`); None when absent, ambiguous or
-    the registry cannot load, so the guard fails open."""
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-        from model_registry import find_session_transcript
-        return find_session_transcript(session_id, allow_dir=allow_dir)
-    except Exception:
-        return None
+def _find_transcript(session_id):
+    """The session's transcript `<login>/projects/*/<session_id>.jsonl` in any login; None when absent or ambiguous,
+    so the guard fails open. The id is escaped: it is matched as text, never as a glob."""
+    hits = [p for login in _logins() for p in login.glob("projects/*/%s.jsonl" % glob.escape(session_id))]
+    return hits[0] if len(hits) == 1 else None
 
 
 def _registry():
@@ -129,11 +138,12 @@ def subagent_idle_seconds(parent_session, agent_id):
     """Seconds since this session's subagent transcript was last written; None when it is not one."""
     if not parent_session or not _AGENT_ID.match(agent_id or ""):
         return None
-    parent = _find_transcript(parent_session, allow_dir=True)
-    if not parent:
+    hits = [p for login in _logins()
+            for p in login.glob("projects/*/%s/subagents/agent-%s.jsonl" % (glob.escape(parent_session), agent_id))]
+    if len(hits) != 1:
         return None
     try:
-        return time.time() - (parent.with_suffix("") / "subagents" / f"agent-{agent_id}.jsonl").stat().st_mtime
+        return time.time() - hits[0].stat().st_mtime
     except OSError:
         return None
 

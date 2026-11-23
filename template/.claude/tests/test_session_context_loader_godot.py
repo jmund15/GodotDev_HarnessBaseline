@@ -105,7 +105,6 @@ def main():
             "get_uncommitted_count": lambda: 0,
             "get_upstream_drift": lambda: None,
             "get_recent_commits": lambda count=3, cwd=None: [],
-            "self_improvement_advisory": lambda _root, _source: "",
         }
         godot = {
             "setup_import_cache": lambda _root: "OK",

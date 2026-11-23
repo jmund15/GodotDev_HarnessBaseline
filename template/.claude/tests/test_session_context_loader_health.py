@@ -60,123 +60,37 @@ class HealthTests(unittest.TestCase):
         with patch.object(scl, "run_bounded", return_value=SimpleNamespace(returncode=0, stdout="")):
             self.assertEqual([], scl.submodule_status(self.root))
 
-    def test_sidecar_refusal_keeps_its_reason(self):
-        # Live defect 2026-09-14: the banner read "sidecar-codex: Override: re-run with -A." with no reason.
-        script = self.root / ".claude" / "scripts" / "codex_proxy_sidecar.sh"
-        script.parent.mkdir(parents=True)
-        script.write_text("", encoding="utf-8")
-        refusal = ("[sidecar] codex quota probe note\n"
-                   "[sidecar] REFUSING luna-max (gpt-x): codex's OWN quota band is Hot, above the Ahead ceiling.\n"
-                   "  This is the PROVIDER's allowance, not this session's.\n"
-                   "  Override: re-run with -A.\n")
-        with patch.object(scl, "resolve_bash", return_value="bash"), \
-                patch.object(scl, "run_bounded", return_value=SimpleNamespace(returncode=8, stdout="", stderr=refusal)):
-            result = scl.verify_sidecar(self.root, "codex_proxy_sidecar.sh")
-        self.assertIn("OWN quota band is Hot", result)
-        self.assertIn("re-run with -A", result)
-        with patch.object(scl, "resolve_bash", return_value="bash"), \
-                patch.object(scl, "run_bounded", return_value=SimpleNamespace(returncode=0, stdout="preflight\nOK\n", stderr="")):
-            self.assertEqual("OK", scl.verify_sidecar(self.root, "codex_proxy_sidecar.sh"))
+    def _seats(self, seats):
+        claude = self.root / ".claude"
+        (claude / "scripts").mkdir(parents=True, exist_ok=True)
+        (claude / "seats.json").write_text(json.dumps({"seats": seats, "models": {}}), encoding="utf-8")
+        return claude
 
-    def test_shared_launcher_probes_a_model_per_transport(self):
-        models = [
-            {"transport": "opencode", "id": "oc-model", "alias": "oc", "roles": ["fanout"], "lifecycle": "current"},
-            {"transport": "go", "id": "go-model", "alias": "go", "roles": ["fanout"], "lifecycle": "current"},
-        ]
-        registry = SimpleNamespace(
-            available_models=lambda: models,
-            transports=lambda: ["opencode", "go"],
-            transport_meta=lambda _name: {"launcher": ".claude/scripts/shared_sidecar.sh"},
-        )
-        launchers = scl.sidecar_launchers(registry, "codex")
-        self.assertEqual([("opencode", "shared_sidecar.sh", "oc"),
-                          ("go", "shared_sidecar.sh", "go")], launchers)
-        script = self.root / ".claude" / "scripts" / "shared_sidecar.sh"
-        script.parent.mkdir(parents=True)
-        script.write_text("", encoding="utf-8")
-        with patch.object(scl, "resolve_bash", return_value="bash"), patch.object(
-            scl, "run_bounded", return_value=SimpleNamespace(returncode=0, stdout="OK", stderr="")
-        ) as check:
-            messages = [scl.verify_sidecar(self.root, name, alias) for _transport, name, alias in launchers]
-        self.assertEqual(["oc: OK", "go: OK"], messages)
-        self.assertEqual(["oc", "go"], [call.args[0][-1] for call in check.call_args_list])
-        self.assertTrue(all(call.args[0][-3] == "--check" and call.args[0][-2] == "-m"
-                            for call in check.call_args_list))
+    def test_a_project_with_no_external_seat_is_silent(self):
+        self._seats({})
+        self.assertEqual({}, scl.sidecar_health(self.root))
 
-    def test_a_plan_launcher_is_listed_only_while_available(self):
-        def registry(state):
-            meta = {
-                "anthropic": {"launcher": ".claude/scripts/anthropic_sidecar.sh"},
-                "anthropic-secondary": {"launcher": ".claude/scripts/anthropic_secondary_sidecar.sh",
-                                        "planOf": "anthropic", "status": {"state": state}},
-                "codex": {"launcher": ".claude/scripts/codex_proxy_sidecar.sh"},
-            }
-            return SimpleNamespace(
-                available_models=lambda: [
-                    {"transport": "anthropic", "id": "host-1", "alias": "host", "roles": ["executor"]},
-                    {"transport": "codex", "id": "cx-1", "alias": "cx", "roles": ["fanout"]}],
-                transports=lambda: sorted(meta),
-                transport_meta=lambda name: meta.get(name),
-                route_of=lambda name: (meta.get(name) or {}).get("planOf") or name,
-            )
-        on = scl.sidecar_launchers(registry("available"), "anthropic")
-        self.assertIn(("anthropic-secondary", "anthropic_secondary_sidecar.sh", "host"), on)
-        self.assertNotIn("anthropic", [t for t, _l, _a in on])
-        off = scl.sidecar_launchers(registry("unavailable"), "anthropic")
-        self.assertNotIn("anthropic-secondary", [t for t, _l, _a in off])
-        back = scl.sidecar_launchers(registry("available"), "anthropic-secondary")
-        self.assertIn(("anthropic", "anthropic_sidecar.sh", "host"), back)
-        self.assertNotIn("anthropic-secondary", [t for t, _l, _a in back])
+    def test_a_seat_whose_adapter_is_missing_is_reported_by_name(self):
+        self._seats({"ext": {"adapter": "scripts/seat_ext.sh", "writes": "no", "max_concurrent": 1,
+                             "configDir": "", "model": "m"}})
+        self.assertEqual({"seat-ext": "UNAVAILABLE (scripts/seat_ext.sh not present)"}, scl.sidecar_health(self.root))
 
-    def test_the_refresh_sentinel_does_not_skip_sidecar_health(self):
-        # The probe's refresh child runs in its login dir, outside the repo, so this project hook
-        # never loads there; the probe's own sentinel stops recursion.
-        with patch.dict(scl.os.environ, {"HARNESS_PLAN_REFRESH": "1"}), \
-                patch.object(scl, "sidecar_launchers", return_value=[("t", "t_sidecar.sh", "a")]), \
-                patch.object(scl, "verify_sidecar", return_value="OK") as verify:
-            self.assertEqual({"sidecar-t": "OK"}, scl.sidecar_health(Path(__file__).resolve().parents[2]))
-            verify.assert_called_once()
+    def test_a_seat_whose_login_dir_is_missing_is_reported_and_a_present_one_is_not(self):
+        claude = self._seats({"ext": {"adapter": "scripts/seat_ext.sh", "writes": "no", "max_concurrent": 1,
+                                      "configDir": str(self.root / "gone"), "model": "m"},
+                              "ok": {"adapter": "scripts/seat_ok.sh", "writes": "no", "max_concurrent": 1,
+                                     "configDir": str(self.root), "model": "m"}})
+        (claude / "scripts" / "seat_ext.sh").write_text("", encoding="utf-8")
+        (claude / "scripts" / "seat_ok.sh").write_text("", encoding="utf-8")
+        result = scl.sidecar_health(self.root)
+        self.assertEqual(["seat-ext"], list(result))
+        self.assertIn("login dir", result["seat-ext"])
 
-    def test_a_hung_launcher_check_ends_at_its_deadline(self):
-        # A launcher whose probe starts a program that keeps the output open: subprocess.run's timeout
-        # waited for that program, 97 s per launcher against 45 s at a real SessionStart.
-        script = self.root / ".claude" / "scripts" / "hung_sidecar.sh"
-        script.parent.mkdir(parents=True)
-        holder = self.root / "holder.py"
-        holder.write_text("import subprocess, sys, time\n"
-                          "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-                          "print('probing', flush=True)\ntime.sleep(60)\n", encoding="utf-8")
-        script.write_text('"%s" "%s"\n' % (Path(sys.executable).as_posix(), holder.as_posix()), encoding="utf-8")
-        started = time.monotonic()
-        with patch.object(scl, "CHECK_SECONDS", 1):
-            result = scl.verify_sidecar(self.root, "hung_sidecar.sh")
-        elapsed = time.monotonic() - started
-        self.assertEqual("UNKNOWN (--check timed out)", result)
-        self.assertLess(elapsed, 20, "the check outlived its 1 s deadline by %.1f s" % (elapsed - 1))
-
-    def test_sidecar_health_checks_every_launcher_at_once(self):
-        # Every check waits at a barrier that opens only when all four are in flight, so a serial
-        # loop breaks the barrier instead of racing a clock.
-        gate = threading.Barrier(4, timeout=10)
-        lock = threading.Lock()
-        live = {"now": 0, "peak": 0}
-
-        def check(_root, _name, alias):
-            with lock:
-                live["now"] += 1
-                live["peak"] = max(live["peak"], live["now"])
-            try:
-                gate.wait()
-            finally:
-                with lock:
-                    live["now"] -= 1
-            return "%s: OK" % alias
-        launchers = [("t%d" % i, "t_sidecar.sh", "a%d" % i) for i in range(4)]
-        with patch.object(scl, "sidecar_launchers", return_value=launchers), \
-                patch.object(scl, "verify_sidecar", side_effect=check):
-            health = scl.sidecar_health(Path(__file__).resolve().parents[2])
-        self.assertEqual({"sidecar-t%d" % i: "a%d: OK" % i for i in range(4)}, health)
-        self.assertEqual(4, live["peak"])
+    def test_unreadable_seat_table_is_unknown_not_silent(self):
+        claude = self.root / ".claude"
+        claude.mkdir(parents=True)
+        (claude / "seats.json").write_text("{not json", encoding="utf-8")
+        self.assertTrue(scl.sidecar_health(self.root)["seats"].startswith("UNKNOWN"))
 
     def test_unknown_status_never_reports_ok_or_updates(self):
         with patch.object(scl, "submodule_status", return_value=None), patch.object(scl.subprocess, "run") as run:
@@ -280,7 +194,7 @@ class HealthTests(unittest.TestCase):
         with contextlib.ExitStack() as stack:
             values = {"get_project_root": self.root, "is_worktree": False, "is_cloud": False,
                       "setup_submodule": "BROKEN (not auto-fixed)",
-                      "sidecar_launchers": [], "get_git_branch": "main", "get_uncommitted_count": None,
+                      "get_git_branch": "main", "get_uncommitted_count": None,
                       "get_recent_commits": []}
             for name, value in values.items():
                 stack.enter_context(patch.object(scl, name, return_value=value))

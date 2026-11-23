@@ -14,10 +14,9 @@ owner prompt names the rows still open. `--validate-close` then refuses a Q row 
 floor, the owner's stop). The record lapses TTL_HOURS after the end; `--arm` clears it.
 `--validate-close` checks each `Q` row's Park reason and Default, plus Reversibility (clean, residue
 or none) when supplied, requires each open `Q` row's next line to be an `Evidence: {...}` file or
-command item that tools/verify_claims.py VERIFIES, and, when the doc holds a `Q` row, the `Next session: <currency> · <model>`
+command item that tools/quote_check.py VERIFIES, and, when the doc holds a `Q` row, the `Next session: <currency> · <model>`
 line in `## Outcome`. `--open-questions` retains legacy missing-Default rows as open.
-Both Close-doc readers default `<dir>` to `<VAULT_ROOT>/DevProjects/<PROJECT_NAME>/Claude/TODO/Overnight`
-from `baseline.lock.json` substitutions.
+Both Close-doc readers default `<dir>` to the `overnight_dir` key of `skills/project_subsystems/adaptation.json`.
 `--archive-closed <dir>` moves each session's docs to <dir>/archive/ once none holds an open,
 malformed or unreadable row and none of its sessions is armed; it never overwrites an archived file.
 Invalid state and hook errors fail open for AskUserQuestion but fail closed for CLI state changes.
@@ -36,7 +35,6 @@ from _hook_state import replace_path, update_json_locked, write_json_atomic
 from _owner_text import ENVELOPE_RE, LEADING_INJECTION_RE
 
 TTL_HOURS = 16
-TOKEN = "{" + "{%s}" + "}"  # a literal token here would be expanded by a consumer's install
 _ALLOWED_HEADINGS = {"Outcome", "Decisions made", "Decisions for you", "Left undone"}
 _REQUIRED_HEADINGS = {"Outcome", "Decisions for you", "Left undone"}
 _Q_ROW = re.compile(
@@ -70,14 +68,12 @@ def _root():
 
 
 def overnight_dir(root=None):
-    lock = Path(root or _root()) / ".claude/baseline.lock.json"
-    try:
-        subs = json.loads(lock.read_text(encoding="utf-8"))["substitutions"]
-        vault, project = subs[TOKEN % "VAULT_ROOT"], subs[TOKEN % "PROJECT_NAME"]
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise ValueError(f"No Overnight dir given and {lock} has no readable VAULT_ROOT and "
-                         f"PROJECT_NAME substitutions ({exc!r}); pass the dir.") from exc
-    return str(Path(vault) / "DevProjects" / project / "Claude/TODO/Overnight")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import adaptation
+    value = adaptation.get(Path(root or _root()) / ".claude", "overnight_dir")
+    if not value:
+        raise ValueError("No Overnight dir given and adaptation.json names no overnight_dir; pass the dir.")
+    return str(value)
 
 
 def session_id(value=None):
@@ -260,13 +256,12 @@ def _check_evidence(lines, index, row, root):
         item = json.loads(match.group(1))
     except ValueError:
         raise ValueError(f"Q row's Evidence line is not JSON. {fix}") from None
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-    import verify_claims
-    if verify_claims.kind_of(item) not in ("file", "command"):
+    if not isinstance(item, dict) or not ("file" in item or "command" in item):
         raise ValueError(f"Q row's Evidence must be a file or command item. {fix}")
-    verdict = verify_claims.check_claims([{"id": "evidence", "evidence": [item]}], root=root)
-    if verdict["verdicts"]["evidence"]["verdict"] != verify_claims.VERIFIED:
-        reason = verdict["verdicts"]["evidence"]["items"][0].get("reason")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import quote_check
+    reason = quote_check.check_item(item, Path(root))
+    if reason:
         raise ValueError(f"Q row's Evidence is not VERIFIED ({reason}). {fix}")
 
 

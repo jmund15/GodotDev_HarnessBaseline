@@ -114,10 +114,23 @@ def _verdict(returncode, stdout, stderr):
     return None, drift
 
 
+def _seat_rows():
+    """The seats.json rows: the one table of external logins (launch_check reads it for every seat)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import launch_check
+    return launch_check.seat_rows(Path(__file__).resolve().parents[1])
+
+
 def decide():
     """The one line to inject, or None."""
     if os.environ.get("CLAUDE_CODE_SIDECAR") or is_cloud():
         return None
+    try:
+        seats = _seat_rows()
+    except Exception as exc:  # noqa: BLE001  advisory: name the fault, check nothing
+        return "[login parity] seats.json not read (%s: %s); no login was checked." % (type(exc).__name__, exc)
+    if not any(row.get("configDir") for row in seats.values()):
+        return None  # no external login to keep in step: no check runs
     proc = run_bounded(CHECK_ARGV, CHECK_TIMEOUT)
     if proc.returncode is None:
         return "[login parity] the check ran past %d s; run `%s` by hand." % (CHECK_TIMEOUT, CHECK_COMMAND)
