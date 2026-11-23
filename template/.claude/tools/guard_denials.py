@@ -1,6 +1,7 @@
-"""Count guard denials per day from Claude Code session transcripts.
+"""Count guard denials per day and per 100 tool calls from Claude Code session transcripts.
 
-Usage: python3 .claude/tools/guard_denials.py --roots DIR [DIR ...] [--cache FILE]
+Usage: python3 .claude/tools/guard_denials.py [--roots DIR [DIR ...]] [--cache FILE]
+Default roots: every login's projects directory (transcript_usage.projects_dirs).
 """
 import argparse
 import json
@@ -13,7 +14,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks"))
 from _hook_state import replace_path  # noqa: E402
 
-import model_registry
+import transcript_usage
 
 # Longest text before a signature in the captured fixture is 146 chars; 700 keeps quoted text further in from matching.
 SIGNATURE_WINDOW = 700
@@ -37,11 +38,7 @@ SIGNATURES = [
 
 
 def default_roots():
-    try:
-        logins = model_registry.login_dirs()
-    except model_registry.RegistryError:
-        logins = [os.path.expanduser('~/.claude'), os.path.expanduser('~/.claude-secondary')]
-    return [model_registry.projects_dir(login) for login in logins]
+    return transcript_usage.projects_dirs()
 
 
 def project_roots(root):
@@ -199,18 +196,46 @@ def scan(roots, cache_path=None):
     return {'denials': denials, 'calls': calls, 'coverage': coverage}
 
 
+def summarize(found):
+    """{day: {'calls': n, 'cats': {category: n}}} from a scan: calls keyed 'day|session', denials by day."""
+    days = {}
+
+    def bucket(day):
+        return days.setdefault(day, {'calls': 0, 'cats': {cat: 0 for cat, _ in SIGNATURES}})
+
+    for key, n in found['calls'].items():
+        bucket(key.split('|', 1)[0])['calls'] += n
+    for row in found['denials']:
+        bucket(row['day'])['cats'][row['cat']] += 1
+    return days
+
+
+def per_hundred(count, calls):
+    return '%.1f' % (100.0 * count / calls) if calls else '-'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--roots', nargs='+', default=None)
     parser.add_argument('--cache', default=None)
     args = parser.parse_args()
     found = scan(args.roots or default_roots(), cache_path=args.cache)
-    counts = {cat: 0 for cat, _ in SIGNATURES}
-    for row in found['denials']:
-        counts[row['cat']] += 1
+    days = summarize(found)
+    total = {'calls': 0, 'cats': {cat: 0 for cat, _ in SIGNATURES}}
+    for day in sorted(days):
+        row = days[day]
+        denials = sum(row['cats'].values())
+        print('%s calls %d denials %d per100 %s' % (day, row['calls'], denials, per_hundred(denials, row['calls'])))
+        for cat, _ in SIGNATURES:
+            if row['cats'][cat]:
+                print('  %s %d' % (cat, row['cats'][cat]))
+        total['calls'] += row['calls']
+        for cat, _ in SIGNATURES:
+            total['cats'][cat] += row['cats'][cat]
+    denials = sum(total['cats'].values())
+    print('total calls %d denials %d per100 %s' % (total['calls'], denials, per_hundred(denials, total['calls'])))
     for cat, _ in SIGNATURES:
-        print('%s %d' % (cat, counts[cat]))
-    print('calls %d' % sum(found['calls'].values()))
+        print('  %s %d per100 %s' % (cat, total['cats'][cat], per_hundred(total['cats'][cat], total['calls'])))
     print(json.dumps(found['coverage']))
 
 
