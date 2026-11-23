@@ -1,8 +1,10 @@
 ---
 paths:
   - "**/*.cs"
+  - "**/*.ts"
+  - "**/*.tsx"
 ---
 
-# Design Litmus
+# Design litmus
 
-Before introducing an authored type, export, parameter, behavior switch, helper or component seam, read [`reference/rules/design_litmus.md`](../reference/rules/design_litmus.md). It owns the numbered questions and the dependency, consumption and gating rules. Existing `design_litmus` #N citations resolve there; unrelated C# reads need only this pointer.
+Before introducing a type, an authored setting, a parameter, a behaviour switch, a helper or a component seam, read [`reference/rules/design_litmus.md`](../reference/rules/design_litmus.md). Citations of `design_litmus` #N resolve there; a read that introduces nothing needs only this pointer.
