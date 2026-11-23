@@ -5,17 +5,20 @@ Claude Code parses `allowed-tools` from the command's frontmatter; a missing gra
 
     python -m pytest .claude/tests/test_push_command_contract.py -q
 """
-from pathlib import Path
 import re
-import sys
+from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-COMMANDS = ROOT / ".claude" / "commands"
-GRANTS = {
-    "commit_push.md": ("Bash(python3:*)",),
-    "clean_pull.md": ("Bash(git ls-tree:*)", "Bash(git ls-files:*)", "Bash(git submodule:*)",
-                      "Bash(git -C:*)", "Bash(mv:*)"),
-}
+import pytest
+
+COMMANDS = Path(__file__).resolve().parents[1] / "commands"
+GRANTS = [
+    ("commit_push.md", "Bash(python3:*)"),
+    ("clean_pull.md", "Bash(git ls-tree:*)"),
+    ("clean_pull.md", "Bash(git ls-files:*)"),
+    ("clean_pull.md", "Bash(git submodule:*)"),
+    ("clean_pull.md", "Bash(git -C:*)"),
+    ("clean_pull.md", "Bash(mv:*)"),
+]
 
 
 def allowed_tools(text):
@@ -24,22 +27,8 @@ def allowed_tools(text):
     return tools.group(1) if tools else ""
 
 
-def main():
-    failed = 0
-    for name, grants in GRANTS.items():
-        path = COMMANDS / name
-        tools = allowed_tools(path.read_text(encoding="utf-8")) if path.exists() else ""
-        for grant in grants:
-            ok = grant in tools
-            print(("ok   " if ok else "FAIL ") + "%s grants %s" % (name, grant))
-            failed += not ok
-    print("push command contract: %d failed" % failed)
-    return 1 if failed else 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-
-
-def test_proof():
-    assert main() == 0
+@pytest.mark.parametrize("name,grant", GRANTS)
+def test_command_grants(name, grant):
+    path = COMMANDS / name
+    assert path.exists(), name
+    assert grant in allowed_tools(path.read_text(encoding="utf-8"))
