@@ -44,6 +44,7 @@ Pin a model and an effort on every job from the table below, by the work shape. 
 | sonnet | The lone holistic review seat; surveys, explore lenses and chained research; scoped architecting; tight-spec execution; a fix whose cause is evident | `medium` tight-spec work and checklist lenses; `high` review and surveys, `xhigh` as the subject grows | A cause hiding behind a second mechanism, or open design: opus. Converged checked work: haiku |
 | haiku | Converged and tight-spec execution; extraction; bounded lookups; surveys | `medium`; `low` copyable extraction; `high` surveys | An in-depth defect hunt or a lone review seat: sonnet |
 | neon | The cross-family review seat beside a Claude seat; design and agentic coding | `high`; `xhigh` as the problem deepens | Unmeasured here, so never the lone seat: check its cites against source |
+| inkling | Copyable reads and doc prose, on the `inkling-local` seat: its answer comes back as text; a run holds the one local GPU, so a local `ai-worker` call waits until it ends | `low`; `seat.sh -e` is required and fixed for the run | Derived work (judgment, synthesis, code) goes to sonnet or above; never a review seat; unmeasured here, so check its output against the source |
 <!-- model-table-end -->
 
 - **Add a model:** one row in `seats.json` (a seat row too when it needs a new login or CLI, with that CLI's adapter) and one row here. Its evidence comes from HarnessBench, never from one dispatch.
