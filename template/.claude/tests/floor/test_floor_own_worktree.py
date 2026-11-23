@@ -1,5 +1,6 @@
-"""Ownership of a live worktree, proven from the transcript: discards, `reset --hard` and recursive deletes in a
-worktree this session created. Rows of PushinPotions' `test_git_guardrails_checkout_own_worktree.py` (MaddManager's
+"""Ownership of a live worktree, proven from the transcript (`_own_worktree.session_created_worktree`): the
+discards and `reset --hard` a session may make in a worktree it created, and the recursive deletes of a worktree,
+which since T1's deletion rule no longer read ownership (an owned worktree's ignored files now ask, like anyone's). Rows of PushinPotions' `test_git_guardrails_checkout_own_worktree.py` (MaddManager's
 copy is a subset) and of `test_pattern_enforcer_own_worktree.py`, the delete half of the same ownership proof
 (it imports `dangerous_shell_guard` as `pe`; it is not on T1's file list, but its cases are floor cases, R1).
 
@@ -29,6 +30,8 @@ ROW = {"type": "assistant", "message": {"role": "assistant", "content": [{
               "description": "Check runner files are clean and create the runner job's worktree"},
     "caller": {"type": "direct"}}]}}
 ADD = "git worktree add .claude/worktrees/mine HEAD"
+# The ownership probe: `reset --hard` of the clean worktree passes only when this session created it.
+PROBE = "git -C .claude/worktrees/mine reset --hard"
 
 
 def g(root, *args):
@@ -112,7 +115,8 @@ class Own:
     def dirty(self, root):
         (root / ".gitignore").write_text("dirty edit\n", encoding="utf-8")
 
-    def blocked(self, rows, command="rm -rf .claude/worktrees/mine"):
+    def blocked(self, rows, command=PROBE):
+        """True when `command` (by default the ownership probe) is denied under the transcript `rows`."""
         return self.run(command, rows).denied
 
 
@@ -203,7 +207,7 @@ def test_submodule_of_shared_checkout_denies(own):
 
 
 def test_orphan_worktree_uses_the_explicit_object_store(own):
-    from _regenerable_clone import lossless_orphan_worktree
+    from _delete_rule import lossless_orphan_worktree
     shutil.rmtree(own.wt / "notes", ignore_errors=True)
     own.dirty(own.wt)
     shutil.rmtree(own.root / ".git/worktrees/mine")
@@ -231,7 +235,7 @@ def _tuple_loop_rows(own, command=None):
 
 
 def test_literal_tuple_loop_creation_allows_discard(own):
-    from _regenerable_clone import _first_visible_add, _unrolled_loops
+    from _own_worktree import _first_visible_add, _unrolled_loops
     own.dirty(own.wt)
     rows = _tuple_loop_rows(own)
     for verb in ("checkout --", "restore"):
@@ -243,7 +247,7 @@ def test_literal_tuple_loop_creation_allows_discard(own):
 
 
 def test_loop_with_echo_between_adds_counts_every_iteration(own):
-    from _regenerable_clone import _first_visible_add, _unrolled_loops
+    from _own_worktree import _first_visible_add, _unrolled_loops
     wt = own.root / ".claude/worktrees"
     command = ('cd "%s"; for n in mine mine2; do git worktree add -q -b fx-$n .claude/worktrees/$n HEAD && '
                'echo ok-$n; done; git worktree list' % own.root.as_posix())
@@ -401,18 +405,28 @@ def test_redirected_repository_does_not_inherit_ownership(own):
 
 
 # --- recursive delete of the owned worktree (test_pattern_enforcer_own_worktree.py) -----------------------------
-def test_created_by_this_session_is_removed(own):
+def test_created_by_this_session_owns_it_for_discards(own):
     assert not own.blocked(own.rows())
 
 
+def test_an_owned_worktree_holding_an_ignored_file_asks_like_any_other(own):
+    """T1 (plan-approved loss): who created a worktree no longer lets its ignored files go with it."""
+    got = own.run("rm -rf .claude/worktrees/mine")
+    assert got.denied and "!! notes/" in got.reason
+    (own.wt / "notes/evidence.txt").unlink()
+    assert own.run("rm -rf .claude/worktrees/mine").kind == "allow"
+
+
 def test_chained_delete_of_a_removable_worktree(own):
+    (own.wt / "notes/evidence.txt").unlink()
     for command in ('cd "%s" && rm -rf .claude/worktrees/mine' % own.root.as_posix(),
                     "rm -rf .claude/worktrees/mine; git worktree prune"):
         assert not own.blocked(own.rows(), command), command
     assert own.blocked(own.rows(), 'cd "%s" && rm -rf .claude/worktrees/mine peer' % own.root.as_posix())
 
 
-def test_owned_unpushed_worktree_names_failed_retirement(own):
+def test_an_unpushed_worktree_names_failed_retirement(own):
+    (own.wt / "notes/evidence.txt").unlink()
     write(own.wt, "local.txt", "local only")
     g(own.wt, "add", "local.txt")
     g(own.wt, "commit", "-qm", "local")
@@ -496,7 +510,7 @@ def _loop_row(own, command, shift=0.0):
 def test_literal_loop_adds_prove_every_listed_worktree(own, loop):
     g(own.root, "worktree", "add", "-q", "-b", "scratch/mine2", ".claude/worktrees/mine2", "HEAD")
     own.finished = datetime.now(timezone.utc).isoformat()
-    both = "rm -rf .claude/worktrees/mine .claude/worktrees/mine2"
+    both = PROBE + " && git -C .claude/worktrees/mine2 reset --hard"
     if loop is None:
         row = _loop_row(own, "for j in mine2; do git worktree add -q -b x-$j .claude/worktrees/$j HEAD; done")
         assert own.blocked([row, own.result_row("")], both)
@@ -595,16 +609,17 @@ def test_creation_named_only_in_prose_stays_denied(own):
 
 def test_scratch_output_goes_with_any_pushed_worktree_but_not_a_loose_file_or_a_session_folder(own):
     """MaddManager's form (`7b8e6e66`): a job's output folder goes; a loose file directly in scratch is evidence
-    (PushinPotions allowed a loose file; drop-list D-LS)."""
+    (PushinPotions allowed a loose file; drop-list D-LS, kept by the owner 2026-11-23)."""
+    delete = "rm -rf .claude/worktrees/mine"
     (own.wt / "notes/evidence.txt").unlink()
     write(own.wt, ".claude/scratch/a-job/output.txt", "a job's output")
-    assert not own.blocked([])
+    assert not own.blocked([], delete)
     loose = own.wt / ".claude/scratch/notes.txt"
     loose.write_text("a file nobody filed under a job", encoding="utf-8")
-    assert own.blocked([])
+    assert own.blocked([], delete)
     loose.unlink()
     write(own.wt, ".claude/scratch/947c1a2b-0000-4000-8000-123456789abc/record.json", "{}")
-    assert own.blocked([])
+    assert own.blocked([], delete)
 
 
 def test_another_sessions_worktree_stays_denied(own):

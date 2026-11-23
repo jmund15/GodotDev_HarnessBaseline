@@ -54,11 +54,29 @@ def table(tmp_path, monkeypatch):
     "killall -r '('",
     "powershell -Command \"Stop-Process -InputObject $p\"",
     "wmic process delete",
-    "ls | xargs -n1 kill",  # the bare `ls | xargs kill` passes in v1 (R1 finding K-XA in test_floor_ported.md)
+    "ls | xargs -n1 kill",
     "powershell -Command \"Get-CimInstance Win32_Process | Invoke-CimMethod -MethodName Terminate\"",
 ])
 def test_unresolvable_stop_selectors_deny(table, tmp_path, command):
     assert bash(command, tmp_path).denied
+
+
+# K-XA (owner, 2026-11-23): a kill of pids the call does not name denies; `reap.py` is the one stop route.
+@pytest.mark.parametrize("command", [
+    "ls | xargs kill", "cat pids.txt | xargs kill -9", "echo 4242 | xargs taskkill /F /PID",
+    "kill $(cat pids.txt)", "kill -9 `cat pids.txt`", "kill $PID", "kill -TERM ${PIDS}",
+    "taskkill /F /PID $PID", "powershell -Command \"Stop-Process -Id $p -Force\"",
+])
+def test_a_kill_of_pids_the_call_does_not_name_denies(table, tmp_path, command):
+    assert bash(command, tmp_path).denied
+
+
+@pytest.mark.parametrize("command", ["sleep 100 & kill $!", "kill -0 $PID", "echo kill $PID",
+                                     "python3 .claude/tools/reap.py $PID --dry-run",
+                                     # a real call (replay, 2026-11-23): the shape named inside a quoted note
+                                     'python3 task_record.py add hsr decision "K-XA deny producer|xargs kill." && echo ok'])
+def test_a_named_pid_a_liveness_probe_and_the_stop_tool_allow(table, tmp_path, command):
+    assert bash(command, tmp_path).kind == "allow"
 
 
 def test_a_resolvable_name_kill_of_an_unprotected_process_allows(table, tmp_path):

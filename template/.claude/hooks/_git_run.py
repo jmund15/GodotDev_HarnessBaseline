@@ -4,6 +4,8 @@ tool spawns git here and nothing here decides anything.
 
     run(args, *, cwd=None, env=None, input=None, timeout=30, prefix=(), optional_locks=True, creationflags=0) -> GitResult
     soft_text(call, **run_kwargs) -> str | None    stdout when git exits 0, else None
+    deadline(seconds) -> Clock                     context: every `run` inside ends by then; `.spent` says one was cut
+    remaining(default) -> float                    seconds left on the active deadline, else `default`
     git_environ(overlay) -> dict | None            os.environ with the overlay applied
     GitResult.text / .err_text / .check(args)      decoded streams; raise-on-nonzero
 
@@ -19,6 +21,8 @@ console window; it is 0 elsewhere.
 """
 import os
 import subprocess
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 
@@ -56,10 +60,57 @@ def git_environ(overlay):
     return env
 
 
+class Clock:
+    """One decision's time budget. `spent` turns True when a git call ran out of it, so a caller that treats a
+    failed read as an answer can still tell that its answer was cut short."""
+
+    def __init__(self, seconds):
+        self.ends = time.monotonic() + seconds
+        self.spent = False
+
+    def left(self):
+        return self.ends - time.monotonic()
+
+
+_clock = None
+
+
+@contextmanager
+def deadline(seconds):
+    """Inside the block, every `run` ends by `seconds` from entry: its timeout shrinks to the time left, and a call
+    started with none left times out at once. Nested blocks keep the outer, earlier deadline."""
+    global _clock
+    outer = _clock
+    clock = Clock(seconds)
+    if outer is not None and outer.ends < clock.ends:
+        clock = outer
+    _clock = clock
+    try:
+        yield clock
+    finally:
+        _clock = outer
+
+
+def remaining(default):
+    """Seconds left on the active deadline, capped at `default`; `default` when no deadline is active."""
+    return default if _clock is None else max(0.0, min(default, _clock.left()))
+
+
 def run(args, *, cwd=None, env=None, input=None, timeout=30, prefix=(), optional_locks=True, creationflags=0):
     argv = ["git"] + ([] if optional_locks else ["--no-optional-locks"]) + list(prefix) + list(args)
-    done = subprocess.run(argv, cwd=cwd, input=input, capture_output=True, timeout=timeout, env=git_environ(env),
-                          creationflags=creationflags)
+    clock, clamped = _clock, False
+    if clock is not None and clock.left() < (timeout or float("inf")):
+        timeout, clamped = clock.left(), True
+        if timeout <= 0:
+            clock.spent = True
+            raise subprocess.TimeoutExpired(argv, 0)
+    try:
+        done = subprocess.run(argv, cwd=cwd, input=input, capture_output=True, timeout=timeout,
+                              env=git_environ(env), creationflags=creationflags)
+    except subprocess.TimeoutExpired:
+        if clamped:
+            clock.spent = True
+        raise
     return GitResult(done.returncode, done.stdout or b"", done.stderr or b"")
 
 

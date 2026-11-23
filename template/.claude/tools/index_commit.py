@@ -57,22 +57,9 @@ for _d in (HERE.parent / "hooks", HERE):
 import _hook_state  # noqa: E402
 import cli_usage  # noqa: E402
 from _git_run import run as git_run  # noqa: E402
+from _commit_scope import STAGE_RECORD_SUFFIX, stage_record_base, stage_record_path  # noqa: E402,F401
 
 INDEX_LOCK_TIMEOUT = 5.0
-STAGE_RECORD_SUFFIX = ".paths.json"
-
-
-def stage_record_path(index):
-    return Path(str(index) + STAGE_RECORD_SUFFIX)
-
-
-def stage_record_base(record):
-    try:
-        base = _read_record(record, "the stage record").get("base_head")
-    except (IndexCommitError, AttributeError):
-        return None
-    return base if isinstance(base, str) else None
-
 COMMIT_TEMPLATE = "GIT_INDEX_FILE=%s git commit -F %s"
 BASE_NOTE = "base HEAD %s; the commit guard refuses this index once HEAD moves, so rerun stage then"
 

@@ -18,15 +18,47 @@ for _p in (str(HOOKS), str(TOOLS), str(Path(__file__).resolve().parent)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-if os.name == "nt":
-    # A runner with no console stdin hands children an invalid handle; nothing here reads stdin it was not given.
-    _popen_init = subprocess.Popen.__init__
+# Per test file: seconds and process spawns by image, printed after every run (K2: the suite reads its own timings, so
+# a slow file is diagnosed by cause as it lands, not found at the end).
+_COST = {}
+_FILE = [None]
+_popen_init = subprocess.Popen.__init__
 
-    def _popen_with_stdin(self, *args, **kwargs):
-        if len(args) < 5 and kwargs.get("stdin") is None:
-            kwargs["stdin"] = subprocess.DEVNULL
-        _popen_init(self, *args, **kwargs)
-    subprocess.Popen.__init__ = _popen_with_stdin
+
+def _popen_counted(self, *args, **kwargs):
+    if os.name == "nt" and len(args) < 5 and kwargs.get("stdin") is None:
+        # A runner with no console stdin hands children an invalid handle; nothing here reads stdin it was not given.
+        kwargs["stdin"] = subprocess.DEVNULL
+    if _FILE[0] is not None:
+        argv = args[0] if args else kwargs.get("args")
+        first = (argv[0] if isinstance(argv, (list, tuple)) and argv else str(argv or "").split(" ")[0])
+        image = os.path.splitext(os.path.basename(str(first)))[0].lower()
+        cost = _COST.setdefault(_FILE[0], {"s": 0.0, "git": 0, "other": 0})
+        cost["git" if image == "git" else "other"] += 1
+    _popen_init(self, *args, **kwargs)
+
+
+subprocess.Popen.__init__ = _popen_counted
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item, nextitem):
+    _FILE[0] = os.path.basename(str(item.fspath))
+    yield
+    _FILE[0] = None
+
+
+def pytest_runtest_logreport(report):
+    name = os.path.basename(report.location[0])
+    _COST.setdefault(name, {"s": 0.0, "git": 0, "other": 0})["s"] += report.duration
+
+
+def pytest_terminal_summary(terminalreporter):
+    if not _COST:
+        return
+    terminalreporter.write_sep("-", "floor cost per file (seconds incl. setup, git spawns, other spawns)")
+    for name, cost in sorted(_COST.items(), key=lambda kv: -kv[1]["s"]):
+        terminalreporter.write_line("%7.1f s %6d git %5d other  %s" % (cost["s"], cost["git"], cost["other"], name))
 
 GIT_ID = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"]
 

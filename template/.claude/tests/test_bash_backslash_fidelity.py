@@ -141,38 +141,6 @@ def payload(command, transcript, tool="Bash", sid=None, extra=None, cwd=REPO):
             "cwd": cwd, "tool_input": ti}
 
 
-def test_s9_colon_operands(tmp_path):
-    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=str(tmp_path / 'state'),
-               HARNESS_BASH_FIDELITY_RECORD=str(tmp_path / 'absent.json'))
-    # Measured on Git Bash: MSYS rewrites an operand as a path list only when text before the colon holds a
-    # slash (`origin/main:f` arrives as `origin\main;f`); `HEAD:f`, `main:f` and `:f` arrive intact.
-    for command in ('git show HEAD:.claude/CLAUDE.core.md | head -1', 'git show main:README.md',
-                    'git show :.claude/baseline.lock.json', 'git show HEAD:/tmp/x', 'git cat-file -p HEAD~1:README.md',
-                    'git show HEAD:a/b:c'):
-        p, out, crashed = run(HOOK, payload(command, ''), env)
-        assert not crashed and p.returncode == 0 and 'updatedInput' not in out, (command, out)
-    for command in ('git show origin/main:.claude/CLAUDE.core.md | head -1',
-                    'git -C /repo show refs/heads/main:folder/file',
-                    'git diff origin/main:a.txt HEAD:a.txt',
-                    'gh api repos/owner/repo/contents/x/HEAD:README.md'):
-        p, out, crashed = run(HOOK, payload(command, ''), env)
-        assert not crashed and p.returncode == 0
-        assert out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 ' + command
-        assert 'additionalContext' not in out, (command, out)  # the rewrite is already applied: a note changes no action
-        p, again, crashed = run(HOOK, payload(out['updatedInput']['command'], ''), env)
-        assert not crashed and 'updatedInput' not in again
-    command = 'cd /repo && git show origin/main:README.md'
-    p, out, crashed = run(HOOK, payload(command, ''), env)
-    assert not crashed and out['updatedInput']['command'] == 'cd /repo && MSYS_NO_PATHCONV=1 git show origin/main:README.md'
-    command = 'git show origin/main:README.md; git show origin/main:README.md'
-    p, out, crashed = run(HOOK, payload(command, ''), env)
-    assert not crashed and out['updatedInput']['command'] == 'MSYS_NO_PATHCONV=1 git show origin/main:README.md; MSYS_NO_PATHCONV=1 git show origin/main:README.md'
-    for command in ('git status', 'git -C C:/repo status', 'git remote add x https://example.invalid/repo',
-                    "printf '%s' 'git show HEAD:path'", "python3 - <<'EOF'\nprint('git show HEAD:path')\nEOF"):
-        p, out, crashed = run(HOOK, payload(command, ''), env)
-        assert not crashed and p.returncode == 0 and 'updatedInput' not in out
-
-
 def main():
     tmp = tempfile.mkdtemp(prefix="bbf_")
     transcript = os.path.join(tmp, "t.jsonl")

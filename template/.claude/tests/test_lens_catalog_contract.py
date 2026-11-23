@@ -28,17 +28,6 @@ class LensCatalogContracts(unittest.TestCase):
             self.assertNotIn('FORBIDDENMODEL', out.getvalue())
             self.assertIn(example, out.getvalue())
 
-    def test_guard_advice_matches_selector_fields(self):
-        guard_spec = importlib.util.spec_from_file_location('indexed_guard_subject', ROOT / '.claude/hooks/indexed_reference_guard.py')
-        guard = importlib.util.module_from_spec(guard_spec)
-        guard_spec.loader.exec_module(guard)
-        result = guard.process({'tool_name':'Read', 'tool_input':{'file_path':str(ROOT / '.claude/commands/agents/plan_check_agents.md')}})
-        self.assertIsNotNone(result)
-        message = result['advisory']
-        self.assertIn('gate', message)
-        self.assertIn('size', message)
-        self.assertNotIn('model, gate', message)
-
     def test_index_preserves_code_and_mixed_plan_gates(self):
         self.assertEqual(lens.Lens('plc-example', '(Purpose) — code', 'plan_check').gate, 'code')
         self.assertEqual(lens.Lens('plc-example', '(Purpose) — code; CONDITIONAL', 'plan_check').gate, 'code,conditional')

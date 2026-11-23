@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hook: PreToolUse on Bash|PowerShell|Monitor — deny recursive grep, nudge other unbounded scans.
+Floor helper (`_floor.HELPER_NAMES`) on Bash|PowerShell|Monitor: deny a recursive grep (V17).
 
 DENY — any recursive grep that walks a tree, whatever its output bound:
 - A recursive grep that reaches a giant single-line or special file buffers without bound, and on
@@ -21,21 +21,8 @@ DENY — any recursive grep that walks a tree, whatever its output bound:
 - Routes named in the deny: the Grep tool, `rg`, `git grep`. Canon: CLAUDE.core.md §9.
 - The reaper `runaway_scan_reaper.py` contains what slips past this parse.
 
-ADVISE — volume: a recursive `rg`/`find`/`ls -R` with no bounding token lands its full match set
-in context (measured 2026-08-04: two ~70KB returns). Advice names `--max-count`, `-l`/`-c` and
-the Grep tool's `head_limit`, never a pipe to `head`, which bounds output but not execution. An `rg`
-whose path operands are all named files or one-level file globs, or that reads a pipe with no path
-operand, walks no tree and is not flagged.
-
-ADVISE — scope: `find` is blind to .gitignore and sweeps `.claude/worktrees/` (measured
-2026-08-09: 261 worktree hits where the Grep tool returned 0). Not flagged when a flag or a
-narrowing path operand scopes the walk, or when cwd is inside a nested checkout
-(`.claude/worktrees/<checkout>/` or `.claude/.cache/<name>-worktrees/<checkout>/`).
-
-Both advisory axes use `_command_text.executable_text`: heredoc data neither triggers advice nor bounds a real scan.
-Advisories are full on the first fire per axis and one line afterwards, re-armed by a compaction
-(`_hook_state.fire_once_since_compaction`). The deny is emitted as `permissionDecision: deny`
-through `pre_bash_dispatch.py`. Any internal error exits 0 silent.
+Channel: `check(payload)` returns `permissionDecision: deny`; the floor skips a helper that fails to import or
+raises. The volume and scope advisories this file once carried are V17's Lost column.
 """
 
 import json
@@ -45,9 +32,7 @@ import shlex
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _claude_scope import in_nested_checkout
 from _command_text import executable_text
-from _hook_state import fire_once_since_compaction
 
 # ---------------------------------------------------------------------------------------------
 # Recursive grep: shell parse
@@ -333,111 +318,6 @@ DENY_REASON = (
     "or `git grep -n <pat> -- <path>` (CLAUDE.core.md §9)."
 )
 
-# ---------------------------------------------------------------------------------------------
-# Advisories
-# ---------------------------------------------------------------------------------------------
-
-# The command word where a scan starts: the line start, or after a separator, subshell opener or
-# transparent wrapper. A flag spelling or a word in prose never starts one.
-_CMD_START = r"(?:^|[|;&(`{\n]\s*)(?:(?:time|nice|nohup|exec|sudo|xargs|env)\s+)*"
-
-# A scan that walks a tree and prints matching LINES. Recursive grep is denied above. `ls` recurses on an
-# uppercase R or `--recursive`; `-r` reverses the sort.
-RECURSIVE_SCAN = re.compile(
-    _CMD_START + r"(?P<verb>rg|find|ls(?=\s+(?:-\S*\s+)*(?:-[a-zA-Z]*(?-i:R)|--recursive))|dir(?=\s+/s))(?:\s|$)",
-    re.IGNORECASE,
-)
-
-_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
-
-
-def _scan_text(command: str) -> str:
-    """The text a command-word matcher judges: heredoc bodies removed, quoted strings emptied."""
-    return _QUOTED.sub('""', executable_text(command or ""))
-
-# Any of these means the caller already bounded or reduced the output.
-BOUNDED = re.compile(
-    r"(?:\|\s*(?:head|tail|wc|uniq|sort\s+-u|Select-Object|measure))"
-    r"|(?:\s-[a-zA-Z]*(?:l|c|q)\b)"
-    r"|(?:--files-with-matches|--count|--quiet|--max-count|-m\s*\d|-m\d)"
-    r"|(?:\s-print0)"
-    r"|(?:head_limit)",
-    re.IGNORECASE,
-)
-
-# Walks a tree while blind to .gitignore. `rg` and `git grep` honour it.
-GITIGNORE_BLIND = re.compile(_CMD_START + r"find\s", re.IGNORECASE)
-
-# The caller already scoped the walk, or handed it to a gitignore-aware tool.
-SCOPED = re.compile(
-    r"--exclude-dir|--exclude|-prune|\s-path\s|git\s+grep|git\s+ls-files",
-    re.IGNORECASE,
-)
-
-# Operands that name the whole tree rather than narrowing it.
-BROAD_OPERANDS = {".", "./", "/", "~", "~/", "$HOME", "$PWD", "*"}
-
-# Flags whose VALUE is a separate token, so the value is not a path operand.
-VALUE_FLAGS = {
-    "-e", "-f", "-m", "-d", "-A", "-B", "-C", "--include", "--exclude",
-    "--exclude-dir", "--max-count", "-name", "-iname", "-type", "-path", "-regex",
-}
-
-SCAN_VERBS = ("grep", "rg", "find", "ls", "dir")
-PATH_FIRST_VERBS = ("find", "ls", "dir")
-
-# Bare operator tokens end the scan's own operand list.
-PIPELINE_OPERATORS = {"|", "||", "&&", "&", ";"}
-
-
-def _scan_paths(command: str):
-    """(verb, path operands) of the command's first scan verb, or (None, []).
-
-    Tokenize before splitting on operators: a quoted `\\|` in a pattern is one token."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return None, []
-
-    verb_index = None
-    for index, token in enumerate(tokens):
-        if os.path.basename(token) in SCAN_VERBS:
-            verb_index = index
-            break
-    if verb_index is None:
-        return None, []
-
-    operands = _operands_after(tokens, verb_index)
-    verb = os.path.basename(tokens[verb_index])
-    return verb, (operands if verb in PATH_FIRST_VERBS else operands[1:])
-
-
-def _operands_after(tokens, verb_index):
-    """Non-flag operands of the command word at `verb_index`, up to the next pipeline operator."""
-    operands, skip_next = [], False
-    for token in tokens[verb_index + 1:]:
-        if token in PIPELINE_OPERATORS:
-            break
-        # shlex glues a separator to the previous word (`'pat';`): that word is the list's last operand.
-        ends_list = token.endswith((";", "&&", "||")) and token not in PIPELINE_OPERATORS
-        token = token.rstrip(";&|") if ends_list else token
-        if skip_next:
-            skip_next = False
-        elif token.startswith("-"):
-            skip_next = token in VALUE_FLAGS
-        elif token:
-            operands.append(token)
-        if ends_list:
-            break
-    return operands
-
-
-def has_narrowing_path(command: str) -> bool:
-    """True when the scan names a path operand that bounds the walk to a subtree or to explicit files."""
-    _verb, paths = _scan_paths(command)
-    return any(path not in BROAD_OPERANDS for path in paths)
-
-
 # A named file: a stem that does not start with a dot, then an extension; no glob characters.
 FILE_OPERAND = re.compile(r"^[^*?\[\]./][^*?\[\]]*\.[A-Za-z0-9]{1,8}$")
 # A one-level file glob (`*.py`, `test_?.sh`): the shell expands it to files before rg runs.
@@ -454,126 +334,26 @@ def _is_file_operand(path: str, cwd: str = "") -> bool:
     return bool(FILE_GLOB_OPERAND.match(base))
 
 
-def rg_walks_no_tree(command: str, cwd: str = "") -> bool:
-    """True when every tree-scan match is an `rg`, and each `rg` either reads a pipe (no path
-    operand, fed by `|`) or names only files and one-level file globs."""
-    if any(match.group("verb").lower() != "rg" for match in RECURSIVE_SCAN.finditer(_scan_text(command))):
-        return False
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return False
-    found = False
-    for index, token in enumerate(tokens):
-        if os.path.basename(token) != "rg":
-            continue
-        paths = _operands_after(tokens, index)[1:]
-        if paths:
-            if not all(_is_file_operand(p, cwd) for p in paths):
-                return False
-        else:
-            previous = tokens[index - 1] if index else ""
-            if not previous.endswith("|") or previous.endswith("||"):
-                return False
-        found = True
-    return found
-
-
-def in_worktree(cwd: str) -> bool:
-    """Inside a nested checkout (any layout `_claude_scope` rebases) the scope advisory would warn
-    against the caller's own tree."""
-    return in_nested_checkout(cwd or "")
-
-
-SCOPE_ADVICE = (
-    "⚠ GITIGNORE-BLIND SCAN — `find` sweeps `.claude/worktrees/`, whose duplicate hits look "
-    "real; capping output does not fix that. Use the Grep or Glob tool, `git ls-files`, or "
-    "`find` with `-path ./.claude -prune` or a narrower root (CLAUDE.core.md §9)."
-)
-
-ADVICE = (
-    "⚠ UNBOUNDED RECURSIVE SCAN — output size is unknown, and every match stays in context. "
-    "Bound it: `rg --max-count N`, `-l`/`-c`, a narrower path/glob, or the Grep tool's "
-    "`head_limit` (CLAUDE.core.md §9)."
-)
-
-SCOPE_ADVICE_SHORT = (
-    "⚠ GITIGNORE-BLIND SCAN — sweeps `.claude/worktrees/`. Use the Grep tool, `git ls-files`, "
-    "or `find` with `-path ./.claude -prune`."
-)
-ADVICE_SHORT = (
-    "⚠ UNBOUNDED RECURSIVE SCAN — cap it (`--max-count N`), reduce it (`-l`/`-c`), or use the "
-    "Grep tool's `head_limit`."
-)
-
-
-def needs_bound(command: str, cwd: str = "") -> bool:
-    command = executable_text(command or "")
-    if not command:
-        return False
-    return (bool(RECURSIVE_SCAN.search(_scan_text(command))) and not BOUNDED.search(command)
-            and not rg_walks_no_tree(command, cwd))
-
-
-def needs_scope(command: str, cwd: str = "") -> bool:
-    command = executable_text(command or "")
-    if not command:
-        return False
-    if not GITIGNORE_BLIND.search(_scan_text(command)):
-        return False
-    if SCOPED.search(command) or has_narrowing_path(command) or in_worktree(cwd):
-        return False
-    return True
+def check(payload):
+    """The deny for a Bash, PowerShell or Monitor call that runs a recursive grep, or None."""
+    if not isinstance(payload, dict) or payload.get("tool_name") not in ("Bash", "PowerShell", "Monitor"):
+        return None
+    command = (payload.get("tool_input") or {}).get("command") or ""
+    if not isinstance(command, str) or not runs_recursive_grep(payload["tool_name"], command):
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                   "permissionDecisionReason": DENY_REASON}}
 
 
 def main() -> None:
     try:
-        input_data = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
+        out = check(json.load(sys.stdin))
+    except Exception:
         sys.exit(0)
-
-    tool = input_data.get("tool_name")
-    if tool not in ("Bash", "PowerShell", "Monitor"):
-        sys.exit(0)
-
-    tool_input = input_data.get("tool_input") or {}
-    command = tool_input.get("command") or ""
-
-    if runs_recursive_grep(tool, command):
-        sys.stdout.write(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": DENY_REASON,
-            }
-        }))
-        sys.exit(0)
-
-    session_id = input_data.get("session_id") or ""
-    advisories = []
-    if needs_bound(command, input_data.get("cwd") or ""):
-        first = fire_once_since_compaction(session_id, "unbounded_scan:bound")
-        advisories.append(ADVICE if first else ADVICE_SHORT)
-    if needs_scope(command, input_data.get("cwd") or ""):
-        first = fire_once_since_compaction(session_id, "unbounded_scan:scope")
-        advisories.append(SCOPE_ADVICE if first else SCOPE_ADVICE_SHORT)
-    if not advisories:
-        sys.exit(0)
-
-    payload = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": "\n\n".join(advisories),
-        }
-    }
-    sys.stdout.write(json.dumps(payload))
+    if out:
+        sys.stdout.write(json.dumps(out))
     sys.exit(0)
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except SystemExit:
-        raise
-    except Exception:
-        sys.exit(0)
+    main()

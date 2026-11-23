@@ -599,8 +599,9 @@ _memo = None
 @contextmanager
 def memoized():
     """Inside the block, `run_git` answers a repeated `_READ_ONLY` query (same argv, cwd and git_env)
-    from its first answer. `pre_bash_dispatch` holds it for one tool call: its sub-hooks read one repo
-    state and would otherwise spawn the same git query once each. Outside it every call runs git."""
+    from its first answer, and `cached` answers any keyed read the same way. `_floor.decide` holds it for one
+    tool call: its checks read one repo state and would otherwise spawn the same git query once each. Outside it
+    every call runs git."""
     global _memo
     outer = _memo
     _memo = {} if outer is None else outer
@@ -608,6 +609,16 @@ def memoized():
         yield
     finally:
         _memo = outer
+
+
+def cached(key, compute):
+    """`compute()` once per `key` inside `memoized()` (one floor decision), so every check that asks the same
+    question reads one answer; outside it, every call computes. The one memo the floor's modules share."""
+    if _memo is None:
+        return compute()
+    if key not in _memo:
+        _memo[key] = compute()
+    return _memo[key]
 
 
 def _subcommand(args):

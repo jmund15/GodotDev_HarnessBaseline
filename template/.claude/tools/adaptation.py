@@ -71,7 +71,7 @@ DEFAULTS: dict = {
     "land_watch": "",
     # scripts/main_check.py: the workflow that proves the default branch after each push; empty means none.
     "main_check": "",
-    # hooks/_regenerable_clone.py: ignored build outputs a worktree delete may discard (fnmatch; a directory covers its contents).
+    # hooks/_delete_rule.py: ignored build outputs a worktree delete may discard (fnmatch; a directory covers its contents).
     "regenerable_ignored": [],
     # hooks/_wide_runs.py, hooks/wide_test_guard.py, tools/guard_text.py, tools/reach_run.py, scripts/main_check.py.
     # The shared default holds the harness slice row; a project's table replaces it whole, so it restates its own rows.

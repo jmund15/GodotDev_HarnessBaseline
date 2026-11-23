@@ -132,7 +132,7 @@ class OwnDiscard(unittest.TestCase):
         for verb in ('checkout --', 'restore'):
             self.assertEqual(0, self.run_hook(f'W=.claude/worktrees/mine; git -C $W {verb} .gitignore', rows))
         # Every iteration counts, including after the preceding submodule update.
-        from _regenerable_clone import _unrolled_loops, _first_visible_add
+        from _own_worktree import _unrolled_loops, _first_visible_add
         command = rows[0]['message']['content'][0]['input']['command']
         paths = _first_visible_add(_unrolled_loops(command) or '', str(self.root))
         self.assertEqual({wt, self.root / '.claude/worktrees/mine2'}, set(paths))
@@ -140,7 +140,7 @@ class OwnDiscard(unittest.TestCase):
 
     def test_loop_with_echo_between_adds_counts_every_iteration(self):
         # In an unrolled loop an `&& echo` after an add still proves every iteration; in a straight chain only the first add is proven.
-        from _regenerable_clone import _unrolled_loops, _first_visible_add
+        from _own_worktree import _unrolled_loops, _first_visible_add
         wt = self.root / '.claude/worktrees'
         command = (f'cd "{self.root.as_posix()}"; for n in mine mine2; do '
                    'git worktree add -q -b fx-$n .claude/worktrees/$n HEAD && echo ok-$n; done; git worktree list')
