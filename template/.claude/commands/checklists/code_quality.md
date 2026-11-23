@@ -34,7 +34,7 @@ Review every changed file against each item.
 - [ ] **Data clump**: Fields that change together and always travel as a group — a caller cannot pass one without the others, so extract a type
 - [ ] **Shotgun surgery**: One logical change forced scattered edits across many files — the concern has no owning home
 - [ ] **Divergent change**: One file changed in this diff for two unrelated reasons — split so each module changes for one reason
-- [ ] **Speculative generality**: Abstraction, parameter, or hook added for a need neither the plan nor a user-stated evolution direction names (CLAUDE.coding.md *Modular when direction is known* — a *stated* direction is not speculative)
+- [ ] **Speculative generality**: Abstraction, parameter, or hook added for a need neither the plan nor a user-stated evolution direction names (`CLAUDE.core.md` §Core Principles: build for evolutions the owner names — a *stated* direction is not speculative)
 - [ ] **Message chain**: `a.B().C().D()` navigation coupling the caller to structure beyond its direct collaborator — hide the walk behind one method
 - [ ] **Middle man**: A type or method that mostly forwards to one collaborator — deleting it would scatter nothing (`architecture_philosophy` §The Deletion Test)
 - [ ] **Switch-on-type**: A new case would force edits at every `switch`/`if`-cascade on the same type or enum discriminator — use polymorphism or one shared map, unless the set is provably closed
