@@ -49,7 +49,7 @@ for path, row in sorted(rows.items()):
 python3 <shared repo>/template/.claude/tools/harness_sync.py pull <ref> --source <shared repo>
 ```
 
-Dry run on a copy of PushinPotions' lock-listed files (its checkout of 2026-11-23): the recipe removes 1,199 files, and `plan_pull` then plans 406 writes, 0 deletes and 7 refusals, each a `local` lock row at a path v2 now ships (`local_rewires.md` §Pull refusals). The removal is recoverable from git (the cutover commit is one revert, Q6 O1). A path S9 places local that the lock marks `tracked` is in the lists below; PushinPotions' `skills/project_subsystems/adaptation.json`, `CLAUDE.md` and `settings.json` are `local` or `composed` rows and are never touched.
+Dry run on a copy of PushinPotions' lock-listed files (its checkout of 2026-11-23): the recipe removes 1,199 files, and `plan_pull` then plans 406 writes, 0 deletes and 7 refusals, each a `local` lock row at a path v2 now ships. PushinPotions' tree also holds six agy files in no lock row, so its real pull refuses 13; S9 deletes all 13 first (`local_rewires.md` §Pull refusals). The removal is recoverable from git (the cutover commit is one revert, Q6 O1). A path S9 places local that the lock marks `tracked` is in the lists below; PushinPotions' `skills/project_subsystems/adaptation.json`, `CLAUDE.md` and `settings.json` are `local` or `composed` rows and are never touched.
 
 ## True deletes, by the commit that deleted them
 

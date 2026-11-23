@@ -44,19 +44,35 @@ The callers: `scripts/TwinCheckout.ps1:37` and the toolchain reference that hold
 
 ### Pull refusals
 
-Seven `local` lock rows sit at a path v2 now ships, so `pull` refuses them by name (a stray is never overwritten). S9 resolves each before the pull: delete the local copy so v2's text stands, or push its content upstream first.
+`pull` refuses 13 files by name. Each sits at a path v2 ships, holds different bytes, and is left by the removal recipe: seven are `local` lock rows, and six (the agy files) are in no lock row, so the dry run on lock-listed files in `delete_list.md` §First pull did not see them. The set is every path v2 ships that PushinPotions' `origin/main` (`d9f2cbe1a`) holds with other bytes, less the `tracked` and `forked` lock rows the recipe removes.
+
+S9 deletes all 13 before the pull, so v2's copy stands. Each was settled from both copies and PushinPotions' history since the fork. None needed a port: v2 already carries what each PushinPotions change does, or the change is v1 machinery v2 removed. None is PushinPotions-only, so `delete_list.md` gains no local row.
+
+| File (under `.claude/`) | Evidence |
+|---|---|
+| `hooks/agy_hook_bridge.py` | PushinPotions' runs every `settings.json` hook of the event, and its recent commits (`a733e027f`, `a5fadfab5`, `298458e6b`) add PostToolUse, SessionStart, Stop and amendment delivery to those hooks. v2 has no shared `settings.json`, so its bridge runs the floor's one entry on `run_command` (`b7f35fc`; plan V7). The agy seat is read-only (`9a21083`), so no edit-side hook has a call to act on. |
+| `tests/test_agy_hook_bridge.py` | Proves that settings-driven chain. v2's proves the floor denies a destructive call, allows an ordinary one, denies when the floor is missing, and runs as agy spawns it. |
+| `tools/agy_seat.py` | PushinPotions' file is byte-equal to the copy v2 took (`6d98297`, from PushinPotions `60fc0fe9`). v2's adds `fa548be` (a transcript path is judged in the form it was written, on any host) and `e8f92fd`. |
+| `tests/test_agy_seat.py` | The same equality; v2's adds the `fa548be` case and pytest collection. |
+| `tools/agy_workspace.py` | v2's equals PushinPotions' minus the PostToolUse, PreInvocation, SessionStart and Stop registrations (`3fedcff`: the bridge answers `{}` to them) and the `CLAUDE.coding.md` and `CLAUDE.godot.md` layers (plan T2 folds them into the core and `CLAUDE.md`). The memory-index rule (`7d3e77291`) is in both. |
+| `tests/test_agy_workspace.py` | v2's holds each PushinPotions case except the PostToolUse one, which a case proving PreToolUse is the only registered event replaces. |
+| `skills/architecture_brainstorm/reference/doc_and_review.md` | PushinPotions' copy (`local`, last edited 2026-11-19) is the detail-layer rewrite whose siblings `forked_reconcile.md` rows 35 and 36 settled for A4's version. It cites `execution_depth.md` and `/design_drive`, which v2 deleted. v2's `SKILL.md` cites the section names v2's file has. Its one addition, the Step 7 architecture quality audit, restates `architecture_philosophy` §Extension shapes and §Authored data is an API, `plan_file_format.md`'s Families and Authored surfaces sections, and the `code_quality.md` rows for the dual-concern knob, the orthogonal-axis rung and the re-authored value. |
+| `skills/change_control/SKILL.md` | PushinPotions' copy (`local`, project layer) holds its gate mechanics, which `carried_dropped.md` rules PushinPotions-local. Its three recent commits (`54773b267`, `14acceee6`, `2fc0521ab`) are the M1 unwire, the bench leaving, and census routing; v2's cadence file already states the bench-CI red clause. The mechanics have owners in PushinPotions: `commands/regression_gate.md` and its reference (silent-skip `INVALID`, REUSE, `-RetryOnly`), the `scripts/regression_gate.ps1` header (baseline, stamp trust), and the `tres_nullstrip_guard.py` docstring (the null-strip rationale). See the next list for what S9 moves. |
+| `tests/test_prompt_dispatch.py` | PushinPotions' 806 lines prove the v1 dispatcher: a timing record, per-member budgets, threaded capture, and a chain that `54773b267` cut to three members, one of them `sidecar_watch_rearm` (deleted). v2's `_chain` (`fc7d937`) runs members in order behind one fault boundary, and its proof covers order, joining, exit codes, faults, import faults, stdin and the shared chain. |
+| `tests/test_runaway_scan_reaper.py` | v2's carries every non-registration case, the Windows-only skip PushinPotions added for the Linux lanes (`e88470cfd`) and the 3.5x spawn bound. The registration and dispatcher-surface cases left with v1's `settings.json` rows and dispatchers. |
+| `tests/test_setup_docs.py` | The same four cases; v2's is the pytest form. |
+| `tools/usage_report.py` | PushinPotions' 1,021 lines are the v1 report: a weekly-reset window, source classes, chain classes and a `turns` command, over `model_registry` prices. Plan §Capabilities keeps a trimmed report priced from `seats.json`, which v2's 115 lines are; `usage_reset` is deleted above for want of a reader. |
+| `tests/test_usage_report.py` | Proves that v1 report; v2's proves the `seats.json` pricing and the session-by-model rows. |
+
+Run the deletions from PushinPotions' checkout root, then the pull:
 
 ```
-.claude/skills/architecture_brainstorm/reference/doc_and_review.md
-.claude/skills/change_control/SKILL.md
-.claude/tests/test_prompt_dispatch.py
-.claude/tests/test_runaway_scan_reaper.py
-.claude/tests/test_setup_docs.py
-.claude/tests/test_usage_report.py
-.claude/tools/usage_report.py
+git rm -q .claude/hooks/agy_hook_bridge.py .claude/skills/architecture_brainstorm/reference/doc_and_review.md   .claude/skills/change_control/SKILL.md .claude/tests/test_agy_hook_bridge.py .claude/tests/test_agy_seat.py   .claude/tests/test_agy_workspace.py .claude/tests/test_prompt_dispatch.py .claude/tests/test_runaway_scan_reaper.py   .claude/tests/test_setup_docs.py .claude/tests/test_usage_report.py .claude/tools/agy_seat.py   .claude/tools/agy_workspace.py .claude/tools/usage_report.py
 ```
 
-Derivation: the dry run in `delete_list.md` §First pull, on a copy of PushinPotions' lock-listed files; the list is `plan_pull`'s conflicts.
+`change_control` leaves PushinPotions two edits. Its cadence table rows become `adaptation.json` `gate_cadence` rows, because the shared file reads them from there: `slice` is `.claude/scripts/run_test_suite.ps1` with the targeted `-Filter` of the changed item (after a failure, only the failed tests), plus `FullyQualifiedName~Tests.Logic.Lint` after any `.cs` change; `close` is `.claude/scripts/verify.ps1 -Scope <the drive's domains>`. PushinPotions already has the `main_check` key the third row names. Its `gate_cadence` holds only an object-valued `main` row today, which the "keep only" row above removes.
+
+Derivation: the set of 13 is computed, not read from one pull. Compare each blob under `template/.claude/` with PushinPotions' blob at the same path, and drop a path whose lock row is `tracked` or `forked` and not in a `delete_list.md` local block.
 
 ## MaddManager
 
