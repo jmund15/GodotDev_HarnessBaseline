@@ -71,7 +71,7 @@ A proposal needs an identifier or context that ties the item to the change; a sh
 
 ## promote
 
-Match the argument against Future Scope's lines; on several matches ask, on none suggest `show all`. Remove the line, and insert at the top of its `## Active > ### <Domain>` a block whose title gains ` (promoted from Future Scope <today>)`, whose `Context:` is the line's parenthetical, and whose `Source:` is `promoted from Future Scope on <today>`; the `added` date stays. Remove a Future Scope domain heading or the whole callout when it empties, else update its `(N items)` count. Add the mirror line. Report `Promoted: <title> — now in Active under <Domain>.`
+Match the argument against Future Scope's lines; on several matches ask, on none suggest `show all`. A title already open in Active or Ledger asks first: the work may be logged twice. Remove the line, and insert at the top of its `## Active > ### <Domain>` a block whose title gains ` (promoted from Future Scope <today>)`, whose `Context:` is the line's parenthetical, and whose `Source:` is `promoted from Future Scope on <today>`; the `added` date stays. Remove a Future Scope domain heading or the whole callout when it empties, else update its `(N items)` count. Add the mirror line. Report `Promoted: <title> — now in Active under <Domain>.`
 
 ## unblock
 
