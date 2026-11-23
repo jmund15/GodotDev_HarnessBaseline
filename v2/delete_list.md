@@ -30,7 +30,7 @@ Base for every row: `v2` at `6f21a0d`. Class and reason per group; the S4 class 
 | `tools/session_digest.py`, `commands/session_digest.md`, `tools/usage_report.py`, `tools/guard_denials.py`, `commands/{commit_push,update_roadmap,harness_prune,overnight_review}.md`, `commands/reference/update_roadmap_*.md`, `commands/agents/redteam_agents.md`, `hooks/{unbounded_scan_guard,bash_backslash_fidelity,semantic_search_scope_guard}.py` | Q2: the plan keeps each by name |
 | `scripts/engine_src/common.js` | `scripts/schema_parity.js` builds the engines from it |
 | `tools/tree-sitter-c_sharp.{wasm,LICENSE,provenance.json}` | `semantic_search_idle_install.py` copies them to the home install |
-| `tools/reap.py`, `tests/test_reap*.py` | `kill_guard.py` calls `reap.process_table`; T1's stop tool replaces `reap.py` after B16 |
+| `tools/reap.py` | T1's small stop tool, rewritten in place by S5d; `kill_guard.py` calls `reap.process_table`. S5d deleted `tests/test_reap.py`, `test_reap_native_env.py` and `floor/test_floor_carried.py`: their kept cases are `floor/test_floor_reap.py`'s rows (`floor/test_floor_ported.md`) |
 
 ## Rows added by B16 to TB3's table
 
