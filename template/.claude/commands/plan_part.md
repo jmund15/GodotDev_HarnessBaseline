@@ -1,12 +1,12 @@
 ---
-description: Brief a plan-pending Part before drafting; /plan_check audits drafts
+description: Brief a plan-pending Part before drafting its plan; /review plan mode audits the draft
 ---
 
 # /plan_part
 
 Prepares an in-context briefing for the agent drafting a plan for a `plan-pending` Part. Loads the design-doc surface verbatim (API + Test Pin block, Integration touch points, Source-cell section), cross-references against current codebase state, and classifies any divergence as **macro** (→ kick to `arch-rework`) or **micro** (→ resolved during plan drafting).
 
-**Companion to `/plan_check`:** this command is *pre-draft* (briefs the agent before plan composition); `/plan_check` is *post-draft* (audits a written plan). Together they bracket the drafting step.
+**Companion to [`/review`](review.md) plan mode:** this command is *pre-draft* (briefs the agent before plan composition); `/review` plan mode is *post-draft* (audits a written plan). Together they bracket the drafting step.
 
 **Contract:** **read-only** — surfaces a structured briefing into the assistant message, which the drafting agent consumes as front-loaded context. Run it BEFORE drafting starts so a macro-drift kick-back costs no drafted plan. The briefing is **front-loaded context for the drafting workflow**, NOT a replacement for it — see `reference/plan_part_composition.md` §Workflow Composition. No file writes, no side effects.
 
@@ -18,9 +18,9 @@ User-typed when scoping to a `plan-pending` roadmap Part.
 
 **Timing — before drafting.** Run `/plan_part <part>` first, review the briefing, THEN proceed into the drafting workflow if the drift verdict is clean (or micro-only). Macro drift kicks back to `arch-rework` with no drafted plan wasted — the structural win. The briefing emits into the active session; drafting continues with the standard workflow (`reference/plan_part_composition.md` §Workflow Composition).
 
-Auto-trigger hooks should NOT fire this — it's an explicit user action that scopes the session.
+Auto-trigger hooks never fire this — it is an explicit user action, or [`/drive <part>`](drive.md)'s first step, that scopes the session.
 
-Required preconditions (HARD-STOP if any fail):
+Required preconditions (HARD-STOP if any fail), checked at Phase 1:
 - Named Part exists on the resolved roadmap.
 - Part State is `plan-pending`. Other States redirect:
 
@@ -36,10 +36,10 @@ Required preconditions (HARD-STOP if any fail):
 
 ## When to skip
 
-- **`/plan_check` already ran successfully on a drafted plan for this Part** — drift already surfaced inline at draft time.
+- **`/review` plan mode already ran on a drafted plan for this Part** — drift already surfaced at review time.
 - **User explicitly wants to redesign** — that's an `arch-rework` transition, not a plan session.
 
-Otherwise the Part's triage decides whether grounding is admitted (`_brainstorm_shared/execution_depth.md` §Admission table).
+Otherwise `/explore` grounding runs when a load-bearing fact is unverified, or one search cannot enumerate a changed contract's consumers.
 
 ---
 
@@ -57,7 +57,7 @@ Otherwise the Part's triage decides whether grounding is admitted (`_brainstorm_
 
 Five phases, run in order. Before skipping or softening any phase, read [`reference/plan_part_composition.md`](reference/plan_part_composition.md) §Anti-patterns.
 
-**Warm chain.** When the `/design_drive` session that recorded the grounding base runs this Part, Phase 3 checks only the delta. Read the base from that drive's task record: `task_record.py show <drive task>`, the decision whose text starts `design-lock base`. List the changed files, working tree included: `git diff --name-only --no-renames <base>` plus `git ls-files --others --exclude-standard`. Phase 2 still loads the Source-cell sections verbatim. Phase 3 verifies only the claims that name a changed file or a type declared in one. Phase 4 rules on that subset, and a subset with no changed file is clean. Any other session, or a chain with no recorded base, runs every phase in full.
+**Warm chain.** When the initiative's state file (`.claude/work/<slug>.md`) records a **Base** sha from `/plan`'s grounding, Phase 3 checks only the delta. Read the base from that line. List the changed files, working tree included: `git diff --name-only --no-renames <base>` plus `git ls-files --others --exclude-standard`. Phase 2 still loads the Source-cell sections verbatim. Phase 3 verifies only the claims that name a changed file or a type declared in one. Phase 4 rules on that subset, and a subset with no changed file is clean. A state file with no recorded base runs every phase in full.
 
 ### Phase 1 — Resolve the Part
 
@@ -69,7 +69,7 @@ Five phases, run in order. Before skipping or softening any phase, read [`refere
 
 ### Phase 2 — Load design surface verbatim
 
-**Single bundled call** (per CLAUDE.md §9 — synthesis-shaped multi-file read):
+**Bundled read.** Bundle the sources through one `read_files` call when the enumerated input fits; split by source when it does not, and verify one complete result per input:
 
 ```
 mcp__ai-worker__read_files(
@@ -93,7 +93,7 @@ mcp__ai-worker__read_files(
 
 ### Phase 3 — Cross-reference against codebase
 
-For every concrete claim in the loaded design surface, verify against current code. **Use the right tool per claim shape** (per CLAUDE.md §9):
+For every concrete claim in the loaded design surface, verify against current code. **Use the right tool per claim shape:**
 
 | Design claim | Verification |
 |---|---|
@@ -115,7 +115,7 @@ For every concrete claim in the loaded design surface, verify against current co
 | New-file path collides with non-trivial existing content (parallel work happened) | Test fixture base class was renamed but extension surface is the same | Design-doc shorthand for a multi-step process the codebase formalizes via discrete API (e.g., "LoadAsync" → `RequestLoad` / `GetLoadStatus` / `CompleteLoad`) |
 | Named subsystem in Integration touch points was removed / merged into another | Adjacent file added/removed in a touch-point subsystem (additive context) | Design-pseudocode method names that the executor will translate to canonical API at write-time |
 | Base class became `sealed`, or `abstract` → concrete, or constructor reshape that invalidates the extension | New `BBDataSig` key exists adjacent to the planned one (additive) | |
-| Jmodot ↔ {{PROJECT_NAME}} boundary the design assumed was re-drawn | Comment / whitespace / formatting drift in linked design-doc section | |
+| A paired-repo boundary (`adaptation.json` `paired_repos`) the design assumed was re-drawn | Comment / whitespace / formatting drift in linked design-doc section | |
 | Source-cell wikilink anchor no longer resolves in the design doc | An extra subclass exists in the family beyond the design's enumeration | |
 
 **Rule of thumb (litmus when in doubt):**
@@ -124,7 +124,7 @@ For every concrete claim in the loaded design surface, verify against current co
 
 **Drift count discipline:** the briefing's `Drift: macro=N | micro=M` header counts ONLY drift items, not glossary notes. A briefing with 4 micro + 2 glossary reads as `macro=0 | micro=4`. Glossary notes are listed below the verification block under a `─── Design-Doc Glossary ───` section so the drafting agent has the translations without inflating the action count.
 
-**Scope-inflation advisory (distinct from drift).** While running the verification above, capture cheap size proxies for any named *modify* / *migrate* / *refactor* target — reuse the SAME `findReferences` / `documentSymbol` / `Glob` calls already issued; do NOT dispatch agents or widen the search (open-ended blast-radius discovery belongs to [`/explore`](explore.md), not this command). Two proxies: (a) `findReferences` count + distinct-file count for a type the Part migrates/refactors; (b) current LOC for a file the design treats as a light edit. When a proxy materially exceeds what the design's prose implies (e.g. a "migrate existing X" one-liner against a type with 20+ call sites across 6+ files), record a **scope signal**. This catches *post-authoring scope inflation* — a Part bounded at arch Step 5 that grew via later code drift — which neither arch Step 5 (too early) nor the plan's file-list gate (catches *unbounded*, not *bounded-but-large*) covers. The signal is **advisory, NOT drift**: it does not gate, does not kick to `arch-rework`, and is NOT counted in the `macro=N | micro=M` header. The proxy count is evidence for a split *recommendation* the user weighs — never a verdict (a 30-reference type may be a mechanical rename; a 3-reference one a deep rework). The authoritative bound check remains the plan's file-list bound gate (`/part_drive` valve (b)).
+**Scope-inflation advisory (distinct from drift).** While running the verification above, capture cheap size proxies for any named *modify* / *migrate* / *refactor* target — reuse the SAME `findReferences` / `documentSymbol` / `Glob` calls already issued; do NOT dispatch agents or widen the search (open-ended blast-radius discovery belongs to [`/explore`](explore.md), not this command). Two proxies: (a) `findReferences` count + distinct-file count for a type the Part migrates/refactors; (b) current LOC for a file the design treats as a light edit. When a proxy materially exceeds what the design's prose implies (e.g. a "migrate existing X" one-liner against a type with 20+ call sites across 6+ files), record a **scope signal**. This catches *post-authoring scope inflation* — a Part bounded at arch Step 5 that grew via later code drift — which neither arch Step 5 (too early) nor the plan's file-list gate (catches *unbounded*, not *bounded-but-large*) covers. The signal is **advisory, NOT drift**: it does not gate, does not kick to `arch-rework`, and is NOT counted in the `macro=N | micro=M` header. The proxy count is evidence for a split *recommendation* the user weighs — never a verdict (a 30-reference type may be a mechanical rename; a 3-reference one a deep rework). The authoritative bound check remains the plan's file-list bound (`plan_file_format.md` *Load-bearing facts*; `/drive` H2).
 
 ### Phase 4 — Drift verdict
 
@@ -201,19 +201,19 @@ Scope:        <clean | <N> advisory signal(s) — see Scope Signals below>
 - Micro drift findings above are yours to resolve during plan drafting.
   Macro drift would have already kicked back before this briefing emitted.
 - Plan file MUST start with header line: `**Roadmap:** <path> — Part **<ID>**`
-  (drives `/session_end` Phase 4.5 drift check; missing header = plan is invisible
-  to drift detection and Part transition will require manual `/update_roadmap`).
+  (/drive reads it to flip the Part at close; a missing header leaves the
+  flip to a manual `/update_roadmap`).
 
 ─── Cross-references ───
 - Design doc: <full path with anchor>
 - Roadmap Part row: <roadmap path>#parts (Part: <Part Name>)
-- Memory + Skills: agent runs CLAUDE.md Planning Phase Checklist before plan compose
+- Memory + Skills: the explore memory lens and the project's domain skills, before plan compose
 
 ─── Next Steps (Drafting Workflow) ───
 1. **Explore** — dispatch /explore for prior-art discovery on any NEW types the design
    introduces. Briefing's API + Test Pin block enumerates the new types — search for
    similar precedents (`*Config.cs`, factory defaults, static-seam patterns) across
-   {{PROJECT_NAME}} + Jmodot BEFORE proposing the new type. Cite found precedents in plan, or
+   the project and its paired repos BEFORE proposing the new type. Cite found precedents in plan, or
    override the design's new-type proposal if a precedent fits.
 2. **Validate** — validate any AskUserQuestion-resolved decisions against the codebase.
    Required when the question presented design alternatives (DI shape, wiring strategy,
@@ -225,7 +225,7 @@ Scope:        <clean | <N> advisory signal(s) — see Scope Signals below>
 ═══════════════════════════════════════════════════════════════
 ```
 
-After emitting, /plan_part is done. The drafting agent reads the briefing as front-loaded context, then continues with the **standard drafting workflow** (`/explore` for prior-art, a validation pass for tentative decisions, a review pass). The Planning Phase Checklist (Memory + Skill search per CLAUDE.md) runs alongside `/explore`. User reviews the composed plan; `/plan_check` optionally audits before code starts.
+After emitting, /plan_part is done. The drafting agent reads the briefing as front-loaded context, then continues with the **standard drafting workflow** (`/explore` for prior-art, a validation pass for tentative decisions, a review pass). Memory and domain-skill search runs inside `/explore`. `/review` plan mode audits the composed plan (`/plan` step 5) before the owner or `/drive` approves it.
 
 ---
 
@@ -233,9 +233,9 @@ After emitting, /plan_part is done. The drafting agent reads the briefing as fro
 
 - **Read-only.** No file writes. The briefing surfaces inline in the assistant message.
 - **Pre-draft by construction.** Run before plan drafting begins, so a macro-drift kick-back costs no drafted plan.
-- **No agents — SCOPED TO PHASES 1–4 ONLY.** /plan_part's own verification work is sequential read + LSP + grep (no `Task` dispatch; bounded, no parallelism benefit). This does NOT apply to `/explore` and the caller's validation pass downstream of the briefing — those ARE in scope and ARE required when tentative design decisions emerge (see `reference/plan_part_composition.md` §Workflow Composition).
+- **Phases 1–4** return a first-party, per-claim drift table; use the smallest method that verifies the claims and keeps their quotes. Delegation cannot turn an unverified claim into a verified one. `/explore` and the caller's validation pass downstream of the briefing are in scope, and required when tentative design decisions emerge (see `reference/plan_part_composition.md` §Workflow Composition).
 - **No worklog adds.** Drift findings route to arch-rework (macro) or the briefing (micro); they don't become worklog items.
-- **Cloud compatible.** LSP fallback to `Grep("class\\s+<Type>")` per CLAUDE.md §9 verified-unique-name carve-out when LSP unavailable.
+- **Cloud compatible.** LSP fallback to `Grep("class\\s+<Type>")` on a verified-unique name when LSP is unavailable.
 
 ---
 
@@ -243,10 +243,9 @@ After emitting, /plan_part is done. The drafting agent reads the briefing as fro
 
 - [`reference/plan_part_composition.md`](reference/plan_part_composition.md) — §Workflow Composition (read at the Phase 5 hand-off) and §Anti-patterns (read before skipping or softening any phase)
 
-- [`_brainstorm_shared/common.md §6`](../skills/_brainstorm_shared/common.md) — roadmap.md schema (Parts table, State vocab §6.3, Source-cell anchor rules §6.2)
+- [`skills/_brainstorm_shared/roadmap_schema.md` §6](../skills/_brainstorm_shared/roadmap_schema.md) — roadmap.md schema (Parts table, State vocab §6.3, Source-cell anchor rules §6.2)
 - [`architecture_brainstorm/reference/part_authoring.md`](../skills/architecture_brainstorm/reference/part_authoring.md) — Step 5 readiness gate, API + Test Pin sub-procedure; [`doc_and_review.md`](../skills/architecture_brainstorm/reference/doc_and_review.md) — *Plan-production handoff requirement* (this command operationalizes that prose)
 - [`/update_roadmap`](update_roadmap.md) — companion executor; invoked via `/update_roadmap transition <part> to arch-rework` when macro drift fires
-- [`/plan_check`](plan_check.md) — post-draft audit (Memory gotchas + abstraction discovery); composes with this command (pre-draft setup)
+- [`/review`](review.md) plan mode — post-draft audit; composes with this command (pre-draft setup)
 - [`project_subsystems` skill](../skills/project_subsystems/SKILL.md) — Integration touch points cross-reference (≤2 subsystem boundaries per arch Step 5)
-- CLAUDE.md *Planning Phase Checklist* — the drafting agent runs this after consuming the briefing
-- CLAUDE.md §9 *Tool Routing — Pre-Call Litmus* — Phase 2 bundled `read_files`, Phase 3 per-claim tool selection
+- [`/plan`](plan.md) — the drafting agent writes the plan and its state file per its Plan step after consuming the briefing

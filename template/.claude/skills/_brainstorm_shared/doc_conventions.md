@@ -11,7 +11,7 @@
 
 | Topic shape | Destination |
 |---|---|
-| {{PROJECT_NAME}}-game-specific (content rules, project mechanics, game design) | `DevProjects/{{PROJECT_NAME}}/Claude/BrainstormingDesigns/YYYY-MM-DD-<topic>/` |
+| Project-specific (content rules, project mechanics, game design) | `<project vault folder>/Claude/BrainstormingDesigns/YYYY-MM-DD-<topic>/`, where the project's `CLAUDE.md` §Obsidian names the folder |
 | Jmodot-framework-general (framework design, reusable architecture, cross-game patterns) | `DevProjects/Jmodot/Claude/BrainstormingDesigns/YYYY-MM-DD-<topic>/` |
 
 **Folder-per-topic convention (always-folder default):** Every brainstorm topic is a folder. Folder name: `YYYY-MM-DD-<kebab-case-topic>/` (date = topic inception). Promoting a flat file later costs more than starting with a folder.
@@ -83,4 +83,4 @@ Criterion 3 is the **submap-vs-sibling distinguisher**, NOT a gate the submap ou
 - ❌ **Over-spawning subfolders for sub-component forks** that fail criterion 1 (just an extension paragraph). Those belong as same-folder siblings.
 - ❌ **Promoting a submap to sibling-folder because the design doc feels reusable.** Reusability requires concrete *anticipated consumers* outside the parent topic, not just doc generality.
 
-**Important — child roadmap.md ownership:** for *deeper-scope* outcomes, `/update_roadmap` creates the child subfolder's `roadmap.md` on its second invocation; [`update_roadmap.md`](../../commands/update_roadmap.md) owns the single-executor rule.
+**Important — child roadmap.md ownership:** for *deeper-scope* outcomes, `/update_roadmap` creates the child subfolder's `roadmap.md` on its second invocation ([`doc_and_review.md`](../architecture_brainstorm/reference/doc_and_review.md) Step 8); [`update_roadmap.md`](../../commands/update_roadmap.md) owns the single-executor rule.

@@ -32,7 +32,7 @@ last_revised: YYYY-MM-DD
 | `subsystem` | A single named subsystem (per `project_subsystems` registry) — e.g., persistence or input routing | Impl-unit Parts (one `plan-pending` Part ≈ one plan-and-build session) |
 | `feature` | A narrower scope inside a subsystem — e.g., one parser mode or one transition family | Impl-unit Parts sized by independently buildable behaviors and cohesion; no Part-count target |
 | `whole-game` | Spans more than one subsystem — cross-system overhaul or retheme | Subsystem-shaped Parts per §6.9 (each row links a child roadmap) |
-| `project-game` | `whole-game` scoped to the {{PROJECT_NAME}} game layer specifically, on a roadmap that sits in a tree also carrying framework (Jmodot) roadmaps | Subsystem-shaped Parts per §6.9 |
+| `project-game` | `whole-game` scoped to the project's own game layer specifically, on a roadmap that sits in a tree also carrying framework (Jmodot) roadmaps | Subsystem-shaped Parts per §6.9 |
 | `family-index` | An index over a family of sibling roadmaps rather than a scope of its own — rows route to members, they do not decompose work | One Part per family member, nearly all `submap-pending` |
 
 ### §6.2 Parts table
@@ -72,7 +72,7 @@ Single field, 11 values. Phase-position is encoded in the prefix; sub-state in t
 | `idea-rework` | Was further along, idea phase needs redo | `/idea_brainstorm` revisit |
 | `arch-pending` | Has idea, awaits arch brainstorm | `/architecture_brainstorm` |
 | `arch-rework` | Was further along, arch phase needs redo | `/architecture_brainstorm` revisit |
-| `plan-pending` | Has arch **that resolved the Part's decisions** (Step-5 readiness gate passed; named dependencies live or scheduled). A locked seam alone, or deps that exist nowhere, is `arch-pending` | `/part_drive` |
+| `plan-pending` | Has arch **that resolved the Part's decisions** (Step-5 readiness gate passed; named dependencies live or scheduled). A locked seam alone, or deps that exist nowhere, is `arch-pending` | `/drive <part>` |
 | `submap-pending` | Decomposition delegated to a sub-roadmap (this Part on parent ≡ N Parts on child) | sub-roadmap progresses → auto-promotes to `complete` when all child Parts complete |
 | `workshop-pending` | Awaits user decision (no agent action possible) | user, then re-route |
 | `prototype-pending` | Blocked on a prototype answer — `prototypes/<slug>/QUESTION.md` written, verdict needs a human playing the build (the prototype workflow). The sanctioned opener for a long-horizon topic whose core feel/mechanic is unvalidated: first Part, later Parts depend on it | user runs the prototype → answer banked in `decisions.md` `## Decided` → re-route (usually `arch-pending` / `plan-pending`) |
@@ -90,7 +90,7 @@ Single field, 11 values. Phase-position is encoded in the prefix; sub-state in t
 
 **`plan-rework` is intentionally absent.** If plan production discovers arch gaps, the Part kicks back to `arch-rework` — one phase back.
 
-**`plan-pending` is a design-completeness assertion, and downstream effort pins price it.** A locked seam mistaken for a designed implementer, named dependency types that exist nowhere (the Part cannot be executed as scoped), or already-shipped scope never flipped makes the state false. `/part_drive` sizes its session effort on the claim that no design ambiguity remains, so mislabeling a thin Part both under-resources its planning session and hides the arch gap that should have kicked back.
+**`plan-pending` is a design-completeness assertion, and downstream effort pins price it.** A locked seam mistaken for a designed implementer, named dependency types that exist nowhere (the Part cannot be executed as scoped), or already-shipped scope never flipped makes the state false. `/drive <part>` goes from plan to execution with no design-lock on the claim that no design ambiguity remains, so mislabeling a thin Part both under-resources its planning session and hides the arch gap that should have kicked back.
 
 ### §6.4 Embedded Mermaid diagram
 
@@ -131,7 +131,7 @@ Three sections rendered below the Mermaid by `/update_roadmap`. Each heading bel
 ```markdown
 ## Currently ready to execute
 Parts where State ∈ {idea-pending, arch-pending, plan-pending, idea-rework, arch-rework} AND every Dep has State=complete.
-- Foundation+Refactor — /part_drive (Pos 1, no deps)
+- Foundation+Refactor — /drive (Pos 1, no deps)
 
 ## Blocked / awaiting deps
 Parts where State ∈ {idea-pending, arch-pending, plan-pending, idea-rework, arch-rework} blocked by incomplete deps.

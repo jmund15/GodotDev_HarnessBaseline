@@ -22,7 +22,7 @@ The three brainstorming phases (`/idea_brainstorm` → `/architecture_brainstorm
 | **Zero-impl outcome** | Some arch designs produce no `plan-pending` Parts — the design IS the answer (a usage convention, naming standard, or pure architectural commitment). Valid and supported by the State vocab. |
 | **Workshop terminate** | `→ workshop` clusters / `workshop-pending` Parts pause the chain pending user decision. |
 
-**Plan production is owned by [`/part_drive`](../../commands/part_drive.md)** — `--plan-only` to an approval-ready plan, unflagged through to shipped code. The brainstorming surface describes the *handoff* (a `plan-pending` Part with bounded files-nameable scope), not their internals.
+**Plan production is owned by [`/plan`](../../commands/plan.md)**, and [`/drive`](../../commands/drive.md) plans and ships a `plan-pending` Part. The brainstorming surface describes the *handoff* (a `plan-pending` Part with bounded files-nameable scope), not their internals.
 
 **Per-skill diagrams.** Each brainstorm SKILL keeps a slim "you are here" ASCII diagram at its own §3 for orientation; the canonical cardinality + flow vocabulary lives here.
 

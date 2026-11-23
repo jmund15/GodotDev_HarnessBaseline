@@ -43,7 +43,7 @@ Don't author Parts whose shape depends on a `*-pending` sibling's output — tha
 
 When a single cross-cutting concern — a cleanup, a migration, a retirement of a dead/legacy surface — spans the surface of 2+ Parts, it MUST have **one named owner Part** (or an explicit purge-first → consume-after sequence via Deps). Never split it so that a slice is left unowned, especially not as a side-note on a Part framed as "mechanical." A downstream Part told its job is mechanical relocation/eviction will faithfully *propagate* an un-purged surface rather than remove it — multiplying the contamination across every target the mechanical Part writes to.
 
-- **Litmus:** *"If the owning Part is skipped or its plan_check doesn't fire, does a later 'mechanical' Part move/copy the un-resolved surface instead of deleting it?"* Yes → the concern is split with an unowned slice; assign one owner or sequence purge-first.
+- **Litmus:** *"If the owning Part is skipped or its plan review doesn't fire, does a later 'mechanical' Part move/copy the un-resolved surface instead of deleting it?"* Yes → the concern is split with an unowned slice; assign one owner or sequence purge-first.
 
 ## User-owned question (ask once per Part, BEFORE the 5-criterion gate runs)
 
@@ -91,7 +91,7 @@ Scan any run of sequential `plan-pending` Parts; **merge** adjacent ones matchin
 
 **Not in conflict with Compound-`+`:** that splits ONE Part bundling *unrelated* concerns; this merges SEPARATE Parts that are thin slices of the *same* concern, artificially layered. Discriminator: unrelated-bundle → split; thin-coupled-layer → merge.
 
-**Size-ceiling fallback:** if merging would breach criterion 5's ≤2-subsystem / half-day ceiling, keep the Parts split but **plan the cohesive cluster in one `/plan_part` session** rather than one `/part_drive` per thin Part — the planning overhead is the real cost, not the Part boundary. (Unit of *shipping* stays small; unit of *planning* becomes the cluster.)
+**Size-ceiling fallback:** if merging would breach criterion 5's ≤2-subsystem / half-day ceiling, keep the Parts split but **plan the cohesive cluster in one `/plan_part` session** rather than one `/drive` per thin Part — the planning overhead is the real cost, not the Part boundary. (Unit of *shipping* stays small; unit of *planning* becomes the cluster.)
 
 ## Integration touch points (required field for `plan-pending` Parts)
 

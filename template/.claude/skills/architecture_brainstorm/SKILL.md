@@ -6,7 +6,7 @@ description: >-
 
 # Architecture Brainstorm
 
-> **Scope:** between [`/idea_brainstorm`](../idea_brainstorm/SKILL.md) (*what could exist?*, produces the candidate pool) and plan production ([`/part_drive`](../../commands/part_drive.md), *how do we ship it?*). This skill answers *how should we build it?*. `/doc_full` is post-hoc, written after a system ships.
+> **Scope:** between [`/idea_brainstorm`](../idea_brainstorm/SKILL.md) (*what could exist?*, produces the candidate pool) and plan production ([`/plan`](../../commands/plan.md) and [`/drive`](../../commands/drive.md), *how do we ship it?*). This skill answers *how should we build it?*. `/doc_full` is post-hoc, written after a system ships.
 
 ## The Hard Gate
 
@@ -42,15 +42,13 @@ If you find yourself reaching for `Edit`, `Write`, or implementation-flavored sk
 - [ ] Task is not in the SKIP categories below.
 - [ ] Candidate ideas EXIST — either from `/idea_brainstorm` (read its idea-bank doc), from a mature domain with canonical patterns, or from the user's own framing. If not, route to `/idea_brainstorm` first.
 
-Whether this skill runs follows [`execution_depth.md`](../_brainstorm_shared/execution_depth.md) §Admission table, Design row.
-
-**Autonomous alternative — [`/design_drive`](../../commands/design_drive.md):** satisfies the [design contract](../_brainstorm_shared/design_contract.md) through its required artifact gates with free-form process and taste batched to one design-lock gate. Use this skill when the user's taste enters continuously.
+**Autonomous alternative — [`/plan`](../../commands/plan.md):** satisfies the [design contract](../_brainstorm_shared/design_contract.md) through its required artifact gates with free-form process and taste batched to one design-lock gate. Use this skill when the user's taste enters continuously.
 
 ---
 
 ## 2. When to Skip
 
-The skip cases follow `execution_depth.md` §Fields, Design litmus for settled.
+Skip when the design is settled: an approved design doc or plan (the owner's approval of a concrete design in the conversation counts), a known root cause, or one pattern the codebase already uses for this. A design with any open owner fork is not settled.
 
 **Other skip categories:**
 
@@ -64,12 +62,12 @@ The skip cases follow `execution_depth.md` §Fields, Design litmus for settled.
 ## 3. Three-Phase Composition
 
 ```
-/idea_brainstorm           /architecture_brainstorm        /part_drive + impl
+/idea_brainstorm           /architecture_brainstorm        /drive + impl     
 ─────────────────          ─────────────────────────        ──────────────────
 "What could exist?"        "How should we build it?"        "How do we ship?"
 
 • Scope-framing Socratic   • Architecture-narrowing         • Entry: /plan_part
-• Per-cluster diverge        Socratic                         <part> → /part_drive
+• Per-cluster diverge        Socratic                         <part> → /drive    
   → filter → hone          • 2–3 approaches with              (verbatim design
   → cluster → present        trade-offs                       surface + codebase
 • Idea-bank doc            • Commitment review                drift)
@@ -86,7 +84,7 @@ The skip cases follow `execution_depth.md` §Fields, Design litmus for settled.
 ```
 
 **Key invariants:**
-- Plan production is owned by [`/part_drive`](../../commands/part_drive.md). This skill describes the *handoff*, not its internals.
+- Plan production is owned by [`/plan`](../../commands/plan.md), and [`/drive <part>`](../../commands/drive.md) plans and ships a `plan-pending` Part. This skill describes the *handoff*, not its internals.
 - The user invokes the drive command (or chooses inline implementation). This skill does NOT start plan production for them.
 - A plan file should reference the design doc AND the corresponding Part on roadmap.md (e.g., *"Implements Part 'Foundation+Refactor' per `BrainstormingDesigns/YYYY-MM-DD-stamina-system/arch.md#session-1`"*).
 - Plan production's first action must be **bounded file enumeration** — if files can't be enumerated, drafting HARD-STOPS (per [`doc_and_review.md`](reference/doc_and_review.md) §Plan-production handoff requirement).
@@ -154,9 +152,9 @@ See [`common.md §5.1`](../_brainstorm_shared/common.md) — three placements (s
 
 This step **applies the discipline documented in [`architecture_philosophy`](../architecture_philosophy/SKILL.md) — *Coupling & Discovery* sections (*Interface Usage*, and the engine skill's retrieval rules where one applies)**. Don't restate the rules; surface them as a step in the design process:
 
-- **First move:** run `mcp__plugin_semantic-search_semantic-search__search` against the relevant abstraction. Works for known type names (`"BBDataSig"`, `"IIdentifiable"`, `"MovementProcessor3D"` — returns the class declaration in one shot) AND for fuzzy domain queries (`"combination resolution"`, `"effect lifecycle"`, `"modifier composition"`). Especially useful for abstractions whose names don't follow `abstract*` / `I*` conventions. See CLAUDE.md §9.
+- **First move:** run `mcp__plugin_semantic-search_semantic-search__search` against the relevant abstraction. Works for known type names (`"BBDataSig"`, `"IIdentifiable"`, `"MovementProcessor3D"` — returns the class declaration in one shot) AND for fuzzy domain queries (`"combination resolution"`, `"effect lifecycle"`, `"modifier composition"`). Especially useful for abstractions whose names don't follow `abstract*` / `I*` conventions. 
 - **Then:** LSP `findReferences` on the candidate base type to enumerate all subclasses / implementers (semantic-search returns the declaration; LSP returns every usage — the latter is what reveals the 2+ subclass family).
-- **Backup:** Grep for `abstract class` and `interface I` patterns in `{{PROJECT_NAME}}/` and `Jmodot/` if semantic-search misses something.
+- **Backup:** Grep for `abstract class` and `interface I` patterns in the project's source roots and its paired repos (`adaptation.json` `paired_repos`) if semantic-search misses something.
 - Identify which existing hierarchies a new design could extend instead of inventing parallel abstractions.
 
 **Cross-reference:** `feedback_inspect_existing_abstractions_first.md` — *"if a base + 2+ subclasses exist, extend it. Inventing a parallel abstraction is usually wrong."*
@@ -263,5 +261,5 @@ Links already given at their step are not repeated here.
 - `obsidian_conventions` skill — wikilink & heading-anchor discipline, MCP connectivity, vault write locations
 - `feedback_recommended_fix_means_implement.md` — post-approval inline-implementation path
 - `archive/feedback_session_start_hook_does_not_override_skill_procedure.md` — Step 2 / Step 5 procedural-gate discipline
-- CLAUDE.md: Planning Phase Checklist (this skill sits upstream of it; output feeds INTO it), Obsidian section (Read/Write constraints, tiebreaker, MCP-offline policy), Worklog section (small deferrals vs tracked items in TODO/)
-- Plan production is owned by [`/part_drive`](../../commands/part_drive.md) — `--plan-only` to an approval-ready plan, unflagged through to shipped code. This skill describes the **handoff**, not its internals.
+- CLAUDE.md: Obsidian section (Read/Write constraints, tiebreaker, MCP-offline policy), Worklog section (small deferrals vs tracked items in TODO/)
+- Plan production is owned by [`/plan`](../../commands/plan.md); [`/drive <part>`](../../commands/drive.md) plans and ships a `plan-pending` Part. This skill describes the **handoff**, not its internals.

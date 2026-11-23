@@ -28,7 +28,6 @@
 
 ## Sibling files in this folder (separate owners, not part of the §-numbering)
 
-- [`design_contract.md`](design_contract.md) — invariants for autonomous design work; consumed by `/design_drive`.
+- [`design_contract.md`](design_contract.md) — invariants for autonomous design work; consumed by `/plan`.
 - [`plan_file_format.md`](plan_file_format.md) — what an approval-ready plan file must read like.
 - [`appetite_invariant.md`](appetite_invariant.md) — the design-hole vs taste-fork classification rule.
-- [`execution_depth.md`](execution_depth.md) — the work triage owner for the drive commands: fields, admission table, re-triage.
