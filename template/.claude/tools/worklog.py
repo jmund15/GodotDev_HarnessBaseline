@@ -8,7 +8,7 @@
   python3 .claude/tools/worklog.py complete "<title or search>" [--ref REF] [--date YYYY-MM-DD] [--dry-run]
   python3 .claude/tools/worklog.py complete --from FILE.jsonl [--dry-run]
 
-`add` runs the write steps of commands/reference/worklog_add.md §ADD: de-dup, place the BLOCK at
+`add` runs the write steps of commands/worklog.md's add form: de-dup, place the BLOCK at
 the top of its `## Active`/`## Ledger` domain (a missing domain heading is created at the end of
 that supersection), place an FSLINE inside `## Future Scope` for a `future` item, add a scope-4
 plan doc to `## Linked Docs` on the Active route, bump `last_updated:`, and patch the mirror.
@@ -16,20 +16,19 @@ Formats are the ones commands/reference/worklog_formats.md defines. Each item `a
 runtime session (`CLAUDE_CODE_SESSION_ID`): a `Session:` sub-bullet on a BLOCK, a ` · session <id>` tag on
 an FSLINE, and no BLOCK line when `--source` already is that session. `session_additions` reads them back. Class and domain are validated
 against the canonical tables in skills/worklog_reference/SKILL.md, read at run time (`--skill`
-names a different copy); a missing, unreadable or table-less owner is a refusal that names it, never
+names a different copy), plus the project's own domains from `adaptation.json` `worklog_domains`; a missing, unreadable or table-less owner is a refusal that names it, never
 an empty list. A domain is accepted in the table's long or short form, and the long form is what a
 section heading carries. Scope is 1-4; a scope-4 item needs a plan doc, which Future Scope does not
 carry. A duplicate (case-insensitive title anywhere, or a same-domain near-duplicate by token
 overlap) writes nothing and exits 2; `--distinct` waives the near-duplicate check only.
 
-The vault TODO directory is `<VAULT_ROOT>/DevProjects/<PROJECT_NAME>/Claude/TODO` from
-.claude/baseline.lock.json's substitutions, the same owner hooks/overnight_ask_guard.py reads; a
-lock without them is a refusal that names it. `--worklog`/`--archive`/`--mirror`/`--history`
+The vault TODO directory is `<vault_root>/DevProjects/<project_name>/Claude/TODO` from
+`adaptation.json`; an unset key is a refusal that names it. `--worklog`/`--archive`/`--mirror`
 override every path.
 
-`complete` runs steps 1-7 and 9 of commands/reference/worklog_complete.md: the BLOCK leaves
+`complete` moves the item as commands/worklog.md's complete form says: the BLOCK leaves
 Worklog.md, an XLINE joins Worklog-Archive.md under its domain, both last_updated lines bump,
-the mirror line leaves .claude/worklog-titles.md, and a matching tackle event gets its completion.
+and the mirror line leaves .claude/worklog-titles.md.
 
 Matching: an exact title wins; otherwise a case-insensitive substring over open `- [ ]` items in
 `## Active` and `## Ledger`. Zero or several matches write nothing, list the candidates with line
@@ -48,13 +47,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / ".claude" / "hooks"))
+sys.path.insert(0, str(REPO / ".claude" / "tools"))
 from _hook_state import replace_path  # noqa: E402
-LOCK = Path(".claude/baseline.lock.json")
+import adaptation  # noqa: E402
+CLAUDE = REPO / ".claude"
 SKILL = Path(".claude/skills/worklog_reference/SKILL.md")
 WORKLOG_NAME = "Worklog.md"
 ARCHIVE_NAME = "Worklog-Archive.md"
 MIRROR = Path(".claude/worklog-titles.md")
-HISTORY = Path(".claude/worklog-tackle-history.jsonl")
 
 # worklog_formats.md: BLOCK header, XLINE, archive head.
 ITEM = re.compile(r"^- \[ \] \*\*(.*?)\*\* — `([^`]+)` · scope `([^`]+)` · added (\d{4}-\d{2}-\d{2})\s*$")
@@ -80,9 +80,6 @@ LAST_UPDATED = re.compile(r"^last_updated: \d{4}-\d{2}-\d{2}$")
 LAST_SYNCED = re.compile(r"^Last synced: \d{4}-\d{2}-\d{2}$")
 MIRROR_SUFFIX = re.compile(r"(?:\s+\[(?:after: [^\]]*|quick-win)\])+$")
 
-# A literal token here would be expanded by a consumer's install (baseline push refuses it);
-# assembled from parts, as hooks/overnight_ask_guard.py does.
-TOKEN = "{" + "{%s}" + "}"
 CLASS_SECTION = "## Classification"
 DOMAIN_SECTION = "## Canonical domain list"
 DOMAIN_TABLE_HEADER = "Long form (Active section header)"
@@ -138,8 +135,8 @@ def table_rows(text, heading):
     return [cells(line) for line in section_lines(text, heading) if line.lstrip().startswith("|")]
 
 
-def read_canonical(path):
-    """(classes, domains) from `path`'s canonical tables; a domain is its (long, short) row.
+def read_canonical(path, project_domains=()):
+    """(classes, domains) from `path`'s canonical tables, then `project_domains`; a domain is its (long, short) row.
 
     Raises ValueError naming the file when it is missing, unreadable, or carries no rows, so a
     caller never validates against an empty list."""
@@ -163,7 +160,7 @@ def read_canonical(path):
         raise ValueError("%s: no class rows under %r" % (path, CLASS_SECTION))
     if not domains:
         raise ValueError("%s: no domain rows under %r" % (path, DOMAIN_SECTION))
-    return classes, tuple(domains)
+    return classes, tuple(domains) + tuple(project_domains)
 
 
 def resolve_domain(domains, value):
@@ -341,30 +338,6 @@ def mirror_plan(text, item):
     bump_count(lines, item.tier, -1)
     bump(lines, LAST_SYNCED, "Last synced: " + date.today().isoformat())
     return "\n".join(lines), removed
-
-
-def history_append(text, title, day):
-    if text is None:
-        return None
-    state = None
-    for raw in text.split("\n"):
-        if not raw.strip():
-            continue
-        try:
-            row = json.loads(raw)
-        except ValueError:
-            continue
-        if row.get("title") != title:
-            continue
-        if row.get("event") == "tackle":
-            state = "tackle"
-        elif row.get("event") == "completion":
-            state = "completion"
-    if state != "tackle":
-        return None
-    row = json.dumps({"event": "completion", "date": day, "title": title}, ensure_ascii=False)
-    prefix = text if not text or text.endswith("\n") else text + "\n"
-    return prefix + row + "\n"
 
 
 def find_future(lines):
@@ -690,7 +663,7 @@ def fields_from_row(row, classes, domains):
 
 
 def add_one(f, paths, distinct, dry_run):
-    worklog_path, _, mirror_path, _ = paths
+    worklog_path, _, mirror_path = paths
     text = read_text(worklog_path)
     items = find_items(text.split("\n")) + find_future(text.split("\n"))
     existing, kind = duplicate_of(items, f["title"], f["domain"], distinct)
@@ -738,7 +711,7 @@ def print_plan(lines, start, end, xline, section, mirror_line):
 
 def complete_one(args, query, ref, paths):
     """(status, label); prints the candidates, the miss or the dry-run plan."""
-    worklog_path, archive_path, mirror_path, history_path = paths
+    worklog_path, archive_path, mirror_path = paths
     text = read_text(worklog_path)
     lines = text.split("\n")
     item, candidates = pick(find_items(lines), query)
@@ -785,36 +758,31 @@ def complete_one(args, query, ref, paths):
     if new_mirror is not None:
         write_atomic(mirror_path, new_mirror)
 
-    if Path(history_path).exists():
-        history_text = read_text(history_path)
-        new_history = history_append(history_text, item.title, day)
-        if new_history is not None:
-            write_atomic(history_path, new_history)
-
     return "completed", item.title
 
 
-def vault_todo(root=None):
-    """`<VAULT_ROOT>/DevProjects/<PROJECT_NAME>/Claude/TODO` from the lock's substitutions, the owner
-    hooks/overnight_ask_guard.py reads; raises ValueError naming the lock when it holds neither."""
-    lock = Path(root or REPO) / LOCK
-    try:
-        subs = json.loads(read_text(lock))["substitutions"]
-        vault, project = subs[TOKEN % "VAULT_ROOT"], subs[TOKEN % "PROJECT_NAME"]
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        raise ValueError("%s has no readable VAULT_ROOT and PROJECT_NAME substitutions (%r)"
-                         % (lock, exc))
+def vault_todo(claude=CLAUDE):
+    """`<vault_root>/DevProjects/<project_name>/Claude/TODO` from `adaptation.json`; raises ValueError naming
+    the file when either key is unset."""
+    vault, project = (adaptation.get(claude, key) for key in ("vault_root", "project_name"))
+    if not (vault and project):
+        raise ValueError("%s sets no vault_root and project_name"
+                         % adaptation.adaptation_path(claude))
     return Path(vault) / "DevProjects" / project / "Claude" / "TODO"
 
 
+def project_domains(claude=CLAUDE):
+    """The project's own (long, short) domain pairs, `adaptation.json` `worklog_domains`."""
+    return tuple((long, short) for long, short in adaptation.get(claude, "worklog_domains"))
+
+
 def resolve_paths(args):
-    if args.worklog and args.archive and args.mirror and args.history:
-        return Path(args.worklog), Path(args.archive), Path(args.mirror), Path(args.history)
+    if args.worklog and args.archive and args.mirror:
+        return Path(args.worklog), Path(args.archive), Path(args.mirror)
     todo = vault_todo()
     return (Path(args.worklog) if args.worklog else todo / WORKLOG_NAME,
             Path(args.archive) if args.archive else todo / ARCHIVE_NAME,
-            Path(args.mirror) if args.mirror else REPO / MIRROR,
-            Path(args.history) if args.history else REPO / HISTORY)
+            Path(args.mirror) if args.mirror else REPO / MIRROR)
 
 
 def iso_day(value):
@@ -827,7 +795,7 @@ def iso_day(value):
 def add_paths(args):
     """apply an `add` invocation; returns the exit code."""
     try:
-        classes, domains = read_canonical(Path(args.skill) if args.skill else REPO / SKILL)
+        classes, domains = read_canonical(Path(args.skill) if args.skill else REPO / SKILL, project_domains())
         paths = resolve_paths(args)
     except ValueError as exc:
         print("invalid: %s" % exc, file=sys.stderr)
@@ -884,7 +852,6 @@ def main(argv=None):
     add.add_argument("--worklog")
     add.add_argument("--archive")
     add.add_argument("--mirror")
-    add.add_argument("--history")
 
     comp = sub.add_parser("complete", help="move an item from Worklog.md to Worklog-Archive.md")
     comp.add_argument("search", nargs="?", help="title or search text")
@@ -895,7 +862,6 @@ def main(argv=None):
     comp.add_argument("--worklog")
     comp.add_argument("--archive")
     comp.add_argument("--mirror")
-    comp.add_argument("--history")
     args = parser.parse_args(argv)
 
     if args.command == "add":
