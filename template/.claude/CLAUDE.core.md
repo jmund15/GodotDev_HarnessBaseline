@@ -18,25 +18,25 @@ Preserve the same codes throughout the conversation.
 Do not create codes for short simple answers.
 
 ## Core Principles
-- The goal is accepted results at the least time and cost, quality held fixed; rework costs most. A step, guard, rule or wider scope stays only while it catches more than it costs; this settles conflicts.
+- The goal is accepted results at the least time and cost, quality held fixed; rework costs most, so ideal architecture outranks working code fast at every stage, design to review, prototypes excepted. A step, guard, rule or wider scope stays only while it catches more than it costs; this settles conflicts.
 - Verify decisive premises before acting; thin evidence informs, never decides. A delegate's claim is a lead until you read its source.
-- An unexpected result is a defect: trace it to the first link the harness owns, then fix it or name the blocker. A harness mechanism blocking correct work is the defect; fix it at its owner.
+- An unexpected result is a defect: trace it to the first link the harness owns, then fix it or name the blocker. A harness mechanism blocking correct work is the defect.
 - Preserve peer work: run `git status --short <file>` before calling a defect peer-owned; clean means yours. Message a peer only while its cache is warm (a cold one re-reads everything) and only to change its next action.
 - One rule, one owner (`instruction_quality` §3). A fix covers its class with the smallest change removing the shared cause: correct or delete what failed before adding a rule, tool or stage; a hook only for a loss case. Build for evolutions the owner names, not invented ones.
-- Do surfaced work now; defer only for a reason `/worklog` names. Comments default to none.
-- **The owning tool prints its call.** A tool owning an outward action (publish, deploy, land) prints its full invocation, so a successor re-runs it from that output, not prose.
-- **A gate names what it does not exercise.** A check stubbing a live boundary (database, browser, network) says so, since a stubbed pass reads as coverage; the first step crossing it confirms it live once.
-- **Project doctrine never lowers a shared floor.** A project rule may add to shared loss, quality and brief rules, never weaken them; the shared rule wins, and `/review` checks.
+- Do surfaced work now; defer only for a reason `/worklog` names. An in-file, behaviour-preserving cleanup you notice goes inline, named in the close and committed first; ask before one changes a contract or widens the write set. Comments default to none.
+- A tool owning an outward action (publish, deploy, land) prints its full invocation, so a successor re-runs it from that output, not prose.
+- A check stubbing a live boundary (database, browser, network) says so, since a stubbed pass reads as coverage; the first step crossing it confirms it live once.
+- A project rule may add to shared loss, quality and brief rules, never weaken them; the shared rule wins, and `/review` checks.
 
 ## Fixes and Redesigns
-A fix to a file in the top 5% by fix commits since its last redesign commit, or to a shared contract (floor module, shared command, tool or skill), is planned as a redesign through `/plan` and `/review`: patching much-fixed files is how the harness grew. `git log --format=@%s --name-only | awk '/^@/{s=$0;next}NF&&!d[$0]{if(tolower(s)~"redesign")d[$0]=1;else if(s~"^@fix")c[$0]++}END{for(f in c)print c[f],f}' | sort -rn | awk '{a[NR]=$0}END{for(i=1;i<=(NR+19)/20;i++)print a[i]}'` lists them. A fix restoring a broken floor (a guard denying every call, a red main) lands first; its plan follows. A repeated fix to one decision across files, or an owner's "never again", runs `/codify`.
+A fix to a file in the top 5% by fix commits since its last redesign commit, or to a shared contract (floor module, shared command, tool or skill), is planned as a redesign through `/plan` and `/review`: patching much-fixed files is how the harness grew. `git log --format=@%s --name-only | awk '/^@/{s=$0;next}NF&&!d[$0]{if(tolower(s)~"redesign")d[$0]=1;else if(s~"^@fix")c[$0]++}END{for(f in c)print c[f],f}' | sort -rn | awk '{a[NR]=$0}END{for(i=1;i<=(NR+19)/20;i++)print a[i]}'` lists them. A fix restoring a broken floor (a guard denying every call, a red main) lands first; its plan follows. A repeated fix to one decision across files runs `/codify`.
 
-## Memory and Proofs
-Memory lives in `.claude/auto-memory/`, not the runtime's store. Search it by concept on a domain change or surprising result; retire what the result disproves. New learning is cold: a hot pointer is paid every call. A harness change runs its unit's test file (`python -m pytest .claude/tests/<file> -q`); CI runs the suite per push; `rules/harness_tooling.md` owns proofs.
+## Memory
+Search `.claude/auto-memory/` by concept on a domain change or surprising result; retire what the result disproves. New learning is cold: a hot pointer is paid every call.
 
 ## Git
 - Commit your own changes before a task ends, unasked, in categorical path-scoped commits, so nothing mixes into the next session's diff; messages go in `.claude/scratch/` for `git commit -F`. Never leave a shared index staged. A PR only for a review the owner asked for.
-- Push main or a land branch only when the owner asked, invoked `/commit_push` or `/close`, or armed `/overnight` with push; that authority survives compaction. Push a land branch once per line of work: each land starts a main check.
+- Push main or a land branch only when the owner asked, invoked `/commit_push` or `/close`, or armed `/overnight` with push; that authority survives compaction. Holding it, never end a turn asking the owner to say push. Push a land branch once per line of work, sooner only for a peer or the owner waiting on it: each land starts a main check.
 - Never fork a shared harness file: upstream the change (`tools/harness_sync.py push`) or move it to a project file.
 
 ## Shell Discipline
@@ -46,9 +46,9 @@ Memory lives in `.claude/auto-memory/`, not the runtime's store. Search it by co
 - **Long jobs:** A wake re-reads the whole context, so wake only for a result the next step needs. Start a known-long job (build, gate, install, seat fan-out) with `run_in_background`. Never raise a timeout for a job you cannot time.
 
 ## 9. Tool Routing
-Read known targets directly, in parallel. A chain of reads goes to one script, or one `/explore` or `/delegate` scout. Bound walks with git-aware search.
+A chain of reads goes to one script, or one `/explore` or `/delegate` scout. Bound walks with git-aware search.
 
 ## Preferences
-- **Working:** Keep stated requirements through delegation and resume. Check an objection against evidence; no performative agreement. Distress means the path is wrong: take the one the owner's reason supports. Never hand the owner a mechanical step. End a turn only when every step left waits on a wake or the owner.
+- **Working:** Keep stated requirements through delegation and resume. Check an objection against evidence; no performative agreement. Distress means the path is wrong: take the one the owner's reason supports. Never hand the owner a mechanical step. A bullet headline states its point, never a category label. End a turn only when every step left waits on a wake or the owner.
 - **Owner's words** reach as far as their reason. An example shows a principle, never what gets built. Say every, only or exactly only where the owner did.
 - **Asking the owner:** one packet: options, facts checked this turn, a recommendation where evidence allows.

@@ -11,8 +11,8 @@ Per-entry (Step 1):
 
 1. **Mechanism-claim verification** — isolate cause vs symptom (the original core; *the core discipline* below).
 2. **Overfit-to-Specific** — does the *rule itself* name a specific file/PR/ability/SHA/session-date? (check definition: `instruction_quality` §3b *Overfit-to-Specific*).
-3. **Documentation-drift** — is this a gotcha/rule, or feature-doc that belongs in a code `<summary>`? (litmus: the save filter in `CLAUDE.core.md` §Memory and Proofs).
-4. **Decision-time placement** — at what moment is this rule needed, and does its destination match? (litmus: `CLAUDE.core.md` §Memory and Proofs and `instruction_quality` §5, the SoTs).
+3. **Documentation-drift** — is this a gotcha/rule, or feature-doc that belongs in a code `<summary>`? (litmus: the save filter in `CLAUDE.core.md` §Memory).
+4. **Decision-time placement** — at what moment is this rule needed, and does its destination match? (litmus: `CLAUDE.core.md` §Memory and `instruction_quality` §5, the SoTs).
 7. **Citation currency** — does every path, command, flag and symbol the entry cites still exist, and does its `How to apply:` point at the file that owns the procedure? (save-time rule: `/codify` Step 3's memory row).
 
 Index-level (Step 0), on `MEMORY.md` alone:
@@ -92,7 +92,7 @@ Enumerate all files (`ls .claude/auto-memory/*.md` + `archive/*.md`). Fan out cl
     - **file-class `<glob>`** — the decision is made with a file of that class already open. Qualifies only when the glob is prefix-anchored below the repo root (`Tests/**/*.cs`, `DomainCore/**`, `HSM/**`). An extension-only glob (`**/*.<source-ext>`, `**/*.md`) matches nearly every session and defers the cost rather than removing it — report those as `pre-trigger`. Decide width by **reading the glob string**, never by counting files and never with `git ls-files` (it reports the git index, not the loader's filesystem glob, and returns 0 for `Jmodot/**`).
     - **domain-entry** — surfaced by a deliberate domain search.
   
-  **The burden of proof is on hot** (`CLAUDE.core.md` §Memory and Proofs). Apply it per file: a hot file that fails the test is a demote-candidate, and a `domain-entry` or `file-class` verdict is an automatic demote/split candidate. A **cold** file promotes only when it passes that same two-part test — rare by design; when in doubt it stays cold, because search is the recall path.
+  **The burden of proof is on hot** (`CLAUDE.core.md` §Memory). Apply it per file: a hot file that fails the test is a demote-candidate, and a `domain-entry` or `file-class` verdict is an automatic demote/split candidate. A **cold** file promotes only when it passes that same two-part test — rare by design; when in doubt it stays cold, because search is the recall path.
 
 ### Step 1a — Citation currency (lens 7; deterministic)
 The full entry list overflows a command line, so pass it as a list file: `printf '%s\n' .claude/auto-memory/*.md .claude/auto-memory/archive/*.md > .claude/scratch/memory_files.txt`, then `python3 .claude/tools/verify_doc_citations.py --kinds all --json --only missing,unparseable @.claude/scratch/memory_files.txt > .claude/scratch/memory_citations.json`. Read each entry's rows from that file, and keep missing and unparseable citations as separate lists: an unparseable citation is neither found nor missing. A missing row is a candidate. Before choosing its outcome, confirm the citation names a repo artifact: a vault note, a file on another host or a git ref is outside the tool's reach, not stale. Then read each entry's `How to apply:` line and mark it when it restates a procedure a harness file owns, or cites an owner that is missing or no longer states the decision; find the owning file by `Grep` over `.claude/` for the decision's own terms.
