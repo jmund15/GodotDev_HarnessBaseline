@@ -25,7 +25,7 @@ Read from `SKILL.md` §User-Tasks when a candidate item may be owner-only. The t
 
 #### User-executed roadmap Parts (not User-Tasks)
 
-A roadmap Part whose execution is the owner's (spatial design, manual content authoring, taste-driven tuning) but which has roadmap dependencies and dependents, such as "design 10–15 static prototype scenes". Route it to roadmap State `user-owned` (`_brainstorm_shared/roadmap_schema.md` §6.3) through `/update_roadmap`, never to `User-Tasks.md`: the Part stays on the roadmap to keep the dependency graph.
+A roadmap Part whose execution is the owner's (spatial design, manual content authoring, taste-driven tuning) but which has roadmap dependencies and dependents, such as "design 10–15 static prototype scenes". Route it to roadmap State `user-owned` (`.claude/skills/_brainstorm_shared/roadmap_schema.md` §6.3) through `/update_roadmap`, never to User-Tasks.md: the Part stays on the roadmap to keep the dependency graph.
 
 #### Anti-triggers (never User-Tasks)
 - Technical work that touches art ("wire the visuals component to the new feature"): the art existing is a prerequisite, not the work.

@@ -8,7 +8,7 @@ description: >-
 
 The decision half of the worklog: whether surfaced work is logged, and its class, scope, readiness and domain. `/worklog` executes every write and owns the files, tiers and forms; reach for it to act.
 
-**Plan from the block, never the mirror line.** The mirror (`.claude/worklog-titles.md`) is a title index. When planning or scoping a logged item, read its full `Context` / `Where` / `Source` block in `Worklog.md`: a title naming one concept can sit over a Context about another subsystem.
+**Plan from the block, never the mirror line.** The mirror (`.claude/worklog-titles.md`) is a title index. When planning or scoping a logged item, read its full `Context` / `Where` / `Source` block in Worklog.md: a title naming one concept can sit over a Context about another subsystem.
 
 **Overlap discovery is a dispatch, not a skim.** The backlog is not in session context. To learn whether an open item overlaps work about to start, run `.claude/workflows/worklog_relevance.js`; `CLAUDE.core.md` §The Worklog says when.
 
@@ -44,7 +44,7 @@ Required on every item: a coarse effort signal, never a deadline. Scope comes fr
 | **3** | A bounded change with real cross-file trade-offs | The approach needs evidence and trade-off resolution |
 | **4** | A design-track feature or system with a linked planning doc | The work needs a separately approved design and implementation track |
 
-A scope-4 item is a one-line pointer with a `Plan doc:` field; its design lives in a sibling `TODO/<name>.md` listed under the worklog's `## Linked Docs`, never in the block. When a `TODO/` doc is created, deleted or merged, its Linked Docs entry follows.
+A scope-4 item is a one-line pointer with a `Plan doc:` field; its design lives in a sibling TODO/<name>.md listed under the worklog's `## Linked Docs`, never in the block. When a TODO/ doc is created, deleted or merged, its Linked Docs entry follows.
 
 ## Readiness (`When:`)
 
@@ -101,7 +101,7 @@ A stronger threshold: only distant-horizon phrases with no trigger. Agent: "even
 
 **Not Future Scope:** "later", "next pass", "follow-up", "for now", "out of scope". These are regular deferrals that stay visible. When unsure, ask; the proposal names "Future Scope" (`/worklog` §add).
 
-### User-Tasks (→ `User-Tasks.md`, outside every agent pass)
+### User-Tasks (→ User-Tasks.md, outside every agent pass)
 
 A high-confidence threshold: work Claude fundamentally cannot do, such as production art, feel-driven tuning, brainstorms whose output is the owner's taste, or design audits against the owner's vision. Read [`reference/user_tasks_triggers.md`](reference/user_tasks_triggers.md) to classify a candidate; it holds each class's signals and litmus, the route for user-executed roadmap Parts and the anti-triggers.
 

@@ -8,7 +8,7 @@ Read at a `/worklog triage` and run from these steps. `commands/worklog.md` owns
 
 ## Step 1 — Read
 
-Read `Worklog.md` whole: a disposition needs each item's Context, Where, Source and dates, which the mirror lacks. Review every `[ ]` item in Active and Ledger; Future Scope is out of scope.
+Read Worklog.md whole: a disposition needs each item's Context, Where, Source and dates, which the mirror lacks. Review every `[ ]` item in Active and Ledger; Future Scope is out of scope.
 
 ## Step 2 — Gather evidence
 
@@ -33,7 +33,7 @@ First match wins:
 Print `Triage: <total> items. Proposed: <n> complete, <m> do-now, <k> quick-win, <p> move, <u> to-user-tasks, <q> delete.` Then walk the proposals highest-signal first, in batches the owner can read:
 
 ```
-[I/N] <Title> — <domain> · <class> · scope <s> · added <date>
+[i of n] <Title> — <domain> · <class> · scope <s> · added <date>
   Context: <line>
   Recommended: <disposition> — <the evidence>
   [y]es  [c]omplete  [d]o-now  [f]lag  [m]ove  [u]ser-tasks  [x] delete  [s]kip  [q]uit
@@ -50,7 +50,7 @@ Print `Triage: <total> items. Proposed: <n> complete, <m> do-now, <k> quick-win,
 ## Step 6 — Wrap up
 
 1. Rebalance by readiness across every surviving item, even with no proposals: ready items in Active, waiting `When: after` items in Ledger, a Ledger item to Active only when its condition cleared, other unscheduled debt left in Ledger.
-2. Bump `last_updated:` and rebuild the mirror once from the Step 1 read plus the walk's changes. Another write may have landed during the walk; re-read `Worklog.md` before the rebuild when it did.
+2. Bump `last_updated:` and rebuild the mirror once from the Step 1 read plus the walk's changes. Another write may have landed during the walk; re-read Worklog.md before the rebuild when it did.
 3. Print:
    ```
    Triage complete. Applied: <n> complete, <m> do-now, <k> flagged, <p> moved, <u> to User-Tasks, <q> deleted.

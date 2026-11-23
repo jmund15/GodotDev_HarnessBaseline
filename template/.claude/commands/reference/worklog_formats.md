@@ -23,7 +23,7 @@ Leave out a sub-bullet that does not apply; never write a placeholder. Class and
   ```
 - `FSLINE`, a Future Scope line inside the `> [!example]- Future Scope (N items)` callout, every line `> `-prefixed, no sub-bullets: ``> - `<class>` · scope `<n>` · <Title> (added YYYY-MM-DD; <one-line context>) · session <runtime session id>``
 - `XLINE`, an archive line: ``- [x] `<class>` · scope `<n>` · <Title> (completed YYYY-MM-DD, <ref>)``
-- `UTLINE`, a `User-Tasks.md` line: `- YYYY-MM-DD — <Title> — <one-line context>`
+- `UTLINE`, a User-Tasks.md line: `- YYYY-MM-DD — <Title> — <one-line context>`
 
 ## Mirror
 
@@ -31,4 +31,4 @@ Leave out a sub-bullet that does not apply; never write a placeholder. Class and
 
 - A `When: after <condition>` item takes the suffix ` [after: <condition>]`; a `Quick-win:` item takes ` [quick-win]`; both stack in that order.
 - `[x]` items and Future Scope items never appear.
-- A copy you cannot patch with certainty (another edit landed, a patch failed) is rebuilt from a full read of `Worklog.md`.
+- A copy you cannot patch with certainty (another edit landed, a patch failed) is rebuilt from a full read of Worklog.md.

@@ -27,7 +27,7 @@ Take one correction the owner wants never to recur, find the file that owns the 
 From the root of the repo that tracks the owner, print the files in the top 5% by fix commits (each file counted from its last commit whose subject says `redesign`):
 
 ```bash
-git log --format=@%s --name-only | awk '/^@/{s=tolower($0);next} NF&&!d[$0]{if(s~/redesign/)d[$0]=1;else if(s~/^@fix/)c[$0]++} END{for(f in c)print c[f],f}' | sort -rn | awk '{a[NR]=$0} END{for(i=1;i<=NR/20;i++)print a[i]}'
+git log --format=@%s --name-only | awk '$0~"^@"{s=tolower($0);next} NF&&!d[$0]{if(s~"redesign")d[$0]=1;else if(s~"^@fix")c[$0]++} END{for(f in c)print c[f],f}' | sort -rn | awk '{a[NR]=$0} END{for(i=1;i<=NR*0.05;i++)print a[i]}'
 ```
 
 - **Redesign.** The owner is on the list, or an earlier fix of the same decision did not hold: plan a redesign through `/plan` and `/review`, and land nothing else here. Name why each earlier fix did not hold; the redesign answers that. A fix that restores a broken floor (a guard denying every call, a red main) lands first, and its redesign plan follows. The redesign's commit subject says `redesign`, which restarts the file's count.

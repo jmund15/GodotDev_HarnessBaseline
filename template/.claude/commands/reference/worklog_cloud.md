@@ -4,11 +4,11 @@ disable-model-invocation: true
 
 # `/worklog` — cloud queue and replay
 
-Read before any `/worklog` form when `CLAUDE_CODE_REMOTE=true`, or when `.claude/worklog-pending.md` holds un-struck `- ` lines on a local session. The vault is not mounted on cloud, so no vault doc can be written there.
+Read before any `/worklog` form when `CLAUDE_CODE_REMOTE=true`, or when .claude/worklog-pending.md holds un-struck `- ` lines on a local session. The vault is not mounted on cloud, so no vault doc can be written there.
 
 ## On cloud
 
-- **Writes** (`add`, `complete`, `promote`, `unblock`, `user-add` and triage dispositions) touch neither the vault nor the mirror. Append the operation to the tracked `.claude/worklog-pending.md`, under one header per session, and stop:
+- **Writes** (`add`, `complete`, `promote`, `unblock`, `user-add` and triage dispositions) touch neither the vault nor the mirror. Append the operation to the tracked .claude/worklog-pending.md, under one header per session, and stop:
   ```
   ## <ISO timestamp> cloud session <id>
   - ADD active: <title> (<domain> · <class> · scope <n>)

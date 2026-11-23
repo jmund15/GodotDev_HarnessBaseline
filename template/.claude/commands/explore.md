@@ -19,7 +19,7 @@ Establish what exists before a design is proposed: read-only lenses survey one t
 2. Pick the lenses from the roster: every lens whose trigger holds runs, and each runs alone (one lens per seat, never merged). Skip a lens only when existing evidence answers the topic's questions from sources still unchanged; cite that evidence. Record why each lens ran or was skipped.
 3. Map each question to the lens that owns it. A question one command can enumerate (every call site, every file holding a field, every test naming a symbol) is answered by that command now: write its output to a file in the run directory, sort the hits a fact decides (path class, declaration or use, test or production), and hand the file to the owning lens to judge the rest. A question no lens owns and no command answers gets a bespoke lens (roster, last paragraph).
 
-**Done:** the run directory `.claude/scratch/explore_<slug>/` holds `context.md`, and the selection with its reasons is recorded there.
+**Done:** the run directory `.claude/scratch/explore_<slug>/` holds the brief (context.md), with the lens selection and its reasons.
 
 ### Roster
 
@@ -38,7 +38,7 @@ Each lens's mandate is `.claude/commands/agents/explore/<lens>.md`; every lens a
 
 ## Step 2 — Brief and dispatch
 
-`context.md` is an open brief: the owner's words verbatim, the raw source paths, the owner-tagged constraints, the question map and the enumeration files, and the deliverable. It carries no conclusion of yours and no condensed or pre-filtered input; the lenses read the sources.
+The brief is open: the owner's words verbatim, the raw source paths, the owner-tagged constraints, the question map and the enumeration files, and the deliverable. It carries no conclusion of yours and no condensed or pre-filtered input; the lenses read the sources.
 
 Invoking `/explore` authorizes the fan-out. Issue one `Workflow` call to `.claude/workflows/explore_fanout.js` with:
 

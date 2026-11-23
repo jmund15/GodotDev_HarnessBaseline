@@ -18,7 +18,7 @@ The invocation is the order to ship: a budget or named set ships without a furth
 
 ## Step 1 — Shortlist
 
-Read the mirror for the ready items' titles, classes and scopes, then read the full `Worklog.md` block of every shortlisted or contested item before choosing: the mirror is an index, and a title can mislead about scope. A named set skips to Step 4.
+Read the mirror for the ready items' titles, classes and scopes, then read the full Worklog.md block of every shortlisted or contested item before choosing: the mirror is an index, and a title can mislead about scope. A named set skips to Step 4.
 
 ## Step 2 — Evidence
 

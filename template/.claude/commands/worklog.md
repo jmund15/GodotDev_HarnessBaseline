@@ -6,11 +6,11 @@ description: Run a worklog operation: show, add, complete, sweep, triage, drive,
 
 The one executor of worklog writes. `worklog_reference` owns whether to log an item and its class, scope, domain and `When:`; this file owns the files, the tiers, the forms and their write steps.
 
-**Files.** The vault TODO folder is `<vault_root>/DevProjects/<project_name>/Claude/TODO/`, each value printed by `python3 .claude/tools/adaptation.py get <key>`. It holds `Worklog.md` (the source of truth), `Worklog-Archive.md` (completed items, read only by `history`) and `User-Tasks.md` (owner-only items, read only by `user-show` and by `user-add`'s de-dup). `.claude/worklog-titles.md` mirrors the open titles and is read only when a form needs it. Entry and mirror formats: [`reference/worklog_formats.md`](reference/worklog_formats.md).
+**Files.** The vault TODO folder is `<vault_root>/DevProjects/<project_name>/Claude/TODO/`, each value printed by `python3 .claude/tools/adaptation.py get <key>`. It holds Worklog.md (the source of truth), Worklog-Archive.md (completed items, read only by `history`) and User-Tasks.md (owner-only items, read only by `user-show` and by `user-add`'s de-dup). `.claude/worklog-titles.md` mirrors the open titles and is read only when a form needs it. Entry and mirror formats: [`reference/worklog_formats.md`](reference/worklog_formats.md).
 
 **Tiers.** `## Active` is the ready pool, kept scannable by readiness, never by an item count. `## Ledger` holds unscheduled debt and every `When: after` item, in the same block shape. `## Future Scope` holds `When: future` one-liners and stays out of the mirror. An add never demotes a ready item; only `triage` and `unblock` move items between tiers, and only `promote` takes one out of Future Scope.
 
-**Cloud.** When `[ "${CLAUDE_CODE_REMOTE:-}" = "true" ]` holds, or `.claude/worklog-pending.md` holds un-struck `- ` lines, read [`reference/worklog_cloud.md`](reference/worklog_cloud.md) before any form.
+**Cloud.** When `[ "${CLAUDE_CODE_REMOTE:-}" = "true" ]` holds, or .claude/worklog-pending.md holds un-struck `- ` lines, read [`reference/worklog_cloud.md`](reference/worklog_cloud.md) before any form.
 
 ## Forms
 
@@ -29,15 +29,15 @@ Argument: `$ARGUMENTS`. An unlisted form prints this table and stops.
 | `drive [<N> \| scope:N \| items:N \| <names>] [--plan-only]` | Select items and ship them through `/drive`: [`reference/worklog_drive.md`](reference/worklog_drive.md) |
 | `promote <title>` | §promote |
 | `unblock <condition>` | §unblock |
-| `user-show` | Print `User-Tasks.md` by domain, verbatim |
-| `history [domain]` | Print `Worklog-Archive.md` by domain, verbatim, optionally one domain |
+| `user-show` | Print User-Tasks.md by domain, verbatim |
+| `history [domain]` | Print Worklog-Archive.md by domain, verbatim, optionally one domain |
 
 ## Write rules
 
 - `add` and `complete` run through `python3 .claude/tools/worklog.py`, which de-dups, places the entry, bumps `last_updated:` and patches the mirror. Exit 2 means a duplicate, an ambiguous match or invalid input: show what it printed and ask. Never hand-edit the vault for these two.
-- Every other write: edit the doc, bump its frontmatter `last_updated:` to today, and patch the mirror as `worklog_formats.md` §Mirror says. Future Scope and `User-Tasks.md` writes never touch the mirror.
+- Every other write: edit the doc, bump its frontmatter `last_updated:` to today, and patch the mirror as `worklog_formats.md` §Mirror says. Future Scope and User-Tasks.md writes never touch the mirror.
 - Take a block's exact text from a targeted read of its section, never from memory. The docs are LF; when an edit finds no match, retry with CRLF and confirm the edit landed.
-- A full read of `Worklog.md` regenerates the mirror from it: that is the drift check.
+- A full read of Worklog.md regenerates the mirror from it: that is the drift check.
 
 ## add
 
@@ -50,14 +50,14 @@ Argument: `$ARGUMENTS`. An unlisted form prints this table and stops.
 
 For an item only the owner can do (`worklog_reference` §User-Tasks triggers).
 
-1. Grep `User-Tasks.md` for the title's keywords. On a near match ask `User-Tasks already has: <entry>. Add as distinct?`; on no, stop. A `triage` caller skips this step.
+1. Grep User-Tasks.md for the title's keywords. On a near match ask `User-Tasks already has: <entry>. Add as distinct?`; on no, stop. A `triage` caller skips this step.
 2. Compose `- YYYY-MM-DD — <Title> — <one-line context>` (today; no bold). An auto-detect proposal confirms `Route to User-Tasks: <title> — <domain>?`; `y, active not user-tasks` turns it into §add.
 3. Insert the line at the top of its `## <Domain>` section, appending the section when it is missing, and bump `last_updated:`.
 4. Report `Routed to User-Tasks.`
 
 ## complete
 
-Run `python3 .claude/tools/worklog.py complete "<title or search>" --ref <commit, PR or session>`: the block leaves `Worklog.md`, its `XLINE` joins `Worklog-Archive.md` under its domain, and the mirror line goes. Mark an item complete in the turn its resolution lands (`worklog_reference` §Completion signals). To re-open one, §add it again with `--source "re-opened from <date> completion"`.
+Run `python3 .claude/tools/worklog.py complete "<title or search>" --ref <commit, PR or session>`: the block leaves Worklog.md, its `XLINE` joins Worklog-Archive.md under its domain, and the mirror line goes. Mark an item complete in the turn its resolution lands (`worklog_reference` §Completion signals). To re-open one, §add it again with `--source "re-opened from <date> completion"`.
 
 ## sweep
 
