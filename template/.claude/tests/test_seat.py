@@ -1,10 +1,11 @@
 """Proof for scripts/seat.sh and its two adapters. Every case spawns the launcher once, in a fixture checkout whose
 `.claude` holds the shipped scripts, tools and seats.json, with stub `claude` and `agy` binaries first on PATH.
-The project launch hooks (dispatch.pre_launch / dispatch.post_return) are proven in test_launch_check.py: the
-adaptation reader registers them with B6, and a seat-level case waits on that.
+The project launch hooks are proven in test_launch_check.py; the one case here is what the launcher does with a
+failing dispatch.post_return: the run fails and the answer file stays.
 
     python -m pytest .claude/tests/test_seat.py -q --durations=0
 """
+import json
 import os
 import shutil
 import stat
@@ -185,3 +186,14 @@ def test_read_only_seat_failing_agy_run_exits_non_zero_and_writes_no_answer(tmp_
     done = _seat(repo, repo, env, "antigravity", _brief(repo, "inputs:\n- a.md\ntargets:\n- out.md\n"), "out.md")
     assert done.returncode != 0
     assert not (repo / "out.md").exists()
+
+
+def test_failing_post_return_fails_the_run_and_keeps_the_answer(tmp_path):
+    repo = _checkout(tmp_path)
+    hook = repo / ".claude" / "skills" / "project_subsystems" / "adaptation.json"
+    hook.parent.mkdir(parents=True)
+    hook.write_text(json.dumps({"dispatch": {"post_return": "echo answer-rejected >&2; exit 1"}}), encoding="utf-8")
+    worktree = _linked_worktree(repo, tmp_path)
+    done = _seat(repo, worktree, _env(tmp_path), "claude-secondary", _brief(worktree), "out.md")
+    assert done.returncode == 2 and "answer-rejected" in done.stderr
+    assert (worktree / "out.md").read_text(encoding="utf-8").strip() == "STUB ANSWER"
