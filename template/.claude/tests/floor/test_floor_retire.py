@@ -4,7 +4,8 @@
 Rows call the rule directly (`is_retired_worktree`, `is_regenerable_clone`, `lossless_orphan_worktree`) or the floor
 the way the client does (`case.bash`). Each group shares one fixture project per module and each row builds its own
 uniquely named worktree or clone in it, so no row reads another's state; a row that changes the project's shared
-state (its submodule store, its `adaptation.json`) builds its own project.
+state (its submodule store, its `adaptation.json`) builds its own project. A worktree that carries submodules is
+copied from one template per project (`worktree_with_submodules`), since `git submodule update` costs a second.
 
 v1 cases not carried, each with its subject gone (`test_floor_ported.md`): the saved copies (a bundle, tar or patch
 under `.claude/scratch` that held a worktree's commits or files), the ignored files and stored edits of a worktree
