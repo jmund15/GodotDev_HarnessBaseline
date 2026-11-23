@@ -4,7 +4,7 @@ which since T1's deletion rule no longer read ownership (an owned worktree's ign
 copy is a subset) and of `test_pattern_enforcer_own_worktree.py`, the delete half of the same ownership proof
 (it imports `dangerous_shell_guard` as `pe`; it is not on T1's file list, but its cases are floor cases, R1).
 
-The transcript row is the live capture v1 keeps in `tests/fixtures/transcript_worktree_add_row.json`.
+`ROW` below is that live transcript row, captured from a session that ran `git worktree add`, inline.
 """
 import json
 import os
