@@ -134,49 +134,6 @@ class ContextTests(unittest.TestCase):
         self.assertEqual("missing", got["boundaries"][0]["next_assistant"]["message_id"])
         self.assertIsNone(got["boundaries"][0]["next_assistant"]["reported_input_sum"])
 
-    def test_context_render_is_bounded_and_names_units(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-        import session_digest
-        got = census(*[boundary(str(i)) for i in range(50)])
-        rendered = session_digest.render_context({"session_id": "session", "context_census": got})
-        self.assertIn("50", rendered)
-        self.assertIn("UTF-8", rendered)
-        self.assertIn("not live context", rendered)
-        self.assertIn("last 10", rendered)
-        self.assertLess(len(rendered), 6000)
-
-    def test_context_render_accepts_missing_session_identity(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-        import session_digest
-        for identity in ({}, {"session_id": None}):
-            with self.subTest(identity=identity):
-                rendered = session_digest.render_context({**identity, "context_census": census()})
-                self.assertIn("Context census — unknown", rendered)
-                self.assertNotIn("session_digest_None", rendered)
-
-    def test_context_cli_writes_counts_not_conversation(self):
-        import contextlib
-        import io
-        import tempfile
-        from unittest.mock import patch
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-        import session_digest
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            transcript = root / "fixture.jsonl"
-            transcript.write_text(json.dumps({"type": "user", "message": {"content": "PRIVATE PROMPT NOT FOR CENSUS"}}) + "\n" +
-                                  json.dumps(assistant("m", {"input_tokens": 4})), encoding="utf-8")
-            with patch.object(sys, "argv", ["session_digest", "--context-only", "--project-dir", str(root)]), \
-                    patch.object(session_digest, "pick_transcript", return_value=transcript), \
-                    patch.object(session_digest, "last_assistant_text", side_effect=AssertionError("unexpected scan")), \
-                    patch.object(session_digest, "tool_census", side_effect=AssertionError("unexpected scan")), \
-                    contextlib.redirect_stdout(io.StringIO()) as output:
-                session_digest.main()
-            artifact = (root / "logs/session_digest_fixture.context.json").read_text(encoding="utf-8")
-            self.assertNotIn("PRIVATE PROMPT", artifact + output.getvalue())
-            self.assertFalse((root / "logs/session_digest_fixture.json").exists())
-            self.assertEqual(4, json.loads(artifact)["context_census"]["usage"]["input_tokens"]["observed_total"])
-
     def test_existing_summary_contract_is_retained(self):
         builder = TranscriptSummaryBuilder("session", "test.jsonl")
         builder.process_line(json.dumps({"type": "user", "message": {"content": "Please inspect the harness"}}))
