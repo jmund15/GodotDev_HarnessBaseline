@@ -136,7 +136,8 @@ from _git_commit import (  # noqa: E402
 REF_MAKERS = ("fetch", "update-ref", "branch", "tag")  # subcommands that can create the ref a later merge names
 
 try:
-    from _regenerable_clone import session_created_worktree, worktree_unstored
+    from _own_worktree import session_created_worktree
+    from _delete_rule import worktree_unstored
 except Exception:
     session_created_worktree = worktree_unstored = None
 try:
@@ -216,7 +217,7 @@ def _discards_nothing(sub, rest, cwd, git_env=None):
 
 def _content_stored(path, cwd):
     """True when git's object store holds the working-tree bytes of `path`, so discarding them loses nothing
-    git cannot reproduce (the orphan-worktree rule's standard: `_regenerable_clone.worktree_unstored`). A restore
+    git cannot reproduce (the orphan-worktree rule's standard: `_delete_rule.worktree_unstored`). A restore
     or a checkout from the index qualifies; a checkout from another ref also overwrites the index, whose staged
     bytes this does not judge."""
     if worktree_unstored is None or not os.path.isfile(os.path.join(cwd, path)):

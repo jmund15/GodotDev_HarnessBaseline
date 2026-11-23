@@ -5,10 +5,11 @@ Bash and PowerShell call; a fault denies the call.
 Blocks, each judged on the resolved target and never on the command's wording:
 - Recursive/forced deletes and directory removal (rm -r/-rf, del /s, rd /s, rmdir /s, PowerShell Remove-Item
   -Recurse and its aliases) and drive format commands. Allowed: a target that is a regenerable cache inside the
-  project, a path below the system temp directory or `~/.claude/plugins/cache/` holding no git repository, this session's own
+  project, a path below the system temp directory (any repository in it included, never the protected checkout or
+  a worktree registered to it) or below `~/.claude/plugins/cache/` holding no git repository, this session's own
   `.claude/scratch/<session id>` output, a pushed regenerable clone, a scratch folder holding no git repository and
-  no registered worktree, a folder a proof planted under `.claude/tmp`, a retired worktree (nothing git lacks,
-  every commit on a remote; its ignored files go only when this session created it), a `NAME=$(mktemp -d)`
+  no registered worktree, a folder a proof planted under `.claude/tmp`, a retired worktree (`_delete_rule`: nothing
+  outside the regenerable entries, every commit pushed or landed, no open PR), a `NAME=$(mktemp -d)`
   variable the same command owns, or a folder a flagless `mkdir` of this session created, holding no git
   repository. A chained second delete, a glob in a directory part, `~`, `%`, an unresolvable target, a target a
   live peer session works in, or another session's id folder disqualifies it. A forced `rm` whose every target is
@@ -40,9 +41,10 @@ _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _HOOKS_DIR not in sys.path:
     sys.path.insert(0, _HOOKS_DIR)
 from _command_text import executable_text, executable_spans, command_words, _REDIRECTION  # noqa: E402
-from _regenerable_clone import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
-                                is_plant_exhaust, is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
-                                regenerable_segments, session_created_worktree, worktree_unstored)
+from _delete_rule import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
+                          is_plant_exhaust, is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
+                          regenerable_segments, worktree_unstored)
+from _own_worktree import session_created_worktree  # noqa: E402
 import _git_commit  # noqa: E402
 if _git_commit.executable_index is None or _git_commit.command_substitutions is None:
     raise ImportError("_shell_lex failed to import: %s" % _git_commit.LEXER_ERROR)
@@ -77,18 +79,18 @@ DANGEROUS_BASH_PATTERNS = [
     # The token scan stops at a command separator. Without that bound it runs to end-of-line and
     # reads a LATER command's flag as this delete's own -- `rm -f a.txt; tool -R out.json` denied
     # five times in one session, every one a safe delete followed by an unrelated -R.
-    # Regression: .claude/tests/test_dangerous_shell_guard_rm_scope.py
+    # Regression: .claude/tests/floor/test_floor_delete.py (the rm-scope rows)
     (r'(?<!git\s)\brm\s+(?:[^\s;|&\n]+\s+)*-[a-zA-Z]*[rR]', 'BLOCKED: Dangerous recursive delete (rm -r / -R / -rf)'),
     (r'(?<!git\s)\brm\s+--recursive\b', 'BLOCKED: Dangerous recursive delete (rm --recursive)'),
 ]
 
 
-# Regenerable caches a recursive delete may target without asking are `_regenerable_clone.regenerable_segments`:
+# Regenerable caches a recursive delete may target without asking are `_delete_rule.regenerable_segments`:
 # harness caches and logs, the semantic-search index, engine and test output, Python bytecode caches. Matched by PATH SEGMENT, never substring:
 # the old `\.claude[\\/](?:\.cache|logs)\b` regex passed `.claude/logs-old` and
 # `.claude/.cache/../..` (the repo root). Evidence folders (`.claude/scratch`) and checkouts
 # (`.claude/worktrees`) are gitignored but are NOT caches, so they stay blocked unless
-# `_regenerable_clone` proves the target loses nothing.
+# `_delete_rule` proves the target loses nothing.
 _UNSAFE_PATH_CHARS = re.compile(r"[*?\[\]{}$~%]")
 _CACHE_HINT = " Allowed: caches, temp dirs, clean pushed scratch clones, retired worktrees (`orchestration` reference `worktrees.md`), scratch folders holding no git repository, folders this session made with a flagless mkdir."
 
@@ -346,9 +348,10 @@ def _under_a_scratch_folder(path: str) -> bool:
 def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | None = None,
                            reasons: list[str] | None = None) -> bool:
     """A pushed clone, a lossless orphaned worktree directory of this repository wherever it sits (needs
-    no approval: nothing in it is unheld by git or a non-regenerable ignored file), an empty leftover directory under scratch (no file,
-    no `.git`), a scratch entry holding no git repository or worktree, or a retired worktree (ignored files
-    go only when this session created it); optionally explain failure."""
+    no approval: nothing in it is unheld by git or a non-regenerable ignored file), an empty leftover directory under
+    scratch (no file, no `.git`), a scratch entry holding no git repository or worktree, or a retired worktree
+    (`_delete_rule`: nothing outside the regenerable entries, every commit pushed or landed); optionally explain
+    failure. Who created the worktree does not change the answer (T1)."""
     root = _project_root()
     target = resolve_cd(cwd or root, token)
     peer = _peer_working_in(target, transcript_path)
@@ -369,13 +372,9 @@ def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | N
                 reasons.append('it is not a literal path, so it can match another session\'s folder')
             return False
         return _removable_scratch_entry(token, target, cwd, transcript_path, reasons)
-    orphan_loss: list[str] = []
-    if lossless_orphan_worktree(token, cwd or root, root, orphan_loss):
+    if lossless_orphan_worktree(token, cwd or root, root):
         return True
-    own = session_created_worktree(target, transcript_path)
-    if reasons is not None and not own:
-        reasons.extend(orphan_loss)
-    return is_retired_worktree(token, cwd or root, root, allow_ignored=own, reasons=reasons)
+    return is_retired_worktree(token, cwd or root, root, reasons=reasons)
 
 
 _SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -641,11 +640,11 @@ def _holds_git(path: str) -> bool:
 def _is_regenerable_or_scratch(path: str) -> bool:
     """`path` (absolute, normalized) is safe to delete recursively without asking."""
     import tempfile
-    if _strictly_under(path, _norm(tempfile.gettempdir())):
+    project = _norm(_project_root())
+    if _strictly_under(path, _norm(tempfile.gettempdir())) and not _strictly_under(path, project):
         # D-TT (owner, 2026-11-23): a temp tree goes with any repository in it, never the protected checkout or a
-        # worktree registered to it.
-        return not any(wt == path or _strictly_under(wt, path)
-                       for wt in [_norm(_project_root())] + _registered_worktrees())
+        # worktree registered to it; a path inside the checkout keeps the checkout's rules wherever it sits.
+        return not any(wt == path or _strictly_under(wt, path) for wt in [project] + _registered_worktrees())
     if _strictly_under(path, _norm(str(Path.home() / ".claude" / "plugins" / "cache"))):
         return not _holds_git(path)  # a plugin's download: the client fetches it again
     parts = _checkout_rel_parts(path)
@@ -1000,7 +999,7 @@ def _lost_path(d, cwd, git_env):
 
 def _content_stored(path, cwd):
     """True when git's object store holds the working-tree bytes of `path`, so discarding them loses nothing
-    git cannot reproduce (`_regenerable_clone.worktree_unstored`). A restore or a checkout from the index
+    git cannot reproduce (`_delete_rule.worktree_unstored`). A restore or a checkout from the index
     qualifies; a checkout from another ref also overwrites the index, whose staged bytes this does not judge."""
     if not os.path.isfile(os.path.join(cwd, path)):
         return False
