@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """The one chain runner behind the five event dispatchers (`pre_edit`, `post_edit`, `pre_read`, `post_read`,
 `prompt` `_dispatch.py`). Each dispatcher file is a stub that calls `main(event)`; EVENTS holds what differs.
+Two dispatchers deliberately do not run a chain, and `tests/test_chain.py` pins that no third appears:
+`_floor.py` answers the loss floor from its own `FLOOR_MEMBERS`, whose members must deny on their own fault and
+return one merged verdict, not an advisory list; `pre_workflow_dispatch.py` runs ordered steps that each read the
+call the step before rewrote, which a chain of independent members cannot express.
 
 Member contract (every event but `prompt`): `process(payload)` on a module, or a callable, returns None or a dict
 with any of

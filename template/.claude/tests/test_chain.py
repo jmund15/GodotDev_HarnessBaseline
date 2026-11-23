@@ -139,3 +139,11 @@ def test_entry_stub_exits_clean_on_a_call_and_a_malformed_payload(event, tmp_pat
     for text in (json.dumps(dict(PAYLOAD, cwd=str(tmp_path))), "not json"):
         done = subprocess.run([sys.executable, entry], input=text, capture_output=True, text=True, env=env, timeout=120)
         assert done.returncode == 0 and done.stdout.strip() == "" and done.stderr == ""
+
+
+def test_every_dispatcher_runs_the_one_chain_and_every_event_has_a_stub():
+    """A new `*_dispatch.py` with its own loop fails here; `_floor` and `pre_workflow_dispatch` are the named exceptions."""
+    own_loop = {"pre_workflow_dispatch.py"}
+    stubs = {p.name for p in HOOKS.glob("*_dispatch.py")} - own_loop
+    assert not {name for name in stubs if "_chain.main(" not in (HOOKS / name).read_text(encoding="utf-8")}
+    assert stubs == {event + "_dispatch.py" for event in _chain.EVENTS}
