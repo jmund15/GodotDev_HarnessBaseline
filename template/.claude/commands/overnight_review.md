@@ -4,7 +4,7 @@ description: Resolve open overnight questions
 
 # /overnight_review — answer parked overnight questions
 
-`/overnight` parks what it cannot decide as `Q` rows in its Close docs. This command collects every row still open across all of them, closes the ones whose premise has lapsed, asks the rest in one sitting and applies the answers.
+`/overnight` parks what it cannot decide as `Q` rows in its Close docs. This command collects every row still open across them, closes the ones whose premise has lapsed, asks the rest in one sitting and applies the answers.
 
 ## Arguments
 
@@ -14,7 +14,7 @@ Running this command ends an armed `/overnight` run: the guard removes the marke
 
 ## Step 1 — Collect
 
-The Overnight dir is `<VAULT_ROOT>/DevProjects/<PROJECT_NAME>/Claude/TODO/Overnight`, from `.claude/baseline.lock.json` substitutions. Vault files can be cloud placeholders, so read each `*.md` there once through the shell (`Get-Content` on Windows) before the scan, then run:
+The Overnight dir is `adaptation.json` `overnight_dir`, which the guard also reads. Vault files can be cloud placeholders, so read each `*.md` there once through the shell (`Get-Content` on Windows) before the scan, then run:
 
 ```bash
 python3 .claude/hooks/overnight_ask_guard.py --open-questions
@@ -28,7 +28,7 @@ For each `open` and `malformed` row, check the premise it cites against live sta
 
 ## Step 3 — Ask
 
-Ask the remaining rows in batched `AskUserQuestion` calls, 4 per call, one question per row. Each question states the fork and what each option buys as a packet per `CLAUDE.core.md` §Preferences.
+Ask the remaining rows in batched `AskUserQuestion` calls, 4 per call (the tool's capacity), one question per row. Each question states the fork and what each option buys, as a packet per `CLAUDE.core.md` §Preferences.
 
 - Options come from the row's `Options:` text. Split on `O<n>` or `(a)` markers, else on ` / ` or `;`.
 - More than 4 options: quote the full row and offer its first 4.
@@ -48,6 +48,6 @@ After the last apply, move every doc that needs no owner action out of the Overn
 python3 .claude/hooks/overnight_ask_guard.py --archive-closed
 ```
 
-It moves each session's Close doc and same-session packets to `archive/` when none holds an open, malformed or unreadable row and that session is not armed, and prints `{archived, kept}` with a reason per kept doc. A kept `archive-target-exists` doc is a name collision: report it.
+It moves each session's Close doc and same-session packets to the dir's archive folder when none holds an open, malformed or unreadable row and that session is not armed, and prints `{archived, kept}` with a reason per kept doc. A kept `archive-target-exists` doc is a name collision: report it.
 
 Final message: counts of resolved-obsolete, answered-and-applied, still-open, unreadable and archived, plus each failed apply.
