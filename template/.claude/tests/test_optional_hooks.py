@@ -4,6 +4,7 @@
     python3 .claude/tests/test_optional_hooks.py
 """
 import importlib
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -39,6 +40,28 @@ def test_import_fault_isolated_per_member(monkeypatch, tmp_path):
     assert loader.load('broken', 'healthy', 'absent', on_error=recover) == (
         'fault stub', 'healthy member', None)
     assert faults == [('broken', 'planted import fault')]
+
+
+def test_chain_appends_the_projects_installed_members_after_the_shared_ones(monkeypatch, tmp_path):
+    sys.path.insert(0, str(HOOKS))
+    import _optional_hooks as loader
+    claude = tmp_path / ".claude"
+    (claude / "hooks").mkdir(parents=True)
+    (claude / "tools").mkdir()
+    (claude / "tools" / "adaptation.py").write_text((HOOKS.parent / "tools" / "adaptation.py").read_text(encoding="utf-8"),
+                                                    encoding="utf-8")
+    (claude / "skills" / "project_subsystems").mkdir(parents=True)
+    for name in ("shared_a", "project_b"):
+        (claude / "hooks" / (name + ".py")).write_text("", encoding="utf-8")
+    adaptation_file = claude / "skills" / "project_subsystems" / "adaptation.json"
+    monkeypatch.setattr(loader, "HOOKS_DIR", claude / "hooks")
+    monkeypatch.delitem(sys.modules, "adaptation", raising=False)
+    shared = (("shared_a", "advisory"), ("shared_gone", "advisory"))
+    adaptation_file.write_text(json.dumps({"hook_members": {"pre_edit": ["project_b", "project_gone", 7]}}), encoding="utf-8")
+    assert loader.chain("pre_edit", shared, "x") == (("shared_a", "advisory"), ("project_b", "x"))
+    assert loader.chain("post_edit", shared, "x") == (("shared_a", "advisory"),)
+    adaptation_file.write_text("{not json", encoding="utf-8")
+    assert loader.chain("pre_edit", shared, "x") == (("shared_a", "advisory"),)
 
 
 def main():

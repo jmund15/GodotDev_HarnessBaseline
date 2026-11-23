@@ -8,11 +8,12 @@ own boundary, so one broken member cannot prevent its siblings from loading.
 `tools/layer_closure.py` reads the names passed here as optional dependencies.
 
     tres_guard, lint_guard = _optional_hooks.load("tres_guard", "lint_guard")
-    CHAIN = _optional_hooks.adopted(CHAIN)   # a chain of (name, ...) entries imported later by name
+    members = _optional_hooks.chain("pre_edit", CHAIN, "advisory")   # shared CHAIN plus the project's members
 """
 from __future__ import annotations
 
 import importlib
+import sys
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent
@@ -25,6 +26,23 @@ def present(name: str) -> bool:
 def adopted(chain):
     """The entries of a (name, ...) chain whose sub-hook is installed, in order."""
     return tuple(entry for entry in chain if present(entry[0]))
+
+
+def chain(event, shared, default):
+    """The dispatcher's `shared` entries, then one `(name, default)` per module name that `adaptation.json`
+    `hook_members[event]` lists (`event` is the dispatcher's stem: `pre_edit`, `post_edit`, `pre_read`,
+    `post_read`, `prompt`), keeping only installed modules. A shared member is shared code and lives in
+    the dispatcher's own CHAIN; the key holds project-local members only, so an absent or malformed key
+    leaves the shared members running."""
+    tools = str(HOOKS_DIR.parent / "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    try:
+        import adaptation
+        named = (adaptation.get(HOOKS_DIR.parent, "hook_members") or {}).get(event) or []
+    except Exception:
+        named = []
+    return adopted(tuple(shared) + tuple((n, default) for n in named if isinstance(n, str)))
 
 
 def load(*names: str, on_error=None):
