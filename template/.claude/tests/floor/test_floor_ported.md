@@ -168,9 +168,8 @@ without git take milliseconds.
   `pre_bash_dispatch.py` and `denial_coach.py` still import it on `v2`; it goes with that dispatch cut.
 - Cutover deletes (S5 review finding 10), each a parallel path to a floor module: `git_guardrails.py`'s loss
   denies (`dangerous_shell_guard.py` owns them), `pre_bash_dispatch.py`'s `git_guardrails` and
-  `dangerous_shell_guard` rows, `_git_commit.py`'s `git_environ` re-export, and three of the four command segmenters (`_shell_lex.shell_segments`,
-  `_git_commit.segments`, `dangerous_shell_guard._segments_with_quotes`, `kill_guard._shell_segments`), which
-  become one.
+  `dangerous_shell_guard` rows, and `_git_commit.py`'s `git_environ` re-export. (The four command segmenters became
+  one, `_shell_lex.lex`, in FL1.)
 - `settings.json` registers `hooks/pre_bash.py` for `_floor.MATCHER` at cutover; until then the v1 entries stay.
 - `baseline.manifest.json` (lane root, v1 publish manifest) still lists the deleted v1 test files; the manifest's
   rewrite (S7) drops them.

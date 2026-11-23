@@ -20,18 +20,16 @@ reads a form this module does not own (a `git -C` writer).
 import os
 import posixpath
 import re
-import shlex
 import sys
 from collections import namedtuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _command_text import _REDIRECTION, _WORD, executable_spans  # noqa: E402
+from _shell_lex import executable_spans, lex  # noqa: E402
 from _git_commit import resolve_cd  # noqa: E402
 
 Write = namedtuple("Write", "path source base verb")
 
 _UNRESOLVED = re.compile(r"[$`*?\[\]{}()~]")
-_QUOTED = re.compile(r"""'[^']*'|"(?:[^"\\]|\\.)*\"""")
 _INTERPRETERS = {"python", "python3", "py", "node", "perl", "ruby", "pwsh", "powershell", "bash", "sh"}
 _INLINE_FLAGS = {"-c", "-e", "-Command", "-command", "-"}
 _COPIERS = {"cp", "mv", "install"}
@@ -67,37 +65,17 @@ _PS_SWITCHES = {"-append", "-force", "-nonewline", "-noclobber", "-whatif", "-co
                 "-asbytestream", "-usingtransaction"}
 
 
-def _after_redirect(segment, m):
-    i = m.end()
-    while i < len(segment) and segment[i].isspace():
-        i += 1
-    return _WORD.match(segment, i), i
-
-
 def _redirect_targets(segment):
-    """Targets of the output redirects outside quoted data."""
-    masked = _QUOTED.sub(lambda m: "x" * len(m[0]), segment)
-    for m in _REDIRECTION.finditer(masked):
-        if "<" in m[0] or "&" in m[0].lstrip("&0123456789"):
-            continue
-        w, _ = _after_redirect(segment, m)
-        if w:
-            try:
-                yield shlex.split(w[0], posix=True)[0]
-            except (ValueError, IndexError):
-                pass
+    """Targets of the output redirects outside quoted data (`>`, `>>`, `>|`, `&>`; never an fd duplication)."""
+    for seg in lex(segment):
+        for r in seg.redirects:
+            if r.op in (">", ">>", ">|", "&>", "&>>") and r.target is not None:
+                yield r.target.value
 
 
 def _args(segment):
     """The segment's words with redirects and leading `NAME=value` assignments removed."""
-    masked = _QUOTED.sub(lambda m: "x" * len(m[0]), segment)
-    for m in reversed(list(_REDIRECTION.finditer(masked))):
-        w, i = _after_redirect(segment, m)
-        segment = segment[:m.start()] + " " + segment[w.end() if w else i:]
-    try:
-        words = shlex.split(segment, posix=True)
-    except ValueError:
-        words = segment.split()
+    words = [w.value for seg in lex(segment) for w in seg.words]
     while words and re.match(r"[A-Za-z_]\w*=", words[0]):
         words.pop(0)
     return words
