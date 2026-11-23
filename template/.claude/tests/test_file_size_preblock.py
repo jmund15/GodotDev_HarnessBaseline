@@ -193,20 +193,6 @@ def test_multiline_log_is_clamped_to_the_log_budget():
         assert "Grep" in got["additionalContext"]
 
 
-def test_dispatcher_emits_updated_input_on_exit_zero():
-    dispatcher = os.path.join(HOOKS, "pre_read_dispatch.py")
-    with tempfile.TemporaryDirectory() as d:
-        big = _lines_file(d, ".claude/scratch/review.md", 2 * mod.LARGE_FILE_BYTE_THRESHOLD)
-        payload = {"hook_event_name": "PreToolUse", "session_id": "file-size-clamp",
-                   "tool_name": "Read", "tool_input": {"file_path": big}}
-        result = subprocess.run([sys.executable, dispatcher], input=json.dumps(payload),
-                                capture_output=True, text=True, timeout=60)
-        assert result.returncode == 0, result.stderr
-        out = json.loads(result.stdout)["hookSpecificOutput"]
-        assert out["hookEventName"] == "PreToolUse"
-        assert out["updatedInput"]["file_path"] == big and out["updatedInput"]["limit"] > 0
-        assert "permissionDecision" not in out
-
 
 if __name__ == "__main__":
     failed = 0

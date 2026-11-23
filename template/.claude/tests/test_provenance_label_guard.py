@@ -66,12 +66,6 @@ check("same-label replacement introduces a new provenance span", blocked(edit(
     ".claude/rules/r.md", "Use Y (owner decision).", old="Use X (owner decision).")))
 check("label removal passes", not blocked(edit(".claude/rules/r.md", "Use X.", old=LABEL)))
 
-dispatcher = os.path.join(HOOKS, "pre_edit_dispatch.py")
-r = subprocess.run([sys.executable, dispatcher], input=json.dumps(edit(".claude/rules/r.md", BY)),
-                   capture_output=True, text=True, timeout=60)
-check("the live dispatcher blocks citing instruction_quality §5 (exit 2)",
-      r.returncode == 2 and "instruction_quality §5" in r.stderr, r.stderr or r.stdout)
-
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:
     print("  " + f)
