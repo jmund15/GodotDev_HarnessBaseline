@@ -34,6 +34,8 @@ Output at generation: `base 1667 + added 87 - deleted 1340 = tip 414`, listed 13
 
 ## First pull: the cutover recipe
 
+Run the removal, the `pull` and the `settings.json` write from a session outside the checkout being cut over: the removal deletes the v1 hook scripts that checkout's `settings.json` registers, so a session working inside it loses every tool between the removal and the new `settings.json`. Settle every refusal before the removal.
+
 `harness_sync.py pull` with no manifest refuses every v1 file whose bytes differ from v2's, and writes nothing. S8 and S9 therefore remove the v1 shared set first: every row of the repo's `.claude/baseline.lock.json` whose `status` is `tracked` or `forked`, except a path this file lists as local. `composed` rows (`settings.json`, `memory_domains.md`) are hand-owned or local and stay; `local` rows were never shared. A file that is neither in the lock nor in the manifest and sits at a v2 path is a stray, and `pull` still refuses it by name.
 
 ```
