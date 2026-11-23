@@ -84,7 +84,7 @@ def main():
               "sidecar-b: sol: shape rating: none exists" in output, output[:800])
         check("a local session gets no cloud contract", "<cloud-session>" not in output)
         check("a fresh startup repeats no branch or commit block the client already shows, but keeps the upstream drift",
-              "Git: main" not in output and "Recent {{PROJECT_NAME}} commits:" not in output
+              "Git: main" not in output and "Recent commits:" not in output
               and "24 ahead, 3 behind" in output and "30h" in output, output[-900:])
         check("a fresh startup in the main checkout prints no Worktree line", "Worktree:" not in output, output[:300])
         check("a healthy item (an OK step, an OK roster) is silent in the Env line",
@@ -92,14 +92,14 @@ def main():
         compact_out = run_main(main_root, patches, source="compact")
         check("compact prints the branch, drift and commit block",
               "Git: main | clean" in compact_out and "24 ahead, 3 behind" in compact_out
-              and "Recent {{PROJECT_NAME}} commits:" in compact_out, compact_out[-900:])
+              and "Recent commits:" in compact_out, compact_out[-900:])
         check("compact folds the reload reminder into one [compaction] line",
               "<context-reload-reminder>" not in compact_out
               and sum(1 for ln in compact_out.splitlines() if ln.startswith("[compaction]")) == 1, compact_out[-500:])
         for quiet_source in ("clear", "resume"):
             quiet_out = run_main(main_root, patches, source=quiet_source)
             check("%s prints the branch and commit block" % quiet_source,
-                  "Git: main" in quiet_out and "Recent {{PROJECT_NAME}} commits:" in quiet_out, quiet_out[-600:])
+                  "Git: main" in quiet_out and "Recent commits:" in quiet_out, quiet_out[-600:])
         clean_drift = run_main(main_root, dict(patches, get_upstream_drift=lambda: (0, 0, 0.0)))
         check("a fresh startup with no drift prints no git line",
               "ahead" not in clean_drift and "Git:" not in clean_drift, clean_drift[:400])
@@ -249,7 +249,7 @@ def main():
                   "GODOT_BIN" not in plain_out and "Jmodot" not in plain_out
                   and "lsp-early-load" not in plain_out, plain_out[-700:])
             check("plain %s session: the git context is still injected" % label,
-                  "Git: main |" in plain_out and "Recent {{PROJECT_NAME}} commits:" in plain_out, plain_out[-700:])
+                  "Git: main |" in plain_out and "Recent commits:" in plain_out, plain_out[-700:])
 
     # A sidecar child executes a brief; the owner's Worktree, Env, Git and commit lines are noise to it.
     with tempfile.TemporaryDirectory(prefix="scl_sidecar_") as sidecar_dir:
@@ -257,7 +257,7 @@ def main():
             delegate_out = run_main(Path(sidecar_dir), patches, source=sidecar_source, sidecar=True)
             check("sidecar %s: no Worktree, Env, Git or commit block" % sidecar_source,
                   not any(marker in delegate_out for marker in
-                          ("Worktree:", "Env: ", "Git: main |", "Recent {{PROJECT_NAME}} commits:")),
+                          ("Worktree:", "Env: ", "Git: main |", "Recent commits:")),
                   delegate_out[-700:])
             check("sidecar %s: still prints the session-context envelope" % sidecar_source,
                   "<session-context>" in delegate_out and "</session-context>" in delegate_out, delegate_out[-300:])

@@ -55,7 +55,8 @@ class ScratchPruneTests(unittest.TestCase):
         self.scratch = self.repo / '.claude' / 'scratch'
         self.scratch.mkdir(parents=True)
         self.vault = base / 'vault'
-        (self.vault / 'DevProjects/{{PROJECT_NAME}}/Claude').mkdir(parents=True)
+        (self.vault / 'DevProjects/Proj/Claude').mkdir(parents=True)
+        self.write(self.repo / '.claude/skills/project_subsystems/adaptation.json', '{"project_name": "Proj"}\n')
         _git(self.repo, 'init', '-q')
         self.write(self.repo / '.gitignore', '.claude/scratch/\n')
         self.write(self.repo / 'readme.md', 'fixture\n')
@@ -97,6 +98,12 @@ class ScratchPruneTests(unittest.TestCase):
 
     # --- inventory -----------------------------------------------------------
 
+    def test_unset_project_name_refuses_rather_than_read_another_folder(self):
+        (self.repo / '.claude/skills/project_subsystems/adaptation.json').write_bytes(b'{}\n')
+        self.entry('any')
+        with self.assertRaisesRegex(ValueError, 'sets no project_name'):
+            self.inventory()
+
     def test_each_citation_form_is_keep_referenced(self):
         forms = {
             'fwd': 'see .claude/scratch/fwd/log.txt\n',
@@ -122,7 +129,7 @@ class ScratchPruneTests(unittest.TestCase):
 
     def test_citation_in_vault_note_is_recorded_as_prose_and_keeps_nothing(self):
         self.entry('vaultcited')
-        self.write(self.vault / 'DevProjects/{{PROJECT_NAME}}/Claude/Notes/a.md',
+        self.write(self.vault / 'DevProjects/Proj/Claude/Notes/a.md',
                    'cited .claude/scratch/vaultcited/report.md\n')
         row = self.rows(self.inventory())['vaultcited']
         self.assertEqual('CANDIDATE', row['bucket'])
@@ -288,7 +295,7 @@ class ScratchPruneTests(unittest.TestCase):
 
     def test_unreadable_vault_file_marks_candidates_unverified_and_apply_refuses(self):
         self.entry('junk')
-        broken = self.write(self.vault / 'DevProjects/{{PROJECT_NAME}}/Claude/broken.md', 'x\n')
+        broken = self.write(self.vault / 'DevProjects/Proj/Claude/broken.md', 'x\n')
         real_read = Path.read_bytes
 
         def read_bytes(path):
@@ -309,7 +316,7 @@ class ScratchPruneTests(unittest.TestCase):
     def test_archived_entry_folder_named_like_a_file_is_not_a_vault_input(self):
         self.entry('junk')
         month = time.strftime('%Y-%m')
-        self.write(self.vault / 'DevProjects/{{PROJECT_NAME}}/Claude/Archived/Scratch' / month
+        self.write(self.vault / 'DevProjects/Proj/Claude/Archived/Scratch' / month
                    / 'notes.md' / 'notes.md', '# archived\n')
         inv = self.inventory()
         self.assertEqual(0, inv['vault']['unreadable'])
@@ -338,7 +345,7 @@ class ScratchPruneTests(unittest.TestCase):
         run = self.apply(self.inventory(), {'study': {'verdict': 'ARCHIVE', 'reason': 'F1 measurement'}})
         self.assertEqual(0, run.returncode, run.stdout + run.stderr)
         month = time.strftime('%Y-%m')
-        dest = self.vault / 'DevProjects/{{PROJECT_NAME}}/Claude/Archived/Scratch' / month / 'study'
+        dest = self.vault / 'DevProjects/Proj/Claude/Archived/Scratch' / month / 'study'
         self.assertEqual('# F1 result\n', (dest / 'findings.md').read_text(encoding='utf-8'))
         self.assertTrue((dest / 'sub/more.md').exists())
         self.assertFalse((dest / 'raw.json').exists())
@@ -350,7 +357,7 @@ class ScratchPruneTests(unittest.TestCase):
         self.entry('leaky', {'notes.md': 'before ' + token + ' after\n', 'clean.md': 'fine\n'})
         run = self.apply(self.inventory(), {'leaky': {'verdict': 'ARCHIVE', 'reason': 'x'}})
         self.assertEqual(0, run.returncode, run.stdout + run.stderr)
-        dest = (self.vault / 'DevProjects/{{PROJECT_NAME}}/Claude/Archived/Scratch' / time.strftime('%Y-%m') / 'leaky')
+        dest = (self.vault / 'DevProjects/Proj/Claude/Archived/Scratch' / time.strftime('%Y-%m') / 'leaky')
         archived = (dest / 'notes.md').read_bytes()
         self.assertNotIn(token.encode(), archived)
         self.assertIn(b'before ', archived)
@@ -363,7 +370,7 @@ class ScratchPruneTests(unittest.TestCase):
         root = self.entry('study', {'findings.md': '# F1\n'})
         inv = self.inventory()
         month = time.strftime('%Y-%m')
-        blocker = self.vault / 'DevProjects/{{PROJECT_NAME}}/Claude/Archived/Scratch' / month / 'study'
+        blocker = self.vault / 'DevProjects/Proj/Claude/Archived/Scratch' / month / 'study'
         self.write(blocker, 'a file where the archive dir must go\n')
         run = self.apply(inv, {'study': {'verdict': 'ARCHIVE', 'reason': 'F1'}})
         self.assertEqual(1, run.returncode, run.stdout + run.stderr)
@@ -435,7 +442,7 @@ class ScratchPruneTests(unittest.TestCase):
             self.assertTrue((self.scratch / 'work').exists(), verdict + ': ' + run.stdout)
             self.assertIn('skipped=1', run.stdout)
             self.assertIn('git work', run.stdout)
-        self.assertFalse((self.vault / 'DevProjects/{{PROJECT_NAME}}/Claude/Archived/Scratch').exists())
+        self.assertFalse((self.vault / 'DevProjects/Proj/Claude/Archived/Scratch').exists())
 
     def test_a_keep_verdict_on_a_git_work_row_is_kept(self):
         self.real_repo(self.scratch / 'work')
@@ -528,7 +535,7 @@ class ScratchPruneTests(unittest.TestCase):
         run = self.apply(self.inventory(), {'big': {'verdict': 'ARCHIVE', 'reason': 'oracles',
                                                     'archiveFiles': ['keep/oracle.cs', 'keep/n.md']}})
         self.assertEqual(0, run.returncode, run.stdout + run.stderr)
-        dest = self.vault / 'DevProjects/{{PROJECT_NAME}}/Claude/Archived/Scratch' / time.strftime('%Y-%m') / 'big'
+        dest = self.vault / 'DevProjects/Proj/Claude/Archived/Scratch' / time.strftime('%Y-%m') / 'big'
         self.assertEqual('class A{}', (dest / 'keep/oracle.cs').read_text(encoding='utf-8'))
         self.assertTrue((dest / 'keep/n.md').exists())
         self.assertFalse((dest / 'other.md').exists())

@@ -755,7 +755,7 @@ def main():
         output_lines.append("")
         output_lines.append(f"Git: {branch} | {uncommitted_str}")
         output_lines.append("")
-        output_lines.append("Recent {{PROJECT_NAME}} commits:")
+        output_lines.append("Recent commits:")
         if main_commits:
             for commit in main_commits:
                 output_lines.append(f"  {commit}")

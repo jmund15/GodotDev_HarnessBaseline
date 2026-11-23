@@ -15,7 +15,7 @@
       code or config suffix (CODE_SUFFIXES) names it. A prose, log or vault-note mention is
       recorded under `referrers.prose` and keeps nothing.
       References: one `git grep --untracked` pass over the repo plus every vault
-      DevProjects/{{PROJECT_NAME}}/Claude/**/*.md. Any unread vault input (unreadable, dehydrated
+      DevProjects/<project_name>/Claude/**/*.md (`project_name` from the repo's adaptation.json; unset exits 2). Any unread vault input (unreadable, dehydrated
       OneDrive placeholder, or an absent vault) marks every CANDIDATE row `unverified`.
       Exit 0 when bucket counts and bytes reconcile to the entry total, 1 otherwise.
 
@@ -30,7 +30,7 @@
       (a verdict never carries the owner's word for work git has nowhere else), its entry vanished,
       its newest mtime or `gitWork` changed, or a new code referrer appeared since the inventory.
       ARCHIVE copies `archiveFiles` (default: every .md in the entry) to
-      <vault>/DevProjects/{{PROJECT_NAME}}/Claude/Archived/Scratch/<YYYY-MM>/<entry>/, verifies
+      <vault>/DevProjects/<project_name>/Claude/Archived/Scratch/<YYYY-MM>/<entry>/, verifies
       size and read-back, then deletes the entry; every key-shape match (`vault_sync.mask_bytes`) is
       replaced by a marker in the copy and counted per file in the output; a failed copy leaves the entry. Registered
       git worktrees inside an entry go through `git worktree remove` first.
@@ -58,11 +58,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vault_read  # noqa: E402  (the dehydration-aware vault reader)
 import vault_sync  # noqa: E402  (owns the key shapes an archive masks)
+import adaptation  # noqa: E402  (project_name names the vault project folder)
 
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_VAULT = vault_read.DEFAULT_VAULT
-VAULT_DOCS = Path('DevProjects/{{PROJECT_NAME}}/Claude')
-ARCHIVE_DIR = VAULT_DOCS / 'Archived' / 'Scratch'
 BUCKETS = ('KEEP-WORKTREE', 'KEEP-GIT', 'KEEP-REFERENCED', 'KEEP-RECENT', 'CANDIDATE')
 VERDICTS = ('DELETE', 'ARCHIVE', 'KEEP')
 PROSE_CAP = 20
@@ -105,9 +104,18 @@ def repo_references(repo, names):
     return refs
 
 
-def vault_references(vault, names):
+def vault_docs(repo):
+    """The project's vault folder, relative to the vault root: DevProjects/<project_name>/Claude.
+    Raises ValueError when adaptation.json sets no project_name, since no folder can be named then."""
+    name = adaptation.get(Path(repo) / '.claude', 'project_name')
+    if not name:
+        raise ValueError('{}/.claude adaptation.json sets no project_name'.format(repo))
+    return Path('DevProjects', name, 'Claude')
+
+
+def vault_references(repo, vault, names):
     """Return (refs, counts); counts separate read, unreadable, unattempted and absent."""
-    texts, counts = vault_read.read_vault(vault, VAULT_DOCS)
+    texts, counts = vault_read.read_vault(vault, vault_docs(repo))
     refs = {}
     for path, text in texts:
         for segment in _mentions(text):
@@ -302,7 +310,7 @@ def _row(path, scratch, worktrees, references, keep_days, now, verified, main):
 
 def _references(repo, vault, names):
     refs = repo_references(repo, names)
-    vault_refs, counts = vault_references(vault, names)
+    vault_refs, counts = vault_references(repo, vault, names)
     for name, paths in vault_refs.items():
         refs.setdefault(name, set()).update(paths)
     return refs, counts
@@ -422,11 +430,11 @@ def trim_bulk(repo=REPO, scratch=None, keep_days=14, bulk_bytes=BULK_BYTES, now=
     return removed, failed
 
 
-def archive_entry(path, scratch, vault, files=None):
+def archive_entry(path, scratch, vault, files=None, repo=REPO):
     """Copy the named files (default: every .md) into the vault archive with key shapes masked and verify each copy.
 
     Returns (archive folder, [(path relative to the entry, matches masked)] for each file that held any)."""
-    dest_root = Path(vault) / ARCHIVE_DIR / time.strftime('%Y-%m') / path.name
+    dest_root = Path(vault) / vault_docs(repo) / 'Archived' / 'Scratch' / time.strftime('%Y-%m') / path.name
     if path.is_file():
         sources = [path]
     elif files is not None:
@@ -537,7 +545,7 @@ def apply(inv, verdicts, vault):
             continue
         try:
             if verdict == 'ARCHIVE':
-                dest, masked = archive_entry(path, scratch, vault, verdicts[name].get('archiveFiles'))
+                dest, masked = archive_entry(path, scratch, vault, verdicts[name].get('archiveFiles'), repo)
             unremoved = remove_entry_with_worktrees(path, repo)
         except OSError as exc:
             totals['failed'] += 1
@@ -583,6 +591,14 @@ def main(argv=None):
     trm.add_argument('--repo', default=str(REPO))
     trm.add_argument('--scratch')
     args = parser.parse_args(argv)
+    try:
+        return _run(args)
+    except ValueError as exc:
+        print('scratch_prune: {}'.format(exc), file=sys.stderr)
+        return 2
+
+
+def _run(args):
     if args.cmd == 'trim':
         removed, failed = trim_bulk(repo=args.repo, scratch=args.scratch, keep_days=args.keep_days,
                                     bulk_bytes=args.bulk_bytes)

@@ -3,7 +3,7 @@
 
 Reads the session JSON on stdin and renders one line:
 
-    Fable 5 ·high | {{PROJECT_NAME}} | ctx 42% | cache 98% (r487k w8k) | sess 96%
+    Fable 5 ·high | <project> | ctx 42% | cache 98% (r487k w8k) | sess 96%
     | warm 48m | boot 69k | miss 1.2M x3 tools_changed | $12.34
 
 `boot` is the session's opening write — the prefix every session pays for once

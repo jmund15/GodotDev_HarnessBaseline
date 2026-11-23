@@ -81,7 +81,8 @@ DEFAULTS: dict = {
     "index_prebuild": [],
     # commands/worklog.md, skills/worklog_reference/SKILL.md: [long form, short form] pairs; `get worklog_domains`.
     "worklog_domains": [],
-    # commands/worklog.md (`get project_name`, `get vault_root`): the values the vault paths use.
+    # tools/worklog.py, tools/scratch_prune.py and the vault-path commands and skills (`get project_name`,
+    # `get vault_root`): the values the vault paths use.
     "project_name": "",
     "vault_root": "",
     # commands/overnight.md, commands/overnight_review.md, hooks/overnight_ask_guard.py: the Overnight Close-doc directory.

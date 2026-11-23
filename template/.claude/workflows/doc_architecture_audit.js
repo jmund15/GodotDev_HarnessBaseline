@@ -123,7 +123,7 @@ const FINDING_SCHEMA_TEXT = [
 const READ_TOOLING = 'Read vault docs with native Read/Glob/Grep under the documentation root: ' + DOC_ROOT + ' . Do NOT re-read Start Here or the folder structure — they are already in the CONTEXT block below (push-don\'t-pull). IMPORTANT: the vault is on OneDrive (Files-On-Demand), so a doc read can transiently return empty/"No such file" while the file hydrates. An empty or missing read is NOT proof of absence — retry the same Read once before concluding a doc is missing, and only flag a doc as absent if the CONTEXT manifest also lacks it. Never emit a finding from a single failed read.'
 
 const STRUCTURAL = [
-  'You are auditing documentation STRUCTURE for the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).',
+  'You are auditing documentation STRUCTURE for this project (stack per `.claude/reference/project_stack.md`).',
   'Your role: check template completeness, compliance, formatting standards, and naming consistency across all documented systems.',
   READ_TOOLING, '', CONTEXT, '', FINDING_SCHEMA_TEXT, '',
   '## Your Checks',
@@ -136,7 +136,7 @@ const STRUCTURAL = [
 ].join('\n')
 
 const CROSSREF = [
-  'You are auditing CROSS-REFERENCES and system boundaries in documentation for the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).',
+  'You are auditing CROSS-REFERENCES and system boundaries in documentation for this project (stack per `.claude/reference/project_stack.md`).',
   'Your role: build a directed link graph from Related Systems callouts, verify link integrity, detect boundary overlaps.',
   READ_TOOLING, '', CONTEXT, '', FINDING_SCHEMA_TEXT, '',
   '## Your Checks',
@@ -149,7 +149,7 @@ const CROSSREF = [
 ].join('\n')
 
 const DOMAIN = [
-  'You are auditing DOMAIN hierarchy and navigation quality in documentation for the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).',
+  'You are auditing DOMAIN hierarchy and navigation quality in documentation for this project (stack per `.claude/reference/project_stack.md`).',
   'Your role: verify Start Here coverage, domain classification accuracy, entry-point correctness, hub needs, archived-doc hygiene, and domain cohesion/isolation.',
   READ_TOOLING, '', CONTEXT, '', FINDING_SCHEMA_TEXT, '',
   '## Your Checks',
