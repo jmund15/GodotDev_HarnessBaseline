@@ -845,52 +845,32 @@ def _bulk(paths, cwd):
                or (cwd and os.path.isdir(os.path.join(cwd, p))) for p in paths)
 
 
-def parse_discard(sub, rest, cwd=None):
-    """The destructive action `git <sub> <rest>` names, or None when it destroys nothing recoverable.
-    Parsed once, so the evidence step and the deny message read the same value."""
-    rest = tuple(rest)
-    if sub in ("checkout", "restore"):
-        if sub == "checkout" and not ("--" in rest or "." in rest):
-            return None
-        staged_only = ({"--staged", "-S"} & set(rest)
-                       and not ("--worktree" in rest or "W" in short_flag_chars(rest)))
-        if sub == "restore" and staged_only:
-            return None
-        split = rest.index("--") if "--" in rest else len(rest)
-        head = rest[:split]
-        paths = tuple(rest[split + 1:]) if "--" in rest else tuple(a for a in rest if not a.startswith("-"))
-        flags = tuple(a for a in head if a.startswith("-"))
-        return Discard(sub, paths=paths,
-                       refs=tuple(a for a in head if not a.startswith("-")) if sub == "checkout" else (),
-                       flags=flags,
-                       source=next((a.split("=", 1)[1] for a in flags if a.startswith("--source=")), None),
-                       side="theirs" if "--theirs" in flags else "ours" if "--ours" in flags else None,
-                       separated="--" in rest, bulk=_bulk(paths, cwd))
-    if sub == "reset" and "--hard" in rest:
-        return Discard("reset --hard", flags=tuple(a for a in rest if a.startswith("-")))
-    if sub == "clean":
-        chars = short_flag_chars(rest)
-        if "n" not in chars and "--dry-run" not in rest and ("f" in chars or "--force" in rest):
-            return Discard("clean")
+def _parse_tree(sub, rest, cwd):
+    """A checkout or restore that overwrites worktree paths, or None (a branch switch, a staged-only restore)."""
+    if sub == "checkout" and not ("--" in rest or "." in rest):
         return None
-    if sub == "push" and (_PUSH_FORCE & set(rest)
-                          or any(a.startswith(("--force-with-lease=", "--force-if-includes=")) for a in rest)
-                          or "f" in short_flag_chars(rest)):
-        return Discard("force-push")
-    if sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest)):
-        return Discard("branch-delete", flags=tuple(a for a in rest if a.startswith("-")),
-                       targets=tuple(a for a in rest if not a.startswith("-")))
-    if sub == "stash" and rest and rest[0] in ("drop", "clear"):
-        args = rest[1:]
-        return Discard("stash " + rest[0], flags=tuple(a for a in args if a.startswith("-")),
-                       targets=tuple(a for a in args if not a.startswith("-")))
-    if sub == "reflog" and "expire" in rest:
-        return Discard("reflog-expire")
-    if sub == "gc" and any(a == "--prune" or a.startswith("--prune=") for a in rest):
-        return Discard("gc-prune")
-    if sub in ("filter-branch", "filter-repo"):
-        return Discard(sub)
-    return None
+    staged_only = ({"--staged", "-S"} & set(rest)
+                   and not ("--worktree" in rest or "W" in short_flag_chars(rest)))
+    if sub == "restore" and staged_only:
+        return None
+    split = rest.index("--") if "--" in rest else len(rest)
+    head = rest[:split]
+    paths = tuple(rest[split + 1:]) if "--" in rest else tuple(a for a in rest if not a.startswith("-"))
+    flags = tuple(a for a in head if a.startswith("-"))
+    return Discard(sub, paths=paths,
+                   refs=tuple(a for a in head if not a.startswith("-")) if sub == "checkout" else (),
+                   flags=flags,
+                   source=next((a.split("=", 1)[1] for a in flags if a.startswith("--source=")), None),
+                   side="theirs" if "--theirs" in flags else "ours" if "--ours" in flags else None,
+                   separated="--" in rest, bulk=_bulk(paths, cwd))
+
+
+def _flags(rest):
+    return tuple(a for a in rest if a.startswith("-"))
+
+
+def _operands(rest):
+    return tuple(a for a in rest if not a.startswith("-"))
 
 
 def _lost_path(d, cwd, git_env):
@@ -1084,106 +1064,130 @@ def _worktree_clean(cwd, git_env):
     return status is not None and status.strip() == ''
 
 
-def _checkout_retry(d):
+def _tree_facts(d, cwd, git_env, transcript_path):
+    if any((git_env or {}).get(k) for k in ('GIT_DIR', 'GIT_WORK_TREE')):
+        return Evidence(redirected=True)
+    judged, lost = _lost_path(d, cwd, git_env)
+    if judged and lost is None:
+        return Evidence(lossless=True)
+    eligible = d.separated if d.action == "checkout" else bool(d.paths or d.flags or d.refs or d.separated)
+    return Evidence(unstored=(lost,) if lost else (), owned=eligible and _in_own_worktree(cwd, git_env, transcript_path))
+
+
+def _reset_facts(d, cwd, git_env, transcript_path):
+    owned = _in_own_worktree(cwd, git_env, transcript_path)
+    return Evidence(owned=owned, clean=owned and _worktree_clean(cwd, git_env))
+
+
+def _tree_passes(ev):
+    return not ev.redirected and (ev.lossless or ev.owned)
+
+
+_SAVE_FIRST = "save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
+
+
+def _checkout_denial(d, ev):
     if d.bulk:
-        return "then name each file: `git checkout -- <file>` for one saved edit at a time."
-    if d.refs:
-        return "then run `git restore --source=%s -- <path>`." % d.refs[0]
-    return "then the same command passes."
+        retry = "then name each file: `git checkout -- <file>` for one saved edit at a time."
+    elif d.refs:
+        retry = "then run `git restore --source=%s -- <path>`." % d.refs[0]
+    else:
+        retry = "then the same command passes."
+    return ("BLOCKED `git checkout` worktree discard (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
+            "overwrites uncommitted edits to those paths, which may be another session's; another session's "
+            "edit needs the owner's words first. To discard your own edit, " + _SAVE_FIRST + retry)
 
 
-def _restore_retry(d):
+def _restore_denial(d, ev):
     if d.bulk:
-        return "then name each file: `git restore <file>` for one saved edit at a time."
-    if "--worktree" in d.flags or "W" in short_flag_chars(d.flags):
-        return "then run it without `--worktree`/`-W` (restore's default), one saved file at a time."
-    if "-s" in d.flags:
-        return "then spell the source `--source=<ref>` and name one saved file."
-    return "then the same command passes."
+        retry = "then name each file: `git restore <file>` for one saved edit at a time."
+    elif "--worktree" in d.flags or "W" in short_flag_chars(d.flags):
+        retry = "then run it without `--worktree`/`-W` (restore's default), one saved file at a time."
+    elif "-s" in d.flags:
+        retry = "then spell the source `--source=<ref>` and name one saved file."
+    else:
+        retry = "then the same command passes."
+    return ("BLOCKED `git restore` without `--staged` (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
+            "discards uncommitted worktree edits, which may be another session's; another session's edit "
+            "needs the owner's words first. To discard your own edit, " + _SAVE_FIRST + retry)
 
 
-def discard_evidence(d, cwd, git_env=None, transcript_path=None):
-    """The facts one destructive decision reads, gathered once. A fact that cannot be read stays at its unproven
-    value, so the decision denies."""
-    if d.action in ("checkout", "restore"):
-        if any((git_env or {}).get(k) for k in ('GIT_DIR', 'GIT_WORK_TREE')):
-            return Evidence(redirected=True)
-        judged, lost = _lost_path(d, cwd, git_env)
-        if judged and lost is None:
-            return Evidence(lossless=True)
-        eligible = d.separated if d.action == "checkout" else bool(d.paths or d.flags or d.refs or d.separated)
-        return Evidence(unstored=(lost,) if lost else (),
-                        owned=eligible and _in_own_worktree(cwd, git_env, transcript_path))
-    if d.action == "reset --hard":
-        owned = _in_own_worktree(cwd, git_env, transcript_path)
-        return Evidence(owned=owned, clean=owned and _worktree_clean(cwd, git_env))
-    if d.action == "branch-delete":
-        return Evidence(problems=tuple(_branch_deletion_problems(d.targets, d.flags, cwd, git_env)))
-    if d.action == "stash drop":
-        return Evidence(preserved=_stash_preserved(d.flags, d.targets, cwd, git_env))
-    return Evidence()
+def _branch_denial(d, ev):
+    unreachable = [p for p in ev.problems if p.endswith("holds commits no other ref has")]
+    return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: unreachable commits would be lost) — "
+            "force-deleting would lose commits: " + "; ".join(ev.problems) + ". "
+            + ("Name only local branches, with no flag beyond `-D`. " if len(unreachable) < len(ev.problems) else "")
+            + ("Keep each branch's commits reachable with `git update-ref refs/preserve/<name> <branch>`, "
+               "then the same delete passes." if unreachable else ""))
 
 
-def _denial(d, ev):
-    """The block message for a parsed discard, rendered from the same request and evidence the decision read."""
-    if d.action in ("checkout", "restore"):
-        if not ev.redirected and (ev.lossless or ev.owned):
-            return None
-        if d.action == "checkout":
-            return ("BLOCKED `git checkout` worktree discard (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
-                    "overwrites uncommitted edits to those paths, which may be another session's; another session's "
-                    "edit needs the owner's words first. To discard your own edit, save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
-                    + _checkout_retry(d))
-        return ("BLOCKED `git restore` without `--staged` (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
-                "discards uncommitted worktree edits, which may be another session's; another session's edit "
-                "needs the owner's words first. To discard your own edit, "
-                "save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
-                + _restore_retry(d))
-    if d.action == "reset --hard":
-        if ev.owned and ev.clean:
-            return None
-        return ("BLOCKED `git reset --hard` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
-                "discards every uncommitted change in the shared worktree with no undo. Use "
-                "`git reset --keep` to move HEAD and keep local edits.")
-    if d.action == "clean":
-        return ("BLOCKED `git clean -f` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
-                "deletes untracked files permanently (git has no copy). Run the same command with "
-                "`-n` first, then ask the user to confirm.")
-    if d.action == "force-push":
-        return ("BLOCKED force-push (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — rewrites remote "
-                "history and can erase commits other checkouts still depend on. Rebase onto the remote and "
-                "push normally.")
-    if d.action == "branch-delete":
-        if not ev.problems:
-            return None
-        return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: unreachable commits would be lost) — "
-                "force-deleting would lose commits: " + "; ".join(ev.problems) + ". "
-                + ("Name only local branches, with no flag beyond `-D`. "
-                   if any(not p.endswith("holds commits no other ref has") for p in ev.problems) else "")
-                + ("Keep each branch's commits reachable with `git update-ref refs/preserve/<name> <branch>`, "
-                   "then the same delete passes."
-                   if any(p.endswith("holds commits no other ref has") for p in ev.problems) else ""))
-    if d.action == "stash drop":
-        if ev.preserved:
-            return None
-        target = d.targets[0] if d.targets else "stash@{0}"
-        return ("BLOCKED `git stash drop` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — stashed work "
-                "is unreferenced once dropped. With the owner's go-ahead, keep it reachable and drop: "
-                f"`git update-ref refs/preserve/<name> {target}`, then the same drop passes.")
-    if d.action == "stash clear":
-        return ("BLOCKED `git stash clear` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
-                "stashed work is unreferenced once dropped. Leave it; ask the user before discarding.")
-    if d.action == "reflog-expire":
-        return ("BLOCKED `git reflog expire` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — the reflog "
-                "is the last recovery path for lost commits. Leave expiry to git's own schedule.")
-    if d.action == "gc-prune":
-        return ("BLOCKED `git gc --prune` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — permanently "
-                "removes unreachable objects that reflog recovery depends on. Run `git gc` without `--prune`.")
-    if d.action in ("filter-branch", "filter-repo"):
-        return (f"BLOCKED `git {d.action}` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — rewrites every "
-                "commit in place, invalidating all existing clones and hashes. Ask the user for explicit "
-                "go-ahead before rewriting history; never do it in-session.")
-    return None
+def _stash_drop_denial(d, ev):
+    target = d.targets[0] if d.targets else "stash@{0}"
+    return ("BLOCKED `git stash drop` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — stashed work "
+            "is unreferenced once dropped. With the owner's go-ahead, keep it reachable and drop: "
+            f"`git update-ref refs/preserve/<name> {target}`, then the same drop passes.")
+
+
+_GO_AHEAD = "(CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
+
+
+@dataclass(frozen=True)
+class Case:
+    """One git discard the floor judges. `parse(sub, rest, cwd)` returns the parsed call or None; `facts(d, cwd,
+    git_env, transcript_path)` reads the evidence once (None reads none); `passes(ev)` is True when that evidence
+    shows the discard loses nothing (None never passes); `denial` is the block text, or `denial(d, ev)` renders it
+    from the same request and evidence. A new loss case is one row and its table test."""
+    parse: object
+    denial: object
+    facts: object = None
+    passes: object = None
+
+
+CASES = (
+    Case(lambda sub, rest, cwd: _parse_tree(sub, rest, cwd) if sub == "checkout" else None, _checkout_denial,
+         _tree_facts, _tree_passes),
+    Case(lambda sub, rest, cwd: _parse_tree(sub, rest, cwd) if sub == "restore" else None, _restore_denial,
+         _tree_facts, _tree_passes),
+    Case(lambda sub, rest, cwd: Discard("reset --hard", flags=_flags(rest)) if sub == "reset" and "--hard" in rest
+         else None,
+         "BLOCKED `git reset --hard` " + _GO_AHEAD + "discards every uncommitted change in the shared worktree with "
+         "no undo. Use `git reset --keep` to move HEAD and keep local edits.",
+         _reset_facts, lambda ev: ev.owned and ev.clean),
+    Case(lambda sub, rest, cwd: Discard("clean") if sub == "clean" and "n" not in short_flag_chars(rest)
+         and "--dry-run" not in rest and ("f" in short_flag_chars(rest) or "--force" in rest) else None,
+         "BLOCKED `git clean -f` " + _GO_AHEAD + "deletes untracked files permanently (git has no copy). Run the "
+         "same command with `-n` first, then ask the user to confirm."),
+    Case(lambda sub, rest, cwd: Discard("force-push") if sub == "push" and (
+         _PUSH_FORCE & set(rest) or any(a.startswith(("--force-with-lease=", "--force-if-includes=")) for a in rest)
+         or "f" in short_flag_chars(rest)) else None,
+         "BLOCKED force-push " + _GO_AHEAD + "rewrites remote history and can erase commits other checkouts still "
+         "depend on. Rebase onto the remote and push normally."),
+    Case(lambda sub, rest, cwd: Discard("branch-delete", flags=_flags(rest), targets=_operands(rest))
+         if sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest)) else None,
+         _branch_denial,
+         lambda d, cwd, git_env, tp: Evidence(problems=tuple(_branch_deletion_problems(d.targets, d.flags, cwd,
+                                                                                         git_env))),
+         lambda ev: not ev.problems),
+    Case(lambda sub, rest, cwd: Discard("stash drop", flags=_flags(rest[1:]), targets=_operands(rest[1:]))
+         if sub == "stash" and rest[:1] == ("drop",) else None,
+         _stash_drop_denial,
+         lambda d, cwd, git_env, tp: Evidence(preserved=_stash_preserved(d.flags, d.targets, cwd, git_env)),
+         lambda ev: ev.preserved),
+    Case(lambda sub, rest, cwd: Discard("stash clear") if sub == "stash" and rest[:1] == ("clear",) else None,
+         "BLOCKED `git stash clear` " + _GO_AHEAD + "stashed work is unreferenced once dropped. Leave it; ask the "
+         "user before discarding."),
+    Case(lambda sub, rest, cwd: Discard("reflog-expire") if sub == "reflog" and "expire" in rest else None,
+         "BLOCKED `git reflog expire` " + _GO_AHEAD + "the reflog is the last recovery path for lost commits. Leave "
+         "expiry to git's own schedule."),
+    Case(lambda sub, rest, cwd: Discard("gc-prune") if sub == "gc" and any(
+         a == "--prune" or a.startswith("--prune=") for a in rest) else None,
+         "BLOCKED `git gc --prune` " + _GO_AHEAD + "permanently removes unreachable objects that reflog recovery "
+         "depends on. Run `git gc` without `--prune`."),
+    Case(lambda sub, rest, cwd: Discard(sub) if sub in ("filter-branch", "filter-repo") else None,
+         lambda d, ev: "BLOCKED `git %s` " % d.action + _GO_AHEAD + "rewrites every commit in place, invalidating "
+         "all existing clones and hashes. Ask the user for explicit go-ahead before rewriting history; never do it "
+         "in-session."),
+)
 
 
 def verdict(args, cwd=None, git_env=None, transcript_path=None):
@@ -1191,8 +1195,16 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
     checkout/restore discard is judged unsafe."""
     if not args:
         return None
-    d = parse_discard(args[0], args[1:], cwd)
-    return None if d is None else _denial(d, discard_evidence(d, cwd, git_env, transcript_path))
+    sub, rest = args[0], tuple(args[1:])
+    for case in CASES:
+        d = case.parse(sub, rest, cwd)
+        if d is None:
+            continue
+        ev = case.facts(d, cwd, git_env, transcript_path) if case.facts else Evidence()
+        if case.passes and case.passes(ev):
+            return None
+        return case.denial if isinstance(case.denial, str) else case.denial(d, ev)
+    return None
 
 
 # --- Peer losses at commit: stage records, stale blobs, amends (moved from _peer_loss.py) ---------------------
@@ -1376,6 +1388,25 @@ def amend_verdict(rest, cwd, git_env=None, session_id=None):
             "would rewrite it. Commit the change as a new commit." % why)
 
 
+# Each commit-time check: (check(rest, cwd, git_env, session_id, own_trailer) -> denial or None, re-run by the
+# commit-msg hook). The amend check reads HEAD and its trailer, which nothing between the tool call and the hook
+# moves, so the hook skips it; the other two read the index git is writing.
+COMMIT_CHECKS = (
+    (lambda rest, cwd, git_env, session_id, own_trailer: base_verdict(cwd, git_env), True),
+    (lambda rest, cwd, git_env, session_id, own_trailer: amend_verdict(rest, cwd, git_env, session_id), False),
+    (revert_verdict, True),
+)
+
+
+def commit_verdict(rest, cwd, git_env, session_id=None, own_trailer=None, hooked=False):
+    """The first commit-time loss of `git commit <rest>`, or None; `hooked` runs only the checks the hook re-runs."""
+    for check, rechecked in COMMIT_CHECKS:
+        message = None if hooked and not rechecked else check(rest, cwd, git_env, session_id, own_trailer)
+        if message:
+            return message
+    return None
+
+
 def _revert_message(stale):
     if not stale:
         return None
@@ -1387,7 +1418,7 @@ def _revert_message(stale):
 
 
 def commit_msg_check(message_path, environ=None, cwd=None):
-    """Deny text for the commit git is about to write, or None: `base_verdict` and `revert_verdict` re-run inside
+    """Deny text for the commit git is about to write, or None: the `COMMIT_CHECKS` marked for it re-run inside
     git's commit-msg hook (`.claude/githooks/commit-msg`), because the PreToolUse check ran before the commit
     hooks and a peer's commit can land in between. A pathspec (`next-index-*`) or `-a` (`index.lock`) commit takes
     the working tree, and a merge has its own guard, so those pass. The message's own Claude-Session trailer is
@@ -1404,7 +1435,7 @@ def commit_msg_check(message_path, environ=None, cwd=None):
     git_dir = run_git(["rev-parse", "--git-dir"], cwd, git_env)
     if git_dir and os.path.exists(os.path.join(cwd, git_dir.strip(), "MERGE_HEAD")):
         return None
-    return base_verdict(cwd, git_env) or revert_verdict([], cwd, git_env, own_trailer=message_trailer(message_path))
+    return commit_verdict([], cwd, git_env, own_trailer=message_trailer(message_path), hooked=True)
 
 
 def _skips_hooks(rest):
@@ -1444,6 +1475,26 @@ def _unproved_publish(args):
     return bool(args) and (args[0] == "push" or publishes_index(args[0], args[1:]) or writes_index(args))
 
 
+_INIT_VALUE_FLAGS = ("-b", "--initial-branch", "--template", "--separate-git-dir", "--object-format", "--ref-format")
+
+
+def _init_target(rest, target, git_env, expand):
+    """(the path `git init <rest>` makes a repository at, its normalized key, True when no repository has its top
+    there yet)."""
+    named, takes_value = [], False
+    for a in rest:
+        if takes_value:
+            takes_value = False
+        elif a in _INIT_VALUE_FLAGS:
+            takes_value = True
+        elif not a.startswith("-"):
+            named.append(a)
+    made = resolve_cd(target, expand(named[0])) if named else target
+    top = run_git(["rev-parse", "--show-toplevel"], made, git_env)
+    made_key = os.path.normcase(os.path.abspath(made))
+    return made, made_key, top is None or os.path.normcase(os.path.abspath(top.strip())) != made_key
+
+
 def git_verdict(command, cwd, transcript_path=None, session_id=None):
     """The first git loss in `command`, or None. A call inside a shell launcher body (`bash -c`, `eval`, ...)
     borrows no worktree ownership; its resolved repository facts still count."""
@@ -1472,18 +1523,8 @@ def git_verdict(command, cwd, transcript_path=None, session_id=None):
             return expand_literal(token, call.assignments) or token
         key = os.path.normcase(os.path.abspath(target))
         if args[0] == "init":
-            named, takes_value = [], False
-            for a in args[1:]:
-                if takes_value:
-                    takes_value = False
-                elif a in ("-b", "--initial-branch", "--template", "--separate-git-dir", "--object-format", "--ref-format"):
-                    takes_value = True
-                elif not a.startswith("-"):
-                    named.append(a)
-            made = resolve_cd(target, expand(named[0])) if named else target
-            top = run_git(["rev-parse", "--show-toplevel"], made, git_env)
-            made_key = os.path.normcase(os.path.abspath(made))
-            if top is None or os.path.normcase(os.path.abspath(top.strip())) != made_key:
+            made, made_key, fresh = _init_target(args[1:], target, git_env, expand)
+            if fresh:
                 born.add(made_key)
             elif not in_project(made, project_root, git_env):
                 initialized.add(made_key)
@@ -1501,9 +1542,7 @@ def git_verdict(command, cwd, transcript_path=None, session_id=None):
             if problem:
                 message = "BLOCKED commit (memory gotcha_concurrent_session_hazards #16) — %s." % problem
             elif args[0] == "commit":
-                message = (base_verdict(target, git_env)
-                           or amend_verdict(args[1:], target, git_env, session_id)
-                           or revert_verdict(args[1:], target, git_env, session_id))
+                message = commit_verdict(args[1:], target, git_env, session_id)
         if message:
             return message
     return None
