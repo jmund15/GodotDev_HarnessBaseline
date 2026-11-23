@@ -2,7 +2,7 @@
 """
 Hook: PreToolUse on Agent|Workflow — deny dispatch tools inside subagent sessions.
 
-Delegates execute; they do not delegate (orchestration §0 and §11). A delegate-spawned agent bypasses PINS logging and /orchestration_metrics,
+Delegates execute; they do not delegate (orchestration §0 and §11). A delegate-spawned agent bypasses the engine's PINS log line,
 inherits the delegate's model with no effort pin, and can violate single-flight
 (tests/LSP) inside one workflow slot. Deny; the delegate reports the fan-out need
 under couldNotSatisfy and the orchestrator dispatches it pinned.

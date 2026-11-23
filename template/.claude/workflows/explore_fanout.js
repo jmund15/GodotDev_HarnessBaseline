@@ -295,8 +295,8 @@ const CLAIMS_SCHEMA = {
 }
 // SCHEMA-SSOT-END
 
-// `labelPrefix` namespaces the PINS log so a /research fan-out through this engine is separable from
-// an /explore one in /orchestration_metrics. Cosmetic to the run, load-bearing to the cost record.
+// `labelPrefix` namespaces the PINS log line so a /research fan-out through this engine is separable from
+// an /explore one in the run log.
 const LABEL = typeof A.labelPrefix === 'string' && A.labelPrefix.trim() ? A.labelPrefix.trim() : 'explore'
 const resolved = lenses.map(l => ({ ...l, label: LABEL + ':' + l.key }))
 log('PINS ' + JSON.stringify(Object.fromEntries(resolved.map(l => [l.label, PIN(l.model) + '/' + EFF(l.effort) + '/' + profileOf(l).agentType]))))

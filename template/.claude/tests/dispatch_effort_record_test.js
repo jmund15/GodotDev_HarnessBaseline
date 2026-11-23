@@ -1,5 +1,5 @@
 // Proof for the Workflow route's run record: dispatch.js logs each job's requested effort and case on its PINS line
-// (`req:`, `case:`) and its justification on a JUSTIFICATION line, which orchestration_metrics.pin_tokens reads.
+// (`req:`, `case:`) and its justification on a JUSTIFICATION line, the run log's record of what each job was asked for.
 // Runs the engine source on planted args and captures its log lines.
 const fs = require('fs')
 const path = require('path')

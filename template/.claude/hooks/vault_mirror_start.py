@@ -34,7 +34,7 @@ from vault_sync import SYNC_INTERVAL_MIN, default_git_dir
 
 # The first few refused files name the cause; `sync_status.json` holds the full list.
 MAX_REFUSALS_SHOWN = 3
-# Under the 120 s the registration gives the hook (settings.project.json).
+# Under the 120 s the registration gives the hook (settings.json).
 TOOL_TIMEOUT_S = 100
 
 
