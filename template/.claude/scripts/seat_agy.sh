@@ -4,10 +4,16 @@
 # seat.sh sets SEAT_MODEL and SEAT_WRITES. The seat gets the read built-ins; agy_workspace.py writes the floor bridge
 # (.agents/hooks.json) into the workdir first, so a shell call the run still makes passes the floor.
 # The brief is the prompt (stdin); the answer is the envelope's result, on stdout. A failed run exits non-zero with the result on stderr.
-brief="$1"
-workdir="$2"
+# --check prints OK, or one UNAVAILABLE line and exits 4, and starts nothing.
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ag="$here/tools/agy_seat.py"
+if [ "${1:-}" = --check ]; then
+  python3 -c 'import os, sys; sys.exit(0 if os.path.isfile(sys.argv[1]) else 1)' "$(python3 "$ag" bin)" && { echo OK; exit 0; }
+  echo "UNAVAILABLE (agy CLI not found)"
+  exit 4
+fi
+brief="$1"
+workdir="$2"
 # No fence exists for a writing agy seat, and none has been asked for: refuse the row.
 if [ "$SEAT_WRITES" = yes ]; then
   echo "seat_agy.sh: refused: a writing agy seat has no workdir fence; set the row to writes: no" >&2

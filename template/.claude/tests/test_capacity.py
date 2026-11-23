@@ -87,6 +87,11 @@ def test_main_unreadable_and_unknown_seat_exit_codes(monkeypatch, capsys, seat_l
     assert capacity.main(["capacity.py"]) == capacity.UNKNOWN_SEAT
 
 
+def test_the_local_seat_has_no_usage_window_and_can_launch(capsys):
+    assert capacity.main(["capacity.py", "inkling-local"]) == capacity.OK
+    assert capsys.readouterr().out.strip() == "inkling-local: no usage window"
+
+
 def test_session_and_seat_rows_come_from_the_adapter_table(monkeypatch):
     assert capacity.seat_row("session") == {"adapter": "scripts/seat_claude.sh", "configDir": "~/.claude"}
     assert capacity.seat_row("antigravity")["adapter"] == "scripts/seat_agy.sh"
