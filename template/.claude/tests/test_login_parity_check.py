@@ -30,8 +30,9 @@ DRIFT = ("anthropic-secondary: semantic-search@dreb 2.28.0 -> 2.69.0 (update)\n"
 
 
 @pytest.fixture(autouse=True)
-def clean_session_env(monkeypatch):
-    """The proof may itself run inside a sidecar child or a cloud VM; every case sets its own session env."""
+def clean_session_env(monkeypatch, seat_logins):
+    """The proof may itself run inside a sidecar child or a cloud VM; every case sets its own session env. The
+    shipped seat's login is planted (`seat_logins`), since the hook checks nothing on a machine with no external login."""
     monkeypatch.delenv("CLAUDE_CODE_SIDECAR", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)
 

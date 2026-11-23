@@ -66,7 +66,7 @@ def test_last_weekly_reset_is_the_seven_day_reset_minus_a_week_or_none(monkeypat
     assert capacity.last_weekly_reset() is None
 
 
-def test_main_exit_codes_follow_the_floor(monkeypatch, capsys):
+def test_main_exit_codes_follow_the_floor(monkeypatch, capsys, seat_logins):
     ok = {"five_hour": {"used": 10.0, "resets": "t"}, "seven_day": {"used": 50.0, "resets": "t"}}
     assert _run(monkeypatch, ok) == capacity.OK
     assert "5-hour 10.0% used" in capsys.readouterr().out
@@ -77,7 +77,7 @@ def test_main_exit_codes_follow_the_floor(monkeypatch, capsys):
     assert _run(monkeypatch, weekly) == capacity.FLOOR_HIT
 
 
-def test_main_unreadable_and_unknown_seat_exit_codes(monkeypatch, capsys):
+def test_main_unreadable_and_unknown_seat_exit_codes(monkeypatch, capsys, seat_logins):
     def boom(row):
         raise capacity.Unreadable("usage endpoint: HTTP Error 401")
     monkeypatch.setitem(capacity.READS, "scripts/seat_claude.sh", boom)

@@ -9,6 +9,8 @@ capture already points at its own files, so the child's output still lands in th
 import os
 import subprocess
 
+import pytest
+
 # Fixture repos are copied while their template's git may still be writing: `git commit` detaches `maintenance run --auto`
 # (an `objects/maintenance.lock`, then packs), and a `copytree` racing it raises `shutil.Error`. No test wants background
 # git work, so every git a test spawns (also the floor's own, and `git init` templates) starts with it off.
@@ -28,3 +30,14 @@ if os.name == "nt":
         _popen_init(self, *args, **kwargs)
 
     subprocess.Popen.__init__ = _popen_with_handles
+
+
+@pytest.fixture
+def seat_logins(tmp_path, monkeypatch):
+    """A planted home holding the shipped seat's login dir, so a case that reads the shipped `seats.json` sees
+    `claude-secondary` as usable on any machine (a seat whose login is absent is no seat, so CI has none by default)."""
+    home = tmp_path / "seat_home"
+    (home / ".claude-secondary").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home
