@@ -8,8 +8,9 @@ by name or pattern (`pkill`, `killall`, `taskkill /IM` or /FI, `Stop-Process -Na
 `$(pidof ...)`) resolves to the live processes it would stop, read from the same process table the
 KILL_GUARD_PROCESS_TABLE seam plants, and is refused when any match is protected. It is also refused when the table
 cannot be read or the pattern cannot be resolved (an invalid regex, a Where-Object or unparsed /FI filter, an
-`xargs kill` fed by anything but pgrep). A kill whose every match is unprotected passes. Not covered: a PID read
-from a variable or file, `.Kill()` and other in-language kills, and kills inside a script file the command runs.
+`xargs kill` fed by anything but pgrep), or when the call does not name the pids it stops (a variable or a
+substitution operand, `_unnamed_pid_kills`). A kill whose every match is unprotected passes. Not covered:
+`.Kill()` and other in-language kills, and kills inside a script file the command runs.
 
 TaskStop decides on facts it observes in the transcript, never on owner wording (a stop verb, a keep word, an
 AskUserQuestion answer): it passes a task whose completion notice is already there (it stops nothing) and an
@@ -662,9 +663,9 @@ def _name_selectors(cmd):
                     out.append(_where_selector("wmic process where%s" % w.group("cond").rstrip(), w.group("cond")))
                 elif re.search(r"\bprocess\b.*\b(?:delete|call\s+terminate)\b", rest, re.I | re.S):
                     out.append(("wmic process with no condition", None))
-            elif verb == "xargs":
-                if any(a.lower() in ("kill", "taskkill") for a in args) and not any(
-                        v in ("pkill", "pgrep") for v in verbs):
+            elif verb == "xargs" and not _quoted_at(stage, m.start("verb")):
+                if re.match(r"(?:\s+-\S+(?:\s+\d+)?)*\s+(?:kill|taskkill)(?:\.exe)?\b", stage[m.end():], re.I) \
+                        and not any(v in ("pkill", "pgrep") for v in verbs):
                     out.append(("xargs kill fed by a pipeline", None))
     joined = " ".join(stages)
     if re.search(r"win32_process", joined, re.I) and re.search(
@@ -674,6 +675,52 @@ def _name_selectors(cmd):
             out.append(_where_selector("Win32_Process Terminate", f.group(1) or f.group(2)))
         else:
             out.append(("Win32_Process Terminate with no readable filter", None))
+    return out
+
+
+def _quoted_at(text, pos):
+    """True when `pos` in `text` lies inside a quoted span: a mention, never a stage verb. A `-c`/`-Command`/`eval`
+    body is code, and `_code_text` already appends it unquoted."""
+    quote, i = None, 0
+    while i < pos:
+        ch = text[i]
+        if ch == "\\" and quote != "'":
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = None if quote == ch else (ch if quote is None else quote)
+        i += 1
+    return quote is not None
+
+
+def _unnamed_pid_kills(cmd):
+    """Labels of the kills whose pids the call does not name (K-XA, owner 2026-11-23): a `kill`, `taskkill /PID` or
+    `Stop-Process -Id` operand read from a variable or a substitution. `$!` (the call's own background job), a
+    `kill -0` probe and a pgrep/pidof substitution (resolved by name in `_name_selectors`) are named."""
+    resolved = re.search(r"(?:\$\(|`)\s*(?:pgrep|pidof)\b", cmd)
+    out = []
+    for stage in _shell_segments(cmd):
+        if _segment_verb(stage) in READ_ONLY_VERBS | NAME_EXTRA_READERS:
+            continue
+        hits = list(NAME_VERB_RE.finditer(stage))
+        for k, m in enumerate(hits):
+            verb = m.group("verb").lower()
+            if _quoted_at(stage, m.start("verb")):
+                continue
+            args = _kill_args(stage[m.end():hits[k + 1].start() if k + 1 < len(hits) else len(stage)])
+            if verb == "kill":
+                if "-0" in args:
+                    continue
+                operands = [a for a in args if not a.startswith("-")]
+            elif verb == "taskkill":
+                operands = [args[i + 1] for i, a in enumerate(args[:-1]) if a.lower() == "/pid"]
+            elif verb in ("stop-process", "spps"):
+                operands = [args[i + 1] for i, a in enumerate(args[:-1]) if a.lower() == "-id"]
+            else:
+                continue
+            if any((a.startswith("$") and a != "$!") or a.startswith("`") or (a == "" and not resolved)
+                   for a in operands):
+                out.append("%s %s" % (verb, " ".join(args)))
     return out
 
 
@@ -761,7 +808,9 @@ def _code_text(cmd):
 def verdict(cmd, env):
     cmd = _code_text(cmd)
     pid_problems = _pid_problems(cmd, env)
-    name_problems = _name_kill_problems(cmd)
+    name_problems = _name_kill_problems(cmd) + [
+        "  `%s`: the call does not name the pids it stops, so they cannot be read before it acts." % label
+        for label in _unnamed_pid_kills(cmd)]
     if not pid_problems and not name_problems:
         return None
     return ("BLOCKED kill (CLAUDE.core.md §Shell Discipline) — the target is not what a truncated shell list shows.\n"

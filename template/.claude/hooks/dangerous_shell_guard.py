@@ -20,7 +20,8 @@ Blocks, each judged on the resolved target and never on the command's wording:
 - Peer losses at commit: a private index over a moved stage base (`stage_record_loss`), an index whose blobs
   revert a peer's newer commit (`stale_loss`), an amend of a HEAD this session did not make (`amend_loss`), an
   index the floor cannot read (#16), a publish whose repository cannot be proved (`UNPROVED_TARGET`), and a
-  commit an index write precedes in the same command (`SAME_COMMAND_WRITE`).
+  commit an index write precedes in the same command where git's commit-msg hook cannot re-check it
+  (`SAME_COMMAND_WRITE`, `_unhooked_publish`).
 
 Quoted spans and heredoc bodies are data, never commands. `git` parsing goes through `_git_commit.py`.
 
@@ -47,7 +48,8 @@ import _git_commit  # noqa: E402
 if _git_commit.executable_index is None or _git_commit.command_substitutions is None:
     raise ImportError("_shell_lex failed to import: %s" % _git_commit.LEXER_ERROR)
 from _git_commit import (literal_assignments, expand_literal, resolve_cd, segments,  # noqa: E402
-                         git_invocations, run_git, resolve_index, in_project, parse_commit_args, _pathspec_file)
+                         git_invocations, run_git, resolve_index, in_project, parse_commit_args, _pathspec_file,
+                         _SHORT_VALUE_LETTERS)
 from _commit_scope import publishes_index, writes_index  # noqa: E402
 from _checkout_root import worktree_chain  # noqa: E402
 import _git_run  # noqa: E402
@@ -653,7 +655,10 @@ def _is_regenerable_or_scratch(path: str) -> bool:
     """`path` (absolute, normalized) is safe to delete recursively without asking."""
     import tempfile
     if _strictly_under(path, _norm(tempfile.gettempdir())):
-        return not _holds_git(path)
+        # D-TT (owner, 2026-11-23): a temp tree goes with any repository in it, never the protected checkout or a
+        # worktree registered to it.
+        return not any(wt == path or _strictly_under(wt, path)
+                       for wt in [_norm(_project_root())] + _registered_worktrees())
     if _strictly_under(path, _norm(str(Path.home() / ".claude" / "plugins" / "cache"))):
         return not _holds_git(path)  # a plugin's download: the client fetches it again
     parts = _checkout_rel_parts(path)
@@ -1494,6 +1499,38 @@ def commit_msg_check(message_path, environ=None, cwd=None):
     return base_verdict(cwd, git_env) or revert_verdict([], cwd, git_env, own_trailer=message_trailer(message_path))
 
 
+def _skips_hooks(rest):
+    """True when a commit-like call's own flags skip git's commit-msg hook (`-n`, `--no-verify`, a bundled `n`)."""
+    for a in rest:
+        if a == "--":
+            break
+        if a == "--no-verify":
+            return True
+        if a.startswith("-") and not a.startswith("--"):
+            for letter in a[1:]:
+                if letter == "n":
+                    return True
+                if letter in _SHORT_VALUE_LETTERS:
+                    break
+    return False
+
+
+def _unhooked_publish(args, cwd, git_env, command):
+    """True when the commit-time entry cannot re-check what this publication commits (D-IW, owner 2026-11-23): the
+    call skips the hooks, the command overrides git config, the repository's `core.hooksPath` is not
+    `.claude/githooks` with its `commit-msg` present, or the publication amends (the hook re-runs the stage-record
+    and peer-revert checks, not the amend check, which read HEAD before this command moved it)."""
+    if _skips_hooks(args[1:]) or (args[0] == "commit" and parse_commit_args(args[1:])[1]):
+        return True
+    if re.search(r"hookspath|GIT_CONFIG_(?:PARAMETERS|COUNT)", command, re.I):
+        return True
+    configured = run_git(["config", "--get", "core.hooksPath"], cwd, git_env)
+    top = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
+    if not configured or not top or configured.strip().replace("\\", "/").rstrip("/") != ".claude/githooks":
+        return True
+    return not os.path.isfile(os.path.join(top.strip(), ".claude", "githooks", "commit-msg"))
+
+
 def _unproved_publish(args):
     """True when an opaque call (cwd=None) would write the index, publish a commit or push."""
     return bool(args) and (args[0] == "push" or publishes_index(args[0], args[1:]) or writes_index(args))
@@ -1546,7 +1583,7 @@ def git_verdict(command, cwd, transcript_path=None, session_id=None):
         judged_args = [expand(arg) for arg in args] if args[0] in ('checkout', 'restore') else args
         message = verdict(judged_args, target, git_env, owner_transcript)
         if (index_write and not message and key not in born and key not in initialized
-                and publishes_index(args[0], args[1:])):
+                and publishes_index(args[0], args[1:]) and _unhooked_publish(args, target, git_env, command)):
             message = SAME_COMMAND_WRITE % (index_write, index_write)
         if writes_index(args):
             index_write = "git " + args[0]

@@ -72,7 +72,9 @@ def test_a_kill_of_pids_the_call_does_not_name_denies(table, tmp_path, command):
 
 
 @pytest.mark.parametrize("command", ["sleep 100 & kill $!", "kill -0 $PID", "echo kill $PID",
-                                     "python3 .claude/tools/reap.py $PID --dry-run"])
+                                     "python3 .claude/tools/reap.py $PID --dry-run",
+                                     # a real call (replay, 2026-11-23): the shape named inside a quoted note
+                                     'python3 task_record.py add hsr decision "K-XA deny producer|xargs kill." && echo ok'])
 def test_a_named_pid_a_liveness_probe_and_the_stop_tool_allow(table, tmp_path, command):
     assert bash(command, tmp_path).kind == "allow"
 
