@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pre_bash_dispatch sub-hook: deny a Bash command longer than the tool's 8191-character cut.
+"""Floor helper (`_floor.HELPER_NAMES`): deny a Bash command longer than the tool's 8191-character cut.
 
 Class: process, blocking. The Bash tool runs only the first 8191 characters of a command: the cut lands inside a
 quote or heredoc as `unexpected EOF while looking for matching`, or inside a heredoc body and runs silently short.
@@ -20,19 +20,24 @@ def reason(length):
             "with the Write tool, then run that file." % (length, LIMIT))
 
 
+def check(payload):
+    """The deny for a Bash command past the cut, or None."""
+    if not isinstance(payload, dict) or payload.get("tool_name") != "Bash":
+        return None
+    command = (payload.get("tool_input") or {}).get("command")
+    if not isinstance(command, str) or len(command) <= LIMIT:
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                   "permissionDecisionReason": reason(len(command))}}
+
+
 def main():
     try:
-        payload = json.load(sys.stdin)
-        if not isinstance(payload, dict) or payload.get("tool_name") != "Bash":
-            return 0
-        command = (payload.get("tool_input") or {}).get("command")
-        if not isinstance(command, str) or len(command) <= LIMIT:
-            return 0
+        out = check(json.load(sys.stdin))
     except Exception:
         return 0
-    sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-                                                        "permissionDecision": "deny",
-                                                        "permissionDecisionReason": reason(len(command))}}))
+    if out:
+        sys.stdout.write(json.dumps(out))
     return 0
 
 

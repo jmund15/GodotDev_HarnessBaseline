@@ -47,7 +47,7 @@ When a single cross-cutting concern — a cleanup, a migration, a retirement of 
 
 ## User-owned question (ask once per Part, BEFORE the 5-criterion gate runs)
 
-Is this Part's execution inherently user-domain (spatial design, manual content authoring, taste-driven tuning) such that no agent phase applies? Explicit yes → mark `user-owned` (per `_brainstorm_shared/common.md §6.3`), Trigger names the user deliverable, skip the 5-criterion gate (orthogonal). No → run the gate as normal. Hard-but-automatable stays `plan-pending`. Escape-hatch litmus: *"inherently user-domain"* (spatial, taste, manual authoring) ≠ *"hard for the agent right now"*.
+Is this Part's execution inherently user-domain (spatial design, manual content authoring, taste-driven tuning) such that no agent phase applies? Explicit yes → mark `user-owned` (per `skills/_brainstorm_shared/common.md §6.3`), Trigger names the user deliverable, skip the 5-criterion gate (orthogonal). No → run the gate as normal. Hard-but-automatable stays `plan-pending`. Escape-hatch litmus: *"inherently user-domain"* (spatial, taste, manual authoring) ≠ *"hard for the agent right now"*.
 
 ## Part-readiness gate (when can a Part be authored with State=`plan-pending`?)
 

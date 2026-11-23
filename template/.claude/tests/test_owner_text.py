@@ -2,10 +2,10 @@
 """Proof: hooks/_owner_text.classify parses every owner-row shape once, and each consumer's
 projection matches the shape x consumer table in the module docstring.
 
-Consumers: harness_growth_guard (turn start), the
+Consumers: the
 session digest's owner-prompt record (session_digest.owner_prompts, built on
 _transcript_summary.TranscriptSummaryBuilder), the provider guard's `owner:` quote
-(`owner_quote_text`/`owner_quote_rows`) and the `owner_turns` record `tools/verify_claims.py` reads. The
+(`owner_quote_text`/`owner_quote_rows`) and the `owner_turns` record. The
 table is parsed from `_owner_text.__doc__`, so a projection change that is not written into the table
 fails here.
 
@@ -110,7 +110,7 @@ TURN_BEFORE_ANSWERS = "u08"   # the latest turn when the transcript ends at the 
 
 
 def table(doc):
-    """{shape: [harness_growth_guard, digest, provider_guard, owner_turns]} from the docstring; a
+    """{shape: [digest, quote, owner_turns]} from the docstring; a
     column the table lacks reads "(missing)", which no projection matches."""
     rows = {}
     for line in (doc or "").splitlines():
@@ -118,9 +118,9 @@ def table(doc):
         if not s.startswith("|") or set(s) <= set("|-: "):
             continue
         cells = [c.strip() for c in s.strip("|").split("|")]
-        if cells[0] == "shape" or len(cells) < 4:
+        if cells[0] == "shape" or len(cells) < 3:
             continue
-        rows[cells[0]] = (cells[1:5] + ["(missing)"] * 4)[:4]
+        rows[cells[0]] = (cells[1:4] + ["(missing)"] * 3)[:3]
     return rows
 
 
@@ -132,7 +132,6 @@ def main():
         print("FAIL _owner_text imports (%s: %s)" % (type(exc).__name__, exc))
         print("\n0/1 cases pass")
         return 1
-    gg = load("gg", HOOKS / "harness_growth_guard.py")
     sd = load("sd", TOOLS / "session_digest.py")
 
     expected = table(ot.__doc__)
@@ -221,24 +220,19 @@ def main():
         digest = {m["index"]: m["content"] for m in sd.owner_prompts(path)}
         head = Path(tmp) / "head.jsonl"
         head.write_text("\n".join(lines[:13]) + "\n", encoding="utf-8")
-        latest_full = gg._latest_turn_key(str(path))
-        latest_head = gg._latest_turn_key(str(head))
         quotes = ot.owner_quote_rows(str(path))
         missing_file = ot.owner_quote_rows(str(Path(tmp) / "absent.jsonl"))
         turns = ot.owner_turns(str(path)) if hasattr(ot, "owner_turns") else None
         missing_turns = ot.owner_turns(str(Path(tmp) / "absent.jsonl")) if hasattr(ot, "owner_turns") else "absent"
 
-    starts_turn = getattr(gg, "_starts_turn", None)
     turns_by_uuid = {}
     for uuid, text in turns or []:
         turns_by_uuid.setdefault(uuid, []).append(text)
     for (label, entry), row in zip(FIXTURE, rows):
         if not label or label not in expected:
             continue
-        g_cell, s_cell, q_cell, t_cell = expected[label]
+        s_cell, q_cell, t_cell = expected[label]
         name = "%s [%s]" % (label, entry["uuid"])
-        g_ok = starts_turn is not None and {"turn": True, "no turn": False}.get(g_cell) == starts_turn(row)
-        cases.append(("harness_growth_guard %s: %s" % (g_cell, name), bool(g_ok)))
         got = digest.get(row.index)
         s_ok = {"drop": got is None,
                 "text": got == " ".join(row.blocks),
@@ -249,14 +243,12 @@ def main():
         cases.append(("digest %s: %s (got %r)" % (s_cell, name, got), bool(s_ok)))
         q_ok = {"drop": ot.owner_quote_text(row) is None,
                 "text": ot.owner_quote_text(row) == row.text}.get(q_cell)
-        cases.append(("provider_guard %s: %s" % (q_cell, name), bool(q_ok)))
+        cases.append(("quote %s: %s" % (q_cell, name), bool(q_ok)))
         want = {"drop": None, "text": row.text, "args": row.command_args,
                 "label": "\n".join(label_ for _, label_ in row.pairs or ())}.get(t_cell, "(bad cell)")
         held = turns_by_uuid.get(row.uuid, [])
         cases.append(("owner_turns %s: %s" % (t_cell, name), held == [] if want is None else held == [want]))
 
-    cases.append(("growth turn key is the latest turn row's uuid", latest_full == LIVE["command_with_args"]["uuid"]))
-    cases.append(("growth skips no-turn rows back to the last turn row", latest_head == TURN_BEFORE_ANSWERS))
 
     # The provider guard's projection over a real transcript file: what an `owner:` quote can find.
     if quotes is None:
@@ -287,7 +279,7 @@ def main():
                   bool(r["u08"].command_args) and [t for t in turns or [] if t[0] == "u08"] == [("u08", r["u08"].command_args)]))
     cases.append(("an answer carried only by tool_result text has no pairs and is not an owner turn",
                   "u12" not in [uuid for uuid, _ in turns or []]))
-    cases.append(("owner_quote_rows still drops answers (the provider_guard column)",
+    cases.append(("owner_quote_rows still drops answers (the quote column)",
                   not any("Yes, stop it" in text for text in quotes or [])))
     cases.append(("an unreadable transcript is not an empty one for owner_turns", missing_turns is None))
 
@@ -343,44 +335,6 @@ def main():
     cases.append(("an empty-args command (`/compact`) is no owner turn", LIVE["empty_args_command"]["uuid"] not in live_ids))
     cases.append(("the provider guard's quote projection still drops command arguments",
                   not any(COMMAND_WORDS in text for text in live_quotes)))
-
-    # End to end through tools/verify_claims.py over a planted session store holding the live rows.
-    try:
-        vc = load("vc", TOOLS / "verify_claims.py")
-    except Exception as exc:
-        vc = None
-        print("     verify_claims did not import: %s: %s" % (type(exc).__name__, exc))
-    if vc is None:
-        cases.append(("verify_claims imports", False))
-    else:
-        with tempfile.TemporaryDirectory() as tmp:
-            project = Path(tmp) / "project"
-            project.mkdir()
-            store = Path(tmp) / "cfg" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(project))
-            store.mkdir(parents=True)
-            (store / (LIVE_SESSION + ".jsonl")).write_text("\n".join(live_lines) + "\n", encoding="utf-8")
-            env = {"CLAUDE_CONFIG_DIR": str(Path(tmp) / "cfg"), "CLAUDE_PROJECT_DIR": str(project)}
-            saved = {key: os.environ.get(key) for key in list(env) + ["CLAUDE_CODE_SESSION_ID"]}
-            os.environ.update(env)
-            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
-            try:
-                def verdict(item):
-                    result = vc.check_claims([{"id": "x", "evidence": [item]}], root=tmp, session_id=LIVE_SESSION)
-                    entry = result["verdicts"]["x"]
-                    return entry["verdict"], entry["items"][0].get("reason")
-                typed = verdict({"owner": COMMAND_WORDS})
-                quoted_summary = verdict({"owner": SUMMARY_WORDS})
-                typed_prompt = verdict({"owner": " ".join(prompt_row["message"]["content"].split()[:4])})
-            finally:
-                for key, value in saved.items():
-                    if value is None:
-                        os.environ.pop(key, None)
-                    else:
-                        os.environ[key] = value
-        cases.append(("verify_claims: words typed as command arguments are VERIFIED (%s)" % (typed,), typed[0] == "VERIFIED"))
-        cases.append(("verify_claims: words only a compaction summary quotes are UNVERIFIED (%s)" % (quoted_summary,),
-                      quoted_summary == ("UNVERIFIED", "quote-absent")))
-        cases.append(("verify_claims: a real owner prompt is still VERIFIED (%s)" % (typed_prompt,), typed_prompt[0] == "VERIFIED"))
 
     holds = getattr(ot, "holds_token", None)
     cases.append(("holds_token finds the word-bounded --token", bool(holds) and holds("use --lean now", "lean")))

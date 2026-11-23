@@ -23,7 +23,7 @@ try {
 }
 // EVIDENCE-SSOT-BEGIN
 const EVIDENCE_SCHEMA = {
-  "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; the /review quote check (tools/quote_check.py) is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
+  "description": "The evidence contract's machine twin (tools/quote_check.py owns the semantics and is its one executable implementation). A claim's `evidence` is a list of items, each exactly one of two kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
   "type": "array",
   "items": {
     "oneOf": [
@@ -34,11 +34,11 @@ const EVIDENCE_SCHEMA = {
           "file",
           "quote"
         ],
-        "description": "A quote from a local file. VERIFIED when the quote (case-folded, in-order `...` gaps allowed, a leading `path:N:` or `N:` grep prefix stripped) occurs in the file; UNVERIFIED when the file is readable and lacks it or does not exist; UNCHECKED when the file cannot be read.",
+        "description": "A quote from a local file, or an owner quote when `file` is the session transcript `.jsonl` (the words are in one owner-typed record). Holds when the quote, whitespace runs collapsed, is in the file; a line range is never checked.",
         "properties": {
           "file": {
             "type": "string",
-            "description": "repository-relative or absolute path, optionally with :N or :N-M; the line range is reported, never decisive"
+            "description": "path relative to the checkout root or absolute, optionally with :N or :N-M"
           },
           "quote": {
             "type": "string",
@@ -53,7 +53,7 @@ const EVIDENCE_SCHEMA = {
           "command",
           "output"
         ],
-        "description": "The stdout of a read-only git command from the allow-list (git grep, ls-files, ls-tree, log, show, branch, check-ignore, cat-file, rev-parse, diff --stat or --name-only, status --short), run without a shell from the repository root. VERIFIED when stdout holds the output, or when output is empty, stdout is empty and every pathspec the command names matches a tracked path. Any other command, a shell metacharacter, an unlisted flag or a timeout is UNCHECKED. One leading `git -C <dir>` (an existing repository-relative directory, where the command then runs) and `check-ignore --no-index` are allowed.",
+        "description": "The stdout of a read-only git command on quote_check.py's allow-list, run without a shell from the checkout root. Holds when the stdout holds the output; an empty output holds only when stdout is empty and every pathspec the command names is tracked.",
         "properties": {
           "command": {
             "type": "string",
@@ -64,108 +64,19 @@ const EVIDENCE_SCHEMA = {
             "description": "a verbatim run of the command's stdout, or the empty string for an absent claim"
           }
         }
-      },
-      {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "owner"
-        ],
-        "description": "The owner's verbatim words. VERIFIED when an owner turn of the session transcript holds them (an AskUserQuestion answer is an owner turn when the item also carries its `question`; a runtime envelope is not), or when a row of the named task record holds them and still resolves. A delegate-recorded, missing or unresolved row, or an unreadable transcript, is UNCHECKED.",
-        "properties": {
-          "owner": {
-            "type": "string",
-            "description": "the owner's words, verbatim"
-          },
-          "question": {
-            "type": "string",
-            "description": "the AskUserQuestion question the owner answered; required when the quote is a picked option label"
-          },
-          "task": {
-            "type": "string",
-            "description": "a task record id whose condition rows may hold the words when this session's transcript does not"
-          }
-        }
-      },
-      {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "url",
-          "quote"
-        ],
-        "description": "A quote from an external page. A fetched artifact (fetch_source.sh manifest) is checked like a file; without one the item is UNCHECKED.",
-        "properties": {
-          "url": {
-            "type": "string",
-            "description": "the page the quote was read from"
-          },
-          "quote": {
-            "type": "string",
-            "description": "verbatim from the fetched bytes"
-          },
-          "artifact": {
-            "type": "string",
-            "description": "local path of the fetched bytes"
-          }
-        }
       }
     ]
   }
 }
-const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; the /review quote check (tools/quote_check.py) is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
+const EVIDENCE_RULES = "The evidence contract's machine twin (tools/quote_check.py owns the semantics and is its one executable implementation). A claim's `evidence` is a list of items, each exactly one of two kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
 // EVIDENCE-SSOT-END
 
-// CLOSE-CHECK-BEGIN
 // ENGINE-BLOCK-BEGIN repoRootOf
 function repoRootOf(a) {
   const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
   return /^([A-Za-z]:)?\//.test(root) ? root : ''
 }
 // ENGINE-BLOCK-END repoRootOf
-// ENGINE-BLOCK-BEGIN rootedPath
-function rootedPath(a, p) {
-  const root = repoRootOf(a)
-  return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
-}
-// ENGINE-BLOCK-END rootedPath
-// ENGINE-BLOCK-BEGIN cdRootPrefix
-function cdRootPrefix(a) {
-  const root = repoRootOf(a)
-  return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
-}
-// ENGINE-BLOCK-END cdRootPrefix
-// ENGINE-BLOCK-BEGIN VERDICTS
-const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
-// ENGINE-BLOCK-END VERDICTS
-// ENGINE-BLOCK-BEGIN applyVerdicts
-const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
-  const supplied = verdicts[keyOf(item)]
-  const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
-  return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
-})
-// ENGINE-BLOCK-END applyVerdicts
-// ENGINE-BLOCK-BEGIN boundedVerification
-const boundedVerification = verification => ({
-  status: verification.status, counts: verification.counts, report: verification.report,
-  ...(verification.note ? { note: verification.note } : {}),
-  nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
-})
-// ENGINE-BLOCK-END boundedVerification
-// ENGINE-BLOCK-BEGIN closeCheck
-// The engine verifies no claim: /review checks a findings file with tools/quote_check.py (T4). Every item stays
-// UNCHECKED, so callers read the same shape and no verifier agent is launched.
-const closeCheck = async (mode, { items, keyOf }) => {
-  const keys = items.map(keyOf)
-  if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
-    || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
-  const verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-    verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: null,
-    note: 'claims are checked by /review (tools/quote_check.py); the engine checks none' }
-  return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
-}
-// ENGINE-BLOCK-END closeCheck
-// CLOSE-CHECK-END
 
 const lenses = Array.isArray(A.lenses) ? A.lenses : []
 // ENGINE-BLOCK-BEGIN RESULT_MODE
@@ -562,7 +473,7 @@ for (const c of stamped) {
 }
 
 const contradictions = []
-let claims = []
+const claims = []
 for (const [k, group] of groups) {
   const lensesInGroup = [...new Set(group.map(c => c.lens))]
   const polarities = [...new Set(group.map(c => c.polarity))]
@@ -606,10 +517,6 @@ claims.sort((a, b) => {
   return va - vb
 })
 
-const closed = await closeCheck('claims', { items: claims, keyOf: c => c.lens + '#' + c.index })
-claims = closed.items
-const verification = closed.verification
-
 const counts = {
   lenses: lenses.length,
   claims: claims.length,
@@ -652,7 +559,7 @@ const status = unavailable === coverage.requested
   : (unavailable > 0 ? 'uncovered' : (coverage.partial > 0 ? 'partial' : 'completed'))
 if (RESULT_MODE === 'bounded') {
   // The byte cap holds so one orchestrator read carries every count, flag and uncovered lens; tools/workflow_replay.mjs recovers
-  // the full result locally from the run record and journal (session_digest.py --workflow-full), with no model call.
+  // the full result locally from the run record and journal (session_digest.py --workflow-dir), with no model call.
   // The string clip, collection widths, depth and count of fully detailed claims and contradictions serve that cap only: keep enough of
   // each collection to orient the reader, show contested and corroborated claims inline first, and shed the rest to the journal by
   // journalSelector in the shed order below, never dropping a count, a contradiction or an uncovered lens. review_fanout.js holds a copy because a Workflow script cannot import.
@@ -690,7 +597,6 @@ if (RESULT_MODE === 'bounded') {
         id: claim.id,
         lens: claim.lens,
         index: claim.index,
-        verdict: claim.verdict,
         confidence: claim.confidence,
         journalSelector: claim.id,
       }
@@ -723,7 +629,6 @@ if (RESULT_MODE === 'bounded') {
   // structurally — only clipText's own truncation of a long `detail` marks the collection clipped.
   const flagPreview = (row) => ({ kind: row.kind, lens: row.lens ?? null, detail: clipText(row.detail || '', 'flags', 120) })
   const state = {
-    nonVerified: boundedVerification(verification).nonVerified,
     claims: claims.filter((claim, index) => index < 4 || processedClaimIds.has(claim.id))
       .map((claim, index) => claimPreview(claim, index < 4)),
     contradictions: contradictions.map((row, index) => contradictionPreview(row, index < 3)),
@@ -732,7 +637,6 @@ if (RESULT_MODE === 'bounded') {
     perLens: perLens.slice(0, 10).map(row => boundValue(row, 'perLens')),
   }
   const totals = {
-    nonVerified: state.nonVerified.length,
     claims: claims.length,
     contradictions: contradictions.length,
     flags: flags.length,
@@ -748,8 +652,7 @@ if (RESULT_MODE === 'bounded') {
     perLens: perLens.length,
   })
   if (SPILL_DIR) fullCounts.spillMetadata = totals.spillMetadata
-  const commandBase = 'python3 .claude/tools/session_digest.py --workflow-dir "<transcriptDir-from-Workflow-result>"'
-  const expectedHash = '--expect-journal-sha256 <sha256-from-manifest>'
+  const readCommand = 'python3 .claude/tools/session_digest.py --workflow-dir "<transcriptDir-from-Workflow-result>"'
   const renderBounded = () => {
     const preview = {}
     for (const name of Object.keys(totals)) {
@@ -767,7 +670,6 @@ if (RESULT_MODE === 'bounded') {
       gaps: state.gaps,
       counts,
       perLens: state.perLens,
-      verification: { ...boundedVerification(verification), nonVerified: state.nonVerified },
     }
     output.delivery = {
       contract: 'native-fanout-bounded/v1',
@@ -778,7 +680,6 @@ if (RESULT_MODE === 'bounded') {
       byteLimitExceeded: false,
       payloadComplete: Object.values(preview).every(row => row.complete),
       processedState: {
-        nonVerifiedInline: state.nonVerified.length === totals.nonVerified,
         changedClaimsInline: true,
         contradictionsInline: true,
         engineFlagsInline: true,
@@ -799,18 +700,12 @@ if (RESULT_MODE === 'bounded') {
         source: 'workflow-journal',
         delivered: false,
         relativePath: 'journal.jsonl',
-        validation: 'required',
         transcriptDirRequired: true,
         selectors: 'C<number>',
         sourceOrder: 'started-agent order, then item-array order',
         contains: 'raw lens claims, checked provenance, and gaps',
         doesNotContain: 'engine confidence changes, contested/corroborated tags, contradictions, or engine flags; those remain inline',
-        commands: {
-          manifest: commandBase + ' --workflow-manifest',
-          select: commandBase + ' --workflow-select <ID> ' + expectedHash,
-          page: commandBase + ' --workflow-page items|lenses|reports|gaps --page <N> --page-size <N> ' + expectedHash,
-          full: commandBase + ' --workflow-full ' + expectedHash,
-        },
+        commands: { read: readCommand },
       },
     }
     return output
@@ -838,7 +733,6 @@ if (RESULT_MODE === 'bounded') {
       if (state[name].length > 0) { tailTurn = (tailTurn + i + 1) % tailShed.length; return name }
     }
     if (state.perLens.length > 0) return 'perLens'
-    if (state.nonVerified.length > 0) return 'nonVerified'
     return null
   }
   let output = renderBounded()
@@ -852,7 +746,7 @@ if (RESULT_MODE === 'bounded') {
   return output
 }
 
-const output = { claims, contradictions, flags, gaps, counts, perLens, spillDir: SPILL_DIR, verification }
+const output = { claims, contradictions, flags, gaps, counts, perLens, spillDir: SPILL_DIR }
 if (SPILL_DIR) {
   output.spills = Object.fromEntries(resolved.filter(spills).map(lens => [lens.key, spillPath(lens.key)]))
   const inlineLabels = resolved.filter(lens => !spills(lens)).map(lens => lens.key)

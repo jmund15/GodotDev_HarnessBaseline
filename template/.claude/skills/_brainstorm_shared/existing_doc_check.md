@@ -55,4 +55,4 @@ A `brainstorming-complete` doc whose `roadmap.md` predates the current skill sta
 
 - Run the multi-store sweep through `/explore`, never inline: its evidence contract and UNCOVERED-dimension reporting are required.
 - Route each ask to the lens that owns it per the table above; the design-source lens never answers a memory or code-family ask.
-- Bulk reads follow the `read_files` contract in `ai_worker_model_guide.md` and `CLAUDE.core.md` §9.
+- Bulk reads follow the `read_files` contract in `~/.claude/ai_worker_model_guide.md` and `CLAUDE.core.md` §9.

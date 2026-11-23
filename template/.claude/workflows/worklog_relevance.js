@@ -33,7 +33,7 @@ if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind ||
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 // EVIDENCE-SSOT-BEGIN
 const EVIDENCE_SCHEMA = {
-  "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; the /review quote check (tools/quote_check.py) is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
+  "description": "The evidence contract's machine twin (tools/quote_check.py owns the semantics and is its one executable implementation). A claim's `evidence` is a list of items, each exactly one of two kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
   "type": "array",
   "items": {
     "oneOf": [
@@ -44,11 +44,11 @@ const EVIDENCE_SCHEMA = {
           "file",
           "quote"
         ],
-        "description": "A quote from a local file. VERIFIED when the quote (case-folded, in-order `...` gaps allowed, a leading `path:N:` or `N:` grep prefix stripped) occurs in the file; UNVERIFIED when the file is readable and lacks it or does not exist; UNCHECKED when the file cannot be read.",
+        "description": "A quote from a local file, or an owner quote when `file` is the session transcript `.jsonl` (the words are in one owner-typed record). Holds when the quote, whitespace runs collapsed, is in the file; a line range is never checked.",
         "properties": {
           "file": {
             "type": "string",
-            "description": "repository-relative or absolute path, optionally with :N or :N-M; the line range is reported, never decisive"
+            "description": "path relative to the checkout root or absolute, optionally with :N or :N-M"
           },
           "quote": {
             "type": "string",
@@ -63,7 +63,7 @@ const EVIDENCE_SCHEMA = {
           "command",
           "output"
         ],
-        "description": "The stdout of a read-only git command from the allow-list (git grep, ls-files, ls-tree, log, show, branch, check-ignore, cat-file, rev-parse, diff --stat or --name-only, status --short), run without a shell from the repository root. VERIFIED when stdout holds the output, or when output is empty, stdout is empty and every pathspec the command names matches a tracked path. Any other command, a shell metacharacter, an unlisted flag or a timeout is UNCHECKED. One leading `git -C <dir>` (an existing repository-relative directory, where the command then runs) and `check-ignore --no-index` are allowed.",
+        "description": "The stdout of a read-only git command on quote_check.py's allow-list, run without a shell from the checkout root. Holds when the stdout holds the output; an empty output holds only when stdout is empty and every pathspec the command names is tracked.",
         "properties": {
           "command": {
             "type": "string",
@@ -74,117 +74,13 @@ const EVIDENCE_SCHEMA = {
             "description": "a verbatim run of the command's stdout, or the empty string for an absent claim"
           }
         }
-      },
-      {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "owner"
-        ],
-        "description": "The owner's verbatim words. VERIFIED when an owner turn of the session transcript holds them (an AskUserQuestion answer is an owner turn when the item also carries its `question`; a runtime envelope is not), or when a row of the named task record holds them and still resolves. A delegate-recorded, missing or unresolved row, or an unreadable transcript, is UNCHECKED.",
-        "properties": {
-          "owner": {
-            "type": "string",
-            "description": "the owner's words, verbatim"
-          },
-          "question": {
-            "type": "string",
-            "description": "the AskUserQuestion question the owner answered; required when the quote is a picked option label"
-          },
-          "task": {
-            "type": "string",
-            "description": "a task record id whose condition rows may hold the words when this session's transcript does not"
-          }
-        }
-      },
-      {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "url",
-          "quote"
-        ],
-        "description": "A quote from an external page. A fetched artifact (fetch_source.sh manifest) is checked like a file; without one the item is UNCHECKED.",
-        "properties": {
-          "url": {
-            "type": "string",
-            "description": "the page the quote was read from"
-          },
-          "quote": {
-            "type": "string",
-            "description": "verbatim from the fetched bytes"
-          },
-          "artifact": {
-            "type": "string",
-            "description": "local path of the fetched bytes"
-          }
-        }
       }
     ]
   }
 }
-const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; the /review quote check (tools/quote_check.py) is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
+const EVIDENCE_RULES = "The evidence contract's machine twin (tools/quote_check.py owns the semantics and is its one executable implementation). A claim's `evidence` is a list of items, each exactly one of two kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
 // EVIDENCE-SSOT-END
 
-// CLOSE-CHECK-BEGIN
-// ENGINE-BLOCK-BEGIN repoRootOf
-function repoRootOf(a) {
-  const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
-  return /^([A-Za-z]:)?\//.test(root) ? root : ''
-}
-// ENGINE-BLOCK-END repoRootOf
-// ENGINE-BLOCK-BEGIN rootedPath
-function rootedPath(a, p) {
-  const root = repoRootOf(a)
-  return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
-}
-// ENGINE-BLOCK-END rootedPath
-// ENGINE-BLOCK-BEGIN cdRootPrefix
-function cdRootPrefix(a) {
-  const root = repoRootOf(a)
-  return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
-}
-// ENGINE-BLOCK-END cdRootPrefix
-// ENGINE-BLOCK-BEGIN VERDICTS
-const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
-// ENGINE-BLOCK-END VERDICTS
-// ENGINE-BLOCK-BEGIN applyVerdicts
-const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
-  const supplied = verdicts[keyOf(item)]
-  const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
-  return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
-})
-// ENGINE-BLOCK-END applyVerdicts
-// ENGINE-BLOCK-BEGIN boundedVerification
-const boundedVerification = verification => ({
-  status: verification.status, counts: verification.counts, report: verification.report,
-  ...(verification.note ? { note: verification.note } : {}),
-  nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
-})
-// ENGINE-BLOCK-END boundedVerification
-// A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
-// ENGINE-BLOCK-BEGIN verifierAgent
-const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
-  const msg = String((e && e.message) || e)
-  if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-  log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
-  return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
-})
-// ENGINE-BLOCK-END verifierAgent
-// ENGINE-BLOCK-BEGIN closeCheck
-// The engine verifies no claim: /review checks a findings file with tools/quote_check.py (T4). Every item stays
-// UNCHECKED, so callers read the same shape and no verifier agent is launched.
-const closeCheck = async (mode, { items, keyOf }) => {
-  const keys = items.map(keyOf)
-  if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
-    || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
-  const verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-    verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: null,
-    note: 'claims are checked by /review (tools/quote_check.py); the engine checks none' }
-  return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
-}
-// ENGINE-BLOCK-END closeCheck
-// CLOSE-CHECK-END
 
 // Model vocabulary comes only from args.__transport, which hooks/workflow_transport.py injects on
 // every Workflow call: {name, ids, efforts?}. This engine holds no model list, so a
@@ -306,7 +202,7 @@ const r = await agent(prompt, { label: 'worklog:relevance', phase: 'Relevance', 
 
 // Unambiguous empty: `count` is always present, so a caller never has to distinguish "no overlaps"
 // from "the agent returned nothing".
-let overlaps = (r && Array.isArray(r.overlaps)) ? r.overlaps : []
+const overlaps = (r && Array.isArray(r.overlaps)) ? r.overlaps : []
 // `checked` must reach the caller: the schema forces the delegate to declare what it inspected, and
 // discarding that here would restore the exact ambiguity it exists to remove — an empty `overlaps`
 // with obsidianOpened:false is an incomplete check, not a clean sweep.
@@ -315,11 +211,4 @@ log('OVERLAPS ' + overlaps.length + ' (stoppedAt=' + (checked ? checked.stoppedA
   + ', obsidianOpened=' + (checked ? checked.obsidianOpened : 'UNREPORTED')
   + ', shortlisted=' + (checked && Array.isArray(checked.shortlisted) ? checked.shortlisted.length : '?') + ')')
 if (checked && checked.basis) { log('BASIS ' + checked.basis) }
-const sourceItems = overlaps.map((item, index) => Object.assign({}, item, {lens: 'worklog:relevance', index: index + 1}))
-sourceItems.push(Object.assign({}, checked || {evidence: []}, {lens: 'worklog:relevance', index: 'checked'}))
-const closed = await closeCheck('claims', {items: sourceItems, keyOf: item => item.lens + '#' + item.index, out: '.claude/scratch/worklog_relevance_claims.json',
-  seats: [{ label: 'worklog:relevance', model: PIN(A.model), effort: EFF(A.effort), tier: A.tier }] })
-overlaps = closed.items.slice(0, -1)
-checked = closed.items[closed.items.length - 1]
-const verification = closed.verification
-return { count: overlaps.length, overlaps, checked, verification }
+return { count: overlaps.length, overlaps, checked }

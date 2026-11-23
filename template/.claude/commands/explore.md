@@ -59,7 +59,7 @@ Each pin comes from `orchestration`'s table for a read-heavy survey. The engine 
 
 - Account for every selected lens: one that did not run or returned nothing leaves its dimension UNCOVERED, never clean. Recover a missing lens from its spill file or with `/session_digest --workflow-dir <transcript dir>` before anything else.
 - Account for every question: name the claims that answer it; a question with none is UNCOVERED.
-- Read the cited source of every claim the engine did not mark verified before it enters the report. Re-run the `{command, output}` evidence of an `absent` claim a design decision will rest on.
+- Run `python3 .claude/tools/quote_check.py <the engine's result.json> --root <checkout>`; the engine checks no claim itself, so every claim is `UNCHECKED` until then. Read the cited source of each printed miss before it enters the report. Re-run the `{command, output}` evidence of an `absent` claim a design decision will rest on.
 - Verify a premise contradiction first-party. Settle conflicting claims on their evidence, never on order or count.
 
 Report the topic, lenses run and skipped, counts and the run directory briefly, then the material claims:

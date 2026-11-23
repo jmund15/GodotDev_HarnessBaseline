@@ -29,7 +29,7 @@ if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind ||
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 // EVIDENCE-SSOT-BEGIN
 const EVIDENCE_SCHEMA = {
-  "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; the /review quote check (tools/quote_check.py) is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
+  "description": "The evidence contract's machine twin (tools/quote_check.py owns the semantics and is its one executable implementation). A claim's `evidence` is a list of items, each exactly one of two kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
   "type": "array",
   "items": {
     "oneOf": [
@@ -40,11 +40,11 @@ const EVIDENCE_SCHEMA = {
           "file",
           "quote"
         ],
-        "description": "A quote from a local file. VERIFIED when the quote (case-folded, in-order `...` gaps allowed, a leading `path:N:` or `N:` grep prefix stripped) occurs in the file; UNVERIFIED when the file is readable and lacks it or does not exist; UNCHECKED when the file cannot be read.",
+        "description": "A quote from a local file, or an owner quote when `file` is the session transcript `.jsonl` (the words are in one owner-typed record). Holds when the quote, whitespace runs collapsed, is in the file; a line range is never checked.",
         "properties": {
           "file": {
             "type": "string",
-            "description": "repository-relative or absolute path, optionally with :N or :N-M; the line range is reported, never decisive"
+            "description": "path relative to the checkout root or absolute, optionally with :N or :N-M"
           },
           "quote": {
             "type": "string",
@@ -59,7 +59,7 @@ const EVIDENCE_SCHEMA = {
           "command",
           "output"
         ],
-        "description": "The stdout of a read-only git command from the allow-list (git grep, ls-files, ls-tree, log, show, branch, check-ignore, cat-file, rev-parse, diff --stat or --name-only, status --short), run without a shell from the repository root. VERIFIED when stdout holds the output, or when output is empty, stdout is empty and every pathspec the command names matches a tracked path. Any other command, a shell metacharacter, an unlisted flag or a timeout is UNCHECKED. One leading `git -C <dir>` (an existing repository-relative directory, where the command then runs) and `check-ignore --no-index` are allowed.",
+        "description": "The stdout of a read-only git command on quote_check.py's allow-list, run without a shell from the checkout root. Holds when the stdout holds the output; an empty output holds only when stdout is empty and every pathspec the command names is tracked.",
         "properties": {
           "command": {
             "type": "string",
@@ -70,117 +70,13 @@ const EVIDENCE_SCHEMA = {
             "description": "a verbatim run of the command's stdout, or the empty string for an absent claim"
           }
         }
-      },
-      {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "owner"
-        ],
-        "description": "The owner's verbatim words. VERIFIED when an owner turn of the session transcript holds them (an AskUserQuestion answer is an owner turn when the item also carries its `question`; a runtime envelope is not), or when a row of the named task record holds them and still resolves. A delegate-recorded, missing or unresolved row, or an unreadable transcript, is UNCHECKED.",
-        "properties": {
-          "owner": {
-            "type": "string",
-            "description": "the owner's words, verbatim"
-          },
-          "question": {
-            "type": "string",
-            "description": "the AskUserQuestion question the owner answered; required when the quote is a picked option label"
-          },
-          "task": {
-            "type": "string",
-            "description": "a task record id whose condition rows may hold the words when this session's transcript does not"
-          }
-        }
-      },
-      {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "url",
-          "quote"
-        ],
-        "description": "A quote from an external page. A fetched artifact (fetch_source.sh manifest) is checked like a file; without one the item is UNCHECKED.",
-        "properties": {
-          "url": {
-            "type": "string",
-            "description": "the page the quote was read from"
-          },
-          "quote": {
-            "type": "string",
-            "description": "verbatim from the fetched bytes"
-          },
-          "artifact": {
-            "type": "string",
-            "description": "local path of the fetched bytes"
-          }
-        }
       }
     ]
   }
 }
-const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; the /review quote check (tools/quote_check.py) is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
+const EVIDENCE_RULES = "The evidence contract's machine twin (tools/quote_check.py owns the semantics and is its one executable implementation). A claim's `evidence` is a list of items, each exactly one of two kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
 // EVIDENCE-SSOT-END
 
-// CLOSE-CHECK-BEGIN
-// ENGINE-BLOCK-BEGIN repoRootOf
-function repoRootOf(a) {
-  const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
-  return /^([A-Za-z]:)?\//.test(root) ? root : ''
-}
-// ENGINE-BLOCK-END repoRootOf
-// ENGINE-BLOCK-BEGIN rootedPath
-function rootedPath(a, p) {
-  const root = repoRootOf(a)
-  return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
-}
-// ENGINE-BLOCK-END rootedPath
-// ENGINE-BLOCK-BEGIN cdRootPrefix
-function cdRootPrefix(a) {
-  const root = repoRootOf(a)
-  return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
-}
-// ENGINE-BLOCK-END cdRootPrefix
-// ENGINE-BLOCK-BEGIN VERDICTS
-const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
-// ENGINE-BLOCK-END VERDICTS
-// ENGINE-BLOCK-BEGIN applyVerdicts
-const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
-  const supplied = verdicts[keyOf(item)]
-  const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
-  return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
-})
-// ENGINE-BLOCK-END applyVerdicts
-// ENGINE-BLOCK-BEGIN boundedVerification
-const boundedVerification = verification => ({
-  status: verification.status, counts: verification.counts, report: verification.report,
-  ...(verification.note ? { note: verification.note } : {}),
-  nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
-})
-// ENGINE-BLOCK-END boundedVerification
-// A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
-// ENGINE-BLOCK-BEGIN verifierAgent
-const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
-  const msg = String((e && e.message) || e)
-  if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-  log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
-  return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
-})
-// ENGINE-BLOCK-END verifierAgent
-// ENGINE-BLOCK-BEGIN closeCheck
-// The engine verifies no claim: /review checks a findings file with tools/quote_check.py (T4). Every item stays
-// UNCHECKED, so callers read the same shape and no verifier agent is launched.
-const closeCheck = async (mode, { items, keyOf }) => {
-  const keys = items.map(keyOf)
-  if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
-    || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
-  const verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-    verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: null,
-    note: 'claims are checked by /review (tools/quote_check.py); the engine checks none' }
-  return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
-}
-// ENGINE-BLOCK-END closeCheck
-// CLOSE-CHECK-END
 
 // args.__transport = {name, ids, efforts?}, injected by hooks/workflow_transport.py. `efforts` is absent when
 // the transport declares no effort vocabulary. No engine supplies a default pin.
@@ -218,7 +114,7 @@ const FINDING_SCHEMA_TEXT = [
   '  "options": null | ["Option A (Recommended) — reason", "Option B — reason"], "scope": ["affected paths or system names"],',
   '  "file": "<path of the doc the finding is about>:<line> or null", "evidence": [{"file": "<absolute path>", "quote": "<VERBATIM text>"}] }',
   'Evidence: ' + EVIDENCE_RULES,
-  '`file` and `evidence` are REQUIRED for a finding about a file\'s content (a missing section, a stale table row, a broken link text): the quote is copied character for character from the doc you read, never your summary, because a checker re-reads the file for it and drops an unmatched finding to unverified. A finding about a file\'s absence or a folder\'s shape sets file to null and supplies canonical command evidence; without a supported command, evidence is an empty array and the finding stays UNCHECKED.',
+  '`file` and `evidence` are REQUIRED for a finding about a file\'s content (a missing section, a stale table row, a broken link text): the quote is copied character for character from the doc you read, never your summary, because the caller re-reads the file for it (tools/quote_check.py) and a quote that is not there is a miss. A finding about a file\'s absence or a folder\'s shape sets file to null and supplies canonical command evidence; without a supported command, evidence is an empty array.',
   'Severity: critical=broken nav/links/missing-blocking-docs; warning=template/format/unidirectional drift; info=hub/naming/orphan/migration.',
   'Action: FIX=mechanical fix with known handler (options null); ASK=needs user judgment (handler null, ranked options recommended-first).',
   'No hallucinated findings — only report issues verified by reading actual files; if uncertain, skip. If no issue for a check, omit it.',
@@ -227,7 +123,7 @@ const FINDING_SCHEMA_TEXT = [
 const READ_TOOLING = 'Read vault docs with native Read/Glob/Grep under the documentation root: ' + DOC_ROOT + ' . Do NOT re-read Start Here or the folder structure — they are already in the CONTEXT block below (push-don\'t-pull). IMPORTANT: the vault is on OneDrive (Files-On-Demand), so a doc read can transiently return empty/"No such file" while the file hydrates. An empty or missing read is NOT proof of absence — retry the same Read once before concluding a doc is missing, and only flag a doc as absent if the CONTEXT manifest also lacks it. Never emit a finding from a single failed read.'
 
 const STRUCTURAL = [
-  'You are auditing documentation STRUCTURE for the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).',
+  'You are auditing documentation STRUCTURE for this project (stack per `.claude/reference/project_stack.md`).',
   'Your role: check template completeness, compliance, formatting standards, and naming consistency across all documented systems.',
   READ_TOOLING, '', CONTEXT, '', FINDING_SCHEMA_TEXT, '',
   '## Your Checks',
@@ -240,7 +136,7 @@ const STRUCTURAL = [
 ].join('\n')
 
 const CROSSREF = [
-  'You are auditing CROSS-REFERENCES and system boundaries in documentation for the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).',
+  'You are auditing CROSS-REFERENCES and system boundaries in documentation for this project (stack per `.claude/reference/project_stack.md`).',
   'Your role: build a directed link graph from Related Systems callouts, verify link integrity, detect boundary overlaps.',
   READ_TOOLING, '', CONTEXT, '', FINDING_SCHEMA_TEXT, '',
   '## Your Checks',
@@ -253,7 +149,7 @@ const CROSSREF = [
 ].join('\n')
 
 const DOMAIN = [
-  'You are auditing DOMAIN hierarchy and navigation quality in documentation for the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).',
+  'You are auditing DOMAIN hierarchy and navigation quality in documentation for this project (stack per `.claude/reference/project_stack.md`).',
   'Your role: verify Start Here coverage, domain classification accuracy, entry-point correctness, hub needs, archived-doc hygiene, and domain cohesion/isolation.',
   READ_TOOLING, '', CONTEXT, '', FINDING_SCHEMA_TEXT, '',
   '## Your Checks',
@@ -349,7 +245,7 @@ for (const f of all) {
   const existing = byKey.get(key)
   if (!existing || (SEV[f.severity] || 0) > (SEV[existing.severity] || 0)) { byKey.set(key, f) }
 }
-let deduped = [...byKey.values(), ...noSystem]
+const deduped = [...byKey.values(), ...noSystem]
 deduped.sort((a, b) => (SEV[b.severity] || 0) - (SEV[a.severity] || 0))
 
 // 3a-bis: scrub in-band agent self-correction artifacts from path-shaped scope fields (e.g. an agent
@@ -403,11 +299,6 @@ for (const [system, e] of bySystem) {
   if (e.agents.size >= 2) { crossAgentPatterns.push({ system, agents: Array.from(e.agents), checks: e.checks }) }
 }
 
-const closed = await closeCheck('claims', { items: deduped, keyOf: f => f.lens + '#' + f.index, out: '.claude/scratch/doc_architecture_audit_claims.json',
-  seats: ['da-structural', 'da-crossref', 'da-domain'].map(label => ({ label, model: A.model, effort: A.effort, tier: A.tier })) })
-deduped = closed.items
-const verification = closed.verification
-
 const counts = {
   critical: deduped.filter(f => f.severity === 'critical').length,
   warning: deduped.filter(f => f.severity === 'warning').length,
@@ -430,4 +321,4 @@ else { healthRating = 'HEALTHY' }
 log('audit: ' + deduped.length + ' findings (' + counts.critical + 'C/' + counts.warning + 'W[' + structuralWarnings + ' structural/' + x1Warnings + ' link]/' + counts.info + 'I), ' + crossAgentPatterns.length + ' cross-agent patterns → ' + healthRating + (lensesCompleted < 3 ? ' — PARTIAL: only ' + lensesCompleted + '/3 lenses (' + failedLenses.join(',') + ' failed)' : ''))
 
 
-return { findings: deduped, crossAgentPatterns, counts, healthRating, ratingBasis: { x1Warnings, structuralWarnings }, linkGraph, lensStatus, lensesCompleted, failedLenses, verification }
+return { findings: deduped, crossAgentPatterns, counts, healthRating, ratingBasis: { x1Warnings, structuralWarnings }, linkGraph, lensStatus, lensesCompleted, failedLenses }

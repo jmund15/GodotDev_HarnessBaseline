@@ -8,18 +8,11 @@ order. A content normalizer feeds its updatedInput to later checks; no advisory
 or rewrite is emitted for a call that is denied.
 
 Order (the first block wins; advisories emit after all checks):
-  1. pattern_enforcer.process            — .cs computed attributes; GD.Print in C# → block
-     tres_format_guard.process           — scene and resource file normalization and unresolved-reference advice
-  2. composed_output_guard.process       — direct edit of composed or generated text → exit 2 + stderr
-  3. provenance_label_guard.process      — provenance label added to loaded guidance → exit 2
-  4. model_name_guard.process            — model name added to a mechanism-layer file → deny;
-                                           fails open (advisory posture) so a fault never blocks
-  5. harness_edit_skill_reminder.process — harness edit → deny until instruction_quality is in context,
-                                           then a once-per-compaction advisory
-  6. readonly_lens_write_guard.process   — off-lens subagent write → stderr note, no block
-  7. running_script_edit_guard.process   — live script instance → advisory
-  8. plan_job_map_guard.process          — production write while this session's plan lacks `## Job map` → advisory
-  9. ui_round_amend_guard.process        — an amendment adding items to a running UI-round piece job → advisory
+  1. running_script_edit_guard.process — live script instance → advisory
+  then the project's own members, named in `adaptation.json` `hook_members.pre_edit`
+  (PushinPotions: `pattern_enforcer`, `.cs` computed attributes and `GD.Print` in C# → block;
+  `tres_format_guard`, scene and resource normalization). CHAIN holds the shared members; a project member is
+  project code, so it is data, not an edit here.
 
 Sub-hook contract: `process(payload)` returns one of
   {"block": <message>}   hard block — stderr + exit 2, the tool call is aborted
@@ -28,22 +21,19 @@ Sub-hook contract: `process(payload)` returns one of
   {"stderr": <text>}     non-blocking note on stderr
   {"updatedInput": ...} corrected tool input, forwarded to later hooks and the client
   None                   nothing to say
-Only one content writer matches a call: pattern_enforcer for .cs; tres_format_guard for .tres.
-Each sub-hook self-gates on tool_name, so the union matcher is safe, and each keeps its
-own main() for standalone runs and for pre_bash_dispatch.py's in-process use.
+Each sub-hook self-gates on tool_name, so the union matcher is safe, and each keeps its own main() for
+standalone runs.
 
 Output contract:
   - Advisories merge into one hookSpecificOutput.additionalContext payload (exit 0) —
     the only model-visible advisory channel on PreToolUse (archive_hook_gotchas.md).
-  - A sub-hook fault blocks only when its module sets `FAIL_CLOSED = True` (floor),
-    the same contract as pre_bash_dispatch. Other faults allow with additionalContext
-    naming the fault and preserve later checks. No edit sub-hook is floor today.
+  - A sub-hook fault blocks only when its module sets `FAIL_CLOSED = True` (floor); another fault allows with
+    additionalContext naming the fault and preserves later checks.
 
 Wired in: settings.json hooks.PreToolUse with matcher "Write|Edit".
 """
 
 import importlib
-import importlib.util
 import json
 import os
 import sys
@@ -51,25 +41,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _optional_hooks  # noqa: E402
 
-# Project-local (rail battery): chained only where the module exists; blocks only in an armed run.
-try:
-    _HAS_RAIL_GUARD = importlib.util.find_spec("rail_probe_guard") is not None
-except Exception:
-    _HAS_RAIL_GUARD = False
-CHAIN = (("rail_probe_guard", "advisory"),) if _HAS_RAIL_GUARD else ()
-CHAIN += (
-    ("pattern_enforcer", "enforcement"),
-    ("tres_format_guard", "advisory"),
-    ("composed_output_guard", "enforcement"),
-    ("provenance_label_guard", "enforcement"),
-    ("model_name_guard", "advisory"),
-    ("harness_edit_skill_reminder", "advisory"),
-    ("readonly_lens_write_guard", "advisory"),
-    ("running_script_edit_guard", "advisory"),
-    ("plan_job_map_guard", "advisory"),
-    ("ui_round_amend_guard", "enforcement"),
-)
-CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did not adopt is absent
+CHAIN = (("running_script_edit_guard", "advisory"),)
 
 
 try:
@@ -104,7 +76,7 @@ def dispatch(input_data, chain=None):
     contexts, notes = [], []
     updated = None
     started = _hook_state.spent_mark() if _hook_state else 0
-    for entry in (chain if chain is not None else CHAIN):
+    for entry in (chain if chain is not None else _optional_hooks.chain("pre_edit", CHAIN, "advisory")):
         name, second = entry
         before = _hook_state.spent_mark() if _hook_state else 0
         member = second if callable(second) else None

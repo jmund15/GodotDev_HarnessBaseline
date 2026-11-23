@@ -86,17 +86,17 @@ def main():
     cases.append(("every doc example names only flags its tool parses", real == [], real))
 
     sources = Sources(CLAUDE)
-    planted = "Run `python3 .claude/tools/lens.py --nosuchflag-zq <x> --also-bad` now."
+    planted = "Run `python3 .claude/tools/quote_check.py --nosuchflag-zq <x> --also-bad` now."
     cases.append(("RED: a planted doc flag the tool lacks is reported",
-                  flag_errors("p.md", planted, sources) == ["p.md: tools/lens.py has no --also-bad",
-                                                            "p.md: tools/lens.py has no --nosuchflag-zq"], ""))
+                  flag_errors("p.md", planted, sources) == ["p.md: tools/quote_check.py has no --also-bad",
+                                                            "p.md: tools/quote_check.py has no --nosuchflag-zq"], ""))
     cases.append(("RED: a tool absent on disk is its own failure",
                   flag_errors("p.md", "`python3 .claude/tools/zq_absent_tool.py --x`", sources)
                   == ["p.md: tools/zq_absent_tool.py is absent"], ""))
     cases.append(("a flag after a pipe, `;`, `&&` or the closing backtick is ignored",
-                  flag_errors("p.md", "`python3 .claude/tools/lens.py --help | grep --zq1`; python3 .claude/tools/lens.py -x ; echo --zq2\n"
-                              "python3 .claude/tools/lens.py && cmd --zq3 and `x` --zq4", sources) == [], ""))
-    cases.append(("a placeholder is dropped", flag_errors("p.md", "`python3 .claude/tools/lens.py <--zq5> <a --zq6>`", sources) == [], ""))
+                  flag_errors("p.md", "`python3 .claude/tools/quote_check.py --help | grep --zq1`; python3 .claude/tools/quote_check.py -x ; echo --zq2\n"
+                              "python3 .claude/tools/quote_check.py && cmd --zq3 and `x` --zq4", sources) == [], ""))
+    cases.append(("a placeholder is dropped", flag_errors("p.md", "`python3 .claude/tools/quote_check.py <--zq5> <a --zq6>`", sources) == [], ""))
     imported = next((t for t in sorted((CLAUDE / "tools").glob("*.py"))
                      if any((CLAUDE / f / (n + ".py")).is_file() for f in ("tools", "hooks")
                             for n in IMPORT.findall(t.read_text(encoding="utf-8", errors="replace")))), None)

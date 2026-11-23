@@ -37,37 +37,47 @@ def denied(stdout):
         return False
 
 
-rc, out, err = run({"tool_name": "Agent", "transcript_path": "/proof/root/projects/session/subagents/agent-1.jsonl"})
-check("an Agent call from a delegate transcript is denied", rc == 0 and denied(out), out + err)
 
-rc, out, err = run({"tool_name": "Workflow", "transcript_path": "/proof/root/projects/session/session.jsonl"}, sidecar=True)
-check("a Workflow call from a sidecar child is denied", rc == 0 and denied(out), out + err)
+def main():
+    rc, out, err = run({"tool_name": "Agent", "transcript_path": "/proof/root/projects/session/subagents/agent-1.jsonl"})
+    check("an Agent call from a delegate transcript is denied", rc == 0 and denied(out), out + err)
 
-MAIN = "/proof/root/projects/session/session.jsonl"
-rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="bench-score")
-check("a Workflow call from a sidecar whose kind row lists Workflow (bench-score) passes silently",
-      rc == 0 and out == "", out + err)
+    rc, out, err = run({"tool_name": "Workflow", "transcript_path": "/proof/root/projects/session/session.jsonl"}, sidecar=True)
+    check("a Workflow call from a sidecar child is denied", rc == 0 and denied(out), out + err)
 
-rc, out, err = run({"tool_name": "Agent", "transcript_path": MAIN}, sidecar=True, kind="bench-score")
-check("an Agent call from a bench-score sidecar, whose row lists only Workflow, is denied", rc == 0 and denied(out), out + err)
+    MAIN = "/proof/root/projects/session/session.jsonl"
+    rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="bench-score")
+    check("a Workflow call from a sidecar whose kind row lists Workflow (bench-score) passes silently",
+          rc == 0 and out == "", out + err)
 
-rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="judge")
-check("a Workflow call from a judge sidecar, whose row lists no Workflow, is denied", rc == 0 and denied(out), out + err)
+    rc, out, err = run({"tool_name": "Agent", "transcript_path": MAIN}, sidecar=True, kind="bench-score")
+    check("an Agent call from a bench-score sidecar, whose row lists only Workflow, is denied", rc == 0 and denied(out), out + err)
 
-rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="no-such-kind")
-check("a Workflow call from a sidecar of an unknown kind is denied", rc == 0 and denied(out), out + err)
+    rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="judge")
+    check("a Workflow call from a judge sidecar, whose row lists no Workflow, is denied", rc == 0 and denied(out), out + err)
 
-rc, out, err = run({"tool_name": "Workflow", "transcript_path": "/proof/root/projects/session/subagents/agent-1.jsonl"},
-                   kind="bench-score")
-check("a delegate transcript is denied whatever kind its environment names", rc == 0 and denied(out), out + err)
+    rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="no-such-kind")
+    check("a Workflow call from a sidecar of an unknown kind is denied", rc == 0 and denied(out), out + err)
 
-rc, out, err = run({"tool_name": "Agent", "transcript_path": "/proof/root/projects/session/session.jsonl"})
-check("an Agent call from the main session passes silently", rc == 0 and out == "", out + err)
+    rc, out, err = run({"tool_name": "Workflow", "transcript_path": "/proof/root/projects/session/subagents/agent-1.jsonl"},
+                       kind="bench-score")
+    check("a delegate transcript is denied whatever kind its environment names", rc == 0 and denied(out), out + err)
 
-rc, out, err = run({"tool_name": "Read", "transcript_path": "/proof/root/projects/session/subagents/agent-1.jsonl"})
-check("a non-dispatch tool in a delegate passes silently", rc == 0 and out == "", out + err)
+    rc, out, err = run({"tool_name": "Agent", "transcript_path": "/proof/root/projects/session/session.jsonl"})
+    check("an Agent call from the main session passes silently", rc == 0 and out == "", out + err)
 
-print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
-for f in FAILURES:
-    print("  " + f)
-sys.exit(1 if FAILURES else 0)
+    rc, out, err = run({"tool_name": "Read", "transcript_path": "/proof/root/projects/session/subagents/agent-1.jsonl"})
+    check("a non-dispatch tool in a delegate passes silently", rc == 0 and out == "", out + err)
+
+    print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
+    for f in FAILURES:
+        print("  " + f)
+    return 1 if FAILURES else 0
+
+
+def test_proof():
+    assert main() == 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

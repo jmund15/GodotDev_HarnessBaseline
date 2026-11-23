@@ -6,7 +6,7 @@ description: Refresh semantic search after file changes or index drift
 
 Refreshes the DreB semantic-search index (.search-index/search.db) so subsequent
 `mcp__plugin_semantic-search_semantic-search__search` queries reflect the current code state.
-For indexed file types and tool guidance, see CLAUDE.core.md §9.
+For indexed file types and tool guidance, see `reference/semantic_search.md`.
 
 ## When to run
 

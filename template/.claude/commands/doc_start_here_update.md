@@ -16,7 +16,7 @@ Documentation reads/writes use native `Read`/`Write`/`Edit`/`Grep`/`Glob` on the
 Use `Glob` on `DevProjects/<project_name>/Claude/Documentation/` (recursive) to list the folder tree (`<project_name>` is what `python3 .claude/tools/adaptation.py get project_name` prints).
 Build the **authoritative system list** by classifying each top-level folder:
 
-**Folder classification** — apply the Folder Classification rules from `agents/documentation_structure.md` to categorize each subfolder as archived, structural, domain, or system. Then:
+**Folder classification** — apply the Folder Classification rules from `commands/agents/documentation_structure.md` to categorize each subfolder as archived, structural, domain, or system. Then:
 - **System folder** — contains doc-template `.md` files (Quick Reference, Architecture, Designer Usage, etc.) directly. System path = `{SystemName}`.
 - **Domain folder** — contains subfolders that are themselves system folders (and optionally a `_Hub.md`). Each subfolder's system path = `{DomainFolder}/{SystemName}`.
 
@@ -70,7 +70,6 @@ If a system could plausibly fit two domains, ask the user:
 > "I'm placing `{SystemName}` in **{DomainA}** because [one-sentence reason]. Does that
 > sound right, or should it go in **{DomainB}**?"
 
-Do NOT silently pick and proceed when genuinely ambiguous.
 
 ### 2d. Determine available docs
 For each new system, note which of these files exist in the folder:
@@ -123,9 +122,6 @@ Apply all changes in memory, then write the full updated file in a single
 ---
 
 ## Constraints
-- If diff is empty, do NOT rewrite the file (avoids spurious modification timestamps)
 - Never invent descriptions — derive them from the Quick Reference System Overview
-- Never change the section order in Start Here
 - Archived table is append-only — stale system removal does NOT touch archived entries
-- Keep this lightweight — no sub-agents needed. Total tool calls: 3-10.
-- Supports both flat (`Documentation/{SystemName}/`) and domain-nested (`Documentation/{DomainFolder}/{SystemName}/`) folder structures. Domain-nested systems inherit their domain from the parent folder name.
+- Keep this lightweight — no sub-agents needed.

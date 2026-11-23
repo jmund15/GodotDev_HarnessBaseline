@@ -7,7 +7,7 @@
 
 ## §5. Doc-path & frontmatter conventions (generic — both skills)
 
-**Path tiebreaker:** the project-versus-Jmodot rule is CLAUDE.md §3 *Obsidian (The Design Source)*. The destination table below is local detail.
+**Path tiebreaker:** the project-versus-Jmodot rule is the project's `CLAUDE.md` §Design Source (Obsidian). The destination table below is local detail.
 
 | Topic shape | Destination |
 |---|---|

@@ -3,8 +3,8 @@
 
 Every gap between consecutive timestamped user/assistant rows goes to exactly one bucket chosen by
 the LATER row's kind, so the buckets sum to the span. A gap over 30 minutes contributes its excess to
-`away` and is capped at 30 minutes for its own bucket. The partition is a report classification
-(`orchestration_metrics.py --rollup` reads it); nothing here enforces anything.
+`away` and is capped at 30 minutes for its own bucket. The partition is a report classification read by hand;
+nothing here enforces anything.
 
     session_timeline.py <transcript.jsonl>     print the partition as JSON
 """
@@ -18,29 +18,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import transcript_usage  # noqa: E402
 
 AWAY_CAP_S = 1800.0
+FG_TEST_BUDGET_S = 30  # a foreground test run longer than this counts in `fg_test_over_budget`
 BIG_RESULT_CHARS = 20000
-
-
-def runner():
-    """The proof runner module (`scripts/harness_tests.py`), which owns its budgets and log paths."""
-    scripts = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts")
-    sys.path.insert(0, scripts)
-    try:
-        import harness_tests
-        return harness_tests
-    finally:
-        sys.path.remove(scripts)
-
-
-def commit_budget_s():
-    """The proof runner's commit-check budget, the one owner of the figure."""
-    return runner().COMMIT_BUDGET_S
 
 
 TEST_RE = re.compile(
     r"harness_tests\.py|\.claude/tests/|-m unittest|regression_gate|run_tests\.ps1|run_test_suite\.ps1"
     r"|gdunit|GdUnit|\btest_\w+\.(py|ps1|sh|mjs|js)\b", re.I)
 COMMIT_RE = re.compile(r"\bgit (-C \S+ )?commit\b")
+# v1 tool names stay in TEST_RE and BOOKKEEPING_RE so a transcript from before v2 classifies the same.
 BOOKKEEPING_RE = re.compile(
     r"task_record\.py|orchestration_metrics\.py|review_ledger\.py|extract_numbers\.py|worklog"
     r"|git (-C \S+ )?(add|commit|status|diff|log|show|rev-parse|ls-files)\b"
@@ -105,7 +91,6 @@ def partition(transcript_path):
     out["bad_lines"] = bad.get("lines", 0)
     if not rows:
         return out
-    fg_budget = commit_budget_s()
     buckets, counts = collections.Counter(), collections.Counter()
     uses, launched = {}, {}
     msg_tools = collections.OrderedDict()
@@ -144,7 +129,7 @@ def partition(transcript_path):
             counts["tool:" + cls] += 1
             if matched:
                 full = t - matched[0][1]
-                if cls == "shell_test" and full > fg_budget:
+                if cls == "shell_test" and full > FG_TEST_BUDGET_S:
                     out["fg_test_over_budget"]["n"] += 1
                     out["fg_test_over_budget"]["secs"] += full
                 if cls == "shell_commit":

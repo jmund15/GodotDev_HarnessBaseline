@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Keep every non-default plan's login dir in step with its route's, so a delegate behaves the same
+"""Keep every seat's login dir in step with the default login's, so a delegate behaves the same
 on either account: the same config files, and the same plugins at the same version.
 
-A plan is a registry transport with `planOf`; its `configDir` is the destination and its route's
-`configDir` the source. A plan authenticated by a key (`credentialVar`) has no login and its
-`configDir` need not exist yet: the sync creates it. Per destination:
+A seat with a `configDir` in `seats.json` is a destination; the default login `~/.claude` is the
+source. Per destination:
   ai_worker_model_guide.md              copied whole when the source has it
   CLAUDE.md                             removed when byte-identical to the source's (RETIRED_COPIES)
   settings.json                         the source's values, except the per-account keys
@@ -20,13 +19,13 @@ saves the prior copy as `<name>.pre-sync`, once. A destination's OWN permission 
 owner removes from the source leaves the destination on the next sync unless the destination had
 it before its first sync. With no snapshot yet, the destination's current rules are its own.
 The file stage opens only the files named here: credentials, `.claude.json` and history are never
-read or written. A key plan's nonexistent `configDir` is created first, and only by a sync.
+read or written.
 
-The plugins stage follows, over every login of a route: the route's own and each plan's. A plugin the
-route's `settings.json` enables (`enabledPlugins`, so user scope) has one target: the version its
-marketplace clone in the route's login declares (the marketplace entry's `version`, else the plugin's
+The plugins stage follows, over the default login and each seat's login that exists. A plugin the
+default login's `settings.json` enables (`enabledPlugins`, so user scope) has one target: the version its
+marketplace clone in the default login declares (the marketplace entry's `version`, else the plugin's
 `plugin.json`), read after `claude plugin marketplace update` under each login, at most once per
-REFRESH_SECONDS (the time is kept in `<route login>/sync_plan_config.state.json`). A plugin whose
+REFRESH_SECONDS (the time is kept in `~/.claude/sync_plan_config.state.json`). A plugin whose
 marketplace declares no version is updated on every login at each refresh, and between refreshes its
 logins must hold one version.
   - A login without the plugin runs `claude plugin install`; one below target `claude plugin update`,
@@ -38,31 +37,23 @@ logins must hold one version.
     that login (`tools/semantic_search_idle_install.py --check`, else `--install`, with
     `--config-dir <login>`). A login whose version and install dir passed every check since the last
     refresh is not checked again until the next one.
-  - `bench_liveness` in project adaptation supplies the installation root, logs provider and
-    process patterns/labels. With that key absent or its root not a directory, plugin work does
-    not defer. While a registered score daemon, campaign pid holder or configured process is live,
-    plugin work defers with one line naming the run; files still sync. With no readable process
-    table every daemon entry counts as live; an unreadable configured logs provider also defers.
 
 Usage:
-    sync_plan_config.py [--check] [--files-only] [--plan <name>]
+    sync_plan_config.py [--check] [--files-only] [--seat <name>]
       --check   list what a sync would change and exit 1 on any drift; it changes no config file, no
                 plugin and no marketplace clone, and makes no network call. An elapsed refresh window
                 is drift: the sync refreshes the clones and starts the next window
-      --plan    only that plan (default: every plan whose configDir differs from its route's);
-                a route, or a plan sharing its route's dir, has nothing to sync. A plan whose
-                `configDir` does not exist is skipped, files and plugins, with one
-                BLOCKED-ON-USER line printed last, unless it is key-authenticated
-                (`credentialVar`), which has no login to create it; the run continues.
+      --seat    only that seat (default: every seat with a `configDir` other than the default login's).
+                A seat whose `configDir` does not exist is skipped, files and plugins, with one
+                BLOCKED-ON-USER line printed last; the run continues.
       --files-only  skip the plugins stage. A sidecar launch passes it: a plugin update replaces the
                 cache dir under sibling sessions on that login, and concurrent launches would race
                 it; the SessionStart hook (hooks/login_parity_check.py) owns plugin repair
 Exit: 0 in step (or synced, or plugin work deferred), 1 drift under --check, 2 bad usage or an
-unreadable file, 3 a plugin step failed, or a step or plan is BLOCKED-ON-USER (each named on its own line),
+unreadable file, 3 a plugin step failed, or a step or seat is BLOCKED-ON-USER (each named on its own line),
 unless a failure already sets exit 2. Exit 3 holds in --check too.
 """
 import copy
-import importlib
 import json
 import os
 import re
@@ -79,47 +70,42 @@ sys.path.insert(0, str(TOOLS))
 sys.path.insert(0, str(TOOLS.parent / "hooks"))
 from _bounded_run import run_bounded  # noqa: E402
 from _hook_state import replace_path  # noqa: E402
-import adaptation  # noqa: E402
-import model_registry  # noqa: E402
 import plugin_registry  # noqa: E402
 import semantic_search_idle_install as idle_shim  # noqa: E402
 
 WHOLE_FILES = ("ai_worker_model_guide.md",)
-# Every project under the home dir loads the route's `~/.claude/CLAUDE.md` as its ancestor
-# `.claude/CLAUDE.md`, whatever CLAUDE_CONFIG_DIR says, so a plan's copy loads it a second time.
-# A sync removes a copy byte-identical to the route's; a different file is the plan's own and stays.
+# Every project under the home dir loads the default login's `~/.claude/CLAUDE.md` as its ancestor
+# `.claude/CLAUDE.md`, whatever CLAUDE_CONFIG_DIR says, so a seat's copy loads it a second time.
+# A sync removes a copy byte-identical to the default login's; a different file is the seat's own and stays.
 RETIRED_COPIES = ("CLAUDE.md",)
 SETTINGS = "settings.json"
 PER_ACCOUNT_KEYS = ("autoMemoryDirectory", "mcpServers", "effortLevel")
 STATE = "sync_plan_config.state.json"
 REFRESH_SECONDS = 24 * 60 * 60
 EXIT_PLUGINS = 3
-# Existing callers inspect this matcher; live_benchmarks reloads the project configuration.
-try:
-    DAEMON_RE = re.compile(adaptation.get(CLAUDE_DIR, "bench_liveness").get("daemon_pattern", r"(?!)"), re.I)
-except (TypeError, re.error):
-    DAEMON_RE = re.compile(r"(?!)")
+SEATS = CLAUDE_DIR / "seats.json"
+DEFAULT_LOGIN = Path(os.path.expanduser("~/.claude"))
 
 
 class SyncError(RuntimeError):
     pass
 
 
-def pairs(data, only=None):
-    """[(plan, source dir, destination dir)] for each plan whose login dir is not its route's."""
-    out = []
-    transports = data.get("transports") or {}
-    for name, cfg in sorted(transports.items()):
-        route = cfg.get("planOf") if isinstance(cfg, dict) else None
-        if not route or (only and name != only):
-            continue
-        source = (transports.get(route) or {}).get("configDir")
-        dest = cfg.get("configDir")
-        if source and dest and model_registry.login_dir(source) != model_registry.login_dir(dest):
-            out.append((name, Path(os.path.expanduser(source)), Path(os.path.expanduser(dest))))
-    if only and only not in transports:
-        raise SyncError("no transport %r in the registry" % only)
-    return out
+def _same_login(a, b):
+    return os.path.normcase(os.path.realpath(str(a))) == os.path.normcase(os.path.realpath(str(b)))
+
+
+def pairs(only=None):
+    """[(seat, source dir, destination dir)] for each `seats.json` seat whose login dir is not the default's."""
+    try:
+        seats = json.loads(SEATS.read_text(encoding="utf-8"))["seats"]
+    except (OSError, ValueError, KeyError) as exc:
+        raise SyncError("%s is unreadable: %s" % (SEATS, exc))
+    if only and only not in seats:
+        raise SyncError("no seat %r in seats.json" % only)
+    return [(name, DEFAULT_LOGIN, Path(os.path.expanduser(row["configDir"]))) for name, row in sorted(seats.items())
+            if row.get("configDir") and not (only and name != only)
+            and not _same_login(os.path.expanduser(row["configDir"]), DEFAULT_LOGIN)]
 
 
 def _read_text(path):
@@ -172,14 +158,6 @@ def merged_settings(source, dest, snapshot=None, commands=None):
     return out
 
 
-def key_plan(cfg):
-    """True when a plan authenticates with a KEY (`credentialVar`) instead of a login. Its
-    `configDir` exists only so the child's CLAUDE_CONFIG_DIR cannot name a host login: nothing logs
-    into it, so a sync creates it rather than telling the owner to log in to a directory no login
-    will ever write."""
-    return isinstance(cfg, dict) and bool(cfg.get("credentialVar"))
-
-
 def changes(source_dir, dest_dir):
     """[(file name, new text, description)] for every file a sync would rewrite; text None removes it."""
     out = []
@@ -228,7 +206,7 @@ def _run(argv, timeout, env=None):
 def claude(login, *args):
     """`claude <args>` on `login`: CLAUDE_CONFIG_DIR set to it, or unset for the default login."""
     env = dict(os.environ)
-    if model_registry.is_default_login(str(login)):
+    if _same_login(login, DEFAULT_LOGIN):
         env.pop("CLAUDE_CONFIG_DIR", None)
     else:
         env["CLAUDE_CONFIG_DIR"] = str(login)
@@ -321,63 +299,8 @@ def user_install(login, plugin):
     return entries[0] if entries else None
 
 
-def process_table():  # a seam test_sync_plan_config plants; keep the wrapper
-    """{pid: {cmd, ...}} for every process (tools/reap.py); empty when unreadable."""
-    import reap
-    return reap.process_table()
-
-
-def live_benchmarks():
-    """One name per live benchmark run: a score daemon in the registry or holding a campaign pid file, or a
-    run_grid.sh process. With no readable process table every daemon entry counts as live, and an unreadable
-    benchmark root counts as one live run. An absent adaptation key or installation means no project runs."""
-    config = adaptation.get(CLAUDE_DIR, "bench_liveness")
-    if not config or not config.get("root"):
-        return []
-    root = CLAUDE_DIR.parent / config["root"]
-    if not root.is_dir():
-        return []
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
-    try:
-        provider = importlib.import_module(config["roots_module"])
-        logs = Path(getattr(provider, config["logs_function"])())
-        grid_re = re.compile(config["grid_pattern"], re.I)
-        daemon_re = re.compile(config["daemon_pattern"], re.I)
-        grid_label, daemon_label = config["grid_label"], config["daemon_label"]
-    except (ImportError, KeyError, ValueError, OSError, TypeError, AttributeError, re.error) as exc:
-        return ["benchmark root unreadable (%s: %s)" % (type(exc).__name__, exc)]
-    daemons = []
-    for entry in sorted((logs / ".score-daemons").glob("*.json")):
-        try:
-            doc = json.loads(entry.read_text(encoding="utf-8"))
-            pid = int(doc.get("pid") or entry.stem)
-            name = os.path.basename(str(doc.get("logsDir") or "").rstrip("/\\")) or entry.stem
-        except (OSError, ValueError, TypeError, AttributeError):
-            pid, name = (int(entry.stem) if entry.stem.isdigit() else None), entry.name
-        daemons.append((pid, name))
-    for pidfile in sorted(logs.glob("*/score-daemon.pid")):
-        try:
-            fields = pidfile.read_text(encoding="utf-8").split()
-            pid = int(fields[0]) if fields[1:] == ["native"] else None
-        except (OSError, ValueError, IndexError):
-            pid = None
-        if pid is not None:
-            daemons.append((pid, pidfile.parent.name))
-    table = process_table()
-    runs = ["score daemon %s (pid %s)" % (name, pid) for pid, name in daemons if not table or pid in table]
-    named = {pid for pid, _name in daemons}
-    for pid, row in sorted(table.items()):
-        cmd = str((row or {}).get("cmd") or "")
-        if grid_re.search(cmd):
-            runs.append("%s (pid %d)" % (grid_label, pid))
-        elif pid not in named and daemon_re.search(cmd):
-            runs.append("%s (pid %d: %s)" % (daemon_label, pid, cmd.strip()[-80:]))
-    return runs
-
-
 def _verified_key(login, entry):
-    return "%s|%s|%s" % (model_registry.login_dir(str(login)), entry.get("version"), entry.get("installPath"))
+    return "%s|%s|%s" % (os.path.normcase(os.path.realpath(str(login))), entry.get("version"), entry.get("installPath"))
 
 
 def _pending(logins, plugins, refresh, check, verified):
@@ -440,7 +363,7 @@ def _apply(name, login, plugin, action, source_dir, verified):
 
 
 def plugins_stage(logins, check, now=None):
-    """(drift count, failure count) for one route's logins [(name, dir)], the route's first. Prints a line
+    """(drift count, failure count) for the logins [(name, dir)], the default login first. Prints a line
     per drift, deferral, change and failure."""
     source_dir = logins[0][1]
     plugins = enabled_plugins(source_dir)
@@ -468,16 +391,10 @@ def plugins_stage(logins, check, now=None):
     verified = state.setdefault("verified", {})
     try:
         todo = _pending(logins, plugins, refresh, check, verified)
-        live = live_benchmarks() if todo else []
-        if check or live:
-            if check:
-                for item in todo:
-                    print(item[4])
-            if live:
-                named = ", ".join(live[:3]) + (" and %d more" % (len(live) - 3) if len(live) > 3 else "")
-                print("plugins: deferred while %s is live%s" % (
-                    named, "" if check else "; files synced, %d plugin change(s) wait" % len(todo)))
-            return (len(todo) + due if check else 0), refresh_failures
+        if check:
+            for item in todo:
+                print(item[4])
+            return len(todo) + due, refresh_failures
         failures = []
         for name, login, plugin, action, _line in todo:
             line = _apply(name, login, plugin, action, source_dir, verified)
@@ -496,23 +413,6 @@ def plugins_stage(logins, check, now=None):
     finally:
         if not check:
             _atomic(state_path, json.dumps(state, indent=2, sort_keys=True) + "\n")
-
-
-def route_groups(data, only=None):
-    """[(route, [(name, login dir)])]: the route's own login first, then each of its plans' that differs
-    and exists; a plan whose login dir is missing (BLOCKED-ON-USER in `main`) leaves the route's own login
-    in a group of its own. A key-authenticated plan is left out: `claude plugin` authenticates as the login it runs under,
-    and an inference key is not a login, so there is nothing for the plugin stage to act on there."""
-    groups = {}
-    transports = data.get("transports") or {}
-    for plan, source_dir, dest_dir in pairs(data, only):
-        if key_plan(transports.get(plan)):
-            continue
-        route = transports[plan]["planOf"]
-        group = groups.setdefault(route, [(route, source_dir)])
-        if dest_dir.is_dir():
-            group.append((plan, dest_dir))
-    return sorted(groups.items())
 
 
 def write(dest_dir, name, text):
@@ -555,7 +455,7 @@ def main(argv):
     files_only = "--files-only" in argv
     rest = [a for a in argv if a not in ("--check", "--files-only")]
     only = None
-    if rest[:1] == ["--plan"] and len(rest) == 2:
+    if rest[:1] == ["--seat"] and len(rest) == 2:
         only = rest[1]
     elif rest:
         print(__doc__.split("Usage:")[1].strip(), file=sys.stderr)
@@ -563,31 +463,26 @@ def main(argv):
     try:
         drift = failed = 0
         blocked = []
-        data = model_registry.load()
-        transports = data.get("transports") or {}
-        for plan, source_dir, dest_dir in pairs(data, only):
+        pending = pairs(only)
+        for seat, source_dir, dest_dir in pending:
             if not dest_dir.is_dir():
-                if not key_plan(transports.get(plan)):
-                    blocked.append("BLOCKED-ON-USER: %s configDir %s does not exist; log in to it once with "
-                                   "`claude` under that CLAUDE_CONFIG_DIR" % (plan, dest_dir))
-                    continue
-                if not check:
-                    dest_dir.mkdir(parents=True, exist_ok=True)
-                # --check reports the whole file stage as drift (nothing is there to compare), which
-                # is what starts the repair; it creates no directory, as it changes no config file.
+                blocked.append("BLOCKED-ON-USER: %s configDir %s does not exist; log in to it once with "
+                               "`claude` under that CLAUDE_CONFIG_DIR" % (seat, dest_dir))
+                continue
             for name, text, what in changes(source_dir, dest_dir):
                 drift += 1
                 done = "removed" if text is None else "synced"
-                print("%s: %s %s" % (plan, name, what) if check else "%s: %s %s (%s)" % (plan, done, name, what))
+                print("%s: %s %s" % (seat, name, what) if check else "%s: %s %s (%s)" % (seat, done, name, what))
                 if not check:
                     write(dest_dir, name, text)
-        for _route, logins in ([] if files_only else route_groups(data, only)):
+        if pending and not files_only:
+            logins = [("default", DEFAULT_LOGIN)] + [(seat, dest) for seat, _src, dest in pending if dest.is_dir()]
             more, bad = plugins_stage(logins, check)
             drift += more
             failed += bad
         for line in blocked:
             print(line)
-    except (SyncError, model_registry.RegistryError, OSError, subprocess.SubprocessError) as exc:
+    except (SyncError, OSError, subprocess.SubprocessError) as exc:
         print("sync_plan_config: %s" % exc, file=sys.stderr)
         return 2
     if failed or blocked:

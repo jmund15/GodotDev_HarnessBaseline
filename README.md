@@ -1,278 +1,63 @@
-# Harness Baseline — layered Claude Code harness
+# Harness Baseline — the shared Claude Code harness
 
-The shared, project-agnostic harness core extracted from a game-development
-harness as a starting point for any Claude Code project — game dev (Godot 4.x +
-C#, Jmodot builds included), content production, or other — and as the **single
-upstream** that keeps that shared core in sync as it evolves across projects.
+This repo is the one upstream for the harness files every project shares. `template/.claude/` holds them; a project
+keeps the same bytes under its own `.claude/`. There are no layers and no substitutions: every project gets the whole
+shared set byte for byte, and each project's own values live in its project-owned files.
 
-## What's in it
+## Shared and project-owned
 
-`template/.claude/` mirrors a consumer project's `.claude/` directory in three archetypes
-(`baseline.manifest.json` holds the per-file map, the layer counts and each file's `sync` kind: `auto`, `seed` or `offer`):
-
-| Layer | Contents |
+| Shared (this repo, `template/.claude/`) | Project-owned (each repo, never synced) |
 |---|---|
-| `pure` | fully domain-agnostic; serves any Claude Code project including non-code content production: session lifecycle (`/session_end`, `/self_evaluate`, `/autolearn`, `/codify`, eval dashboard), doc system (`/doc_*`), worklog system (`/worklog` + relevance workflow), machine provisioning (`/workstation_setup` core), memory system + process/discipline auto-memory offered as `sync: offer` rows (hot + `archive/`), agent templates, review/explore/idea fan-out workflows, orchestration + delegation doctrine (`orchestration` skill, `reference/model_ladder_evidence.md`, sidecar launchers for external models), instruction-quality tooling, harness proof runner (`scripts/harness_tests.py` + `tests/`), slimmed git commands (`/commit_push`, `/clean_push`, `/create_pr`), the `/sync_baseline` machinery itself |
-| `coding` | any programming project, not content production: plan/roadmap pipeline (`/plan_part` → `/part_drive` → `/plan_check` → `/part_execute`), `/explore`, brainstorm redteam, heavy PR machinery (`/merge_pr`, `/pr_ready`, `/review_pr(s)`), tool-routing hook family, TDD/debugging/architecture skills, code-hygiene auto-memory |
-| `godot` | Testing skill (GdUnit4 + ISceneRunner), `/regression_gate` + `verify.ps1`, Godot log analysis, `.tres`/`[Tool]` safety guards (format, script-strip, null-strip, uid-cache audit), test-double / RefCounted-free / gate-coverage guards, C# LSP rules + adapter, scene/physics/C#/HSM-BT pattern rules, cloud bootstrap (`cloud-setup.sh`, session context loader), Godot-specific memory gotchas, the Jmodot framework skill + subsystem docs, status-effect/entity/sprite/shader/VFX authoring skills, logging methodology (JmoLogger), submodule procedure, and the `/workstation_setup` toolchain phases (`commands/reference/workstation_setup_toolchain.md`) |
+| `CLAUDE.core.md`, the floor hooks (`hooks/pre_bash.py` and the guards it runs), kept hooks, tools, commands, skills, workflows, `guards/rails.md`, `seats.json` and the seat launcher, and their tests under `tests/` | `CLAUDE.md` (it `@`-imports `CLAUDE.core.md`), `settings.json`, `skills/project_subsystems/adaptation.json`, `auto-memory/`, and the project's own commands, skills, hooks and tests |
 
-A consumer subscribes to a prefix of `pure` → `coding` → `godot`.
+A shared file reads a project value from `adaptation.json` through `tools/adaptation.py`
+(`python3 .claude/tools/adaptation.py get project_name`); the key list and each key's readers are in that tool's
+`DEFAULTS`. A project file can add to a shared floor rule, never weaken it.
 
-**Seed files** (the manifest's `sync: seed` rows) are copied once and then project-owned; `pull`
-writes one only when it is absent. Two shape the rest: `CLAUDE.md` imports `CLAUDE.core.md` and each
-adopted layer file, and `settings.project.json` composes with `settings.base.json` and each adopted
-layer's `settings.<layer>.json` into `settings.json`.
+## Sync: `tools/harness_sync.py`
 
-**Offer files** (`sync: offer`: every `.claude/auto-memory/` file except the `MEMORY.md` seed) are
-copied at bootstrap and tracked from then on. A memory added upstream later reports `offered`: a bare
-`pull` never takes it, `pull <relpath>` adopts it, and `ignore <relpath>` declines it.
-
-**Deliberately excluded** (stays per-project): game-content skills/commands
-(ability/entity authoring, content audits), project subsystem registries, game-design
-docs, project memory (beyond the offered pure/coding/godot memory), benchmark corpora and
-campaign tooling, and all session state (`self_evaluate_archive.json`, plans, scratch,
-logs, caches).
-
-## Placeholders
-
-Template files use four substitution variables, applied by `bootstrap.sh`:
-
-- `{{PROJECT_NAME}}` — Godot project name (also used for `app_userdata` log paths and the Obsidian `DevProjects/<name>` folder)
-- `{{PROJECT_NAMESPACE}}` — C# namespace / library prefix (defaults to the project name)
-- `{{VAULT_ROOT}}` — absolute path to the Obsidian vault root
-- `{{PROJECT_ROOT}}` — the `--target` folder, derived by bootstrap (no flag); the engine re-derives it from the
-  checkout on every run, and the lock keeps it empty
-
-## Adopting into a new project
+Run from the project root. `<shared>` is a local checkout of this repo.
 
 ```bash
-git clone <this-repo> harness-baseline
-cd harness-baseline
-./bootstrap.sh --target /path/to/NewGame --project-name NewGame \
-    --vault-root "C:/Users/you/Documents/ObsidianVault" \
-    # --project-name defaults to the target folder name; --layers pure,coding,godot chooses your prefix (default: all)
+# Adopt, or update to a newer shared commit
+python3 <shared>/template/.claude/tools/harness_sync.py pull <ref> --source <shared> --project .
+
+# What differs from the last pull, and whether settings.json registers the floor hook
+python3 .claude/tools/harness_sync.py status
+
+# Send hand-edited shared files upstream as a pull request (gh must be logged in)
+python3 .claude/tools/harness_sync.py push --source <shared> [--branch NAME] [--dry-run]
 ```
 
-A content-production repo bootstraps with `--layers pure`.
+- `pull` writes `.claude/harness.manifest.json`: the pulled commit, each shared file's sha256 and the floor hook
+  path. It copies raw blobs, so line endings never change. A shared file the project edited since the last pull
+  refuses the whole pull and writes nothing. A file the shared repo deleted is deleted from the project unless it
+  was edited.
+- `status` lists `edited` and `missing` shared files and exits 1 when a file is missing or `settings.json` does not
+  register `.claude/hooks/pre_bash.py`.
+- `push` commits each edited shared file onto a branch cut from the manifest's commit and opens the pull request.
+  It carries edits only: a new shared file is added in this repo directly.
 
-Path arguments take `C:\x`, `C:/x` or `/c/x`; a `--vault-root` that is not a directory stops the run before
-any write. Bootstrap copies the template, substitutes placeholders, and writes
-`.claude/baseline.lock.json` (per-file hashes + your substitution map) so the sync
-loop works from the first session; `init` and every later `pull` write `.claude/gitignore.harness` into the
-root `.gitignore` between `# >>> harness >>>` and `# <<< harness <<<`. Bootstrap also runs `git init` when the
-target has no repo, sets `core.hooksPath` to `.claude/githooks`, creates the vault worklog skeleton
-`<vault>/DevProjects/<project>/Claude/TODO/Worklog.md` when absent, merges `autoMemoryDirectory` into the
-gitignored `.claude/settings.local.json`, and prints `baseline_sync.py doctor`, the adoption self-check. Every file it writes uses LF. `--force` re-runs over an existing
-`.claude`: seed files already there stay as they are, and the lock is rebuilt.
+A repo never forks a shared file. When a shared file needs a change, edit it, push it, and pull the merged result.
 
-Then follow the printed next-steps checklist, and walk the **Known adaptation points** below. In
-`.claude/CLAUDE.md` you fill four headings: **Project Guidelines**, **Development Philosophy: Hybrid TDD**,
-**Project Domains** and **Project-Specific Conventions**.
+A new project also writes its own `CLAUDE.md` (with `@CLAUDE.core.md`), its `settings.json` (registering the floor
+hook) and its `adaptation.json`.
 
-## Keeping projects and baseline in sync
+## CI and tests
 
-A project still on a schema-1 lock (its `.claude/baseline.lock.json` has `"schema": 1`) upgrades in one
-run of this checkout's engine, then clears the remaining judgment rows with `/sync_baseline`:
+`.github/workflows/baseline.yml` runs one job, `baseline`, the status context the branch ruleset requires:
 
-```bash
-python3 template/.claude/tools/baseline_sync.py upgrade --project /path/to/Game --baseline-dir . --layers pure,coding,godot
-```
+- `python tools/ci_totals.py <previous commit>` prints code, test and prose totals and each one's change since the
+  previous run.
+- `python -m pytest -n auto -q --durations=20 tests template/.claude/tests` runs every shared test, slowest 20
+  listed. `tests/test_context_budget.py` fails a push that takes the always-loaded text past 15 KB or the
+  model-visible skill and command descriptions past 6 KB.
 
-The contract: **the baseline never changes for project-specific edits; every
-universal improvement flows back here, and every arrival at `main` goes through
-one gated transaction.**
+Run the same pytest line locally before a push. A harness change runs its unit's test file
+(`python -m pytest template/.claude/tests/<file> -q`).
 
-A new `.claude/` file is classified — `tracked`, `local`, `forked` or `composed`
-— before its first commit, not judged later on drift. There are no `watch` rows:
-every file the baseline tracks carries a decision tied to its content hash from
-the moment it exists.
+## `v2/`
 
-Mechanism (per consumer project):
-
-- `.claude/baseline.lock.json` (schema 2) — the decision ledger. Each row's
-  `status` (`tracked` / `local` / `forked` / `composed`), `judged` verdict
-  (`push` / `keep-local` / `fork`) and content sha are set at classification time
-  and re-evaluated only when the row's content actually changes.
-- `.claude/tools/baseline_sync.py` — the mechanical engine:
-  - `check` / `diff` / `pull` — read-side classification and sync against the
-    pinned upstream commit;
-  - `classify` / `judge` / `triage` — the decision ledger's write side: `triage`
-    surfaces rows that need a verdict, `judge` records it;
-  - `author start` — creates or reuses this session's baseline author worktree
-    (`.claude/.cache/baseline-worktrees/<session>`) for universal work that is
-    authored baseline-first, then pulled;
-  - `publish` — the eight-step publication transaction (below);
-  - `fork` / `track` / `ignore` / `forget` / `gc` / `migrate` / `paths` / `candidates`
-    round out row lifecycle and lock maintenance.
-- `/sync_baseline` — the judgment wrapper around the engine: runs `check`,
-  surfaces `triage` batches for the model or owner to `judge`, and drives
-  `publish` once verdicts are recorded.
-- **The classification guard** (`hooks/baseline_classification_guard.py`) denies
-  a `git commit` that adds an unclassified `.claude/` file, naming the `classify`
-  command that unblocks it — the enforcement point moved from a drift check after
-  the fact to the commit itself.
-
-### Publication: one gated transaction
-
-`baseline_sync.py publish (--from-commit <sha> | --from-worktree <path>) [--rows FILE] [--dry-run] [--no-ci]`
-runs eight steps — `collect → classify → materialize → scrub → validate → publish
-→ update-lock → check` — against one journal
-(`.claude/.cache/baseline-publish/<id>.json`) written atomically before each step
-starts, so any failure is resumable with `--resume <id>` and any failure before
-step 6's merge leaves `main` untouched. `--dry-run` stops after step 5 (validate)
-for owner review; `--resume` continues it. Step 5 runs the manifest, separation
-and battery gates from *Maintaining this repo* below, plus the whole-tree
-identity scan, before anything reaches a pull request.
-
-- Publishing a consumer's own committed universal work: `--from-commit <sha>`,
-  driven by rows whose lock verdict is `push`.
-- Publishing baseline work authored directly in an `author start` worktree:
-  `--from-worktree <path>` — this publishes that worktree's `HEAD` tree only,
-  never its commit history, so a token that only ever existed in an earlier,
-  since-amended commit never reaches the published tree.
-- A repeated publish for the same source commit and row set is a no-op
-  (`already published <id>`) once merged, or a named `--resume <id>` refusal
-  while still in flight; a fresh publish on top of a moved baseline records
-  `supersedes: <id>`.
-
-Typical lifecycles:
-
-- *Improved a hook / command / skill while working on game A* → classify at
-  creation → commit → `judge --verdict push` → `publish --from-commit <sha>` →
-  baseline updated → in game B, `pull` (run it occasionally, or when starting
-  significant work).
-- *Project-specific tweak to a tracked file* → `triage` surfaces it →
-  `judge --verdict keep-local`, or `fork` if the divergence is permanent.
-- *Universal work authored baseline-first* → `author start` → edit and commit in
-  that worktree → `publish --from-worktree <path>` → `pull` in the consumer.
-- *Hot memory demoted to `archive/` in a project* → the template mirrors the move
-  (delete the hot copy, add the archive copy); `forget` the old row, `classify`
-  the new one. A consumer that tracked the hot copy sees it `removed-upstream` and the
-  archive copy `offered`: `forget` the old row, then `pull <archive relpath>`.
-
-## Maintaining this repo
-
-- `python3 tools/gen_manifest.py` after any add/remove/move under `template/` —
-  the manifest drives bootstrap layer-filtering and consumer lock generation.
-  Layer and sync-kind (seed/offer/auto) assignment is pattern-based at the top of that script; extend the
-  pattern lists when adding files of a new kind. **Layer assignment has NO
-  fallback**; `gen_manifest.py` fails loudly listing any unclassified file, so
-  every new file must be added to exactly one layer pattern list.
-- `python3 tools/audit_baseline.py` (also `/sync_baseline audit`) — the separation
-  gate. Verifies no source-project identifiers / secrets / concrete machine paths
-  leak into `template/`, the manifest matches disk and the generator, and flags (INFO)
-  a `pure` file naming >=4 godot/coding markers, or a `coding` file naming >=4 godot
-  markers (layer-gate check). It also warns on pure-tagged files naming code/engine or
-  consumer-domain nouns (core-domain-noun check). ERROR exit blocks publish; run it
-  after any template change. Its judgment pass (in the `/sync_baseline audit`
-  command) covers what the script can't: game-domain-noun leaks and the
-  adaptation-points list below. The standing layer-gate INFO rows (`/explore`,
-  `/merge_pr`, `/plan_check`, `/test_compact`, review agents, code-quality checklist,
-  `debugging` skill) are confirmed engine-agnostic tools whose
-  bodies use Godot examples — they stay in their layer.
-- Commit messages follow the same categorical convention as consumer projects
-  (`feat`/`fix`/`refactor`/`chore`).
-- Model/tooling evolution (new models, new plugin capabilities, superior
-  workflows) lands here exactly like any universal improvement: change it in
-  whichever project discovered it, upstream via `/sync_baseline push`, and other
-  projects adopt via `pull`.
-
-## Publishing
-
-This repo is published; consumer locks' `baseline_repo` point at its remote and
-`bootstrap.sh` records the clone's `origin` automatically. `publish.sh` remains for
-lifting a fresh copy into a new empty remote (it re-runs the separation audit as a
-backstop).
-
-## Known adaptation points
-
-A few included files are generic in shape but carry conventions as concrete
-defaults — review them on first use in a new project. (`tools/audit_baseline.py`
-keeps this list honest: its judgment pass flags adaptation-shaped files missing from here.)
-
-- [pure] `reference/memory_domains.md` — the domain → search-seed → companion-skill table, rendered
-  by `compose` from `reference/memory_domains.base.md` (tracked, universal prose) and
-  `adaptation.json` `memory_domains`; `hooks/plan_memory_reminder.py` reads the same key.
-  Add your project's content domains to `adaptation.json`, never to either file directly.
-- [pure] `commands/doc_start_here_update.md` — the domain-classification table's stack-generic rows
-  read `adaptation.json` `content_domains` for your project's central content pipeline row(s).
-- [godot] `commands/agents/pr_test_checklist_conventions.md` — the merge-heuristics table's
-  stack-generic rows read `adaptation.json` `content_scopes` for your content/entity
-  scope-to-section rows.
-- [coding] `commands/agents/pr_classification.md` — the domain table reads `adaptation.json`
-  `pr_domains` for your project's folder-shape-to-domain signals.
-- [coding] `commands/agents/review_agents.md` — the `pool-lifecycle` agent's checklist names
-  example pooled types (`IPoolable` family) in brackets; substitute your pooling types
-  and prune any pattern your project lacks.
-- [pure] `skills/worklog_reference/SKILL.md` — the domain-classification tables use example
-  content domains; replace with your project's domains.
-- [pure] `reference/project_stack.md` (seed) — the toolchain version pins every other surface cites
-  (engine, runtime, test framework, build command); fill the placeholder fields at adoption. [godot] Add a
-  `Godot engine: <version>` line, which the docs-cache hook reads, and the physics engine.
-- [pure] `skills/environment_bootstrap/SKILL.md` (seed) — this machine's ground truth: binaries, vault
-  root, log locations, shell and launcher differences; fill it for your machine.
-- [pure] `reference/vault_taxonomy.md` (seed) — the vault layout `obsidian_conventions` reads (project
-  folders, the live design surface, legacy areas); list your vault's folders.
-- [pure] `skills/project_subsystems/SKILL.md` (seed) — the subsystem registry that
-  `/sync_subsystems`, `/structure_audit`, the structure rules, the testing skill's
-  test-support path and the brainstorm scope litmus route through; fill it at adoption. [godot] Its
-  conventions add .godot/, addons/, bin/ and obj/ to the reserved paths, and the playtest scenario paths
-  (your scene roots) that `/pr_ready`'s playtest-route blocker reads.
-  Its sibling `adaptation.json` (seed) holds the other adaptation tables this list names —
-  one skill folder owns both files.
-- [pure] `skills/project_subsystems/adaptation.<layer>.defaults.json` (`pure`, `coding`, `godot`; tracked, `sync: auto`) —
-  framework data the shipped tools read, such as the godot layer's `index_prebuild` commands that
-  `/reindex_search` runs through `tools/adaptation.py run index_prebuild`; `adaptation.load` merges them
-  under your `adaptation.json`, so put project values in `adaptation.json`, never in these files.
-- [pure] `reference/external_models.local.json` (local) — this machine's provider account fields (credit,
-  credentialFile) layered over the shipped `reference/external_models.json`, which holds none.
-- [pure] `index_composition_baseline.json` (local, written by `tools/index_composition.py --set-baseline`) — the
-  corpus size and auto-memory share `/reindex_search` compares against; absent, the report prints `no baseline set`.
-- [pure] `tools/load_census.project.json` (local) — your project's load-census budgets and tripwires over the
-  generic caps in `tools/load_census.py`.
-- [godot, coding] `commands/agents/structure_audit_agents.md` + `skills/architecture_philosophy/structure_rules.md` —
-  folder-layout rules read the registry above, plus `adaptation.json` `structure_exceptions`
-  for justified folder/namespace-alias exceptions.
-- [coding] `skills/architecture_philosophy/SKILL.md` — the design-philosophy skill reflects
-  the source projects' architectural conventions; prune to taste on first use.
-- [pure] `workflows/doc_architecture_audit.js` / `commands/doc_architecture_audit.md` —
-  assumes the 4-doc Obsidian documentation system; adapt vocabulary if your doc
-  tree differs.
-- [godot, pure] `cloud-setup.sh` / `hooks/session_context_loader.py` / `commands/reference/workstation_setup_toolchain.md` —
-  pin your Godot/.NET/LSP versions (config constants at the top of each; the
-  workstation toolchain reference carries them as defaults).
-- [godot] `scripts/regression_gate.ps1` — `$script:DigestExcl` lists engine-regenerated
-  artifact paths excluded from the tree digest; add your project's.
-- [godot] `scripts/run_integration_batched.ps1` — `$quarantine` reads `adaptation.json`
-  `test_quarantine_filter`, the filter appended to every Integration batch; ships empty.
-- [godot] `hooks/test_suite_gate_coverage_guard.py` — `GATED` names the test tiers the gate
-  filters on (`Logic`/`Integration`/`Sanity`) and `EXCLUDED` the deliberate non-gated
-  folders; match them to your `Tests/` layout.
-- [godot] `hooks/refcounted_free_guard.py` — `TESTS_ROOT` and `EXEMPT` read `adaptation.json`
-  `tests_root` and `teardown_helpers` (e.g. `Tests/Framework/Helpers/TestObjectTeardown.cs`).
-- [pure] `scripts/harness_tests.py` — `EXCLUDED` and `_PROOF_TIMEOUTS` merge in `adaptation.json`
-  `proof_excluded` and `proof_timeouts` for project-specific proof exclusions and overrides.
-- [godot] `hooks/duplicate_test_double_baseline.json` — ships empty (`{}`); regenerate with
-  `duplicate_test_double_guard.py --write-baseline` once your project carries a
-  test-double backlog it wants grandfathered.
-- [godot] `hooks/check_logger_tag_prefix.py` + `skills/logging_methodology/SKILL.md` — the
-  tag-constant class is named `InstrumentationTags`; rename in both if your project
-  uses another holder.
-- [pure] `tools/lens.py` — `REGISTRIES` pairs each agent-registry file with the ID prefix
-  its lenses use; `adaptation.json` `lens_prefixes` overrides a prefix. Add project
-  lenses in `commands/agents/<registry>.project.md` (the `tools/lens.py` docstring
-  owns the rules); never fork a registry to add one.
-- [pure] pure files with example domain nouns as inline examples only (mechanism is
-  domain-agnostic): `commands/agents/orchestrator_action_protocol.md`,
-  `commands/autolearn.md`, `commands/reindex_search.md`,
-  `skills/instruction_quality/SKILL.md`,
-  `workflows/review_fanout.js`. Allowlisted in `tools/audit_baseline.py`'s
-  core-domain-noun check — swap the examples for your domain's when you first touch each file.
-- [pure] `commands/clean_pull.md`, `clean_push.md`, `commit_push.md`, `create_pr.md` — the paired-repo
-  steps read `adaptation.json` `paired_repos` for the list; empty skips the step.
-- [pure] `hooks/prompt_memory_loader.py` — `HIGH_RISK_PATTERNS` and `DRIVE_COMMANDS` extend from
-  `adaptation.json` `high_risk_patterns` and `drive_commands`.
-- [pure] `hooks/prompt_git_state_delta.py` — `WATCHED_SUBMODULES` reads `adaptation.json`
-  `git_submodules`.
-- [pure] `hooks/compound_cd_approver.py` — `SAFE_SEGMENT_COMMANDS` extends from `adaptation.json`
-  `read_only_commands`, each entry validated against `NEVER_SAFE` and a shape regex.
+`v2/` holds the cutover's working records: the carried/dropped table (`v2/carried_dropped.md` and its per-job
+fragments), the delete list and the drafts of each project's `CLAUDE.md`. It sits outside `template/`, so `pull`
+never copies it.

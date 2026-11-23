@@ -95,6 +95,49 @@ def test_same_command_index_write_allows(wrepo, command):
     assert bash(command, wrepo, session_id="s1").kind == "allow"
 
 
+# D-IW (owner, 2026-11-23): the deny stands only where git's commit-msg hook cannot re-check the final index.
+@pytest.fixture(scope="module")
+def hooked(tmp_path_factory):
+    """`wrepo`'s shape with `core.hooksPath=.claude/githooks` and a `commit-msg` hook in place."""
+    repo = make_repo(tmp_path_factory.mktemp("hooked"))
+    write(repo, "a.txt", "a\n")
+    (repo / "sub").mkdir()
+    write(repo, ".claude/githooks/commit-msg", "#!/bin/sh\nexit 0\n")
+    g(repo, "config", "core.hooksPath", ".claude/githooks")
+    return repo
+
+
+@pytest.mark.parametrize("command", [c for c in W_DENY if "merge --continue" not in c] + [
+    "git add a.txt && git merge --continue"])
+def test_an_index_write_before_a_hooked_commit_allows(hooked, command):
+    assert bash(command, hooked, session_id="s1").kind == "allow"
+
+
+@pytest.mark.parametrize("command", [
+    "git add a.txt && git commit -n -m x", "git add a.txt && git commit --no-verify -q -m x",
+    "git add a.txt && git commit -qnm x", "git add a.txt && git -c core.hooksPath=/dev/null commit -q -m x",
+    "git stash && git cherry-pick --continue --no-verify",
+])
+def test_an_index_write_before_a_commit_that_skips_the_hook_denies(hooked, command):
+    got = bash(command, hooked, session_id="s1")
+    assert got.denied and all(n in got.reason for n in NEXT_STEP), got.reason
+
+
+def test_a_head_move_before_an_amend_denies_even_when_hooked(hooked):
+    """The commit-msg entry re-runs the stage-record and peer-revert checks, not the amend check, which read HEAD
+    before the command moved it."""
+    got = bash("git reset -q --soft HEAD && git commit --amend -q -m x", hooked, session_id="s1")
+    assert got.denied and all(n in got.reason for n in NEXT_STEP), got.reason
+
+
+def test_a_hooks_path_without_the_commit_msg_hook_denies(tmp_path):
+    repo = make_repo(tmp_path)
+    write(repo, "a.txt", "a\n")
+    g(repo, "config", "core.hooksPath", ".claude/githooks")
+    got = bash("git add a.txt && git commit -q -m x", repo, session_id="s1")
+    assert got.denied and all(n in got.reason for n in NEXT_STEP), got.reason
+
+
 @pytest.fixture
 def probe_root(tmp_path, monkeypatch):
     root = tmp_path / "probe_root"

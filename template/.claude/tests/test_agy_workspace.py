@@ -59,48 +59,53 @@ def read(rel):
 first = ws.write(ROOT)
 agents = os.path.join(ROOT, ".agents")
 core = read("rules/claude_core.md")
-check("a CLAUDE layer is an always-on rule that includes its source",
-      "trigger: always_on" in core and "@[CLAUDE.core.md](../../.claude/CLAUDE.core.md)" in core, core)
-check("an absent layer gets no rule", not os.path.exists(os.path.join(agents, "rules", "claude_godot.md")))
-memory = read("rules/memory_index.md")
-check("the memory index is an always-on rule that includes its source, as Claude Code loads it every session",
-      "trigger: always_on" in memory and "(../../.claude/auto-memory/MEMORY.md)" in memory, memory)
-rule = read("rules/path_cs.md")
-check("a path rule is a model-decision pointer naming its globs",
-      "trigger: model_decision" in rule and "**/*.cs, Jmodot/**" in rule and ".claude/rules/cs.md" in rule, rule)
-check("a rule with no paths gets no pointer", not os.path.exists(os.path.join(agents, "rules", "path_nopaths.md")))
-stub = read("skills/my-skill/SKILL.md")
-check("an invocable skill gets a stub with its description and its source path",
-      'description: "Use to do the thing. SKIP other."' in stub and ".claude/skills/my_skill/SKILL.md" in stub, stub)
-check("a non-invocable skill gets no stub", not os.path.exists(os.path.join(agents, "skills", "hidden")))
-hooks = json.loads(read("hooks.json"))
-cmd = hooks["project-guards"]["PreToolUse"][0]["hooks"][0]["command"]
-check("hooks route every tool call through the bridge", "agy_hook_bridge.py" in cmd and cmd.endswith("PreToolUse"), cmd)
-post = [h["command"] for g in hooks.get("project-records", {}).get("PostToolUse", []) for h in g.get("hooks", [])]
-check("finished tool calls reach the bridge's PostToolUse",
-      len(post) == 1 and "agy_hook_bridge.py" in post[0] and post[0].endswith("PostToolUse"), json.dumps(hooks))
-for event in ("SessionStart", "Stop"):
-    entries = [h["command"] for group in hooks.values() for h in group.get(event, [])]
-    check(f"agy's {event} reaches the bridge's {event}",
-          len(entries) == 1 and "agy_hook_bridge.py" in entries[0] and entries[0].endswith(event), json.dumps(hooks))
-servers = json.loads(read("mcp_config.json"))["mcpServers"]
-native = ROOT.replace("\\", "/")
-check("only the read-only project server is wired, with the root substituted",
-      "godot" not in servers and servers["git"]["args"] == [native + "/.claude/tools/git_ro_mcp.py"]
-      and servers["git"]["env"]["GIT_RO_ROOT"] == native, json.dumps(servers))
-check("a rerun writes nothing", first > 0 and ws.write(ROOT) == 0, str(first))
 
-os.remove(os.path.join(ROOT, ".claude", "rules", "cs.md"))
-put(".agents/rules/mine.md", "---\ntrigger: always_on\n---\nowner's own rule\n")
-ws.write(ROOT)
-check("a generated file the plan drops is removed, an owner's file stays",
-      not os.path.exists(os.path.join(agents, "rules", "path_cs.md"))
-      and os.path.exists(os.path.join(agents, "rules", "mine.md")))
+def main():
+    check("a CLAUDE layer is an always-on rule that includes its source",
+          "trigger: always_on" in core and "@[CLAUDE.core.md](../../.claude/CLAUDE.core.md)" in core, core)
+    check("an absent layer gets no rule", not os.path.exists(os.path.join(agents, "rules", "claude_godot.md")))
+    memory = read("rules/memory_index.md")
+    check("the memory index is an always-on rule that includes its source, as Claude Code loads it every session",
+          "trigger: always_on" in memory and "(../../.claude/auto-memory/MEMORY.md)" in memory, memory)
+    rule = read("rules/path_cs.md")
+    check("a path rule is a model-decision pointer naming its globs",
+          "trigger: model_decision" in rule and "**/*.cs, Jmodot/**" in rule and ".claude/rules/cs.md" in rule, rule)
+    check("a rule with no paths gets no pointer", not os.path.exists(os.path.join(agents, "rules", "path_nopaths.md")))
+    stub = read("skills/my-skill/SKILL.md")
+    check("an invocable skill gets a stub with its description and its source path",
+          'description: "Use to do the thing. SKIP other."' in stub and ".claude/skills/my_skill/SKILL.md" in stub, stub)
+    check("a non-invocable skill gets no stub", not os.path.exists(os.path.join(agents, "skills", "hidden")))
+    hooks = json.loads(read("hooks.json"))
+    cmd = hooks["project-guards"]["PreToolUse"][0]["hooks"][0]["command"]
+    check("hooks route every tool call through the bridge", "agy_hook_bridge.py" in cmd and cmd.endswith("PreToolUse"), cmd)
+    check("the floor's PreToolUse is the only event registered: the bridge answers {} to every other",
+          [event for group in hooks.values() for event in group] == ["PreToolUse"], json.dumps(hooks))
+    servers = json.loads(read("mcp_config.json"))["mcpServers"]
+    native = ROOT.replace("\\", "/")
+    check("only the read-only project server is wired, with the root substituted",
+          "godot" not in servers and servers["git"]["args"] == [native + "/.claude/tools/git_ro_mcp.py"]
+          and servers["git"]["env"]["GIT_RO_ROOT"] == native, json.dumps(servers))
+    check("a rerun writes nothing", first > 0 and ws.write(ROOT) == 0, str(first))
 
-foreign = tempfile.mkdtemp(prefix="agy_ws_foreign_")
-out = subprocess.run([sys.executable, TOOL, "write", "--root", foreign], capture_output=True, text=True)
-check("a root that is not this project is skipped", out.stdout.startswith("skipped")
-      and not os.path.exists(os.path.join(foreign, ".agents")), out.stdout + out.stderr)
+    os.remove(os.path.join(ROOT, ".claude", "rules", "cs.md"))
+    put(".agents/rules/mine.md", "---\ntrigger: always_on\n---\nowner's own rule\n")
+    ws.write(ROOT)
+    check("a generated file the plan drops is removed, an owner's file stays",
+          not os.path.exists(os.path.join(agents, "rules", "path_cs.md"))
+          and os.path.exists(os.path.join(agents, "rules", "mine.md")))
 
-print("ALL PASS" if not fails else f"{fails} FAILURE(S)")
-sys.exit(1 if fails else 0)
+    foreign = tempfile.mkdtemp(prefix="agy_ws_foreign_")
+    out = subprocess.run([sys.executable, TOOL, "write", "--root", foreign], capture_output=True, text=True)
+    check("a root that is not this project is skipped", out.stdout.startswith("skipped")
+          and not os.path.exists(os.path.join(foreign, ".agents")), out.stdout + out.stderr)
+
+    print("ALL PASS" if not fails else f"{fails} FAILURE(S)")
+    return 1 if fails else 0
+
+
+def test_proof():
+    assert main() == 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

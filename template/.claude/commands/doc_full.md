@@ -26,7 +26,7 @@ Phase 4: START HERE UPDATE  (reconcile Start Here.md with folder structure)
 Determine the system name from `$ARGUMENTS` or the session's development history. This becomes `{SystemName}` for all subagent prompts and file paths.
 
 ### 1b. Apply Obsidian Conventions
-Read `agents/documentation_structure.md` (folder structure) and the `obsidian_conventions` skill (vault tooling), and apply:
+Read `commands/agents/documentation_structure.md` (folder structure) and the `obsidian_conventions` skill (vault tooling), and apply:
 - **Normalize name** — PascalCase, no spaces, strip redundant domain prefixes
 - **Determine domain folder** — read Start Here "By Domain", route to `{Domain}/{SystemName}/`
 - **Check doc folder** — check if doc folder exists (pass to agents as context)

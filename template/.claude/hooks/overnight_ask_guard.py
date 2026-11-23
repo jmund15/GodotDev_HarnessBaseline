@@ -7,15 +7,14 @@ and --archive-closed, which read Close docs and never touch markers). State is a
 Expired owned state is removed. Only the owner typing `/overnight off` or running `/overnight_review`
 ends the run: a UserPromptSubmit whose owner text holds either (prompt_dispatch CHAIN member) removes
 the marker; any other owner text keeps it and prints a one-line reminder. The model has no disarm command, so work
-after the Close doc (a /session_end the goal names) stays unattended.
+after the Close doc (a /close the goal names) stays unattended.
 Ending a run writes ended-<session-id>.json with the Q numbers then open in this session's Close doc, and the
 end line names them (home: commands/overnight.md §Step 4). Until the session calls AskUserQuestion, each later
 owner prompt names the rows still open. `--validate-close` then refuses a Q row opened after the end (class:
 floor, the owner's stop). The record lapses TTL_HOURS after the end; `--arm` clears it.
 `--validate-close` checks each `Q` row's Park reason and Default, plus Reversibility (clean, residue
 or none) when supplied, requires each open `Q` row's next line to be an `Evidence: {...}` file or
-command item that tools/quote_check.py VERIFIES, and, when the doc holds a `Q` row, the `Next session: <currency> · <model>`
-line in `## Outcome`. `--open-questions` retains legacy missing-Default rows as open.
+command item that tools/quote_check.py VERIFIES. `--open-questions` retains legacy missing-Default rows as open.
 Both Close-doc readers default `<dir>` to the `overnight_dir` key of `skills/project_subsystems/adaptation.json`.
 `--archive-closed <dir>` moves each session's docs to <dir>/archive/ once none holds an open,
 malformed or unreadable row and none of its sessions is armed; it never overwrites an archived file.
@@ -45,7 +44,6 @@ _Q_ROW = re.compile(
     r"(?:\. Default: (?P<default>.+?))?\.\s*$"
 )
 _EVIDENCE = re.compile(r"^Evidence: (\{.*\})\s*$")
-_NEXT_SESSION = re.compile(r"^(?:- )?Next session: .+ · .+$", re.MULTILINE)
 _NOT_OWNER = re.compile(r"<(?:cross-session-message|task-notification|agent-message)\b", re.I)
 _OFF = re.compile(r"/overnight(?:\s+|</command-name>\s*<command-args>\s*)(?:--?)?off\b", re.I)
 _REVIEW = re.compile(r"/overnight_review\b", re.I)
@@ -58,7 +56,7 @@ _RESUME = re.compile(
 
 REASON = (
     "/overnight is armed — no one is here to answer. Decide or park per commands/overnight.md "
-    "§Step 2; the final message lists the Q rows as text. This holds through /session_end and "
+    "§Step 2; the final message lists the Q rows as text. This holds through /close and "
     "every hook that says to ask. Only the owner typing /overnight off or running /overnight_review ends it."
 )
 
@@ -221,10 +219,6 @@ def validate_close(path, root=None):
         if still_open and not ended.get("asked_at"):
             note = (f" (the owner ended this run and {_labels(sorted(still_open))} is still open: ask it live with "
                     "AskUserQuestion this turn, commands/overnight.md §Step 4)")
-    outcome = re.search(r"^## Outcome\s*$(?P<body>.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL)
-    if numbers and not (outcome and _NEXT_SESSION.search(outcome.group("body"))):
-        raise ValueError("A Close doc with a Q row needs 'Next session: <currency> · <model>' in ## Outcome "
-                         "(overnight.md §Step 4).")
     _validate_left_undone(text, set(numbers), root or _root())
     print(f"VALIDATED {target}{note}")
 

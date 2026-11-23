@@ -7,7 +7,8 @@ of the backlog — the calling session never loads it. Return structured JSON on
 
 - Index: `.claude/worklog-titles.md` (repo-relative). Active `[ ]` items only, grouped under
   `## <domain>` headings, one item per line as `- <class> · <scope> · <title>`.
-- Source of truth: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\Claude\TODO\Worklog.md`.
+- Source of truth: `<vault_root>\DevProjects\<project_name>\Claude\TODO\Worklog.md`, where
+  `vault_root` and `project_name` are those keys of `.claude/skills/project_subsystems/adaptation.json`.
   The index is derived and can lag; it also excludes Future Scope, User-Tasks, and completed items
   **by design**, so an item's absence from the index is NOT evidence the item does not exist.
 
@@ -81,7 +82,7 @@ you are unsure about; when unsure, drop.
   downgrade to `adjacent` / `note-only`. This never licenses a narrow shortlist in step 1; recall is
   cheap there and irrecoverable afterward.
 - Never invent a title. Copy each title verbatim from the index or the Obsidian doc.
-- Supply each overlap's `evidence` and `checked.evidence` under `.claude/reference/evidence_contract.md`. Quote the title from the full vault source path. Provenance cites the index or vault text actually read, even for an empty result; a blocked read or triviality exit supplies an empty evidence array, never invented evidence.
+- Supply each overlap's `evidence` and `checked.evidence` per the schema's `evidence` description (`tools/quote_check.py` owns its semantics). Quote the title from the full vault source path. Provenance cites the index or vault text actually read, even for an empty result; a blocked read or triviality exit supplies an empty evidence array, never invented evidence.
 - **`checked` is mandatory and must be truthful.** An empty `overlaps` is only trustworthy if it says
   what was actually inspected: `indexRead`, `obsidianOpened` (true ONLY if you opened `Worklog.md`
   with Read), and `shortlisted` (the titles you carried out of step 1, before verification). An empty

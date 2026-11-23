@@ -3,7 +3,7 @@
 
 Claude Code parses `allowed-tools` from the command's frontmatter; a missing grant makes the step ask or fail at run time.
 
-    python3 .claude/tests/test_push_command_contract.py
+    python -m pytest .claude/tests/test_push_command_contract.py -q
 """
 from pathlib import Path
 import re
@@ -13,7 +13,6 @@ ROOT = Path(__file__).resolve().parents[2]
 COMMANDS = ROOT / ".claude" / "commands"
 GRANTS = {
     "commit_push.md": ("Bash(python3:*)",),
-    "clean_push.md": ("Bash(python3:*)",),
     "clean_pull.md": ("Bash(git ls-tree:*)", "Bash(git ls-files:*)", "Bash(git submodule:*)",
                       "Bash(git -C:*)", "Bash(mv:*)"),
 }
@@ -40,3 +39,7 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_proof():
+    assert main() == 0

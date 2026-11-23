@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Runs a Workflow engine script outside the Workflow tool. Stdin: {script, args, reply}; stdout: the
 // engine's return as JSON. Every agent() call returns `reply`; `args` without `__transport` gets HOST.
-// A JS proof requires `load` (the script as a callable) and `withHost` (the host transport, given its host).
+// `launched: true` in the stdin object skips the planted keys. A JS proof requires `load` (the script as a callable) and `withHost` (the host transport, given its host).
 //
 //     echo '{"script": ".claude/workflows/review_fanout.js", "args": {...}, "reply": {...}}' | node _engine_run.js
 const fs = require('fs')
@@ -55,7 +55,9 @@ const withKinds = (args) => {
 const withHost = (args, host = HOST) =>
   withKinds(Object.prototype.hasOwnProperty.call(args || {}, '__transport') ? args : { ...args, __transport: { ...host } })
 
-const run = ({ script, args, reply }) => load(script)(withHost(args),
+// `launched: true` passes `args` exactly as the Workflow entry built them (hooks/workflow_transport.py), with
+// nothing planted, so a proof can show that the entry's payload alone satisfies an engine.
+const run = ({ script, args, reply, launched }) => load(script)(launched ? args : withHost(args),
   async () => reply, thunks => Promise.all(thunks.map(fn => Promise.resolve().then(fn))), () => {}, () => {})
 
 module.exports = { load, run, withHost, withKinds, HOST, KIND_ROWS }

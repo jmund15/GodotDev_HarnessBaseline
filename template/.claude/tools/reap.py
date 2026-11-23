@@ -78,7 +78,7 @@ beside the whole transcript. The tool reads no transcript for it, no stop verb, 
               result. The targets' own trees and console hosts (conhost.exe) inherit the session id and
               never count as its host. The host test:
               a session is live when a live SESSION HOST serves it: a live process's
-              `<login>/sessions/<pid>.json` row names it (every login model_registry.login_dirs
+              `<login>/sessions/<pid>.json` row names it (every login transcript_usage.login_dirs
               declares), or a live process matching the session-host patterns of `never` names it
               after --session-id or --resume. A tool shell, MCP server or console host that merely
               carries the id is a DEPENDENT, never a host: it outlives the session, so counting it
@@ -170,13 +170,12 @@ import _hook_state  # noqa: E402
 from _win_path import drive_path, native_path  # noqa: E402
 
 LEDGER = REPO / ".claude" / "logs" / "reap_ledger.jsonl"
-STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # session hook state; watch_records.py reads it
+STOPPED_LAUNCHES_KEY = "sidecar_stopped_launches"  # session hook state
 sys.path.insert(0, str(REPO / ".claude" / "tools"))
-from model_registry import login_dirs, session_projects_dir  # noqa: E402
-import sidecar_argv  # noqa: E402
+from transcript_usage import login_dirs  # noqa: E402  the one login list (seats.json configDirs)
 import cli_usage  # noqa: E402
 
-PROJECTS_ROOT = Path(session_projects_dir())
+PROJECTS_ROOT = Path(os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")) / "projects"
 REASONS = ("duplicate", "orphan", "stalled", "superseded", "queued")
 RETIRED_REASONS = {"owner": "omit --reason: a target that is not never-kill and not another session's needs none, and "
                             "whether the owner ordered the stop is judged on the call, not by this tool"}
@@ -756,7 +755,7 @@ def launchers_of(table, launch, pid):
 
 
 def session_registry_dirs():
-    """Every declared login's `sessions` dir that exists (`model_registry.login_dirs`)."""
+    """Every declared login's `sessions` dir that exists (`transcript_usage.login_dirs`)."""
     return [Path(p) / "sessions" for p in login_dirs() if (Path(p) / "sessions").is_dir()]
 
 
@@ -998,11 +997,9 @@ def ownership(table, pid, session_pid, sid):
     if env and SID_ENV in env:
         return None, "its own environment names a DIFFERENT session -- a peer's process"
     prompt = _env_value(env, PROMPT_ENV)
-    if prompt and sid and launched_prompt(sid, prompt):
-        return "its sidecar prompt file %s was launched by this session's transcript" % os.path.basename(prompt), None
     if prompt:
-        return None, ("its sidecar prompt file %s was not launched by this session: a sidecar belongs to the session "
-                      "that launched it, a DIFFERENT one" % os.path.basename(prompt))
+        return None, ("its sidecar prompt file %s carries no session tag: nothing proves this session launched it"
+                      % os.path.basename(prompt))
     # A record on disk is second-hand (a stale -R path can name us while the process is a peer's),
     # so it is consulted only when the environment was unreadable.
     cmd = table[pid].get("cmd") or ""
@@ -1034,36 +1031,6 @@ def _env_value(env, key):
 def _same_path(a, b):
     fix = lambda p: os.path.normcase(os.path.abspath(drive_path(p.replace("\\", "/"))))
     return fix(a) == fix(b)
-
-
-def launched_prompt(sid, prompt):
-    """True when this session's transcript holds a sidecar launch whose -f resolves to `prompt`."""
-    transcript = session_transcript(sid)
-    if not transcript:
-        return False
-    sys.path.insert(0, str(REPO / ".claude" / "tools"))
-    import orchestration_metrics as om
-    import sidecar_argv
-    name = os.path.basename(prompt)
-    with open(transcript, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            if name not in line or "_sidecar.sh" not in line:
-                continue
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            message = entry.get("message") if entry.get("type") == "assistant" else None
-            for item in (message or {}).get("content") or []:
-                command = (item.get("input") or {}).get("command") if isinstance(item, dict) else None
-                if item.get("type") != "tool_use" or not isinstance(command, str):
-                    continue
-                run_cwd, calls = om._resolved_launcher_calls(command, entry.get("cwd") or str(REPO))
-                for kind, _script, args in calls:
-                    value = sidecar_argv.sidecar_flags(args).get("f") if kind == "sidecar" else None
-                    if isinstance(value, str) and _same_path(os.path.join(run_cwd, value), prompt):
-                        return True
-    return False
 
 
 def session_transcript(sid):
@@ -1423,7 +1390,7 @@ def live_launches(table, prompt=None, resume=None, self_pid=None, launch=None, f
         cmd = row.get("cmd") or ""
         if is_launcher(row):
             block = launch_block(pid)
-            flags = sidecar_argv.sidecar_flags(launcher_args(cmd))
+            flags = _launcher_flags(launcher_args(cmd))
             path, session = flags.get("f"), flags.get("r")
             theirs, their_record = flags.get("l"), flags.get("R")
         elif (row.get("name") or "").lower().startswith("claude") and re.search(r"\s-p(?:\s|$)", cmd):
@@ -1467,6 +1434,16 @@ def _ids_block(pid, block):
     return msys_environ(pid) or block
 
 
+def _launcher_flags(args):
+    """{letter: value} of the value flags a launcher's reap checks read (-f prompt file, -r resume, -l launch id,
+    -R record); the last repeat wins."""
+    out = {}
+    for flag, value in zip(args, args[1:]):
+        if len(flag) == 2 and flag[0] == "-" and flag[1] in "frlR":
+            out[flag[1]] = value
+    return out
+
+
 def launcher_args(cmd):
     """The arguments after the `*_sidecar.sh` token of a launcher's command line."""
     tokens = [tok.strip('"') for tok in re.findall(r'"[^"]*"|\S+', cmd or "")]
@@ -1490,7 +1467,7 @@ def _launch_label(table, pid):
     launch = launch_of(pid)
     if launch or not is_launcher(table[pid]):
         return launch or "unknown"
-    record = sidecar_argv.sidecar_flags(launcher_args(table[pid].get("cmd"))).get("R")
+    record = _launcher_flags(launcher_args(table[pid].get("cmd"))).get("R")
     try:
         with open(_resolve(record) + ".pid", encoding="utf-8", errors="replace") as fh:
             found = re.findall(r"\blaunch=(\S+)", fh.read())

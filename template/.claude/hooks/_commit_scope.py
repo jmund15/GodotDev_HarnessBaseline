@@ -12,13 +12,17 @@ Every invocation that commits the index (`--continue` included) is judged, not o
     writes_index(args)                      -> bool    whether a git invocation changes the index or HEAD
     incoming_heads(cwd, git_env=None)       -> list    the ref holding the incoming side, or []
     merge_authored(rest, cwd, git_env=None) -> set|None  same, for a guard that scans the whole tree
+    stage_record_path(index) -> Path, stage_record_base(record) -> str|None
+                                            the record `tools/index_commit.py stage` writes beside a private
+                                            index, and the HEAD it was staged over (None when unreadable)
 
-`hooks/git_guardrails.py` and `hooks/baseline_classification_guard.py` both read this, so the two
-guards cannot disagree about what a merge authored.
+`hooks/dangerous_shell_guard.py` reads this for what a merge authored.
 """
+import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _HOOKS_DIR not in sys.path:
@@ -80,6 +84,21 @@ class Publication:
         if local is None:
             return None
         return dict(self.git_env or {}, **dict.fromkeys([*local.split(), "GIT_WORK_TREE"]))
+
+
+STAGE_RECORD_SUFFIX = ".paths.json"
+
+
+def stage_record_path(index):
+    return Path(str(index) + STAGE_RECORD_SUFFIX)
+
+
+def stage_record_base(record):
+    try:
+        base = json.loads(Path(record).read_text(encoding="utf-8")).get("base_head")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return base if isinstance(base, str) else None
 
 
 def publication(sub, rest, cwd, git_env=None):

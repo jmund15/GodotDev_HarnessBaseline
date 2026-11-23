@@ -44,7 +44,7 @@ List `DevProjects/<project_name>/Claude/Documentation/` (recursion depth 2). Cla
   "templateFormat": "4-doc | design-doc-only | mixed | empty" }
 ```
 
-`classification` and `domain` are load-bearing: the manifest is the only channel that carries skip/grouping intent to the workflow's agents (push-don't-pull). In particular, `entity-doc` folders follow the entity-doc conventions `agents/documentation_structure.md` §Folder Classification assigns them and are **exempt from template-compliance checks (S1-S4)** — the structural lens honors that exemption only if the manifest tags them. There is **no hand-maintained exclusion list** — skipping is derived from classification (the canonical rules are content-based and stateless).
+`classification` and `domain` are load-bearing: the manifest is the only channel that carries skip/grouping intent to the workflow's agents (push-don't-pull). In particular, `entity-doc` folders follow the entity-doc conventions `commands/agents/documentation_structure.md` §Folder Classification assigns them and are **exempt from template-compliance checks (S1-S4)** — the structural lens honors that exemption only if the manifest tags them. There is **no hand-maintained exclusion list** — skipping is derived from classification (the canonical rules are content-based and stateless).
 
 ### 1c. Read Start Here
 Read *Start Here.md* in `DevProjects/<project_name>/Claude/Documentation/`. Parse all `[[wikilinks]]` + domain-table assignments, Role table entries (Designer/Developer), and entry-point links (Quick Reference vs Design Document).
@@ -91,6 +91,8 @@ It returns:
 ### 4a. Absence-Claim Verification Gate (MANDATORY — before computing anything)
 
 Lens agents produce **false absences**: they read a bounded slice and report the unread remainder as missing. Confirming presence needs one hit; confirming absence needs exhaustive coverage — and an agent cannot distinguish "I looked everywhere" from "I stopped early." Treat every absence-shaped finding as unverified until you check it yourself.
+
+First run `python3 .claude/tools/quote_check.py <engine result.json> --root <vault root>`: a printed miss is a finding to read at its source, and a quote it does not print is confirmed. It checks quotes and git-command output only, never an absence, so the gate below still applies.
 
 **Qualifying shape** — the description asserts something does not exist: *missing, absent, broken, unresolvable, does not link back, not found, orphaned, no longer exists*. Usual carriers: X1, X2, S1, S2, D1, D5.
 

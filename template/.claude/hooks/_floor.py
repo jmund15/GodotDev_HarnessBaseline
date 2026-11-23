@@ -7,7 +7,9 @@ payload as rewritten so far; the first deny wins, then an `ask`, then a rewrite 
 
 Fails closed: a payload that is not a JSON object denies; a FLOOR module that fails to import denies every call its
 matcher selects (the action it judges, never the noun) and names the import error; a FLOOR check that raises denies
-its call. A HELPERS module (the kept small Bash helpers, V16) that fails to import or raises is skipped.
+its call; a decision whose git reads ran out of `BUDGET_S` denies, since a hook the client kills on its timeout is a
+non-blocking error (the call would run unjudged). A HELPERS module (the kept small Bash helpers, V16) that fails to
+import or raises is skipped.
 """
 import contextlib
 import importlib
@@ -23,6 +25,12 @@ MATCHER = "Bash|PowerShell|Monitor|TaskStop"
 SHELLS = ("Bash", "PowerShell")
 UNREADABLE = ("BLOCKED call (CLAUDE.core.md §Shell Discipline) — the loss floor could not read its input. "
               "Re-issue the same call; if it repeats, report it.")
+# The whole decision's git budget, below the client's default 60 s hook timeout with room for one Python start and
+# the process-table reads `kill_guard` bounds itself (the registered timeout is set at cutover, at least 60 s).
+BUDGET_S = 40.0
+OUT_OF_TIME = ("BLOCKED call (CLAUDE.core.md §Shell Discipline) — the loss floor's git reads ran past its %d s budget, "
+               "so the call was not judged (a loaded machine or a stalled git). Re-issue the same call; if it "
+               "repeats, find what stalls git in that checkout.")
 # What a broken kill_guard would have judged: a stop, a window close, or a scratch script it reads for one.
 _STOP_WORDS = re.compile(r"kill|stop-process|spps|wmic|terminate|closemainwindow|wm_close|sc_close|0xf060"
                          r"|(?:post|send)message|\.claude[/\\]scratch[/\\]", re.I)
@@ -46,7 +54,9 @@ FLOOR_MEMBERS = (
     ("dangerous_shell_guard", _shell_call, "destructive-command check"),
     ("kill_guard", _stop_call, "stop/kill check"),
 )
-HELPER_NAMES = ()
+# The kept small Bash helpers (V16, §4 Q12), each `check(payload)`: the length cut and the recursive-grep deny, then
+# the backslash repair last, since it rewrites the command every deny above must judge first.
+HELPER_NAMES = ("bash_length_guard", "unbounded_scan_guard", "bash_backslash_fidelity")
 
 
 def _fault(exc):
@@ -68,6 +78,7 @@ try:
     import _git_commit
 except Exception:
     _git_commit = None
+import _git_run
 
 
 def _deny(reason):
@@ -95,8 +106,9 @@ def decide(payload):
     if not isinstance(payload, dict) or not isinstance(payload.get("tool_input", {}), dict):
         return _deny(UNREADABLE)
     memo = _git_commit.memoized() if _git_commit is not None else contextlib.nullcontext()
-    with memo:
-        return _decide(payload)
+    with memo, _git_run.deadline(BUDGET_S) as clock:
+        out = _decide(payload)
+    return _deny(OUT_OF_TIME % BUDGET_S) if clock.spent else out
 
 
 def _decide(payload):

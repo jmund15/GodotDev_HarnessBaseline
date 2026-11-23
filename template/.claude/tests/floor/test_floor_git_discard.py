@@ -390,3 +390,20 @@ def test_stash_drop_held_by_a_ref_tip(tmp_path_factory, label, scenario, work, s
     assert got.kind == kind, got.reason
     if kind == "deny":
         assert "git update-ref refs/preserve/" in got.reason and "stash@{0}" in got.reason
+
+
+# One unproven call per `CASES` row: each row parses its own sample and denies it when no repository can be read.
+CASE_SAMPLES = ["checkout -- f.txt", "restore f.txt", "reset --hard", "clean -fd", "push -f", "branch -D x",
+                "stash drop", "stash clear", "reflog expire", "gc --prune=now", "filter-branch"]
+
+
+def test_every_discard_case_has_its_deny_row():
+    import dangerous_shell_guard as dsg
+    claimed = []
+    for sample in CASE_SAMPLES:
+        sub, *rest = sample.split()
+        rows = [case for case in dsg.CASES if case.parse(sub, tuple(rest), None) is not None]
+        assert len(rows) == 1, sample
+        claimed.append(rows[0])
+        assert dsg.verdict([sub, *rest], None), sample
+    assert len(set(map(id, claimed))) == len(dsg.CASES)

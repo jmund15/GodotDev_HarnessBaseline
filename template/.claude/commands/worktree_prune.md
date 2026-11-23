@@ -31,7 +31,7 @@ Per worktree, gather:
 | Uncommitted | `git -C <path> status --porcelain` — count **tracked** modifications separately from untracked files |
 | Locked | `locked` in the porcelain output — a locked worktree is deliberately pinned; never recommend it |
 | Open PR | the worktree's branch is an open PR's head branch or `sync/pr<N>` of open PR N (`gh pr list --state open --json number,headRefName`) |
-| Guard | `python3 .claude/hooks/_regenerable_clone.py --retire-check <path>...`: the delete guard's own verdict for a worktree this session did not create, with every reason it would deny |
+| Guard | `python3 .claude/hooks/_delete_rule.py <path>...`: the delete guard's own verdict for each worktree, with every reason it would deny |
 
 Bucket into: `merged` (branch is in main, nothing uncommitted) · `wip:N` (N tracked uncommitted edits) · `unmerged:N` (N commits not in main) · `detached` · `locked` · `orphan` · `open-pr:N` (checked first; never recommended, because PR testing and review need its checkout until the PR closes or merges, and the delete guard denies it).
 
@@ -59,7 +59,7 @@ The report is done when the table prints. With no worktree under `.claude/worktr
 
 **The bucket is advice, not permission.** `wip:N` is N tracked uncommitted edits. Show the diff and get a decision first: removing a clean worktree is recoverable from its branch, but uncommitted work is gone. Never pass `--force`. Never remove a `locked` worktree.
 
-`git worktree remove` refuses any worktree carrying a submodule; `orchestration` reference `worktrees.md` owns the removal recipe for those and the delete guard's rules.
+`git worktree remove` refuses any worktree carrying a submodule: run `rm -rf .claude/worktrees/<name>` alone, then `git worktree prune`. The delete guard (`hooks/_delete_rule.py`) allows that delete only when the checkout loses no work, and its deny names every failed condition.
 
 Ask the owner one question naming each worktree to remove; `CLAUDE.core.md` §Shell Discipline owns what the delete guard then accepts. Armed `/overnight` is the exception: `commands/overnight.md` §Step 2 decides it. This command's own output is not the confirmation.
 

@@ -61,19 +61,17 @@ DEFAULTS: dict = {
     "symbol_stopwords": [],
     # hooks/session_context_loader.py, hooks/semantic_search_scope_guard.py: absolute document roots read outside the repo.
     "doc_roots": [],
-    # scripts/sync_plan_config.py: the bench liveness patterns and labels; absent means no project extras.
-    "bench_liveness": {},
     # tools/drift_scan.py (MaddManager): {sources, consumers, min_length, ignore}; empty means not configured.
     "drift_scan": {},
     # tools/usage_report.py: the weekly quota reset ({weekday, hour}, machine-local).
     "usage_reset": {"weekday": "sunday", "hour": 13},
-    # hooks/git_guardrails.py, commands/commit_push.md: the branch prefix a land runner integrates; empty means none.
+    # commands/commit_push.md: the branch prefix a land runner integrates; empty means none.
     "land_prefix": "",
     # commands/commit_push.md step 6: the command that waits on a land and reports it; empty means none.
     "land_watch": "",
     # scripts/main_check.py: the workflow that proves the default branch after each push; empty means none.
     "main_check": "",
-    # hooks/_regenerable_clone.py: ignored build outputs a worktree delete may discard (fnmatch; a directory covers its contents).
+    # hooks/_delete_rule.py: ignored build outputs a worktree delete may discard (fnmatch; a directory covers its contents).
     "regenerable_ignored": [],
     # hooks/_wide_runs.py, hooks/wide_test_guard.py, tools/guard_text.py, tools/reach_run.py, scripts/main_check.py.
     # The shared default holds the harness slice row; a project's table replaces it whole, so it restates its own rows.
@@ -83,7 +81,8 @@ DEFAULTS: dict = {
     "index_prebuild": [],
     # commands/worklog.md, skills/worklog_reference/SKILL.md: [long form, short form] pairs; `get worklog_domains`.
     "worklog_domains": [],
-    # commands/worklog.md (`get project_name`, `get vault_root`): the values the vault paths use.
+    # tools/worklog.py, tools/scratch_prune.py and the vault-path commands and skills (`get project_name`,
+    # `get vault_root`): the values the vault paths use.
     "project_name": "",
     "vault_root": "",
     # commands/overnight.md, commands/overnight_review.md, hooks/overnight_ask_guard.py: the Overnight Close-doc directory.
@@ -94,7 +93,8 @@ DEFAULTS: dict = {
     "dispatch": {"pre_launch": "", "post_return": ""},
     # commands/pr_ready.md (`get pr_ready.checks`): the project check files a PR runs.
     "pr_ready": {"checks": []},
-    # hooks/<event>_dispatch.py (one shared dispatcher per event): the member modules each event runs.
+    # hooks/_optional_hooks.py chain(): {pre_edit, post_edit, pre_read, post_read, prompt: [module]}, the project-local
+    # members each dispatcher runs after its own CHAIN of shared members.
     "hook_members": {},
 }
 

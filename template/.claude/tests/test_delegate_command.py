@@ -1,105 +1,51 @@
 #!/usr/bin/env python3
-"""Structural proof for commands/delegate.md.
+"""Contract proof for commands/delegate.md (v2): the seat route's call shape, the capacity read it
+prints before a fan-out, and every `.claude/` path the command names resolves.
 
-This proves required text branches exist and planted forbidden shortcuts are detected. It does
-not prove that Claude follows the route at runtime; the plan's live smoke supplies that evidence.
+The route's behaviour is proved where it runs (the seat launcher's and the Workflow entry's tests); this
+file proves only what the command text promises a session to run: `seat.sh <seat> <brief.md> <out.md>`,
+`capacity.py` before a fan-out, and paths that exist. It does not match prose.
 
-    python3 .claude/tests/test_delegate_command.py
+    python -m pytest .claude/tests/test_delegate_command.py -q
 """
-from pathlib import Path
 import re
-import sys
-import tempfile
+from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-COMMAND = ROOT / ".claude" / "commands" / "delegate.md"
-MODEL_EVIDENCE = ROOT / ".claude" / "skills" / "orchestration" / "reference" / "model_evidence.md"
-COMPARISON_RULE = r"Same-task comparisons need an explicit request, named arms, frozen inputs and a finite budget"
+CLAUDE = ROOT / ".claude"
+COMMAND = CLAUDE / "commands" / "delegate.md"
 
-REQUIRED = {
-    "one-line command description": r"^---\n(?:[^\n]+\n)*description: [^\n]+\n(?:[^\n]+\n)*---$",
-    "inline task form": r"(?:/delegate )?<task>`? creates one `single` job",
-    "job-file form": r"(?:/delegate )?--jobs <path>`? reads",
-    "proceed preflight": r"`PROCEED`:.*scope.*inputs.*pins.*currency",
-    "hold preflight": r"`HOLD`:.*required.*missing",
-    "abort preflight": r"`ABORT`:.*authorization.*forbids",
-    "route and job kind stay separate": r"route[\s\S]+single\|parallel\|chain\|review[\s\S]+kind[\s\S]+scout\|lens\|reviewer\|author\|judge",
-    "native hand-off": r"[Aa] job placed on the session's own plan runs as a native `Workflow` agent through `dispatch\.js`",
-    "printed call is issued": r"issue the printed `Workflow` call",
-    "sidecar-only fields keep a job a sidecar": r"`workdir` naming a checkout other than the repo root\) keeps? a job a sidecar",
-    "native engine owner": r"`review_fanout\.js` is the one engine the fan-out lacks",
-    "fan-out owner": r"`sidecar_fanout\.py` runs the file[^\n]+picks each job's paying plan",
-    "specialized command refusal": r"own coverage contract[\s\S]+design grounding, plan drafting or plan review",
-    "jobs defer to the orchestration owner": r"Jobs follow `orchestration` §0; a review lens is one mandate",
-    "comparison defers to its orchestration owner": r"Same-task comparisons follow `orchestration` reference `model_evidence\.md`",
-    "manifest finalization": r"--manifest-seed[\s\S]+--manifest-out[\s\S]+--session",
-    "outcomes recorded before manifest": r"--rate[\s\S]+manifest",
-    "exact label count": r"seed count is the required result count",
-    "review mapping carries kind": r"review_fanout\.js[^\n]+agents:[^\n]+kind",
-    "review manifest label matches workflow": r"review:<key>",
-}
-
-FORBIDDEN = {
-    "bare Agent exact-pin shortcut": r"Agent\s*\(\s*\{",
-    "Workflow cross-transport shortcut": r"Workflow\s*\(\s*\{[\s\S]{0,240}?transport\s*:",
-    "automatic provider multiplication": r"Add (?:one Anthropic arm|every other available roster model)",
-}
+SEAT_CALL = re.compile(r"seat\.sh <seat> <brief\.md> <out\.md>")
+CAPACITY_CALL = re.compile(r"capacity\.py <seat>")
+PATH_TOKEN = re.compile(r"`((?:\.claude/)?(?:tools|scripts|hooks|workflows|guards|skills|rules|reference)/[\w./-]+\.(?:py|sh|js|json|md|ps1))`")
+# A direct SDK call that pins a model on the agent tool is the shortcut the route exists to avoid.
+BARE_AGENT_PIN = re.compile(r"Agent\s*\(\s*\{")
 
 
-def missing(text):
-    return [name for name, pattern in REQUIRED.items()
-            if not re.search(pattern, text, re.MULTILINE)]
+@pytest.fixture(scope="module")
+def text():
+    return COMMAND.read_text(encoding="utf-8")
 
 
-def violations(text):
-    return [name for name, pattern in FORBIDDEN.items()
-            if re.search(pattern, text, re.MULTILINE)]
+def test_command_exists():
+    assert COMMAND.is_file(), COMMAND
 
 
-def main():
-    cases = []
-    cases.append(("presence checks fail against an empty command",
-                  len(missing("")) == len(REQUIRED), str(missing(""))))
-
-    planted = {
-        "bare Agent exact-pin shortcut": "Agent({model: 'x', prompt: 'do it'})",
-        "Workflow cross-transport shortcut": "Workflow({args: {transport: 'anthropic'}})",
-        "automatic provider multiplication": "Add every other available roster model that claims the fan-out role.",
-    }
-    for expected, text in planted.items():
-        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False,
-                                         encoding="utf-8", newline="\n") as fh:
-            fh.write(text)
-            temp = Path(fh.name)
-        found = violations(temp.read_text(encoding="utf-8"))
-        temp.unlink(missing_ok=True)
-        cases.append((f"planted violation fires: {expected}", expected in found, str(found)))
-
-    if not COMMAND.exists():
-        cases.append(("delegate command exists", False, str(COMMAND)))
-    else:
-        text = COMMAND.read_text(encoding="utf-8")
-        missing_real = missing(text)
-        violations_real = violations(text)
-        cases.append(("all required branches are present", not missing_real, str(missing_real)))
-        cases.append(("no prohibited shortcut is present", not violations_real, str(violations_real)))
-        cases.append(("model_evidence states the bounded-comparison rule delegate points at",
-                      bool(re.search(COMPARISON_RULE, MODEL_EVIDENCE.read_text(encoding="utf-8"))), str(MODEL_EVIDENCE)))
-        for name, pattern in REQUIRED.items():
-            mutant = re.sub(pattern, '', text, flags=re.MULTILINE)
-            cases.append((f"removing contract is detected: {name}", name in missing(mutant), name))
-
-    passed = failed = 0
-    for label, ok, detail in cases:
-        print(("ok   " if ok else "FAIL ") + label)
-        if ok:
-            passed += 1
-        else:
-            failed += 1
-            print("     " + detail)
-    print(f"delegate command: {passed} passed, {failed} failed")
-    return 1 if failed else 0
+def test_names_the_seat_call_shape(text):
+    assert SEAT_CALL.search(text), "delegate.md no longer names seat.sh <seat> <brief.md> <out.md>"
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_reads_capacity_before_a_fan_out(text):
+    assert CAPACITY_CALL.search(text), "delegate.md no longer prints capacity.py <seat> before a fan-out"
+
+
+def test_no_bare_agent_pin(text):
+    assert not BARE_AGENT_PIN.search(text)
+
+
+@pytest.mark.parametrize("token", sorted(set(PATH_TOKEN.findall(COMMAND.read_text(encoding="utf-8")))))
+def test_named_path_resolves(token):
+    path = token if token.startswith(".claude/") else ".claude/" + token
+    assert (ROOT / path).exists() or (CLAUDE / token).exists(), f"delegate.md names {token}, which is absent"

@@ -84,40 +84,6 @@ def main():
     refusal_cases(cases, "index_commit", call("index_commit.py", "stage"),
                   parser_for("index_commit"))
 
-    # autolearn_outcomes: a bad enum refuses without touching the ledger; the example parses.
-    ledger = os.path.join(tmp, "autolearn_outcomes.jsonl")
-    refusal_cases(cases, "autolearn_outcomes",
-                  call("autolearn_outcomes.py", "record", "--outcome", "bogus", "--file", ledger),
-                  parser_for("autolearn_outcomes"))
-
-    # baseline_sync: a bad verdict refuses; the example parses in either flag order.
-    refusal_cases(cases, "baseline_sync",
-                  call("baseline_sync.py", "judge", ".claude/tools/reap.py", "--verdict", "nope"),
-                  parser_for("baseline_sync", interleaved=True))
-    interleaved = parser_for("baseline_sync", interleaved=True)
-    try:
-        legacy = (None if isinstance(interleaved, BaseException) else
-                  interleaved(["--verdict", "push", "judge", ".claude/tools/reap.py"]))
-    except BaseException as exc:
-        legacy = exc
-    cases.append(("baseline_sync: the legacy judge flag order (flags before the op) still parses",
-                  getattr(legacy, "op", None) == "judge" and getattr(legacy, "verdict", None) == "push",
-                  repr(legacy)))
-    helped = call("baseline_sync.py", "judge", "--help")
-    scoped = helped.stdout + helped.stderr
-    cases.append(("baseline_sync: judge --help is operation-scoped (omits other ops' flags)",
-                  helped.returncode == 0 and "--verdict" in scoped and "accepts:" in scoped
-                  and "example:" in scoped
-                  and "--merge" not in scoped and "--template" not in scoped
-                  and "--status" not in scoped, scoped[:600]))
-    # The scoped help is a hand-kept list: every flag it names must be one the real parser registers.
-    with open(os.path.join(TOOLS, "baseline_sync.py"), encoding="utf-8") as fh:
-        source = fh.read()
-    named = set(re.findall(r"(?<![\w-])--[a-z][a-z-]+", scoped)) - {"--help"}
-    unregistered = sorted(flag for flag in named if 'add_argument("%s"' % flag not in source)
-    cases.append(("baseline_sync: every flag judge --help names has an add_argument call in baseline_sync.py",
-                  bool(named) and not unregistered, repr(unregistered)))
-
     # reap: a malformed call refuses with its shape; a refusal on an observed fact (a pid already gone) states only
     # its verdict. The help carries a row for every reason reap declares, and every flag it names is one the parser
     # registers: a reason retired or renamed moves reap's own table, never a copy kept here.
@@ -135,36 +101,6 @@ def main():
                   and all(reason in posted for reason in reap_mod.REASONS),
                   repr((sorted(labelled), unregistered))))
 
-    # orchestration_metrics: a short --rate refuses; a flat mandates names the object shape.
-    refusal_cases(cases, "orchestration_metrics",
-                  call("orchestration_metrics.py", "--rate", "only-one-argument"),
-                  parser_for("orchestration_metrics"))
-    try:
-        module = load("orchestration_metrics")
-        spec, refusal = module._rating_spec({"label": "review:x", "outcome": "clean",
-                                             "mandates": '{"x": "findings"}'})
-        names_shape = (spec is None
-                       and "{mandate: {outcome: findings|clean|not-reached, unique, duplicate}}" in refusal
-                       and "x" in refusal)
-    except BaseException as exc:
-        refusal, names_shape = repr(exc), False
-    cases.append(("orchestration_metrics: --mandates refusal names the object shape it accepts",
-                  names_shape, repr(refusal)))
-    # The root parser serves every mode, so a usage error outside --rate states the mode list, never
-    # --rate's own flags.
-    modes = call("orchestration_metrics.py", "--pricier-pins", "not-a-number")
-    modes_accepts, modes_example = shape_of(modes.stderr)
-    parsed_modes = None
-    if modes_example:
-        try:
-            parsed_modes = parser_for("orchestration_metrics")(example_argv(modes_example))
-        except BaseException as exc:  # a parse failure IS the case's fact
-            parsed_modes = exc
-    cases.append(("orchestration_metrics: a non-rate usage error names the modes, not another mode's flags",
-                  modes.returncode != 0 and bool(modes_accepts) and "--rollup" in modes_accepts
-                  and "--mandates" not in modes_accepts and parsed_modes is not None
-                  and not isinstance(parsed_modes, BaseException), modes.stderr[-500:]))
-
     failures = [label for label, ok, _ in cases if not ok]
     for label, ok, detail in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))
@@ -172,6 +108,11 @@ def main():
             print("      " + str(detail).replace("\n", "\n      "))
     print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
     return 1 if failures else 0
+
+
+
+def test_proof():
+    assert main() in (None, 0)
 
 
 if __name__ == "__main__":

@@ -183,7 +183,7 @@ class StraySearchIndexSweepTests(unittest.TestCase):
                     "get_project_root": root, "is_worktree": False, "is_cloud": False,
                     "setup_submodule": "OK",
                     "get_git_branch": "main", "get_uncommitted_count": 0,
-                    "get_recent_commits": [], "roster_health": "UNKNOWN (no logs dir)",
+                    "get_recent_commits": [],
                     "sidecar_health": {},
                 }
                 for name, value in values.items():

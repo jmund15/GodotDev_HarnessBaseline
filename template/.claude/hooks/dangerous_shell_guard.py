@@ -5,10 +5,11 @@ Bash and PowerShell call; a fault denies the call.
 Blocks, each judged on the resolved target and never on the command's wording:
 - Recursive/forced deletes and directory removal (rm -r/-rf, del /s, rd /s, rmdir /s, PowerShell Remove-Item
   -Recurse and its aliases) and drive format commands. Allowed: a target that is a regenerable cache inside the
-  project, a path below the system temp directory or `~/.claude/plugins/cache/` holding no git repository, this session's own
+  project, a path below the system temp directory (any repository in it included, never the protected checkout or
+  a worktree registered to it) or below `~/.claude/plugins/cache/` holding no git repository, this session's own
   `.claude/scratch/<session id>` output, a pushed regenerable clone, a scratch folder holding no git repository and
-  no registered worktree, a folder a proof planted under `.claude/tmp`, a retired worktree (nothing git lacks,
-  every commit on a remote; its ignored files go only when this session created it), a `NAME=$(mktemp -d)`
+  no registered worktree, a folder a proof planted under `.claude/tmp`, a retired worktree (`_delete_rule`: nothing
+  outside the regenerable entries, every commit pushed or landed, no open PR), a `NAME=$(mktemp -d)`
   variable the same command owns, or a folder a flagless `mkdir` of this session created, holding no git
   repository. A chained second delete, a glob in a directory part, `~`, `%`, an unresolvable target, a target a
   live peer session works in, or another session's id folder disqualifies it. A forced `rm` whose every target is
@@ -20,7 +21,8 @@ Blocks, each judged on the resolved target and never on the command's wording:
 - Peer losses at commit: a private index over a moved stage base (`stage_record_loss`), an index whose blobs
   revert a peer's newer commit (`stale_loss`), an amend of a HEAD this session did not make (`amend_loss`), an
   index the floor cannot read (#16), a publish whose repository cannot be proved (`UNPROVED_TARGET`), and a
-  commit an index write precedes in the same command (`SAME_COMMAND_WRITE`).
+  commit an index write precedes in the same command where git's commit-msg hook cannot re-check it
+  (`SAME_COMMAND_WRITE`, `_unhooked_publish`).
 
 Quoted spans and heredoc bodies are data, never commands. `git` parsing goes through `_git_commit.py`.
 
@@ -36,23 +38,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
-for _d in (os.path.join(os.path.dirname(_HOOKS_DIR), "tools"), _HOOKS_DIR):
-    if _d not in sys.path:
-        sys.path.insert(0, _d)
+if _HOOKS_DIR not in sys.path:
+    sys.path.insert(0, _HOOKS_DIR)
 from _command_text import executable_text, executable_spans, command_words, _REDIRECTION  # noqa: E402
-from _regenerable_clone import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
-                                is_plant_exhaust, is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
-                                regenerable_segments, session_created_worktree, worktree_unstored)
+from _delete_rule import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
+                          is_plant_exhaust, is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
+                          regenerable_segments, worktree_unstored)
+from _own_worktree import session_created_worktree  # noqa: E402
 import _git_commit  # noqa: E402
 if _git_commit.executable_index is None or _git_commit.command_substitutions is None:
     raise ImportError("_shell_lex failed to import: %s" % _git_commit.LEXER_ERROR)
 from _git_commit import (literal_assignments, expand_literal, resolve_cd, segments,  # noqa: E402
-                         git_invocations, run_git, resolve_index, in_project, parse_commit_args, _pathspec_file)
-from _commit_scope import publishes_index, writes_index  # noqa: E402
+                         git_invocations, run_git, resolve_index, in_project, parse_commit_args, _pathspec_file,
+                         _SHORT_VALUE_LETTERS)
+from _commit_scope import publishes_index, stage_record_base, stage_record_path, writes_index  # noqa: E402
 from _checkout_root import worktree_chain  # noqa: E402
 import _git_run  # noqa: E402
 from _transcript_calls import Call, Result, session_events  # noqa: E402
-from index_commit import stage_record_base, stage_record_path  # noqa: E402
 
 
 # Dangerous command patterns — applied to BOTH the Bash and PowerShell tools
@@ -77,18 +79,18 @@ DANGEROUS_BASH_PATTERNS = [
     # The token scan stops at a command separator. Without that bound it runs to end-of-line and
     # reads a LATER command's flag as this delete's own -- `rm -f a.txt; tool -R out.json` denied
     # five times in one session, every one a safe delete followed by an unrelated -R.
-    # Regression: .claude/tests/test_dangerous_shell_guard_rm_scope.py
+    # Regression: .claude/tests/floor/test_floor_delete.py (the rm-scope rows)
     (r'(?<!git\s)\brm\s+(?:[^\s;|&\n]+\s+)*-[a-zA-Z]*[rR]', 'BLOCKED: Dangerous recursive delete (rm -r / -R / -rf)'),
     (r'(?<!git\s)\brm\s+--recursive\b', 'BLOCKED: Dangerous recursive delete (rm --recursive)'),
 ]
 
 
-# Regenerable caches a recursive delete may target without asking are `_regenerable_clone.regenerable_segments`:
+# Regenerable caches a recursive delete may target without asking are `_delete_rule.regenerable_segments`:
 # harness caches and logs, the semantic-search index, engine and test output, Python bytecode caches. Matched by PATH SEGMENT, never substring:
 # the old `\.claude[\\/](?:\.cache|logs)\b` regex passed `.claude/logs-old` and
 # `.claude/.cache/../..` (the repo root). Evidence folders (`.claude/scratch`) and checkouts
 # (`.claude/worktrees`) are gitignored but are NOT caches, so they stay blocked unless
-# `_regenerable_clone` proves the target loses nothing.
+# `_delete_rule` proves the target loses nothing.
 _UNSAFE_PATH_CHARS = re.compile(r"[*?\[\]{}$~%]")
 _CACHE_HINT = " Allowed: caches, temp dirs, clean pushed scratch clones, retired worktrees (`orchestration` reference `worktrees.md`), scratch folders holding no git repository, folders this session made with a flagless mkdir."
 
@@ -234,22 +236,11 @@ def _strip_double(s: str, i: int) -> tuple[str, int]:
     return " ".join(kept), i + 1
 
 
-_git_memo: dict | None = None  # one `check_bash_command` call's git answers, so each of its targets reuses them
-
-
-def _memoized(key, compute):
-    if _git_memo is None:
-        return compute()
-    if key not in _git_memo:
-        _git_memo[key] = compute()
-    return _git_memo[key]
-
-
 def _registered_worktrees() -> list[str]:
     """Normalized paths of the project's registered worktrees; an unreadable list holds the project root,
     so every scratch target counts as holding one and the delete stays denied."""
     root = _project_root()
-    return _memoized(('worktrees', root), lambda: _list_registered_worktrees(root))
+    return _git_commit.cached(('worktrees', root), lambda: _list_registered_worktrees(root))
 
 
 def _list_registered_worktrees(root: str) -> list[str]:
@@ -332,7 +323,7 @@ def _scratch_bases(root: str, cwd: str | None) -> list[str]:
     stats every registered worktree) is read only for a different one."""
     bases = [root]
     if cwd and os.path.isdir(cwd):
-        top = _memoized(('toplevel', cwd), lambda: _git_toplevel(cwd))
+        top = _git_commit.cached(('toplevel', cwd), lambda: _git_toplevel(cwd))
         if top and _norm(top) != _norm(root) and os.path.isfile(os.path.join(top, '.git')) \
                 and _norm(top) in _registered_worktrees():
             bases.append(top)
@@ -357,9 +348,10 @@ def _under_a_scratch_folder(path: str) -> bool:
 def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | None = None,
                            reasons: list[str] | None = None) -> bool:
     """A pushed clone, a lossless orphaned worktree directory of this repository wherever it sits (needs
-    no approval: nothing in it is unheld by git or a non-regenerable ignored file), an empty leftover directory under scratch (no file,
-    no `.git`), a scratch entry holding no git repository or worktree, or a retired worktree (ignored files
-    go only when this session created it); optionally explain failure."""
+    no approval: nothing in it is unheld by git or a non-regenerable ignored file), an empty leftover directory under
+    scratch (no file, no `.git`), a scratch entry holding no git repository or worktree, or a retired worktree
+    (`_delete_rule`: nothing outside the regenerable entries, every commit pushed or landed); optionally explain
+    failure. Who created the worktree does not change the answer (T1)."""
     root = _project_root()
     target = resolve_cd(cwd or root, token)
     peer = _peer_working_in(target, transcript_path)
@@ -380,13 +372,9 @@ def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | N
                 reasons.append('it is not a literal path, so it can match another session\'s folder')
             return False
         return _removable_scratch_entry(token, target, cwd, transcript_path, reasons)
-    orphan_loss: list[str] = []
-    if lossless_orphan_worktree(token, cwd or root, root, orphan_loss):
+    if lossless_orphan_worktree(token, cwd or root, root):
         return True
-    own = session_created_worktree(target, transcript_path)
-    if reasons is not None and not own:
-        reasons.extend(orphan_loss)
-    return is_retired_worktree(token, cwd or root, root, allow_ignored=own, reasons=reasons)
+    return is_retired_worktree(token, cwd or root, root, reasons=reasons)
 
 
 _SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
@@ -416,27 +404,6 @@ def _deletable_by_fact(target: str, here: str | None = None, transcript_path: st
             or _is_regenerable_target(target, here, transcript_path)
             or (here is not None and _is_regenerable_resolved(target, here))
             or _session_made_dir(target, here, transcript_path))
-
-
-def _is_safe_ephemeral_cleanup(scan: str, raw: str, cwd: str | None = None,
-                               transcript_path: str | None = None) -> bool:
-    """True only for a single (non-chained) recursive delete whose every path argument satisfies
-    `_deletable_by_fact`: a regenerable cache inside the project, this session's own scratch output, a
-    target git cannot lose, or a folder this session's own mkdir made.
-
-    Control operators are judged on the quote-blanked `scan`, so a chained second delete cannot
-    ride along. Path arguments come from shell-tokenizing the unblanked `raw`, so a quoted literal
-    target is judged as the path it names. Any other path token disqualifies the command; the check
-    can only over-block, never green-light a broad delete."""
-    if re.search(r'&&|\|\||;|\||`|\$\(', scan):
-        return False
-    tokens = _cleanup_tokens(raw)
-    if tokens is None:
-        return False
-    paths = [t for t in tokens
-             if not t.startswith('-')
-             and t.lower() not in ('rm', 'del', 'erase', 'ri', 'remove-item')]
-    return bool(paths) and all(_deletable_by_fact(p, cwd, transcript_path) for p in paths)
 
 
 def _forces_removal(args: list[str]) -> bool:
@@ -513,11 +480,8 @@ def rewrite_absent_forced_deletes(command: str, cwd: str | None = None) -> str |
 
 
 # A4: `NAME=$(mktemp -d)` (or `-t <template>` with no `/` in the template) is ownership evidence a
-# literal path never carries. Everything else surrounding it — cd, a subshell pipeline that reads
-# the transcript, a printf | hook | grep | cut probe — is unrelated chaining and stays unrestricted;
-# only each delete-shaped segment's own targets and the assigning variable are judged.
+# literal path never carries; a delete target that is exactly `$NAME` of such a variable is the command's own.
 _DELETE_CMD_NAMES = frozenset({'rm', 'del', 'erase', 'ri', 'remove-item'})
-_CHAIN_SEP_RE = re.compile(r'&&|\|\||;|\|')
 _VAR_TOKEN_RE = re.compile(r'^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$')
 # The value must END at the substitution: a suffix (`$(mktemp -d)/..`, `/*`) points outside the directory.
 _MKTEMP_ASSIGN_VALUE_RE = re.compile(r'\$\(\s*mktemp\s+-d(?:\s+-t\s+[^\s)/]+)?\s*\)(?=[\s;&|]|$)')
@@ -528,20 +492,6 @@ def _blank_quotes_samelen(command: str) -> str:
     """Like `_strip_quoted`, but each quoted span is replaced by spaces of the SAME length, so
     positions found in the blanked text still index correctly into the original string."""
     return re.sub(r"'[^']*'|\"[^\"]*\"", lambda m: ' ' * len(m.group(0)), command)
-
-
-def _split_top_level(raw: str) -> list[str]:
-    """`raw` cut at `&&`, `||`, `;` and `|` that sit outside any quoted span — a `|` inside a
-    `$(...)` subshell argument (e.g. `T=$(ls ... | head -1)`) is quoted-blanked away first only
-    for locating the cut points, then sliced from the real `raw`, so quotes stay intact."""
-    blanked = _blank_quotes_samelen(raw)
-    segments = []
-    pos = 0
-    for m in _CHAIN_SEP_RE.finditer(blanked):
-        segments.append(raw[pos:m.start()])
-        pos = m.end()
-    segments.append(raw[pos:])
-    return segments
 
 
 def _is_mktemp_owned(name: str, raw: str) -> bool:
@@ -557,39 +507,6 @@ def _is_mktemp_owned(name: str, raw: str) -> bool:
         return False
     tail = raw[matches[0].end() + 1:]
     return _MKTEMP_ASSIGN_VALUE_RE.match(tail) is not None
-
-
-def _is_owned_temp_cleanup(raw: str) -> bool:
-    """True when EVERY delete-shaped top-level segment in `raw` targets exactly one variable,
-    all of whose targets in that segment are `"$NAME"`, `$NAME` or `${NAME}`, where `_is_mktemp_owned`
-    holds for NAME. One unowned or mixed-target delete segment anywhere disqualifies the whole
-    command — chaining a second, unrelated delete alongside a legitimate one must not ride along."""
-    # A segment is judged when any recursive-delete pattern matches it, wherever the delete sits:
-    # a delete inside `$(...)`, backticks, or behind `sudo` does not head its segment and so
-    # disqualifies the whole command.
-    delete_segments = []
-    for segment in _split_top_level(raw):
-        if not any(re.search(p, _strip_quoted(segment), re.IGNORECASE) for p in _RECURSIVE_DELETE_PATTERNS):
-            continue
-        tokens = _cleanup_tokens(segment)
-        if not tokens or tokens[0].lower() not in _DELETE_CMD_NAMES:
-            return False
-        delete_segments.append(tokens)
-    if not delete_segments:
-        return False
-    for tokens in delete_segments:
-        paths = [t for t in tokens[1:] if not t.startswith('-')]
-        if not paths:
-            return False
-        names = set()
-        for p in paths:
-            m = _VAR_TOKEN_RE.match(p)
-            if not m:
-                return False
-            names.add(m.group(1))
-        if len(names) != 1 or not _is_mktemp_owned(names.pop(), raw):
-            return False
-    return True
 
 
 # Resolved-target allow: each delete segment's targets resolve through literal paths, variables the
@@ -652,8 +569,11 @@ def _holds_git(path: str) -> bool:
 def _is_regenerable_or_scratch(path: str) -> bool:
     """`path` (absolute, normalized) is safe to delete recursively without asking."""
     import tempfile
-    if _strictly_under(path, _norm(tempfile.gettempdir())):
-        return not _holds_git(path)
+    project = _norm(_project_root())
+    if _strictly_under(path, _norm(tempfile.gettempdir())) and not _strictly_under(path, project):
+        # D-TT (owner, 2026-11-23): a temp tree goes with any repository in it, never the protected checkout or a
+        # worktree registered to it; a path inside the checkout keeps the checkout's rules wherever it sits.
+        return not any(wt == path or _strictly_under(wt, path) for wt in [project] + _registered_worktrees())
     if _strictly_under(path, _norm(str(Path.home() / ".claude" / "plugins" / "cache"))):
         return not _holds_git(path)  # a plugin's download: the client fetches it again
     parts = _checkout_rel_parts(path)
@@ -733,15 +653,15 @@ def _is_regenerable_resolved(target: str, here: str) -> bool:
     return _is_regenerable_or_scratch(_norm(resolve_cd(here, target)))
 
 
-def _is_resolved_safe_cleanup(raw: str, cwd: str | None, accept) -> bool:
-    """True when every recursive-delete segment in `raw` is a plain delete command whose targets
-    all satisfy `accept(target, base directory)`.
-    A delete that does not head its segment (inside `$(...)`, backticks, behind `sudo`/`xargs`), a
-    glob in a directory part or a `cd`, `~`, `%` or any unresolvable target disqualifies the whole
-    command (KFM #50). A glob in the last part is judged by its directory."""
+def _delete_targets(raw: str, cwd: str | None):
+    """Every target of every recursive-delete segment in `raw`, as (token, path, here): `path` is the literal the
+    delete removes, expanded through assignments the command makes and resolved later against the tracked `cd`
+    `here`, or its directory for a glob in the last part; None when it cannot be proved (an unexpanded value, `~`,
+    `%`, a glob in a directory part, an unknown cwd). None for the whole command when a delete does not head its
+    segment (inside `$(...)`, backticks, behind `sudo`/`xargs`) or names no target, or when no segment deletes."""
     assignments = literal_assignments(raw)
     here = cwd or _project_root()
-    found = False
+    found = []
     for segment in _segments_with_quotes(raw):
         tokens = _cleanup_tokens(segment)
         if tokens and tokens[0] == "cd" and len(tokens) == 2:
@@ -752,21 +672,34 @@ def _is_resolved_safe_cleanup(raw: str, cwd: str | None, accept) -> bool:
         if not any(re.search(p, _strip_quoted(segment), re.IGNORECASE) for p in _RECURSIVE_DELETE_PATTERNS):
             continue
         if not tokens or tokens[0].lower() not in _DELETE_CMD_NAMES or '`' in segment or '$(' in segment:
-            return False
+            return None
         targets = [t for t in tokens[1:] if not t.startswith('-')]
         if not targets:
-            return False
+            return None
         for token in targets:
             value = expand_literal(token, assignments)
-            if value is None or here is None or value.startswith('~') or '%' in value:
-                return False
-            head, tail = os.path.split(value.replace("\\", "/").rstrip("/"))
-            if _GLOB_CHARS.search(head):
-                return False
-            if not accept(head if _GLOB_CHARS.search(tail) else value, here):
-                return False
-        found = True
-    return found
+            path = None
+            if value is not None and here is not None and not value.startswith('~') and '%' not in value:
+                head, tail = os.path.split(value.replace("\\", "/").rstrip("/"))
+                if not _GLOB_CHARS.search(head):
+                    path = head if _GLOB_CHARS.search(tail) else value
+            found.append((token, path, here))
+    return found or None
+
+
+def _deletable(raw: str, cwd: str | None, transcript_path: str | None) -> bool:
+    """Every recursive-delete target in `raw` needs no owner answer: a `$NAME` of the command's own
+    `NAME=$(mktemp -d)`, or a proved path `_deletable_by_fact` admits. One unproved target denies the command."""
+    targets = _delete_targets(raw, cwd)
+    if not targets:
+        return False
+    for token, path, here in targets:
+        var = _VAR_TOKEN_RE.match(token)
+        if var and _is_mktemp_owned(var.group(1), raw):
+            continue
+        if path is None or not _deletable_by_fact(path, here, transcript_path):
+            return False
+    return True
 
 
 # `git`'s global options sit BETWEEN `git` and the subcommand (`git -C <path> rm ...`),
@@ -792,49 +725,32 @@ def _normalize_git_globals(scan: str) -> str:
 def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> str:
     """Why the first worktree, scratch or worktree-shaped (a `.git` file) target this delete names is not
     removable, or ''."""
-    assignments = literal_assignments(raw)
-    here = cwd or _project_root()
     home = _norm(os.path.join(_project_root(), '.claude', 'worktrees'))
     scratch = _norm(os.path.join(_project_root(), '.claude', 'scratch'))
-    for segment in _segments_with_quotes(raw):
-        tokens = _cleanup_tokens(segment)
-        if tokens and tokens[0] == 'cd' and len(tokens) == 2:
-            moved = expand_literal(tokens[1], assignments)
-            here = resolve_cd(here, moved) if here and moved else None
+    for _token, value, here in _delete_targets(raw, cwd) or ():
+        if not value or _UNSAFE_PATH_CHARS.search(value):
             continue
-        if not tokens or tokens[0].lower() not in _DELETE_CMD_NAMES or here is None:
-            continue
-        for token in tokens[1:]:
-            if token.startswith('-'):
-                continue
-            value = expand_literal(token, assignments)
-            if not value or _UNSAFE_PATH_CHARS.search(value):
-                continue
-            target = _norm(resolve_cd(here, value))
-            reasons = []
-            if target == home or _strictly_under(target, home):
-                if not _is_regenerable_target(value, here, transcript_path, reasons):
-                    return ' %s is not retired: %s.' % (value, '; '.join(reasons))
-            elif _strictly_under(target, scratch):
-                clone_reasons = []
-                if not (is_regenerable_clone(value, here, _project_root(), clone_reasons)
-                        or _is_regenerable_target(value, here, transcript_path, reasons)):
-                    return ' %s is not removable: %s; %s.' % (value, clone_reasons[0], reasons[0])
-            elif os.path.isfile(os.path.join(target, '.git')) \
-                    and not _is_regenerable_target(value, here, transcript_path, reasons):
-                return ' %s is not removable: %s.' % (value, '; '.join(dict.fromkeys(reasons)))
+        target = _norm(resolve_cd(here, value))
+        reasons = []
+        if target == home or _strictly_under(target, home):
+            if not _is_regenerable_target(value, here, transcript_path, reasons):
+                return ' %s is not retired: %s.' % (value, '; '.join(reasons))
+        elif _strictly_under(target, scratch):
+            clone_reasons = []
+            if not (is_regenerable_clone(value, here, _project_root(), clone_reasons)
+                    or _is_regenerable_target(value, here, transcript_path, reasons)):
+                return ' %s is not removable: %s; %s.' % (value, clone_reasons[0], reasons[0])
+        elif os.path.isfile(os.path.join(target, '.git')) \
+                and not _is_regenerable_target(value, here, transcript_path, reasons):
+            return ' %s is not removable: %s.' % (value, '; '.join(dict.fromkeys(reasons)))
     return ''
 
 
 def check_bash_command(command: str, cwd: str | None = None,
                        transcript_path: str | None = None) -> tuple[bool, str]:
     """Check bash command for dangerous patterns. Returns (blocked, message)."""
-    global _git_memo
-    _git_memo = {}
-    try:
+    with _git_commit.memoized():
         return _check_bash_command(command, cwd, transcript_path)
-    finally:
-        _git_memo = None
 
 
 def _check_bash_command(command: str, cwd: str | None, transcript_path: str | None) -> tuple[bool, str]:
@@ -848,10 +764,7 @@ def _check_bash_command(command: str, cwd: str | None, transcript_path: str | No
             # Allow recursive deletes confined to regenerable harness scratch, or every target a
             # `NAME=$(mktemp -d)` variable this same command owns; never relax a drive-format
             # block regardless of target.
-            if ('format' not in message.lower()
-                    and (_is_safe_ephemeral_cleanup(scan, raw, cwd, transcript_path) or _is_owned_temp_cleanup(raw)
-                         or _is_resolved_safe_cleanup(
-                             raw, cwd, lambda value, here: _deletable_by_fact(value, here, transcript_path)))):
+            if 'format' not in message.lower() and _deletable(raw, cwd, transcript_path):
                 continue
             if 'recursive' in message.lower():
                 return True, (message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
@@ -932,52 +845,32 @@ def _bulk(paths, cwd):
                or (cwd and os.path.isdir(os.path.join(cwd, p))) for p in paths)
 
 
-def parse_discard(sub, rest, cwd=None):
-    """The destructive action `git <sub> <rest>` names, or None when it destroys nothing recoverable.
-    Parsed once, so the evidence step and the deny message read the same value."""
-    rest = tuple(rest)
-    if sub in ("checkout", "restore"):
-        if sub == "checkout" and not ("--" in rest or "." in rest):
-            return None
-        staged_only = ({"--staged", "-S"} & set(rest)
-                       and not ("--worktree" in rest or "W" in short_flag_chars(rest)))
-        if sub == "restore" and staged_only:
-            return None
-        split = rest.index("--") if "--" in rest else len(rest)
-        head = rest[:split]
-        paths = tuple(rest[split + 1:]) if "--" in rest else tuple(a for a in rest if not a.startswith("-"))
-        flags = tuple(a for a in head if a.startswith("-"))
-        return Discard(sub, paths=paths,
-                       refs=tuple(a for a in head if not a.startswith("-")) if sub == "checkout" else (),
-                       flags=flags,
-                       source=next((a.split("=", 1)[1] for a in flags if a.startswith("--source=")), None),
-                       side="theirs" if "--theirs" in flags else "ours" if "--ours" in flags else None,
-                       separated="--" in rest, bulk=_bulk(paths, cwd))
-    if sub == "reset" and "--hard" in rest:
-        return Discard("reset --hard", flags=tuple(a for a in rest if a.startswith("-")))
-    if sub == "clean":
-        chars = short_flag_chars(rest)
-        if "n" not in chars and "--dry-run" not in rest and ("f" in chars or "--force" in rest):
-            return Discard("clean")
+def _parse_tree(sub, rest, cwd):
+    """A checkout or restore that overwrites worktree paths, or None (a branch switch, a staged-only restore)."""
+    if sub == "checkout" and not ("--" in rest or "." in rest):
         return None
-    if sub == "push" and (_PUSH_FORCE & set(rest)
-                          or any(a.startswith(("--force-with-lease=", "--force-if-includes=")) for a in rest)
-                          or "f" in short_flag_chars(rest)):
-        return Discard("force-push")
-    if sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest)):
-        return Discard("branch-delete", flags=tuple(a for a in rest if a.startswith("-")),
-                       targets=tuple(a for a in rest if not a.startswith("-")))
-    if sub == "stash" and rest and rest[0] in ("drop", "clear"):
-        args = rest[1:]
-        return Discard("stash " + rest[0], flags=tuple(a for a in args if a.startswith("-")),
-                       targets=tuple(a for a in args if not a.startswith("-")))
-    if sub == "reflog" and "expire" in rest:
-        return Discard("reflog-expire")
-    if sub == "gc" and any(a == "--prune" or a.startswith("--prune=") for a in rest):
-        return Discard("gc-prune")
-    if sub in ("filter-branch", "filter-repo"):
-        return Discard(sub)
-    return None
+    staged_only = ({"--staged", "-S"} & set(rest)
+                   and not ("--worktree" in rest or "W" in short_flag_chars(rest)))
+    if sub == "restore" and staged_only:
+        return None
+    split = rest.index("--") if "--" in rest else len(rest)
+    head = rest[:split]
+    paths = tuple(rest[split + 1:]) if "--" in rest else tuple(a for a in rest if not a.startswith("-"))
+    flags = tuple(a for a in head if a.startswith("-"))
+    return Discard(sub, paths=paths,
+                   refs=tuple(a for a in head if not a.startswith("-")) if sub == "checkout" else (),
+                   flags=flags,
+                   source=next((a.split("=", 1)[1] for a in flags if a.startswith("--source=")), None),
+                   side="theirs" if "--theirs" in flags else "ours" if "--ours" in flags else None,
+                   separated="--" in rest, bulk=_bulk(paths, cwd))
+
+
+def _flags(rest):
+    return tuple(a for a in rest if a.startswith("-"))
+
+
+def _operands(rest):
+    return tuple(a for a in rest if not a.startswith("-"))
 
 
 def _lost_path(d, cwd, git_env):
@@ -1012,7 +905,7 @@ def _lost_path(d, cwd, git_env):
 
 def _content_stored(path, cwd):
     """True when git's object store holds the working-tree bytes of `path`, so discarding them loses nothing
-    git cannot reproduce (`_regenerable_clone.worktree_unstored`). A restore or a checkout from the index
+    git cannot reproduce (`_delete_rule.worktree_unstored`). A restore or a checkout from the index
     qualifies; a checkout from another ref also overwrites the index, whose staged bytes this does not judge."""
     if not os.path.isfile(os.path.join(cwd, path)):
         return False
@@ -1171,106 +1064,130 @@ def _worktree_clean(cwd, git_env):
     return status is not None and status.strip() == ''
 
 
-def _checkout_retry(d):
+def _tree_facts(d, cwd, git_env, transcript_path):
+    if any((git_env or {}).get(k) for k in ('GIT_DIR', 'GIT_WORK_TREE')):
+        return Evidence(redirected=True)
+    judged, lost = _lost_path(d, cwd, git_env)
+    if judged and lost is None:
+        return Evidence(lossless=True)
+    eligible = d.separated if d.action == "checkout" else bool(d.paths or d.flags or d.refs or d.separated)
+    return Evidence(unstored=(lost,) if lost else (), owned=eligible and _in_own_worktree(cwd, git_env, transcript_path))
+
+
+def _reset_facts(d, cwd, git_env, transcript_path):
+    owned = _in_own_worktree(cwd, git_env, transcript_path)
+    return Evidence(owned=owned, clean=owned and _worktree_clean(cwd, git_env))
+
+
+def _tree_passes(ev):
+    return not ev.redirected and (ev.lossless or ev.owned)
+
+
+_SAVE_FIRST = "save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
+
+
+def _checkout_denial(d, ev):
     if d.bulk:
-        return "then name each file: `git checkout -- <file>` for one saved edit at a time."
-    if d.refs:
-        return "then run `git restore --source=%s -- <path>`." % d.refs[0]
-    return "then the same command passes."
+        retry = "then name each file: `git checkout -- <file>` for one saved edit at a time."
+    elif d.refs:
+        retry = "then run `git restore --source=%s -- <path>`." % d.refs[0]
+    else:
+        retry = "then the same command passes."
+    return ("BLOCKED `git checkout` worktree discard (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
+            "overwrites uncommitted edits to those paths, which may be another session's; another session's "
+            "edit needs the owner's words first. To discard your own edit, " + _SAVE_FIRST + retry)
 
 
-def _restore_retry(d):
+def _restore_denial(d, ev):
     if d.bulk:
-        return "then name each file: `git restore <file>` for one saved edit at a time."
-    if "--worktree" in d.flags or "W" in short_flag_chars(d.flags):
-        return "then run it without `--worktree`/`-W` (restore's default), one saved file at a time."
-    if "-s" in d.flags:
-        return "then spell the source `--source=<ref>` and name one saved file."
-    return "then the same command passes."
+        retry = "then name each file: `git restore <file>` for one saved edit at a time."
+    elif "--worktree" in d.flags or "W" in short_flag_chars(d.flags):
+        retry = "then run it without `--worktree`/`-W` (restore's default), one saved file at a time."
+    elif "-s" in d.flags:
+        retry = "then spell the source `--source=<ref>` and name one saved file."
+    else:
+        retry = "then the same command passes."
+    return ("BLOCKED `git restore` without `--staged` (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
+            "discards uncommitted worktree edits, which may be another session's; another session's edit "
+            "needs the owner's words first. To discard your own edit, " + _SAVE_FIRST + retry)
 
 
-def discard_evidence(d, cwd, git_env=None, transcript_path=None):
-    """The facts one destructive decision reads, gathered once. A fact that cannot be read stays at its unproven
-    value, so the decision denies."""
-    if d.action in ("checkout", "restore"):
-        if any((git_env or {}).get(k) for k in ('GIT_DIR', 'GIT_WORK_TREE')):
-            return Evidence(redirected=True)
-        judged, lost = _lost_path(d, cwd, git_env)
-        if judged and lost is None:
-            return Evidence(lossless=True)
-        eligible = d.separated if d.action == "checkout" else bool(d.paths or d.flags or d.refs or d.separated)
-        return Evidence(unstored=(lost,) if lost else (),
-                        owned=eligible and _in_own_worktree(cwd, git_env, transcript_path))
-    if d.action == "reset --hard":
-        owned = _in_own_worktree(cwd, git_env, transcript_path)
-        return Evidence(owned=owned, clean=owned and _worktree_clean(cwd, git_env))
-    if d.action == "branch-delete":
-        return Evidence(problems=tuple(_branch_deletion_problems(d.targets, d.flags, cwd, git_env)))
-    if d.action == "stash drop":
-        return Evidence(preserved=_stash_preserved(d.flags, d.targets, cwd, git_env))
-    return Evidence()
+def _branch_denial(d, ev):
+    unreachable = [p for p in ev.problems if p.endswith("holds commits no other ref has")]
+    return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: unreachable commits would be lost) — "
+            "force-deleting would lose commits: " + "; ".join(ev.problems) + ". "
+            + ("Name only local branches, with no flag beyond `-D`. " if len(unreachable) < len(ev.problems) else "")
+            + ("Keep each branch's commits reachable with `git update-ref refs/preserve/<name> <branch>`, "
+               "then the same delete passes." if unreachable else ""))
 
 
-def _denial(d, ev):
-    """The block message for a parsed discard, rendered from the same request and evidence the decision read."""
-    if d.action in ("checkout", "restore"):
-        if not ev.redirected and (ev.lossless or ev.owned):
-            return None
-        if d.action == "checkout":
-            return ("BLOCKED `git checkout` worktree discard (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
-                    "overwrites uncommitted edits to those paths, which may be another session's; another session's "
-                    "edit needs the owner's words first. To discard your own edit, save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
-                    + _checkout_retry(d))
-        return ("BLOCKED `git restore` without `--staged` (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
-                "discards uncommitted worktree edits, which may be another session's; another session's edit "
-                "needs the owner's words first. To discard your own edit, "
-                "save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
-                + _restore_retry(d))
-    if d.action == "reset --hard":
-        if ev.owned and ev.clean:
-            return None
-        return ("BLOCKED `git reset --hard` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
-                "discards every uncommitted change in the shared worktree with no undo. Use "
-                "`git reset --keep` to move HEAD and keep local edits.")
-    if d.action == "clean":
-        return ("BLOCKED `git clean -f` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
-                "deletes untracked files permanently (git has no copy). Run the same command with "
-                "`-n` first, then ask the user to confirm.")
-    if d.action == "force-push":
-        return ("BLOCKED force-push (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — rewrites remote "
-                "history and can erase commits other checkouts still depend on. Rebase onto the remote and "
-                "push normally.")
-    if d.action == "branch-delete":
-        if not ev.problems:
-            return None
-        return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: unreachable commits would be lost) — "
-                "force-deleting would lose commits: " + "; ".join(ev.problems) + ". "
-                + ("Name only local branches, with no flag beyond `-D`. "
-                   if any(not p.endswith("holds commits no other ref has") for p in ev.problems) else "")
-                + ("Keep each branch's commits reachable with `git update-ref refs/preserve/<name> <branch>`, "
-                   "then the same delete passes."
-                   if any(p.endswith("holds commits no other ref has") for p in ev.problems) else ""))
-    if d.action == "stash drop":
-        if ev.preserved:
-            return None
-        target = d.targets[0] if d.targets else "stash@{0}"
-        return ("BLOCKED `git stash drop` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — stashed work "
-                "is unreferenced once dropped. With the owner's go-ahead, keep it reachable and drop: "
-                f"`git update-ref refs/preserve/<name> {target}`, then the same drop passes.")
-    if d.action == "stash clear":
-        return ("BLOCKED `git stash clear` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
-                "stashed work is unreferenced once dropped. Leave it; ask the user before discarding.")
-    if d.action == "reflog-expire":
-        return ("BLOCKED `git reflog expire` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — the reflog "
-                "is the last recovery path for lost commits. Leave expiry to git's own schedule.")
-    if d.action == "gc-prune":
-        return ("BLOCKED `git gc --prune` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — permanently "
-                "removes unreachable objects that reflog recovery depends on. Run `git gc` without `--prune`.")
-    if d.action in ("filter-branch", "filter-repo"):
-        return (f"BLOCKED `git {d.action}` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — rewrites every "
-                "commit in place, invalidating all existing clones and hashes. Ask the user for explicit "
-                "go-ahead before rewriting history; never do it in-session.")
-    return None
+def _stash_drop_denial(d, ev):
+    target = d.targets[0] if d.targets else "stash@{0}"
+    return ("BLOCKED `git stash drop` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — stashed work "
+            "is unreferenced once dropped. With the owner's go-ahead, keep it reachable and drop: "
+            f"`git update-ref refs/preserve/<name> {target}`, then the same drop passes.")
+
+
+_GO_AHEAD = "(CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
+
+
+@dataclass(frozen=True)
+class Case:
+    """One git discard the floor judges. `parse(sub, rest, cwd)` returns the parsed call or None; `facts(d, cwd,
+    git_env, transcript_path)` reads the evidence once (None reads none); `passes(ev)` is True when that evidence
+    shows the discard loses nothing (None never passes); `denial` is the block text, or `denial(d, ev)` renders it
+    from the same request and evidence. A new loss case is one row and its table test."""
+    parse: object
+    denial: object
+    facts: object = None
+    passes: object = None
+
+
+CASES = (
+    Case(lambda sub, rest, cwd: _parse_tree(sub, rest, cwd) if sub == "checkout" else None, _checkout_denial,
+         _tree_facts, _tree_passes),
+    Case(lambda sub, rest, cwd: _parse_tree(sub, rest, cwd) if sub == "restore" else None, _restore_denial,
+         _tree_facts, _tree_passes),
+    Case(lambda sub, rest, cwd: Discard("reset --hard", flags=_flags(rest)) if sub == "reset" and "--hard" in rest
+         else None,
+         "BLOCKED `git reset --hard` " + _GO_AHEAD + "discards every uncommitted change in the shared worktree with "
+         "no undo. Use `git reset --keep` to move HEAD and keep local edits.",
+         _reset_facts, lambda ev: ev.owned and ev.clean),
+    Case(lambda sub, rest, cwd: Discard("clean") if sub == "clean" and "n" not in short_flag_chars(rest)
+         and "--dry-run" not in rest and ("f" in short_flag_chars(rest) or "--force" in rest) else None,
+         "BLOCKED `git clean -f` " + _GO_AHEAD + "deletes untracked files permanently (git has no copy). Run the "
+         "same command with `-n` first, then ask the user to confirm."),
+    Case(lambda sub, rest, cwd: Discard("force-push") if sub == "push" and (
+         _PUSH_FORCE & set(rest) or any(a.startswith(("--force-with-lease=", "--force-if-includes=")) for a in rest)
+         or "f" in short_flag_chars(rest)) else None,
+         "BLOCKED force-push " + _GO_AHEAD + "rewrites remote history and can erase commits other checkouts still "
+         "depend on. Rebase onto the remote and push normally."),
+    Case(lambda sub, rest, cwd: Discard("branch-delete", flags=_flags(rest), targets=_operands(rest))
+         if sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest)) else None,
+         _branch_denial,
+         lambda d, cwd, git_env, tp: Evidence(problems=tuple(_branch_deletion_problems(d.targets, d.flags, cwd,
+                                                                                         git_env))),
+         lambda ev: not ev.problems),
+    Case(lambda sub, rest, cwd: Discard("stash drop", flags=_flags(rest[1:]), targets=_operands(rest[1:]))
+         if sub == "stash" and rest[:1] == ("drop",) else None,
+         _stash_drop_denial,
+         lambda d, cwd, git_env, tp: Evidence(preserved=_stash_preserved(d.flags, d.targets, cwd, git_env)),
+         lambda ev: ev.preserved),
+    Case(lambda sub, rest, cwd: Discard("stash clear") if sub == "stash" and rest[:1] == ("clear",) else None,
+         "BLOCKED `git stash clear` " + _GO_AHEAD + "stashed work is unreferenced once dropped. Leave it; ask the "
+         "user before discarding."),
+    Case(lambda sub, rest, cwd: Discard("reflog-expire") if sub == "reflog" and "expire" in rest else None,
+         "BLOCKED `git reflog expire` " + _GO_AHEAD + "the reflog is the last recovery path for lost commits. Leave "
+         "expiry to git's own schedule."),
+    Case(lambda sub, rest, cwd: Discard("gc-prune") if sub == "gc" and any(
+         a == "--prune" or a.startswith("--prune=") for a in rest) else None,
+         "BLOCKED `git gc --prune` " + _GO_AHEAD + "permanently removes unreachable objects that reflog recovery "
+         "depends on. Run `git gc` without `--prune`."),
+    Case(lambda sub, rest, cwd: Discard(sub) if sub in ("filter-branch", "filter-repo") else None,
+         lambda d, ev: "BLOCKED `git %s` " % d.action + _GO_AHEAD + "rewrites every commit in place, invalidating "
+         "all existing clones and hashes. Ask the user for explicit go-ahead before rewriting history; never do it "
+         "in-session."),
+)
 
 
 def verdict(args, cwd=None, git_env=None, transcript_path=None):
@@ -1278,8 +1195,16 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
     checkout/restore discard is judged unsafe."""
     if not args:
         return None
-    d = parse_discard(args[0], args[1:], cwd)
-    return None if d is None else _denial(d, discard_evidence(d, cwd, git_env, transcript_path))
+    sub, rest = args[0], tuple(args[1:])
+    for case in CASES:
+        d = case.parse(sub, rest, cwd)
+        if d is None:
+            continue
+        ev = case.facts(d, cwd, git_env, transcript_path) if case.facts else Evidence()
+        if case.passes and case.passes(ev):
+            return None
+        return case.denial if isinstance(case.denial, str) else case.denial(d, ev)
+    return None
 
 
 # --- Peer losses at commit: stage records, stale blobs, amends (moved from _peer_loss.py) ---------------------
@@ -1463,6 +1388,25 @@ def amend_verdict(rest, cwd, git_env=None, session_id=None):
             "would rewrite it. Commit the change as a new commit." % why)
 
 
+# Each commit-time check: (check(rest, cwd, git_env, session_id, own_trailer) -> denial or None, re-run by the
+# commit-msg hook). The amend check reads HEAD and its trailer, which nothing between the tool call and the hook
+# moves, so the hook skips it; the other two read the index git is writing.
+COMMIT_CHECKS = (
+    (lambda rest, cwd, git_env, session_id, own_trailer: base_verdict(cwd, git_env), True),
+    (lambda rest, cwd, git_env, session_id, own_trailer: amend_verdict(rest, cwd, git_env, session_id), False),
+    (revert_verdict, True),
+)
+
+
+def commit_verdict(rest, cwd, git_env, session_id=None, own_trailer=None, hooked=False):
+    """The first commit-time loss of `git commit <rest>`, or None; `hooked` runs only the checks the hook re-runs."""
+    for check, rechecked in COMMIT_CHECKS:
+        message = None if hooked and not rechecked else check(rest, cwd, git_env, session_id, own_trailer)
+        if message:
+            return message
+    return None
+
+
 def _revert_message(stale):
     if not stale:
         return None
@@ -1474,7 +1418,7 @@ def _revert_message(stale):
 
 
 def commit_msg_check(message_path, environ=None, cwd=None):
-    """Deny text for the commit git is about to write, or None: `base_verdict` and `revert_verdict` re-run inside
+    """Deny text for the commit git is about to write, or None: the `COMMIT_CHECKS` marked for it re-run inside
     git's commit-msg hook (`.claude/githooks/commit-msg`), because the PreToolUse check ran before the commit
     hooks and a peer's commit can land in between. A pathspec (`next-index-*`) or `-a` (`index.lock`) commit takes
     the working tree, and a merge has its own guard, so those pass. The message's own Claude-Session trailer is
@@ -1491,12 +1435,64 @@ def commit_msg_check(message_path, environ=None, cwd=None):
     git_dir = run_git(["rev-parse", "--git-dir"], cwd, git_env)
     if git_dir and os.path.exists(os.path.join(cwd, git_dir.strip(), "MERGE_HEAD")):
         return None
-    return base_verdict(cwd, git_env) or revert_verdict([], cwd, git_env, own_trailer=message_trailer(message_path))
+    return commit_verdict([], cwd, git_env, own_trailer=message_trailer(message_path), hooked=True)
+
+
+def _skips_hooks(rest):
+    """True when a commit-like call's own flags skip git's commit-msg hook (`-n`, `--no-verify`, a bundled `n`)."""
+    for a in rest:
+        if a == "--":
+            break
+        if a == "--no-verify":
+            return True
+        if a.startswith("-") and not a.startswith("--"):
+            for letter in a[1:]:
+                if letter == "n":
+                    return True
+                if letter in _SHORT_VALUE_LETTERS:
+                    break
+    return False
+
+
+def _unhooked_publish(args, cwd, git_env, command):
+    """True when the commit-time entry cannot re-check what this publication commits (D-IW, owner 2026-11-23): the
+    call skips the hooks, the command overrides git config, the repository's `core.hooksPath` is not
+    `.claude/githooks` with its `commit-msg` present, or the publication amends (the hook re-runs the stage-record
+    and peer-revert checks, not the amend check, which read HEAD before this command moved it)."""
+    if _skips_hooks(args[1:]) or (args[0] == "commit" and parse_commit_args(args[1:])[1]):
+        return True
+    if re.search(r"hookspath|GIT_CONFIG_(?:PARAMETERS|COUNT)", command, re.I):
+        return True
+    configured = run_git(["config", "--get", "core.hooksPath"], cwd, git_env)
+    top = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
+    if not configured or not top or configured.strip().replace("\\", "/").rstrip("/") != ".claude/githooks":
+        return True
+    return not os.path.isfile(os.path.join(top.strip(), ".claude", "githooks", "commit-msg"))
 
 
 def _unproved_publish(args):
     """True when an opaque call (cwd=None) would write the index, publish a commit or push."""
     return bool(args) and (args[0] == "push" or publishes_index(args[0], args[1:]) or writes_index(args))
+
+
+_INIT_VALUE_FLAGS = ("-b", "--initial-branch", "--template", "--separate-git-dir", "--object-format", "--ref-format")
+
+
+def _init_target(rest, target, git_env, expand):
+    """(the path `git init <rest>` makes a repository at, its normalized key, True when no repository has its top
+    there yet)."""
+    named, takes_value = [], False
+    for a in rest:
+        if takes_value:
+            takes_value = False
+        elif a in _INIT_VALUE_FLAGS:
+            takes_value = True
+        elif not a.startswith("-"):
+            named.append(a)
+    made = resolve_cd(target, expand(named[0])) if named else target
+    top = run_git(["rev-parse", "--show-toplevel"], made, git_env)
+    made_key = os.path.normcase(os.path.abspath(made))
+    return made, made_key, top is None or os.path.normcase(os.path.abspath(top.strip())) != made_key
 
 
 def git_verdict(command, cwd, transcript_path=None, session_id=None):
@@ -1527,18 +1523,8 @@ def git_verdict(command, cwd, transcript_path=None, session_id=None):
             return expand_literal(token, call.assignments) or token
         key = os.path.normcase(os.path.abspath(target))
         if args[0] == "init":
-            named, takes_value = [], False
-            for a in args[1:]:
-                if takes_value:
-                    takes_value = False
-                elif a in ("-b", "--initial-branch", "--template", "--separate-git-dir", "--object-format", "--ref-format"):
-                    takes_value = True
-                elif not a.startswith("-"):
-                    named.append(a)
-            made = resolve_cd(target, expand(named[0])) if named else target
-            top = run_git(["rev-parse", "--show-toplevel"], made, git_env)
-            made_key = os.path.normcase(os.path.abspath(made))
-            if top is None or os.path.normcase(os.path.abspath(top.strip())) != made_key:
+            made, made_key, fresh = _init_target(args[1:], target, git_env, expand)
+            if fresh:
                 born.add(made_key)
             elif not in_project(made, project_root, git_env):
                 initialized.add(made_key)
@@ -1546,7 +1532,7 @@ def git_verdict(command, cwd, transcript_path=None, session_id=None):
         judged_args = [expand(arg) for arg in args] if args[0] in ('checkout', 'restore') else args
         message = verdict(judged_args, target, git_env, owner_transcript)
         if (index_write and not message and key not in born and key not in initialized
-                and publishes_index(args[0], args[1:])):
+                and publishes_index(args[0], args[1:]) and _unhooked_publish(args, target, git_env, command)):
             message = SAME_COMMAND_WRITE % (index_write, index_write)
         if writes_index(args):
             index_write = "git " + args[0]
@@ -1556,9 +1542,7 @@ def git_verdict(command, cwd, transcript_path=None, session_id=None):
             if problem:
                 message = "BLOCKED commit (memory gotcha_concurrent_session_hazards #16) — %s." % problem
             elif args[0] == "commit":
-                message = (base_verdict(target, git_env)
-                           or amend_verdict(args[1:], target, git_env, session_id)
-                           or revert_verdict(args[1:], target, git_env, session_id))
+                message = commit_verdict(args[1:], target, git_env, session_id)
         if message:
             return message
     return None

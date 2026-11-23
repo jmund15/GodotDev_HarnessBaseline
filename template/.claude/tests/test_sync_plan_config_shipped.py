@@ -1,59 +1,57 @@
-"""Proof for sync_plan_config.py, the file stage only (--files-only). A planted registry copy points one plan's login dir and
-its route's login dir at temp dirs, so the proof never reads or writes a real login. The planted source holds the one
-whole-file config; check reports it as drift (exit 1), a sync writes it, and a second check is clean (exit 0). A
-missing plan and a bad flag are refused (exit 2). The plugins stage is not run: it calls the claude CLI."""
+"""Proof for sync_plan_config.py's file stage (--files-only), in process. A temp `seats.json` and a temp default login
+stand in for the real ones, so the proof never reads or writes a login. The default login holds the one whole-file
+config: check reports it as drift (exit 1), a sync writes it to the seat with a `configDir`, a second check is clean
+(exit 0); a seat with no `configDir` is not synced; a missing seat and a bad flag are refused (exit 2); a seat whose
+login dir is absent is BLOCKED-ON-USER (exit 3). The plugins stage is not run: it calls the claude CLI."""
+import importlib.util
 import json
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _sidecar_launch import launch_env  # noqa: E402
+import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = ROOT / ".claude" / "scripts" / "sync_plan_config.py"
-REGISTRY = ROOT / ".claude" / "reference" / "external_models.json"
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "sync_plan_config.py"
 GUIDE = "ai_worker_model_guide.md"
 
 
-def run(env, *args):
-    return subprocess.run([sys.executable, str(SCRIPT), *args], cwd=str(ROOT), env=env, capture_output=True,
-                          text=True, encoding="utf-8", errors="replace", timeout=120)
-
-
-def contract(temp_root):
-    temp_root = Path(temp_root)
-    data = json.loads(REGISTRY.read_text(encoding="utf-8"))
-    plan, route = next((name, cfg["planOf"]) for name, cfg in sorted(data["transports"].items()) if cfg.get("planOf"))
-    source, dest = temp_root / "route-login", temp_root / "plan-login"
+@pytest.fixture
+def sync(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("sync_plan_config_under_test", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    source, dest = tmp_path / "default-login", tmp_path / "seat-login"
     source.mkdir()
     dest.mkdir()
     (source / GUIDE).write_text("planted guide\n", encoding="utf-8", newline="\n")
-    data["transports"][route]["configDir"] = source.as_posix()
-    data["transports"][plan]["configDir"] = dest.as_posix()
-    registry = temp_root / "registry.json"
-    registry.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
-    env = launch_env(temp_root, HARNESS_MODEL_REGISTRY=str(registry))
-
-    drift = run(env, "--check", "--files-only", "--plan", plan)
-    assert drift.returncode == 1 and GUIDE in drift.stdout, (drift.returncode, drift.stdout[-300:], drift.stderr[-300:])
-    assert not (dest / GUIDE).exists(), "--check wrote the destination"
-
-    synced = run(env, "--files-only", "--plan", plan)
-    assert synced.returncode == 0 and (dest / GUIDE).read_text(encoding="utf-8") == "planted guide\n", (
-        synced.returncode, synced.stdout[-300:], synced.stderr[-300:])
-
-    clean = run(env, "--check", "--files-only", "--plan", plan)
-    assert clean.returncode == 0 and GUIDE not in clean.stdout, (clean.returncode, clean.stdout[-300:])
-
-    missing = run(env, "--check", "--files-only", "--plan", "no-such-plan")
-    assert missing.returncode == 2 and "no transport" in missing.stderr, (missing.returncode, missing.stderr[-300:])
-    bad = run(env, "--bogus")
-    assert bad.returncode == 2, bad.returncode
+    seats = tmp_path / "seats.json"
+    seats.write_text(json.dumps({"seats": {"login-seat": {"configDir": dest.as_posix()},
+                                           "no-login-seat": {"configDir": ""}}}), encoding="utf-8")
+    monkeypatch.setattr(mod, "SEATS", seats)
+    monkeypatch.setattr(mod, "DEFAULT_LOGIN", source)
+    mod.dest = dest
+    return mod
 
 
-if __name__ == "__main__":
-    with tempfile.TemporaryDirectory(prefix="sync_plan_config_proof_") as tmp:
-        contract(tmp)
-    print("ok sync_plan_config.py")
+def test_check_then_sync_then_clean(sync, capsys):
+    assert sync.main(["--check", "--files-only"]) == 1 and GUIDE in capsys.readouterr().out
+    assert not (sync.dest / GUIDE).exists(), "--check wrote the destination"
+    assert sync.main(["--files-only"]) == 0
+    capsys.readouterr()
+    assert (sync.dest / GUIDE).read_text(encoding="utf-8") == "planted guide\n"
+    assert sync.main(["--check", "--files-only"]) == 0 and GUIDE not in capsys.readouterr().out
+
+
+def test_only_seats_with_a_login_dir_pair(sync):
+    assert [name for name, _src, _dst in sync.pairs()] == ["login-seat"]
+    assert sync.pairs("login-seat")[0][2] == sync.dest
+
+
+def test_refusals(sync, capsys):
+    assert sync.main(["--check", "--files-only", "--seat", "no-such-seat"]) == 2
+    assert "no seat" in capsys.readouterr().err
+    assert sync.main(["--bogus"]) == 2
+
+
+def test_absent_login_dir_is_blocked_on_user(sync, capsys):
+    sync.dest.rmdir()
+    assert sync.main(["--check", "--files-only"]) == 3
+    assert "BLOCKED-ON-USER: login-seat" in capsys.readouterr().out

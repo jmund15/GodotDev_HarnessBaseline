@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Proof for the recursive-grep deny in hooks/unbounded_scan_guard.py, fed through the real
-PreToolUse entry hooks/pre_bash_dispatch.py.
+PreToolUse entry hooks/pre_bash.py.
 
 Every recursive grep is denied; there is no rewrite. The deny names the bounded forms, and the
 `rg -uu` form it names finds a tracked file a .gitignore rule matches. Deny arms cover the shapes
@@ -23,7 +23,7 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
-DISPATCH = os.path.join(REPO, ".claude", "hooks", "pre_bash_dispatch.py")
+DISPATCH = os.path.join(REPO, ".claude", "hooks", "pre_bash.py")
 GUARD = os.path.join(REPO, ".claude", "hooks", "unbounded_scan_guard.py")
 sys.path.insert(0, HERE)
 import _hook_call  # noqa: E402

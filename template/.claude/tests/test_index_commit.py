@@ -78,7 +78,7 @@ def scene(tmp, name):
     (root / ".claude" / "tests").mkdir(parents=True)
     shutil.copy2(TOOL, root / ".claude" / "tools" / "index_commit.py")
     shutil.copy2(TOOL.parent / "cli_usage.py", root / ".claude" / "tools" / "cli_usage.py")
-    for module in ("_git_run.py", "_hook_state.py", "_file_lock.py"):
+    for module in sorted(p.name for p in HOOKS.glob("_*.py")):  # the tool imports a chain of helpers
         shutil.copy2(HOOKS / module, root / ".claude" / "hooks" / module)
     (root / ".gitignore").write_text(".claude/tests/\n", encoding="utf-8", newline="\n")
     for relpath in sorted(HEAD_ROWS) + ["gone.py", "peer.py"]:
@@ -621,6 +621,11 @@ def main():
     for line in failures:
         print("  " + line)
     return 1 if failures else 0
+
+
+
+def test_proof():
+    assert main() in (None, 0)
 
 
 if __name__ == "__main__":

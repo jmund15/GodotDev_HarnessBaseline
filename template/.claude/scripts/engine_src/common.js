@@ -58,48 +58,6 @@ function repoRootOf(a) {
   return /^([A-Za-z]:)?\//.test(root) ? root : ''
 }
 // ENGINE-BLOCK-END repoRootOf
-// ENGINE-BLOCK-BEGIN rootedPath
-function rootedPath(a, p) {
-  const root = repoRootOf(a)
-  return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
-}
-// ENGINE-BLOCK-END rootedPath
-// ENGINE-BLOCK-BEGIN cdRootPrefix
-function cdRootPrefix(a) {
-  const root = repoRootOf(a)
-  return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
-}
-// ENGINE-BLOCK-END cdRootPrefix
-// ENGINE-BLOCK-BEGIN VERDICTS
-const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
-// ENGINE-BLOCK-END VERDICTS
-// ENGINE-BLOCK-BEGIN applyVerdicts
-const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
-  const supplied = verdicts[keyOf(item)]
-  const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
-  return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
-})
-// ENGINE-BLOCK-END applyVerdicts
-// ENGINE-BLOCK-BEGIN boundedVerification
-const boundedVerification = verification => ({
-  status: verification.status, counts: verification.counts, report: verification.report,
-  ...(verification.note ? { note: verification.note } : {}),
-  nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
-})
-// ENGINE-BLOCK-END boundedVerification
-// ENGINE-BLOCK-BEGIN closeCheck
-// The engine verifies no claim: /review checks a findings file with tools/quote_check.py (T4). Every item stays
-// UNCHECKED, so callers read the same shape and no verifier agent is launched.
-const closeCheck = async (mode, { items, keyOf }) => {
-  const keys = items.map(keyOf)
-  if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
-    || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
-  const verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-    verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: null,
-    note: 'claims are checked by /review (tools/quote_check.py); the engine checks none' }
-  return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
-}
-// ENGINE-BLOCK-END closeCheck
 // ENGINE-BLOCK-BEGIN CLAIM_FENCE
 const CLAIM_FENCE = /```(?:claims|findings)[ \t]*\r?\n([\s\S]*?)```/g
 // ENGINE-BLOCK-END CLAIM_FENCE

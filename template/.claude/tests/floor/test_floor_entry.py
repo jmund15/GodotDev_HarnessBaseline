@@ -129,6 +129,22 @@ def test_a_floor_dispatcher_whose_decide_raises_denies_through_the_stub(tree, br
     assert spawn(tree, shell("ls", tmp_path))[0] == "deny"
 
 
+def test_the_floor_imports_only_its_own_modules(tree):
+    """A floor module's import chain is the floor's: a per-session state module or a v1 tool a later slice reshapes
+    must not be able to break the import, which would deny every call (review finding 5)."""
+    probe = "import sys; sys.path.insert(0, %r); import _floor; print(' '.join(sorted(sys.modules)))" % str(
+        tree / "hooks")
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "BASH_ENV", "PYTHONSTARTUP")}
+    done = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, env=env, timeout=60)
+    assert done.returncode == 0, done.stderr
+    loaded = set(done.stdout.split())
+    assert not loaded & {"_hook_state", "cli_usage", "index_commit", "reap"}, loaded
+
+
+def test_every_floor_member_has_its_broken_import_case():
+    assert set(FLOOR_MODULES) == {name for name, _matches, _action in _floor.FLOOR_MEMBERS}
+
+
 # --- in process: the dispatcher's own rules -----------------------------------------------------------------------
 def test_the_matcher_registers_every_tool_the_floor_judges():
     assert set(_floor.MATCHER.split("|")) == {"Bash", "PowerShell", "Monitor", "TaskStop"}
@@ -167,6 +183,17 @@ def test_a_floor_deny_wins_over_a_helper_rewrite(monkeypatch, plant):
     assert bash("git reset --hard", plant).denied
 
 
+def test_a_decision_whose_git_reads_run_out_of_time_denies(monkeypatch, plant):
+    """Review finding 5 of S5: the client treats a hook it kills on timeout as a non-blocking error, so the floor
+    ends its own git reads first and denies the call they left unjudged."""
+    command = "git commit -q --allow-empty -m x"
+    assert bash(command, plant).kind == "allow"
+    monkeypatch.setattr(_floor, "BUDGET_S", 0.0)
+    got = bash(command, plant)
+    assert got.denied and "budget" in got.reason
+    assert bash("ls", plant).kind == "allow"  # no git read, nothing cut short
+
+
 @pytest.mark.parametrize("payload", [None, [1], "x", {"tool_name": "Bash", "tool_input": "notadict"}])
 def test_a_payload_the_floor_cannot_read_denies(payload):
     got = decide(payload)
@@ -176,3 +203,31 @@ def test_a_payload_the_floor_cannot_read_denies(payload):
 def test_monitor_and_other_tools_pass_the_destructive_checks_as_in_v1(plant):
     assert bash("git reset --hard", plant, tool="Monitor").kind == "allow"
     assert decide({"tool_name": "Read", "tool_input": {"file_path": "x"}}).kind == "allow"
+
+
+# --- The kept Bash helpers (B10, §4 Q12) through the one entry --------------------------------------------------
+@pytest.mark.parametrize("tool,command,kind", [
+    ("Bash", "grep -rn needle .", "deny"),
+    ("Bash", "find . -name '*.py' | xargs grep needle", "deny"),
+    ("PowerShell", "Get-ChildItem -Recurse | Select-String needle", "deny"),
+    ("Monitor", "grep -rn needle .claude/", "deny"),
+    ("Bash", "git grep -n needle -- .claude", "allow"),
+    ("Bash", "echo 'grep -rn needle .'", "allow"),
+    ("Bash", "echo " + "x" * 8200, "deny"),
+    ("Bash", "echo " + "x" * 8000, "allow"),
+], ids=["grep-r", "find-xargs-grep", "pwsh-recurse", "monitor-grep-r", "git-grep", "quoted-mention", "past-cut",
+        "under-cut"])
+def test_the_helpers_judge_through_the_entry(tmp_path, tool, command, kind):
+    assert bash(command, tmp_path, tool=tool).kind == kind
+
+
+def test_the_backslash_repair_rewrites_through_the_entry(tmp_path, monkeypatch):
+    record, transcript = tmp_path / "record.json", tmp_path / "t.jsonl"
+    record.write_text(json.dumps({"9.9.9|%s" % sys.platform: {"collapses": True, "collapses_before_quote": False,
+                                                               "observed": "2026-09-15"}}), encoding="utf-8")
+    transcript.write_text(json.dumps({"type": "user", "version": "9.9.9", "message": {"content": "x"}}) + "\n",
+                          encoding="utf-8")
+    monkeypatch.setenv("HARNESS_BASH_FIDELITY_RECORD", str(record))
+    pair = "\\" * 2
+    got = bash("printf 'a" + pair + "b'", tmp_path, transcript_path=transcript)
+    assert got.kind == "rewrite" and got.updated["command"] == "printf 'a" + pair * 2 + "b'"

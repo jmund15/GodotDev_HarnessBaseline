@@ -247,5 +247,5 @@ After emitting, /plan_part is done. The drafting agent reads the briefing as fro
 - [`architecture_brainstorm/reference/part_authoring.md`](../skills/architecture_brainstorm/reference/part_authoring.md) — Step 5 readiness gate, API + Test Pin sub-procedure; [`doc_and_review.md`](../skills/architecture_brainstorm/reference/doc_and_review.md) — *Plan-production handoff requirement* (this command operationalizes that prose)
 - [`/update_roadmap`](update_roadmap.md) — companion executor; invoked via `/update_roadmap transition <part> to arch-rework` when macro drift fires
 - [`/review`](review.md) plan mode — post-draft audit; composes with this command (pre-draft setup)
-- [`project_subsystems` skill](../skills/project_subsystems/SKILL.md) — Integration touch points cross-reference (≤2 subsystem boundaries per arch Step 5)
+- The project's `project_subsystems` skill — Integration touch points cross-reference (≤2 subsystem boundaries per arch Step 5)
 - [`/plan`](plan.md) — the drafting agent writes the plan and its state file per its Plan step after consuming the briefing

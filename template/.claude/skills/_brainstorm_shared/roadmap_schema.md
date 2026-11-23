@@ -94,7 +94,7 @@ Single field, 11 values. Phase-position is encoded in the prefix; sub-state in t
 
 ### §6.4 Embedded Mermaid diagram
 
-`roadmap.md` includes a Mermaid block beneath the Parts table, wrapped by a `## Current state — Mermaid` heading (this heading is the structural anchor `/update_roadmap` uses to locate-and-replace the block; do not rename). **Regenerated deterministically by `/update_roadmap` on every update — never hand-edited.** Palette and styling discipline follow the `mermaid_diagrams` skill (canonical roles → roadmap class names). `roadmap_atlas.py` reads this block as its render template (its frontmatter, `graph`, comment and `classDef` lines), so an edit here changes every roadmap's next render.
+`roadmap.md` includes a Mermaid block beneath the Parts table, wrapped by a `## Current state — Mermaid` heading (this heading is the structural anchor `/update_roadmap` uses to locate-and-replace the block; do not rename). **Regenerated deterministically by `/update_roadmap` on every update — never hand-edited.** Palette and styling discipline follow the `mermaid_diagrams` skill (canonical roles → roadmap class names). The project's roadmap generator, where it has one, reads this block as its render template (its frontmatter, `graph`, comment and `classDef` lines), so an edit here changes every roadmap's next render.
 
 ```mermaid
 ---
@@ -126,7 +126,7 @@ Color encodes phase; dashed stroke encodes rework / abandoned / submap-pending /
 
 ### §6.5 Derived views
 
-Three sections rendered below the Mermaid by `/update_roadmap`. Each heading below is required verbatim — they are the structural anchors `/update_roadmap` uses to locate-and-replace each derived block; do not rename. `roadmap_atlas.py` reads this block as its render template (each heading and the definition line under it), so an edit here changes every roadmap's next render.
+Three sections rendered below the Mermaid by `/update_roadmap`. Each heading below is required verbatim — they are the structural anchors `/update_roadmap` uses to locate-and-replace each derived block; do not rename. The project's roadmap generator, where it has one, reads this block as its render template (each heading and the definition line under it), so an edit here changes every roadmap's next render.
 
 ```markdown
 ## Currently ready to execute

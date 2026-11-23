@@ -81,21 +81,6 @@ class MachineSlots(unittest.TestCase):
         finally:
             slots.release_all(first)
 
-    def test_nested_budget_serializes_runner_but_can_borrow_free_cases(self):
-        import harness_tests as runner
-        held = slots.take(False)
-        try:
-            with patch.dict(os.environ, {'HARNESS_SLOT_BUDGET': '1', 'HARNESS_MACHINE_ROOT': self.folder, 'HARNESS_TEST_JOBS': '8', 'HARNESS_DEADLINE': str(time.time() - 1)}):
-                self.assertEqual(runner._jobs(), 1)
-                self.assertEqual(runner._take_slots(True), [])
-                with slots.parallel_budget(4) as width:
-                    self.assertEqual(width, 2)
-                    self.assertIsNone(slots.take(False, deadline=time.time(), inherit=False))
-            available = slots.take(False, deadline=time.time())
-            self.assertIsNotNone(available)
-            slots.release_all(available)
-        finally:
-            slots.release_all(held)
 
     def test_exclusive_waiter_drains_without_new_work_entering(self):
         first = slots.take(False)
@@ -397,9 +382,6 @@ class MachineSlots(unittest.TestCase):
         finally:
             slots.release_all(held)
 
-    def test_native_delegate_guard_names_slotted_direct_proof_command(self):
-        guard = json.loads((ROOT / '.claude/guards/single_flight.json').read_text(encoding='utf-8'))
-        self.assertIn('machine_slots.py run --', guard['withShell'])
 
     def test_manual_case_pool_callers_hold_a_budget(self):
         # A proof that sizes its own ThreadPoolExecutor from _case_pool's width must hold the budget for it.
@@ -409,61 +391,9 @@ class MachineSlots(unittest.TestCase):
                 with self.subTest(path=path.name):
                     self.assertTrue('with _case_budget(' in text, path.name + ': a requested width is not admission')
 
-    def test_publish_does_not_reserve_machine_for_nested_battery(self):
-        import baseline_publish as publish
-        import inspect
-        source = inspect.getsource(publish._validate)
-        self.assertNotIn('publish_slots_', source)
-        self.assertNotIn('runner._slot_guard(tasks[index][2])', source)
-        self.assertIn('machine_slots', source)
 
-    def test_nested_publish_spends_one_parent_lane(self):
-        import baseline_publish as publish
-        tree = Path(self.tmp.name) / 'publish'
-        (tree / 'tests').mkdir(parents=True)
-        for index in range(3):
-            (tree / 'tests' / ('test_%d.py' % index)).touch()
-        active, peak, labels = 0, 0, []
-        lock = threading.Lock()
-        def run(*args):
-            nonlocal active, peak
-            with lock:
-                active += 1
-                peak = max(peak, active)
-            time.sleep(.05)
-            with lock:
-                active -= 1
-                labels.append(args[2])
-            return 'ok'
-        with patch.object(publish, '_run_python_args', run), patch.dict(os.environ, {'HARNESS_SLOT_BUDGET': '1'}):
-            publish._validate(tree, [], True)
-        self.assertEqual(len(labels), 5)
-        self.assertEqual(peak, 1)
 
-    def test_preview_exports_bridge_before_lane_home_changes(self):
-        import baseline_linux_preview as preview
-        script = preview.preview_script('/mnt/c/source', [('a', [('proof', 'python3 template/.claude/scripts/harness_tests.py')])])
-        self.assertNotIn('HARNESS_SLOT_DIR="$R/.slots"', script)
-        self.assertIn('HARNESS_WINDOWS_SLOT_SCRIPT', script)
-        self.assertLess(script.index('HARNESS_WINDOWS_SLOT_SCRIPT'), script.index('HOME="$D/a.home"'))
 
-    def test_proof_environment_injects_no_bootstrap_and_the_lease_still_admits(self):
-        """A delegate shell inherits no slot bootstrap: `proof_environment` keeps only the pool root, and `run` takes
-        one lane for its command, so a product run still queues behind a full pool."""
-        base = {'PYTHONPATH': '/x', 'NODE_OPTIONS': '--trace', 'BASH_ENV': '/y'}
-        env = slots.proof_environment(dict(base))
-        self.assertEqual({k: env[k] for k in base}, base)
-        self.assertEqual(env['HARNESS_MACHINE_ROOT'], slots.machine_root())
-        held = slots.take(True)
-        try:
-            out = subprocess.run([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--deadline', str(time.time() + 1),
-                                  '--', sys.executable, '-c', 'print("ran")'], env=env, capture_output=True, text=True, timeout=60)
-            self.assertNotEqual(out.stdout, 'ran\n', 'a full pool admitted a product run')
-        finally:
-            slots.release_all(held)
-        out = subprocess.run([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--', sys.executable, '-c',
-                              'print("ran")'], env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual((out.returncode, out.stdout), (0, 'ran\n'), out.stderr)
 
     def _queued_script(self, command, env, expected='1\n'):
         held = slots.take(True)

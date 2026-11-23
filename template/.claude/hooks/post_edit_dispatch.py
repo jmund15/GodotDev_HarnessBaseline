@@ -7,15 +7,9 @@ One settings.json entry runs the post-edit advisory chain in one interpreter.
 Resource normalization belongs to pre_edit_dispatch.py; post-edit advisories
 merge into one additionalContext payload.
 
-Order (cheapest text scans first, then the file-reading guards):
-  1. check_logger_tag_prefix.process — untagged JmoLogger call on an added line
-  2. design_surface_reminder.process — [Export] bool / null strategy arg / new abstract rung
-  3. plan_memory_reminder.process    — domain reminders for a .claude/plans/*.md write
-  4. self_eval_archive_guard.process — self-evaluation archive validity
-  5. retire_trigger_advisory.process — malformed retire_when metadata on a new memory or rules file
-  6. task_brief_facts.process        — a `task` brief's row facts: route, cost, plan room, window fit
-  7. plan_job_map_guard.process      — records a plan file this session wrote, for the pre-edit job-map advisory
-  8. runaway_scan_reaper.check       — throttled orphaned-search reaper (adapter: _reaper_process)
+Order: runaway_scan_reaper.check (throttled orphaned-search reaper), then the
+project's own members, named in `adaptation.json` `hook_members.post_edit` (PushinPotions:
+`check_logger_tag_prefix`, an untagged JmoLogger call on an added line). CHAIN holds the shared members.
 
 Sub-hook contract: `process(payload)` returns `{"context": <text>}` or None;
 `{"stderr": <text>}` records diagnostics. Each sub-hook self-gates on tool_name and
@@ -41,17 +35,7 @@ import threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _optional_hooks  # noqa: E402
 
-CHAIN = (
-    ("check_logger_tag_prefix", "advisory"),
-    ("design_surface_reminder", "advisory"),
-    ("plan_memory_reminder", "advisory"),
-    ("self_eval_archive_guard", "advisory"),
-    ("retire_trigger_advisory", "advisory"),
-    ("task_brief_facts", "advisory"),
-    ("plan_job_map_guard", "advisory"),
-    ("runaway_scan_reaper", "reaper"),
-)
-CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did not adopt is absent
+CHAIN = (("runaway_scan_reaper", "advisory"),)
 SUBHOOK_TIMEOUT = 5.0
 MAX_CONTEXT_CHARS = 8_000
 
@@ -64,20 +48,13 @@ def _fault(name, phase, detail):
     return f"[post-edit-dispatch] {name} {phase} fault: {detail}\n"
 
 
-def _reaper_process(input_data):
-    """Adapter: runaway_scan_reaper.check returns lines, the chain contract wants {"context"}."""
-    lines = importlib.import_module("runaway_scan_reaper").check(input_data)
-    return {"context": "\n".join(lines)} if lines else None
-
-
 def _invoke(name, process, input_data):
     result_queue = queue.Queue(maxsize=1)
 
     def run():
         phase = "import"
         try:
-            chosen = _reaper_process if process is None and name == "runaway_scan_reaper" else process
-            target = chosen or importlib.import_module(name).process
+            target = process or importlib.import_module(name).process
             phase = "runtime"
             result_queue.put(("ok", target(input_data) or {}))
         except Exception as exc:
@@ -97,7 +74,7 @@ def _invoke(name, process, input_data):
 def dispatch(input_data, chain=None):
     """Run the chain over one payload. Returns (exit_code, stdout_text, stderr_text)."""
     contexts, notes = [], []
-    for entry in (chain if chain is not None else CHAIN):
+    for entry in (chain if chain is not None else _optional_hooks.chain("post_edit", CHAIN, "advisory")):
         name, second = entry
         process = second if callable(second) else None
         result = _invoke(name, process, input_data)

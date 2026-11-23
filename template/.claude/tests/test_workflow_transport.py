@@ -15,7 +15,7 @@ HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 sys.path.insert(0, str(HOOKS))
 import workflow_transport as wt  # noqa: E402
 
-ALLOWED_KEYS = {"__transport", "__toolProfiles", "__railsText", "__repoRoot", "__postReturn"}
+ALLOWED_KEYS = {"__transport", "__toolProfiles", "__kindProfile", "__railsText", "__repoRoot", "__postReturn"}
 
 
 def plant(tmp_path, native=True, rails=True):
@@ -58,6 +58,14 @@ def test_profile_rows_go_only_to_engine_routed_kinds_and_keep_three_fields(tmp_p
     profiles = wt.inject(args, cwd=None, claude_dir=plant(tmp_path))["__toolProfiles"]
     assert profiles == {"a": {"kind": "author", "agentType": "delegate-author", "builtins": ["Read", "Edit"],
                               "mcpServers": ["ai-worker"]}}
+
+
+def test_the_calls_own_kind_is_injected_as_the_single_kind_profile(tmp_path):
+    claude = plant(tmp_path)
+    assert wt.inject({"kind": "author"}, cwd=None, claude_dir=claude)["__kindProfile"] == {
+        "kind": "author", "agentType": "delegate-author", "builtins": ["Read", "Edit"], "mcpServers": ["ai-worker"]}
+    for args in ({}, {"kind": "scout"}, {"kind": "nope"}):  # none, a kind off the engine route, an unknown kind
+        assert "__kindProfile" not in wt.inject(args, cwd=None, claude_dir=claude)
 
 
 def test_no_capacity_tier_or_effort_key_is_injected(tmp_path):

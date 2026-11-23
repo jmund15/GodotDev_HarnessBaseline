@@ -99,6 +99,14 @@ def test_main_pre_launch_refuses_with_the_hook_stderr(tmp_path, monkeypatch, cap
     assert rc == 2 and "no-launch" in capsys.readouterr().err
 
 
+def test_main_post_return_refuses_with_the_hook_stderr_and_leaves_the_answer(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "out.md").write_text("answer", encoding="utf-8")
+    rc = lc.main(["post_return", "s", "b", "out.md", "l"], lookup=lambda key: "echo answer-rejected >&2; exit 1")
+    assert rc == 2 and "answer-rejected" in capsys.readouterr().err
+    assert (tmp_path / "out.md").read_text(encoding="utf-8") == "answer"
+
+
 def test_spawned_check_refuses_a_read_only_job_naming_a_peer_target(tmp_path):
     brief = _brief(tmp_path, "targets:\n- other.md\n")
     done = subprocess.run([sys.executable, str(LAUNCH_CHECK), "check", "--brief", brief, "--out", "out.md",

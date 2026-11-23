@@ -248,7 +248,7 @@ def test_unknown_source_is_distinct_from_worktree(repo):
 
 def test_stage_record_base_mismatch_denies(tmp_path, repo):
     import dangerous_shell_guard as dsg
-    from index_commit import stage_record_path
+    from _commit_scope import stage_record_path
     index = tmp_path / "private.index"
     base = g(repo, "rev-parse", "HEAD")
     env = {"GIT_INDEX_FILE": str(index)}
@@ -263,7 +263,7 @@ def test_stage_record_base_mismatch_denies(tmp_path, repo):
 
 
 def test_stage_record_base_mismatch_denies_through_the_entry(tmp_path, repo):
-    from index_commit import stage_record_path
+    from _commit_scope import stage_record_path
     index = tmp_path / "private.index"
     g(repo, "read-tree", "HEAD")
     stage_record_path(index).write_text('{"base_head": "%s"}' % g(repo, "rev-parse", "HEAD"), encoding="utf-8")

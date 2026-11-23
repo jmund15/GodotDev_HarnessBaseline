@@ -35,3 +35,14 @@ worktree path that workflow checks out.
    `git worktree lock <land worktree> --reason "land runner"`, then
    `submodule update --init --recursive` inside it. The workflow hard-codes this path under
    the owner's home folder; another user or repo root edits that file.
+4. **The main check worktree** (when `adaptation.json` `main_check` is non-empty). `git worktree list` shows
+   `.claude/worktrees/main-check` locked. Absent: create it as step 3 does, with `--reason "main check"`, then run
+   the project's prep for a fresh test checkout, which its `workstation_setup_toolchain.md` names.
+5. **The main check state.** `git ls-remote origin main-check-state` prints a sha, and
+   `git show origin/main-check-state:main_check.json` holds a `checkedTo` that is an ancestor of `origin/main`
+   (`git merge-base --is-ancestor`). Absent (a new repo only; every other machine fetches it): seed a state file in
+   `main_check.py`'s format whose `checkedTo` is the sha the newest green land run put on `main`. Read it from
+   that run's log (`gh run view <id> --log`): the `LAND_RESULT=green` line's `landed=` sha, else its `sha=`; skip
+   results already on main or superseded. Build the commit with `main_check.py`'s `git` helper (`hash-object`,
+   `mktree`, `commit-tree`), which sends bytes: a text-mode pipe on Windows puts `` in the file name. Push it to
+   `refs/heads/main-check-state`; `main_check.load_state` reading it back is the check.

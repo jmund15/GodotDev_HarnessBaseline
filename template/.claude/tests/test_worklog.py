@@ -307,15 +307,13 @@ Last synced: %s
 """ % (OLD, A_TITLE, B_TITLE, L_TITLE, L_WHEN)
 
 
-def stage(tmp, worklog=W1, archive=A1, mirror=M1, history=None):
+def stage(tmp, worklog=W1, archive=A1, mirror=M1):
     p = pathlib.Path(tmp)
     (p / "Worklog.md").write_bytes(worklog.encode("utf-8"))
     if archive is not None:
         (p / "Worklog-Archive.md").write_bytes(archive.encode("utf-8"))
     (p / "worklog-titles.md").write_bytes(mirror.encode("utf-8"))
     (p / "SKILL.md").write_bytes(SKILL_PLANT.encode("utf-8"))
-    if history is not None:
-        (p / "history.jsonl").write_bytes(history.encode("utf-8"))
     return p
 
 
@@ -323,8 +321,7 @@ def run(p, *args, archive_name="Worklog-Archive.md"):
     cmd = [sys.executable, str(TOOL), "complete", *args,
            "--worklog", str(p / "Worklog.md"),
            "--archive", str(p / archive_name),
-           "--mirror", str(p / "worklog-titles.md"),
-           "--history", str(p / "history.jsonl")]
+           "--mirror", str(p / "worklog-titles.md")]
     return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
 
 
@@ -334,8 +331,7 @@ def run_add(p, *args, skill=None, session=None):
            "--skill", skill,
            "--worklog", str(p / "Worklog.md"),
            "--archive", str(p / "Worklog-Archive.md"),
-           "--mirror", str(p / "worklog-titles.md"),
-           "--history", str(p / "history.jsonl")]
+           "--mirror", str(p / "worklog-titles.md")]
     env = dict(os.environ)
     env.pop("CLAUDE_CODE_SESSION_ID", None)
     if session:
@@ -461,25 +457,6 @@ check("--from: missed line reported", "no-match:" in r.stdout, r.stdout)
 check("--from: the good item still completed", TARGET_BLOCK not in read(p, "Worklog.md"))
 check("--from: the bad item wrote nothing", "zzz no such item" not in read(p, "Worklog-Archive.md"))
 
-# --- tackle-history pairing ---
-tackle = json.dumps({"event": "tackle", "date": "2026-11-08", "title": TARGET}) + "\n"
-p = stage(tempfile.mkdtemp(prefix="wl_hist_"), history=tackle)
-r = run(p, TARGET, "--ref", "0b820491e")
-check("history: completes (rc=0)", r.returncode == 0, r.stderr[-400:])
-rows = [json.loads(x) for x in read(p, "history.jsonl").splitlines() if x.strip()]
-check("history: completion pairs with the tackle",
-      rows[-1] == {"event": "completion", "date": TODAY, "title": TARGET}, rows)
-
-no_tackle = json.dumps({"event": "tackle", "date": "2026-11-08", "title": "some other item"}) + "\n"
-p = stage(tempfile.mkdtemp(prefix="wl_hist_none_"), history=no_tackle)
-run(p, TARGET, "--ref", "0b820491e")
-check("history: no matching tackle, none written", read(p, "history.jsonl") == no_tackle)
-
-done = tackle + json.dumps({"event": "completion", "date": "2026-11-08", "title": TARGET}) + "\n"
-p = stage(tempfile.mkdtemp(prefix="wl_hist_done_"), history=done)
-run(p, TARGET, "--ref", "0b820491e")
-check("history: an existing completion is not duplicated", read(p, "history.jsonl") == done)
-
 # ================================ add ================================
 
 def add(p, title, cls, scope, domain, context="probe context", *extra):
@@ -505,7 +482,6 @@ expected_mi = (M4.replace("## Active (2)", "## Active (3)", 1)
                .replace("### Alpha\n", "### Alpha\n- chore · 1 · " + T1 + "\n", 1)
                .replace("Last synced: " + OLD, "Last synced: " + TODAY))
 check("add active: mirror line and count, every other byte unchanged", mi == expected_mi, mi[:600])
-check("add active: history not created", not (p / "history.jsonl").exists())
 
 # --- every optional field ---
 T2 = "Plan the probe follow-up"
@@ -749,20 +725,22 @@ def test_proof():
     spec.loader.exec_module(tool)
 
     v = pathlib.Path(tempfile.mkdtemp(prefix="wl_vault_"))
-    (v / ".claude").mkdir()
-    (v / ".claude" / "baseline.lock.json").write_text(json.dumps(
-        {"substitutions": {tool.TOKEN % "VAULT_ROOT": "/vault",
-                           tool.TOKEN % "PROJECT_NAME": "Sample"}}), encoding="utf-8")
-    check("vault dir: built from the lock's substitutions",
+    adaptation_json = v / "skills" / "project_subsystems" / "adaptation.json"
+    adaptation_json.parent.mkdir(parents=True)
+    adaptation_json.write_text(json.dumps({"vault_root": "/vault", "project_name": "Sample",
+                                           "worklog_domains": [["Gameplay / Combat", "gameplay"]]}), encoding="utf-8")
+    check("vault dir: built from adaptation.json vault_root and project_name",
           tool.vault_todo(v) == pathlib.Path("/vault/DevProjects/Sample/Claude/TODO"), tool.vault_todo(v))
+    check("project domains: read from adaptation.json worklog_domains as (long, short)",
+          tool.project_domains(v) == (("Gameplay / Combat", "gameplay"),), tool.project_domains(v))
     v = pathlib.Path(tempfile.mkdtemp(prefix="wl_vault_none_"))
     try:
         tool.vault_todo(v)
         raised = ""
     except ValueError as exc:
         raised = str(exc)
-    check("vault dir: a lock without substitutions refuses and names it",
-          str(v / ".claude" / "baseline.lock.json") in raised, raised)
+    check("vault dir: an unset vault_root refuses and names adaptation.json",
+          "vault_root" in raised and "adaptation.json" in raised, raised)
 
     # --- the tool's canonical reader agrees with the planted and the real SKILL tables ---
     def table_slice(text, start_marker, end_marker):
@@ -837,6 +815,9 @@ def test_proof():
     p = pathlib.Path(tempfile.mkdtemp(prefix="wl_canon_"))
     (p / "SKILL.md").write_text(SKILL_PLANT, encoding="utf-8")
     planted_classes, planted_domains = tool.read_canonical(p / "SKILL.md")
+    check("planted canonical: project domains follow the table's rows",
+          tool.read_canonical(p / "SKILL.md", (("Gameplay / Combat", "gameplay"),))[1]
+          == PLANT_DOMAINS + (("Gameplay / Combat", "gameplay"),))
     check("planted canonical: the tool reads the planted class rows",
           planted_classes == PLANT_CLASSES, planted_classes)
     check("planted canonical: the tool reads each planted long/short pair",

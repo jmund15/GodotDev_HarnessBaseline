@@ -19,7 +19,7 @@ For each existing symbol, file, scene, or data key the topic names:
 ## What each finding becomes
 - A consumer a change would break → `bearing: "blast-radius"`, `file` = `path:line`, evidence = the matched line verbatim.
 - A count you could not establish because the LSP was unavailable → a `gaps` entry naming the exact query the orchestrator should run serially. Do NOT emit a claim with a guessed number.
-- The touched surface has no consumers at all → `polarity: "absent"` with `verification`, because "nothing depends on this" materially changes the plan and must not rest on one empty Grep.
+- The touched surface has no consumers at all → `polarity: "absent"` with a `{command, output}` `evidence` item, because "nothing depends on this" materially changes the plan and must not rest on one empty Grep.
 
 ## Reporting Filter
 - Do NOT list every match — group by consuming subsystem and cite the representative line. A raw grep dump is not a claim.

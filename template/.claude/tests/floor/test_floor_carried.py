@@ -1,9 +1,6 @@
-"""The v1 proofs carried with their modules: `tools/reap.py` (the stop tool `kill_guard` admits) and
-`hooks/_regenerable_clone.py` (the worktree and clone deletion rule `dangerous_shell_guard` calls).
-
-Both modules carry unchanged from v1 (PushinPotions' generation, plus MaddManager's loose-scratch-file deny) until
-T1's one-rule deletion redesign and the small stop tool replace them; their v1 proofs run here whole, one row per
-proof file, each a script that exits 0 only when every case passes. Table rows replace them with the redesign.
+"""The v1 proofs carried with their module: `tools/reap.py` (the stop tool `kill_guard` admits), carried unchanged
+until T1's small stop tool replaces it; its v1 proofs run here whole, one row per proof file, each a script that
+exits 0 only when every case passes. The deletion rule's carried proofs became `test_floor_retire.py`'s rows.
 """
 import os
 import subprocess
@@ -13,8 +10,7 @@ import pytest
 
 from conftest import CLAUDE
 
-CARRIED = ["test_reap.py", "test_reap_native_env.py", "test_regenerable_clone.py", "test_regenerable_clone_part2.py",
-           "test_regenerable_clone_part3.py"]
+CARRIED = ["test_reap.py", "test_reap_native_env.py"]
 
 
 @pytest.mark.parametrize("proof", CARRIED)

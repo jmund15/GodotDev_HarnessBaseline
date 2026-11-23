@@ -192,4 +192,4 @@ It runs batch-propose — one approval applies all `roadmap.md` edits (Parts tab
 - `feedback_no_unilateral_condensation.md` — Step 3 Diverge verbatim-port discipline
 - `feedback_no_performative_agreement.md` — Step 2 Socratic-question opener discipline
 - `feedback_session_start_hook_does_not_override_skill_procedure.md` — session-start hooks don't excuse skipping Step 2 / Step 3 gates
-- CLAUDE.core.md §9 — read_files routing (synthesis bundling)
+- `~/.claude/ai_worker_model_guide.md` — read_files routing (synthesis bundling)

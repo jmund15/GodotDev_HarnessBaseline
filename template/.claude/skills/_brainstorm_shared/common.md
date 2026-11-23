@@ -1,6 +1,6 @@
 # Brainstorming — Shared Procedures (index)
 
-> Shared procedure surface for the [`idea_brainstorm`](../idea_brainstorm/SKILL.md) and [`architecture_brainstorm`](../architecture_brainstorm/SKILL.md) skills, and for every command that cites *"`_brainstorm_shared/common.md` §X"*.
+> Shared procedure surface for the [`idea_brainstorm`](../idea_brainstorm/SKILL.md) and [`architecture_brainstorm`](../architecture_brainstorm/SKILL.md) skills, and for every command that cites *"`skills/_brainstorm_shared/common.md` §X"*.
 >
 > This file is the index: the section bodies live in the sibling files below. The map below resolves each `common.md §X` citation.
 
