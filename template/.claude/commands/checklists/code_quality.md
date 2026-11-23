@@ -1,12 +1,11 @@
 ---
-description: Review code, audit session edits, or run a compliance pass; use `checklists:test_quality` for test-file-only reviews.
+description: Shared code-quality items a review checks each changed file against
+disable-model-invocation: true
 ---
 
 # Shared Code Quality Checklist
 
 Review every changed file against each item.
-
-When the godot layer is installed, the companion of this file (same name plus `_godot`) holds engine items. Read it too: each `## Godot <Name> (X)` section extends the section with letter `X` below. Without it, only the items below apply.
 
 ## Compliance (C)
 

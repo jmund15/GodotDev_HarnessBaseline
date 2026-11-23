@@ -1,12 +1,11 @@
 ---
-description: Review tests, write tests under TDD, check coverage or assess testability; use `checklists:code_quality` for non-test production code.
+description: Shared test-quality items a review checks each changed test and production file against
+disable-model-invocation: true
 ---
 
 # Shared Test Quality Checklist
 
 Review every changed test file and every changed production file against these items.
-
-When the godot layer is installed, the companion of this file (same name plus `_godot`) holds engine items. Read it too: each `## Godot <Section>` extends the section of that name below. Without it, only the items below apply.
 
 **Prototype boundary:** a prototype that needs tests is no longer a prototype. Prototype code is out of test scope by definition; the moment a test is written against it, it is production-intent and the Logic-Domain Iron Law applies retroactively (testing skill, The Iron Law).
 
