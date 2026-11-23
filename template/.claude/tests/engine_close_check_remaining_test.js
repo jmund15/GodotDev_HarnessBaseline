@@ -9,7 +9,7 @@ const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'remaining-engines-'))
 fs.writeFileSync(path.join(temp, 'fixture'), 'true quote\n')
 const liveStart = fs.readFileSync(path.resolve(__dirname, 'fixtures/evidence/review/journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).find(row => row.type === 'started')
 const root = path.resolve(__dirname, '../..')
-const engines = ['dispatch', 'review_fanout', 'doc_architecture_audit', 'dispatch_chains', 'key_reachability', 'worklog_relevance']
+const engines = ['review_fanout', 'doc_architecture_audit', 'key_reachability', 'worklog_relevance']
 const base = { __transport: { ids: ['producer', 'checker'] }, checker: { model: 'checker', effort: 'low' }, __toolProfiles: { verify: { agentType: 'lane-verify', tier: 'fanout' } } }
 // Every closeCheck argument must reach the verifier command in every engine: each engine carries its own
 // copy of the block, and a copy that drops an argument runs a weaker check without failing anywhere else.

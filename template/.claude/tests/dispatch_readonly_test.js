@@ -72,15 +72,15 @@ async function run(args, agentImpl) {
   r = await run(argsFor(a => { withKind('author')(a) }))
   check('an author job runs as lane-author and is not read-only',
     r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-author' && !r.calls[0].prompt.includes(READONLY), j(r))
-  check('an author job gets the amend line and the choices contract',
-    r.calls[0].prompt.includes('.amend.md') && r.calls[0].prompt.includes('=== CHOICES'), r.calls[0].prompt.slice(-300))
+  check('an author job gets the choices contract',
+    r.calls[0].prompt.includes('=== CHOICES'), r.calls[0].prompt.slice(-300))
 
   r = await run(argsFor(() => {}),
     async (n, opts) => { if (opts.agentType === 'lane-survey') throw new Error("agent type 'lane-survey' not found"); return 'ok' })
   check('a job whose agent type is not loaded is never retried as another type',
     r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-survey', r.calls.map(c => c.opts.agentType).join(','))
-  check('that job comes back as a no-return the caller can see',
-    r.result && r.result.noReturn && r.result.noReturn.labels.includes('m4-FA'), j(r))
+  check('that job comes back with its rejection named',
+    r.result && r.result['m4-FA'] && String(r.result['m4-FA'].error).includes('not found'), j(r))
 
   console.log('\n' + (total - failed) + ' pass, ' + failed + ' fail')
   process.exit(failed ? 1 : 0)

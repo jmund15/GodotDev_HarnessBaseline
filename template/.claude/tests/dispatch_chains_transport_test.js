@@ -2,7 +2,7 @@
 const fs = require('fs')
 const path = require('path')
 
-const src = fs.readFileSync(path.join(__dirname, '..', 'workflows', 'dispatch_chains.js'), 'utf8')
+const src = fs.readFileSync(path.join(__dirname, '..', 'workflows', 'dispatch.js'), 'utf8')
 const body = src.replace(/^export const meta = \{[\s\S]*?^\}\r?\n/m, '')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 // The vocabulary the provider guard injects on every Workflow call; the engine holds none of its own.
@@ -147,8 +147,8 @@ async function run(args, agentResults = null) {
     ] }],
   }, [null, { ok: true }])
   check('a null result stops the dependent lane',
-    stoppedLane.calls.length === 1 && stoppedLane.result.first
-      && stoppedLane.result.first.error.includes('remaining jobs')
+    stoppedLane.calls.length === 1 && stoppedLane.result.first === null
+      && stoppedLane.result.noReturn.labels.join() === 'first'
       && !Object.prototype.hasOwnProperty.call(stoppedLane.result, 'second'),
     JSON.stringify(stoppedLane))
 
