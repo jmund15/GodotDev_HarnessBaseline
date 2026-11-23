@@ -54,7 +54,7 @@ rule is satisfiable *only by bad writing* (§7). Budget a review of real respons
 ## A universal miss is an audit trigger, not a verdict
 
 Detect it mechanically: an item missed by every graded arm goes to the project's reachability
-audit workflow. Consume its applied `verification` through `commands/agents/orchestrator_action_protocol.md` Step 1.5 before using a ruling to change an instrument. The workflow rules each item:
+audit workflow. Run `tools/quote_check.py` over its result before using a ruling to change an instrument. The workflow rules each item:
 - **KEEP** — the fact is in the arm's reach (its input, brief, repo or auto-loaded memory) and a correct
   answer earns the item as worded. It is hard, not broken, and stays in the denominator: a stronger arm
   may be the first to find it. A FLOOR label the audit falsifies still comes off.

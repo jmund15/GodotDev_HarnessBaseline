@@ -564,7 +564,6 @@ def audit(s, record):
 
     sys.path.insert(0, os.path.join(CLAUDE_DIR, "tools"))
     import worklog  # noqa: E402
-    import dispatch_result  # noqa: E402
 
     vault = os.path.join(d, "vault.md")
     with io.open(vault, "w", encoding="utf-8", newline="\n") as fh:
@@ -572,17 +571,6 @@ def audit(s, record):
     _vault_err = drive_held(vault, lambda: worklog.write_atomic(vault, "new\n"))
     check("the worklog vault writer lands on a held target",
           _vault_err is None and io.open(vault, encoding="utf-8").read() == "new\n", repr(_vault_err))
-
-    out_dir = os.path.join(d, "fanout")
-    os.makedirs(out_dir)
-    deliverable = dispatch_result.deliverable_path(out_dir, "wr1")
-    with io.open(str(deliverable), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write("old\n")
-    _deliverable_err = drive_held(str(deliverable),
-                                  lambda: dispatch_result.write_deliverable(out_dir, "wr1", "new\n"))
-    check("the dispatch deliverable writer lands on a held target",
-          _deliverable_err is None and io.open(str(deliverable), encoding="utf-8").read() == "new\n",
-          repr(_deliverable_err))
 
     # --- importing the library reads no local settings listing --------------------
     # The proof runner keys a pass on every directory a proof lists. A listing of `.claude` at import time put

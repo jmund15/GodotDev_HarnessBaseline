@@ -998,11 +998,9 @@ def ownership(table, pid, session_pid, sid):
     if env and SID_ENV in env:
         return None, "its own environment names a DIFFERENT session -- a peer's process"
     prompt = _env_value(env, PROMPT_ENV)
-    if prompt and sid and launched_prompt(sid, prompt):
-        return "its sidecar prompt file %s was launched by this session's transcript" % os.path.basename(prompt), None
     if prompt:
-        return None, ("its sidecar prompt file %s was not launched by this session: a sidecar belongs to the session "
-                      "that launched it, a DIFFERENT one" % os.path.basename(prompt))
+        return None, ("its sidecar prompt file %s carries no session tag: nothing proves this session launched it"
+                      % os.path.basename(prompt))
     # A record on disk is second-hand (a stale -R path can name us while the process is a peer's),
     # so it is consulted only when the environment was unreadable.
     cmd = table[pid].get("cmd") or ""
@@ -1034,36 +1032,6 @@ def _env_value(env, key):
 def _same_path(a, b):
     fix = lambda p: os.path.normcase(os.path.abspath(drive_path(p.replace("\\", "/"))))
     return fix(a) == fix(b)
-
-
-def launched_prompt(sid, prompt):
-    """True when this session's transcript holds a sidecar launch whose -f resolves to `prompt`."""
-    transcript = session_transcript(sid)
-    if not transcript:
-        return False
-    sys.path.insert(0, str(REPO / ".claude" / "tools"))
-    import orchestration_metrics as om
-    import sidecar_argv
-    name = os.path.basename(prompt)
-    with open(transcript, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            if name not in line or "_sidecar.sh" not in line:
-                continue
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            message = entry.get("message") if entry.get("type") == "assistant" else None
-            for item in (message or {}).get("content") or []:
-                command = (item.get("input") or {}).get("command") if isinstance(item, dict) else None
-                if item.get("type") != "tool_use" or not isinstance(command, str):
-                    continue
-                run_cwd, calls = om._resolved_launcher_calls(command, entry.get("cwd") or str(REPO))
-                for kind, _script, args in calls:
-                    value = sidecar_argv.sidecar_flags(args).get("f") if kind == "sidecar" else None
-                    if isinstance(value, str) and _same_path(os.path.join(run_cwd, value), prompt):
-                        return True
-    return False
 
 
 def session_transcript(sid):

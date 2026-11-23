@@ -71,56 +71,12 @@ const EVIDENCE_SCHEMA = {
 const EVIDENCE_RULES = "The evidence contract's machine twin (tools/quote_check.py owns the semantics and is its one executable implementation). A claim's `evidence` is a list of items, each exactly one of two kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
 // EVIDENCE-SSOT-END
 
-// CLOSE-CHECK-BEGIN
 // ENGINE-BLOCK-BEGIN repoRootOf
 function repoRootOf(a) {
   const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
   return /^([A-Za-z]:)?\//.test(root) ? root : ''
 }
 // ENGINE-BLOCK-END repoRootOf
-// ENGINE-BLOCK-BEGIN rootedPath
-function rootedPath(a, p) {
-  const root = repoRootOf(a)
-  return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
-}
-// ENGINE-BLOCK-END rootedPath
-// ENGINE-BLOCK-BEGIN cdRootPrefix
-function cdRootPrefix(a) {
-  const root = repoRootOf(a)
-  return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
-}
-// ENGINE-BLOCK-END cdRootPrefix
-// ENGINE-BLOCK-BEGIN VERDICTS
-const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
-// ENGINE-BLOCK-END VERDICTS
-// ENGINE-BLOCK-BEGIN applyVerdicts
-const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
-  const supplied = verdicts[keyOf(item)]
-  const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
-  return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
-})
-// ENGINE-BLOCK-END applyVerdicts
-// ENGINE-BLOCK-BEGIN boundedVerification
-const boundedVerification = verification => ({
-  status: verification.status, counts: verification.counts, report: verification.report,
-  ...(verification.note ? { note: verification.note } : {}),
-  nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
-})
-// ENGINE-BLOCK-END boundedVerification
-// ENGINE-BLOCK-BEGIN closeCheck
-// The engine verifies no claim: the caller runs `tools/quote_check.py <result.json> --root <checkout>` over the
-// engine's returned result (T4). Every item stays UNCHECKED, so callers read the same shape and no verifier agent runs.
-const closeCheck = async (mode, { items, keyOf }) => {
-  const keys = items.map(keyOf)
-  if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
-    || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
-  const verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-    verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: null,
-    note: 'the engine checks no claim: run tools/quote_check.py <result.json> --root <checkout> over this result' }
-  return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
-}
-// ENGINE-BLOCK-END closeCheck
-// CLOSE-CHECK-END
 
 const lenses = Array.isArray(A.lenses) ? A.lenses : []
 // ENGINE-BLOCK-BEGIN RESULT_MODE
@@ -517,7 +473,7 @@ for (const c of stamped) {
 }
 
 const contradictions = []
-let claims = []
+const claims = []
 for (const [k, group] of groups) {
   const lensesInGroup = [...new Set(group.map(c => c.lens))]
   const polarities = [...new Set(group.map(c => c.polarity))]
@@ -560,10 +516,6 @@ claims.sort((a, b) => {
   const va = a.confidence === 'verified' ? 0 : 1, vb = b.confidence === 'verified' ? 0 : 1
   return va - vb
 })
-
-const closed = await closeCheck('claims', { items: claims, keyOf: c => c.lens + '#' + c.index })
-claims = closed.items
-const verification = closed.verification
 
 const counts = {
   lenses: lenses.length,
@@ -645,7 +597,6 @@ if (RESULT_MODE === 'bounded') {
         id: claim.id,
         lens: claim.lens,
         index: claim.index,
-        verdict: claim.verdict,
         confidence: claim.confidence,
         journalSelector: claim.id,
       }
@@ -678,7 +629,6 @@ if (RESULT_MODE === 'bounded') {
   // structurally — only clipText's own truncation of a long `detail` marks the collection clipped.
   const flagPreview = (row) => ({ kind: row.kind, lens: row.lens ?? null, detail: clipText(row.detail || '', 'flags', 120) })
   const state = {
-    nonVerified: boundedVerification(verification).nonVerified,
     claims: claims.filter((claim, index) => index < 4 || processedClaimIds.has(claim.id))
       .map((claim, index) => claimPreview(claim, index < 4)),
     contradictions: contradictions.map((row, index) => contradictionPreview(row, index < 3)),
@@ -687,7 +637,6 @@ if (RESULT_MODE === 'bounded') {
     perLens: perLens.slice(0, 10).map(row => boundValue(row, 'perLens')),
   }
   const totals = {
-    nonVerified: state.nonVerified.length,
     claims: claims.length,
     contradictions: contradictions.length,
     flags: flags.length,
@@ -721,7 +670,6 @@ if (RESULT_MODE === 'bounded') {
       gaps: state.gaps,
       counts,
       perLens: state.perLens,
-      verification: { ...boundedVerification(verification), nonVerified: state.nonVerified },
     }
     output.delivery = {
       contract: 'native-fanout-bounded/v1',
@@ -732,7 +680,6 @@ if (RESULT_MODE === 'bounded') {
       byteLimitExceeded: false,
       payloadComplete: Object.values(preview).every(row => row.complete),
       processedState: {
-        nonVerifiedInline: state.nonVerified.length === totals.nonVerified,
         changedClaimsInline: true,
         contradictionsInline: true,
         engineFlagsInline: true,
@@ -786,7 +733,6 @@ if (RESULT_MODE === 'bounded') {
       if (state[name].length > 0) { tailTurn = (tailTurn + i + 1) % tailShed.length; return name }
     }
     if (state.perLens.length > 0) return 'perLens'
-    if (state.nonVerified.length > 0) return 'nonVerified'
     return null
   }
   let output = renderBounded()
@@ -800,7 +746,7 @@ if (RESULT_MODE === 'bounded') {
   return output
 }
 
-const output = { claims, contradictions, flags, gaps, counts, perLens, spillDir: SPILL_DIR, verification }
+const output = { claims, contradictions, flags, gaps, counts, perLens, spillDir: SPILL_DIR }
 if (SPILL_DIR) {
   output.spills = Object.fromEntries(resolved.filter(spills).map(lens => [lens.key, spillPath(lens.key)]))
   const inlineLabels = resolved.filter(lens => !spills(lens)).map(lens => lens.key)
