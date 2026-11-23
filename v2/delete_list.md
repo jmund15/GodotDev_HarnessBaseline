@@ -1,6 +1,6 @@
 # Delete list: the cutover PR's deletes from the shared tree
 
-**v2 shared set: 459 files** under `template/.claude/` (`git ls-files template/.claude | wc -l` at the B16 tip). B16's done-condition holds when that command prints this number.
+**v2 shared set: 457 files** under `template/.claude/` (`git ls-files template/.claude | wc -l` after A11, which deleted two more: §Deleted by A11). B16's done-condition holds when that command prints this number.
 
 Written by TB3 (the first table) and B16 (the rest). B16 deleted every path below from the template; the cutover PR deletes the same paths from each consumer repo that holds them, unless the path is PushinPotions- or MaddManager-local, in which case S9 places it in that repo (the **local** list).
 
@@ -20,6 +20,13 @@ Base for every row: `v2` at `6f21a0d`. Class and reason per group; the S4 class 
 | `hooks/git_guardrails.py` and 11 tests | 1 + 11 | The floor (`dangerous_shell_guard.py`, `kill_guard.py`) carries every loss deny; the advisories are V1's lost column | `tests/floor/` |
 | The ten v1 guard files | 10 | `guards/rails.md` replaces them (A3's hand-off) | `guards/rails.md` |
 | `schemas/review_findings.json`, orphaned fixtures and helpers | see list | No reader remains | none |
+
+## Deleted by A11
+
+| File | Class | Reason |
+|---|---|---|
+| `commands/roadmap_next.md` | MaddManager-local | The plan's §Capabilities keeps MM `/roadmap_next` MaddManager-local: PushinPotions has no copy. MaddManager keeps its own (S8) |
+| `skills/godot_architecture/SKILL.md` | delete | A Godot skill (Q1) no repo uses: PushinPotions' lock records it declined (`status: local`, `absent: true`) and MaddManager has no Godot code |
 
 ## Kept although S4 classed them delete or local
 
