@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Proof for tools/vault_read.py: a vault read types every file it could not read, so a sweep never reads clean by omission.
 
-    python3 .claude/tests/test_vault_read.py
+    python -m pytest .claude/tests/test_vault_read.py -q
 """
 import sys
 import tempfile
@@ -57,6 +57,15 @@ def main():
         return 1
     print("\nall ok")
     return 0
+
+
+def test_proof():
+    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code
+    assert code in (None, 0), code
 
 
 if __name__ == "__main__":

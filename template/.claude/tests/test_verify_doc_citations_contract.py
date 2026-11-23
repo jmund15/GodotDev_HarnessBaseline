@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal proof for tools/verify_doc_citations.py: a planted file:line past EOF exits 1, a real one exits 0.
 
-    python3 .claude/tests/test_verify_doc_citations_contract.py
+    python -m pytest .claude/tests/test_verify_doc_citations_contract.py -q
 """
 from __future__ import annotations
 
@@ -67,6 +67,15 @@ def main():
             shutil.rmtree(directory, ignore_errors=True)
     print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
     return 1 if failures else 0
+
+
+def test_proof():
+    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code
+    assert code in (None, 0), code
 
 
 if __name__ == "__main__":

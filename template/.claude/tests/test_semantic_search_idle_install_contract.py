@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal proof for tools/semantic_search_idle_install.py: the decision path with a stubbed installer.
 
-    python3 .claude/tests/test_semantic_search_idle_install_contract.py
+    python -m pytest .claude/tests/test_semantic_search_idle_install_contract.py -q
 
 Every path lives under a temp home. The two contract spawns (the shim's and the stock server's) are stubbed to
 return the same contract, so no node process starts and nothing is installed on this machine. A
@@ -122,6 +122,15 @@ def main():
             shutil.rmtree(directory, ignore_errors=True)
     print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
     return 1 if failures else 0
+
+
+def test_proof():
+    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code
+    assert code in (None, 0), code
 
 
 if __name__ == "__main__":

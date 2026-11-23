@@ -5,7 +5,7 @@
 machine's setup stamp is current, and the shared user-scope tool, manifest and templates must be listed there.
 A copy that drops a template, or misspells the key, must read as short or undeclared.
 
-    python3 .claude/tests/test_setup_docs.py
+    python -m pytest .claude/tests/test_setup_docs.py -q
 """
 import importlib.util
 import sys
@@ -106,6 +106,15 @@ def main():
         print("\nFAILED:\n  " + "\n  ".join(FAILURES))
         sys.exit(1)
     print("all ok")
+
+
+def test_proof():
+    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code
+    assert code in (None, 0), code
 
 
 if __name__ == "__main__":

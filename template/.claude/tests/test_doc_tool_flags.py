@@ -7,7 +7,7 @@ from `.claude/tools/` or `.claude/hooks/` (transitively). Sources are read as te
 proof stays one fast process. Placeholders (`<...>`) are dropped, and an example ends at a pipe, `;`, `&&`, a
 newline or its closing backtick. A tool file absent on disk is reported as its own failure.
 
-    python3 .claude/tests/test_doc_tool_flags.py
+    python -m pytest .claude/tests/test_doc_tool_flags.py -q
 """
 import re
 import sys
@@ -111,6 +111,15 @@ def main():
                 print("       " + line)
     print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
     return 1 if failures else 0
+
+
+def test_proof():
+    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code
+    assert code in (None, 0), code
 
 
 if __name__ == "__main__":
