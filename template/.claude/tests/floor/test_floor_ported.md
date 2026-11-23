@@ -18,7 +18,7 @@ holding a v1 case's several asserts).
 | `test_dangerous_shell_guard_cache_cleanup.py` | 80 | 80 | `test_floor_delete.py` |
 | `test_dangerous_shell_guard_owned_temp_cleanup.py` | 22 | 22 | `test_floor_delete.py` |
 | `test_dangerous_shell_guard_session_dir.py` | 13 | 13 | `test_floor_delete.py` |
-| `test_regenerable_clone.py` (3 parts), `test_conformance_j8.py`'s two nested-submodule retirement cases | whole | whole | `test_floor_retire.py` (166) |
+| `test_regenerable_clone.py` (3 parts), `test_conformance_j8.py`'s two nested-submodule retirement cases | whole | whole | `test_floor_retire.py` (180) |
 | `test_git_guardrails_advice.py` (sections 0-3) | 95 | 95 + 11 stash-held | `test_floor_git_discard.py` (107, with the one-row-per-case table check) |
 | `test_git_guardrails_amend.py` | 6 | 6 | `test_floor_peer_loss.py` (21) |
 | `test_git_guardrails_revert_lane.py` | 8 | 8 | `test_floor_peer_loss.py` |
@@ -66,6 +66,9 @@ repositories (D-TT).
   saved bundle (`test_a_saved_bundle_no_longer_retires_an_unpushed_worktree`). The rule reads "who created the worktree
   does not change the answer", so a submodule whose admin directory is gone now denies in an owned worktree too
   (`test_a_submodule_whose_admin_directory_is_gone_denies`). Tar and patch saved copies go with the bundle.
+- A submodule whose path holds a space (D18): the old floor split `submodule status` on whitespace and skipped it
+  unchecked; the rule now judges it, so a dirty one denies and a clean one retires (`test_floor_retire.py`
+  `..._submodule_path_holds_a_space_...` rows, worktree and orphan).
 - Two new allows of the command's own `NAME=$(mktemp -d)` directories (temp trees, D-TT's reason): a multi-line
   script (v1's chain splitter missed newlines) and two mktemp variables in one `rm` (`test_floor_delete.py`
   `OWNED_PASS`).

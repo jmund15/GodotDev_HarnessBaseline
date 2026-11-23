@@ -261,7 +261,7 @@ def test_a_branch_that_heads_an_open_pr_keeps_its_checkout(world):
 _LISTING = "worktree {wt}\n\n"
 _DEFAULTS = {"worktree": _LISTING, "status": "", "rev-list": "", "ls-files": "160000 abc 0\tSub\0",
              "sub_ls": "", "sub_status": "", "sub_pushed": "", "rev-parse": "abc\n", "branch": "", "symbolic-ref": "",
-             "config": "submodule.Sub.path Sub\n"}
+             "config": "submodule.Sub.path\nSub\0"}
 
 
 @pytest.mark.parametrize("overrides,reason", [
@@ -348,6 +348,35 @@ def test_a_submodule_whose_admin_directory_is_gone_denies(world):
     rmtree(admin if os.path.isabs(admin) else path / "Sub" / admin)
     got, reasons = world.retired(path)
     assert not got and any("Sub" in r and "missing admin directory" in r for r in reasons), reasons
+
+
+@pytest.fixture(scope="module")
+def spaced(tmp_path_factory):
+    """A project whose second submodule path holds a space (D18: the old floor skipped such a path unchecked)."""
+    world = Project(tmp_path_factory.mktemp("spaced"))
+    git(world.root, *SUB, "submodule", "add", "-q", "../sub_remote.git", "Sub Mod")
+    git(world.root, "commit", "-qm", "spaced submodule")
+    git(world.root, "push", "-q", "origin", "main")
+    return world
+
+
+def test_a_clean_worktree_whose_submodule_path_holds_a_space_retires(spaced):
+    assert spaced.retired(spaced.wt("sp_clean", submodule=True))[0]
+
+
+def test_a_dirty_submodule_whose_path_holds_a_space_keeps_the_worktree(spaced):
+    path = spaced.wt("sp_dirty", submodule=True)
+    write(path, "Sub Mod/s.txt", "changed\n")
+    got, reasons = spaced.retired(path)
+    assert not got and "submodule Sub Mod has local files or changes" in " | ".join(reasons), reasons
+
+
+def test_an_orphan_whose_submodule_path_holds_a_space_goes_only_when_clean(spaced):
+    git(spaced.root, *SUB, "submodule", "update", "-q", "--init")
+    assert spaced.retired(spaced.orphan("sp_o_clean", submodule=True))[0]
+    dirty = spaced.orphan("sp_o_dirty", submodule=True, edit=lambda p: write(p, "Sub Mod/s.txt", "edited\n"))
+    got, reasons = spaced.retired(dirty)
+    assert not got and any("Sub Mod/s.txt" in r for r in reasons), reasons
 
 
 def test_a_lane_landed_by_rebase_retires_and_a_local_commit_does_not(tmp_path):

@@ -536,8 +536,7 @@ def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path
     found: list[str] = []
     subs = []
     if (work_tree / ".gitmodules").is_file():
-        listed = run(["config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"])
-        subs = [line.split(" ", 1)[1].strip("/") for line in (listed or "").splitlines() if " " in line]
+        subs = _gitmodules_paths(run(_GITMODULES_PATHS))
     for sub in subs:
         if not (work_tree / sub).is_dir() or not any((work_tree / sub).iterdir()):
             continue
@@ -687,14 +686,24 @@ def _open_pr_reason(target: Path, root: Path) -> str | None:
     return None
 
 
+# `-z` rows are `key NL value NUL`: a submodule name or path holding a space stays whole (the plain rows split on it).
+_GITMODULES_PATHS = ["config", "-f", ".gitmodules", "-z", "--get-regexp", r"^submodule\..*\.path$"]
+
+
+def _gitmodules_paths(listed: str | None) -> list[str]:
+    """The submodule paths in `_GITMODULES_PATHS` output; none when it is None or empty."""
+    rows = (row.partition("\n") for row in (listed or "").split("\0"))
+    return [path.strip("/") for _key, sep, path in rows if sep]
+
+
 def _declared_submodules(repo: Path) -> list[str] | None:
     """The submodule paths `repo`'s `.gitmodules` declares (none without the file), or None when git cannot read it."""
     if not (repo / ".gitmodules").is_file():
         return []
-    listed = _git(["config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"], repo)
+    listed = _git(_GITMODULES_PATHS, repo)
     if listed is None and _git(["config", "-f", ".gitmodules", "--list"], repo) != "":
         return None
-    return [line.split(" ", 1)[1].strip().strip("/") for line in (listed or "").splitlines() if " " in line]
+    return _gitmodules_paths(listed)
 
 
 def _populated_submodules(repo: Path, declared: list[str] | None = None, prefix: str = "") -> list[str] | None:
