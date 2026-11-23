@@ -22,6 +22,13 @@ worktree path that workflow checks out.
    default limit would end a long land). Absent or wrong → replace it with `-Force`:
    `$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries`,
    then `Register-ScheduledTask -Force -TaskName '<label> runner' -Action $a -Trigger $t -Settings $s -User '<DOMAIN\user>' -RunLevel Limited`.
+   The runner directory's `.env` holds `GITHUB_ACTIONS_RUNNER_CHANNEL_TIMEOUT=300`, the listener's maximum: the
+   listener kills a job whose worker has not taken it within that many seconds (default 30), and under load a
+   worker starts slower than that. The listener reads `.env` only at start, so restart the task after writing
+   it, while no land job runs: stop the task's `pwsh.exe` with
+   `python3 .claude/tools/reap.py --why "restart the <label> runner" <its pid>` (its tree dies with it), then
+   `Start-ScheduledTask '<label> runner'`. `Stop-ScheduledTask` alone ends only that `pwsh.exe` and leaves
+   `Runner.Listener.exe` running without its restart loop.
 3. **The land worktree.** `git worktree list` shows `<land worktree>` locked, and, when the repo has
    submodules, `git -C <land worktree> submodule status` shows no `-` prefix. Absent:
    `git worktree add --detach <land worktree> origin/main`,

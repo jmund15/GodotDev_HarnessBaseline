@@ -5,6 +5,8 @@ stamp-inputs:
   - ".claude/reference/project_stack.md"
   - ".claude/commands/workstation_setup.md"
   - ".claude/commands/reference/workstation_setup_land_runner.md"
+  - ".claude/commands/reference/workstation_setup_defender.md"
+  - ".claude/seats.json"
   - ".claude/tools/vault_sync.py"
   - ".claude/hooks/vault_mirror_start.py"
   - ".claude/tools/user_scope.py"
@@ -37,16 +39,17 @@ size is not; `user_scope/hooks/ollama_healthcheck.py` reads the recorded tier. P
 tool, and no caller here passes a VRAM count.
 
 **Engine toolchain.** Phase 8 and Phase 9 step 3 come from the `workstation_setup_toolchain` reference
-in `.claude/commands/reference/`, a file only the godot layer ships. A checkout without that file
-reports one NOT-ADOPTED row for them, runs every other phase, and counts the gap as no failure.
+in `.claude/commands/reference/`, a project-local file. A repo without that file reports one
+NOT-ADOPTED row for them, runs every other phase, and counts the gap as no failure.
 
 ## Phase 0 — Repo integrity
 
 1. `git -C <repo> submodule update --init --recursive`; `git -C <repo> submodule status` shows no
    `-` (uninitialized) prefix.
 2. `git -C <repo> status` clean; `main` present.
-3. Harness baseline: `python3 .claude/tools/baseline_sync.py check --strict`. Exit 0 → PROVISIONED.
-   A non-zero exit is reported with its states; `/sync_baseline` owns the follow-up. Do not pull
+3. Shared harness files: `python3 .claude/tools/harness_sync.py status`. Exit 0 → PROVISIONED. A
+   non-zero exit is reported with the files and floor registrations it lists. The follow-up is the
+   owner's: `harness_sync.py pull <ref>` for a stale file, `push` for a local edit. Do not pull
    unprompted.
 4. `git -C <repo> config core.hooksPath .claude/githooks`; `git -C <repo> config --get core.hooksPath`
    prints `.claude/githooks`. Its commit-msg hook re-checks at commit time that the commit reverts no
@@ -56,27 +59,27 @@ reports one NOT-ADOPTED row for them, runs every other phase, and counts the gap
 
 | Check | Command | Requirement |
 |---|---|---|
-| claude CLI | `claude --version` | current; the sidecars and the MCP idle-timeout knob (Phase 3) depend on it |
+| claude CLI | `claude --version` | current; the Claude seat (Phase 4) and the MCP idle-timeout knob (Phase 3) depend on it |
 | Python | `python3 --version` from the Bash tool, not a WSL shell | 3.10+; UTF-8 mode comes from `settings.json` `env.PYTHONUTF8` |
-| git + gh | `git --version`, `gh auth status` | gh authenticated (baseline publish and PRs) |
+| git + gh | `git --version`, `gh auth status` | gh authenticated (`harness_sync.py push` and PRs) |
 | Node | `node --version` | any LTS (workflow scripts, Node MCP servers) |
 | pwsh | `pwsh --version` | answers (PowerShell Core, not `powershell`): the `claude-*` shell integration and the land runner task launch through it |
-| Git bash | `python3 -c "import sys; sys.path.insert(0,'.claude/tools'); import sidecar_launch; print(sidecar_launch.git_bash())"` | prints a Git for Windows `bash.exe` path; a bare `bash` can be WSL's (`environment_bootstrap` §This-machine ground truth) |
-| WSL | `wsl -l -q` lists a distro with `python3` | optional: only `baseline_linux_preview.py` needs it, and a baseline publication that owes a preview is red without it → DEGRADED when absent |
+| Git bash | `bash -c 'uname -s'` | prints `MINGW64_NT-…`: the `bash` that runs `.claude/scripts/*.sh` is Git for Windows', since a bare `bash` can be WSL's (`environment_bootstrap` §This-machine ground truth) |
 
 A missing required item → BLOCKED-ON-USER row with its install link; continue with the other phases.
-Engine prerequisites are the toolchain reference's (Phase 8).
+Engine prerequisites are the toolchain reference's (Phase 8). On Windows, also run the Defender step of
+[`workstation_setup_defender.md`](reference/workstation_setup_defender.md).
 
 ### User scope — home-folder files the harness depends on
 
-`.claude/user_scope/manifest.json` lists the files outside the repo that sessions rely on (the statusline
-that `hooks/budget_posture.py` reads, the user hooks). The optional `manifest.local.json` holds the owner's
+`.claude/user_scope/manifest.json` lists the files outside the repo that sessions rely on (the statusline,
+the user hooks). The optional `manifest.local.json` holds the owner's
 own items, including the settings keys the shared project file cannot carry, such as `syncClaudeAiSkills`,
 and the Chrome default in `~/.claude.json`, which the tool only reads. The claude.ai connectors,
-bundled-skill hiding and plugin choices ride in `settings.project.json`. Phase 2 owns
+bundled-skill hiding and plugin choices ride in the repo's hand-owned `settings.json`. Phase 2 owns
 `autoMemoryDirectory`, so leave a manifest item for that key to it. `.claude/tools/user_scope.py` checks
 and installs the items from the templates beside the manifests. Run this before `sync_plan_config.py`
-runs: it carries the registered settings into the plan logins.
+runs: it carries the registered settings into the seat logins.
 
 1. `python3 .claude/tools/user_scope.py check`. A `drift` or `register-differs` row is PROVISIONED, with the
    copy commands `check` prints in Evidence (the owner edits these files live; `adopt <id>` carries a home
@@ -97,14 +100,14 @@ runs: it carries the registered settings into the plan logins.
 After the table above, list each tool below with a newer release than this machine runs, as one yes/no
 row per tool. This command never applies an update to a pinned tool, whose bump can break what
 this audit just verified. The exception is the plugins `sync_plan_config.py` owns, which it brings
-to their marketplace's latest on every login (Phase 4 step 2). An unreachable registry is DEGRADED.
+to their marketplace's latest on every login (Phase 4 step 1). An unreachable registry is DEGRADED.
 The toolchain reference adds its own rows.
 
 | Tool | Installed | Latest | Upgrade owner |
 |---|---|---|---|
 | claude CLI | `claude --version` | `npm view @anthropic-ai/claude-code version` | `claude update` |
-| semantic-search plugin | version in each config dir's `installed_plugins.json` | `npm view @dreb/semantic-search version` | applied by `sync_plan_config.py` (Phase 4 step 2) |
-| gh, opencode, ollama, node | `--version` | their release pages | the user's package manager |
+| semantic-search plugin | version in each config dir's `installed_plugins.json` | `npm view @dreb/semantic-search version` | applied by `sync_plan_config.py` (Phase 4 step 1) |
+| gh, ollama, node | `--version` | their release pages | the user's package manager |
 
 A gap appears as `UPDATE-AVAILABLE <installed> → <latest>` in the row's Evidence column; the
 row keeps its own status.
@@ -145,8 +148,8 @@ its old value; start a new one after a change.
    assigns to roles; `small` installs only the small arms, leaving the 14B- and 30B-backed roles
    unset; `none` installs no local arm, and leaves ai-worker uninstalled unless `models.yaml` has a
    funded cloud alias for its roles.
-4. **An armless ai-worker is a valid end state** → DEGRADED, never BLOCKED-ON-USER. Bulk reads use
-   the CLAUDE.md §Tool Routing offline fallback.
+4. **An armless ai-worker is a valid end state** → DEGRADED, never BLOCKED-ON-USER. Bulk reads then
+   go to direct reads or a `/delegate` scout (`CLAUDE.core.md` §9 Tool Routing).
 5. **Single-GPU concurrency env — report, don't set.** Each session runs its own ai-worker, and
    nothing queues across them. Report a value other than `1` for `OLLAMA_NUM_PARALLEL` (requests per
    loaded model) or `OLLAMA_MAX_LOADED_MODELS` (default 3× the GPU count).
@@ -156,41 +159,37 @@ its old value; start a new one after a change.
    against the ledger's `resident_bytes`, not the declared value.
 7. **MCP idle timeout.** ai-worker sends a progress notification every 20 s, so Claude Code's
    30-minute stdio idle abort fires only on a hung server. No setting is required.
-8. Credentials: `~/.env.ai-worker.cmd` supplies cloud keys. Only providers
-   `reference/external_models.json` marks available need one.
+8. Credentials: `~/.env.ai-worker.cmd` supplies the keys of the cloud aliases `models.yaml` names.
+   An alias with no key is DEGRADED.
 9. **Record the registration this phase observed:** `python3 .claude/tools/workstation_profile.py
    record --ai-worker present|absent`. The value is kept for the report; routing reads the live
    registration, never this field.
 
-## Phase 4 — Model registry and sidecars
+## Phase 4 — Seat logins
 
-1. `python3 .claude/tools/model_registry.py --check` exits 0. It is a hard dependency of every
-   sidecar. A `price.asOf is N days old` warning means re-probing the vendor page it names.
-2. For each `.claude/scripts/*_sidecar.sh` with a `--check` mode, run `bash <script> --check`:
-   `OK (…)` → PROVISIONED. `UNAVAILABLE` for a provider the user does not use → DEGRADED with the
-   reason printed; for one they do use → BLOCKED-ON-USER naming the missing key or install. On a
-   `go` row, `--check` makes one small live call that spends a little Go plan quota: run it once
-   per setup, never in a loop.
-   Before those checks, run `python3 .claude/scripts/sync_plan_config.py` once. It syncs each further
-   Anthropic plan's `configDir` with `~/.claude`: the config files, then on every login each enabled
-   plugin at its marketplace's latest version with its post-install steps (for semantic-search, the
-   Windows build and that login's idle shim). Exit 0 → PROVISIONED. A missing plan dir → BLOCKED-ON-USER:
-   log in to it once with `claude` under that `CLAUDE_CONFIG_DIR`. A `BLOCKED-ON-USER` line (a
-   marketplace command awaiting `--accept-command`) → that row, quoting the line. A `plugins: deferred`
-   line → DEFERRED-PEER-CONTENTION with the same command, run after the named benchmark ends. A
+`.claude/seats.json` lists the external seats `seat.sh` launches; each seat names its login's config dir in
+`configDir` (empty: the seat's CLI keeps its own login). A repo or machine with no seat in `seats` reports
+one NOT-ADOPTED row and skips the steps: work runs on native Workflows alone, and nothing below is checked.
+
+1. Run `python3 .claude/scripts/sync_plan_config.py` once. It syncs each seat's `configDir` with
+   `~/.claude`: the config files, then on every login each enabled plugin at its marketplace's latest
+   version with its post-install steps (for semantic-search, the Windows build and that login's idle
+   shim). Exit 0 → PROVISIONED. A missing config dir → BLOCKED-ON-USER: log in to it once with `claude`
+   under that `CLAUDE_CONFIG_DIR`. A `BLOCKED-ON-USER` line (a marketplace command awaiting
+   `--accept-command`) → that row, quoting the line. A `plugins: deferred` line →
+   DEFERRED-PEER-CONTENTION with the same command, run after the named benchmark ends. A
    `plugins: ... failed` line → FAILED, quoting the line.
-3. **OpenCode credentials and CLI.** `~/.env.ai-worker.cmd` carries `set OPENCODE_API_KEY=<key>`
-   with a real key: Go refuses the `public` fallback. `opencode --version` answers and
-   `~/.local/share/opencode/auth.json` exists, since the CLI reads its key there. A missing key while
-   the user uses Go → BLOCKED-ON-USER; a missing CLI → DEGRADED, naming the install.
-4. **Shell integration.** `.claude/scripts/claude_profile_functions.ps1` defines the `claude-*`
+2. For each seat, the CLI its adapter runs answers `--version`, and `python3 .claude/tools/capacity.py <seat>`
+   prints both usage windows: a readable window proves the login is live without spending quota. An
+   unreadable login for a seat the user runs → BLOCKED-ON-USER naming the login; for a seat they do not
+   run → DEGRADED.
+3. **Shell integration.** `.claude/scripts/claude_profile_functions.ps1` defines the `claude-*`
    launch functions. The user's `$PROFILE` must dot-source it, never carry copies of the bodies.
-   Verify: `pwsh -NoLogo -NonInteractive -Command "Get-Command claude-primary, claude-deepseek, claude-gpt"`.
+   Verify: `pwsh -NoLogo -NonInteractive -Command "Get-Command claude-primary"`.
    If it fails, wire the dot-source and re-verify. Inline function bodies in `$PROFILE` are drift:
    replace them with the dot-source.
    When `environment_bootstrap` names a shared `$PROFILE` with a repo-root list, add this machine's
-   repo root to it and keep other machines' entries. A launch banner with blank rates means step 1
-   failed.
+   repo root to it and keep other machines' entries.
 
 ## Phase 5 — Semantic-search plugin
 
@@ -200,7 +199,7 @@ its old value; start a new one after a change.
    each new version, because a plugin that self-installs through `execFileSync('npm', ['install'])`
    fails on Windows with `spawnSync npm ENOENT` (a `Status: failed` MCP card). Its build check is
    `timeout 3 node <plugin-cache-dir>/bin/server.js` exiting 0 with empty stderr, stdin at EOF.
-   Its output lines read as in Phase 4 step 2. Then
+   Its output lines read as in Phase 4 step 1. Then
    `ToolSearch("select:mcp__plugin_semantic-search_semantic-search__search")` answers; absent →
    restart the session.
 2. `.search-index/search.db` is gitignored, so a fresh clone lacks it: run `/reindex_search`, then
@@ -208,9 +207,10 @@ its old value; start a new one after a change.
 
 ## Phase 6 — Obsidian vault
 
-1. The vault paths CLAUDE.md §3 names resolve under `{{VAULT_ROOT}}\DevProjects\`.
-2. A different vault location on this machine → report the delta. The harness hard-codes the root,
-   so the user changes it, or approves the edit.
+1. The vault paths CLAUDE.md §3 names resolve under `<vault_root>\DevProjects\`, where
+   `python3 .claude/tools/adaptation.py get vault_root` prints `<vault_root>`.
+2. A different vault location on this machine → report the delta. The root is the `vault_root` key of
+   `.claude/skills/project_subsystems/adaptation.json`, so the user changes it, or approves the edit.
 3. Spot-read `Worklog.md`: content, not OneDrive placeholder stubs.
 4. Vault transport applies when `.claude/tools/vault_sync.project.json` exists. It names the vault
    folders this repo carries to cloud sessions on its `vault` branch, the git dir and the scheduled
@@ -239,7 +239,7 @@ Run the three checks of [`workstation_setup_land_runner.md`](reference/workstati
 
 Read the `workstation_setup_toolchain` reference and run its phases T1–T6 in order. Its T7 runs inside
 Phase 9. With no such file in `.claude/commands/reference/`, report `Engine toolchain | NOT-ADOPTED |
-godot layer not installed`, skip Phase 8, and skip Phase 9 step 3.
+no toolchain reference in this repo`, skip Phase 8, and skip Phase 9 step 3.
 
 ## Phase 9 — Smoke gate
 
@@ -254,14 +254,14 @@ godot layer not installed`, skip Phase 8, and skip Phase 9 step 3.
 ## Report format
 
 End with one table: `| Component | Status | Evidence / next action |`. Status is one of
-PROVISIONED, DEGRADED, FAILED, BLOCKED-ON-USER, DEFERRED-PEER-CONTENTION or NOT-ADOPTED (a layer or
+PROVISIONED, DEGRADED, FAILED, BLOCKED-ON-USER, DEFERRED-PEER-CONTENTION or NOT-ADOPTED (a
 feature this checkout does not use; no action); one row per phase item.
 A BLOCKED-ON-USER row names the exact artifact the user supplies (key file, install, path
 decision). A DEFERRED row carries the exact command to run later.
 
 Then, last: `python3 .claude/tools/workstation_profile.py stamp`. It re-runs the cheap checks it can
-observe for itself — those each installed layer module supplies, such as an engine layer's toolchain
-and feed folders — and **refuses on any failure**, so a stamp never certifies a machine this audit
+observe for itself — those each project module supplies, such as an engine toolchain and feed
+folders — and **refuses on any failure**, so a stamp never certifies a machine this audit
 would not have passed. It takes no count from you; report its exit and its message, and pass each
 DEGRADED row's name with `--degraded NAME` (repeatable) so the record keeps what this machine is
 weak at beside what it has. That stamp is what later sessions compare against.
