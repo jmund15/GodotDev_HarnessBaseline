@@ -28,7 +28,7 @@ import time
 _CLAUDE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_CLAUDE / 'hooks'))
 import _file_lock
-from _hook_state import SUBAGENT_CACHE_WARM_SECONDS, read_json_salvage, update_json_locked
+from _hook_state import read_json_salvage, update_json_locked
 
 
 class SlotStoreError(OSError):
@@ -204,33 +204,6 @@ def _proxy_take(exclusive, count, folder, width, deadline, notice):
 
 
 NOTICE_AFTER = 30
-# A dispatched job's one bounded call: the wait guard clamps each of its waits to this same prompt-cache bound.
-JOB_WAIT_S = SUBAGENT_CACHE_WARM_SECONDS
-
-
-def job_deadline():
-    """The deadline of a take made by a caller that may not start a wide run (a dispatched non-gate sidecar job,
-    `_wide_runs.gate_caller`), else None. The job cannot move a full pool, and each wait re-reads its context; its
-    dispatcher's watcher wakes it, so the run is the dispatcher's."""
-    if not os.environ.get('CLAUDE_CODE_SIDECAR'):
-        return None
-    from _wide_runs import gate_caller
-    return None if gate_caller({}, os.environ) else time.time() + JOB_WAIT_S
-
-
-def owed_line(command):
-    return ('machine slots: the pool stayed full for %ds, so this job did not run: %s\n'
-            'Return now and list that run as owed: your dispatcher must run it before it reads your work as done.'
-            % (JOB_WAIT_S, ' '.join(command)))
-
-
-def admit(command):
-    """One lane for `command`'s own process, or None once a dispatched job's bounded take has printed the owed line."""
-    deadline = job_deadline()
-    held = take(notice=True, deadline=deadline)
-    if held is None:
-        print(owed_line(command), file=sys.stderr, flush=True)
-    return held
 
 
 def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, inherit=True, notice=False, split=None):
@@ -301,8 +274,8 @@ def take(exclusive=False, count=1, *, folder=None, width=None, deadline=None, in
             if deadline is not None and time.time() >= deadline:
                 return None
             if notice and time.monotonic() >= next_notice:
-                print('machine slots: queued %ds, phase %s, holding %d slots (%s)%s' % (
-                    time.monotonic() - began, phase, len(held), folder, _holders(folder, held)), file=sys.stderr, flush=True)
+                print('machine slots: queued %ds behind the full pool (%s)%s' % (
+                    time.monotonic() - began, folder, _holders(folder, held)), file=sys.stderr, flush=True)
                 next_notice += 60
             time.sleep(.05)
     except (OSError, TimeoutError) as exc:
@@ -353,9 +326,9 @@ def _live_ticket_before(queue, name):
 
 
 @contextmanager
-def guard(exclusive=False, count=1):
+def guard(exclusive=False, count=1, *, notice=False):
     deadline = os.environ.get('HARNESS_DEADLINE')
-    held = take(exclusive, count, deadline=float(deadline) if deadline else None)
+    held = take(exclusive, count, deadline=float(deadline) if deadline else None, notice=notice)
     if held is None:
         raise SlotStoreError('deadline passed before the machine slots were free')
     try:
@@ -395,40 +368,8 @@ def parallel_budget(wanted):
 def proof_environment(env):
     """Admission for direct Python/Node proofs launched by a remote-work fan-out."""
     env = dict(env)
-    bootstrap = str(_CLAUDE / 'scripts' / '_slot_bootstrap')
-    paths = [p for p in env.get('PYTHONPATH', '').split(os.pathsep) if p and p != bootstrap]
-    env['PYTHONPATH'] = os.pathsep.join([bootstrap] + paths)
-    node = str(Path(bootstrap) / 'node_slots.js')
-    option = '--require ' + json.dumps(node)
-    if option not in env.get('NODE_OPTIONS', ''):
-        env['NODE_OPTIONS'] = (env.get('NODE_OPTIONS', '') + ' ' + option).strip()
-    env['HARNESS_SLOT_PYTHON'] = sys.executable
-    env['HARNESS_SLOT_SCRIPT'] = str(Path(__file__).resolve())
-    shell = (Path(bootstrap) / 'bash_slots.sh').as_posix()
-    # Another checkout's bootstrap (a publish battery's template) is this one, not a previous BASH_ENV to chain:
-    # chained, it sourced itself until the shell crashed.
-    previous = env.get('BASH_ENV') or ''
-    if previous and previous != shell and Path(previous).name != 'bash_slots.sh':
-        env['HARNESS_PREVIOUS_BASH_ENV'] = previous
-    env['BASH_ENV'] = shell
     env.setdefault('HARNESS_MACHINE_ROOT', machine_root())
     return env
-
-
-_SELF_ADMITTING = {'harness_tests.py'}
-
-
-def _self_admitting(command):
-    """True when the script the interpreter runs takes its own lanes per proof. Wrapped, it would hold one lane
-    for its whole batch and run serially inside it (`HARNESS_SLOT_BUDGET=1`), so an exclusive head waits out
-    the batch. The script decides, never a later argument naming it (as `bash_slots.sh` reads a call)."""
-    for arg in command[1:]:
-        if arg in ('-c', '-m', '-Command', '-e', '--eval'):
-            return False
-        if arg.startswith('-'):
-            continue
-        return arg.replace('\\', '/').rsplit('/', 1)[-1] in _SELF_ADMITTING
-    return False
 
 
 def main():
@@ -449,19 +390,10 @@ def main():
         command = command[1:]
     if args.mode == 'run' and not command:
         parser.error('run needs -- COMMAND ...')
-    if args.mode == 'run' and _self_admitting(command):
-        return subprocess.call(command)
     held = None
-    deadline = args.deadline
-    bounded = None
-    if deadline is None and args.mode == 'run':
-        deadline = bounded = job_deadline()
     try:
-        held = take(args.exclusive, args.count, folder=args.folder, width=args.width, deadline=deadline,
+        held = take(args.exclusive, args.count, folder=args.folder, width=args.width, deadline=args.deadline,
                     notice=args.notice or args.mode == 'run')
-        if held is None and bounded:
-            print(owed_line(command), file=sys.stderr, flush=True)
-            return 2
         if args.mode == 'broker':
             print(json.dumps({'held': None if held is None else (args.width or capacity()) if args.exclusive else args.count}), flush=True)
             if held is not None:
