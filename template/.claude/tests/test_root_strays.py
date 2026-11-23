@@ -60,8 +60,8 @@ class RootStraysTests(unittest.TestCase):
         self.commit({'.claude/self_dir/readme.md': 'self_dir describes itself'}, 60)
         self.assertIn('self_dir', self.names())
 
-    def test_lock_file_mention_does_not_count(self):
-        self.commit({'.claude/locked_dir/a.txt': 'x', '.claude/baseline.lock.json': '{"locked_dir": 1}'}, 60)
+    def test_manifest_mention_does_not_count(self):
+        self.commit({'.claude/locked_dir/a.txt': 'x', '.claude/harness.manifest.json': '{"locked_dir": 1}'}, 60)
         self.assertIn('locked_dir', self.names())
 
     def test_recent_entry_is_not_a_candidate(self):

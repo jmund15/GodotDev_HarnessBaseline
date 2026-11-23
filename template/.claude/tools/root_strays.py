@@ -3,7 +3,7 @@
   list [--repo DIR] [--min-age-days N]
       One JSON row per candidate: name, files, ageDays. A candidate is a tracked top-level
       entry of `.claude/` (file or directory) that no other tracked file mentions by name
-      (`baseline.lock.json` lists every file and is ignored) and whose last commit is at least
+      (`harness.manifest.json` lists every file and is ignored) and whose last commit is at least
       N days old (default 14, scratch_prune's recency floor). Report-only: the owner decides.
       A name another file mentions only by coincidence counts as referenced, so the list
       under-reports rather than over-reports. Exit 0.
@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-LOCK = '.claude/baseline.lock.json'
+MANIFEST = '.claude/harness.manifest.json'
 DEFAULT_MIN_AGE_DAYS = 14
 DAY = 86400
 
@@ -38,7 +38,7 @@ def _entries(repo):
 
 
 def _mentioned_elsewhere(repo, name):
-    hits = _git(repo, 'grep', '-l', '-F', '-e', name, '--', '.', f':!{LOCK}').splitlines()
+    hits = _git(repo, 'grep', '-l', '-F', '-e', name, '--', '.', f':!{MANIFEST}').splitlines()
     own = f'.claude/{name}'
     return [hit for hit in hits if hit != own and not hit.startswith(own + '/')]
 

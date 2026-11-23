@@ -8,7 +8,19 @@ import os
 from pathlib import Path
 
 RECALL_ON_DATA_ACCESS = 0x400000
-DEFAULT_VAULT = Path.home() / "OneDrive" / "Documents" / "ObsidianVault"
+FALLBACK_VAULT = Path.home() / "OneDrive" / "Documents" / "ObsidianVault"
+
+
+def default_vault(claude_dir=None):
+    """`vault_root` from the project's adaptation.json, else the home-relative fallback. adaptation is
+    imported here, not at load, so a copy of this file beside `vault_sync.py` alone still imports."""
+    claude_dir = Path(claude_dir) if claude_dir else Path(__file__).resolve().parents[1]
+    try:
+        import adaptation
+        root = adaptation.get(claude_dir, "vault_root")
+    except ImportError:
+        root = None
+    return Path(root) if root else FALLBACK_VAULT
 
 
 def dehydrated(path):
