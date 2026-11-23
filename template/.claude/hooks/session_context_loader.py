@@ -23,12 +23,10 @@ The whole text goes to `.claude/scratch/session_context_full.md`, and a last lin
 
 import json
 import os
-import platform
 import re
 import shutil
 import subprocess
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -264,61 +262,6 @@ def setup_submodule(root: Path) -> str:
     return "FIXED (" + done + ")"
 
 
-def resolve_bash() -> str | None:
-    """Resolve Git Bash, never WSL bash.
-
-    On Windows `bash` on PATH is C:\\Windows\\System32\\bash.exe — the WSL launcher,
-    which cannot see C:/... paths (it wants /mnt/c/...) and fails with a bare
-    "No such file or directory". Git Bash sits beside git.exe, so derive it from
-    git's own location rather than trusting PATH order.
-    """
-    if platform.system() != "Windows":
-        return "bash"
-    git_exe = shutil.which("git")
-    if git_exe:
-        # .../Git/cmd/git.exe -> .../Git/bin/bash.exe
-        candidate = Path(git_exe).parent.parent / "bin" / "bash.exe"
-        if candidate.exists():
-            return str(candidate)
-    for fallback in (
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files\Git\usr\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-    ):
-        if Path(fallback).exists():
-            return fallback
-    found = shutil.which("bash")
-    # Reject WSL: it would report every POSIX-path probe as missing.
-    if found and "system32" not in found.lower():
-        return found
-    return None
-
-
-def sidecar_launchers(registry, seat: str):
-    """One available model alias per plan other than the session's `seat` plan, even when launchers
-    share a script. A plan (`planOf`) probes one of its route's rows through its own launcher; a
-    plan whose own status is unavailable is not listed."""
-    models = registry.available_models()
-    route_of = getattr(registry, "route_of", lambda name: name)
-    launchers = []
-    for transport in registry.transports():
-        if transport == seat:
-            continue
-        config = registry.transport_meta(transport) or {}
-        if (config.get("status") or {}).get("state") == "unavailable":
-            continue
-        route = route_of(transport)
-        rows = [m for m in models if m.get("transport") == route and m.get("alias")]
-        if not rows:
-            continue
-        launcher = config.get("launcher")
-        if launcher:
-            rows.sort(key=lambda m: (m.get("lifecycle") != "current", not bool(m.get("roles")),
-                                     m.get("order", 9999)))
-            launchers.append((transport, os.path.basename(launcher), rows[0]["alias"]))
-    return launchers
-
-
 HANDLE_HOARD_FLOOR = 200_000
 
 
@@ -385,19 +328,24 @@ def roster_health(root: Path) -> str:
         return f"UNKNOWN ({type(error).__name__}: {error})"
 
 
-def free_catalog_line(root: Path, source: str) -> str:
-    """`free catalog: +<id> -<id>` when the live opencode catalog differs from the free pool's registry rows
-    (free_pool.catalog_line), else "". The live read takes seconds, so only an owner's fresh session (startup or
-    /clear) pays it: a delegate, a resume and a compaction print nothing. A failed read prints its own line; this
-    never raises."""
-    if source not in ("startup", "clear") or _sidecar_delegate():
-        return ""
+def sidecar_health(root: Path) -> dict[str, str]:
+    """One line per seat in `seats.json` that is not ready: its adapter script or its login config dir is missing.
+    Static, so a session start runs no CLI; the seat launcher refuses the same gaps at launch. {} when the table
+    names no seat or every seat is ready."""
+    claude = root / ".claude"
     try:
-        sys.path.insert(0, str(root / ".claude" / "tools"))
-        import free_pool
-        return free_pool.catalog_line()
-    except Exception as err:
-        return f"free catalog: check failed ({err})"
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+        import launch_check
+        rows = launch_check.seat_rows(claude)
+    except Exception as error:
+        return {"seats": f"UNKNOWN ({type(error).__name__}: {error})"}
+    problems = {}
+    for name, row in rows.items():
+        if not (claude / row["adapter"]).is_file():
+            problems["seat-" + name] = f"UNAVAILABLE ({row['adapter']} not present)"
+        elif row.get("configDir") and not os.path.isdir(os.path.expanduser(row["configDir"])):
+            problems["seat-" + name] = f"UNAVAILABLE (login dir {row['configDir']} not present)"
+    return problems
 
 
 def _sidecar_delegate() -> bool:
@@ -433,25 +381,6 @@ def skill_listing_banner(root: Path, input_data: dict) -> str:
         return f"skill-listing: UNKNOWN ({type(error).__name__}: {error})"
 
 
-def sidecar_health(root: Path) -> dict[str, str]:
-    """Only the current registry selects launchers; discovery failure stays unknown. The launchers are
-    checked at once, so the whole block costs one check's deadline, not one per launcher."""
-    try:
-        sys.path.insert(0, os.path.join(root, ".claude", "tools"))
-        import model_registry as registry
-        import _session_transport as transport
-        launchers = sidecar_launchers(registry, transport.session_plan())
-    except Exception as error:
-        return {"sidecar_registry": f"UNKNOWN ({type(error).__name__})"}
-    if not launchers:
-        return {}
-    with ThreadPoolExecutor(max_workers=len(launchers)) as pool:
-        results = list(pool.map(lambda item: verify_sidecar(root, item[1], item[2]), launchers))
-    return {"sidecar-" + name: result for (name, _launcher, _alias), result in zip(launchers, results)}
-
-
-# Matches the dispatch preflight's deadline; live capacity probes inside a check cap at 35 s.
-CHECK_SECONDS = 45
 
 
 def locations_line(root: Path) -> str:
@@ -527,67 +456,6 @@ def harness_fact_line(root: Path, now: datetime | None = None) -> str:
         return ""
 
 
-def verify_sidecar(root: Path, script_name: str = "deepseek_sidecar.sh", alias: str | None = None) -> str:
-    """Probe one named model's availability; do not infer every row from a launcher check.
-
-    Delegates to `<launcher>.sh --check` rather than reimplementing the
-    preconditions, so availability has ONE definition and the hook cannot drift
-    green while real dispatch fails. Invoking through bash is deliberate: bash is
-    itself a precondition, so a missing shell is reported, not masked.
-
-    Exists so budget-pressure routing (orchestration §5b) can pick a
-    provider from a fact already in context, never from a mid-session investigation.
-    """
-    script = root / ".claude" / "scripts" / script_name
-    if not script.exists():
-        return f"UNAVAILABLE ({script_name} not present)"
-    bash = resolve_bash()
-    if not bash:
-        return "UNAVAILABLE (no Git Bash found; sidecar needs a POSIX shell)"
-    try:
-        # Absolute POSIX form: bash strips Windows backslashes, which would make
-        # the probe report UNAVAILABLE on every Windows session — a false negative
-        # that silently routes all delegation back to Anthropic quota.
-        command = [bash, script.resolve().as_posix(), "--check"]
-        if alias:
-            command.extend(("-m", alias))
-        proc = run_bounded(command, CHECK_SECONDS, cwd=str(root))
-    except FileNotFoundError:
-        return "UNAVAILABLE (bash not on PATH)"
-    except OSError as exc:
-        return f"UNKNOWN (--check failed to launch: {exc})"
-    if proc.returncode is None:
-        return "UNKNOWN (--check timed out)"
-    emitted = (proc.stdout or "").strip() or (proc.stderr or "").strip()
-    if not emitted:
-        return f"UNKNOWN (--check exit {proc.returncode}, no output)"
-    lines = [line.strip() for line in emitted.splitlines() if line.strip()]
-    if proc.returncode == 0:
-        result = lines[-1]
-    else:
-        # A refusal's last line is its override hint; the reason is the REFUSING line above it.
-        reason = next((line for line in lines if "REFUSING" in line), None)
-        result = lines[-1] if reason is None or reason == lines[-1] else f"{reason} {lines[-1]}"
-    return f"{alias}: {result}" if alias else result
-
-
-def self_improvement_advisory(root: Path, source: str | None) -> str:
-    """`tools/self_improvement_due.py --line`'s output on `source == "startup"` only — empty on
-    resume, compact, clear or a missing source, or when nothing is due. The 15 s subprocess
-    timeout outwaits the archive store's 10 s ledger-lock wait, so a held lock reports its reason."""
-    if source != "startup":
-        return ""
-    script = root / ".claude" / "tools" / "self_improvement_due.py"
-    if not script.exists():
-        return ""
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script), "--root", str(root / ".claude"), "--line"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15, cwd=str(root)
-        )
-        return (result.stdout or "").strip()
-    except Exception:
-        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -845,7 +713,7 @@ def main():
         for status in _step_results("local_checks", root):
             setup_results.update(status)
 
-    if not cloud:  # sidecars and benchmark rosters live on the workstation only
+    if not cloud:  # seats and benchmark rosters live on the workstation only
         setup_results.update(sidecar_health(root))
         rosters = roster_health(root)
         if rosters:
@@ -906,9 +774,6 @@ def main():
         ladder_line = ladder_banner(root)
         if ladder_line:
             output_lines.append(ladder_line)
-        catalog_line = free_catalog_line(root, str(input_data.get("source") or "startup"))
-        if catalog_line:
-            output_lines.append(catalog_line)
     listing_line = skill_listing_banner(root, input_data)
     if listing_line:
         output_lines.append(listing_line)
@@ -999,12 +864,6 @@ def main():
 
     for lines in _step_results("report_lines", root):
         output_lines.extend(_bulk(lines))
-
-    # Self-improvement loop due-check — startup only, silent when nothing is due.
-    due_line = self_improvement_advisory(root, input_data.get("source")) if owner_view else ""
-    if due_line:
-        output_lines.append("")
-        output_lines.append(due_line)
 
     # Compaction drops the gotchas a session had loaded. Picking up another session's work is the
     # /session_digest command's, whose listing reaches every session.
