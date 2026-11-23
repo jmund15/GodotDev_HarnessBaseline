@@ -1,133 +1,75 @@
 ---
 name: Orchestration
 description: >-
-  Use before delegating or coordinating multi-step work, including 3+ unrelated test failures, multiple subsystems broken independently, batch PR reviews, cross-domain audits, or independent work units to parallelize. SKIP small inline edits and known lookups where handoff costs more than the work.
+  Use before delegating or coordinating multi-step work: picking inline, a native job or an external seat, a model and effort, a fan-out's width, or consuming a delegate's result. SKIP small inline edits and known lookups where handoff costs more than the work.
 ---
 
 # Orchestration
 
-**Goal:** the harness goal in `CLAUDE.core.md` §Core Principles, applied to every dispatch choice (inline or delegated, width, tier, effort); §5b's quality floors are never the trade.
+Every dispatch choice (route, width, model, effort) serves the goal in `CLAUDE.core.md` §Core Principles. Settle each question at the first stage whose inputs can settle it. A question a read, search or check settles now is settled now; one handed forward names the input it waits on (a run's result, an owner answer, an independent reading).
 
-**Settle each question at the first stage whose inputs can.** A stage (brief, plan, check, fold, execution, review) hands forward only what needs a later stage's input: an execution result, an owner answer or an independent reading. What its own reads, searches or checks settle, it settles; a question passed on costs a later, wider stage the same read. Each handed-forward item names the input it waits on.
+## 0. Route
 
-## 0. Dispatch Shape — decide this FIRST
-
-| Mechanism | Use |
+| Route | Use |
 |---|---|
-| Inline | Small, already-understood edits and lookups; parent decisions and cross-system synthesis |
-| Fan-out | Every pinned job list: `tools/sidecar_fanout.py <jobs file> --detach` applies the ladder's selection line across each job's listed rows (§5b). A job it places on the session's own plan runs as a Workflow agent; the rest run as sidecars |
-| Workflow | The call the fan-out prints for the jobs it placed on the session's own plan; an engine the fan-out lacks; or a measurement of the session model itself |
-| Sidecar | A fan-out job on another plan, or one whose fields need its own process (`SIDECAR_ONLY_FIELDS`: another checkout as `workdir`, `window`, `extraArgs`), or a measurement of process-level configuration; never a hand-written launch |
+| Inline | Small, understood edits and lookups; the parent's judgment and cross-system synthesis. Price each inline call at the parent's whole context. |
+| Native job | A delegated job on the session's own login: `dispatch.js` through `/delegate`, one job, a parallel set, or `chains` when each hop feeds the next with no judgment between. |
+| Seat | A job on another login or model family through `seat.sh` (`/delegate`): when the session's 5-hour window will not last the job (§5b), when a review wants a second family, and always when the job's workdir is another checkout, so the project's launch hooks run. |
 
-Litmus, for work the Inline row does not keep: lookup shape follows `CLAUDE.core.md` §9. Can you enumerate the jobs now? Yes → `/delegate`. No → the unknown is itself one job: a search across files you cannot name yet is a single pinned survey through `/delegate` (`kind: scout`, a fanout-tier row) that returns the map, then `/delegate` over it. The Agent tool is denied: it cannot pin model or effort.
+Can you enumerate the jobs now? Yes: `/delegate`. No: the unknown is itself one job, a scout that returns the map, then `/delegate` over it. A loop over a large file, images or long output (edit, run, inspect, fix) is a job even on one known file, because it would fill the parent's context. The `Agent` tool is denied: Workflows are the one native route. A delegate never dispatches; the parent launches every job of a nested fan-out itself.
 
-### Governing skills
+**Size each dispatch from its work.** Measure the units, their size, their coupling and their distinct risks, then set at the least that delivers the accepted result: the route; one job per disjoint write set, per unit past one context, or per distinct risk that needs its own reader (a copied roster or a vote count never adds a job); the model and effort that clear the job's remaining ambiguity (§5); and the reading, as paths and hunks, never a whole artifact for a few rows.
 
-Before building a brief, read [Governing skills](reference/brief_checks.md#governing-skills).
+**Standing authorization.** Dispatch is opted in for every session: send jobs without asking, within the session's runtime and context. A command that prescribes a fan-out authorizes it.
 
-**Size every dispatch from its work.** This holds for every dispatch: author, survey, review, a later round or a rerun. Measure the work first: its units, their size, their coupling and their distinct risks. Then set four things from that measure, each at the least that delivers the accepted result (Goal):
-1. **Route:** inline when handoff costs more than the work, each inline call priced at the parent's whole context (`CLAUDE.core.md` §9), or the work is the parent's judgment; a converged spec dispatches (§11). Price it by what it leaves in the parent's context, not by how many files it touches: a loop (edit, run or render, inspect, fix) over a large file, images or long output is a job even on one known file, and returns its verdict and evidence paths.
-2. **Jobs:** one per piece of work that needs its own owner: a disjoint write set (§2's map), units past one context (§11 *Context bound*), or a distinct risk that needs its own reader (§2 *Sizing the width*). Coupled work keeps one owner. A copied roster, a provider name or a vote count never adds a job.
-3. **Depth:** the lowest ladder cell that clears the job's residual ambiguity, at the effort its depth needs (§5).
-4. **Reading:** only what the work needs, as paths, hunks and excerpts, never a whole artifact for a few rows, within the window (Checklist).
-
-Keep required coverage and independent review. A command's mandates are a coverage floor, not a seat count: every admitted mandate runs (the drive's mandate-admission rule), on the seats §2 sets, and a bespoke lens may be added when it names the failure mode it hunts.
-
-**Standing authorization:** multi-agent orchestration is opted in for every session in this project: dispatch pinned jobs without asking, within the size guideline, on the row and plan the ladder's selection line picks. It holds within the session's live runtime and context capacity; only a larger fan-out asks first. A command that prescribes a fan-out authorizes it at the width §2 sets.
-
-Workflow stays on the current endpoint with its actual model IDs; never accept a silent fallback. A dispatch is never granted Workflow or Agent (`reference/sidecar_dispatch.md`), so the orchestrator dispatches every lens of a nested fan-out itself.
-
-## Pre-Dispatch Checklist
-
-- Each job lists every row that meets its bar, each with its effort (the jobs file's `rows`), by the ladder's selection line; the fan-out applies that line across them (§5b). Availability is checked.
-- The job declares one `kind` (`reference/sidecar_dispatch.md` §Job kind), and the brief's operations fit it.
-- The brief's premises and paths pass [`reference/brief_checks.md`](reference/brief_checks.md).
-- Read the preflight (`tools/dispatch_size.py`): its fit line gives each job's reading against its compaction point with room for work, and it lists every unmet launch precondition (a kind the fan-out would refuse, a pinned tier with no ladder slice in this context, the orchestration skill not loaded); a clean preflight is the launch's go. Check required reading outside its scan, including standing doctrine (the kind's disclosure). Hand hunks, paths and search targets for on-demand reads when the set does not fit. A larger window (`-M`, `window: "full"`) takes [`reference/dispatch_rows.md`](reference/dispatch_rows.md) §A larger window.
-- A multi-job run is marked concurrent, and `guards/single_flight.json` owns what its rail bars. A job needing a machine-wide single-flight tool gets its own dispatch; runtime-test jobs use a solo dispatch or a chain lane within the runtime-slot rule (§2).
-- Read the preflight facts (`reference/sidecar_dispatch.md` step 3 for sidecars; a Workflow-routed job's preflight is the guard's plan-room check at the call), then tell the owner one line before dispatch. It names the work measure; the jobs with model, effort, paying plan and reading; the cheapest shape that would deliver the same accepted result (fewer or merged jobs, a lower pin, a search before reading, inline); and the fact that made this shape beat it; and each open item that waits on this job, with the shared file or output that makes it wait. §8 compares the line with what ran.
-- Before a job's rows leave out a cheaper row that clears the ladder's floor, read [`reference/dispatch_rows.md`](reference/dispatch_rows.md) §Which rows a job lists: the named reason that bars it, where rows come from and how effort is set.
+Before launch, tell the owner one line: the work measure, each job with its model, effort and route, the cheapest shape that would deliver the same result (fewer jobs, a lower pin, inline) and the fact that made this shape beat it. A status of running work names each job by model, task and progress.
 
 ## 2. Width
 
-Run independent work together when it cuts elapsed time without hiding integration cost; independent review buys another perspective, not a guarantee from vote count. Keep coupled debugging, one shared design decision, overlapping writes and consistent prose authoring with one owner: width costs reconciliation and context even when agents only read.
+Run independent work together when it cuts elapsed time without hiding integration cost. Keep coupled debugging, one shared design decision, overlapping writes and one voice of prose with one owner: width costs reconciliation even when agents only read. Map everything open (slices, findings, failing tests, files to change) to jobs by write set and dependency, and state the map. Items with disjoint write sets and no shared seam run as concurrent jobs, in worktrees (§7) when they share a checkout. Items sharing a file or a seam serialize. Split a long job at a natural boundary where its growing context would cost more than another job's start; never cap it by turns.
 
-At every dispatch decision and after each measured run, map everything open in the session's work (plan slices, review findings, failing proofs, files to change, the session's own gates and renders, the drive's remaining items and owner rulings) to jobs by write set and dependency, and state the map. A priority order orders launches; it never by itself holds an independent item back. Items with disjoint write sets and no shared seam may run as concurrent jobs, up to the transport's concurrency limit (§5b's one-native-job rule; the fan-out's sidecar limits are `reference/sidecar_dispatch.md`'s), in worktrees (§7) when they share a checkout. Items sharing a file or a seam serialize, and coupled items merge into one job only within §11's context bound. Set the job count by §11's complete-task cost.
+## 4. Briefs
 
-Before running runtime-test lanes concurrently, read the runtime-slot rule in [`reference/worktrees.md`](reference/worktrees.md).
+Every brief is open or execute, with `inputs:` and `targets:` lists ([`reference/brief_checks.md`](reference/brief_checks.md)). The launcher or engine adds the delegate rails (`guards/rails.md`) to every job, so a brief never copies them.
 
-### Sizing the width
+## 5. Model and effort
 
-Before seating a fixed review panel, read [`reference/review_width.md`](reference/review_width.md): it owns coverage, width, depth and the size, room and ledger-plan rules.
+Pin a model and an effort on every job from the table below, by the work shape. Claude rows run as native jobs or on a Claude seat; every other row runs only on the seat `.claude/seats.json` lists for it. Prices, logins and seat limits live in `seats.json` alone.
 
-**Later rounds.** Before seating a review of a subject an earlier round reviewed, read [`reference/later_rounds.md`](reference/later_rounds.md).
+<!-- model-table-begin -->
+| Model | Work shapes it suits | Starting effort | Move when |
+|---|---|---|---|
+| fable | Running a long session; cross-system seams and the final design verdict; delegate specs | `high`; `medium` for a long session | As a delegate it buys nothing over opus: send opus |
+| opus | Architecting and planning; debugging an unknown root cause; an added plan-review seat | `medium` planning, rising as the design deepens; `high` debugging | A lone review, chained research, tight-spec work or a parity refactor: sonnet matches it for less |
+| sonnet | The lone holistic review seat; surveys, explore lenses and chained research; scoped architecting; tight-spec execution; a fix whose cause is evident | `medium` tight-spec work and checklist lenses; `high` review and surveys, `xhigh` as the subject grows | A cause hiding behind a second mechanism, or open design: opus. Converged checked work: haiku |
+| haiku | Converged and tight-spec execution; extraction; bounded lookups; surveys | `medium`; `low` copyable extraction; `high` surveys | An in-depth defect hunt or a lone review seat: sonnet |
+| neon | The cross-family review seat beside a Claude seat; design and agentic coding | `high`; `xhigh` as the problem deepens | Unmeasured here, so never the lone seat: check its cites against source |
+<!-- model-table-end -->
 
-## 4. Agent Prompt Structure
+- **Add a model:** one row in `seats.json` (a seat row too when it needs a new login or CLI, with that CLI's adapter) and one row here. Its evidence comes from HarnessBench, never from one dispatch.
+- **Clearly defined or ambiguous.** A slice is clearly defined when a check fails before the work and passes only when its unknown is resolved correctly: a failing test, a count against a hand-labeled sample, a diff against a golden file. It takes the tight-spec shape. A slice whose check is subjective, or one a first guess already passes, is ambiguous and takes the row's ambiguous-execution effort. A job takes the pin of its least-scored slice.
+- **Fix the brief before raising effort.** When a job under-resolves, find why: a missing input or premise is fixed in the brief; raise effort only on a complete brief; change the model when a raise did not help. High stakes buy verification (a RED-first case, an independent review), never a stronger executor.
 
-A brief states its own task first, then context, purpose, the expected write set, exclusions, the operations it requires, the return artifact and the done-condition. The write set is the map's scheduling forecast, never a fence narrower than the done-condition needs. In its own worktree, a delegate edits any further file the work needs and lists it in its return: a clash costs one merge, a halt costs a relaunch. In a shared checkout, it reports a file another running job writes instead of editing it. Delegates inherit nothing from the conversation: an exclusion not written in the brief is lost, and a lens whose mandate looks unrelated may answer the relayed user message instead. Rich context in the briefing session does not discharge the brief's gates: the brief supplies what its job needs and cannot load by itself, as evidence and paths, never the transcript. It never restates what the job's profile loads (`CLAUDE.md`, the standing rules); a fact every brief would need belongs in the harness. Grounding the profile does not load goes in as the passage the work rests on, quoted with its path; a whole skill or document is named by path for the job to load, never copied. Preserve known values even when an inference fails. A delegate quotes source verbatim and labels its own inference separately.
+## 5b. Capacity
 
-**A brief leaves the thinking to the job.** It hands over what the job cannot know, each input at the weight it holds; how much it settles follows the work. Settled work (an owner's pick, a golden file, a hand-labeled sample) gets a full spec, pinned per §5 as tight-spec work, never to an architect row. Open-ended work (designing, architecting, planning, debugging, judging another job's work) gets the context its analysis needs. What the owners decided (words, a pick, an artifact or build they approved, a lock) is fixed and named so; a question, a "maybe", an example or an option they passed over is open, and so is an earlier agent's decision (in code, a comment, a report, a brief or a plan): it reaches the job as a claim with its source and its reason, and a finding against it counts; a claim about current state goes with what checking it against source found. The briefer adds nothing that moves a weight: no hedge on a decision, no menu closing an open question, no cause, fix or design the owners did not pick. Owner words go verbatim, as evidence of what they want and why. [`reference/brief_checks.md`](reference/brief_checks.md) holds the judged-job rule and its one exception.
+A job goes only to a login whose 5-hour window will last until the job finishes, counting every job already live there. Among the logins that pass, weekly room ranks, and using up a 5-hour window early is fine. Before a fan-out, `/delegate` prints each login's two windows with `tools/capacity.py`; the judgment is yours, and `seat.sh` refuses only a login already at its exhaust floor.
 
-**Scope a brief by the defect class, never by the candidates you already found.** Give the class, the discovery obligation and the searches to run (a function's callers, a value's overrides); pass known candidates as "already seen, not the boundary", and require a coverage report. A review or audit brief never caps how many findings to return. An audit of harness changes runs the registered harness lens over them (`/session_audit <range> --lens sa-harness-quality`, or a plan's meta mandates), which holds them to the whole doctrine; a bespoke brief may add a class to that lens, never stand in for it.
+## 7. Worktrees
 
-- A long writing job (an `author`) writes each unit as it settles, never in one final write; no brief forbids that, and a read-only job returns its report as its final message instead. A Workflow result is a bounded preview (a tally from it undercounts); get the full set per [`reference/result_retrieval.md`](reference/result_retrieval.md).
-- The return contract: the deliverable at the path the brief names plus a digest, and without a named path the final message is the deliverable. Native writable jobs can use the engine's `spillDir` (repo-relative, under `.claude/scratch/`); jobs without Write return inline. A result the parent parses by script returns as fenced JSON Lines blocks, checked per that reference.
-- A job over enumerable items returns one checklist line per item, done with evidence or not done with its blocker: [`reference/brief_checks.md`](reference/brief_checks.md) §Return checklist.
-- A delegate that writes returns a `choices` block, `changedPaths` instead of a commit in the shared checkout, an `offers` block, and a `reach` block when it changes gated code: read [`reference/writer_returns.md`](reference/writer_returns.md) before briefing or consuming one.
+A job that writes beside other running writers gets its own linked worktree, which the parent creates before launch. A writing seat refuses to start outside one. Cut its branch from the land branch, so the `.claude/` it runs under is current. Concurrent runtime-test lanes never exceed the slot count the project's test harness reports. Retire a worktree per `CLAUDE.core.md` §Shell Discipline.
 
-Debugging lanes gather discriminating evidence before fixes, especially after a failed fix. An executor's done-condition and the runs its brief may order: [`reference/brief_checks.md`](reference/brief_checks.md). A findings or claims job's post-check follows §8.
+## 8. After a job returns
 
-A running job's course changes by amendment: write its brief's full file name plus `.amend.md`, delivered at the job's next tool call, so a wrong brief costs no relaunch and no owner question. Before messaging or editing beside one, read [`reference/integration.md`](reference/integration.md) §While a job runs.
+- **Read the whole result.** A Workflow's return is a bounded preview: get the complete set with `/session_digest --workflow-dir <transcriptDir>`. A native job that writes leaves its deliverable at `<spillDir>/<label>.md`; a seat leaves `<out.md>`, and a non-zero exit carries the CLI's stderr verbatim.
+- **Check its claims.** Run `python3 .claude/tools/quote_check.py <file> --root <checkout>` over a claims or findings file, with the job's checkout as root. Read the cited source for each miss, and keep a claim only when the source supports it. Resolve every cited path in a design or plan deliverable before consuming it. Failed, empty or malformed output leaves its scope uncovered, never clean.
+- **Decide findings as one set.** Group them by the decision they touch and look for the one change, often a cut, that answers several. A finding that adds a mechanism names the failure it would have caught and why the existing design cannot answer it; otherwise decline it. A finding that widens or narrows the owner's scope goes to the owner. `/review` §4 caps the rounds.
+- **Recover before paying again.** Read the deliverable, then the transcript, and confirm a job ended before replacing it. A dead Workflow resumes with `resumeFromRunId`, which replays completed agents from cache only while the engine script and `guards/rails.md` are byte-identical to the dead run's; after an edit to either, recover from its journal instead.
+- **What lands is the parent's.** Read every diff and decide it. A delegate in a worktree committed on its branch; one in the shared checkout returned its changed paths, which the parent commits by pathspec.
 
-## 5. Model & Effort Selection
+## 10. Goal tracking
 
-Before the first pinned dispatch after a start or compaction, `Read` `reference/model_ladder_evidence.md` in full by its absolute path, or run `python3 .claude/tools/model_registry.py for-role <tier>...` bare for every tier you pin: a pipe, `head`, `tail`, filter or redirect earns no credit. A command names a tier; `for-role` resolves it. Declare it only when the call's own data implies none (`tier` on the object carrying `model`, else `args.tier`). A comparison or battery that pins rows on purpose states `args.measurement` instead. `hooks/workflow_provider_guard.py` denies a pin outside the job's tier: its written `tier`, else the tier its data implies (a `review_fanout.js` seat's lenses, a `dispatch.js` job's `shape`). `for-role` drops exhausted plans before any row prints, then lists each fit row with its ladder cells; `[budget-posture]` gives each other plan's band word. Weigh them by the ladder's selection line, at the bar the owner's preference, the lean condition (reference `spend_lean.md`) or the work's rigor sets (rule 1). The parent keeps orchestration, unscoped cross-system decisions and the final design verdict. Owner overrides stay labeled overrides.
+A long run (a drive, an `/overnight` run, any work with a state file) is steered by its goal's requirements, never its plan's step list: a finished step is not a met requirement. At each checkpoint (a job's return, a compaction, a finished slice), judge each requirement met, partial or not met against current evidence, and say whether the current path still reaches it. Settle an open question with the cheapest check (a probe, a measurement), never another round. A partial or unmet requirement is the next work unless an owner fork blocks it; work the fork does not block still runs. Close only when every requirement reads met or blocked by an owner fork.
 
-Pin the row and the effort per slice by whether its test intent scores what the executor must discover and then judge; never by size, file count or the cost of a mistake. A shape's tier admits both the ambiguous-execution and tight-spec rows; the test intent picks one. Read [`reference/slice_pins.md`](reference/slice_pins.md) for the clearly-defined and ambiguous tests and the `pick`/`spec` fields that record the reading. High stakes buy verification (a RED-first case, an independent review), not a stronger executor.
+## 11. Dispatch doctrine
 
-Before a same-task comparison, or pinning a model the owner marked for its tier or one `for-role` does not list for it, read [`reference/model_evidence.md`](reference/model_evidence.md).
-
-### Per-dispatch harness cost
-
-Read-only built-ins omit project context and cannot write artifacts; supply the rule a lean child needs explicitly, or choose a fuller profile.
-
-### Effort
-
-Every dispatched agent pins model and effort, and only a measurement of the session model inherits; a check-scored job's effort is a lookup every route fills from its `spec`. Before setting an effort by hand (an owner pin, an engine's `args.checker`, a review seat, a later round), or when a job under-resolves, read [`reference/effort.md`](reference/effort.md). §5b owns cost-driven descent.
-
-## 5b. Budget, Availability & Transport
-
-The fan-out picks each job's paying plan. Before a job's `plan` override, a pay-per-token route or a credit-plan row, read [`reference/budget_posture.md`](reference/budget_posture.md) §Paying plans.
-
-Read the complete `for-role` listing before claiming no row serves. State a deliberate budget override before use, and never swap a model merely to get a green exit.
-
-When the posture line reports `5h used faster than its time` or a Surplus band, read [`reference/budget_posture.md`](reference/budget_posture.md): it owns the one-native-job rule, its owner override and the close-of-task backlog offer.
-
-Keep quality floors while cutting cost: remove redundant work first, then adjust effort or tier on evidence. A tier follows its work shape in the ladder's role definitions, in every quota band.
-
-## 7. Worktree Caveat
-
-Before a job runs in another checkout (a worktree or `workdir`), or a worktree retires, read [`reference/worktrees.md`](reference/worktrees.md).
-
-## 8. Verification After Integration
-
-When a dispatch returns, read [`reference/integration.md`](reference/integration.md): it owns the engine's `verification` block, the manifest join and recovery before a rerun.
-
-Reviewers report every finding that passes `commands/agents/orchestrator_action_protocol.md` §Reporting Filter, in its §Finding Schema and tagged with its `minRigor` ([`reference/rigor.md`](reference/rigor.md)); [`reference/later_rounds.md`](reference/later_rounds.md) sets what a fix's re-check covers and when the rounds stop. A cosmetic issue (whitespace, comment style) passes only when it shows a real problem. Check a symbol's call sites, not only its public surface. Failed, null or malformed output is uncovered, never "zero findings". For any other deliverable, read it, verify its decisive claims and original-source coverage, then run the applicable checks. Resolve every cited symbol and path in an architecting or planning deliverable before consuming it. Reconcile conflicting evidence directly.
-
-## 9. Authoring a Workflow on the Fly
-
-Before writing a new Workflow script, read [`reference/workflow_authoring.md`](reference/workflow_authoring.md).
-
-## 10. Goal Tracking and Context Checkpointing (long-horizon runs)
-
-A long run (a drive, an `/overnight` or `/goal` run, any task with a record) is steered by its goal's requirements, never its plan's step list: a finished step is not a met requirement. At each checkpoint (a job's return, a compaction, a finished slice, a wait on jobs), read each task-record requirement as met, partial or not met against current evidence, and say whether the current path still reaches it, whether a better path exists and what is missing. Rounds that left the goal's open question unsettled get the cheapest check that settles it next (a probe or measurement), never another round. A partial or not-met requirement is the next work, re-ordering or replacing the plan, unless an owner fork blocks it: a decision the owner reserved (a plan's owner ruling, an approval) or a parked question. Work that fork does not block still runs. Closeout starts only when every requirement reads met or blocked by an owner fork.
-
-Before a drive keeps task state across phases or compactions, read [`reference/checkpointing.md`](reference/checkpointing.md).
-
-## 11. Dispatch Doctrine (efficiency-to-quality)
-
-Dispatch a converged spec, work enumerated with a check (a plan slice, a close-out recipe, a known follow-on step), at the ladder's tight-spec cell; the parent keeps final judgment: a red's ruling, what lands, the commit. A delegatable unit is one coherent job whose file set you can enumerate now and which finishes in one session. A verified finding ledger with exact old/new text is a converged spec. Author the verification and first exemplar before batching clones.
-
-Before a review-gated slice, a plan draft or a split over disjoint units, read [`reference/drive_dispatch.md`](reference/drive_dispatch.md): *Continue file*, *Plan drafts* and *Context bound*.
-
-Count complete-task cost: preparation, cold starts, model work, repair, verification and recovery. Bound parent prose, not evidence.
+Dispatch a converged spec (enumerated work with a check: a plan slice, a known follow-on, a verified finding with its exact edit) at the tight-spec shape; the parent keeps the final judgment. Author the check and a first exemplar before batching clones. A job that must wait on a long run (a gate, a build, a main check) stays with the parent: start the run in the background and act on its one wake. The parent wakes once per fan-out: a native Workflow returns once for its set, and a seat fan-out is one background call that exits with its last seat. Count complete-task cost: preparation, cold starts, model work, repair, verification and recovery.
