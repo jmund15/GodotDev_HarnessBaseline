@@ -317,7 +317,7 @@ def plant_consume(name, text, task, *, label="w1", status="completed", brief_age
     with open(os.path.join(FIXTURE_SESSION, "workflows", FIXTURE_RUN_ID + ".json"), encoding="utf-8") as fh:
         record = json.load(fh)
     record.update(status=status, result=None,
-                  args={"jobs": [{"label": label, "promptPath": brief, "agentType": "lane-author"}],
+                  args={"jobs": [{"label": label, "promptPath": brief, "agentType": "delegate-author"}],
                         "spillDir": spill},
                   workflowProgress=[{"type": "workflow_agent", "index": 1, "label": label, "agentId": "c1",
                                      "state": "done", "startedAt": START_MS, "queuedAt": START_MS - 1}])

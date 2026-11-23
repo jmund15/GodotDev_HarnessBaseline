@@ -63,7 +63,7 @@
     "kind": "lens",
     "disclosure": "pointer",
     "guard": "survey",
-    "agentType": "lane-survey",
+    "agentType": "delegate-survey",
     "tier": "fanout"
    }
   },
@@ -113,7 +113,7 @@
     "kind": "lens",
     "disclosure": "pointer",
     "guard": "survey",
-    "agentType": "lane-survey",
+    "agentType": "delegate-survey",
     "tier": "fanout"
    },
    "reviewer": {
@@ -138,7 +138,7 @@
     "kind": "reviewer",
     "disclosure": "full",
     "guard": "review",
-    "agentType": "lane-review",
+    "agentType": "delegate-review",
     "tier": "executor"
    },
    "author": {
@@ -166,7 +166,7 @@
     "kind": "author",
     "disclosure": "full",
     "guard": "author",
-    "agentType": "lane-author",
+    "agentType": "delegate-author",
     "tier": "executor"
    }
   }

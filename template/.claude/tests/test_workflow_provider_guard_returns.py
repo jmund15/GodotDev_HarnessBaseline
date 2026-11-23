@@ -37,7 +37,7 @@ class ReturnsInjection(unittest.TestCase):
         with patch.object(guard, '_legal_pins', return_value={'test'}), patch.object(guard, '_rails_map', return_value={}), patch.object(guard, '_rails_text', return_value={}), patch.object(guard, '_suffix_names', return_value={}), patch.object(guard, '_declared_efforts', return_value=['low']), patch.object(guard.model_registry, 'row_for_model', return_value={'transport': 'fixture'}), patch.object(guard.model_registry, 'effort_values', return_value=['low']):
             args = guard.transport_injection(payload, 'fixture', {'models': [], 'transports': {'fixture': {}}})['args']
         self.assertEqual(args['__returns'], {})
-        self.assertEqual(args['__toolProfiles']['verify'], {'agentType': 'lane-verify', 'tier': 'fanout'})
+        self.assertEqual(args['__toolProfiles']['verify'], {'agentType': 'delegate-verify', 'tier': 'fanout'})
         self.assertFalse({'default', 'tierPins', 'fanoutEfforts'} & set(args['__transport']))
 
     def test_a_job_kind_sets_the_agent_type_through_its_profile_row(self):
@@ -49,7 +49,7 @@ class ReturnsInjection(unittest.TestCase):
         with patch.object(guard, '_legal_pins', return_value={'test'}), patch.object(guard, '_rails_map', return_value={}), patch.object(guard, '_rails_text', return_value={}), patch.object(guard, '_suffix_names', return_value={}), patch.object(guard, '_declared_efforts', return_value=['low']), patch.object(guard.model_registry, 'row_for_model', return_value={'transport': 'fixture'}), patch.object(guard.model_registry, 'effort_values', return_value=['low']):
             args = guard.transport_injection(payload, 'fixture', {'models': [], 'transports': {'fixture': {}}})['args']
         got = {label: row['agentType'] for label, row in args['__toolProfiles'].items() if label != 'verify'}
-        self.assertEqual(got, {'looker': 'lane-survey', 'judge': 'lane-review', 'writer': 'lane-author'})
+        self.assertEqual(got, {'looker': 'delegate-survey', 'judge': 'delegate-review', 'writer': 'delegate-author'})
         self.assertTrue(all('agentType' not in j for j in args['jobs']))
 
     def test_a_job_with_no_kind_is_refused_before_injection(self):

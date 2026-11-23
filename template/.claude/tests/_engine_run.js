@@ -28,11 +28,11 @@ const load = (script, transform = source => source) => {
 const ROW = { add: [], remove: [], overrideMode: 'shape-default', enforcement: 'inherited', effectiveMcp: 'unknown/inherited',
   mcpServers: ['semantic-search', 'ai-worker'] }
 const KIND_ROWS = {
-  scout: { ...ROW, kind: 'scout', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-survey' },
-  lens: { ...ROW, kind: 'lens', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-survey' },
-  reviewer: { ...ROW, kind: 'reviewer', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-review' },
-  author: { ...ROW, kind: 'author', builtins: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], agentType: 'lane-author' },
-  judge: { ...ROW, kind: 'judge', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-review' },
+  scout: { ...ROW, kind: 'scout', builtins: ['Read', 'Glob', 'Grep'], agentType: 'delegate-survey' },
+  lens: { ...ROW, kind: 'lens', builtins: ['Read', 'Glob', 'Grep'], agentType: 'delegate-survey' },
+  reviewer: { ...ROW, kind: 'reviewer', builtins: ['Read', 'Glob', 'Grep'], agentType: 'delegate-review' },
+  author: { ...ROW, kind: 'author', builtins: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], agentType: 'delegate-author' },
+  judge: { ...ROW, kind: 'judge', builtins: ['Read', 'Glob', 'Grep'], agentType: 'delegate-review' },
 }
 const RAILS_FIXTURE = '## Fixture rails\n\nStanding rules for the proof.'
 const withKinds = (args) => {

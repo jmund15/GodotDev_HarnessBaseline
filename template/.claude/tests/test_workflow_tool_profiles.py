@@ -158,7 +158,7 @@ check("an invalid delta is refused before any agent call",
 check("a signed string grant with no covering agent file is refused before launch", True,
       "no covering agent file" in (guard.tool_profile_refusal(workflow([
           {"label": "shell", "model": "sonnet", "kind": "scout", "tools": "+Bash"}])) or ""))
-check("a reviewer's +Bash grant is covered by the lane-review-sh variant", None,
+check("a reviewer's +Bash grant is covered by the delegate-review-sh variant", None,
       guard.tool_profile_refusal(workflow([
           {"label": "shell", "model": "sonnet", "kind": "reviewer", "tools": "+Bash"}])))
 check("an unsigned Workflow tools string fails before launch", True,
@@ -166,7 +166,7 @@ check("an unsigned Workflow tools string fails before launch", True,
           {"label": "shell", "model": "sonnet", "kind": "reviewer", "tools": "Bash"}])) or ""))
 injected = guard.transport_injection(workflow([REVIEW_JOB]), "anthropic")
 args = json.loads(injected["args"]) if isinstance(injected["args"], str) else injected["args"]
-check("the resolved profile rides in args.__toolProfiles", "lane-review",
+check("the resolved profile rides in args.__toolProfiles", "delegate-review",
       args["__toolProfiles"]["k1"]["agentType"])
 check("the injected profile keeps its registrations",
       "plugin:semantic-search:semantic-search",
@@ -267,7 +267,7 @@ def cli_profile(kind):
         return {"__stderr__": run.stderr}
 
 
-check("resolve-kind reviewer carries the row's agentType", "lane-review",
+check("resolve-kind reviewer carries the row's agentType", "delegate-review",
       cli_profile("reviewer").get("agentType"))
 check("resolve-kind arm carries no agentType", False, "agentType" in cli_profile("arm"))
 
@@ -290,26 +290,25 @@ check("a planted table edit fails the drift check with the drift code", 1,
 tp_cli("agents", "--write", "--table", _planted, "--agents-dir", _tmp_agents)
 check("--write clears the drift", 0,
       tp_cli("agents", "--check", "--table", _planted, "--agents-dir", _tmp_agents).returncode)
-_review_agent = os.path.join(_gen_agents, "lane-review.md")
+_review_agent = os.path.join(_gen_agents, "delegate-review.md")
 _text = open(_review_agent, encoding="utf-8").read() if os.path.exists(_review_agent) else ""
-check("lane-review.md names its type", True, "\nname: lane-review\n" in _text)
-check("lane-review.md carries the one-line description", True,
+check("delegate-review.md names its type", True, "\nname: delegate-review\n" in _text)
+check("delegate-review.md carries the one-line description", True,
       "\ndescription: Workflow engine delegate for the review tool profile; engines select it, "
       "never pick it for a manual Agent call.\n" in _text)
 _tools = next((ln[len("tools: "):] for ln in _text.splitlines() if ln.startswith("tools: ")), "")
-check("lane-review.md's tools start with the row's built-ins", ["Read", "Glob", "Grep"],
+check("delegate-review.md's tools start with the row's built-ins", ["Read", "Glob", "Grep"],
       _tools.split(", ")[:3])
-check("lane-review.md lists ToolSearch because the row names an MCP server", True,
+check("delegate-review.md lists ToolSearch because the row names an MCP server", True,
       _tools.endswith(", ToolSearch"))
-check("lane-review.md grants no Skill tool", False, "Skill" in _tools.split(", "))
-check("lane-review.md's body is the delegate system prompt", True,
+check("delegate-review.md grants no Skill tool", False, "Skill" in _tools.split(", "))
+check("delegate-review.md's body is the delegate system prompt", True,
       _text.rstrip("\n").endswith("The runtime appends the workflow-return note."))
-_declared = sorted(r["agentType"] + ".md" for r in json.load(open(
-    os.path.join(os.path.dirname(AGENTS_DIR), "guards", "tool_profiles.json"), encoding="utf-8"))["kinds"].values()
-    if r.get("agentType"))
-_declared = sorted(set(_declared) | {"lane-review-sh.md"})
+_table_json = json.load(open(os.path.join(os.path.dirname(AGENTS_DIR), "guards", "tool_profiles.json"), encoding="utf-8"))
+_declared = sorted({r["agentType"] + ".md" for r in list(_table_json["kinds"].values()) + _table_json["variants"]
+                    if r.get("agentType")})
 check("the table declares survey, review, review-sh, author, verify and gate agent types",
-      ["lane-author.md", "lane-gate.md", "lane-review-sh.md", "lane-review.md", "lane-survey.md", "lane-verify.md"],
+      ["delegate-author.md", "delegate-gate.md", "delegate-review-sh.md", "delegate-review.md", "delegate-survey.md", "delegate-verify.md"],
       _declared)
 check("only kinds and variants that declare agentType render a file", _declared,
       sorted(os.listdir(_gen_agents)))
@@ -340,9 +339,9 @@ check("resolve-kind has no --brief flag", True, "--brief" not in tp_cli("resolve
 check("the coverage module is deleted", False, os.path.exists(os.path.join(CLAUDE, "hooks", "_brief_coverage.py")))
 
 # ---- 14. a planted native command per kind runs as its agent type; the pr_ready lens runs as the variant
-for _kind, _tools, _agent in (("scout", None, "lane-survey"), ("lens", None, "lane-survey"), ("reviewer", None, "lane-review"),
-                              ("reviewer", "+Bash", "lane-review-sh"), ("author", None, "lane-author"),
-                              ("judge", None, "lane-review")):
+for _kind, _tools, _agent in (("scout", None, "delegate-survey"), ("lens", None, "delegate-survey"), ("reviewer", None, "delegate-review"),
+                              ("reviewer", "+Bash", "delegate-review-sh"), ("author", None, "delegate-author"),
+                              ("judge", None, "delegate-review")):
     _job = {"label": "planted", "model": "sonnet", "effort": "low", "kind": _kind}
     if _tools:
         _job["tools"] = _tools
@@ -355,7 +354,7 @@ _readers = sorted(f[:-3] for f in os.listdir(_WF_DIR)
                   if f.endswith(".js") and "__kindProfile" in open(os.path.join(_WF_DIR, f), encoding="utf-8").read())
 check("every single-kind engine is in the hook's CALL_KIND_ENGINES", [],
       [e for e in _readers if e not in guard.CALL_KIND_ENGINES])
-check("...and a call to one resolves its row", "lane-review",
+check("...and a call to one resolves its row", "delegate-review",
       guard.call_kind_profile({"tool_name": "Workflow", "tool_input": {
           "scriptPath": ".claude/workflows/" + _readers[0] + ".js", "args": {"kind": "reviewer"}}})["agentType"])
 raises("...and a kindless call to one is refused", "kind",
@@ -368,13 +367,13 @@ def _disallowed(name):
         if line.startswith("disallowedTools:"):
             return line.split(":", 1)[1].strip()
     return None
-for _name in ("lane-survey.md", "lane-review.md", "lane-review-sh.md"):
+for _name in ("delegate-survey.md", "delegate-review.md", "delegate-review-sh.md"):
     check(_name + " withholds ai-worker write_doc", "mcp__ai-worker__write_doc", _disallowed(_name))
-check("lane-author.md carries no disallowedTools line", None, _disallowed("lane-author.md"))
+check("delegate-author.md carries no disallowedTools line", None, _disallowed("delegate-author.md"))
 check("render_agents puts disallowedTools in the variant's frontmatter", True,
       "disallowedTools: mcp__ai-worker__write_doc" in tp.render_agents(
           json.load(open(os.path.join(os.path.dirname(AGENTS_DIR), "guards", "tool_profiles.json"), encoding="utf-8")),
-          tp.load_registrations()).get("lane-review-sh.md", ""))
+          tp.load_registrations()).get("delegate-review-sh.md", ""))
 
 if RAN < 70:
     print("FAIL expected >= 70 cases, ran %d" % RAN)

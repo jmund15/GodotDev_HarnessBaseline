@@ -777,10 +777,10 @@ def spec_refused_before_any_write():
           proc.returncode != 0 and "sessionAudit.plan" in proc.stderr, proc.stderr[-400:])
     check("the refused plan spec wrote no brief", not f.out.exists() or not any(x.is_file() for x in f.out.rglob("*")),
           sorted(x.name for x in f.out.glob("*")) if f.out.exists() else "")
-    top = f.prepare(agentType="lane-author", **common)
+    top = f.prepare(agentType="delegate-author", **common)
     check("a spec naming the retired `agentType` is refused naming `kind`",
           top.returncode != 0 and "agentType" in top.stderr and "kind" in top.stderr, top.stderr[-400:])
-    seat = f.prepare(seats=[{"key": "exp-integration-surface", "agentType": "lane-author"}],
+    seat = f.prepare(seats=[{"key": "exp-integration-surface", "agentType": "delegate-author"}],
                      pins={"panel": PANEL}, efforts={"panel": EFFORT}, mode="explore",
                      engine=str(f.root / "engine.js"),
                      checker={"model": PANEL, "effort": EFFORT})
