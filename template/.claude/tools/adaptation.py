@@ -30,7 +30,7 @@ import sys
 from pathlib import Path
 
 DEFAULTS: dict = {
-    # hooks/compound_cd_approver.py: commands the approver allows inside a compound.
+    # hooks/compound_cd_approver.py (run inside the floor entry, hooks/pre_bash.py): commands the approver allows inside a compound.
     "read_only_commands": [],
     # hooks/prompt_git_state_delta.py: submodule paths whose state the prompt reports.
     "git_submodules": [],

@@ -52,7 +52,7 @@ A writing seat starts from inside its own linked worktree (`orchestration` §7).
 | Own worktree, `max_concurrent`, login at its exhaust floor | not checked | refused before spawn | they govern a CLI process and its login; the engine queues past its own concurrency cap, and the session's login is judged in step 2 |
 | Workdir in another checkout | never | the only route | the project's launch hooks must run on it |
 | Floor | the session's hooks run in every agent | a writing Claude seat runs the project's settings; a read-only seat returns on stdout and cannot write | the CLI decides what runs inside it |
-| Rails and wait checks | `guards/rails.md` injected by the engine; the session's `hooks/foreground_wait_guard.py` | `guards/rails.md` and the same guard, armed by the launcher | same text and checks, each route's channel |
+| Rails and wait checks | `guards/rails.md` injected by the engine; the wait clamp in the floor entry (`hooks/pre_bash.py`) | `guards/rails.md` and the same clamp, in the seat's floor entry | same text and checks, each route's channel |
 | Wake | the Workflow returns once for its set | the background call exits with its last seat | same |
 
 ## 4. Take back
