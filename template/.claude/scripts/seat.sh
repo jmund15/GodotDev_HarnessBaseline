@@ -40,6 +40,7 @@ if [ "$SEAT_WRITES" = yes ]; then
     echo "seat.sh: writing seat '$seat' must run in its own linked worktree, not the main checkout ($workdir)" >&2
     exit 2
   fi
+  main_checkout="$(dirname "$common_dir")"
 fi
 
 # A slot is a directory under the user's home (the login is shared by every session on the machine). A slot whose
@@ -77,8 +78,13 @@ esac
 python3 "$lc" pre_launch "$seat" "$brief_abs" "$out_abs" "$label" || exit 2
 
 # The wait checks ride into every seat, whatever its workdir: the seat gets no completion wake of its own.
+# A writing seat also gets the workdir fence, which keeps its writes out of the main checkout.
+fence=""
+if [ "$SEAT_WRITES" = yes ]; then
+  fence=",{\"matcher\": \"Write|Edit|NotebookEdit|Bash\", \"hooks\": [{\"type\": \"command\", \"command\": \"python3 '$here/hooks/sidecar_workdir_guard.py' '$workdir' '$main_checkout' '$claimed' '$brief_abs'\"}]}"
+fi
 cat > "$claimed/settings.json" <<EOF
-{"hooks": {"PreToolUse": [{"matcher": "Bash|PowerShell|Monitor", "hooks": [{"type": "command", "command": "python3 '$here/hooks/foreground_wait_guard.py'"}]}]}}
+{"hooks": {"PreToolUse": [{"matcher": "Bash|PowerShell", "hooks": [{"type": "command", "command": "python3 '$here/hooks/foreground_wait_guard.py'"}]}$fence]}}
 EOF
 
 export SEAT_CONFIG_DIR SEAT_MODEL SEAT_WRITES SEAT_SETTINGS="$claimed/settings.json" SEAT_HERE="$here"

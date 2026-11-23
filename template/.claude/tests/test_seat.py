@@ -162,7 +162,8 @@ def test_writing_seat_runs_claude_with_its_login_settings_and_the_brief_on_stdin
     argv = (tmp_path / "argv.txt").read_text(encoding="utf-8").split("\n")
     assert argv[0] == "-p" and "claude-sonnet-5-5" in argv and "acceptEdits" in argv
     assert "--disallowedTools" not in argv
-    assert "foreground_wait_guard.py" in (tmp_path / "settings.txt").read_text(encoding="utf-8")
+    settings = (tmp_path / "settings.txt").read_text(encoding="utf-8")
+    assert "foreground_wait_guard.py" in settings and "sidecar_workdir_guard.py" in settings
     assert Path((tmp_path / "config.txt").read_text(encoding="utf-8")) == Path(env["HOME"]) / ".claude-secondary"
     assert (tmp_path / "stdin.txt").read_text(encoding="utf-8") == BRIEF
 

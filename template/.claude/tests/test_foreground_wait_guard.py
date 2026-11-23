@@ -1,175 +1,118 @@
-"""Proof for hooks/foreground_wait_guard.py: a Monitor watch past the tool's own ceiling is denied; one under it passes.
-A backgrounded pipeline's trailing `| tail`/`| head` is dropped for the caller, and every other blind shape is denied.
+"""Proof for hooks/foreground_wait_guard.py: the two wait checks a never-woken caller gets.
 
-Real PreToolUse payloads on stdin. The Monitor branch reads no state, so the proof plants none; the blind cases read
-none either.
+    python -m pytest .claude/tests/test_foreground_wait_guard.py -q --durations=0
 
-    python3 .claude/tests/test_foreground_wait_guard.py
+Decision cases call the hook in process with a real payload; one spawned case proves the registered command runs.
 """
+import importlib.util
 import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
-HOOK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "hooks", "foreground_wait_guard.py")
-MONITOR_CAP_MS = 1800000
-FAILURES = []
+import pytest
 
+TESTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(TESTS))
+import _hook_call  # noqa: E402
 
-def run(payload):
-    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
-                       text=True, encoding="utf-8", timeout=30)
-    return r.returncode, r.stdout, r.stderr
-
-
-def check(label, ok, detail=""):
-    print("%-4s %s" % ("ok" if ok else "FAIL", label))
-    if not ok:
-        FAILURES.append("%s :: %s" % (label, str(detail)[:300]))
+HOOK = TESTS.parent / "hooks" / "foreground_wait_guard.py"
+SUBAGENT_MS = 270000
+HANDBACK_MS = 1800000
+LOOP = "until test -f done.flag; do sleep 30; done"
+# Each clamped loop wait adds 270 s; the total is read before a call, so the call after the 1800 s total is the deny.
+CALLS_TO_HANDBACK = HANDBACK_MS // SUBAGENT_MS + 2
 
 
-def monitor(timeout_ms):
-    return {"session_id": "proof-fwg-1", "hook_event_name": "PreToolUse", "tool_name": "Monitor",
-            "tool_input": {"command": "tail -f run.log", "timeout_ms": timeout_ms}}
+@pytest.fixture
+def env(tmp_path):
+    return {"HARNESS_HOOK_STATE_DIR": str(tmp_path), "PATH": os.environ.get("PATH", ""),
+            "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""), "CLAUDE_CODE_ENTRYPOINT": "sdk-cli"}
 
 
-rc, out, err = run(monitor(MONITOR_CAP_MS + 1))
-decision = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
-check("a Monitor asking past the tool ceiling is denied",
-      rc == 0 and decision.get("permissionDecision") == "deny", out + err)
-
-rc, out, err = run(monitor(60000))
-check("a Monitor under the ceiling passes silently", rc == 0 and out.strip() == "", out + err)
-
-
-def bash(command, background=False):
-    tool_input = {"command": command, "run_in_background": True} if background else {"command": command}
-    return {"session_id": "proof-fwg-2", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": tool_input}
-
-
-def advisory(command, background=False):
-    rc, out, err = run(bash(command, background))
-    context = json.loads(out).get("hookSpecificOutput", {}).get("additionalContext", "") if out.strip() else ""
-    return rc, context, out + err
-
-
-for label, command in (("a subshell backgrounded with a trailing ampersand", "( pytest -q ) &"),
-                       ("a line ending in a background ampersand", "pytest -q &\necho done")):
-    rc, context, detail = advisory(command)
-    check(label + " draws the run_in_background advisory",
-          rc == 0 and "run_in_background" in context, detail)
-
-for label, command, background in (
-        ("a logical and is not a background job", "pytest -q && echo ok", False),
-        ("a redirect into a descriptor is not a background job", "pytest -q 2>&1", False),
-        ("an ampersand inside quotes is not a background job", 'echo "tail &"', False),
-        ("an ampersand in a heredoc body is data", "cat <<'EOF'\nline &\nEOF", False),
-        ("an ampersand on a call already detached with run_in_background is not repeated", "( pytest -q ) &", True)):
-    rc, context, detail = advisory(command, background)
-    check(label + " passes silently", rc == 0 and "run_in_background" not in context, detail)
-
-def decision_of(command, background):
-    rc, out, err = run(bash(command, background))
-    hso = json.loads(out).get("hookSpecificOutput", {}) if out.strip() else {}
-    return rc, hso, out + err
-
-
-# A blind stage that ends the command is dropped for the caller: the call already says the right one.
-for label, command, want in (
-        ("a tail count", "python3 .claude/scripts/harness_tests.py --close | tail -15",
-         "python3 .claude/scripts/harness_tests.py --close"),
-        ("a stderr redirect then a tail count", "python3 x.py 2>&1 | tail -n 20", "python3 x.py 2>&1"),
-        ("a bare tail count", "python3 x.py | tail -5", "python3 x.py"),
-        ("a head stage", "npm run build | head -n 40", "npm run build"),
-        ("a scoped harness run piped into tail",
-         "cd /r && python3 .claude/scripts/harness_tests.py --proofs-for x.py 2>&1 | tail -15",
-         "cd /r && python3 .claude/scripts/harness_tests.py --proofs-for x.py 2>&1"),
-        ("two stacked blind stages", "python3 x.py | tail -5 | head -3", "python3 x.py")):
-    rc, hso, detail = decision_of(command, True)
-    got = (hso.get("updatedInput") or {}).get("command")
-    check("backgrounded, %s is rewritten to %r" % (label, want),
-          rc == 0 and hso.get("permissionDecision") is None and got == want, detail)
-
-# Every other blind shape keeps the deny: dropping the stage would change what runs or where its result goes.
-for label, command in (
-        ("a blind stage mid-pipeline", "python3 x.py | tail -n 20 | cat"),
-        ("a blind stage inside a subshell", "(python3 x.py | tail -n 5)"),
-        ("a test run filtered then cut by head", "(npx vitest run 2>&1 | grep -E 'Tests |FAIL' | head -8); echo end"),
-        ("a blind stage followed by a command", "python3 x.py | tail -n 5; echo done"),
-        ("a blind stage followed by a logical and", "python3 x.py | tail -n 5 && echo ok"),
-        ("a blind stage carrying a redirection", "python3 x.py | tail -n 5 > out.txt"),
-        ("a command carrying a substitution", "python3 $(cat listing.txt) | tail -n 5")):
-    rc, hso, detail = decision_of(command, True)
-    check("backgrounded, " + label + " is denied", rc == 0 and hso.get("permissionDecision") == "deny", detail)
-
-# A foreground call, and a pipe that feeds a captured string or a quoted argument, are not the task's output pipe.
-for label, command, background in (
-        ("a foreground call piped into tail", "python3 x.py | tail -5", False),
-        ("a pipe inside a command substitution", "echo $(python3 x.py | tail -n 5)", True),
-        ("a quoted pipe", 'echo "a | tail"', True)):
-    rc, hso, detail = decision_of(command, background)
-    check(label + " is left alone",
-          rc == 0 and hso.get("permissionDecision") is None and not hso.get("updatedInput"), detail)
-
-for label, command, background in (
-        ("a backgrounded job teed to a file before tail", "npm run build | tee build.log | tail -3", True),
-        ("a backgrounded tail -f follows a file", "tail -f run.log", True),
-        ("a backgrounded job writing a file, then tail of that file", "npm run build > b.log 2>&1; tail -5 b.log", True),
-        ("a backgrounded filter with no truncation", "npx vitest run 2>&1 | grep FAIL", True),
-        ("a foreground command piped into tail", "git log --oneline | tail -5", False)):
-    rc, hso, detail = decision_of(command, background)
-    check(label + " is not denied", rc == 0 and hso.get("permissionDecision") != "deny", detail)
-
-
-# A caller no wake reaches (a print-mode child, a Workflow agent) has a 5-minute prompt cache: a foreground call
-# longer than SUBAGENT_WAIT_MS returns to a cold cache and rewrites the whole context. Its timeout is clamped,
-# the client moves a command still running at the clamp to the background, and the appended EXIT line in that
-# command's output file is the caller's done-test.
-SUBAGENT_WAIT_MS = 270000
-
-
-def timed(command, timeout, **caller):
-    payload = {"session_id": "proof-fwg-3", "hook_event_name": "PreToolUse", "tool_name": "Bash",
-               "tool_input": {"command": command, "timeout": timeout}}
-    payload.update(caller)
+def _payload(command, tool="Bash", timeout=None, background=False, agent_id=None):
+    tool_input = {"command": command}
+    if timeout is not None:
+        tool_input["timeout"] = timeout
+    if background:
+        tool_input["run_in_background"] = True
+    payload = {"session_id": "wait-proof", "tool_name": tool, "tool_input": tool_input}
+    if agent_id:
+        payload["agent_id"] = agent_id
     return payload
 
 
-def rewrite(payload, entrypoint):
-    env = dict(os.environ, CLAUDE_CODE_ENTRYPOINT=entrypoint)
-    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
-                       text=True, encoding="utf-8", timeout=30, env=env)
-    hso = json.loads(r.stdout).get("hookSpecificOutput", {}) if r.stdout.strip() else {}
-    return r.returncode, hso.get("updatedInput"), hso.get("permissionDecision"), r.stdout + r.stderr
+def _call(env, payload):
+    code, _out, err, output = _hook_call.call(HOOK, payload, env=env)
+    assert code == 0, err
+    return output
 
 
-RENDER = "node design/live/frames.mjs --out /tmp/a1"
-for label, payload, entrypoint in (
-        ("a print-mode child's", timed(RENDER, 600000), "sdk-cli"),
-        ("a Workflow agent's", timed(RENDER, 590000, agent_id="a1", agent_type="workflow-subagent"), "cli")):
-    rc, updated, verdict, detail = rewrite(payload, entrypoint)
-    check(label + " long foreground command is clamped to the cache bound with an EXIT done line",
-          rc == 0 and verdict is None and updated is not None
-          and updated.get("timeout") == SUBAGENT_WAIT_MS and not updated.get("run_in_background")
-          and updated.get("command", "").startswith(RENDER)
-          and updated.get("command", "").rstrip().endswith('echo "EXIT $?"'), detail)
+def test_woken_orchestrator_passes_a_long_foreground_call_untouched(env):
+    woken = dict(env, CLAUDE_CODE_ENTRYPOINT="cli")
+    assert _call(woken, _payload("make build", timeout=600000)) == {}
 
-rc, updated, verdict, detail = rewrite(timed(RENDER, 200000), "sdk-cli")
-check("a print-mode child's command inside the cache bound passes untouched",
-      rc == 0 and updated is None and verdict is None, detail)
 
-rc, updated, verdict, detail = rewrite(timed(RENDER, 600000), "cli")
-check("the interactive orchestrator's raised timeout is still backgrounded, not clamped",
-      rc == 0 and updated is not None and updated.get("run_in_background") is True
-      and updated.get("command") == RENDER, detail)
+def test_never_woken_long_call_is_clamped_and_bash_gets_the_exit_line(env):
+    out = _call(env, _payload("make build", timeout=600000))
+    assert out["updatedInput"]["timeout"] == SUBAGENT_MS
+    assert out["updatedInput"]["command"] == 'make build\necho "EXIT $?"'
+    assert "Clamped" in out["additionalContext"]
 
-LOOP = "for i in $(seq 1 40); do grep -q 'facts in' a2.log && break; sleep 20; done"
-rc, updated, verdict, detail = rewrite(timed(LOOP, 600000), "sdk-cli")
-check("a for-loop wait is a wait loop: clamped, with no EXIT line added",
-      rc == 0 and updated is not None and updated.get("timeout") == SUBAGENT_WAIT_MS
-      and updated.get("command") == LOOP, detail)
 
-print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
-for f in FAILURES:
-    print("  " + f)
-sys.exit(1 if FAILURES else 0)
+def test_never_woken_powershell_is_clamped_without_the_exit_line(env):
+    out = _call(env, _payload("Build-Thing", tool="PowerShell", timeout=600000))
+    assert out["updatedInput"]["timeout"] == SUBAGENT_MS
+    assert out["updatedInput"]["command"] == "Build-Thing"
+
+
+def test_never_woken_call_within_the_bound_passes(env):
+    assert _call(env, _payload("make build", timeout=SUBAGENT_MS)) == {}
+
+
+def test_background_call_is_not_clamped(env):
+    assert _call(env, _payload("make build", timeout=600000, background=True)) == {}
+
+
+def test_handback_denies_the_wait_once_loop_waits_pass_thirty_minutes(env):
+    outs = [_call(env, _payload(LOOP, timeout=SUBAGENT_MS)) for _ in range(CALLS_TO_HANDBACK)]
+    assert all(out == {} for out in outs[:-1])
+    assert outs[-1]["permissionDecision"] == "deny"
+
+
+def test_a_non_wait_call_resets_the_hand_back_total(env):
+    for _ in range(CALLS_TO_HANDBACK):
+        _call(env, _payload(LOOP, timeout=SUBAGENT_MS))
+    _call(env, _payload("git status"))
+    assert _call(env, _payload(LOOP, timeout=SUBAGENT_MS)) == {}
+
+
+def test_a_loop_inside_a_heredoc_body_is_not_a_wait(env):
+    script = "cat <<'EOF'\nuntil x; do sleep 1; done\nEOF"
+    for _ in range(CALLS_TO_HANDBACK):
+        assert _call(env, _payload(script, timeout=SUBAGENT_MS)) == {}
+
+
+def test_never_woken_follows_the_caller_kind(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    spec = importlib.util.spec_from_file_location("fwg_under_test", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(HOOK.parent))
+    spec.loader.exec_module(module)
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text("", encoding="utf-8")
+    meta_dir = tmp_path / "session" / "subagents"
+    meta_dir.mkdir(parents=True)
+    (meta_dir / "agent-a1.meta.json").write_text("{}", encoding="utf-8")
+    assert module.never_woken({"agent_id": "a1", "transcript_path": str(transcript), "agent_type": "general"}) is False
+    assert module.never_woken({"agent_id": "w9", "agent_type": "workflow-subagent"}) is True
+    assert module.never_woken({}) is False
+
+
+def test_the_registered_command_runs_and_clamps_once(tmp_path):
+    done = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(_payload("make build", timeout=600000)),
+                          capture_output=True, text=True, encoding="utf-8",
+                          env=dict(os.environ, CLAUDE_CODE_ENTRYPOINT="sdk-cli", HARNESS_HOOK_STATE_DIR=str(tmp_path)))
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout)["hookSpecificOutput"]["updatedInput"]["timeout"] == SUBAGENT_MS
