@@ -6,14 +6,14 @@ Read at Phase 1 of [`../SKILL.md`](../SKILL.md).
 
 ## Memory seed first
 
-Search auto-memory for the high-leverage gotcha buckets before designing the loop: object lifecycle and disposal, pooled-object reset ordering, and orphaned processes or silently skipped tests. `reference/memory_domains.md` supplies the project's seed terms. Then search the **specific** task domain. Recall is semantic search over `.claude/auto-memory/`: query an NL paraphrase of the symptom, facets searched separately (CLAUDE.md §2 *Memory*).
+Search auto-memory for the high-leverage gotcha buckets before designing the loop: object lifecycle and disposal, pooled-object reset ordering, and orphaned processes or silently skipped tests. Then search the **specific** task domain. Recall is semantic search over `.claude/auto-memory/`: query a plain-language paraphrase of the symptom, one facet per query.
 
 ## Loop options (ranked roughly by leverage)
 
 1. **Failing test at the right seam.** Match the suite to the bug class: pure logic, cross-system integration seam, or user-observable end-to-end behavior. The project's testing skill, where it ships one, names the suites and their classification rules.
 2. **Harness on a minimal fixture** (a fixture scene, app instance or service stub): simulate input, assert the observable outcome. Prefer one that runs headless.
-3. **Run the real app** for manual repro. Pattern: trigger, poll the runtime output, assert. The engine's path-scoped rules name the run and output tools, and what a poll returns (a tool that returns the last N lines retained until stop, not the lines since the previous call, needs a larger limit or a diff against the previous read).
-4. **Replay a captured runtime log.** Real session, deterministic offline. A rotating log may be stale or belong to another session's live run: classify provenance first. `environment_bootstrap` owns the log locations.
+3. **Run the real app** for manual repro. Pattern: trigger, poll the runtime output, assert. The project's rules name the run and output tools. Know what a poll returns: a tool that returns the last N lines retained until stop, not the lines since the previous call, needs a larger limit or a diff against the previous read.
+4. **Replay a captured runtime log.** Real session, deterministic offline. A rotating log may be stale or belong to another session's live run: classify provenance first.
 5. **Throwaway fixture** hitting the bug path directly, when the production scene is too tangled to isolate the symptom.
 6. **`git bisect run <the project's single-test command>`** when the bug appeared between two known-good states. **Verify the good-end FIRST**: run the failing test at the supposed-good commit before automating a wide window. Identical failure sets at both endpoints mean there is no green-to-red transition: reclassify as never-green-but-masked (red since its introduction commit, hidden by a stale baseline) and skip the bisect. Checking out an old commit also reverts submodules and the `.claude/` harness: restore them per step and on exit.
 7. **Differential loop**: the same input through old and new version (or two configs), diff the outputs. Best for "regression appeared between commit X and Y."
@@ -23,7 +23,7 @@ Search auto-memory for the high-leverage gotcha buckets before designing the loo
 ## Cloud vs. local
 
 - **Local:** running the real app is fastest for visual bugs.
-- **Cloud** (`CLAUDE_CODE_REMOTE=true`): interactive run tools are usually unavailable. Force the loop to headless tests or to log replay; the project's cloud rule names what works there.
+- **Cloud** (`CLAUDE_CODE_REMOTE=true`): interactive run tools are usually unavailable. Force the loop to headless tests or to log replay.
 
 ## Non-deterministic bugs
 

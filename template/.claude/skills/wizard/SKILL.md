@@ -18,7 +18,7 @@ A wizard is ephemeral by default — built for one run, saved to a scratch or `s
 
 Work out every manual step the human must take and every value that gets captured along the way. Read the repo first — don't ask cold:
 
-- For setup: `.env`, `.env.example`, `.env.*`, `README`, `docker-compose*`, Godot's `export_presets.cfg` / `project.godot`, and `.github/workflows/*` (every `secrets.*` / `vars.*` reference is a value the wizard must produce).
+- For setup: `.env`, `.env.example`, `.env.*`, `README`, `docker-compose*`, the build or export configuration, and `.github/workflows/*` (every `secrets.*` / `vars.*` reference is a value the wizard must produce).
 - For a migration or transition: the current state, the target state, and the irreversible actions between them.
 
 Then show the user the ordered list of stages and the values each produces, and confirm — they may add, drop, or reorder.
@@ -27,7 +27,7 @@ Then show the user the ordered list of stages and the values each produces, and 
 
 ### 2. Map each stage's journey
 
-For each stage, write the precise path a human follows: which URL to open, what to do there, where a value is shown, which variable it fills — e.g. "Project → Export → Android → Keystore → Reveal store password → copy". Where you don't actually know the current UI or the exact command, say so and ask the user or check the docs — never invent steps that may not exist.
+For each stage, write the precise path a human follows: which URL to open, what to do there, where a value is shown, which variable it fills — e.g. "Settings → API keys → Create key → copy". Where you don't actually know the current UI or the exact command, say so and ask the user or check the docs — never invent steps that may not exist.
 
 **Done when:** every stage traces to concrete instructions a stranger could follow.
 
