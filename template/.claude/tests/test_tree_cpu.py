@@ -23,19 +23,28 @@ def main():
     global fail
     fail = 0
     # A parent that only waits, whose grandchild burns CPU: the tree total grows; the parent's own does not.
-    burn = 'import time\nend = time.monotonic() + 4\nwhile time.monotonic() < end: pass'
+    burn = 'import time\nend = time.monotonic() + 3\nwhile time.monotonic() < end: pass'
     middle = 'import subprocess, sys; subprocess.run([sys.executable, "-c", %r])' % burn
     parent = subprocess.Popen([sys.executable, '-c', 'import subprocess, sys; subprocess.run([sys.executable, "-c", %r])' % middle])
     try:
-        time.sleep(1.0)
-        first = tree_cpu.tree_cpu(parent.pid)
-        time.sleep(1.5)
-        second = tree_cpu.tree_cpu(parent.pid)
+        # Poll for the first reading and then for 0.5 s of growth, instead of sleeping for fixed spans.
+        first = second = None
+        deadline = time.monotonic() + 2.5
+        while time.monotonic() < deadline:
+            reading = tree_cpu.tree_cpu(parent.pid)
+            if reading is not None and first is None:
+                first = reading
+            elif reading is not None:
+                second = reading
+                if second - first >= 0.5:
+                    break
+            time.sleep(0.1)
         check(first is not None and second is not None and second - first >= 0.5,
               'a grandchild burning CPU grows the tree total', (first, second))
         out = subprocess.run([sys.executable, str(TOOL), str(parent.pid)], capture_output=True, text=True)
         check(out.returncode == 0 and float(out.stdout) >= second, 'the CLI prints the tree total', (out.returncode, out.stdout))
     finally:
+        parent.kill()  # the burning grandchild ends by itself within its three seconds
         parent.wait(timeout=30)
 
     gone = subprocess.run([sys.executable, str(TOOL), str(parent.pid)], capture_output=True, text=True)
