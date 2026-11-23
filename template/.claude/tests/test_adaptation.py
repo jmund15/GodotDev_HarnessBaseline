@@ -231,10 +231,11 @@ def test_the_key_list_is_the_kept_callers_keys():
 def test_pre_bash_and_scratch_keep_default_empty_and_read_back(tmp_path, capsys):
     assert adaptation.get(_claude_dir(tmp_path, None, name="a"), "pre_bash") == {"protected": [], "router_entrypoints": []}
     assert adaptation.get(_claude_dir(tmp_path, None, name="b"), "scratch_keep") == []
-    rows = {"protected": [{"pattern": "run_grid\.sh", "why": "a benchmark grid"}], "router_entrypoints": ["verify"]}
+    rows = {"protected": [{"pattern": "run_grid\.sh", "why": "a benchmark grid"}], "router_entrypoints": [{"name": "verify"}, {"name": "gate", "detach_flag": "-Detach"},
+                                {"name": "engine_run", "redirect": False}]}
     claude = _claude_dir(tmp_path, {"pre_bash": rows, "scratch_keep": ["boot", "kfm"]}, name="c")
     assert adaptation.get(claude, "pre_bash.protected") == rows["protected"]
-    assert adaptation.get(claude, "pre_bash.router_entrypoints") == ["verify"]
+    assert adaptation.get(claude, "pre_bash.router_entrypoints") == rows["router_entrypoints"]
     assert adaptation.get(claude, "scratch_keep") == ["boot", "kfm"]
     assert capsys.readouterr().err == ""
 
@@ -246,7 +247,13 @@ def test_pre_bash_and_scratch_keep_default_empty_and_read_back(tmp_path, capsys)
     {"protected": ["x"]},
     {"protected": "x"},
     {"router_entrypoints": [5]},
-], ids=["bad-regex", "no-why", "blank-why", "not-a-row", "not-a-list", "bad-name"])
+    {"router_entrypoints": ["verify"]},
+    {"router_entrypoints": [{"name": " "}]},
+    {"router_entrypoints": [{"name": "verify", "redirect": "no"}]},
+    {"router_entrypoints": [{"name": "gate", "detach_flag": "Detach"}]},
+    {"router_entrypoints": [{"name": "verify", "background": True}]},
+], ids=["bad-regex", "no-why", "blank-why", "not-a-row", "not-a-list", "bad-name", "bare-name", "blank-name",
+        "redirect-not-bool", "detach-not-a-flag", "unknown-field"])
 def test_a_malformed_pre_bash_row_keeps_the_default_and_names_itself(tmp_path, capsys, bad):
     claude = _claude_dir(tmp_path, {"pre_bash": bad})
     assert adaptation.get(claude, "pre_bash") == {"protected": [], "router_entrypoints": []}

@@ -2,12 +2,13 @@
 """Floor helper (`_floor.HELPER_NAMES`): rewrite a test, build or gate run, through `check(payload)`.
 
 The rewrite reaches the call as the floor entry's updatedInput, with an additionalContext line naming it:
-- A linked worktree's run of a script the project lists in `adaptation.json` `pre_bash.router_entrypoints` runs
-  main's copy with `-Repo <worktree>`: main's code, the target's data.
-- run_in_background is set for a delegate's run (those scripts, engine_run, `dotnet build|test`) and for
-  any gate run (an entrypoint named `*_gate`) without -Detach. A delegate is a subagent (payload agent_id) or a `claude -p`
-  child (CLAUDE_CODE_ENTRYPOINT=sdk-cli). A run with a quick read-only flag, such as
-  -SelfTest, is not backgrounded.
+- The project lists its scripts in `adaptation.json` `pre_bash.router_entrypoints`, one row per script:
+  `{"name": <stem>, "redirect": <bool, default true>, "detach_flag": <flag, optional>}`. A linked worktree's run of a
+  `redirect` script runs main's copy with `-Repo <worktree>`: main's code, the target's data.
+- run_in_background is set for a delegate's run of a listed script or `dotnet build|test`, and for any caller's run of
+  a script whose row names a `detach_flag` (it outlives a turn) unless that flag is passed. A delegate is a subagent
+  (payload agent_id) or a `claude -p` child (CLAUDE_CODE_ENTRYPOINT=sdk-cli). A run with a quick read-only flag, such
+  as -SelfTest, is not backgrounded.
 Mentions are not actions: quoted text, comments and heredoc bodies that name a script are left alone.
 The floor's checks judge the call as sent: this changes only which copy of a script runs and whether it runs in the
 background, which no floor check reads. A fault here skips the rewrite (`_floor`: a failing helper is skipped).
@@ -22,15 +23,20 @@ import _git_commit
 import _shell_lex
 
 MAIN = Path(__file__).resolve().parents[2]
-# `engine_run` is backgrounded for a delegate but never redirected: it takes its own `--path`.
-BACKGROUND_ONLY = frozenset(('engine_run',))
 
 
 def _entrypoints():
-    """The project's `adaptation.json` `pre_bash.router_entrypoints`: script stems whose worktree copy is redirected
-    to main's. The shared code names none (T7); a malformed row is skipped."""
+    """The project's `adaptation.json` `pre_bash.router_entrypoints` as {stem: (redirect, detach flag or '')}. The
+    shared code names no script (T7); a row with no name is skipped (`tools/adaptation.py` names a malformed row)."""
     listed = _delete_rule.project_data('pre_bash', 'router_entrypoints')
-    return frozenset(n.strip().lower() for n in listed if isinstance(n, str) and n.strip())         if isinstance(listed, list) else frozenset()
+    rows = {}
+    for row in listed if isinstance(listed, list) else ():
+        name = row.get('name') if isinstance(row, dict) else None
+        if isinstance(name, str) and name.strip():
+            detach = row.get('detach_flag')
+            rows[name.strip().lower()] = (row.get('redirect') is not False,
+                                          detach.lower() if isinstance(detach, str) else '')
+    return rows
 
 
 def _quote(value, original=''):
@@ -86,14 +92,14 @@ def _route_runner(words, index, cwd, delegate):
     if not path.lower().endswith('.ps1'):
         return False, None
     name = Path(path).stem.lower()
-    entrypoints = _entrypoints()
-    if name not in entrypoints | BACKGROUND_ONLY or '/.claude/scripts/' not in '/' + path.lower():
+    row = _entrypoints().get(name)
+    if row is None or '/.claude/scripts/' not in '/' + path.lower():
         return False, None
+    redirect, detach = row
     flags = {w.value.lower().split(':')[0] for w in words[index + 1:]}
     quick = bool(flags & {'-selftest', '-watch', '-dryrun', '-reapreport', '-bootstrapfromtrx'})
-    # A gate (an entrypoint named `*_gate`) outlives a turn, so the orchestrator's run is backgrounded too unless it detaches.
-    background = not quick and (delegate or (name.endswith('_gate') and '-detach' not in flags))
-    if name not in entrypoints:
+    background = not quick and (delegate or bool(detach and detach not in flags))
+    if not redirect:
         return background, None
     target = _linked_target(_git_commit.resolve_cd(cwd, path))
     if not target:

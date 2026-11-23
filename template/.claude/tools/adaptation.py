@@ -16,8 +16,9 @@ Command line (run from the repo root):
 `gate_cadence` is a job's cadence data: `slice`, `merge` and `close` are command forms a rails' `Your checks`
 line prints verbatim. `gate_cadence_errors` validates the table; a malformed row fails `get gate_cadence` (exit 1).
 `pre_bash` is the floor's project data: `protected` rows ({pattern, why}: a command whose kill is denied) and
-`router_entrypoints` (script names whose run the call router sends to a delegate). A malformed row is dropped
-with one stderr line. `scratch_keep` names the top-level scratch folders `tools/scratch_prune.py` never prunes.
+`router_entrypoints` rows ({name, redirect?, detach_flag?}: a script the call router runs from main's copy unless
+`redirect` is false, backgrounds for a delegate, and backgrounds for every caller without its `detach_flag`). A
+malformed row is dropped with one stderr line. `scratch_keep` names the top-level scratch folders `tools/scratch_prune.py` never prunes.
 """
 from __future__ import annotations
 
@@ -73,7 +74,8 @@ DEFAULTS: dict = {
     "gate_cadence": {"slice": ["for `.claude/**` units: the edited unit's proof file, run directly"],
                      "merge": [], "close": []},
     # hooks/kill_guard.py (`protected`: {pattern, why} rows of commands a kill is denied for), hooks/run_call_router.py
-    # (`router_entrypoints`: script names run as a delegate's one job): the project's values in the floor's code.
+    # (`router_entrypoints`: {name, redirect?, detach_flag?} rows of the scripts it routes): the project's values in
+    # the floor's code.
     "pre_bash": {"protected": [], "router_entrypoints": []},
     # tools/scratch_prune.py: top-level scratch folders a tool keeps across sessions; the prune never counts them.
     "scratch_keep": [],
@@ -221,8 +223,13 @@ def _protected_row_ok(row) -> bool:
     return True
 
 
-def _entrypoint_ok(name) -> bool:
-    return isinstance(name, str) and bool(name.strip())
+def _entrypoint_ok(row) -> bool:
+    """A router row: a non-empty `name`, an optional bool `redirect` and an optional `-flag` `detach_flag`."""
+    if not isinstance(row, dict) or "name" not in row or not set(row) <= {"name", "redirect", "detach_flag"}:
+        return False
+    detach = row.get("detach_flag")
+    return (isinstance(row["name"], str) and bool(row["name"].strip()) and isinstance(row.get("redirect", True), bool)
+            and (detach is None or (isinstance(detach, str) and len(detach) > 1 and detach.startswith("-"))))
 
 
 def _sub_values(path: Path, key: str, value: dict) -> dict:

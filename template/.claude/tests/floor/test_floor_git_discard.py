@@ -440,3 +440,14 @@ def test_every_discard_case_has_its_deny_row():
         claimed.append(rows[0])
         assert dsg.verdict([sub, *rest], None), sample
     assert len(set(map(id, claimed))) == len(dsg.CASES)
+
+
+def test_a_crafted_git_discard_is_one_row(plant, monkeypatch):
+    """R3: one `CASES` row teaches the floor a discard; the rest of the subcommand stays allowed."""
+    import dangerous_shell_guard as dsg
+    row = dsg.Case(lambda sub, rest, cwd: dsg.Discard("notes-prune") if sub == "notes" and rest[:1] == ("prune",)
+                   else None, "BLOCKED: crafted git notes prune")
+    monkeypatch.setattr(dsg, "CASES", dsg.CASES + (row,))
+    denied = bash("git notes prune", plant)
+    assert denied.denied and "crafted git notes prune" in denied.reason
+    assert bash("git notes list", plant).kind == "allow"
