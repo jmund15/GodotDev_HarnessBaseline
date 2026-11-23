@@ -186,20 +186,16 @@ finish() {
 
 TOTAL_STAGES=1
 
-banner "Godot Android export setup"
+banner "Example service setup"
 
 # ── Example stage: replace with your real steps ───────────────────────────
-stage "Android — export signing"
-say "We'll grab your Android keystore credentials and store them for export + CI signing."
-open_url "https://docs.godotengine.org/en/stable/tutorials/export/exporting_for_android.html"
-step "Generate a keystore: keytool -genkeypair -v -keystore release.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000"
-step "In Godot, open Project → Export → Android → Keystore and confirm the alias you set."
-ask ANDROID_KEYSTORE_ALIAS "Enter the keystore alias:"
-step "On the Keystore row, click 'Reveal' on the Store Password, then copy it."
-ask_secret ANDROID_STORE_PASSWORD "Paste the store password:"
-write_env ANDROID_KEYSTORE_ALIAS "$ANDROID_KEYSTORE_ALIAS"
-write_env ANDROID_STORE_PASSWORD "$ANDROID_STORE_PASSWORD"
-set_secret ANDROID_STORE_PASSWORD "$ANDROID_STORE_PASSWORD"   # CI signing needs this one
+stage "Example service — API key"
+say "We'll create an API key for the example service and store it for local runs and CI."
+open_url "https://example.com/settings/api-keys"
+step "Click 'Create key', name it after this project, and copy the key it shows once."
+ask_secret EXAMPLE_API_KEY "Paste the API key:"
+write_env EXAMPLE_API_KEY "$EXAMPLE_API_KEY"
+set_secret EXAMPLE_API_KEY "$EXAMPLE_API_KEY"   # CI needs this one
 # ──────────────────────────────────────────────────────────────────────────
 
 finish
