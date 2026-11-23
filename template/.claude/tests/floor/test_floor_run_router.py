@@ -212,6 +212,34 @@ def test_a_wrapped_native_build_or_test_is_backgrounded_in_a_delegate(plant, com
     assert backgrounded(call(command, agent="agent-wf"))
 
 
+# --- each behaviour is a field of the project's row (T7) --------------------------------------------------------
+def test_a_rows_detach_flag_backgrounds_its_run_for_every_caller(plant, project_values):
+    project_values({"protected": [], "router_entrypoints": [{"name": "nightly", "detach_flag": "-Detach"}]})
+    assert backgrounded(call("pwsh -File .claude/scripts/nightly.ps1"))
+    detached = "pwsh -File .claude/scripts/nightly.ps1 -Detach"
+    assert untouched(call(detached), detached)
+
+
+def test_a_gate_named_row_without_a_detach_flag_is_backgrounded_only_for_a_delegate(plant, project_values):
+    project_values({"protected": [], "router_entrypoints": [{"name": "smoke_gate"}]})
+    command = "pwsh -File .claude/scripts/smoke_gate.ps1"
+    assert untouched(call(command), command)
+    assert backgrounded(call(command, agent="agent-wf"))
+
+
+def test_a_row_without_redirect_runs_its_worktree_copy_in_the_background(plant, project_values):
+    project_values({"protected": [], "router_entrypoints": [{"name": "probe_run", "redirect": False}]})
+    command = "pwsh -NoProfile -File %s/.claude/scripts/probe_run.ps1 --path ." % plant["wt"]
+    out = call(command, agent="agent-wf")
+    assert backgrounded(out) and rewritten(out) == command
+
+
+def test_a_script_no_row_names_is_left_alone_for_a_delegate(plant, project_values):
+    project_values({"protected": [], "router_entrypoints": []})
+    command = "pwsh -NoProfile -File .claude/scripts/engine_run.ps1 --path . --import"
+    assert untouched(call(command, agent="agent-wf"), command)
+
+
 # --- a router fault costs only the rewrite ----------------------------------------------------------------------
 def test_a_router_fault_leaves_the_rest_of_the_floor_deciding(plant, monkeypatch):
     def boom(payload):

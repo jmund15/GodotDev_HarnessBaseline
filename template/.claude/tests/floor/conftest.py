@@ -118,7 +118,9 @@ PROJECT_PRE_BASH = {
                     r"(?:\S*[/\])?run_grid(?:\.snapshot[\w.-]*)?\.sh",
          "why": "a benchmark grid — its in-flight cell is a billed arm"},
     ],
-    "router_entrypoints": ["run_test_suite", "verify", "regression_gate", "run_integration_batched"],
+    "router_entrypoints": [{"name": "run_test_suite"}, {"name": "verify"},
+                           {"name": "regression_gate", "detach_flag": "-Detach"}, {"name": "run_integration_batched"},
+                           {"name": "engine_run", "redirect": False}],
 }
 
 
