@@ -2,7 +2,7 @@
 
 Placement record for the files the S4 inventory left unplaced (`harness-v2.inventory.md` §Unplaced files, PushinPotions `origin/main` 44 paths and MaddManager `main` 56 paths). This file replaces those unplaced rows for the 46 paths below as the record of each placement; the inventory keeps its other rows. Paths are relative to `template/.claude/` in the shared repo, which is where v2 keeps the v1 layout (job map §1).
 
-Counts: 46 paths in this job's write set, one decision per path. 17 shared (kept, in this repo). 6 local (moved out of v2; PushinPotions or MaddManager keeps its own copy). 23 delete (listed for the cutover PR). The 46 are the union of both repos' lists after the owner exclusions below. Every PushinPotions path is also in MaddManager's list, so the Listed-in column reads `PP, MM` for those; a path with `MM` alone is in MaddManager's list only.
+Counts: 46 paths in this job's write set, one decision per path. 16 shared (kept, in this repo). 6 local (moved out of v2; PushinPotions or MaddManager keeps its own copy). 24 delete (listed for the cutover PR). The 46 are the union of both repos' lists after the owner exclusions below. Every PushinPotions path is also in MaddManager's list, so the Listed-in column reads `PP, MM` for those; a path with `MM` alone is in MaddManager's list only.
 
 ## Excluded: owned by another S6 job
 
@@ -24,7 +24,7 @@ Reasons state the need: which kept unit names the file, or which dropped or spli
 | `scripts/claude_profile_functions.ps1` | shared | PP, MM | /workstation_setup Phase 4 provisions these shell functions; that command is kept and reshaped. |
 | `scripts/defender_exclusions.ps1` | shared | PP, MM | /workstation_setup's Defender step runs it; project-neutral because paths arrive as parameters. |
 | `searchignore.harness` | shared | PP, MM | /reindex_search names it; every repo needs the search ignore list. |
-| `tests/test_case_pool.py` | shared | PP, MM | Proof of tests/_case_pool.py, the test runner A1 carries (H13); its overlap cases are the cost of proving concurrency. |
+| `tests/test_case_pool.py` | delete | PP, MM | Already absent on v2: `bade7bb` deleted `tests/_case_pool.py` with this proof (its five users run as plain pytest functions). Row only. |
 | `tests/test_claude_core_standalone.py` | shared | PP, MM | Proves the shared CLAUDE.core.md stands alone; in-process, no spawn. |
 | `tests/test_doc_tool_flags.py` | shared | PP, MM | Proves doc examples name only flags their tool parses; in-process. Fails in this lane until B2 and B9 land (see Blocked). |
 | `tests/test_hook_call.py` | shared | PP, MM | Proof of tests/_hook_call.py, the in-process hook call T6 relies on; its one spawned case checks the verdict matches a real run. |
@@ -68,7 +68,7 @@ Reasons state the need: which kept unit names the file, or which dropped or spli
 
 ## Deletes for the cutover PR
 
-All 23 `delete` rows above. The cutover PR reads this file for them. Tests that import a deleted file are not in this list: they belong to other owners and are named under "Outside this write set".
+All 24 `delete` rows above. The cutover PR reads this file for them. Tests that import a deleted file are not in this list: they belong to other owners and are named under "Outside this write set".
 
 ## Local moves
 
@@ -95,5 +95,5 @@ Each row is a file this job did not change. Each must change or go before the na
 - **Local for the pattern_enforcer shards.** The shards split one proof round-robin across four processes to fit a wall-clock budget. Dropping them from the shared repo leaves the parent proof and its shards with the project that owns the hook. PushinPotions' owner should cut the sharding at its cause (T6: in-process plus one spawn per entry point), not here.
 - **Delete for the semantic-search measurements.** They measure a memory change already decided and recorded in archived plans. They need a live engine and cold rebuilds and run in no routine gate. Forward value: the measurement can be re-run from git history if the shim's memory model changes.
 - **Delete for `kernel_pool.py`.** It is a one-off Windows diagnosis. No kept unit names it, and the finding is in an archived gotcha note.
-- **Keep the six kept tests as they are.** Each already meets T6: four in-process, one with a single spawn case, the null-stdin proof with one spawn per case. The seven-second case-pool proof is its concurrency evidence. The null-stdin control waits out its 8 s bound on purpose, since the control must show the process still running. No conversion was needed, so no test was rewritten.
+- **Keep the six kept tests as they are.** Each already meets T6: four in-process, one with a single spawn case, the null-stdin proof with one spawn per case. The null-stdin control waits out its 8 s bound on purpose, since the control must show the process still running. No conversion was needed, so no test was rewritten.
 - **`hooks/README.md` deleted, not rewritten.** Its one needed fact (which hook files are live) is the registration list B14 writes to `/v2/hook_registrations.md`. A rewrite would restate the layers T7 removes.
