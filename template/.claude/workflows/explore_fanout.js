@@ -607,7 +607,7 @@ const status = unavailable === coverage.requested
   : (unavailable > 0 ? 'uncovered' : (coverage.partial > 0 ? 'partial' : 'completed'))
 if (RESULT_MODE === 'bounded') {
   // The byte cap holds so one orchestrator read carries every count, flag and uncovered lens; tools/workflow_replay.mjs recovers
-  // the full result locally from the run record and journal (session_digest.py --workflow-full), with no model call.
+  // the full result locally from the run record and journal (session_digest.py --workflow-dir), with no model call.
   // The string clip, collection widths, depth and count of fully detailed claims and contradictions serve that cap only: keep enough of
   // each collection to orient the reader, show contested and corroborated claims inline first, and shed the rest to the journal by
   // journalSelector in the shed order below, never dropping a count, a contradiction or an uncovered lens. review_fanout.js holds a copy because a Workflow script cannot import.
@@ -703,8 +703,7 @@ if (RESULT_MODE === 'bounded') {
     perLens: perLens.length,
   })
   if (SPILL_DIR) fullCounts.spillMetadata = totals.spillMetadata
-  const commandBase = 'python3 .claude/tools/session_digest.py --workflow-dir "<transcriptDir-from-Workflow-result>"'
-  const expectedHash = '--expect-journal-sha256 <sha256-from-manifest>'
+  const readCommand = 'python3 .claude/tools/session_digest.py --workflow-dir "<transcriptDir-from-Workflow-result>"'
   const renderBounded = () => {
     const preview = {}
     for (const name of Object.keys(totals)) {
@@ -754,18 +753,12 @@ if (RESULT_MODE === 'bounded') {
         source: 'workflow-journal',
         delivered: false,
         relativePath: 'journal.jsonl',
-        validation: 'required',
         transcriptDirRequired: true,
         selectors: 'C<number>',
         sourceOrder: 'started-agent order, then item-array order',
         contains: 'raw lens claims, checked provenance, and gaps',
         doesNotContain: 'engine confidence changes, contested/corroborated tags, contradictions, or engine flags; those remain inline',
-        commands: {
-          manifest: commandBase + ' --workflow-manifest',
-          select: commandBase + ' --workflow-select <ID> ' + expectedHash,
-          page: commandBase + ' --workflow-page items|lenses|reports|gaps --page <N> --page-size <N> ' + expectedHash,
-          full: commandBase + ' --workflow-full ' + expectedHash,
-        },
+        commands: { read: readCommand },
       },
     }
     return output
