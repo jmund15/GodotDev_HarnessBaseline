@@ -2,7 +2,7 @@
 
 The client saves a hook command's output past `HOOK_TEXT_CAP` to a file and shows the agent a 2,000-character
 preview, and it caps each registered command on its own. A hook whose text can pass the cap registers N commands
-(`<hook>.py --part 1` .. `--part N` in `settings.base.json`); each computes the same whole text and prints its slice
+(`<hook>.py --part 1` .. `--part N` in the hook's `settings.json` registration); each computes the same whole text and prints its slice
 through `part_of`.
 
 A part holds whole lines only, counted in UTF-8 bytes (the stricter reading of the cap), so no line is cut and a part

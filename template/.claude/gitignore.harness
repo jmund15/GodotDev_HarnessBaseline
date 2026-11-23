@@ -5,15 +5,11 @@ logs/
 .claude/hooks/hook_debug.log
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+.agents/
 .claude/.cache/
 .claude/cache/
 .claude/tmp/
 .claude/scratch/
-.claude/orchestration_verdicts.json
-.claude/tools/_battery_responses.json
-.claude/tools/_battery_agent_ids.json
-.claude/plans/archive/
-.claude/benchmark_runs/
 .claude/*.jsonl.bak*
 .claude/worklog-backup-*.md
 tmpclaude-*
