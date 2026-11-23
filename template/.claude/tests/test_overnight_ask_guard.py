@@ -9,7 +9,6 @@ import time
 import unittest
 from pathlib import Path
 
-import _scan_fixtures as fx
 
 HOOK = Path(__file__).resolve().parents[1] / "hooks/overnight_ask_guard.py"
 
