@@ -18,6 +18,8 @@ from unittest import mock
 
 import pytest
 
+import _floor
+
 from case import bash
 from conftest import git, write
 
@@ -108,7 +110,9 @@ def test_rm_scope_must_block(plant, plain_temp, command):
 
 
 @pytest.mark.parametrize("command", RM_SCOPE_PASS)
-def test_rm_scope_must_pass(plant, plain_temp, command):
+def test_rm_scope_must_pass(plant, plain_temp, command, monkeypatch):
+    # The subject is the delete check: a chained `grep -r` is the recursive-grep helper's deny, not a delete.
+    monkeypatch.setattr(_floor, "HELPERS", ())
     assert bash(command.replace("{temp}", plain_temp), plant).kind == "allow"
 
 
