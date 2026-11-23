@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLAUDE = os.path.dirname(HERE)
@@ -33,6 +34,8 @@ sys.path.insert(0, os.path.join(CLAUDE, "hooks"))
 # subprocess the channel cases start.
 os.environ["REGENERABLE_CLONE_GIT_TIMEOUT_S"] = "120"
 import _regenerable_clone as rc  # noqa: E402
+sys.path.insert(0, HERE)
+from _hook_call import call  # noqa: E402
 
 PREFIX = os.path.join(CLAUDE, "scratch", "_rc_fix_")
 FIX = PREFIX + str(os.getpid())
@@ -96,14 +99,21 @@ def msys(path):
     return "/" + drive.rstrip(":").lower() + rest.replace("\\", "/")
 
 
-def channel(cmd, project=PROJECT, transcript=None, env=None):
+def channel(cmd, project=PROJECT, transcript=None, env=None, spawn=False):
+    """The Bash hook's verdict on `cmd`. In process by default (`_hook_call.call`, the same exit code, stdout and
+    stderr); `spawn=True` starts the hook as the client does, for the one case per entry point that proves the wiring."""
     payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": "regen-clone-proof",
                "hook_event_name": "PreToolUse", "cwd": project}
     if transcript:
         payload["transcript_path"] = transcript
-    proc = subprocess.run([sys.executable, os.path.join(CLAUDE, "hooks", "pre_bash.py")],
-                          input=json.dumps(payload), capture_output=True, text=True, timeout=60,
-                          env={**os.environ, "CLAUDE_PROJECT_DIR": project, **(env or {})})
+    hook = os.path.join(CLAUDE, "hooks", "pre_bash.py")
+    hook_env = {**os.environ, "CLAUDE_PROJECT_DIR": project, **(env or {})}
+    if spawn:
+        proc = subprocess.run([sys.executable, hook], input=json.dumps(payload), capture_output=True, text=True,
+                              timeout=60, env=hook_env)
+    else:
+        code, out, err, _ = call(hook, payload, env=hook_env)
+        proc = SimpleNamespace(returncode=code, stdout=out, stderr=err)
     if proc.returncode not in (0, 2) or "Traceback" in proc.stderr:
         return "CRASH", proc
     denied = proc.returncode == 2 or '"deny"' in proc.stdout or "BLOCKED" in (proc.stdout + proc.stderr)
@@ -139,10 +149,10 @@ def expect_clone(label, token, want, project, reason=None):
         print(f"  ok   clone {label}: {'pass' if want else 'block'}")
 
 
-def expect_channel(label, cmd, want):
+def expect_channel(label, cmd, want, spawn=False):
     global fails, total
     total += 1
-    got, proc = channel(cmd)
+    got, proc = channel(cmd, spawn=spawn)
     if got != want:
         fails += 1
         print(f"  FAIL channel {label}: expected {want}, got {got} (exit {proc.returncode}) "
@@ -661,6 +671,24 @@ def project_remote():
     return proj_remote
 
 
+def populate_submodule(worktree, name="Sub"):
+    """What `git submodule update --init` leaves in a worktree, made by its own clone and checkout.
+
+    The command runs git's shell-script wrapper (about 0.8 s a call on Windows, nearly all of it interpreter start);
+    the cases only judge the resulting checkout, which this builds in about 0.2 s: a clone whose git dir sits in the
+    worktree's `modules/` (the same layout), checked out at the commit the worktree records."""
+    def out(*args):
+        return subprocess.run(["git", *args], cwd=worktree, env=ENV, check=True, capture_output=True, text=True).stdout.strip()
+    url = out("config", "-f", ".gitmodules", "submodule.%s.url" % name)
+    sha = out("rev-parse", ":" + name)
+    modules = os.path.join(os.path.abspath(os.path.join(worktree, out("rev-parse", "--git-dir"))), "modules")
+    os.makedirs(modules, exist_ok=True)
+    sub = os.path.join(worktree, name)
+    git("-c", "protocol.file.allow=always", "clone", "-q", "--no-checkout", "--separate-git-dir",
+        os.path.join(modules, name), url, sub)
+    git("checkout", "-q", "--detach", sha, cwd=sub)
+
+
 def retired_worktree_cases():
     """A linked worktree under a fixture project's `.claude/worktrees/`, with a submodule."""
     global fails, total
@@ -674,7 +702,7 @@ def retired_worktree_cases():
         path = os.path.join(home, name)
         git("worktree", "add", "-q", "--detach", path, cwd=proj)
         if submodule:
-            git("-c", "protocol.file.allow=always", "submodule", "update", "-q", "--init", cwd=path)
+            populate_submodule(path)
         return path
 
     clean = add_wt("clean")
@@ -1409,7 +1437,7 @@ def scratch_clone_cases(outside):
     expect("empty token", "", False)
 
     # The real pre_bash_dispatch.py channel: a crash or traceback is never an allow.
-    expect_channel("rm -rf clean clone", "rm -rf " + rel(clean), "allow")
+    expect_channel("rm -rf clean clone", "rm -rf " + rel(clean), "allow", spawn=True)
     expect_channel("rm -rf dirty clone", "rm -rf " + rel(dirty), "deny")
     expect_channel("rm -rf clone holding only an ignored cache", "rm -rf " + rel(cached), "allow")
     # A redirection is shell plumbing, never a delete target.
