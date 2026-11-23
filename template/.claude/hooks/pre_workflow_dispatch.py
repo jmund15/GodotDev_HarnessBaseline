@@ -196,6 +196,12 @@ def launch_checks(payload, root):
     return reasons, None
 
 
+def tool_deltas(payload, root):
+    """A job's `tools` delta no variant row covers (or that is malformed) is refused here, before any agent starts."""
+    args, _as_text = _args_of(payload.get("tool_input") or {})
+    return (workflow_transport.delta_refusals(args, CLAUDE_DIR) if args else []), None
+
+
 def post_return(payload, root):
     """PostToolUse(Workflow): the project's `dispatch.post_return` hook, once per job, free and deterministic.
     A refusal is that job's failure; the reason reaches the session through `decision: block`. The payload carries the
@@ -259,7 +265,7 @@ def lf_guard(payload, root):
     return _helper("workflow_script_lf_guard", payload)
 
 
-WORKFLOW_STEPS = (expand_args_file, expand_jobs_file, launch_checks, transport, lf_guard)
+WORKFLOW_STEPS = (expand_args_file, expand_jobs_file, launch_checks, tool_deltas, transport, lf_guard)
 STOP_ON_DENY = (expand_args_file, expand_jobs_file)
 
 

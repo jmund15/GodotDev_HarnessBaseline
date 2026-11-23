@@ -63,8 +63,89 @@ def jobs_of(args):
     return jobs + [l for l in args.get("lenses") or [] if isinstance(l, dict)]
 
 
+def _table(claude_dir):
+    return _json(Path(claude_dir) / "guards" / "tool_profiles.json")
+
+
 def _kinds(claude_dir):
-    return _json(Path(claude_dir) / "guards" / "tool_profiles.json").get("kinds") or {}
+    return _table(claude_dir).get("kinds") or {}
+
+
+def parse_delta(raw):
+    """`(add, remove)` of a job's `tools` field: a string (comma or space separated) or a list of signed names
+    (`+Bash`, `-Grep`). Raises ValueError when it is not one: an unsigned name, a bare sign, an empty value."""
+    if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+        raw = ",".join(raw)
+    if not isinstance(raw, str):
+        raise ValueError("tools must be a signed string or list such as '+Bash' or '+Bash,-Grep'")
+    entries = [e for e in raw.replace(",", " ").split() if e]
+    if not entries or any(e[0] not in "+-" or not e[1:] or e[1] in "+-" for e in entries):
+        raise ValueError("tools %r is not a signed delta such as '+Bash' or '+Bash,-Grep'" % (raw,))
+    return [e[1:] for e in entries if e[0] == "+"], [e[1:] for e in entries if e[0] == "-"]
+
+
+def _has_delta(job):
+    return "tools" in job
+
+
+def _delta_text(add, remove):
+    return " ".join(["+%s" % a for a in add] + ["-%s" % r for r in remove])
+
+
+def _variant(kinds, variants, kind, add, remove):
+    """The `variants` row of `kind` whose delta is exactly `add`/`remove`, with its builtins, or None."""
+    for row in variants:
+        if row.get("kind") == kind and set(row.get("add") or []) == set(add) and set(row.get("remove") or []) == set(remove):
+            base = [b for b in kinds[kind].get("builtins") or [] if b not in remove]
+            return row, base + [a for a in add if a not in base]
+    return None
+
+
+def _suggestions(kinds, variants, kind, add, remove):
+    """What offers the asked tools, computed from the table: whole kinds, then variants of other kinds."""
+    found, writers = [], []
+    for name, row in kinds.items():
+        have = row.get("builtins") or []
+        if name != kind and all(a in have for a in add) and not any(r in have for r in remove):
+            (writers if row.get("writes") else found).append(
+                name if row.get("writes") else "%s (%s)" % (name, ", ".join(have)))
+    for row in variants:
+        other = row.get("kind")
+        if other == kind or other not in kinds:
+            continue
+        have = [b for b in kinds[other].get("builtins") or [] if b not in (row.get("remove") or [])]
+        have += [a for a in row.get("add") or [] if a not in have]
+        if all(a in have for a in add) and not any(r in have for r in remove):
+            found.append("%s %s" % (other, _delta_text(row.get("add") or [], row.get("remove") or [])))
+    return found + writers
+
+
+def resolve_job(kinds, variants, job):
+    """The profile of one job: its kind's row, or the variant row its `tools` delta selects. None when the kind has no
+    row. Raises ValueError naming the fix when the delta is malformed or no variant covers it."""
+    kind = job.get("kind")
+    label = job.get("label") or job.get("key") or "(unlabeled)"
+    row = kinds.get(kind) if isinstance(kind, str) else None
+    if not row:
+        return None
+    if not _has_delta(job):
+        return _profile(kinds, kind)
+    try:
+        add, remove = parse_delta(job.get("tools"))
+    except ValueError as exc:
+        raise ValueError("%s: %s" % (label, exc))
+    hit = _variant(kinds, variants, kind, add, remove)
+    if hit is None:
+        options = _suggestions(kinds, variants, kind, add, remove)
+        raise ValueError("%s: %s %s has no profile; use %s" % (
+            label, kind, _delta_text(add, remove),
+            "kind " + (", ".join(options[:-1]) + ", or " + options[-1] if len(options) > 1 else options[0]) if options
+            else "a kind or variant row in guards/tool_profiles.json that offers it"))
+    variant, builtins = hit
+    profile = _profile(kinds, kind)
+    profile["agentType"] = variant["agentType"]
+    profile["builtins"] = builtins
+    return profile
 
 
 def _profile(kinds, kind):
@@ -84,15 +165,33 @@ def kind_row(kind, claude_dir=CLAUDE_DIR):
 
 
 def tool_profiles(args, claude_dir=CLAUDE_DIR):
-    """One profile per job whose `kind` has a row, keyed by the job's label (or a lens's key)."""
-    kinds = _kinds(claude_dir)
+    """One profile per job whose `kind` has a row, keyed by the job's label (or a lens's key). A job's `tools` delta
+    selects its kind's variant row. A job whose delta is malformed or uncovered gets none: `delta_refusals` names it."""
+    table = _table(claude_dir)
+    kinds, variants = table.get("kinds") or {}, table.get("variants") or []
     out = {}
     for job in jobs_of(args):
         name = job.get("label") or job.get("key")
-        profile = _profile(kinds, job.get("kind"))
+        try:
+            profile = resolve_job(kinds, variants, job)
+        except ValueError:
+            continue
         if name and profile:
             out[name] = profile
     return out
+
+
+def delta_refusals(args, claude_dir=CLAUDE_DIR):
+    """One line per job whose `tools` delta is malformed or no variant covers, each leading with the fix."""
+    table = _table(claude_dir)
+    kinds, variants = table.get("kinds") or {}, table.get("variants") or []
+    lines = []
+    for job in jobs_of(args):
+        try:
+            resolve_job(kinds, variants, job)
+        except ValueError as exc:
+            lines.append(str(exc))
+    return lines
 
 
 def kind_profile(args, claude_dir=CLAUDE_DIR):
