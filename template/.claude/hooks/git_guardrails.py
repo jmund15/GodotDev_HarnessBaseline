@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
 """
-Hook: PreToolUse on Bash|PowerShell — block git operations that destroy local state, and
-require a green harness close before push where the project declares no main check (floor guard), and advise a harness commit authored without
-`instruction_quality` loaded (`_skill_verdict`; retire-when review-by 2027-03-15), name a staged skill or
-command body past the client's re-attach cap (`_reattach_cap_verdict`), report cheap bound
-proofs at commit that failed or did not pass (one `unproven` line, said once per cause per context window;
-process advisory), name a tool whose every tracked proof `adaptation.json` `proof_excluded` keeps from running
-(`_excluded_proof_note`; process advisory), report `layer_closure` findings over the touched tracked
-lock rows (`_layer_closure_note`; process advisory, local cache clone only), report a path whose
-`baseline_sync.py pull` proof is pending or red, or whose pull record is unreadable (`_pull_proof.blocked`;
-process advisory, the main check owns the landed range), deny `git commit --amend` of a HEAD that is neither this
+Hook: PreToolUse on Bash|PowerShell — block git operations that destroy local state: deny `git commit --amend` of a HEAD that is neither this
 session's nor a lane's own commit (`amend_verdict`; floor guard), and deny a commit
 that a git index write (`add`, `rm`, `reset`, `stash`, ...; `_commit_scope.writes_index`) precedes in the
 same command: every commit guard reads the index before the command runs, so it would judge the commit
@@ -27,7 +18,7 @@ Why:
 A merge commit whose result drops lines a parent added to a `.claude/` file since the merge base
 names them as an advisory (`merge_drop_advisory`), never a deny.
 
-Scope: destructive local actions, history rewrites and harness push coverage. `git
+Scope: destructive local actions and history rewrites. `git
 status`, `git restore --staged`, `git clean -n`, `git branch -d` stay allowed —
 they are recoverable or non-destructive. So does `git branch -D` of a local branch whose every
 commit `git cherry` finds already applied to HEAD or origin/HEAD (a squash-merged branch), of a branch
@@ -46,71 +37,34 @@ one line.
 Wired in: settings.json hooks.PreToolUse with matcher "Bash|PowerShell".
 """
 
-import ast
-import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 _CLAUDE_DIR = os.path.dirname(_HOOKS_DIR)
 sys.path.insert(0, os.path.join(_CLAUDE_DIR, "scripts"))
 sys.path.insert(0, _HOOKS_DIR)
 # Guard imports so a broken helper cannot crash the destructive-state checks. State failure denies
-# commits; runner failure denies pushes and only advises local commits.
+# commits.
 try:
-    from _hook_state import read_json_salvage, state_path, SETUP_SURFACE_FILES as SURFACES, \
-        in_harness_dirs, spent_mark, unspend  # noqa: E402
+    from _hook_state import spent_mark, unspend  # noqa: E402
     _STATE_IMPORT_ERROR = None
 except Exception as _exc:
-    read_json_salvage, state_path, SURFACES, in_harness_dirs = None, None, None, (lambda _rel: False)
     spent_mark, unspend = (lambda: 0), (lambda _start, _stop=None: None)
     _STATE_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
-_LAZY = {}
 
 
-def _harness_file_check():
-    """`harness_edit_skill_reminder.is_harness_file`, or None when the helper cannot import. Imported at the first
-    commit that needs it: a module-level import puts the file in the read set of every proof that imports this hook."""
-    if "is_harness_file" not in _LAZY:
-        try:
-            from harness_edit_skill_reminder import is_harness_file
-        except Exception:
-            is_harness_file = None
-        _LAZY["is_harness_file"] = is_harness_file
-    return _LAZY["is_harness_file"]
-
-
-def _runner():
-    """The runner's close helpers (`close_base`, `close_paths`, `commit_advisories`, `default_base_covers`,
-    `push_destination`, `unproven_command`) and `error`, the import failure text or None. Imported at the first harness
-    commit or push that needs them, not on every git call: the runner pulls in the whole of `harness_tests.py` and the
-    adaptation data it loads. A runner that cannot import leaves every helper None."""
-    if "runner" not in _LAZY:
-        try:
-            from harness_tests import (close_base, close_paths, commit_advisories, default_base_covers, discover, _named_for,
-                                       push_destination, unproven_command)
-            _LAZY["runner"] = SimpleNamespace(error=None, discover=discover, named_for=_named_for,
-                                              close_base=close_base, close_paths=close_paths,
-                                              commit_advisories=commit_advisories, default_base_covers=default_base_covers,
-                                              push_destination=push_destination, unproven_command=unproven_command)
-        except Exception as _exc:
-            _LAZY["runner"] = SimpleNamespace(error="%s: %s" % (type(_exc).__name__, _exc), discover=None,
-                                              named_for=None, close_base=None,
-                                              close_paths=None, commit_advisories=None, default_base_covers=None,
-                                              push_destination=None, unproven_command=None)
-    return _LAZY["runner"]
 # Which paths a merge commit authors, shared with `baseline_classification_guard.py`. Guarded like
 # the two above: a missing helper must deny commit-like invocations, never crash the other git guards.
 try:
-    from _commit_scope import authored_paths, publishes_index, writes_index  # noqa: E402
+    from _commit_scope import publishes_index, writes_index  # noqa: E402
     _SCOPE_IMPORT_ERROR = None
 except Exception as _exc:
-    authored_paths = publishes_index = writes_index = None
+    publishes_index = writes_index = None
     _SCOPE_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 # The merge-drop advisory's helpers left the shared helpers with v2 (V1 Lost); without them it stays silent.
 try:
@@ -118,17 +72,10 @@ try:
     from _git_commit import merge_refs, merge_strategy  # noqa: E402
 except ImportError:
     merge_dropped_lines = merge_refs = merge_strategy = None
-# The pull proof record: a pulled path whose proof is pending or red commits with a note. Guarded like the helpers above.
-try:
-    import _pull_proof  # noqa: E402
-    _PULL_PROOF_IMPORT_ERROR = None
-except Exception as _exc:
-    _pull_proof = None
-    _PULL_PROOF_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
 from _git_commit import (  # noqa: E402
     git_environ,
     git_invocation, git_invocations, executable_text, run_git,
-    staged_paths, incoming_paths, bypass_declared, parse_commit_args, full_pathspec, resolve_index, commit_source,
+    staged_paths, incoming_paths, bypass_declared, parse_commit_args, resolve_index,
     _pathspec_file,
     unexpanded_hint, resolve_cd, expand_literal, ref_resolves, refs_created, ref_names_created,
 )
@@ -521,318 +468,6 @@ def verdict(args, cwd=None, git_env=None, transcript_path=None):
     return None
 
 
-def _setup_surface(path):
-    """One of `_hook_state.SETUP_SURFACE_FILES` (the project's `reference/setup_surfaces.txt`). Not
-    harness code, so the harness-edit rules above do not apply to it
-    -- its close proof still reads the same constant."""
-    return path.replace("\\", "/") in (SURFACES or ())
-
-
-def _tracked_proofs(tests_dir, name, git_env=None):
-    """The tracked proof files the runner binds to a tool: a file that exists on disk but was never committed
-    reaches no other checkout. The runner's `discover` and `_named_for` decide which file proves `name`; a runner
-    that does not import binds none."""
-    runner = _runner()
-    if runner.error:
-        return []
-    hits = [h for h in runner.discover(tests_dir) if runner.named_for(os.path.basename(h), name)]
-    return [h for h in hits if run_git(["ls-files", "--error-unmatch", "--", h], tests_dir, git_env) is not None]
-
-
-def _excluded_proofs(repo_root):
-    """`adaptation.json` `proof_excluded` of the checkout being committed: {proof file name: reason}, the proofs the
-    close never runs."""
-    sys.path.insert(0, os.path.join(_CLAUDE_DIR, "tools"))
-    try:
-        import adaptation
-    finally:
-        sys.path.pop(0)
-    return adaptation.get(os.path.join(repo_root, ".claude"), "proof_excluded")
-
-
-def _layer_closure_note(repo_root, touched):
-    """The advisory for a commit that touches tracked rows of `baseline.lock.json`: `layer_closure.scan` over just those
-    rows, so a tracked file citing or reading a file no layer ships (the failure `tests/test_layer_closure.py` gives the
-    close) shows at commit. None when the checkout has no lock, no touched row is tracked or every touched row closes.
-    The pinned manifest is read from the local cache clone only, so the check never waits on a fetch; a pin it cannot
-    read, or any other failure, is named as a check that did not run."""
-    lock_path = os.path.join(repo_root, ".claude", "baseline.lock.json")
-    if not os.path.isfile(lock_path):
-        return None
-    try:
-        sys.path.insert(0, os.path.join(_CLAUDE_DIR, "tools"))
-        try:
-            import layer_closure
-        finally:
-            sys.path.pop(0)
-        with open(lock_path, encoding="utf-8") as fh:
-            lock = json.load(fh)
-        rows = set(touched) & layer_closure.lock_checked(lock)
-        if not rows:
-            return None
-        root = Path(repo_root)
-        manifest = layer_closure.pinned_manifest(root, lock, fetch=False)
-        if manifest is None:
-            return ("[harness commit] layer closure not checked for %d touched tracked row(s): the pinned baseline "
-                    "manifest is not in the local cache clone." % len(rows))
-        found = layer_closure.scan(root, layer_closure.consumer_layers(lock, manifest), rows)
-    except Exception as exc:
-        return "[harness commit] layer closure not checked: %s: %s." % (type(exc).__name__, exc)
-    if not found:
-        return None
-    return ("[harness commit] layer closure: %d finding(s) over the touched tracked rows; tests/test_layer_closure.py "
-            "fails the close on each: %s." % (len(found), "; ".join(f.render() for f in found[:10])
-                                              + ("; ..." if len(found) > 10 else "")))
-
-
-def _excluded_proof_note(norm, proofs, repo_root):
-    """The advisory for an edited tool whose every tracked proof is in `proof_excluded`; None when the close runs
-    one of them or the tool has none."""
-    if not proofs:
-        return None
-    excluded = _excluded_proofs(repo_root)
-    names = [os.path.basename(p) for p in proofs]
-    if not all(n in excluded for n in names):
-        return None
-    return ("[harness commit] %s: every tracked proof is in adaptation.json proof_excluded, so the close never runs "
-            "%s." % (norm, "; ".join("%s (%s)" % (n, excluded[n]) for n in names)))
-
-
-def _stamp_path(repo_root):
-    """The target repo's stamp, unless the runner explicitly selected another path."""
-    return os.environ.get("HARNESS_TEST_STAMP") or os.path.join(
-        repo_root, ".claude", "logs", "harness_tests_stamp.json")
-
-
-def _md_density_verdict(repo_root, touched, git_env=None, session_id=""):
-    """The advisory for a commit whose staged `.claude/**.md` ADDS units denser than the §5 audit trigger.
-
-    Judges the DELTA, never the whole file: a surface that was already dense is not this commit's
-    doing. A unit an earlier commit advisory in this session already listed (same file, same text) is not
-    listed again; a unit grown since is, and so is every unit after a compaction, which dropped the line. The key
-    is spent here, so the caller that denies the commit afterwards gives it back (`main`). Reuses
-    harness_growth_guard's own UNIT regex and EXCLUDED list so there is one definition of a
-    "rule-unit", not a second that drifts.
-    """
-    try:
-        sys.path.insert(0, os.path.join(repo_root, ".claude", "hooks"))
-        import harness_growth_guard as hg
-    except Exception:
-        return None                      # advisory machinery missing: never block a commit on it
-
-    over = []
-    for norm in touched:
-        if not norm.startswith(".claude/") or not norm.endswith(".md"):
-            continue
-        if any(seg in hg.EXCLUDED for seg in norm.split("/")[1:-1]):
-            continue                     # auto-memory/, plans/, scratch/ are evidence homes (§5)
-        try:
-            head = subprocess.run(["git", "show", "HEAD:" + norm], cwd=repo_root, env=git_environ(git_env),
-                                  capture_output=True, text=True, encoding="utf-8",
-                                  errors="replace")
-            before = head.stdout if head.returncode == 0 else ""
-            with open(os.path.join(repo_root, norm), encoding="utf-8", errors="replace") as fh:
-                after = fh.read()
-        except Exception:
-            continue
-
-        def units(t):
-            return [ln for ln in t.splitlines() if hg.UNIT.match(ln)]
-
-        def key(ln):
-            """A unit's identity: its bold lead, else its first words. Lets a unit be tracked
-            across an edit, so SHRINKING an already-dense paragraph is not read as adding one."""
-            m = re.match(r"^\s*(?:[-*] |\d+\. )?\*\*([^*]+)\*\*", ln)
-            return (m.group(1) if m else ln.strip()[:60]).lower()
-
-        was_size = {}
-        for ln in units(before):
-            was_size[key(ln)] = len(ln.encode())
-        # Flag a unit only if it is over cap AND this commit made it that way -- new, or grown.
-        # A pre-existing dense paragraph is not this commit's fault, and blocking on it would make
-        # the gate unpassable, which is how a gate gets bypassed instead of obeyed.
-        for ln in units(after):
-            n = len(ln.encode())
-            if n <= hg.DENSITY_AUDIT:
-                continue
-            prev = was_size.get(key(ln))
-            if prev is not None and n <= prev:
-                continue
-            over.append((norm, n, ln.strip()[:90], hashlib.sha1(ln.encode("utf-8")).hexdigest()[:12]))
-
-    if session_id and over:
-        from _hook_state import fire_once_since_compaction
-        over = [o for o in over if fire_once_since_compaction(session_id, "md_density:%s:%s" % (o[0], o[3]))]
-    if not over:
-        return None
-    lines = ["[harness commit] a staged .md adds a rule-unit over the %d B/unit audit trigger "
-             "(instruction_quality §5; a review trigger, never a cap):" % hg.DENSITY_AUDIT]
-    for norm, n, head, _sig in over:
-        lines.append("  %s: %d B — %s…" % (norm, n, head))
-    lines.append("Apply §5's split test and §6's cuts; leave a unit whose every sentence is needed.")
-    return "\n".join(lines)
-
-
-def _reattach_cap_verdict(repo_root, touched):
-    """The advisory for a commit that touches a skill or command body longer than the client's re-attach cap.
-
-    The client cuts a re-attached body at `SKILL_REATTACH_CHARS` characters, so an over-cap body returns
-    truncated after a compaction. The count is `_hook_state.reattach_over_cap`'s, the
-    one definition of over-cap, so this report and the census never disagree. It names only bodies this
-    commit touches: a body an earlier commit left over is on the census, not on this commit. A report,
-    never a deny.
-    """
-    try:
-        import _hook_state as hs
-        rows = hs.reattach_over_cap(Path(repo_root) / ".claude")
-        cap = hs.SKILL_REATTACH_CHARS
-    except Exception:
-        return None                      # advisory machinery missing: never block a commit on it
-    wanted = {p.replace("\\", "/") for p in touched}
-    over = [r for r in rows if r["path"] in wanted]
-    if not over:
-        return None
-    lines = ["[harness commit] a staged skill or command body is past the client's re-attach cap "
-             "(%s characters), so its re-attached copy returns truncated after a compaction:"
-             % format(cap, ",")]
-    for r in over:
-        lines.append("  %s: %s characters (%s over)"
-                     % (r["path"], format(r["chars"], ","), format(r["chars"] - cap, ",")))
-    lines.append("Split by when the text is read: move detail layers into on-demand reference/ files cited "
-                 "from the step that reads them (instruction_quality §5).")
-    return "\n".join(lines)
-
-
-def _removed(repo_root, norm, git_env=None, *, worktree=False):
-    """True when the commit deletes `norm`: absent from the worktree, and absent from the index too unless the
-    commit publishes the worktree (`worktree`: a pathspec or `-a` commit, which commits the deletion itself).
-    Its proof may leave in the same commit. A git failure reads as present, so the proof is still required."""
-    if os.path.exists(os.path.join(repo_root, norm)):
-        return False
-    if worktree:
-        return True
-    listed = run_git(["ls-files", "--", norm], repo_root, git_env)
-    return listed is not None and not listed.strip()
-
-
-def _code_ast(source, *, ignore_strings=False):
-    """Module AST without docstrings/comments; optionally erase string constant values."""
-    try:
-        tree = ast.parse(source)
-    except (SyntaxError, ValueError):
-        return None
-    for node in ast.walk(tree):
-        body = getattr(node, "body", None)
-        if (isinstance(body, list) and body and isinstance(body[0], ast.Expr)
-                and isinstance(getattr(body[0], "value", None), ast.Constant)
-                and isinstance(body[0].value.value, str)):
-            node.body = body[1:] or [ast.Pass()]
-    if ignore_strings:
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                node.value = ""
-    return ast.dump(tree)
-
-
-def _behavior_unchanged(repo_root, norm, git_env=None, *, ignore_strings=False):
-    """True when HEAD, index and worktree ASTs agree, without docstrings/comments.
-
-    `ignore_strings` also erases string values for the proof advisory, never an exemption.
-    A new, unparseable or unreadable file reads as changed. A pathspec or `-a` commit
-    publishes the worktree, so both copies must match.
-    """
-    head = run_git(["show", "HEAD:" + norm], repo_root, git_env)
-    staged = run_git(["show", ":" + norm], repo_root, git_env)
-    try:
-        with open(os.path.join(repo_root, norm), encoding="utf-8") as fh:
-            work = fh.read()
-    except (OSError, UnicodeDecodeError):
-        return False
-    if head is None or staged is None:
-        return False
-    if any("__doc__" in text for text in (head, staged, work)):
-        return False  # the file emits its docstring, so a docstring edit is behavior
-    before = _code_ast(head, ignore_strings=ignore_strings)
-    return (before is not None and before == _code_ast(staged, ignore_strings=ignore_strings)
-            == _code_ast(work, ignore_strings=ignore_strings))
-
-
-def _baseline_unchanged(repo_root, norm, git_env=None, source="index"):
-    """True when the published copy equals the `tracked` row's upstream commit: adopted or pulled
-    baseline content, authored and owed its proof upstream.
-
-    `source` is `commit_source`'s: an index commit publishes the staged lock and copy, a pathspec or `-a`
-    commit the working ones, so a pull committed by pathspec is judged by the lock it brings. The row's
-    `base` (else the lock's `synced_commit`) names that commit, read from the cached baseline checkout.
-    An unknown source, a missing or unparseable lock, a row that is not `tracked`, a missing cache, or a
-    differing copy reads as authored here.
-    """
-    def read(rel):
-        if source == "index":
-            text = run_git(["show", ":" + rel], repo_root, git_env)
-            return None if text is None else text.encode("utf-8")
-        try:
-            with open(os.path.join(repo_root, rel), "rb") as fh:
-                return fh.read().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-        except OSError:
-            return None
-
-    if source not in ("index", "worktree"):
-        return False
-    lock = read(".claude/baseline.lock.json")
-    try:
-        parsed = json.loads(lock) if lock else None
-        row = parsed["files"][norm]
-    except (ValueError, KeyError, TypeError):
-        return False
-    if not isinstance(row, dict) or row.get("status") != "tracked":
-        return False
-    commit = row.get("base") or parsed.get("synced_commit")
-    cache = os.path.join(repo_root, ".claude", ".cache", "baseline-repo")
-    if not commit or not os.path.isdir(cache):
-        return False
-    try:
-        result = subprocess.run(["git", "-C", cache, "show", f"{commit}:template/{norm}"],
-                                capture_output=True, timeout=30, env=git_environ(git_env))
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if result.returncode != 0:
-        return False
-    copy = read(norm)
-    return copy is not None and copy == result.stdout.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
-
-
-def _skill_verdict(session_id, touched):
-    """Advise a harness commit from a session that never loaded `instruction_quality`.
-
-    The staged set covers writes that the Write|Edit reminder cannot see.
-
-    Silent when no session state file exists: there is no session to judge, and CI runs this
-    battery that way. Damaged or skill-less state yields the advisory.
-    """
-    if read_json_salvage is None or state_path is None:
-        return None
-    path = state_path(session_id)
-    if not os.path.exists(path):
-        return None
-    loaded = (read_json_salvage(path) or {}).get("skills_loaded")
-    if isinstance(loaded, list) and "instruction_quality" in loaded:
-        return None
-    # The skill governs what the Write|Edit reminder classifies plus the harness code set; a plan,
-    # a memory or the worklog mirror has its own owner.
-    is_harness_file = _harness_file_check()
-    surfaces = [p for p in touched if is_harness_file is None or is_harness_file(p)
-                or in_harness_dirs(p)]
-    if not surfaces:
-        return None
-    home = ("skills/instruction_quality/SKILL.md" if any(p.endswith(".md") for p in surfaces)
-            else "rules/harness_tooling.md")
-    return ("[harness commit] (%s) `instruction_quality` was never loaded this session and "
-            "these staged paths are harness surfaces:\n  %s%s\n"
-            "Load the skill, check the edits against the sections for their file class."
-            % (home, ", ".join(surfaces[:4]), " …" if len(surfaces) > 4 else ""))
-
-
 STAGE_RECORD_SUFFIX = ".paths.json"  # tools/index_commit.py writes `<index>.paths.json` beside its index
 
 
@@ -1144,210 +779,6 @@ def harness_verdict(sub, rest, cwd, inline_env=None, git_env=None, session_id=No
         return ("BLOCKED harness commit — `git %s` failed; cannot verify commit scope." % failed_cmd
                 + unexpanded_hint(failed_cmd))
 
-    if publishes_index(sub, rest):
-        # A pending or red pull proof is a note, not a block: the main check proves the landed range, so a
-        # pulled path's commit guards no floor (rules/harness_tooling.md §Land and main check).
-        if _pull_proof is None:
-            if os.path.exists(os.path.join(repo_root, ".claude", "logs", "baseline_pull_proof.json")):
-                ADVISORIES.append(
-                    "[harness commit] pull proof: the record exists but its reader is unavailable (%s); "
-                    "repair hooks/_pull_proof.py." % _PULL_PROOF_IMPORT_ERROR)
-        else:
-            state, entries = _pull_proof.record_state(repo_root)
-            if state == _pull_proof.UNREADABLE:
-                ADVISORIES.append(
-                    "[harness commit] pull proof: the record is unreadable. Run "
-                    "`python3 .claude/tools/baseline_sync.py pull`: it keeps the record aside and proves "
-                    "every uncommitted baseline path again.")
-            elif state == _pull_proof.VALID:
-                pending = _pull_proof.blocked(repo_root, [p.replace("\\", "/") for p in paths], entries)
-                if pending:
-                    ADVISORIES.append(
-                        "[harness commit] pull proof: the proof of pulled path(s) is pending or red: %s. Run "
-                        "`python3 .claude/tools/baseline_sync.py pull` to rerun them."
-                        % ", ".join(pending))
-
-    touched = sorted(p for p in paths if p.replace("\\", "/").startswith(".claude/"))
-    surfaces = sorted(p for p in paths if _setup_surface(p))
-    if not touched and not surfaces:
-        return None
-
-    if not publishes_index(sub, rest):
-        # A bare merge / cherry-pick / revert re-commits content that was judged when it was
-        # committed on its source ref; a conflict stops it before any commit, and the commit that
-        # closes it — here or through `--continue` — is judged below.
-        return None
-
-    touched = authored_paths(touched, cwd, git_env)
-    surfaces = authored_paths(surfaces, cwd, git_env)
-    if not touched and not surfaces:
-        return None
-    return None
-
-
-def _push_ranges(rest, root, git_env=None, targets=None):
-    """Local evidence for each published source; no network calls in the hook. A `targets` list
-    receives each range's (remote, destination branch), in range order."""
-    if "--dry-run" in rest or "-n" in rest or "--delete" in rest or "-d" in rest:
-        return []
-    operands, remote, option = [], None, None
-    for arg in rest:
-        if option:
-            if option == "--repo":
-                remote = arg
-            option = None
-        elif arg in ("--repo", "--receive-pack", "--exec", "--push-option", "-o"):
-            option = arg
-        elif arg.startswith("--repo="):
-            remote = arg.partition("=")[2]
-        elif not arg.startswith("-"):
-            operands.append(arg)
-    branch = (run_git(["branch", "--show-current"], root, git_env) or "").strip()
-    def config(key):
-        return (run_git(["config", "--get", key], root, git_env) or "").strip()
-    if remote is None:
-        remote = operands.pop(0) if operands else _runner().push_destination(root, git_env)[0]
-    specs, args = [], iter(operands)
-    for arg in args:
-        if arg == "tag":
-            name = next(args, None)
-            if name is None:
-                raise RuntimeError("missing push tag")
-            specs.append("refs/tags/" + name)
-        else:
-            specs.append(arg)
-    if "--all" in rest or "--mirror" in rest:
-        namespace = "refs" if "--mirror" in rest else "refs/heads"
-        specs += (run_git(["for-each-ref", "--format=%(refname)", namespace], root, git_env) or "").splitlines()
-    if "--tags" in rest:
-        specs += (run_git(["for-each-ref", "--format=%(refname)", "refs/tags"], root, git_env) or "").splitlines()
-    if not specs:
-        specs = (run_git(["config", "--get-all", "remote." + remote + ".push"], root, git_env) or "").splitlines()
-    if not specs:
-        mode = config("push.default") or "simple"
-        if mode == "matching":
-            specs = [":"]
-        elif mode == "nothing":
-            return []
-        else:
-            target = config("branch." + branch + ".merge") if mode in ("simple", "upstream") else ""
-            specs = ["HEAD:" + (target or "refs/heads/" + branch)]
-    expanded = []
-    for spec in specs:
-        if spec.lstrip("+") == ":":
-            heads = (run_git(["for-each-ref", "--format=%(refname)", "refs/heads"], root, git_env) or "").splitlines()
-            expanded += [ref for ref in heads if run_git(["rev-parse", "--verify", "refs/remotes/" + remote + "/"
-                         + ref.removeprefix("refs/heads/")], root, git_env)]
-        else:
-            expanded.append(spec)
-    ranges = []
-    for spec in expanded:
-        source, _, target = spec.lstrip("+").partition(":")
-        if not source:
-            continue
-        rev = run_git(["rev-parse", "--verify", source + "^{commit}"], root, git_env)
-        if not rev:
-            raise RuntimeError("cannot resolve push source " + source)
-        target = (target or source).removeprefix("refs/heads/")
-        if target == "HEAD":
-            target = (run_git(["branch", "--show-current"], root, git_env) or "").strip()
-        ref = "refs/remotes/" + remote + "/" + target
-        base = _runner().close_base(root, push_ref=ref, head=rev.strip(), git_env=git_env, remote=remote)
-        ranges.append((base, rev.strip()))
-        if targets is not None:
-            targets.append((remote, target))
-    return ranges
-
-
-_ADAPTATION_DIR = _CLAUDE_DIR
-
-
-def _adaptation_str(key):
-    """`adaptation.json` string `key`; empty when it is absent or not a string."""
-    sys.path.insert(0, os.path.join(_CLAUDE_DIR, "tools"))
-    try:
-        import adaptation
-    finally:
-        sys.path.pop(0)
-    value = adaptation.load(_ADAPTATION_DIR).get(key)
-    return value if isinstance(value, str) else ""
-
-
-def _land_prefix():
-    """`adaptation.json` `land_prefix`: the branch prefix whose pushes the project's land runner integrates onto
-    the default branch; empty when the project has none."""
-    return _adaptation_str("land_prefix")
-
-
-def _main_check():
-    """`adaptation.json` `main_check`: the workflow that proves the default branch after every push; empty when
-    the project declares none."""
-    return _adaptation_str("main_check")
-
-
-def harness_push_verdict(rest, cwd, inline_env=None, git_env=None):
-    """Floor guard: where the project declares no `adaptation.json` `main_check`, each outgoing harness ref must be
-    the commit a green close proved, with its base and paths; a commit landed after the close stays local, and the
-    push names the proven commit. A push to a branch under `land_prefix` passes: the land runner integrates it and
-    the close is not its job. Where `main_check` is declared the default branch is proved after the push, so no close
-    is required; a push source the guard cannot resolve is still denied. `approving_gates.py` still approves only a
-    push of a stored green close's commit."""
-    if bypass_declared(inline_env, BYPASS_VAR):
-        return None
-    try:
-        land = _land_prefix()
-    except Exception:
-        land = ""
-    try:
-        declared = bool(_main_check())
-    except Exception:
-        declared = False
-    if land:
-        next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %%s; this project has a land runner: "
-                     "`git push --recurse-submodules=check origin HEAD:%s<session id's first 8 chars>`; the runner "
-                     "lands the branch."
-                     % land)
-    else:
-        next_step = ("BLOCKED harness push (rules/harness_tooling.md) — %s; run `python3 "
-                     ".claude/scripts/harness_tests.py --close` in the background, then push the commit it proves.")
-    runner = _runner()
-    if _STATE_IMPORT_ERROR or runner.error:
-        return next_step % "close machinery unavailable"
-    root = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
-    if not root:
-        return next_step % "cannot resolve the push checkout"
-    root = root.strip()
-    targets = []
-    try:
-        ranges = _push_ranges(rest, root, git_env, targets)
-        outgoing = [(base, rev, runner.close_paths(root, base, rev, remote))
-                    for (base, rev), (remote, _target) in zip(ranges, targets)]
-    except RuntimeError as exc:
-        source = str(exc).removeprefix("cannot resolve push source ")
-        if source != str(exc):
-            return ("BLOCKED harness push (rules/harness_tooling.md) — cannot resolve push source `%s`; the guard "
-                    "does not expand shell variables, so push the commit by its literal hash or ref." % source)
-        return next_step % "cannot resolve the outgoing harness range"
-    except (OSError, ValueError):
-        return next_step % "cannot resolve the outgoing harness range"
-    if declared:
-        return None
-    harness = [(base, rev, paths, dest) for (base, rev, paths), dest in zip(outgoing, targets)
-               if paths and not (land and dest[1].removeprefix("refs/heads/").startswith(land))]
-    if not harness:
-        return None
-    close = (read_json_salvage(_stamp_path(root)) or {}).get("close")
-    green = isinstance(close, dict) and close.get("verdict") == "green" and not close.get("red")
-    proven = close.get("head") if green else None
-    for base, rev, paths, (remote, target) in harness:
-        if proven and rev != proven:
-            return ("BLOCKED harness push (rules/harness_tooling.md) — the green close proved %s, not the pushed "
-                    "%s; push the proven commit: `git push %s %s:%s`, or check that ref out and run `python3 "
-                    ".claude/scripts/harness_tests.py --close` in the background there."
-                    % (proven[:12], rev[:12], remote, proven, target))
-        if rev != proven or not (close.get("base") == base or runner.default_base_covers(root, close.get("base"), rev, remote)) \
-                or not set(paths) <= set(close.get("paths") or []):
-            return next_step % ("no green close result covers %s, its outgoing base and paths" % rev[:12])
     return None
 
 
@@ -1467,8 +898,8 @@ def main() -> None:
 
         def expand(token):
             return expand_literal(token, call.assignments) or token
-        key = os.path.normcase(os.path.abspath(target))
-        if args and args[0] == "init":
+        key = os.path.normcase(os.path.abspath(target)) if target else None
+        if args and args[0] == "init" and target:
             named, takes_value = [], False
             for a in args[1:]:
                 if takes_value:
@@ -1485,8 +916,11 @@ def main() -> None:
             continue
         judged_args = [expand(arg) for arg in args] if args and args[0] in ('checkout', 'restore') else args
         message = verdict(judged_args, target, git_env, input_data.get('transcript_path'))
-        if not message and args and args[0] == "push":
-            message = harness_push_verdict(args[1:], target, inline_env, git_env)
+        if (not message and target is None and args
+                and (args[0] in ("commit", "merge", "cherry-pick", "revert") or publishes_index and publishes_index(args[0], args[1:]))):
+            # An unexpandable `-C` or a wrapped call: the repo cannot be proved, so the commit scope cannot be either.
+            message = ("BLOCKED harness commit — `git rev-parse --show-toplevel` failed; cannot verify commit scope."
+                       + unexpanded_hint(command))
         if (index_write and not message and key not in born and publishes_index and args
                 and publishes_index(args[0], args[1:])):
             message = SAME_COMMAND_WRITE % (index_write, index_write)
