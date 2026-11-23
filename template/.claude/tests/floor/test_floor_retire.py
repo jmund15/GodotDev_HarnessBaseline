@@ -12,6 +12,7 @@ this session created (`allow_ignored`, `--created`), untracked Godot `.import` f
 the `--retire-check` CLI (now `_delete_rule.py <path>...`), and the timeout environment variable. T1 lists these
 allows as lost: each now asks the owner once. Their deny cases are kept below in their no-saved-copy form.
 """
+import atexit
 import json
 import os
 import shutil
@@ -56,18 +57,31 @@ def seeded(root, name, files, branch="main"):
 
 def project_remote(root):
     """A bare remote of a fixture project carrying a submodule (`git worktree remove` refuses every worktree that
-    carries one, so a retired worktree goes by a recursive delete)."""
+    carries one, so a retired worktree goes by a recursive delete). Built once per session in a template folder and
+    copied per project (the submodule URL is relative, so a copied pair stays a pair); a row that pushes changes only
+    its own copy."""
+    if not _TEMPLATE:
+        _TEMPLATE.append(Path(tempfile.mkdtemp(prefix="retire_remotes_")))
+        atexit.register(rmtree, _TEMPLATE[0])
+        _build_remotes(_TEMPLATE[0])
+    for name in ("sub_remote.git", "proj_remote.git", "proj_seed"):
+        shutil.copytree(_TEMPLATE[0] / name, Path(root, name))
+    return Path(root, "proj_remote.git")
+
+
+_TEMPLATE = []
+
+
+def _build_remotes(root):
     sub_seed = seeded(root, "sub_seed", {"s.txt": "s\n"})
     sub_remote = Path(root, "sub_remote.git")
     git(root, "clone", "-q", "--bare", str(sub_seed), str(sub_remote))
     proj_seed = seeded(root, "proj_seed", {
         "a.txt": "a\n", ".gitignore": ".claude/worktrees/\n.claude/scratch/\n.claude/tmp/\n.godot/\n.devdb/\n"
                                       ".env.local\ndist-preview/\nlogs/\ntest-results/\n"})
-    git(proj_seed, *SUB, "submodule", "add", "-q", str(sub_remote), "Sub")
+    git(proj_seed, *SUB, "submodule", "add", "-q", "../sub_remote.git", "Sub")
     git(proj_seed, "commit", "-qm", "sub")
-    remote = Path(root, "proj_remote.git")
-    git(root, "clone", "-q", "--bare", str(proj_seed), str(remote))
-    return remote
+    git(root, "clone", "-q", "--bare", str(proj_seed), str(Path(root, "proj_remote.git")))
 
 
 class Project:
