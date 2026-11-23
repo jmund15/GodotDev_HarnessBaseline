@@ -1,13 +1,27 @@
 ---
 disable-model-invocation: true
-allowed-tools: Bash(gh pr view:*), Bash(gh pr edit:*), Bash(gh pr merge:*), Bash(gh pr close:*), Bash(gh pr list:*), Bash(gh label:*), Bash(git stash:*), Bash(git checkout:*), Bash(git pull:*), Bash(git rebase:*), Bash(git push:*), Bash(git add:*), Bash(git branch:*), Bash(git -C:*), Bash(git submodule:*), Bash(dotnet build:*), Bash(gdunit4:*), Glob, Grep, Read, Edit, Task, mcp__obsidian__obsidian_list_notes, mcp__obsidian__obsidian_read_note
+allowed-tools: Bash(gh pr view:*), Bash(gh pr edit:*), Bash(gh pr merge:*), Bash(gh pr close:*), Bash(gh pr list:*), Bash(gh label:*), Bash(git fetch:*), Bash(git worktree:*), Bash(git restore:*), Bash(git rebase:*), Bash(git merge:*), Bash(git commit:*), Bash(git push:*), Bash(git add:*), Bash(git rev-parse:*), Bash(git rev-list:*), Bash(git status:*), Bash(git -C:*), Bash(git submodule:*), Bash(dotnet build:*), Bash(gdunit4:*), Glob, Grep, Read, Edit, Task, mcp__obsidian__obsidian_list_notes, mcp__obsidian__obsidian_read_note
 description: "Build, test, and merge a single PR"
 ---
 
 Build, test, and merge a single PR. Assumes code review has already been done via `/review_pr`.
 
+The primary checkout is shared with other sessions: no step stashes, switches branches or checks out in it. Every sync, conflict, build and gate step runs in the worktree Step 0 creates, and Step 9 (or any stop) retires it. `<wt>` below is that worktree, `.claude/worktrees/merge-pr<N>`; `<base>` is the PR's `baseRefName`.
+
 ## Arguments
 - `$ARGUMENTS` — PR number (required)
+
+---
+
+## Step 0: Merge Worktree
+
+```bash
+git fetch origin <base> <branch>
+git worktree add --detach .claude/worktrees/merge-pr<N> origin/<branch>
+git -C .claude/worktrees/merge-pr<N> rev-parse HEAD
+```
+
+Done when the last command prints the PR's `headRefOid`. A detached worktree never collides with a checkout of `<branch>` elsewhere. When `<wt>` already exists from an earlier run, read its `git -C <wt> status --short`: remove it with `git worktree remove <wt>` when clean, and stop and report when it holds changes.
 
 ---
 
@@ -19,33 +33,31 @@ gh pr view <N> --json title,headRefName,state,mergeable,additions,deletions,chan
 
 Verify:
 - PR is open (not closed/merged)
-- PR is mergeable (no conflicts). If not mergeable, sync with main using the appropriate strategy:
+- PR is mergeable (no conflicts). If not mergeable, sync with `origin/<base>` using the appropriate strategy:
 
   **Choose sync strategy based on branch size:**
-  - **≤20 diverged commits → `git rebase main`** (each commit replays individually, conflicts are small and isolated)
-  - **>20 diverged commits → `git merge main`** (one resolution pass with full branch context, avoids fatigue across 50+ resolution passes where the same conflict can recur)
+  - **≤20 diverged commits → `git rebase origin/<base>`** (each commit replays individually, conflicts are small and isolated)
+  - **>20 diverged commits → `git merge origin/<base>`** (one resolution pass with full branch context, avoids fatigue across 50+ resolution passes where the same conflict can recur)
 
-  Count diverged commits: `git rev-list --count main..HEAD`
+  Count diverged commits: `git -C <wt> rev-list --count origin/<base>..HEAD`
 
   **Rebase path** (small branches):
   ```bash
-  git checkout <branch>
-  git rebase main
+  git -C <wt> rebase origin/<base>
   # Resolve conflicts per Step 2 rules (one commit at a time)
-  git push --force-with-lease
+  git -C <wt> push --force-with-lease origin HEAD:<branch>
   ```
 
   **Merge path** (large branches, >20 commits):
   ```bash
-  git checkout <branch>
-  git merge main
+  git -C <wt> merge origin/<base>
   # Resolve all conflicts in one pass per Step 2 rules
   # Build + test to verify resolution
-  git push
+  git -C <wt> push origin HEAD:<branch>
   ```
   > **Why the threshold?** Rebase replays each commit individually — excellent for isolation, but at 50+ commits the same file can conflict repeatedly, causing resolution fatigue and silent errors. Merge resolves each conflict exactly once with full branch context. The conflict resolution rules (interface checks, data-file verification, feature spot-checks) apply equally to both strategies.
 
-  Ask user to confirm before syncing.
+  Ask user to confirm before syncing. When `python3 .claude/tools/adaptation.py get pr_pipeline.sync` prints entries, run them in `<wt>` instead of the default sync above (`/pr_pipeline` §Hook points owns the placeholders).
 - If a submodule pointer changed: warn about merge order. The paired submodule PR merges to the submodule's primary branch FIRST.
   - Find the paired submodule branch by the project's pairing convention (the submodule's path-scoped rule names it) and verify it exists: `git -C <submodule> ls-remote --heads origin`.
   - If the submodule PR conflicts with its primary branch: sync it the same way as Step 1, then push.
@@ -62,7 +74,7 @@ If the sync in Step 1 produces merge conflicts (whether from rebase or merge), r
 > - `--ours` = HEAD = main + already-replayed commits (the base you're rebasing ONTO)
 > - `--theirs` = the branch commit being cherry-picked (the commit being replayed)
 >
-> This is the opposite of merge semantics. Always verify after `checkout --ours/--theirs` that the file contains what you expect before staging.
+> This is the opposite of merge semantics. Always verify after `git -C <wt> restore --ours/--theirs -- <file>` that the file contains what you expect before staging.
 
 ### Decision Framework
 
@@ -123,10 +135,9 @@ Resolution:
 1. Confirm BOTH paired submodule branches are merged to the submodule's primary branch first (Step 1 submodule check)
 2. After they merge, update the submodule to the latest primary branch:
    ```bash
-   git -C <submodule> fetch origin
-   git -C <submodule> checkout <primary>
-   git -C <submodule> pull
-   git add <submodule>
+   git -C <wt>/<submodule> fetch origin
+   git -C <wt>/<submodule> switch --detach origin/<primary>
+   git -C <wt> add <submodule>
    ```
 3. Continue the rebase or merge
 
@@ -158,7 +169,7 @@ After resolving ALL conflicts in a rebase:
 1. `git rebase --continue` (repeat for each conflicted commit)
 2. Build the project — compilation errors reveal broken resolutions
 3. For serialized data files: run the Step 2 post-resolution check
-4. `git push --force-with-lease` to update the PR branch
+4. `git -C <wt> push --force-with-lease origin HEAD:<branch>` to update the PR branch
 5. Proceed to Step 3
 
 ---
@@ -169,19 +180,13 @@ Classify using the [PR Classification](agents/pr_classification.md) tables. The 
 
 ---
 
-## Step 4: Branch Checkout
+## Step 4: Submodule Tree
 
 ```bash
-# Stash any local changes
-git stash --include-untracked -m "merge-pr: stash before PR #<N>"
-
-# Switch to PR branch
-git checkout <branch>
-
-# CRITICAL: Update submodule to match the branch's pointer
-# git checkout updates the pointer but NOT the working tree — without this, builds fail with missing types
-git submodule update --init --recursive
+git -C <wt> submodule update --init --recursive
 ```
+
+A worktree's submodule pointer has no checked-out tree until this runs, and a build without it fails with missing types. Done when the command exits 0. Steps 5 and 6 run in `<wt>` and name its project path; a bare build command resolves the primary checkout, not the PR tree.
 
 ---
 
@@ -304,25 +309,20 @@ gh pr merge <N> --merge --delete-branch
 - Delete the remote branch: `git -C <submodule> push origin --delete <branch>`
 - Delete the local branch if it exists: `git -C <submodule> branch -d <branch> 2>/dev/null || true`
 
-Then return to main:
+Then update the remote view and retire the worktree; the primary checkout is left as it is:
 ```bash
-git checkout main
-git pull
-
-# CRITICAL: Update submodules after pull — the merged PR may have changed a pointer
-git submodule update --init --recursive
+git fetch origin <base>
+git worktree remove .claude/worktrees/merge-pr<N>
 ```
 
-Pop stash if one was created:
-```bash
-git stash pop 2>/dev/null || true
-```
+Done when `git worktree list` no longer shows `<wt>`. A `worktree remove` refused for local changes is reported, never forced. A stop before the merge (abort, a red gate, an owner decline) retires `<wt>` the same way once nothing in it is unpushed.
 
 ---
 
 ## Constraints
 
-- **Never force-push** to PR branches
+- **Never touch the primary checkout** — no stash, checkout, switch or pull there; `<wt>` is the only tree this command changes
+- **Never force-push** to PR branches without `--force-with-lease`
 - **Never merge without user confirmation**
 - **Build before test** — compilation errors waste user testing time
 - **Tests before user** — automated tests are cheaper than human time
