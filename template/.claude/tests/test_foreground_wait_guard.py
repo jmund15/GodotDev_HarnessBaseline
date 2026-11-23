@@ -2,22 +2,22 @@
 
     python -m pytest .claude/tests/test_foreground_wait_guard.py -q --durations=0
 
-Decision cases call the hook in process with a real payload; one spawned case proves the registered command runs.
+Decision cases call `check` in process with a real payload. The floor reaches it through `_floor.HELPER_NAMES`
+(tests/floor/test_floor_entry.py proves the clamp through the floor).
 """
 import importlib.util
-import json
 import os
-import subprocess
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 TESTS = Path(__file__).resolve().parent
-sys.path.insert(0, str(TESTS))
-import _hook_call  # noqa: E402
-
 HOOK = TESTS.parent / "hooks" / "foreground_wait_guard.py"
+sys.path.insert(0, str(HOOK.parent))
+import foreground_wait_guard  # noqa: E402
+
 SUBAGENT_MS = 270000
 HANDBACK_MS = 1800000
 LOOP = "until test -f done.flag; do sleep 30; done"
@@ -44,9 +44,15 @@ def _payload(command, tool="Bash", timeout=None, background=False, agent_id=None
 
 
 def _call(env, payload):
-    code, _out, err, output = _hook_call.call(HOOK, payload, env=env)
-    assert code == 0, err
-    return output
+    """The `hookSpecificOutput` the helper returns for `payload` under `env`; {} when it returns None."""
+    with mock.patch.dict(os.environ, env, clear=True):
+        out = foreground_wait_guard.check(payload)
+    return (out or {}).get("hookSpecificOutput") or {}
+
+
+def test_the_clamp_bound_is_the_hook_states_cache_warm_window():
+    import _hook_state
+    assert foreground_wait_guard.SUBAGENT_WAIT_MS == _hook_state.SUBAGENT_CACHE_WARM_SECONDS * 1000
 
 
 def test_woken_orchestrator_passes_a_long_foreground_call_untouched(env):
@@ -109,10 +115,3 @@ def test_never_woken_follows_the_caller_kind(tmp_path, monkeypatch):
     assert module.never_woken({"agent_id": "w9", "agent_type": "workflow-subagent"}) is True
     assert module.never_woken({}) is False
 
-
-def test_the_registered_command_runs_and_clamps_once(tmp_path):
-    done = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(_payload("make build", timeout=600000)),
-                          capture_output=True, text=True, encoding="utf-8",
-                          env=dict(os.environ, CLAUDE_CODE_ENTRYPOINT="sdk-cli", HARNESS_HOOK_STATE_DIR=str(tmp_path)))
-    assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout)["hookSpecificOutput"]["updatedInput"]["timeout"] == SUBAGENT_MS

@@ -5,15 +5,17 @@ Three shapes: adaptation.json absent -> the built-in SAFE_SEGMENT_COMMANDS only;
 a valid entry -> that command joins the allowlist; a wrong-typed `read_only_commands` (not a
 list) -> the default (built-in set only) plus one stderr line. Validation cases: an entry
 matching NEVER_SAFE (e.g. "rm") is rejected and never joins the allowlist; an entry failing
-`^[a-z0-9_.-]+$` is rejected too. Each case runs the hook as a real subprocess against a
-scratch `.claude` tree (`_adaptation_fixture`), so behavior is proven end-to-end, not by
-importing internals.
+`^[a-z0-9_.-]+$` is rejected too. Each case loads the hook copy from a
+scratch `.claude` tree (`_adaptation_fixture`) through `check(payload)`, the entry the floor calls.
 
     python -m pytest .claude/tests/test_compound_cd_approver_adaptation.py -q
 """
+import contextlib
+import importlib.util
+import io
+import itertools
 import json
 import os
-import subprocess
 import sys
 
 import pytest
@@ -26,12 +28,18 @@ REAL_HOOK = os.path.join(fx.REAL_HOOKS, HOOK_NAME)
 DOTNET = "cd /repo && dotnet build"
 
 
+_COPIES = itertools.count()
+
+
 def run_hook(hook_path, command):
-    """Spawned: the hook's stdin entry point is the subject."""
-    payload = {"tool_name": "Bash", "tool_input": {"command": command}}
-    r = subprocess.run([sys.executable, hook_path], input=json.dumps(payload),
-                       capture_output=True, text=True, timeout=30)
-    return r.stdout.strip(), r.stderr.strip(), r.returncode
+    """(stdout JSON text, stderr text, 0) of `check` on a Bash payload, from the hook copy at `hook_path`."""
+    spec = importlib.util.spec_from_file_location("cd_approver_copy_%d" % next(_COPIES), hook_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        out = module.check({"tool_name": "Bash", "tool_input": {"command": command}})
+    return (json.dumps(out) if out else ""), err.getvalue().strip(), 0
 
 
 def is_allowed(stdout):
@@ -47,7 +55,7 @@ def adapted():
     made = []
 
     def make(seed):
-        tree = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=seed)
+        tree = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=seed, extra_hook_files=("_shell_lex.py",))
         made.append(tree)
         return os.path.join(tree, "hooks", HOOK_NAME)
 
@@ -121,6 +129,7 @@ READ_ONLY = [
     ("read-only git still auto-approves", "cd /repo && git log --oneline -5"),
     ("a read-only pipe still auto-approves", "cd /repo && git status --short | head -5"),
     ("quoted grep still auto-approves", "cd /repo && grep -n 'a b' x.py"),
+    ("a separator inside quotes is not a segment", "cd /repo && grep -n 'a && rm b' x.py"),
 ]
 
 
@@ -134,3 +143,13 @@ def test_a_carrier_is_not_auto_approved(command):
 def test_a_read_only_command_is_auto_approved(command):
     out, _err, _rc = run_hook(REAL_HOOK, command)
     assert is_allowed(out)
+
+
+def test_a_non_bash_tool_and_a_non_cd_command_return_nothing():
+    for payload in ({"tool_name": "PowerShell", "tool_input": {"command": "cd /repo && git status"}},
+                    {"tool_name": "Bash", "tool_input": {"command": "git status"}},
+                    {"tool_name": "Bash", "tool_input": {}}):
+        spec = importlib.util.spec_from_file_location("cd_approver_none", REAL_HOOK)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert module.check(payload) is None

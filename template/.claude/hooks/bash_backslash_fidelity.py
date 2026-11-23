@@ -31,7 +31,7 @@ applied unconditionally:
                 latest `observed` (client updates have kept the measured behavior), plus one advisory
                 per client version and platform, machine-wide naming both versions and the probe command;
     unrecorded key with no such row, unreadable version or record -> no rewrite, one advisory per
-                compaction window naming the version and the probe command.
+                machine naming the version and the probe command.
 - Any internal error: silent.
 
 Scope: the `command` field of Bash only. Monitor's backslash behavior is unmeasured (an excluded
@@ -39,7 +39,7 @@ check, re-entered on the first Monitor command containing `\\`), and a `claude -
 PreToolUse event on a Workflow call, so repair inside such a child is unverified.
 
 Channel: hookSpecificOutput.updatedInput, permissionDecision: deny, or additionalContext, through `check(payload)`.
-Last in `_floor.HELPER_NAMES`, so every deny wins before this rewrites.
+Runs after every other rewriting helper in `_floor.HELPER_NAMES`, so every deny wins before this rewrites.
 Proofs: tests/test_bash_backslash_fidelity.py, tests/test_bash_fidelity_probe.py.
 """
 import json
@@ -256,20 +256,3 @@ def check(payload):
     out = evaluate(payload)
     return {"hookSpecificOutput": out} if out else None
 
-
-def main():
-    try:
-        payload = json.load(sys.stdin)
-    except Exception:
-        return 0
-    try:
-        out = check(payload)
-        if out:
-            sys.stdout.write(json.dumps(out))
-    except Exception:
-        pass
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

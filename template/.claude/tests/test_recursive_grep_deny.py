@@ -24,7 +24,7 @@ import uuid
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 DISPATCH = os.path.join(REPO, ".claude", "hooks", "pre_bash.py")
-GUARD = os.path.join(REPO, ".claude", "hooks", "unbounded_scan_guard.py")
+sys.path.insert(0, os.path.join(REPO, ".claude", "hooks"))
 sys.path.insert(0, HERE)
 import _hook_call  # noqa: E402
 
@@ -195,9 +195,8 @@ def run_rg(*args, cwd=None):
 
 def hook_verdict(command, cwd):
     payload = {'tool_name': 'Bash', 'cwd': str(cwd), 'tool_input': {'command': command}}
-    code, out, err, _ = _hook_call.call(GUARD, payload, cwd=str(cwd))
-    assert code == 0 and 'Traceback' not in err, err
-    return json.loads(out)['hookSpecificOutput']
+    import unbounded_scan_guard
+    return unbounded_scan_guard.check(payload)['hookSpecificOutput']
 
 
 import pytest

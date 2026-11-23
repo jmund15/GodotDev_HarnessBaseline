@@ -25,7 +25,6 @@ Channel: `check(payload)` returns `permissionDecision: deny`; the floor skips a 
 raises. The volume and scope advisories this file once carried are V17's Lost column.
 """
 
-import json
 import os
 import re
 import sys
@@ -227,16 +226,3 @@ def check(payload):
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                    "permissionDecisionReason": DENY_REASON}}
 
-
-def main() -> None:
-    try:
-        out = check(json.load(sys.stdin))
-    except Exception:
-        sys.exit(0)
-    if out:
-        sys.stdout.write(json.dumps(out))
-    sys.exit(0)
-
-
-if __name__ == "__main__":
-    main()

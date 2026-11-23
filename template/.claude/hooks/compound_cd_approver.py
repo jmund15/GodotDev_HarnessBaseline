@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
-"""
-Hook: PreToolUse - Auto-approve compound cd commands (allowlist-gated)
+"""Floor helper (`_floor.HELPER_NAMES`, run last): auto-approve a compound `cd` command through `check(payload)`.
 
 Claude Code's permission wildcard (*) cannot match across && boundaries.
 This means `Bash(cd *)` does NOT match `cd /path && git show ...`, causing
@@ -13,17 +11,15 @@ EVERY segment after the leading `cd <path>` runs an allowlisted command in a
 read-only shape (`git` read subcommands only; no expansion, redirection,
 background or newline anywhere in the command). Interpreters (python/node/npx) are deliberately
 excluded — auto-approving them would approve arbitrary inline code.
-Anything else falls through to the normal permission flow (print "{}",
-exit 0) — a prompt, not a block.
+Anything else returns None and falls through to the normal permission flow
+— a prompt, not a block. The floor merges this `allow` below every deny and `ask` (`_floor._decide`).
 
 Note: This is a convenience net. The preferred approach is to avoid compound
 cd commands entirely (use absolute paths, git -C, etc.) per CLAUDE.md rules.
 """
 
-import json
 import os
 import re
-import shlex
 import sys
 
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -31,6 +27,9 @@ _TOOLS_DIR = os.path.join(os.path.dirname(_HOOKS_DIR), "tools")
 if _TOOLS_DIR not in sys.path:
     sys.path.insert(0, _TOOLS_DIR)
 import adaptation  # noqa: E402
+
+sys.path.insert(0, _HOOKS_DIR)
+import _shell_lex  # noqa: E402
 
 # Pattern: command starts with cd (possibly quoted path) followed by &&
 CD_COMPOUND_PATTERN = re.compile(r'^cd\s+(".*?"|\'.*?\'|\S+)\s*&&')
@@ -59,10 +58,7 @@ NEVER_SAFE = frozenset({
 
 _READ_ONLY_COMMAND_RE = re.compile(r"^[a-z0-9_.-]+$")
 
-# Segment separators: &&, ||, ;, | (pipe last so || is consumed first).
-_SEGMENT_SPLIT = re.compile(r'&&|\|\||;|\|')
 _CARRIER_RE = re.compile(r"[$`<>()\n\r]")
-_LONE_AMP_RE = re.compile(r"(?<!&)&(?!&)")
 
 # `git` is allowlisted for its read-only subcommands only; `find` and `sort` lose the
 # arguments that delete, execute or write.
@@ -119,54 +115,31 @@ def _segment_safe(words, safe_commands: frozenset) -> bool:
 
 
 def _all_segments_safe(command: str, safe_commands: frozenset) -> bool:
-    """True when every segment is an allowlisted command in a non-writing shape. Expansion,
-    redirection, background and newline characters fall through: they carry commands or
-    writes the segment split cannot see."""
-    if _CARRIER_RE.search(command) or _LONE_AMP_RE.search(command):
+    """True when every segment is an allowlisted command in a non-writing shape. Expansion, redirection,
+    background and newline characters fall through: they carry commands or writes the segment split cannot see."""
+    if _CARRIER_RE.search(command):
         return False
-    for segment in _SEGMENT_SPLIT.split(command):
-        try:
-            words = shlex.split(segment)
-        except ValueError:
+    for segment in _shell_lex.lex(command):
+        if segment.op == "&":
             return False
+        words = [word.value for word in segment.words]
         if words and not _segment_safe(words, safe_commands):
             return False
     return True
 
 
-def main():
-    try:
-        input_data = json.load(sys.stdin)
-    except json.JSONDecodeError:
-        print("{}")
-        sys.exit(0)
-
-    tool_name = input_data.get("tool_name", "")
-    tool_input = input_data.get("tool_input", {})
-
-    if tool_name != "Bash":
-        print("{}")
-        sys.exit(0)
-
-    command = tool_input.get("command", "")
-
-    if CD_COMPOUND_PATTERN.match(command) and _all_segments_safe(command, _effective_safe_commands()):
-        result = {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "permissionDecisionReason": (
-                    "Auto-approved: cd compound command — every segment starts "
-                    "with an allowlisted command in a read-only shape"
-                ),
-            }
-        }
-        print(json.dumps(result))
-        sys.exit(0)
-
-    print("{}")
-    sys.exit(0)
-
-
-if __name__ == "__main__":
-    main()
+def check(payload):
+    """The `allow` output for a Bash `cd <path> && <read-only commands>` call, else None."""
+    if payload.get("tool_name") != "Bash":
+        return None
+    command = (payload.get("tool_input") or {}).get("command")
+    if not isinstance(command, str) or not CD_COMPOUND_PATTERN.match(command):
+        return None
+    if not _all_segments_safe(command, _effective_safe_commands()):
+        return None
+    return {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "permissionDecisionReason": "Auto-approved: cd compound command — every segment starts "
+                                    "with an allowlisted command in a read-only shape",
+    }}

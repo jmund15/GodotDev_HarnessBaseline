@@ -1,6 +1,5 @@
-#!/usr/bin/env python3
-"""
-Hook: PreToolUse (Bash|PowerShell). The seat launcher arms it through the floor entry, hooks/pre_bash.py (tools/launch_check.py stage).
+"""Floor helper (`_floor.HELPER_NAMES`): the wait clamp for a caller no completion wake reaches, through `check(payload)`.
+The floor entry, hooks/pre_bash.py, carries it for a seat too (tools/launch_check.py stage).
 
 A never-woken caller (a Workflow subagent, a `claude -p` child, a seat) gets no completion wake, so a backgrounded
 job never wakes it. Two checks keep its foreground waits inside its prompt cache:
@@ -12,18 +11,14 @@ A woken caller (the interactive session, an Agent-tool subagent) passes untouche
 run_call_router reads it. Rule homes: guards/rails.md, CLAUDE.core.md §Shell Discipline.
 State: the shared per-session file (_hook_state), key `wait_loops`, one entry per caller, swept past STALE_SECONDS.
 """
-import json
 import os
 import re
-import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import _hook_state  # noqa: E402
-from _shell_lex import shell_code  # noqa: E402
+from _shell_lex import shell_code
 
-SUBAGENT_WAIT_MS = _hook_state.SUBAGENT_CACHE_WARM_SECONDS * 1000
-HANDBACK_MS = 1800000  # wait_log.py HANDBACK_S: past it the parent's one wake costs less than a child's trickle polls
+SUBAGENT_WAIT_MS = 270000  # the prompt cache's warm window (_hook_state.SUBAGENT_CACHE_WARM_SECONDS), under the 5-minute expiry
+HANDBACK_MS = 1800000  # past it the parent's one wake costs less than a child's trickle polls
 BASH_DEFAULT_MS = 120000
 STATE_KEY = "wait_loops"
 STALE_SECONDS = 3600  # the longest prompt cache: a caller idle this long re-reads uncached either way
@@ -46,7 +41,7 @@ HANDBACK_REASON = (
     "BLOCKED wait: this caller's foreground loop waits total %d minutes since its last non-wait call, past the %d minutes "
     "after which the parent's one wake costs less than these polls, and no wake reaches a subagent or `claude -p` child. "
     "Return now with the log path, pid, expected end and the steps left after it, so the parent waits for it "
-    "(guards/rails.md; the same hand-back `bench wait` gives)."
+    "(guards/rails.md)."
 )
 
 
@@ -79,6 +74,7 @@ def never_woken(payload):
 def _wait_total_ms(payload, add_ms):
     """Track an unwoken caller's clamped loop-wait time: `add_ms` is added when this call is a loop wait, and any other
     call resets the total. Returns the total BEFORE this call. Fails open to 0 when the state cannot be locked."""
+    import _hook_state  # per-session state loads on first use: `import _floor` carries none
     key = _caller(payload) or "main"
     path = _hook_state.state_path(payload.get("session_id"))
     if not add_ms:
@@ -102,15 +98,6 @@ def _wait_total_ms(payload, add_ms):
     return prior if written else 0
 
 
-def _deny(reason):
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": "deny",
-        "permissionDecisionReason": reason,
-    }}))
-    return 0
-
-
 def _budget(tool_input):
     try:
         return int(tool_input.get("timeout") or BASH_DEFAULT_MS)
@@ -118,37 +105,31 @@ def _budget(tool_input):
         return BASH_DEFAULT_MS
 
 
-def main():
-    try:
-        payload = json.load(sys.stdin)
-    except ValueError:
-        return 0
+def _output(**fields):
+    return {"hookSpecificOutput": dict(fields, hookEventName="PreToolUse")}
+
+
+def check(payload):
+    """The hand-back deny, the clamp rewrite, or None. A woken caller (the interactive session) gets None."""
     if payload.get("tool_name") not in ("Bash", "PowerShell") or not never_woken(payload):
-        return 0
+        return None
     tool_input = payload.get("tool_input") or {}
     command = str(tool_input.get("command") or "")
     if tool_input.get("run_in_background"):
         _wait_total_ms(payload, 0)
-        return 0
+        return None
     budget = _budget(tool_input)
     if _LOOP_SLEEP.search(shell_code(command)):
         spent = _wait_total_ms(payload, min(budget, SUBAGENT_WAIT_MS))
         if spent > HANDBACK_MS:
-            return _deny(HANDBACK_REASON % (spent // 60000, HANDBACK_MS // 60000))
+            return _output(permissionDecision="deny",
+                           permissionDecisionReason=HANDBACK_REASON % (spent // 60000, HANDBACK_MS // 60000))
     else:
         _wait_total_ms(payload, 0)
     if budget <= SUBAGENT_WAIT_MS:
-        return 0
+        return None
     bash = payload.get("tool_name") == "Bash"
     updated = dict(tool_input, timeout=SUBAGENT_WAIT_MS,
                    command=command.rstrip() + "\n" + EXIT_LINE if bash else command)
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "updatedInput": updated,
-        "additionalContext": CLAMP_NOTE % (budget, SUBAGENT_WAIT_MS) + (CLAMP_WAIT if bash else ""),
-    }}))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    return _output(updatedInput=updated,
+                   additionalContext=CLAMP_NOTE % (budget, SUBAGENT_WAIT_MS) + (CLAMP_WAIT if bash else ""))
