@@ -13,16 +13,12 @@ import kill_guard as kg
 from case import bash, decide, taskstop
 
 FAKE = {
-    "21764": "python3 .claude/tools/sidecar_fanout.py .claude/scratch/jobs.json --compare|python.exe",
-    "53236": "C:/Program Files/Git/bin/bash.exe .claude/scripts/codex_proxy_sidecar.sh -m luna|bash.exe",
+    "21764": "python3 tools/regression_gate_poll.py --live|python.exe",
     "9001": "grep -rl claude-gpt /c/Users/<user>/|grep.exe",
     "9002": "node C:/Users/<user>/AppData/.../semantic-search/server.js|node.exe",
     "9003": "claude.exe --resume|claude.exe",
     "9004": "pwsh -File .claude/scripts/gate_chain.ps1|pwsh.exe",
     "9005": "",
-    "9006": 'python3 -c "import time; time.sleep(600)  # sidecar_launch.py"|python3.exe',
-    "9007": "python3 .claude/tools/sidecar_launch.py --job x|python3.exe",
-    "9008": "bash .claude/scripts/watch_sidecar.sh|bash.exe",
     "9010": "python3 .claude/tools/lf_normalize.py|python.exe",
     "9011": "bash C:/Users/<user>/Game_Dev/BenchmarkArms/logs/x/run_grid.snapshot.20260915T161253Z.sh x sol:1|bash.exe",
 }
@@ -46,10 +42,7 @@ def reason(command, cwd=None):
 
 # --- pid kills ---------------------------------------------------------------------------------------------------
 PID_DENIED = [
-    ("the incident: a sidecar fan-out", "MSYS_NO_PATHCONV=1 taskkill /PID 21764 /T /F", "sidecar_fanout.py"),
-    ("a sidecar launcher child", "taskkill /PID 53236 /T /F", "BLOCKED"),
-    ("a python process running sidecar_launch.py", "taskkill /PID 9007 /F", "launcher child"),
-    ("a bash script named *_sidecar.sh", "taskkill /PID 9008 /F", "launcher child"),
+    ("the incident's form (MSYS_NO_PATHCONV taskkill) on a gate run", "MSYS_NO_PATHCONV=1 taskkill /PID 21764 /T /F", "gate"),
     ("a peer Claude session", "taskkill /PID 9003 /F", "possibly a peer"),
     ("a gate run", "taskkill /PID 9004 /F", "gate"),
     ("an unresolvable pid fails closed", "taskkill /PID 4242 /T /F", "could not resolve"),
@@ -68,17 +61,16 @@ PID_DENIED = [
     'eval "kill 21764"', "eval 'sleep 1; kill 21764'", 'watch -n 5 "kill 21764"', 'su -c "kill 21764"',
     'su root -c "kill 21764"', 'flock /tmp/x.lock -c "kill 21764"', "script -q -c 'kill 21764' /dev/null")]
 PID_ALLOWED = [
-    ("a heredoc fed to python is data", "python3 - <<'EOF'\nkill 21764\ntaskkill /PID 21764 /T /F\npkill -f sidecar_fanout\nEOF"),
-    ("a heredoc fed to cat is data", "cat > notes.md <<'EOF'\nkill 21764\ntaskkill /PID 21764 /T /F\npkill -f sidecar_fanout\nEOF"),
+    ("a heredoc fed to python is data", "python3 - <<'EOF'\nkill 21764\ntaskkill /PID 21764 /T /F\npkill -f regression_gate_poll\nEOF"),
+    ("a heredoc fed to cat is data", "cat > notes.md <<'EOF'\nkill 21764\ntaskkill /PID 21764 /T /F\npkill -f regression_gate_poll\nEOF"),
     ("a heredoc fed to python -c is data",
-     "python3 -c \"print(1)\" <<'EOF'\nkill 21764\ntaskkill /PID 21764 /T /F\npkill -f sidecar_fanout\nEOF"),
+     "python3 -c \"print(1)\" <<'EOF'\nkill 21764\ntaskkill /PID 21764 /T /F\npkill -f regression_gate_poll\nEOF"),
     ("an inline python program is data", "python3 -c 'import os; print(\"kill 21764\")'"),
     ("kill -0 sends no signal", "kill -0 21764"),
     ("kill -0 inside bash -lc", "bash -lc 'kill -0 21764 2>/dev/null'"),
     ("a quoted mention: echo", 'echo "kill 21764"'),
     ("a quoted mention: echo single", "echo 'kill 21764 now'"),
     ("a quoted mention: commit message", 'git commit -q -m "kill 21764 left a seat running"'),
-    ("a python shell only mentioning sidecar_launch.py", "taskkill /PID 9006 /F"),
     ("the stray grep I meant", "MSYS_NO_PATHCONV=1 taskkill /PID 9001 /T /F"),
     ("an unrelated node server", "taskkill /PID 9002 /F"),
     ("no kill in the command", "git status && echo taskkilled"),
@@ -119,11 +111,11 @@ def test_msys_pid_maps_to_its_winpid():
 
 
 def test_git_bash_kill_resolves_the_msys_pid_first(monkeypatch):
-    table = {"4242": "bash .claude/scripts/deepseek_sidecar.sh -m flash|bash.exe", "777": "notepad.exe|notepad.exe"}
+    table = {"4242": "bash .claude/scripts/seat.sh claude-secondary b.md o.md|bash.exe", "777": "notepad.exe|notepad.exe"}
     monkeypatch.setattr(kg, "_cim_commandline", lambda pid: table.get(pid, ""))
     monkeypatch.setattr(kg, "_ps_winpid", lambda pid: "4242" if pid == "777" else None)
     assert kg.pid_forms("kill 777") == [("777", True)]
-    assert "sidecar" in (REAL_COMMANDLINE("777", msys_first=True) or "")
+    assert "seat.sh" in (REAL_COMMANDLINE("777", msys_first=True) or "")
     assert (REAL_COMMANDLINE("777") or "").startswith("notepad")
     assert kg.pid_forms("taskkill /PID 9001 /T /F") == [("9001", False)]
 
@@ -137,7 +129,7 @@ def test_exhausted_budget_resolves_nothing(monkeypatch):
 # --- name and pattern kills against a planted table -------------------------------------------------------------
 NAMED_ROWS = (
     (100, "claude.exe", "C:/Tools/claude.exe --resume"),
-    (101, "python.exe", "python3 .claude/tools/sidecar_fanout.py jobs.json --compare"),
+    (101, "python.exe", "python3 tools/regression_gate_poll.py --live"),
     (102, "pwsh.exe", "pwsh -File .claude/scripts/gate_chain.ps1"),
     (103, "node.exe", "node C:/srv/app/server.js"),
     (104, "python.exe", "python3 -m http.server 8000"),
@@ -155,10 +147,10 @@ def named(planted, monkeypatch):
 
 
 NAME_KILLS_DENIED = {
-    "pkill -f <pattern>": "pkill -f sidecar_fanout",
+    "pkill -f <pattern>": "pkill -f regression_gate_poll",
     "pkill <name>": "pkill claude",
     "pkill python (one of two matches protected)": "pkill python",
-    "pkill with a combined flag cluster": "pkill -9 -fx 'python3 .claude/tools/sidecar_fanout.py jobs.json --compare'",
+    "pkill with a combined flag cluster": "pkill -9 -fx 'python3 tools/regression_gate_poll.py --live'",
     "killall <name>": "killall claude",
     "taskkill /IM": "taskkill /IM claude.exe /F",
     "taskkill //IM (MSYS escape)": "taskkill //IM claude.exe //F",
@@ -172,10 +164,10 @@ NAME_KILLS_DENIED = {
     "Get-Process | Where-Object | Stop-Process (unresolvable)":
         "Get-Process | Where-Object { $_.CPU -gt 5 } | Stop-Process",
     "wmic name delete": "wmic process where \"name='claude.exe'\" delete",
-    "wmic commandline like call terminate": "wmic process where \"commandline like '%sidecar_fanout%'\" call terminate",
+    "wmic commandline like call terminate": "wmic process where \"commandline like '%regression_gate_poll%'\" call terminate",
     "Win32_Process Terminate": "Get-CimInstance Win32_Process -Filter \"name='claude.exe'\" | Invoke-CimMethod -MethodName Terminate",
-    "kill $(pgrep -f <pattern>)": "kill $(pgrep -f sidecar_fanout)",
-    "pgrep | xargs kill": "pgrep -f sidecar_fanout | xargs kill -9",
+    "kill $(pgrep -f <pattern>)": "kill $(pgrep -f regression_gate_poll)",
+    "pgrep | xargs kill": "pgrep -f regression_gate_poll | xargs kill -9",
     "kill $(pidof <name>)": "kill -9 $(pidof claude)",
     "a pkill inside bash -c, after other text": "bash -c \"echo go; pkill -f claude; true\"",
     "a pkill after env assignments": "FOO=1 pkill claude",
@@ -192,7 +184,7 @@ NAME_KILLS_ALLOWED = {
     "Get-Process <n> | Stop-Process, unprotected": "Get-Process node | Stop-Process",
     "wmic of an unprotected name": "wmic process where \"name='node.exe'\" delete",
     "a name that matches nothing": "pkill -f nothing_runs_this",
-    "pgrep alone is a read": "pgrep -f sidecar_fanout",
+    "pgrep alone is a read": "pgrep -f regression_gate_poll",
     "the reaper": "python3 .claude/tools/reap.py --help",
     "grep for the word": "grep pkill notes.md",
     "echo of a taskkill line": "echo taskkill /IM claude.exe",
@@ -374,11 +366,10 @@ def stop(tmp_path, rows, task_id):
 
 RUNNING_LAUNCHES = {
     "a poll loop": ("while :; do grep -q DONE grid.log && exit 0; sleep 120; done", "Bash", "allow"),
-    "a billed sidecar launch": ("bash .claude/scripts/deepseek_sidecar.sh -m flash -f brief.txt", "Bash", "ask"),
+    "a seat launch": ("bash .claude/scripts/seat.sh claude-secondary brief.md out.md", "Bash", "ask"),
     "a benchmark grid": ("bash .claude/scripts/benchmark_campaign/run_grid.sh deepseek-v41-flash flash:1", "Bash",
                          "allow"),
     "a gate run": ("pwsh -File .claude/scripts/gate_chain.ps1", "Bash", "allow"),
-    "a harness proof run": ("python3 .claude/scripts/harness_tests.py --close", "Bash", "allow"),
     "a Monitor poll loop": ("while true; do grep -E '^VERDICT=' gate.out && break; sleep 10; done", "Monitor", "allow"),
     "an Agent": ("sleep 60", "Agent", "ask"),
 }
@@ -470,7 +461,7 @@ def test_taskstop_deny_names_the_task_and_one_next_step(tmp_path):
 
 def test_taskstop_ended_tasks_pass(tmp_path):
     assert stop(tmp_path, [_ended_row("aended01")], "aended01").kind == "allow"
-    rows = _launch_rows("bgended1", "bash .claude/scripts/deepseek_sidecar.sh -m flash -f brief.txt")
+    rows = _launch_rows("bgended1", "bash .claude/scripts/seat.sh claude-secondary brief.md out.md")
     assert stop(tmp_path, rows + [_ended_row("bgended1", "failed")], "bgended1").kind == "allow"
 
 

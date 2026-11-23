@@ -15,7 +15,7 @@ substitution operand, `_unnamed_pid_kills`). A kill whose every match is unprote
 TaskStop decides on facts it observes in the transcript, never on owner wording (a stop verb, a keep word, an
 AskUserQuestion answer): it passes a task whose completion notice is already there (it stops nothing) and an
 unpaid task this session's main thread launched. Running paid work this session launched (a Workflow, an Agent,
-a shell running a sidecar launcher) returns `ask`: the stop is the owner's call (CLAUDE.core.md §Shell Discipline),
+a shell running the seat launcher) returns `ask`: the stop is the owner's call (CLAUDE.core.md §Shell Discipline),
 and reading the owner's words for consent failed repeatedly, so the permission prompt asks the owner directly.
 A task this session did not launch (a subagent's, a peer's) is denied: its own launcher or session stops it.
 
@@ -23,8 +23,8 @@ A second floor guard in the same hook (class floor: it protects peer sessions) d
 that executes a terminal-window close by handle, title or host process (`window_close_verdict`). It has no
 text override: a reason the agent writes into the call proves no ownership of the window.
 
-WHY THIS EXISTS: `shell_census.py` lists long-running shells with their command tails TRUNCATED, and
-its own text hands over `taskkill /PID <pid> /T /F`. A session that matched the wrong row of that list killed its own `sidecar_fanout.py` run, a paid arm.
+WHY THIS EXISTS: a process list shows command tails TRUNCATED, and a session that matched the wrong row of one
+(v1's `shell_census.py`, which handed over `taskkill /PID <pid> /T /F`) killed its own paid fan-out run.
 
 A stop is irreversible and the display is lossy, so this gate fails CLOSED (instruction_quality
 section 16). Bash/PowerShell bypass, per target: `HARNESS_ALLOW_KILL=<pid> taskkill /PID <pid> /T /F`. It covers
@@ -44,16 +44,9 @@ import _msys  # noqa: E402
 import _shell_lex  # noqa: E402
 from _win_path import native_path  # noqa: E402
 
-# Killing any of these takes down work that cannot be resumed from where it stopped: a billed
-# sidecar arm, a gate/suite run, or a peer's whole session.
+# Killing any of these takes down work that cannot be resumed from where it stopped: a gate/suite run, a billed
+# benchmark cell, or a peer's whole session.
 PROTECTED = (
-    (r"sidecar_fanout\.py", "a sidecar fan-out — its in-flight arms are billed and unresumable"),
-    # Bound to the process's script argument (after an optional interpreter and flags): a shell whose command
-    # line only mentions the script name, as in `python -c "...sidecar_launch.py"`, is not a launcher.
-    (r"^\"?(?:(?:[A-Za-z]:[/\\][^\"\n]*?[/\\]|[^\s\"]*[/\\])?(?:bash|sh|python3?|py)(?:\.exe)?\"?\s+(?:-\S+\s+)*)?"
-     r"\"?(?:\S*[/\\])?(?:\S*_sidecar\.sh|sidecar_launch\.py)\b",
-     "a sidecar launcher child — the arm dies with it"),
-    (r"harness_tests\.py", "the harness proof runner"),
     (r"regression_gate|gate_chain|verify\.ps1", "a gate/verification run"),
     (r"vstest|dotnet\s+test", "a test run"),
     # NOT \bclaude\b — that matches `.claude/` (present in nearly every harness command) and
@@ -61,7 +54,7 @@ PROTECTED = (
     (r"(?:^|[\s/\\\"])claude\.exe|(?:^|[\s/\\\"])claude(?:\s|$)",
      "a Claude Code session — possibly a peer's"),
     (r"claude-code-proxy", "a transport proxy other sessions may be routing through"),
-    # Bound to the command word: a grid named as a proof input (`harness_tests.py --for run_grid.sh`) is data.
+    # Bound to the command word: a grid named as an argument (`grep run_grid.sh notes.md`) is data.
     (r"(?:^|[;&|(\n]\s*)(?:(?:nohup|exec|setsid)\s+)?(?:(?:bash|sh|pwsh|powershell)\s+(?:-\S+\s+)*)?[\"']?"
      r"(?:\S*[/\\])?run_grid(?:\.snapshot[\w.-]*)?\.sh",
      "a benchmark grid — its in-flight cell is a billed arm"),
@@ -164,14 +157,6 @@ def _local_path(token, cwd):
     return path if os.path.isabs(path) else os.path.join(cwd or os.getcwd(), path)
 
 
-def _launcher_calls(command):
-    return _shell_lex.launcher_invocations(command)
-
-
-def _fanout_calls(command):
-    return [call for call in _launcher_calls(command) if call.kind == "fanout"]
-
-
 def _shell_segments(command):
     """Executing stages, with quoted separators preserved and substitutions visited separately."""
     def scan(start, stop=None):
@@ -226,8 +211,7 @@ def _run_refs(command):
     """The script each executing stage runs: its first script reference. Later ones are arguments."""
     refs = []
     for segment in _shell_segments(command):
-        found = [token for token in SCRIPT_REF_RE.findall(segment)
-                 if 'sidecar_fanout.py' not in token.lower() or _fanout_calls(segment)]
+        found = SCRIPT_REF_RE.findall(segment)
         if found:
             refs.append(found[0])
     return refs
@@ -264,11 +248,11 @@ def _process_table():
 
 
 def _paid(launch):
-    """True when the launch spends model quota: a Workflow, an Agent, or a shell running a sidecar launcher."""
+    """True when the launch spends model quota: a Workflow, an Agent, or a shell running the seat launcher."""
     tool, tool_input = launch[0], launch[1] if isinstance(launch[1], dict) else {}
     if tool in ("Workflow", "Agent"):
         return True
-    return tool in ("Bash", "PowerShell") and bool(_launcher_calls(tool_input.get("command") or ""))
+    return tool in ("Bash", "PowerShell") and bool(_shell_lex.launcher_invocations(tool_input.get("command") or ""))
 
 
 def taskstop_decision(transcript_path, tool_input):

@@ -31,7 +31,7 @@ holding a v1 case's several asserts).
 | `test_git_guardrails_harness_commit.py` (sections W, G1, G2, G3, S, M) | 44 | 44 + `-C $UNSET` | `test_floor_commit_index.py` (61, with the D-IW rows) |
 | `test_git_commit_msg_hook.py` | 16 | 16 | `test_floor_commit_msg.py` (17, plus the S5 CLI row) |
 | `test_kill_guard.py` | 73 | 73 | `test_floor_kill.py` (154) |
-| `test_reap.py`, `test_reap_native_env.py` | whole | whole | `test_floor_carried.py` (2): each runs whole, with `tools/reap.py` (Owed) |
+| `test_reap.py`, `test_reap_native_env.py` | 190 checks + 3 | same | `test_floor_reap.py` (73), with the small stop tool (S5d, below) |
 
 `test_floor_entry.py` (32) holds T1's entry cases: one spawned stub call per decision kind, a broken import of each
 `_floor.FLOOR_MEMBERS` row (the row set and the case set must be equal) and of the shared lexer, an unparseable
@@ -82,8 +82,8 @@ v1's own answer, except K-XA's rows, which assert the ruling.
 
 Left without an in-process row: fail-closed returns on a git read that fails (`_stash_changes_held`,
 `stage_record_loss`), message variants of a branch whose deny a row already asserts (`HEAD cannot be read` on amend,
-the `.git`-file reason), and the live process-table and PID readers (`reap.process_table`, the CIM and `ps`
-lookups), which every row plants.
+the `.git`-file reason), and `kill_guard`'s live CIM and `ps` PID lookups, which every row plants. `reap.process_table`
+and the native environment read run live in `test_floor_reap.py`'s two Windows rows.
 
 ## Not carried as decision rows
 
@@ -103,6 +103,48 @@ lookups), which every row plants.
   environment variable.
 - A v1 fixture that is gone: the recovered `rm_denials.json` replay (gitignored scratch, absent in both repos).
 
+## The small stop tool (S5d)
+
+`tools/reap.py` (2,052 lines) is rewritten to the one stop route T1 names: `reap.py <pid>... [--why] [--dry-run]`,
+judged on facts in `reap.judge` (never-kill, this session's by ancestry or own environment, unreadable, another
+live session's, a dead session's leftover, unclaimed). B16 deleted every v1 importer of its internals; `kill_guard`
+keeps `reap.process_table`. `test_reap.py`'s 190 checks and `test_reap_native_env.py`'s 3 ran whole through
+`test_floor_carried.py` (3.8 s); they are now `test_floor_reap.py`'s rows (1.0 s).
+
+Kept as rows (outcome unchanged): this session's tree by ancestry and by its own environment (the hung run); a
+peer's identical process, a live peer's environment, a process inside a peer's host tree; the never gate (own
+host, a host inside own ancestry, MCP and LSP servers with flags before the script, ChatGPT's codex, the
+`ENABLE_LSP_TOOL` env wrapper and an own codex as allows); unreadable environment; a pid not in the table; the
+unclaimed app with any `--why`, logged verbatim, and with no transcript; the retired `--reason owner`; sparing
+infra with its subtree; covered and repeated pids; dry run; the unwritable ledger; the `killing` row before the
+kill; the MSYS child outside the Windows tree; the `ps -W` maps both ways; Git's bash for the MSYS read; the CIM
+control-character and non-UTF-8 reads; `/proc` off Windows and the CIM fallback; taskkill success as the target
+gone; the login's projects dir and registry dirs; the dead-session liveness facts (registry row, host command
+line, unknown host, console host, another project, the pane watcher under a live wrapper); the live Win32 snapshot
+and native environment block.
+
+Changed (RED on v1 `reap.py`, shown in S5d's report):
+- A dead session's leftover in this project is stopped with no flag (v1 refused it unless `--reason orphan`). The
+  tool decides on facts, and `orphan` was a spelling the agent had to add to reach a fact the tool verified anyway.
+- `--reason` in any class is retired: refused, naming its replacement (v1 verified `duplicate`, `orphan`,
+  `stalled`, `superseded`, `queued`). Each class only refused a target the default path stops on the same facts,
+  so no loss case rests on it; their subjects were bench daemons and rosters (V6) and sidecar journals and records
+  (V7). The verbs `inspect`, `leftovers`, `live-launch` and `end-seat` are retired the same way (`--dry-run` prints
+  each target's proof).
+
+Dropped, subject gone (plan line): the sidecar launch tags, prompt file and `-R` dispatch-record proofs, dispatch
+servers, detached seats, launchers and the shared-proxy never-kill (V7: `seat.sh` replaces the sidecar launchers);
+the reason classes' own rows (above); `live-launch`'s 33 rows, `end-seat`, the `sidecar_stopped_launches` hook
+state, `inspect`'s 11 rows and `leftovers`' classification and live spawn (T1's small stop tool; V7); the help's
+reason-flag table (`test_cli_refusal_shapes.py`'s reap row now checks the usage shape only). Dropped as
+over-computational: the Win32-versus-CIM process count (a PowerShell spawn per run); the Win32 row that reads this
+process covers the reader. `_bounded_run.job_env`'s `REAP_JOB_ID`, read only by `queued`, is cut with it.
+
+`kill_guard`: the protected patterns for `sidecar_fanout.py`, the `*_sidecar.sh`/`sidecar_launch.py` launchers (V7)
+and `harness_tests.py` (V9) are cut with their four rows; the rows that used the fan-out as their protected example
+now use a gate run. TaskStop's paid-work `ask` follows the paid launcher to `seat.sh` (`_shell_lex.launcher_invocations`;
+RED: `test_taskstop_of_an_own_running_launch[a seat launch]` allowed before).
+
 ## Suite cost
 
 `conftest.py` prints each file's seconds and git and other spawns after every run. The floor's time is git
@@ -111,17 +153,11 @@ without git take milliseconds.
 
 ## Owed
 
-- The small stop tool (T1). `tools/reap.py` carries unchanged with its whole v1 proofs: on `v2`, `dispatch_table.py`,
-  `shell_census.py`, `sidecar_fanout.py` and `watch_records.py` still call about twenty of its internals
-  (`invocation`, `session_live`, `owner_of`, `launch_census`, `live_launches`, `describe_launches`, `git_bash`,
-  `process_exited`, ...), and `kill_guard.py` and `scripts/sync_plan_config.py` call `process_table`. The rewrite
-  lands after B1/B16 delete those importers, keeping `process_table` for the two kept callers, with its proofs as rows.
 - `hooks/approving_gates.py` and its test (B10's fourth delete): `sidecar_dispatch_context.py`,
   `pre_bash_dispatch.py` and `denial_coach.py` still import it on `v2`; it goes with that dispatch cut.
 - Cutover deletes (S5 review finding 10), each a parallel path to a floor module: `git_guardrails.py`'s loss
   denies (`dangerous_shell_guard.py` owns them), `pre_bash_dispatch.py`'s `git_guardrails` and
-  `dangerous_shell_guard` rows, `_git_commit.py`'s `git_environ` re-export and its `tools/` `sys.path` insert for
-  v1's `sidecar_argv` importers, and three of the four command segmenters (`_shell_lex.shell_segments`,
+  `dangerous_shell_guard` rows, `_git_commit.py`'s `git_environ` re-export, and three of the four command segmenters (`_shell_lex.shell_segments`,
   `_git_commit.segments`, `dangerous_shell_guard._segments_with_quotes`, `kill_guard._shell_segments`), which
   become one.
 - `settings.json` registers `hooks/pre_bash.py` for `_floor.MATCHER` at cutover; until then the v1 entries stay.
