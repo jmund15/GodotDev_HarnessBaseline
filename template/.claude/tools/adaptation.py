@@ -32,6 +32,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+HOOK_EVENTS = ("pre_bash", "pre_edit", "post_edit", "pre_read", "post_read", "prompt")
+
 DEFAULTS: dict = {
     # hooks/compound_cd_approver.py (run inside the floor entry, hooks/pre_bash.py): commands the approver allows inside a compound.
     "read_only_commands": [],
@@ -97,9 +99,10 @@ DEFAULTS: dict = {
     "dispatch": {"pre_launch": "", "post_return": ""},
     # commands/pr_ready.md (`get pr_ready.checks`): the project check files a PR runs.
     "pr_ready": {"checks": []},
-    # hooks/_optional_hooks.py members(): {pre_edit, post_edit, pre_read, post_read, prompt: [module]}, the project-local
-    # members each dispatcher runs after `_chain.EVENTS`' shared members.
-    "hook_members": {},
+    # hooks/_optional_hooks.py members(): {pre_bash, pre_edit, post_edit, pre_read, post_read, prompt: [module]}, the
+    # project-local members each dispatcher runs after its shared members (`pre_bash`: the floor, hooks/_floor.py, whose
+    # members deny on their own fault).
+    "hook_members": {event: [] for event in HOOK_EVENTS},
     # commands/pr_pipeline.md (`get pr_pipeline.<point>`): the project's steps of the shared batch PR loop, one list per
     # hook point; an entry is a command line or a `/command` name.
     "pr_pipeline": {"discover": [], "sync": [], "pre_review": [], "gate": [], "checklist": [], "post_merge": []},
@@ -115,6 +118,7 @@ _SUB_TYPES: dict = {
     "pr_ready": {"checks": list},
     "pre_bash": {"protected": list, "router_entrypoints": list},
     "pr_pipeline": {point: list for point in DEFAULTS["pr_pipeline"]},
+    "hook_members": {event: list for event in HOOK_EVENTS},
 }
 
 _MISSING = object()

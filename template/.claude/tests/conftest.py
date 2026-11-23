@@ -5,6 +5,10 @@ unnamed stdin fails with `[WinError 6]`, and an unnamed stdout or stderr intermi
 when `subprocess` duplicates the Win32 standard handle. Here, in one place, an unnamed stdin becomes DEVNULL (a test
 that needs a payload passes `input=`), and an unnamed stdout or stderr becomes fd 1 or 2, the descriptors pytest's
 capture already points at its own files, so the child's output still lands in the captured output.
+
+A `test_*.py` (or `*_test.py`) that collects no test fails its collection, naming the file: pytest otherwise passes it
+silently, so a script-style proof reads green without running. A script-style Python proof is named `proof_*.py`;
+`test_script_proofs.py` runs each as one case.
 """
 import os
 import subprocess
@@ -41,3 +45,14 @@ def seat_logins(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     return home
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_make_collect_report(collector):
+    report = (yield).get_result()
+    path = getattr(collector, "path", None)
+    if (isinstance(collector, pytest.Module) and path is not None and report.outcome == "passed" and not report.result
+            and (path.name.startswith("test_") or path.name.endswith("_test.py"))):
+        report.outcome = "failed"
+        report.longrepr = ("%s collects no test: a script-style proof is named proof_*.py (run by test_script_proofs.py), "
+                           "a pytest file defines a `def test_` or a `class Test`." % path.name)

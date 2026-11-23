@@ -40,7 +40,7 @@ Per PR, `gh pr diff <N> --name-only`. For each pair, flag the same file touched 
 
 ## 3. Sync
 
-Per PR in order, `gh pr view <N> --json mergeable,baseRefName`. A `CONFLICTING` PR runs the `sync` entries, or `/merge_pr`'s Step 1 sync when `sync` is empty. Re-sync a later PR after each merge in §8, since the base moved. Done when `gh pr view <N> --json mergeable` prints `MERGEABLE`; a PR that stays conflicting is deferred with its reason.
+Per PR in order, `gh pr view <N> --json mergeable,baseRefName`. A `CONFLICTING` PR runs the `sync` entries, or `/merge_pr`'s Step 0 worktree and Step 1 sync when `sync` is empty. Re-sync a later PR after each merge in §8, since the base moved. Done when `gh pr view <N> --json mergeable` prints `MERGEABLE`; a PR that stays conflicting is deferred with its reason.
 
 ## 4. Review
 

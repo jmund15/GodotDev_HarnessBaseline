@@ -507,3 +507,35 @@ def test_the_cli_stamp_refuses_with_a_nonzero_exit_and_says_why(tmp_path, monkey
     monkeypatch.setattr(ws, "preflight", lambda _root: ["toolchain is missing"])
     code, out = cli(["stamp", "--root", str(plant_root(tmp_path / "refused"))])
     assert code != 0 and "toolchain is missing" in out, (code, out)
+
+
+# ---------------------------------------------------------------- core.hooksPath audit
+
+def hooks_repo(path, hooks_path=None):
+    path.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True)
+    if hooks_path is not None:
+        subprocess.run(["git", "-C", str(path), "config", "core.hooksPath", hooks_path], check=True,
+                       capture_output=True)
+    return path
+
+
+@pytest.mark.parametrize("value", ["/abs/main/.claude/githooks", "C:/main/.claude/githooks", ".githooks",
+                                   ".claude/githooks/", None])
+def test_a_hooks_path_that_is_not_the_relative_claude_githooks_fails_the_audit(tmp_path, value):
+    assert ws.preflight(hooks_repo(tmp_path / "repo", value))
+
+
+def test_the_relative_claude_githooks_passes_the_audit(tmp_path):
+    assert ws.preflight(hooks_repo(tmp_path / "repo", ".claude/githooks")) == []
+
+
+def test_a_directory_that_is_no_repository_has_no_hooks_path_to_audit(tmp_path):
+    (tmp_path / "plain").mkdir()
+    assert ws.preflight(tmp_path / "plain") == []
+
+
+def test_a_stamp_refuses_an_absolute_hooks_path(tmp_path):
+    repo = hooks_repo(tmp_path / "repo", str(tmp_path / "main" / ".claude" / "githooks"))
+    refused = ws.stamp(repo)
+    assert refused[0] is False

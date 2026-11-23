@@ -51,7 +51,7 @@ NOT-ADOPTED row for them, runs every other phase, and counts the gap as no failu
    owner's: `harness_sync.py pull <ref>` for a stale file, `push` for a local edit. Do not pull
    unprompted.
 4. `git -C <repo> config core.hooksPath .claude/githooks`; `git -C <repo> config --get core.hooksPath`
-   prints `.claude/githooks`. Its commit-msg hook re-checks at commit time that the commit reverts no
+   prints `.claude/githooks`, relative so each worktree runs its own hooks; the stamp refuses an absolute or other value. Its commit-msg hook re-checks at commit time that the commit reverts no
    peer's commit.
 5. `git -C <repo> config core.longpaths true`; `git -C <repo> config --get core.longpaths` prints `true`.
    Deep tracked paths under `.claude/worktrees/<name>/` pass Windows' 260-char path cap, and without
