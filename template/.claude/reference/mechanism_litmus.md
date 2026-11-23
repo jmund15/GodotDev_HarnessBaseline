@@ -13,8 +13,8 @@ A mechanism is any test, check, hook, tool, rule or stage that runs without a re
 
 ## Two clauses
 
-> **A fix re-asks the litmus.** Before fixing a mechanism, read its recent fixes:
-> `git log --oneline --since=30.days --grep='^fix' -- <its files>`. When an earlier fix changed the same decision, or
+> **A fix re-asks the litmus.** Before fixing a mechanism, read its fix history with the query in `commands/codify.md`
+> Step 2 (the one recipe; `tests/test_codify_top5.py` pins it). When an earlier fix changed the same decision, or
 > this fix would add one more case (a phrasing, a name, a path pattern, an event kind) to a list the mechanism decides
 > by, fix the decision: make it decide on the property the cases share, observed as a fact. When no observed fact
 > carries that property (the input is prose, free shell text, an owner's wording or model output), the decision fails

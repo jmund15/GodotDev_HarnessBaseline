@@ -29,7 +29,7 @@ Make the run directory `.claude/scratch/review/<subject-slug>/` and write `<run-
 - **The owner's words** behind the change, verbatim, each with its source: the owner-decisions block of the state file (`.claude/work/<slug>.md`) or the session transcript `.jsonl` (`/session_digest` finds it).
 - **The subject.** Plan mode: the plan path. Diff mode: the range or file list, and `<run-dir>/subject.diff` holding `git diff <range>` (for `--files`, `git diff HEAD -- <files>`). When the range moves a submodule pointer, append `git -C <submodule> diff <old>..<new>`: a caller reviewed without its callee's change hides a broken contract.
 - **The system it lands in:** the paths of the files the change touches and of the directories holding them. The reviewer reads their callers itself.
-- **Fix history:** the output of `git log --oneline --grep='^fix' -- <touched files>`.
+- **Fix history:** the query in `commands/codify.md` Step 2, run from the root of the repo that tracks the touched files.
 - **Diff mode, the size change:** the output of `git diff --numstat <range>`. A rise in code, test or prose lines that names no new job is a root-cause-or-patch finding.
 - **Diff mode, the checklists:** `.claude/commands/checklists/parity.md`, and each path `python3 .claude/tools/adaptation.py get review.checklists` prints.
 - **The questions** below, as written.
