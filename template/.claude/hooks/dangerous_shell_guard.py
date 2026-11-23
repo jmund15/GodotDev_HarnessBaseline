@@ -1,53 +1,58 @@
 #!/usr/bin/env python3
-"""
-Hook: PreToolUse on Bash|PowerShell - the destructive-command floor.
+"""The destructive-command check of the loss floor (class floor, T1). `_floor.py` runs `check(payload)` for every
+Bash and PowerShell call; a fault denies the call.
 
-The one destructive-command check of every profile. `pre_bash_dispatch` loads it as a floor member
-(not optional), so an import fault denies per `_floor_stub`. The engine-layer edit-time half that
-used to share a file with it stays in `pattern_enforcer`, which no longer judges shell commands.
+Blocks, each judged on the resolved target and never on the command's wording:
+- Recursive/forced deletes and directory removal (rm -r/-rf, del /s, rd /s, rmdir /s, PowerShell Remove-Item
+  -Recurse and its aliases) and drive format commands. Allowed: a target that is a regenerable cache inside the
+  project, a path below the system temp directory or `~/.claude/plugins/cache/` holding no git repository, this session's own
+  `.claude/scratch/<session id>` output, a pushed regenerable clone, a scratch folder holding no git repository and
+  no registered worktree, a folder a proof planted under `.claude/tmp`, a retired worktree (nothing git lacks,
+  every commit on a remote; its ignored files go only when this session created it), a `NAME=$(mktemp -d)`
+  variable the same command owns, or a folder a flagless `mkdir` of this session created, holding no git
+  repository. A chained second delete, a glob in a directory part, `~`, `%`, an unresolvable target, a target a
+  live peer session works in, or another session's id folder disqualifies it. A forced `rm` whose every target is
+  a literal path proven absent inside `.claude/scratch/` removes nothing and is rewritten to `true`.
+- Git discards (`verdict`): `reset --hard` outside a clean worktree this session created, `clean -f`, a checkout or
+  restore that overwrites an edit git holds nowhere else (outside this session's own worktrees), force-push,
+  `branch -D` of a branch no other ref holds, `stash drop` of an entry no ref holds, `stash clear`,
+  `reflog expire`, `gc --prune` and `filter-*`. A call inside a shell launcher body borrows no worktree ownership.
+- Peer losses at commit: a private index over a moved stage base (`stage_record_loss`), an index whose blobs
+  revert a peer's newer commit (`stale_loss`), an amend of a HEAD this session did not make (`amend_loss`), an
+  index the floor cannot read (#16), a publish whose repository cannot be proved (`UNPROVED_TARGET`), and a
+  commit an index write precedes in the same command (`SAME_COMMAND_WRITE`).
 
-Blocks:
-- Recursive/forced deletes and directory removal (rm -r/-rf, del /s, rd /s, rmdir /s, PowerShell
-  Remove-Item -Recurse and its aliases) and drive format commands.
+Quoted spans and heredoc bodies are data, never commands. `git` parsing goes through `_git_commit.py`.
 
-Exemptions, each judged on the resolved target and never on the command's wording:
-- Quoted spans and heredoc bodies are blanked before matching, so a quoted mention (`grep "rm -rf"`,
-  an echo, a commit body) is no command. `git rm` stays allowed.
-- A recursive delete whose every target is a regenerable cache inside the project, a path below the
-  system temp directory holding no git repository, this session's own `.claude/scratch/<session id>`
-  output, a pushed regenerable clone, a scratch folder holding no git repository and no registered
-  worktree, a folder a proof planted under `.claude/tmp` (`is_proof_plant`, holding no git repository but an empty-commit fixture; the owner's loose files
-  there stay protected), a retired worktree (nothing git lacks, every commit on a remote; its ignored
-  files go only when this session created it), a `NAME=$(mktemp -d)` variable the same command owns, or a
-  folder a flagless `mkdir` of this session created (`_session_made_dir`: its transcript call succeeded and the
-  folder was born inside it), holding no git repository.
-  Any chained second delete, glob in a directory part, `~`, `%` or unresolvable target disqualifies it, as
-  does a target a live peer session works in, or a scratch target that is or holds another session's id folder.
-- A forced `rm` whose every target is a literal path proven ABSENT inside this project's
-  `.claude/scratch/`, with no glob, unresolved variable, `..` or link leaving scratch: it removes
-  nothing, so `main()` rewrites that segment to `true` through `hookSpecificOutput.updatedInput`
-  rather than approving it. No wildcard, unknown expansion, existing tree or path outside scratch
-  qualifies.
-
-Git history rewrites (reset --hard, clean -f, force-push, branch -D, stash drop) belong to
-`git_guardrails`, which parses git invocations; this file holds no second copy of them.
-
-Wired in: hooks/pre_bash_dispatch.py (floor member). Standalone: stdin PreToolUse JSON, exit 2 on a block.
+Second caller: `.claude/githooks/commit-msg` runs `dangerous_shell_guard.py --commit-msg <file>`, which re-runs
+the stage-record and peer-revert checks against the index git is about to write; exit 1 refuses with one line.
 """
 
 import json
 import os
 import re
-from pathlib import Path
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
+for _d in (os.path.join(os.path.dirname(_HOOKS_DIR), "tools"), _HOOKS_DIR):
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
 from _command_text import executable_text, executable_spans, command_words, _REDIRECTION  # noqa: E402
 from _regenerable_clone import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
                                 is_plant_exhaust, is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
-                                regenerable_segments, session_created_worktree)
-from _git_commit import literal_assignments, expand_literal, resolve_cd, segments  # noqa: E402
+                                regenerable_segments, session_created_worktree, worktree_unstored)
+import _git_commit  # noqa: E402
+if _git_commit.executable_index is None or _git_commit.command_substitutions is None:
+    raise ImportError("_shell_lex failed to import: %s" % _git_commit.LEXER_ERROR)
+from _git_commit import (literal_assignments, expand_literal, resolve_cd, segments,  # noqa: E402
+                         git_invocations, run_git, resolve_index, in_project, parse_commit_args, _pathspec_file)
+from _commit_scope import publishes_index, writes_index  # noqa: E402
+from _checkout_root import worktree_chain  # noqa: E402
+import _git_run  # noqa: E402
 from _transcript_calls import Call, Result, session_events  # noqa: E402
+from index_commit import stage_record_base, stage_record_path  # noqa: E402
 
 
 # Dangerous command patterns — applied to BOTH the Bash and PowerShell tools
@@ -248,15 +253,13 @@ def _registered_worktrees() -> list[str]:
 
 
 def _list_registered_worktrees(root: str) -> list[str]:
-    import subprocess
     try:
-        out = subprocess.run(['git', '-C', root, 'worktree', 'list', '--porcelain'], capture_output=True,
-                             text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
+        out = _git_run.run(['-C', root, 'worktree', 'list', '--porcelain'], timeout=20)
+    except OSError:
         return [_norm(root)]
     if out.returncode:
         return [_norm(root)]
-    return [_norm(line[len('worktree '):]) for line in out.stdout.splitlines() if line.startswith('worktree ')]
+    return [_norm(line[len('worktree '):]) for line in out.text.splitlines() if line.startswith('worktree ')]
 
 
 _ANY_SESSION_ID = ANY_SESSION_ID
@@ -337,13 +340,11 @@ def _scratch_bases(root: str, cwd: str | None) -> list[str]:
 
 
 def _git_toplevel(cwd: str) -> str:
-    import subprocess
     try:
-        out = subprocess.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'], capture_output=True,
-                             text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
+        out = _git_run.run(['-C', cwd, 'rev-parse', '--show-toplevel'], timeout=20)
+    except OSError:
         return ''
-    return out.stdout.strip() if out.returncode == 0 else ''
+    return out.text.strip() if out.returncode == 0 else ''
 
 
 def _under_a_scratch_folder(path: str) -> bool:
@@ -653,6 +654,8 @@ def _is_regenerable_or_scratch(path: str) -> bool:
     import tempfile
     if _strictly_under(path, _norm(tempfile.gettempdir())):
         return not _holds_git(path)
+    if _strictly_under(path, _norm(str(Path.home() / ".claude" / "plugins" / "cache"))):
+        return not _holds_git(path)  # a plugin's download: the client fetches it again
     parts = _checkout_rel_parts(path)
     if not parts:
         return False
@@ -857,35 +860,764 @@ def _check_bash_command(command: str, cwd: str | None, transcript_path: str | No
     return False, ""
 
 
-def main():
+
+# --- Git losses ---------------------------------------------------------------------------------------------------
+# Moved from git_guardrails.py (its loss checks) and _peer_loss.py. `_git_commit` owns the command parse: heredoc
+# bodies stripped, segments split, `git -C <path>` and a preceding `cd <path>` retarget the repo, inline `VAR=1`
+# prefixes read.
+
+REF_MAKERS = ("fetch", "update-ref", "branch", "tag")
+# An opaque call is one whose repository cannot be proved; the parser reports it with cwd=None.
+UNPROVED_TARGET = ("BLOCKED `git %s` (CLAUDE.core.md §Shell Discipline): the guard cannot prove which "
+                   "repository this call targets (an unexpanded `-C` value, or a call behind env/sudo/xargs), so "
+                   "it cannot read the index or the peer work that call would publish. Name the repository with "
+                   "a literal `-C` path, and run the call directly rather than through a wrapper.")
+# Every commit check reads the index before the command runs, so a write earlier in the same command
+# lands after they judged the commit.
+SAME_COMMAND_WRITE = ("BLOCKED commit (CLAUDE.core.md §Shell Discipline: an index write runs in its own Bash call) — `%s` "
+                      "runs earlier in this command, and every commit guard reads the index before the command "
+                      "runs, so they would judge this commit without that write. Run the `%s` in its own Bash "
+                      "call, then commit.")
+
+
+def short_flag_chars(args):
+    """Characters of single-dash bundled flags, e.g. -fdx -> {'f','d','x'}."""
+    chars = set()
+    for a in args:
+        if a.startswith("-") and not a.startswith("--"):
+            chars.update(a[1:])
+    return chars
+
+
+_SIDE_UNSAFE = (".tscn", ".tres")
+
+
+# Options a path-scoped discard may carry and still be judged by the worktree diff alone. Any other
+# (`--staged`/`-S`, `--worktree`/`-W`, a short `-s <tree>`, `-f`, a bundle) reads as a loss.
+_NO_LOSS_OPTS = {"--theirs", "--ours", "-q", "--quiet"}
+_PUSH_FORCE = {"--force", "--force-with-lease", "--force-if-includes"}
+
+
+@dataclass(frozen=True)
+class Discard:
+    """One destructive Git invocation, parsed once. `paths` are the operands a checkout/restore would
+    overwrite, `targets` the named branches or stash entries, `flags` every dash option in order."""
+    action: str
+    paths: tuple = ()
+    refs: tuple = ()
+    flags: tuple = ()
+    targets: tuple = ()
+    source: str | None = None
+    side: str | None = None
+    separated: bool = False
+    bulk: bool = False
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """What the repository shows about a parsed discard. Every fact defaults to the unproven value, so a
+    failed read denies instead of allowing."""
+    redirected: bool = False
+    lossless: bool = False
+    unstored: tuple = ()
+    owned: bool = False
+    clean: bool = False
+    problems: tuple = ()
+    preserved: bool = False
+
+
+def _bulk(paths, cwd):
+    """True when a named path is `.`, `:/`, `/`, a glob or a directory, so the retry names files instead."""
+    return any(p in (".", ":/", "/") or re.search(r"[*?\[\]$`%]", p)
+               or (cwd and os.path.isdir(os.path.join(cwd, p))) for p in paths)
+
+
+def parse_discard(sub, rest, cwd=None):
+    """The destructive action `git <sub> <rest>` names, or None when it destroys nothing recoverable.
+    Parsed once, so the evidence step and the deny message read the same value."""
+    rest = tuple(rest)
+    if sub in ("checkout", "restore"):
+        if sub == "checkout" and not ("--" in rest or "." in rest):
+            return None
+        staged_only = ({"--staged", "-S"} & set(rest)
+                       and not ("--worktree" in rest or "W" in short_flag_chars(rest)))
+        if sub == "restore" and staged_only:
+            return None
+        split = rest.index("--") if "--" in rest else len(rest)
+        head = rest[:split]
+        paths = tuple(rest[split + 1:]) if "--" in rest else tuple(a for a in rest if not a.startswith("-"))
+        flags = tuple(a for a in head if a.startswith("-"))
+        return Discard(sub, paths=paths,
+                       refs=tuple(a for a in head if not a.startswith("-")) if sub == "checkout" else (),
+                       flags=flags,
+                       source=next((a.split("=", 1)[1] for a in flags if a.startswith("--source=")), None),
+                       side="theirs" if "--theirs" in flags else "ours" if "--ours" in flags else None,
+                       separated="--" in rest, bulk=_bulk(paths, cwd))
+    if sub == "reset" and "--hard" in rest:
+        return Discard("reset --hard", flags=tuple(a for a in rest if a.startswith("-")))
+    if sub == "clean":
+        chars = short_flag_chars(rest)
+        if "n" not in chars and "--dry-run" not in rest and ("f" in chars or "--force" in rest):
+            return Discard("clean")
+        return None
+    if sub == "push" and (_PUSH_FORCE & set(rest)
+                          or any(a.startswith(("--force-with-lease=", "--force-if-includes=")) for a in rest)
+                          or "f" in short_flag_chars(rest)):
+        return Discard("force-push")
+    if sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest)):
+        return Discard("branch-delete", flags=tuple(a for a in rest if a.startswith("-")),
+                       targets=tuple(a for a in rest if not a.startswith("-")))
+    if sub == "stash" and rest and rest[0] in ("drop", "clear"):
+        args = rest[1:]
+        return Discard("stash " + rest[0], flags=tuple(a for a in args if a.startswith("-")),
+                       targets=tuple(a for a in args if not a.startswith("-")))
+    if sub == "reflog" and "expire" in rest:
+        return Discard("reflog-expire")
+    if sub == "gc" and any(a == "--prune" or a.startswith("--prune=") for a in rest):
+        return Discard("gc-prune")
+    if sub in ("filter-branch", "filter-repo"):
+        return Discard(sub)
+    return None
+
+
+def _lost_path(d, cwd, git_env):
+    """(judged, the first path whose content the discard would lose). `judged` False means the request's
+    shape cannot be proven lossless: no repository, a checkout with no `--`, a flag the diff cannot judge,
+    or a bulk path. A `judged` True with no path means every named path loses nothing. A restore of a path
+    absent from the worktree writes bytes and overwrites none."""
+    if cwd is None or (d.action == "checkout" and not d.separated):
+        return False, None
+    if (not d.paths or len(d.refs) > 1
+            or any(o not in _NO_LOSS_OPTS and not o.startswith("--source=") for o in d.flags)
+            or any(p in (".", ":/", "/") or re.search(r"[*?\[\]$`%]", p) for p in d.paths)):
+        return False, None
+    base = d.refs[0] if d.refs else d.source
+    for path in d.paths:
+        if "__pycache__" in Path(path).parts and ".." not in Path(path).parts and not path.startswith(":"):
+            continue
+        if d.side:
+            if path.lower().endswith(_SIDE_UNSAFE):
+                return True, path
+            if not (run_git(["ls-files", "-u", "--", path], cwd, git_env) or "").strip():
+                return True, path
+            continue
+        if d.action == "restore" and not path.startswith(":") and not os.path.lexists(os.path.join(cwd, path)):
+            continue
+        diff = ["diff", "--quiet", "--ignore-cr-at-eol"] + ([base] if base else []) + ["--", path]
+        if (run_git(diff, cwd, git_env) is None and not (base and _clean_in_head(path, cwd, git_env))
+                and not (_content_stored(path, cwd) and (d.action == "restore" or not base))):
+            return True, path
+    return True, None
+
+
+def _content_stored(path, cwd):
+    """True when git's object store holds the working-tree bytes of `path`, so discarding them loses nothing
+    git cannot reproduce (`_regenerable_clone.worktree_unstored`). A restore or a checkout from the index
+    qualifies; a checkout from another ref also overwrites the index, whose staged bytes this does not judge."""
+    if not os.path.isfile(os.path.join(cwd, path)):
+        return False
+    return worktree_unstored(cwd, [path]) == []
+
+
+def _clean_in_head(path, cwd, git_env=None):
+    """True when HEAD tracks `path` and neither the index nor the worktree holds an edit to it: overwriting it
+    from another commit loses nothing git does not still hold (landing a merge onto a shared checkout)."""
+    if run_git(["cat-file", "-e", "HEAD:" + path], cwd, git_env) is None:
+        # Absent from HEAD, the index and the worktree: the checkout creates it and overwrites nothing.
+        return (not os.path.lexists(os.path.join(cwd, path))
+                and run_git(["ls-files", "--", path], cwd, git_env) == "")
+    return (run_git(["diff", "--quiet", "--ignore-cr-at-eol", "HEAD", "--", path], cwd, git_env) is not None
+            and run_git(["diff", "--quiet", "--cached", "HEAD", "--", path], cwd, git_env) is not None)
+
+
+def _stash_preserved(flags, targets, cwd, git_env=None):
+    """True when the one stash entry `git stash drop` targets loses nothing git cannot reach: a ref outside
+    refs/stash holds the entry commit, or `_stash_changes_held` finds every change it carries in one ref's tip."""
+    if len(targets) > 1 or [a for a in flags if a not in ("-q", "--quiet")] or not cwd:
+        return False
+    sha = run_git(["rev-parse", "--verify", "--quiet", (targets or ("stash@{0}",))[0] + "^{commit}"], cwd, git_env)
+    if not sha or not sha.strip():
+        return False
+    holders = run_git(["for-each-ref", "--contains", sha.strip(), "--format=%(refname)"], cwd, git_env)
+    if any(ref and ref != "refs/stash" for ref in (holders or "").splitlines()):
+        return True
+    return _stash_changes_held(sha.strip(), cwd, git_env)
+
+
+_STASH_PREFILTER_PATHS = 16
+
+
+def _tree_names(args, cwd, git_env):
+    """The NUL-separated path list of a `git diff`/`ls-tree` call as a set, or None when the call failed."""
+    out = run_git(args, cwd, git_env)
+    return None if out is None else {p for p in out.split("\0") if p}
+
+
+def _stash_changes_held(stash, cwd, git_env=None):
+    """True when one ref outside refs/stash has, at its tip, every change the stash entry carries: each tracked
+    path the entry's worktree tree or its index commit (`stash^2`) changes against its base (`stash^1`), and each
+    file of its untracked commit (`stash^3`), is byte- and mode-equal at that tip (the worktree and index versions
+    both, so a staged version no tip holds is not lost silently). Fails closed on a deleted branch, a branch that
+    moved past the change, a detached HEAD (no ref), a partial match, an entry with no change to compare, a path a
+    batch query cannot name (a newline or an undecodable byte) and any git failure. `cat-file --batch-check`
+    prefilters every ref tip in one process on the first `_STASH_PREFILTER_PATHS` paths, a cost bound only: the
+    tree diffs on each surviving tip are the verdict."""
+    index = run_git(["rev-parse", "--verify", "--quiet", stash + "^2^{tree}"], cwd, git_env)
+    base = run_git(["rev-parse", "--verify", "--quiet", stash + "^1^{tree}"], cwd, git_env)
+    untracked = run_git(["rev-parse", "--verify", "--quiet", stash + "^3^{tree}"], cwd, git_env)
+    if not index or not base:
+        return False
+    worktree_paths = _tree_names(["diff", "--name-only", "-z", "--no-renames", stash + "^1", stash], cwd, git_env)
+    index_paths = _tree_names(["diff", "--name-only", "-z", "--no-renames", stash + "^1", stash + "^2"], cwd, git_env)
+    untracked_paths = (_tree_names(["ls-tree", "-r", "--name-only", "-z", stash + "^3"], cwd, git_env)
+                       if untracked and untracked.strip() else set())
+    if worktree_paths is None or index_paths is None or untracked_paths is None:
+        return False
+    expected = ([(stash, p) for p in sorted(worktree_paths)]
+                + [(stash + "^2", p) for p in sorted(index_paths - worktree_paths)]
+                + [(stash + "^3", p) for p in sorted(untracked_paths)])
+    if not expected or any("\n" in p or "�" in p for _, p in expected):
+        return False
+    refs = run_git(["for-each-ref", "--format=%(objectname) %(refname)"], cwd, git_env)
+    if refs is None:
+        return False
+    tips = []
+    for line in refs.splitlines():
+        tip, _, name = line.partition(" ")
+        if tip and name != "refs/stash" and tip not in tips:
+            tips.append(tip)
+    probe = expected[:_STASH_PREFILTER_PATHS]
+    queries = [f"{tree}:{p}" for tree, p in probe]
+    for tip in tips:
+        queries.extend(f"{tip}:{p}" for _, p in probe)
+    batch = _git_run.soft_text(["cat-file", "--batch-check"], cwd=cwd, env=git_env, timeout=30,
+                               input=("\n".join(queries) + "\n").encode("utf-8"))
+    rows = (batch or "").splitlines()
+    if batch is None or len(rows) != len(queries):
+        return False
+    answers = [None if row.endswith(" missing") else row.split(" ", 1)[0] for row in rows]
+    want = answers[:len(probe)]
+    for n, tip in enumerate(tips):
+        if answers[len(probe) * (n + 1):len(probe) * (n + 2)] != want:
+            continue
+        if _tip_holds_stash(tip, stash, worktree_paths, index_paths, untracked_paths, cwd, git_env):
+            return True
+    return False
+
+
+def _tip_holds_stash(tip, stash, worktree_paths, index_paths, untracked_paths, cwd, git_env):
+    """The exact verdict for one ref tip: no path the entry's worktree tree changes differs between the tip and
+    that tree, no path its index commit changes differs between the tip and that commit, and no untracked file
+    differs between the tip and `stash^3`."""
+    for side, paths in ((stash, worktree_paths), (stash + "^2", index_paths)):
+        if paths:
+            differing = _tree_names(["diff", "--name-only", "-z", "--no-renames", tip, side], cwd, git_env)
+            if differing is None or differing & paths:
+                return False
+    if untracked_paths:
+        differing = _tree_names(["diff", "--name-only", "-z", "--no-renames", "--diff-filter=AMTU", tip, stash + "^3"],
+                                cwd, git_env)
+        if differing is None or differing & untracked_paths:
+            return False
+    return True
+
+
+_BRANCH_DELETE_FLAGS = ("-D", "--delete", "--force", "-f", "-q", "--quiet")
+
+
+def _branch_deletion_problems(names, flags, cwd, git_env=None):
+    """Why `branch -D` would lose a commit: one line per unmet branch, empty when it loses none. A branch is safe
+    when it is a `scratch/<name>` session fixture, when every commit `git cherry` finds is already applied to HEAD
+    or to origin/HEAD (a squash-merged or cherry-picked branch, which `-d` refuses), or when a ref outside the
+    deleted set (a remote-tracking ref, a tag, `refs/preserve/`) holds its tip. Any other flag, a missing branch or
+    a failed git call is a problem."""
+    if not cwd or not names:
+        return ["no branch is named, or the repository cannot be read"]
+    problems = ["flag `%s` is not one `branch -D` is judged with" % a
+                for a in flags if a not in _BRANCH_DELETE_FLAGS]
+    bases = ["HEAD"] + (["refs/remotes/origin/HEAD"]
+                        if run_git(["rev-parse", "--verify", "-q", "refs/remotes/origin/HEAD"], cwd, git_env) else [])
+    doomed = {"refs/heads/" + n for n in names}
+    for name in names:
+        tip = run_git(["rev-parse", "--verify", "-q", "refs/heads/" + name], cwd, git_env)
+        if tip is None or not tip.strip():
+            problems.append("`%s` is not a local branch" % name)
+            continue
+        if name.startswith("scratch/"):
+            continue
+        if any(out is not None and not any(line.startswith("+") for line in out.splitlines())
+               for out in (run_git(["cherry", base, "refs/heads/" + name], cwd, git_env) for base in bases)):
+            continue
+        holders = run_git(["for-each-ref", "--contains", tip.strip(), "--format=%(refname)"], cwd, git_env)
+        if not any(ref and ref not in doomed for ref in (holders or "").splitlines()):
+            problems.append("`%s` holds commits no other ref has" % name)
+    return problems
+
+
+def _in_own_worktree(cwd, git_env, transcript_path):
+    """True when `cwd` (resolved through `-C`) lies in a worktree this session created, a submodule checked out
+    inside one included: that clone is the session's own. Redirected git state or an unknown session reads False."""
+    if (not cwd or not transcript_path
+            or any((git_env or {}).get(k) for k in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'))):
+        return False
+    return any(session_created_worktree(top, transcript_path)
+               for top in worktree_chain(cwd, lambda flag, start: run_git(["rev-parse", flag], start, git_env)))
+
+
+def _worktree_clean(cwd, git_env):
+    """True when the worktree holds nothing uncommitted, untracked files included. An unreadable status reads as
+    dirty."""
+    status = run_git(['status', '--short'], cwd, git_env)
+    return status is not None and status.strip() == ''
+
+
+def _checkout_retry(d):
+    if d.bulk:
+        return "then name each file: `git checkout -- <file>` for one saved edit at a time."
+    if d.refs:
+        return "then run `git restore --source=%s -- <path>`." % d.refs[0]
+    return "then the same command passes."
+
+
+def _restore_retry(d):
+    if d.bulk:
+        return "then name each file: `git restore <file>` for one saved edit at a time."
+    if "--worktree" in d.flags or "W" in short_flag_chars(d.flags):
+        return "then run it without `--worktree`/`-W` (restore's default), one saved file at a time."
+    if "-s" in d.flags:
+        return "then spell the source `--source=<ref>` and name one saved file."
+    return "then the same command passes."
+
+
+def discard_evidence(d, cwd, git_env=None, transcript_path=None):
+    """The facts one destructive decision reads, gathered once. A fact that cannot be read stays at its unproven
+    value, so the decision denies."""
+    if d.action in ("checkout", "restore"):
+        if any((git_env or {}).get(k) for k in ('GIT_DIR', 'GIT_WORK_TREE')):
+            return Evidence(redirected=True)
+        judged, lost = _lost_path(d, cwd, git_env)
+        if judged and lost is None:
+            return Evidence(lossless=True)
+        eligible = d.separated if d.action == "checkout" else bool(d.paths or d.flags or d.refs or d.separated)
+        return Evidence(unstored=(lost,) if lost else (),
+                        owned=eligible and _in_own_worktree(cwd, git_env, transcript_path))
+    if d.action == "reset --hard":
+        owned = _in_own_worktree(cwd, git_env, transcript_path)
+        return Evidence(owned=owned, clean=owned and _worktree_clean(cwd, git_env))
+    if d.action == "branch-delete":
+        return Evidence(problems=tuple(_branch_deletion_problems(d.targets, d.flags, cwd, git_env)))
+    if d.action == "stash drop":
+        return Evidence(preserved=_stash_preserved(d.flags, d.targets, cwd, git_env))
+    return Evidence()
+
+
+def _denial(d, ev):
+    """The block message for a parsed discard, rendered from the same request and evidence the decision read."""
+    if d.action in ("checkout", "restore"):
+        if not ev.redirected and (ev.lossless or ev.owned):
+            return None
+        if d.action == "checkout":
+            return ("BLOCKED `git checkout` worktree discard (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
+                    "overwrites uncommitted edits to those paths, which may be another session's; another session's "
+                    "edit needs the owner's words first. To discard your own edit, save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
+                    + _checkout_retry(d))
+        return ("BLOCKED `git restore` without `--staged` (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
+                "discards uncommitted worktree edits, which may be another session's; another session's edit "
+                "needs the owner's words first. To discard your own edit, "
+                "save it first: `git update-ref refs/preserve/<name> $(git hash-object -w <path>)`, "
+                + _restore_retry(d))
+    if d.action == "reset --hard":
+        if ev.owned and ev.clean:
+            return None
+        return ("BLOCKED `git reset --hard` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
+                "discards every uncommitted change in the shared worktree with no undo. Use "
+                "`git reset --keep` to move HEAD and keep local edits.")
+    if d.action == "clean":
+        return ("BLOCKED `git clean -f` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
+                "deletes untracked files permanently (git has no copy). Run the same command with "
+                "`-n` first, then ask the user to confirm.")
+    if d.action == "force-push":
+        return ("BLOCKED force-push (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — rewrites remote "
+                "history and can erase commits other checkouts still depend on. Rebase onto the remote and "
+                "push normally.")
+    if d.action == "branch-delete":
+        if not ev.problems:
+            return None
+        return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: unreachable commits would be lost) — "
+                "force-deleting would lose commits: " + "; ".join(ev.problems) + ". "
+                + ("Name only local branches, with no flag beyond `-D`. "
+                   if any(not p.endswith("holds commits no other ref has") for p in ev.problems) else "")
+                + ("Keep each branch's commits reachable with `git update-ref refs/preserve/<name> <branch>`, "
+                   "then the same delete passes."
+                   if any(p.endswith("holds commits no other ref has") for p in ev.problems) else ""))
+    if d.action == "stash drop":
+        if ev.preserved:
+            return None
+        target = d.targets[0] if d.targets else "stash@{0}"
+        return ("BLOCKED `git stash drop` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — stashed work "
+                "is unreferenced once dropped. With the owner's go-ahead, keep it reachable and drop: "
+                f"`git update-ref refs/preserve/<name> {target}`, then the same drop passes.")
+    if d.action == "stash clear":
+        return ("BLOCKED `git stash clear` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
+                "stashed work is unreferenced once dropped. Leave it; ask the user before discarding.")
+    if d.action == "reflog-expire":
+        return ("BLOCKED `git reflog expire` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — the reflog "
+                "is the last recovery path for lost commits. Leave expiry to git's own schedule.")
+    if d.action == "gc-prune":
+        return ("BLOCKED `git gc --prune` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — permanently "
+                "removes unreachable objects that reflog recovery depends on. Run `git gc` without `--prune`.")
+    if d.action in ("filter-branch", "filter-repo"):
+        return (f"BLOCKED `git {d.action}` (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — rewrites every "
+                "commit in place, invalidating all existing clones and hashes. Ask the user for explicit "
+                "go-ahead before rewriting history; never do it in-session.")
+    return None
+
+
+def verdict(args, cwd=None, git_env=None, transcript_path=None):
+    """A block message for one git invocation, or None. `cwd` is the repo the call targets; without it a
+    checkout/restore discard is judged unsafe."""
+    if not args:
+        return None
+    d = parse_discard(args[0], args[1:], cwd)
+    return None if d is None else _denial(d, discard_evidence(d, cwd, git_env, transcript_path))
+
+
+# --- Peer losses at commit: stage records, stale blobs, amends (moved from _peer_loss.py) ---------------------
+REVERT_SCAN_CAP = 500
+REVERT_HISTORY = 30
+TRAILER_RE = re.compile(r"claude\.ai/code/session_\w+")
+
+
+@dataclass(frozen=True)
+class Loss:
+    kind: str
+    paths: tuple = ()
+    head: str | None = None
+    base: str | None = None
+    record: str | None = None
+    trailer: str | None = None
+
+
+def stage_record_loss(cwd, git_env):
+    """A private index `tools/index_commit.py stage` built over a HEAD that has since moved, or whose record
+    cannot be read: committing it would undo every commit since its base."""
+    index = (git_env or {}).get("GIT_INDEX_FILE")
+    if not index:
+        return None
+    record = stage_record_path(index)
+    if not record.is_file():
+        return None
+    base = stage_record_base(record)
+    head = run_git(["rev-parse", "HEAD"], cwd, git_env)
+    head = head.strip() if head is not None else None
+    if base and head == base:
+        return None
+    return Loss("stage_record", head=head, base=base, record=record.name)
+
+
+def message_trailer(message_path):
     try:
-        input_data = json.load(sys.stdin)
-    except json.JSONDecodeError:
-        print("{}")  # Workaround for Claude Code #10463
-        sys.exit(0)
+        match = TRAILER_RE.search(Path(message_path).read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return None
+    return match.group(0) if match else None
 
-    tool_input = input_data.get("tool_input") if isinstance(input_data, dict) else None
-    if isinstance(input_data, dict) and input_data.get("tool_name") in ("Bash", "PowerShell") \
-            and isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str):
-        command = tool_input["command"]
-        blocked, message = check_bash_command(command, input_data.get("cwd"),
-                                              input_data.get("transcript_path"))
-        if blocked:
-            rewritten = None
-            if input_data.get("tool_name") == "Bash" and "recursive" in message.lower():
-                rewritten = rewrite_absent_forced_deletes(command, input_data.get("cwd"))
-            if rewritten is not None and not check_bash_command(
-                    rewritten, input_data.get("cwd"), input_data.get("transcript_path"))[0]:
-                print(json.dumps({"hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "updatedInput": dict(tool_input, command=rewritten)}}))
-                sys.exit(0)
-            print(message, file=sys.stderr)
-            sys.exit(2)
 
-    print("{}")
-    sys.exit(0)
+def session_trailer(session_id):
+    if not session_id:
+        return None
+    for path in (Path.home() / ".claude" / "sessions").glob("*.json"):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict) and doc.get("sessionId") == session_id and doc.get("bridgeSessionId"):
+            return "claude.ai/code/" + doc["bridgeSessionId"]
+    return None
+
+
+def lane_commits(root, git_env):
+    dirs = (run_git(["rev-parse", "--git-dir", "--git-common-dir"], root, git_env) or "").splitlines()
+    if len(dirs) < 2 or os.path.realpath(os.path.join(root, dirs[0])) == os.path.realpath(os.path.join(root, dirs[1])):
+        return set()
+    for ref in ("refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"):
+        base = run_git(["merge-base", "HEAD", ref], root, git_env)
+        if base and base.strip():
+            return set((run_git(["rev-list", base.strip() + "..HEAD"], root, git_env) or "").split())
+    return set()
+
+
+def amend_loss(rest, cwd, git_env=None, session_id=None):
+    if not parse_commit_args(rest)[1]:
+        return None
+    root = (run_git(["rev-parse", "--show-toplevel"], cwd, git_env) or cwd).strip()
+    head = (run_git(["rev-parse", "HEAD"], root, git_env) or "").strip()
+    if head and head in lane_commits(root, git_env):
+        return None
+    trailer = session_trailer(session_id)
+    body = run_git(["log", "-1", "--format=%B", "HEAD"], root, git_env) if head else None
+    if trailer and body is not None and trailer in body:
+        return None
+    return Loss("amend", head=head if body is not None else None, trailer=trailer)
+
+
+def _replaced_blobs(root, git_env, own_trailer):
+    revs = (run_git(["rev-list", "-n", str(REVERT_HISTORY), "HEAD"], root, git_env) or "").split()
+    own = lane_commits(root, git_env)
+    if own_trailer and revs:
+        own |= set((run_git(["log", "--format=%H", "-F", "--grep=" + own_trailer, "-n",
+                             str(REVERT_HISTORY), "HEAD"], root, git_env) or "").split())
+    peers = [r for r in revs if r not in own]
+    out = run_git(["show", "--raw", "-z", "--no-abbrev", "--no-renames", "--format="] + peers,
+                  root, git_env) if peers else ""
+    found = {}
+    for path, fields in _raw_entries((out or "").replace("\n", "")):
+        if len(fields) >= 5 and fields[4] == "M":
+            found.setdefault(path, set()).add(fields[2])
+    return found
+
+
+def _raw_entries(out):
+    tokens = (out or "").split("\0")
+    for meta, path in zip(tokens[::2], tokens[1::2]):
+        if meta.startswith(":") and path:
+            yield path, meta.split()
+
+
+def _tree_blobs(ref, paths, root, git_env):
+    out = run_git(["ls-tree", "-z", ref, "--"] + paths, root, git_env)
+    if out is None:
+        return None
+    entries = (entry.partition("\t") for entry in out.split("\0"))
+    return {path: meta.split()[-1] for meta, _, path in entries if path}
+
+
+def stale_loss(rest, cwd, git_env=None, session_id=None, own_trailer=None):
+    """Staged paths whose blob would set a peer's newer commit back: a staged blob equal to HEAD's worktree copy
+    from an older index, a blob a peer commit replaced, or a file a peer deleted re-added."""
+    include_dirty, _amend, pathspec = parse_commit_args(rest)
+    has_spec = bool(pathspec) or _pathspec_file(rest) is not None
+    if include_dirty or (has_spec and not ({"-i", "--include"} & set(rest))):
+        return None
+    root = run_git(["rev-parse", "--show-toplevel"], cwd, git_env)
+    if root is None:
+        return None
+    root = root.strip()
+    reverting = run_git(["rev-parse", "-q", "--verify", "REVERT_HEAD"], root, git_env)
+    added = run_git(["diff", "--cached", "--name-only", "--diff-filter=A", "-z"], root, git_env)
+    readded = [p for p in (added or "").split("\0") if p and not os.path.lexists(os.path.join(root, p))
+               and run_git(["log", "-1", "--format=%h", "--diff-filter=D", "HEAD", "--", p], root, git_env)]
+    out = run_git(["diff", "--cached", "--name-only", "--diff-filter=M", "-z"], root, git_env)
+    raw = run_git(["diff", "--cached", "--raw", "-z", "--no-abbrev", "--diff-filter=M"], root, git_env)
+    staged = {p: (fields[2], fields[3]) for p, fields in _raw_entries(raw) if len(fields) >= 4}
+    mode_only = {p for p, (old, new) in staged.items() if old == new}
+    paths = [p for p in (out or "").split("\0") if p and p not in mode_only][:REVERT_SCAN_CAP]
+    stale = []
+    if paths:
+        head = _tree_blobs("HEAD", paths, root, git_env)
+        work = run_git(["hash-object", "--"] + paths, root, git_env)
+        if head is not None and work is not None:
+            stale = [p for p, blob in zip(paths, work.split()) if head.get(p) == blob]
+            replaced = _replaced_blobs(root, git_env, own_trailer or session_trailer(session_id))
+            merging = run_git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], root, git_env)
+            theirs = (_tree_blobs("MERGE_HEAD", paths, root, git_env) or {}) if merging else {}
+            stale += [p for p in paths if p not in stale and p in staged and staged[p][1] in replaced.get(p, ())
+                      and staged[p][1] != theirs.get(p)]
+    found = stale + readded
+    if reverting and found:
+        changed = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", "-m", "-z", "REVERT_HEAD"],
+                          root, git_env)
+        reverted = set((changed or "").split("\0"))
+        found = [p for p in found if p not in reverted]
+    return Loss("stale", paths=tuple(found)) if found else None
+
+
+def base_verdict(cwd, git_env):
+    loss = stage_record_loss(cwd, git_env)
+    if loss is None:
+        return None
+    reason = ("HEAD is %s but the index was read from base %s" % (loss.head[:9], loss.base[:9])
+              if loss.base and loss.head is not None else "its stage record %s cannot be read" % loss.record)
+    return ("BLOCKED commit (CLAUDE.md §Core Principles: preserve peer work) — %s, so publishing this "
+            "private index would undo every commit since its base. Rerun `python3 "
+            ".claude/tools/index_commit.py stage` (index_commit) with the same paths, then commit the "
+            "new index." % reason)
+
+
+def revert_verdict(rest, cwd, git_env, session_id=None, own_trailer=None):
+    loss = stale_loss(rest, cwd, git_env, session_id, own_trailer)
+    return _revert_message(loss.paths) if loss else None
+
+
+def amend_verdict(rest, cwd, git_env=None, session_id=None):
+    loss = amend_loss(rest, cwd, git_env, session_id)
+    if loss is None:
+        return None
+    if loss.head is None:
+        why = "HEAD cannot be read"
+    elif not loss.trailer:
+        why = "this session's commit trailer cannot be resolved, so HEAD %s has no known author" % loss.head[:9]
+    else:
+        why = "HEAD %s carries no `%s` trailer, so another author made it" % (loss.head[:9], loss.trailer)
+    return ("BLOCKED git commit --amend (CLAUDE.core.md §Core Principles: preserve peer work) — %s, and the amend "
+            "would rewrite it. Commit the change as a new commit." % why)
+
+
+def _revert_message(stale):
+    if not stale:
+        return None
+    shown = "\n  ".join(stale[:10]) + ("\n  ... %d more" % (len(stale) - 10) if len(stale) > 10 else "")
+    return ("BLOCKED commit (CLAUDE.md §Core Principles: preserve peer work) — it would revert a peer's commit "
+            "to %d file(s):\n  %s\n"
+            "The index was built from an older HEAD. Rebuild it from the current HEAD, or commit "
+            "your files with a pathspec (`git commit -F <msg> -- <paths>`)." % (len(stale), shown))
+
+
+def commit_msg_check(message_path, environ=None, cwd=None):
+    """Deny text for the commit git is about to write, or None: `base_verdict` and `revert_verdict` re-run inside
+    git's commit-msg hook (`.claude/githooks/commit-msg`), because the PreToolUse check ran before the commit
+    hooks and a peer's commit can land in between. A pathspec (`next-index-*`) or `-a` (`index.lock`) commit takes
+    the working tree, and a merge has its own guard, so those pass. The message's own Claude-Session trailer is
+    the session whose commits it may revert."""
+    environ = os.environ if environ is None else environ
+    cwd = cwd or os.getcwd()
+    index = environ.get("GIT_INDEX_FILE") or ""
+    name = os.path.basename(index)
+    if name.startswith("next-index") or name == "index.lock":
+        return None
+    git_env = {k: v for k, v in environ.items() if k.startswith("GIT_")}
+    if index:
+        git_env["GIT_INDEX_FILE"] = os.path.abspath(os.path.join(cwd, index))
+    git_dir = run_git(["rev-parse", "--git-dir"], cwd, git_env)
+    if git_dir and os.path.exists(os.path.join(cwd, git_dir.strip(), "MERGE_HEAD")):
+        return None
+    return base_verdict(cwd, git_env) or revert_verdict([], cwd, git_env, own_trailer=message_trailer(message_path))
+
+
+def _unproved_publish(args):
+    """True when an opaque call (cwd=None) would write the index, publish a commit or push."""
+    return bool(args) and (args[0] == "push" or publishes_index(args[0], args[1:]) or writes_index(args))
+
+
+def git_verdict(command, cwd, transcript_path=None, session_id=None):
+    """The first git loss in `command`, or None. A call inside a shell launcher body (`bash -c`, `eval`, ...)
+    borrows no worktree ownership; its resolved repository facts still count."""
+    command = executable_text(command)
+    if "git" not in command:
+        return None
+    cwd = cwd or "."
+    born = set()  # repos this same command creates with `git init`
+    initialized = set()  # existing repos outside this project the command runs `git init` on
+    project_root = _project_root()
+    index_write = None  # the latest git index write seen so far in this command
+    for call in git_invocations(command, cwd):
+        args = [call.sub] + call.rest
+        target, git_env = call.cwd, call.git_env
+        launched = call.body_path is None or len(call.body_path) > 0
+        owner_transcript = None if launched else transcript_path
+        if target is None:
+            message = verdict(args, None, git_env, None)
+            if not message and _unproved_publish(args):
+                message = UNPROVED_TARGET % call.sub
+            if message:
+                return message
+            continue
+
+        def expand(token):
+            return expand_literal(token, call.assignments) or token
+        key = os.path.normcase(os.path.abspath(target))
+        if args[0] == "init":
+            named, takes_value = [], False
+            for a in args[1:]:
+                if takes_value:
+                    takes_value = False
+                elif a in ("-b", "--initial-branch", "--template", "--separate-git-dir", "--object-format", "--ref-format"):
+                    takes_value = True
+                elif not a.startswith("-"):
+                    named.append(a)
+            made = resolve_cd(target, expand(named[0])) if named else target
+            top = run_git(["rev-parse", "--show-toplevel"], made, git_env)
+            made_key = os.path.normcase(os.path.abspath(made))
+            if top is None or os.path.normcase(os.path.abspath(top.strip())) != made_key:
+                born.add(made_key)
+            elif not in_project(made, project_root, git_env):
+                initialized.add(made_key)
+            continue
+        judged_args = [expand(arg) for arg in args] if args[0] in ('checkout', 'restore') else args
+        message = verdict(judged_args, target, git_env, owner_transcript)
+        if (index_write and not message and key not in born and key not in initialized
+                and publishes_index(args[0], args[1:])):
+            message = SAME_COMMAND_WRITE % (index_write, index_write)
+        if writes_index(args):
+            index_write = "git " + args[0]
+        if (not message and (args[0] in ("commit", "merge", "cherry-pick", "revert")
+                             or publishes_index(args[0], args[1:])) and key not in born):
+            git_env, problem = resolve_index(git_env, target)
+            if problem:
+                message = "BLOCKED commit (memory gotcha_concurrent_session_hazards #16) — %s." % problem
+            elif args[0] == "commit":
+                message = (base_verdict(target, git_env)
+                           or amend_verdict(args[1:], target, git_env, session_id)
+                           or revert_verdict(args[1:], target, git_env, session_id))
+        if message:
+            return message
+    return None
+
+
+# --- Entry points ---------------------------------------------------------------------------------------------------
+def _output(decision=None, reason=None, updated=None):
+    hso = {"hookEventName": "PreToolUse"}
+    if decision:
+        hso.update(permissionDecision=decision, permissionDecisionReason=reason)
+    if updated is not None:
+        hso["updatedInput"] = updated
+    return {"hookSpecificOutput": hso}
+
+
+def check(payload):
+    """The floor's verdict on one PreToolUse payload: None (allow), a deny, or a rewrite of an absent forced delete."""
+    tool_input = payload.get("tool_input")
+    if payload.get("tool_name") not in ("Bash", "PowerShell") or not isinstance(tool_input, dict) \
+            or not isinstance(tool_input.get("command"), str):
+        return None
+    command, cwd, transcript = tool_input["command"], payload.get("cwd"), payload.get("transcript_path")
+    blocked, message = check_bash_command(command, cwd, transcript)
+    if blocked:
+        rewritten = None
+        if payload.get("tool_name") == "Bash" and "recursive" in message.lower():
+            rewritten = rewrite_absent_forced_deletes(command, cwd)
+        if rewritten is None or check_bash_command(rewritten, cwd, transcript)[0]:
+            return _output("deny", message)
+        command = rewritten
+    why = git_verdict(command, cwd, transcript, payload.get("session_id"))
+    if why:
+        return _output("deny", why)
+    return _output(updated=dict(tool_input, command=command)) if blocked else None
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--commit-msg"]:
+        try:
+            why = commit_msg_check(argv[1] if len(argv) > 1 else "")
+        except Exception as exc:  # a floor check: a fault refuses the commit
+            print("BLOCKED commit: the commit-msg peer-revert check crashed (%s: %s). Repair "
+                  ".claude/hooks/dangerous_shell_guard.py commit_msg_check until .claude/tests/floor/"
+                  "test_floor_commit_msg.py passes, then commit again." % (type(exc).__name__, exc), file=sys.stderr)
+            return 1
+        if why:
+            print(why, file=sys.stderr)
+            return 1
+        return 0
+    try:
+        payload = json.load(sys.stdin)
+    except ValueError:
+        payload = None
+    out = check(payload) if isinstance(payload, dict) else None
+    if out:
+        print(json.dumps(out))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
