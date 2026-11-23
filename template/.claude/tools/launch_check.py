@@ -7,7 +7,12 @@ worktree, a full seat, a login at its capacity floor) stay in `seat.sh`; they me
         Refuses (exit 2, one stderr line) when the brief, the output directory or an `inputs:` entry does not
         resolve under --root, or a `writes: no` job's brief names a `targets:` entry other than <out.md>.
     launch_check.py seat <seat>
-        Prints the seat's `seats.json` row as shell assignments for seat.sh to eval. Exit 2 for an unknown seat or one whose login is absent here.
+        Prints the seat's `seats.json` row as shell assignments for seat.sh to eval, with the row of its model: the
+        efforts the model accepts (`SEAT_EFFORTS`, space-separated, empty when the model lists none), its window
+        (`SEAT_CONTEXT`), output cap (`SEAT_MAX_OUTPUT`) and upstream `SEAT_BASE_URL`. Exit 2 for an unknown seat or one whose login is absent here.
+    launch_check.py record <seat> <model> <effort> <rc> <proxy-version> <raw-file> <hold-stderr-file> <record-file>
+        The run record of a seat that holds a local backend (scripts/seat_local.sh): writes <record-file> and prints
+        the answer, which is the child's `result` text, or its raw output when that is not a result object.
     launch_check.py stage <slot> <brief.md> <out.md> <here> <workdir> <main-checkout|"">
         Writes <slot>/prompt.md (guards/rails.md once, then the brief: the one prompt every adapter reads) and
         <slot>/settings.json (the floor entry; a non-empty main checkout adds the workdir fence, with the output
@@ -115,14 +120,23 @@ def seat_assignments(seat, claude_dir=CLAUDE_DIR):
     if _login(row) and not os.path.isdir(_login(row)):
         raise ValueError("seat '%s' has no login on this machine: log in once with `claude` under CLAUDE_CONFIG_DIR=%s"
                          % (seat, _login(row)))
+    model = _model_row(row, claude_dir)
     values = {
         "SEAT_ADAPTER": row["adapter"],
         "SEAT_WRITES": row["writes"],
         "SEAT_MAX": str(row["max_concurrent"]),
         "SEAT_CONFIG_DIR": _login(row),
         "SEAT_MODEL": row["model"],
+        "SEAT_EFFORTS": " ".join(model.get("efforts") or []),
+        "SEAT_CONTEXT": str(model.get("contextTokens") or ""),
+        "SEAT_MAX_OUTPUT": str(model.get("maxOutputTokens") or ""),
+        "SEAT_BASE_URL": model.get("baseUrl") or "",
     }
     return "\n".join("%s=%s" % (key, shlex.quote(value)) for key, value in values.items())
+
+
+def _model_row(row, claude_dir):
+    return (table(claude_dir).get("models") or {}).get(row["model"]) or {}
 
 
 def stage(slot, brief, out, here, workdir, main_checkout):
@@ -139,6 +153,33 @@ def stage(slot, brief, out, here, workdir, main_checkout):
                          + [shlex.quote(str(a)) for a in (workdir, main_checkout, os.path.dirname(out), brief)])
         groups.append({"matcher": "Write|Edit|NotebookEdit|Bash", "hooks": [{"type": "command", "command": fence}]})
     (slot / "settings.json").write_text(json.dumps({"hooks": {"PreToolUse": groups}}), encoding="utf-8", newline="\n")
+
+
+HOLD_PREFIX = "[backend_hold] "
+ARGV_LABEL = "server argv: "
+
+
+def record(seat, model, effort, rc, proxy_version, raw, hold_stderr):
+    """(answer, record) of one held local run. `raw` is the child's `--output-format json` stdout and `hold_stderr`
+    backend_hold's stderr. The record keeps the server's argv line verbatim (`serverArgv`, None when backend_hold
+    printed none) and whether it names a reasoning effort (`serverArgvHasEffort`): a run whose server did not start
+    with the effort the dispatch asked for is void, and only that line shows it."""
+    try:
+        result = json.loads(raw)
+    except ValueError:
+        result = None
+    result = result if isinstance(result, dict) and result.get("type") == "result" else None
+    held = [line[len(HOLD_PREFIX):] for line in hold_stderr.splitlines() if line.startswith(HOLD_PREFIX)]
+    argv = next((line[len(ARGV_LABEL):] for line in held if line.startswith(ARGV_LABEL)), None)
+    body = result or {}
+    made = {
+        "seat": seat, "model": model, "effort": effort, "rc": int(rc), "proxyVersion": proxy_version or None,
+        "serverArgv": argv, "serverArgvHasEffort": bool(argv and "reasoning_effort" in argv), "holdLines": held,
+        "isError": bool(body.get("is_error")) if result else None, "numTurns": body.get("num_turns"),
+        "durationMs": body.get("duration_ms"), "sessionId": body.get("session_id"),
+        "usage": body.get("usage"), "modelUsage": body.get("modelUsage"),
+    }
+    return (str(body.get("result", "")) if result else raw), made
 
 
 def _adaptation_get(key):
@@ -161,7 +202,7 @@ def run_hook(key, args, cwd, lookup=_adaptation_get):
 def main(argv=None, lookup=_adaptation_get):
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        print("usage: launch_check.py check|seat|stage|pre_launch|post_return ...", file=sys.stderr)
+        print("usage: launch_check.py check|seat|record|stage|pre_launch|post_return ...", file=sys.stderr)
         return 2
     verb, rest = args[0], args[1:]
     if verb == "check" and len(rest) == 8:
@@ -182,6 +223,13 @@ def main(argv=None, lookup=_adaptation_get):
             return 2
         print(text)
         return 0
+    if verb == "record" and len(rest) == 8:
+        seat, model, effort, rc, proxy, raw_file, err_file, out_file = rest
+        read = lambda name: Path(name).read_text(encoding="utf-8", errors="replace")
+        answer, made = record(seat, model, effort, rc, proxy, read(raw_file), read(err_file))
+        Path(out_file).write_text(json.dumps(made, indent=1) + "\n", encoding="utf-8", newline="\n")
+        sys.stdout.buffer.write(answer.encode("utf-8"))
+        return 0
     if verb == "stage" and len(rest) == 6:
         stage(*rest)
         return 0
@@ -192,7 +240,7 @@ def main(argv=None, lookup=_adaptation_get):
             sys.stderr.write(err)
             return 2
         return 0
-    print("usage: launch_check.py check|seat|stage|pre_launch|post_return ...", file=sys.stderr)
+    print("usage: launch_check.py check|seat|record|stage|pre_launch|post_return ...", file=sys.stderr)
     return 2
 
 
