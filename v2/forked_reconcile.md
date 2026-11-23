@@ -1,6 +1,6 @@
 # Forked shared files: v2 reconcile audit (S6b B12)
 
-Source: PushinPotions `origin/main` `d9f2cbe1a`, its `.claude/baseline.lock.json`. v2 read at lane base `b183746`; v2 tip is `e3adbe6` (B3d's commit, after the base). Paths are under `.claude/` of PushinPotions and `template/.claude/` of the shared repo.
+Source: PushinPotions `origin/main` `d9f2cbe1a`, its `.claude/baseline.lock.json`. Every v2 column is read at v2 tip `9091bba`, the base of the fix round (rows 20–27 and 30 were re-checked there). Paths are under `.claude/` of PushinPotions and `template/.claude/` of the shared repo.
 
 **Disposition codes.** **U** upstreamed: the PushinPotions-local change is in v2, or a named carried/dropped row restates it. **M** moved: the text lives in a named PushinPotions-local file, or the owner's register names its local home. **D** dropped with its file (the delete row is named). **O** open: the local change is in neither v2 nor a named local file, or no v2 job has reconciled the file. Counts of "PP lines" are added lines of PushinPotions' change against the fork base, checked for exact-line presence in v2 and in PushinPotions' tree.
 
@@ -38,17 +38,17 @@ So M1 marks nine of the ten. For those nine, M1's bytes are the v2 base (Q3). Ch
 | 17 | `commands/sync_subsystems.md` | coding · `3b8ee0d6` | A10 `5f59322`, 59 lines | 5 lines | U | Register A10: Step 0 and Step 1 replaced by `reserved_paths:` (T7). |
 |  18 | `commands/workstation_setup.md` | pure · `1302c0d1` | A10 `afe600d`, `1b3cfc2`, 267 lines | 88 lines | U | B12b. Upstreamed `core.longpaths`, the `stale` user-scope row, and `install` without a prompt. PP's NuGet, .NET, Godot-pin, csharp-ls and runtimeconfig phases go to PP-local `workstation_setup_toolchain.md` (v2 reads it; S9 folds them in). Dropped with their tools (V10): `baseline_sync.py check`, the `lock_merge.py` driver, the WSL preview. |
 | 19 | `gitignore.harness` | pure · `ffc2a2d8` | **B12, this lane** (residue, commit A) | 2 lines removed | U | PP removed `.claude/tests/` and its comment (`14cb8b4a4`). The exclusion ships in shared `searchignore.harness` (`ef4727a`), so v2 takes PP's bytes. The v1 test `test_baseline_sync_doctor.py` uses its own fixture, not this file. |
-| 20 | `hooks/README.md` | pure · `3b8ee0d6` | deleted, B13 `6c3004b` | 35 added, 27 removed | D | Register B13 R1–R3: doctrine dropped. Its one live-hook fact moves to B14's `/v2/hook_registrations.md`, which is not written yet (open under B14, row 22–26). |
-|  21 | `hooks/git_guardrails.py` | pure · `9aceeed` | S5 `c3807db` (10 added, 4 removed), i.e. v2 = base plus floor change | 385 added, 681 removed | U | B12b, commit `ecb40df`. M1's one hunk applied to v2: `harness_verdict` returns after its scope checks. The advisory helpers it no longer calls stay until the floor modules replace the file (S5b, B14c). Six tests fail on the base too (own-worktree cases and one harness-commit case); this edit does not change them. |
-|  22 | `hooks/post_edit_dispatch.py` | pure · `9aceeed` | none: v2 == base | 1 added, 13 removed | O | 13 removed lines still wired. B14 landed two proof-test commits (`a4e8cca`, `f6a5d68`), not this rewrite. Open, lane B14c (the brief names it). Apply M1's bytes first (Q3), then Q13's shape.  |
-|  23 | `hooks/post_read_dispatch.py` | pure · `9aceeed` | none: v2 == base | 8 added, 55 removed | O | 55 removed lines still in v2. Open, lane B14c (the brief names it). Apply M1's bytes first (Q3), then Q13's shape.  |
-|  24 | `hooks/pre_edit_dispatch.py` | pure · `9aceeed` | none: v2 == base | 2 added, 23 removed | O | Still names `pattern_enforcer` at :61, a policing member M1 unwired. Open, lane B14c (the brief names it). Apply M1's bytes first (Q3), then Q13's shape.  |
-|  25 | `hooks/pre_read_dispatch.py` | pure · `9aceeed` | none: v2 == base | 16 added, 109 removed | O | 109 removed lines still in v2. Open, lane B14c (the brief names it). Apply M1's bytes first (Q3), then Q13's shape.  |
-|  26 | `hooks/prompt_dispatch.py` | pure · `9aceeed` | none: v2 == base | 1 added, 8 removed | O | 8 removed lines still in v2. Open, lane B14c (the brief names it). Apply M1's bytes first (Q3), then Q13's shape.  |
-| 27 | `hooks/pre_workflow_dispatch.py` | pure · `9aceeed` | B3 `96a44b4` (via `v2-B3c`), 282 lines, launch checks through `launch_check.py` | 14 added, 24 removed | U | 23 of 24 M1 removals applied. 12 of 14 M1 additions describe members the rewrite drops; superseded by the one launch-check path (B1, `launch_check.py` in v2). Checked against v2 tip: `e3adbe6` does not touch this file. |
+| 20 | `hooks/README.md` | pure · `3b8ee0d6` | deleted, B13 `6c3004b` | 35 added, 27 removed | D | Register B13 R1–R3: doctrine dropped. Its one live-hook fact is `v2/hook_registrations.md`, written and reconciled against the tip (its Reconcile command). |
+| 21 | `hooks/git_guardrails.py` | pure · `9aceeed` | deleted, B16 `5696d6f` | 385 added, 681 removed | D | The floor (`dangerous_shell_guard`, `kill_guard`, `_git_commit`) carries every loss deny; M1's one hunk and the advisory helpers went with the file. None of its 34 M1-removed lines of 25+ characters survives in v2's hooks. |
+| 22 | `hooks/post_edit_dispatch.py` | pure · `9aceeed` | stub over `_chain.py`, FX-DISP `fc7d937` | 1 added, 13 removed | U | M1's removed members are gone: none of its 15 removed lines of 25+ characters is in the stub or `_chain.py`. The shared members are `_chain.EVENTS["post_edit"]`; a project's own come from `adaptation.json` `hook_members` (`hook_registrations.md` rows 2, 3, 8, 9, 12). |
+| 23 | `hooks/post_read_dispatch.py` | pure · `9aceeed` | stub over `_chain.py`, FX-DISP `fc7d937` | 8 added, 55 removed | U | M1's removed members are gone: none of its 59 removed lines of 25+ characters is in the stub or `_chain.py`. The shared members are `_chain.EVENTS["post_read"]`; a project's own come from `adaptation.json` `hook_members` (`hook_registrations.md` rows 2, 3, 8, 9, 12). |
+| 24 | `hooks/pre_edit_dispatch.py` | pure · `9aceeed` | stub over `_chain.py`, FX-DISP `fc7d937` | 2 added, 23 removed | U | M1's removed members are gone: none of its 16 removed lines of 25+ characters is in the stub or `_chain.py`. The shared members are `_chain.EVENTS["pre_edit"]`; a project's own come from `adaptation.json` `hook_members` (`hook_registrations.md` rows 2, 3, 8, 9, 12). |
+| 25 | `hooks/pre_read_dispatch.py` | pure · `9aceeed` | stub over `_chain.py`, FX-DISP `fc7d937` | 16 added, 109 removed | U | M1's removed members are gone: none of its 62 removed lines of 25+ characters is in the stub or `_chain.py`. The shared members are `_chain.EVENTS["pre_read"]`; a project's own come from `adaptation.json` `hook_members` (`hook_registrations.md` rows 2, 3, 8, 9, 12). |
+| 26 | `hooks/prompt_dispatch.py` | pure · `9aceeed` | stub over `_chain.py`, FX-DISP `fc7d937` | 1 added, 8 removed | U | M1's removed members are gone: none of its 6 removed lines of 25+ characters is in the stub or `_chain.py`. The shared members are `_chain.EVENTS["prompt"]`; a project's own come from `adaptation.json` `hook_members` (`hook_registrations.md` rows 2, 3, 8, 9, 12). |
+| 27 | `hooks/pre_workflow_dispatch.py` | pure · `9aceeed` | FX-NAT, 282+ lines, launch checks through `launch_check.py` | 14 added, 24 removed | U | Re-checked at tip `9091bba`: none of M1's 16 removed lines of 25+ characters survives. 12 of 14 M1 additions describe members the rewrite drops; superseded by the one launch-check path (B1, `launch_check.py`). |
 |  28 | `reference/semantic_search.md` | coding · `ffc2a2d8` | A1 `57926fc`, 11 lines | 5 added, 4 removed | U | B12b. Upstreamed the scope guard's subdirectory rewrite. C# chunking is already owned by `semantic_search_idle.md`; PP's vault paths are `doc_roots`. |
 | 29 | `rules/harness_tooling.md` | pure · `9aceeed` | A1 `83a9dae`, 54 lines | 5 added, 6 removed | U | Register A1: `close growth` line dropped (H14), commit-proof rule carried (H16), `git_guardrails` quick checks dropped (H18), machine-slot rule carried (H22). |
-|  30 | `scripts/validate_commands.py` | coding · `1e1cd7e0` | none: v2 == base. C2 merged (`fbfd9ac`) without touching it | 61 added, 80 removed | D | B12b, commit `847b164`. v2 keeps the link, header and count checks. Cut: template-variable, agent-name, hardcoded-template, fixture and external-registry checks (lens agents, `/test_agents` fixtures, `session_audit` and `model_registry` are deleted). PP's changes were `pp-` agent names, old counts and `review_prs`, all inside the cut checks. |
+| 30 | `scripts/validate_commands.py` | coding · `1e1cd7e0` | deleted, `fdf2100` (callerless) | 61 added, 80 removed | D | B12b, commit `847b164` cut its PP-specific checks; the file itself is gone at the tip. The six dead links §5 listed are no longer checked by any tool. |
 | 31 | `skills/_brainstorm_shared/common.md` | coding · `ffc2a2d8` | A4 `26012f8`, 33 lines | none | U | PP's bytes are identical to the fork base (`cmp`), so there is no local change. The `forked` mark is stale; PP's lock should drop it. |
 | 32 | `skills/_brainstorm_shared/design_contract.md` | coding · `6cd286f7` | A4 `26012f8`, 37 lines | 1 added, 1 removed | U | The one PP cross-link is re-pointed to `/plan`, `/drive`, `/review` by A4 (`26012f8`). |
 |  33 | `skills/_brainstorm_shared/doc_conventions.md` | coding · `ffc2a2d8` | A4 `26012f8`, 86 lines | 5 added, 5 removed | D | B12b. PP's changes are its project name and its `pp-game` scope spelling; no tool checks scope values, so the shared `project-game` serves. |
@@ -71,22 +71,30 @@ So M1 marks nine of the ten. For those nine, M1's bytes are the v2 base (Q3). Ch
 
 ## 3. Counts and the done-condition
 
-- **Rows:** 49, one per forked file. **Shared v2 versions:** 43 files have one at `template/.claude/<path>`. Six have none, because their owner deleted them: rows 4, 5, 20, 45, 46, 47.
-- **Disposition (B12b):** U 15 (rows 1, 8, 9, 10, 15, 17, 18, 19, 21, 27, 28, 29, 31, 32, 49), M 19 (2, 3, 5, 6, 7, 11, 13, 37–48), D 10 (4, 12, 14, 16, 20, 30, 33, 34, 35, 36), O 5 (rows 22–26). Total 49. B12 left 30 open; B12b closed 25.
-- **Done-condition** ("no row is left open"): met for every row except the five non-Bash dispatchers, which lane B14c is reshaping (the brief). Row 13 closes at S9 when `pr_ready.checks` is written; rows 2, 3, 11 and 37–43 close when S9 places the PP-local content they name.
+Run from the lane root; it reads the table above against tip `9091bba`.
+
+```
+python3 -c "
+import re, subprocess, collections
+tip = set(subprocess.run(['git', 'ls-tree', '-r', '--name-only', '9091bba', '--', 'template/.claude'], capture_output=True, text=True).stdout.split('\n'))
+rows = re.findall(r'(?m)^\|\s*(\d+) \| \x60([^\x60]+)\x60 \|.*? \| ([UMDO]) \|', open('v2/forked_reconcile.md', encoding='utf-8').read())
+print(len(rows), collections.Counter(d for _, _, d in rows), 'no tip file:', [n for n, f, _ in rows if 'template/.claude/' + f not in tip])
+"
+```
+
+Output: `49 Counter({'U': 19, 'M': 19, 'D': 11}) no tip file: ['4', '5', '20', '21', '30', '45', '46', '47']`.
+
+- **Rows:** 49, one per forked file. **Shared v2 versions:** 41 files have one at `template/.claude/<path>`. Eight have none, because their owner deleted them: rows 4, 5, 20, 21, 30, 45, 46, 47.
+- **Disposition:** U 19 (rows 1, 8, 9, 10, 15, 17, 18, 19, 22–29, 31, 32, 49), M 19 (2, 3, 5, 6, 7, 11, 13, 37–48), D 11 (4, 12, 14, 16, 20, 21, 30, 33, 34, 35, 36), O 0.
+- **Done-condition** ("no row is left open"): met. Row 13 closes at S9 when `pr_ready.checks` is written; rows 2, 3, 11 and 37–43 close when S9 places the PP-local content they name. `local_rewires.md` lists S9's other edits.
 
 ## 4. Rows that rest on unmerged lanes
 
-- **`v2-S5b`:** row 21 (`git_guardrails.py`). S5b does not write this file. The V1 loss-floor redesign (P:214) names it, so an owner has to be assigned before the cutover.
-- **`v2-TB3`:** no row rests on it. Its branch is already an ancestor of `b183746`, so the brief's list is out of date for TB3.
-- **`v2-B3d`:** no row changes on it. Its commit `e3adbe6` is at the v2 tip, after this base, and touches none of the forked files.
+None. Every v2 column names a commit at or before tip `9091bba`.
 
-## 5. Owner returns (B12b)
+## 5. Owner returns
 
-- **B14c:** rows 22–26 (dispatchers); also write `/v2/hook_registrations` for row 20's fact.
 - **S9 (PushinPotions cutover):** place the PP-local content rows 2, 3, 11, 13 and 37–43 name; delete PP's `plan_part_phase1_3.md` and `plan_part_phase4_5.md`; keep PP's merge flow as `commands/pp_merge_pr.md`.
-- **A10 and A9:** `{{PROJECT_NAME}}` and `{{VAULT_ROOT}}` tokens remain in shared files (23 and 3 hits under `commands/`, for example `reference/create_pr_jmodot.md`); T7 has no substitutions. `validate_commands.py` reports six dead links: `doc_audit_fix.md` and `structure_audit.md` to `agents/orchestrator_action_protocol.md`, `structure_audit.md` to `agents/review_fold.md`, and `review_agents.md` from `review_agents_godot.md` and `structure_audit_agents.md`.
-- **S5b and B14c:** `git_guardrails.py` still holds the advisory helpers M1 stopped calling.
 
 ## 6. What this audit did and did not check
 
