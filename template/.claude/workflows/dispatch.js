@@ -141,7 +141,7 @@ const SHARED = Array.isArray(A.sharedSingleFlight) ? A.sharedSingleFlight : []
 const guardFor = (lane, j) => {
   if (lanes.length < 2 && SHARED.length === 0) return ''
   const lines = ['', '=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===',
-    'Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. Your brief names this project\'s single-flight commands; any other command is not single-flight, so run your brief\'s own checks with it. Python and Node proofs under .claude/tests/ are not single-flight'
+    'Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. Any other command is not single-flight, so run your brief\'s own checks with it. Python and Node proofs under .claude/tests/ are not single-flight'
       + (noShell(j) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s own test file (`python -m pytest <file> -q`) before you return (rules/harness_tooling.md).')
       + ' If your task file mandates a single-flight run, STOP and report that it needs a serialized dispatch.']
   if (lanes.length > 1 && lane.exclusiveResource) lines.push('You are the ONLY agent in your own lane (' + lane.exclusiveResource + '), which you own outright for the duration of your task.')
