@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
 """Hook: UserPromptSubmit and PostToolUse — kill orphaned runaway search processes.
 
-Coverage: `check(payload)` runs in-process inside the floor entry (Bash, PowerShell, Monitor),
-post_read_dispatch (read family, Write, WebFetch, WebSearch) and post_edit_dispatch (Write, Edit).
-This file's own PostToolUse registration uses the anchored matcher
-`^(?:Agent|Workflow|TaskStop|TaskOutput|Skill|ToolSearch|LSP|NotebookEdit|mcp__.*)$` for the
-long-running tools no dispatcher covers. Short coordination tools (AskUserQuestion, SendMessage,
-the Task list, worktree, cron and notification tools) stay uncovered; UserPromptSubmit is their
-backstop.
+Coverage: one PostToolUse registration matching every tool, one UserPromptSubmit registration, and `check(payload)` in-process
+inside the floor entry (Bash, PowerShell, Monitor), where the throttle absorbs the second run. No dispatcher runs it.
 
 `unbounded_scan_guard.py` denies recursive grep before it runs, but only for commands that pass
 through this project's hooks in the shapes it parses. This reaper contains what slips through.
@@ -27,10 +22,7 @@ is never hit. One pid, never a tree. One advisory line per reaped pid; silent ot
 Throttle: at most one process snapshot per THROTTLE_SEC machine-wide. The fast path is one
 `os.stat` of `.claude/.cache/runaway-scan-reaper.stamp`; a winner claims the window through a
 `_file_lock` lock (`acquire(lock, 0)`) before touching the stamp. A held lock skips this pass
-silently; the lock is never reclaimed by age, only when its holder's handle is gone. Autonomous drives send no prompts for hours, hence
-tool-call coverage as well as UserPromptSubmit. A tool two entries cover (a Write, or an mcp__
-tool both post_read_dispatch and the narrow registration match) runs the reaper twice, which the
-throttle absorbs.
+silently; the lock is never reclaimed by age, only when its holder's handle is gone. Autonomous drives send no prompts for hours, hence tool-call coverage as well as UserPromptSubmit.
 
 This is a separate module rather than a mode of `shell_census.py`: the census snapshot is a
 PowerShell CIM query (about 1 s) cached for rendering shell ownership, and it carries no image
@@ -316,8 +308,7 @@ def _kill_verified(pid, ppid, first):
 def check(payload=None):
     """Advisory lines for this call's reaps; [] when throttled, off Windows, or on any error.
 
-    The in-process entry for the floor entry (`_floor.HELPER_NAMES`); `process` wraps it for post_read_dispatch and
-    post_edit_dispatch, which append the lines to their own additionalContext. Throttled like main() and never raises.
+    The in-process entry for the floor entry (`_floor.HELPER_NAMES`); `main` prints it. Throttled like main() and never raises.
     """
     try:
         if os.name != "nt":
@@ -329,12 +320,6 @@ def check(payload=None):
         return reap()
     except Exception:
         return []
-
-
-def process(payload):
-    """Dispatcher member contract: `check`'s lines as one `{"context": text}`, or None when it reaped nothing."""
-    lines = check(payload)
-    return {"context": "\n".join(lines)} if lines else None
 
 
 def main():

@@ -93,3 +93,14 @@ def test_the_registered_command_prints_the_file_from_stdin(root):
 def test_a_non_json_payload_is_a_silent_no_op():
     run = subprocess.run([sys.executable, str(HOOK)], input=b"not json", capture_output=True, timeout=30)
     assert run.returncode == 0 and run.stdout == b""
+
+
+def test_a_linked_worktree_session_resolves_its_own_root_before_the_project_dir(tmp_path, monkeypatch):
+    main, tree = tmp_path / "main", tmp_path / "tree"
+    for base in (main, tree):
+        (base / ".claude" / "work").mkdir(parents=True)
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(main))
+    payload = dict(write_payload(tree, ".claude/work/slug.md"), tool_name="Write")
+    assert hook.process(payload) is None
+    assert (tree / ".claude/scratch/active_state_sess_01").is_file()
+    assert not (main / ".claude/scratch").exists()

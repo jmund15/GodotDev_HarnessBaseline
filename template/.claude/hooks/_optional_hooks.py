@@ -1,13 +1,12 @@
-"""Import sub-hooks from higher baseline layers only where this project adopted them.
+"""Import hook modules only where this project has them.
 
-A dispatcher of layer X may run guards of a higher layer. A consumer that adopted only X has no
-file for them, so the dispatcher loads each by name: an absent file yields None and the
-dispatcher skips it. A present file's import failure raises unless the caller supplies
-`on_error(name, exception)` to return its action-scoped fault stub. Each import has its
-own boundary, so one broken member cannot prevent its siblings from loading.
+A project installs a subset of the hook files (a project without the C# steps has no `session_context_loader_csharp`),
+so a caller loads each by name: an absent file yields None and the caller skips it. A present file's import failure
+raises unless the caller supplies `on_error(name, exception)` to return its action-scoped fault stub. Each import has
+its own boundary, so one broken member cannot prevent its siblings from loading.
 
-    tres_guard, lint_guard = _optional_hooks.load("tres_guard", "lint_guard")
-    members = _optional_hooks.chain("pre_edit", CHAIN, "advisory")   # shared CHAIN plus the project's members
+    csharp, godot = _optional_hooks.load("session_context_loader_csharp", "session_context_loader_godot")
+    names = _optional_hooks.members("pre_edit", shared)   # `_chain`: the shared members plus the project's, installed
 """
 from __future__ import annotations
 
@@ -22,17 +21,11 @@ def present(name: str) -> bool:
     return (HOOKS_DIR / f"{name}.py").is_file()
 
 
-def adopted(chain):
-    """The entries of a (name, ...) chain whose sub-hook is installed, in order."""
-    return tuple(entry for entry in chain if present(entry[0]))
-
-
-def chain(event, shared, default):
-    """The dispatcher's `shared` entries, then one `(name, default)` per module name that `adaptation.json`
-    `hook_members[event]` lists (`event` is the dispatcher's stem: `pre_edit`, `post_edit`, `pre_read`,
-    `post_read`, `prompt`), keeping only installed modules. A shared member is shared code and lives in
-    the dispatcher's own CHAIN; the key holds project-local members only, so an absent or malformed key
-    leaves the shared members running."""
+def members(event, shared):
+    """The module names `_chain` runs for `event` (the dispatcher's stem: `pre_edit`, `post_edit`, `pre_read`,
+    `post_read`, `prompt`): the `shared` names, then each name `adaptation.json` `hook_members[event]` lists, keeping
+    only installed modules. A shared member is shared code and lives in `_chain.EVENTS`; the key holds project-local
+    members only, so an absent or malformed key leaves the shared members running."""
     tools = str(HOOKS_DIR.parent / "tools")
     if tools not in sys.path:
         sys.path.insert(0, tools)
@@ -41,7 +34,7 @@ def chain(event, shared, default):
         named = (adaptation.get(HOOKS_DIR.parent, "hook_members") or {}).get(event) or []
     except Exception:
         named = []
-    return adopted(tuple(shared) + tuple((n, default) for n in named if isinstance(n, str)))
+    return tuple(name for name in tuple(shared) + tuple(n for n in named if isinstance(n, str)) if present(name))
 
 
 def load(*names: str, on_error=None):

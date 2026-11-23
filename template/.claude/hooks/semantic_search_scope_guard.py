@@ -14,9 +14,9 @@ repo-relative POSIX paths, so an absolute, backslash or `.`/`..`/empty-segment v
 nothing and reads as a false "not indexed". Owner: `reference/semantic_search.md`; evidence:
 `auto-memory/gotcha_semantic_search_restricttodir_posix.md`.
 
-Output contract: `process(payload)` returns `{"deny": reason}`, `{"rewrite": tool_input, "note": text}` or
-None. `pre_read_dispatch.py`, and this module's `main()` for tests, writes a deny to stderr and exits 2,
-and emits a rewrite as `updatedInput` with the note as `additionalContext`.
+Output contract: `process(payload)` returns `{"deny": reason}`, `{"updatedInput": tool_input, "context": text}` or
+None. `_chain` (the `pre_read` chain) turns a deny into a permission denial; this module's `main()`, for tests, writes
+a deny to stderr and exits 2, and emits `updatedInput` with `context` as `additionalContext`.
 
 Fail posture: a decided violation fails CLOSED. A malformed or non-dict payload, or one missing the
 inspected fields, returns None without raising -- unknown state is not evidence of a violation.
@@ -104,7 +104,7 @@ def _canonical_restrict(raw, root, prefix):
 
 def process(payload):
     """{"deny": reason} for a call whose fix is a choice (an index root outside the project, or a
-    restrictToDir that leaves it); {"rewrite": tool_input, "note": text} for one its own values settle
+    restrictToDir that leaves it); {"updatedInput": tool_input, "context": text} for one its own values settle
     (a subdirectory searchDir becomes the root plus that restrictToDir; a non-canonical restrictToDir
     inside the project is normalized); else None."""
     if not isinstance(payload, dict):
@@ -159,8 +159,8 @@ def process(payload):
 
     if updated == tool_input:
         return None
-    return {"rewrite": updated,
-            "note": "[semantic-search] corrected the call to searchDir = the index root, restrictToDir = '%s' "
+    return {"updatedInput": updated,
+            "context": "[semantic-search] corrected the call to searchDir = the index root, restrictToDir = '%s' "
                     "(reference/semantic_search.md)." % updated.get("restrictToDir", "")}
 
 
@@ -181,9 +181,9 @@ def main() -> None:
     if result and result.get("deny"):
         sys.stderr.write(str(result["deny"]) + "\n")
         sys.exit(2)
-    if result and result.get("rewrite"):
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": result["rewrite"],
-                                                 "additionalContext": result["note"]}}))
+    if result and result.get("updatedInput"):
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": result["updatedInput"],
+                                                 "additionalContext": result["context"]}}))
     sys.exit(0)
 
 
