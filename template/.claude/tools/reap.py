@@ -26,7 +26,8 @@ after --session-id or --resume. A tool shell, MCP server or console host that on
 proves nothing: it outlives its session. A live host with no row and no id whose children carry a session id makes
 every session unknown, and the target is refused.
 
-The kill is `taskkill /PID <root> /T /F`, plus each Git Bash child an exec left outside the Windows tree. Every
+The kill is `taskkill /PID <pid> /F` on each member of the verified tree, deepest first (never `/T`, which walks
+reused OS parent pids). A child belongs to a parent only if the parent started no later than the child. Every
 refusal, dry run and kill is a row in .claude/logs/reap_ledger.jsonl; a kill's row is written first, and an
 unwritable ledger refuses the kill. MSYS pids (Git Bash `kill`, `ps`) map to Windows pids through `ps -W`.
 Exit 0 every target stopped (or dry-run); 2 a target refused, a kill failed, or a bad call.
@@ -403,44 +404,46 @@ def _env_value(env, key):
 
 
 # ----------------------------------------------------------------- trees
-def _parent(row, table):
-    """The Windows parent while it lives, else the MSYS parent `link_msys_parents` recorded."""
-    ppid = row.get("ppid")
-    return ppid if ppid in table else row.get("msys_ppid")
+def parents(table, row):
+    """Pids that are `row`'s parent: the recorded Windows and MSYS parents that are live and started no later than
+    `row`. Windows reuses pids, so a recorded parent that started after its child is a stranger holding the old
+    number, never the parent. A start time that is missing cannot rule the link out."""
+    out = []
+    for key in ("ppid", "msys_ppid"):
+        pid = row.get(key)
+        parent = table.get(pid) if isinstance(pid, int) else None
+        if parent is not None and pid != row.get("pid") and pid not in out                 and not (parent.get("start") and row.get("start") and parent["start"] > row["start"]):
+            out.append(pid)
+    return out
+
+
+def children_of(table):
+    """{parent pid: [child pids]} over `parents`: the one reader of the parent link."""
+    out = {}
+    for pid, row in table.items():
+        for parent in parents(table, row):
+            out.setdefault(parent, []).append(pid)
+    return out
 
 
 def ancestors(table, pid):
     out, seen = [], set()
-    cur = _parent(table.get(pid, {}), table)
-    while isinstance(cur, int) and cur in table and cur not in seen:
+    cur = (parents(table, table.get(pid, {})) or [None])[0]
+    while cur is not None and cur not in seen:
         seen.add(cur)
         out.append(cur)
-        cur = _parent(table[cur], table)
+        cur = (parents(table, table[cur]) or [None])[0]
     return out
 
 
 def descendants(table, pid):
-    out, frontier = [], [pid]
+    kids, out, frontier = children_of(table), [], [pid]
     while frontier:
-        cur = frontier.pop()
-        for k, r in table.items():
-            if cur in (r.get("ppid"), r.get("msys_ppid")) and k not in out and k != pid:
+        for k in kids.get(frontier.pop(), ()):
+            if k not in out and k != pid:
                 out.append(k)
                 frontier.append(k)
     return sorted(out)
-
-
-def outside_windows_tree(table, pid, tree):
-    """Members of `tree` that `taskkill /T` on `pid` cannot reach: no Windows-parent chain to `pid`."""
-    out = []
-    for k in tree:
-        cur, seen = table[k].get("ppid"), set()
-        while isinstance(cur, int) and cur in table and cur != pid and cur not in seen:
-            seen.add(cur)
-            cur = table[cur].get("ppid")
-        if k != pid and cur != pid:
-            out.append(k)
-    return out
 
 
 # ----------------------------------------------------------------- the facts a verdict reads
@@ -449,8 +452,8 @@ def never_reason(row, table):
     for pat, why in NEVER:
         if pat.search(row.get("cmd") or ""):
             return why
-    parent = table.get(row.get("ppid")) or {}
-    if (row.get("name") or "").lower() == "codex.exe" and (parent.get("name") or "").lower() == "chatgpt.exe":
+    if (row.get("name") or "").lower() == "codex.exe" and any(
+            (table[p].get("name") or "").lower() == "chatgpt.exe" for p in parents(table, row)):
         return "a codex.exe run by ChatGPT.exe"
     return None
 
@@ -481,9 +484,7 @@ def session_host(table, session, registry, exclude, block_of):
     served = [pid for pid, found in sorted(registry.items()) if session in found]
     if served:
         return True, served[0]
-    children = {}
-    for pid, row in table.items():
-        children.setdefault(row.get("ppid"), []).append(pid)
+    children = children_of(table)
     verdict = (False, None)
     for pid in sorted(table):
         row = table[pid]
@@ -569,12 +570,11 @@ def judge(table, pid, me, block_of, host_of, project_of):
 
 
 # ----------------------------------------------------------------- the stop
-def taskkill(pid, *, tree=True):
-    """Kill `pid` (with its tree by default). Success is the target gone: `/T` exits nonzero when a member dies
-    before its turn, though the root is killed."""
-    cmd = ["taskkill", "/PID", str(pid), "/F"] + (["/T"] if tree else [])
+def taskkill(pid):
+    """Kill the one process `pid`. Never `/T`: it walks the OS parent pids, which Windows reuses, so it can stop a
+    stranger. Success is the target gone."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True, timeout=30)
         if r.returncode == 0:
             return True
         listing = subprocess.run(["tasklist", "/FI", "PID eq %d" % int(pid), "/FO", "CSV", "/NH"],
@@ -585,15 +585,15 @@ def taskkill(pid, *, tree=True):
 
 
 def kill_sparing(table, root, never_pids):
-    """Kill root and its descendants except each never-kill member and its own subtree, deepest first, so no member
-    is orphaned mid-kill. Returns (killed, failed, spared)."""
+    """Kill root and its verified descendants except each never-kill member and its own subtree, deepest first, so
+    no member is orphaned mid-kill. Returns (killed, failed, spared)."""
     spared = set()
     for pid in never_pids:
         spared.update([pid] + descendants(table, pid))
     doomed = [p for p in [root] + descendants(table, root) if p not in spared]
     killed, failed = [], []
     for pid in sorted(doomed, key=lambda p: -len(ancestors(table, p))):
-        (killed if taskkill(pid, tree=False) else failed).append(pid)
+        (killed if taskkill(pid) else failed).append(pid)
     return killed, failed, sorted(spared)
 
 
@@ -602,16 +602,10 @@ def record(entry):
     return _hook_state.append_jsonl_rotating(str(LEDGER), [entry])
 
 
-def _stop(table, pid, tree, never):
+def _stop(table, pid, never):
     """(result, killed pids) for one judged target."""
-    if never:
-        killed, failed, _spared = kill_sparing(table, pid, never)
-        return ("partial" if killed and failed else "killed" if killed else "kill-failed"), sorted(killed)
-    if not taskkill(pid):
-        return "kill-failed", []
-    rest = outside_windows_tree(table, pid, tree)
-    stopped = [k for k in rest if taskkill(k, tree=False)]
-    return ("killed" if len(stopped) == len(rest) else "partial"), [pid] + stopped
+    killed, failed, _spared = kill_sparing(table, pid, never)
+    return ("partial" if killed and failed else "killed" if killed else "kill-failed"), sorted(killed)
 
 
 def main(argv=None, env=None):
@@ -693,7 +687,7 @@ def main(argv=None, env=None):
             print("REFUSED %s\n   LEDGER unwritable: %s; no kill without its row" % (head, LEDGER))
             refused += 1
             continue
-        result, killed = _stop(table, pid, tree, never)
+        result, killed = _stop(table, pid, never)
         print("%s %s\n   proof: %s\n   killed: %s%s" % (result.upper(), head, proof, killed,
                                                        "\n   spared (never-kill): %s" % never if never else ""))
         entry.update(result=result, killed=killed)

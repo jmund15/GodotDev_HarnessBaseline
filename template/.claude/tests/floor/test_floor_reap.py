@@ -88,7 +88,7 @@ def run(tmp_path, monkeypatch):
         monkeypatch.setattr(reap, "ps_text", lambda: ps)
         monkeypatch.setattr(reap, "environ_of", lambda pid, text=None: read(pid))
         monkeypatch.setattr(reap, "native_environ", read)
-        monkeypatch.setattr(reap, "taskkill", lambda pid, tree=True: (killed.append(pid) or True) if ok(pid) else False)
+        monkeypatch.setattr(reap, "taskkill", lambda pid: (killed.append(pid) or True) if ok(pid) else False)
         monkeypatch.setattr(reap, "projects_root", lambda: projects)
         monkeypatch.setattr(reap, "LEDGER", ledger_path or ledger)
         out, err = io.StringIO(), io.StringIO()
@@ -131,7 +131,7 @@ STOPPED = [
 @pytest.mark.parametrize("label,argv,tbl,blocks,pid", STOPPED, ids=[r[0] for r in STOPPED])
 def test_stopped(run, label, argv, tbl, blocks, pid):
     got = run(argv, tbl, blocks=blocks)
-    assert (got.rc, got.killed) == (0, [pid]), got.out
+    assert got.rc == 0 and pid in got.killed, got.out
     assert got.ledger[-1]["result"] == "killed" and got.ledger[-1]["proof"]
 
 
@@ -270,7 +270,7 @@ def test_a_tree_holding_shared_infra_stops_the_rest_and_spares_the_infra_with_it
 
 def test_a_repeated_pid_and_a_descendant_of_another_target_are_one_tree_stop(run):
     got = run(["101", "103", "101"], table())
-    assert (got.rc, got.killed) == (0, [101]), got.out
+    assert (got.rc, sorted(got.killed)) == (0, [101, 102, 103]), got.out
 
 
 def test_dry_run_stops_nothing_and_records_the_plan(run):
@@ -291,10 +291,10 @@ def test_the_killing_row_is_written_before_the_kill(run, tmp_path):
 
     def recorded_first(pid):
         rows = [json.loads(x) for x in ledger.read_text(encoding="utf-8").splitlines()] if ledger.exists() else []
-        seen.append(bool(rows) and rows[-1]["pid"] == pid and rows[-1]["result"] == "killing")
+        seen.append(bool(rows) and rows[-1]["pid"] == 101 and rows[-1]["result"] == "killing")
         return True
     got = run(["101"], table(), kill_ok=recorded_first, ledger_path=ledger)
-    assert got.rc == 0 and seen == [True]
+    assert got.rc == 0 and seen == [True] * 3
 
 
 def test_a_kill_that_fails_exits_2_and_is_recorded(run):
@@ -306,8 +306,38 @@ def test_a_git_bash_child_outside_the_windows_tree_dies_with_its_msys_parent(run
     ps = PS_HEADER + ("     5101    5100    5100      101  ?         197608 13:59:21 /usr/bin/bash\n"
                       "     5150    5101    5100      150  ?         197608 13:59:22 /usr/bin/bash\n")
     grid = row(150, 7777, "bash.exe", "bash run_cells.sh camp spec")
-    assert run(["101"], table(grid), ps=ps).killed == [101, 150]
-    assert run(["101"], table(grid), ps=None).killed == [101]
+    assert sorted(run(["101"], table(grid), ps=ps).killed) == [101, 102, 103, 150]
+    assert sorted(run(["101"], table(grid), ps=None).killed) == [101, 102, 103]
+
+
+# A reused parent pid: the orphan's recorded parent is a newer process holding the old number.
+def _reused():
+    new = row(7001, 1, "bash.exe", "bash fresh.sh", start="2026-09-15 15:00:00")
+    orphan = row(7002, 7001, "bash.exe", "bash old-orphan.sh", start="2026-09-15 13:00:00")
+    return table(new, orphan)
+
+
+def test_a_child_that_started_before_its_recorded_parent_is_not_its_descendant():
+    tbl = _reused()
+    assert 7002 not in reap.descendants(tbl, 7001) and 7001 not in reap.ancestors(tbl, 7002)
+    assert 7002 not in reap.descendants(tbl, SESSION_PID)
+
+
+def test_a_reused_parent_pid_does_not_stop_the_stranger_with_the_target(run):
+    got = run(["7001"], _reused())
+    assert got.rc == 0 and got.killed == [7001], got.out
+
+
+def test_a_reused_parent_pid_is_no_msys_parent_either():
+    tbl = _reused()
+    tbl[7002]["msys_ppid"] = 7001
+    assert reap.parents(tbl, tbl[7002]) == []
+
+
+def test_taskkill_never_walks_the_os_tree(monkeypatch):
+    seen = []
+    monkeypatch.setattr(reap.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or SimpleNamespace(returncode=0, stdout=""))
+    assert reap.taskkill(5) and seen == [["taskkill", "/PID", "5", "/F"]]
 
 
 # --- the readers -----------------------------------------------------------------------------------------------
