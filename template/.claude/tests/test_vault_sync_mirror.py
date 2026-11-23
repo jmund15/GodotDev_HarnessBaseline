@@ -42,20 +42,40 @@ def plant(root, files):
 
 
 class Mirror(unittest.TestCase):
+    """The bare origin, the author repo and the clone are built once for the class and copied per test, with the
+    origin url in each copy's config rewritten (no git spawned)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.template = Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, cls.template, ignore_errors=True)
+        remote = cls.template / 'remote.git'
+        subprocess.run(['git', 'init', '-q', '--bare', str(remote)], check=True, capture_output=True)
+        author = cls.template / 'author'
+        author.mkdir()
+        git(author, 'init', '-q')
+        git(author, 'checkout', '-q', '--orphan', 'vault')
+        git(author, 'remote', 'add', 'origin', str(remote))
+        clone = cls.template / 'clone'
+        clone.mkdir()
+        git(clone, 'init', '-q')
+        git(clone, 'remote', 'add', 'origin', str(remote))
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
+        shutil.copytree(self.template, self.base, dirs_exist_ok=True)
         self.remote = self.base / 'remote.git'
-        subprocess.run(['git', 'init', '-q', '--bare', str(self.remote)], check=True, capture_output=True)
         self.author = self.base / 'author'
-        self.author.mkdir()
-        git(self.author, 'init', '-q')
-        git(self.author, 'checkout', '-q', '--orphan', 'vault')
-        git(self.author, 'remote', 'add', 'origin', str(self.remote))
         self.clone = self.base / 'clone'
-        self.clone.mkdir()
-        git(self.clone, 'init', '-q')
-        git(self.clone, 'remote', 'add', 'origin', str(self.remote))
+        for repo in (self.author, self.clone):
+            config = repo / '.git' / 'config'
+            text = config.read_text(encoding='utf-8')
+            # git config escapes a Windows path's backslashes
+            for old, new in ((self.template.as_posix(), self.base.as_posix()),
+                             (str(self.template).replace(os.sep, os.sep * 2), str(self.base).replace(os.sep, os.sep * 2))):
+                text = text.replace(old, new)
+            config.write_text(text, encoding='utf-8', newline='\n')
         self.target = self.base / 'home' / 'OneDrive' / 'DevProjects'
 
     def tearDown(self):

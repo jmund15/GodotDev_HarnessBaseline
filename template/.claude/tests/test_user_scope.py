@@ -38,6 +38,7 @@ class Sandbox:
         self.home.mkdir()
         self.scope.mkdir()
         self.repo.mkdir()
+        self.patch = {}  # module attributes planted on each in-process run, e.g. a stubbed git fact
 
     def close(self):
         shutil.rmtree(self.root, ignore_errors=True)
@@ -51,11 +52,26 @@ class Sandbox:
     def manifest(self, items, name="manifest.json"):
         (self.scope / name).write_text(json.dumps({"version": 1, "items": items}), encoding="utf-8")
 
+    def argv(self, command, *args, scope=None):
+        return [command, "--home", str(self.home), "--scope-dir", str(scope or self.scope), "--repo", str(self.repo), *args]
+
     def run(self, command, *args, scope=None):
+        """The tool's `main` in process on a fresh module copy; one spawned case (`run_process`) covers the script."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                module = tool()
+                for name, value in self.patch.items():
+                    setattr(module, name, value)
+                code = module.main(self.argv(command, *args, scope=scope)) or 0
+            except SystemExit as exc:  # argparse refusals exit 2
+                code = exc.code if isinstance(exc.code, int) else 1
+        return Run(code, out.getvalue(), err.getvalue())
+
+    def run_process(self, command, *args, scope=None):
         env = {key: value for key, value in os.environ.items() if key != "PYTHONUTF8"}
-        argv = [sys.executable, str(TOOL), command, "--home", str(self.home),
-                "--scope-dir", str(scope or self.scope), "--repo", str(self.repo), *args]
-        done = subprocess.run(argv, capture_output=True, env=env, timeout=120)
+        done = subprocess.run([sys.executable, str(TOOL), *self.argv(command, *args, scope=scope)],
+                              capture_output=True, env=env, timeout=120)
         return Run(done.returncode, done.stdout.decode("utf-8", "replace"), done.stderr.decode("utf-8", "replace"))
 
     def rows(self):
@@ -188,10 +204,11 @@ def test_s1_home_copy_of_an_earlier_template_commit_is_stale_and_install_updates
 
 
 def test_s1_home_edit_beside_template_history_stays_drift():
+    # The committed history is a git fact: planted as the blob ids `git log` would list, so no repo is built (the
+    # stale case above runs the real `git log`).
     sb = default_sandbox()
     try:
-        commit_template(sb, "a.txt", b"alpha old\n")
-        commit_template(sb, "a.txt", b"alpha\n")
+        sb.patch["committed_blobs"] = lambda template: {tool().blob_id(b"alpha old\n"), tool().blob_id(b"alpha\n")}
         (sb.home / ".claude").mkdir(parents=True)
         (sb.home / ".claude" / "a.txt").write_bytes(b"owner edit\n")
         expect(sb.statuses()["tool-a"] == "drift", f"status {sb.statuses()}")
@@ -1178,3 +1195,13 @@ def test_the_shipped_manifest_ships_no_local_model_hook_and_the_statusline_state
     sl.accumulate("sid", 10, 5, 1)
     state = json.loads(Path(sl.state_path("sid")).read_text(encoding="utf-8"))
     assert "rate_limits" not in state and "context_pct" not in state and state["total_created"] == 10
+
+
+def test_cli_entry_point_runs_as_a_script():
+    sb = default_sandbox()
+    try:
+        done = sb.run_process("check", "--json")
+        expect(done.code == 1 and {row["status"] for row in json.loads(done.out)["items"]} == {"missing"},
+               f"exit {done.code}: {done.out!r} {done.err!r}")
+    finally:
+        sb.close()

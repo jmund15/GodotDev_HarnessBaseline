@@ -47,21 +47,31 @@ def age(path, days):
 
 
 class ScratchPruneTests(unittest.TestCase):
+    """The base repo and vault are built once for the class (one git init and commit) and copied per test."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.template = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.template, onexc=_force_remove)
+        base = Path(cls.template)
+        repo = base / 'repo'
+        (repo / '.claude' / 'scratch').mkdir(parents=True)
+        (base / 'vault' / 'DevProjects/Proj/Claude').mkdir(parents=True)
+        cls.write(None, repo / '.claude/skills/project_subsystems/adaptation.json', '{"project_name": "Proj"}\n')
+        _git(repo, 'init', '-q')
+        cls.write(None, repo / '.gitignore', '.claude/scratch/\n')
+        cls.write(None, repo / 'readme.md', 'fixture\n')
+        _git(repo, 'add', '-A')
+        _git(repo, 'commit', '-q', '-m', 'base')
+
     def setUp(self):
         self.temp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.temp, onexc=_force_remove)
         base = Path(self.temp)
+        shutil.copytree(self.template, base, dirs_exist_ok=True)
         self.repo = base / 'repo'
         self.scratch = self.repo / '.claude' / 'scratch'
-        self.scratch.mkdir(parents=True)
         self.vault = base / 'vault'
-        (self.vault / 'DevProjects/Proj/Claude').mkdir(parents=True)
-        self.write(self.repo / '.claude/skills/project_subsystems/adaptation.json', '{"project_name": "Proj"}\n')
-        _git(self.repo, 'init', '-q')
-        self.write(self.repo / '.gitignore', '.claude/scratch/\n')
-        self.write(self.repo / 'readme.md', 'fixture\n')
-        _git(self.repo, 'add', '-A')
-        _git(self.repo, 'commit', '-q', '-m', 'base')
 
     def write(self, path, text):
         path = Path(path)
