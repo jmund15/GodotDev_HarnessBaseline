@@ -1,0 +1,1 @@
+{"type": "assistant", "sessionId": "session-2", "uuid": "u-m4-100", "timestamp": "2026-11-20T11:00:00Z", "message": {"id": "m4", "model": "antigravity/gemini-4-neon", "content": [], "usage": {"input_tokens": 1000, "output_tokens": 100, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}

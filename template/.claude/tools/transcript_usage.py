@@ -1,23 +1,17 @@
 #!/usr/bin/env python3
-"""The one reader of Claude Code transcript token usage.
+"""The one reader of Claude Code transcript token usage, and of the login directories transcripts live in.
 
-ONE API CALL PER `message.id`, never one per record. An assistant message spanning several
-content blocks is written as several JSONL lines that each repeat the same `message.usage`, and
-`output_tokens` grows across them, so the LAST record of an id holds the finalized usage and the
-complete content array. Summing per record double-counts (measured 2.00x over one six-agent run,
-2026-08-19; the history lives in orchestration_metrics.agent_usage, which reduces through here).
+ONE API CALL PER `message.id`, never one per record. An assistant message spanning several content
+blocks is written as several JSONL lines that each repeat the same `message.usage`, and `output_tokens`
+grows across them, so the LAST record of an id holds the finalized usage and the complete content.
+Summing per record double-counts.
 
-Consumers: `orchestration_metrics.agent_usage` (per Workflow agent) and `plan_usage_calc.py`
-(account-wide, per call with its timestamp and 5-minute/1-hour cache-write split).
+Transport. A session whose calls name any non-`claude-` model ran through an external seat's proxy and
+is `proxied`; every other session is `anthropic`. A proxied child can echo a `claude-*` pin of its own,
+so the names decide across all of a session's calls, never its first one.
 
-Transport. A call counts toward the Anthropic plan window only when its session ran on the host
-transport. A session's transport is the sidecar spend ledger's `transport` for its `sessionId`
-(SIDECAR_LEDGER_PATH overrides the ledger, here and in orchestration_metrics). A session the ledger
-does not name is the host unless it served a non-`claude-` model, which only a proxy returns; it is
-then `proxied`. A `claude-*` model name alone never proves Anthropic spend: a proxied child echoes
-its own pin (gotcha_self_reported_model_identity_is_not_authority), which is why the ledger decides
-first. A proxied session that has no ledger row and echoes a `claude-*` pin is counted as host;
-the ledger is the only record that separates it.
+Login dirs. A login's transcripts live under `<login dir>/projects`. The login dirs are the default
+`~/.claude`, `CLAUDE_CONFIG_DIR` when set, and each seat's `configDir` in `seats.json`, each once.
 
     transcript_usage.py <transcript.jsonl>     print the per-call usage rows as JSON lines
 """
@@ -26,18 +20,12 @@ import os
 import sys
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import model_registry  # noqa: E402
-import spend_ledger  # noqa: E402
+import launch_check  # the one seats.json reader (tools/launch_check.py)
 
-HOST_TRANSPORT = "anthropic"
+ANTHROPIC = "anthropic"
 PROXIED = "proxied"
 SYNTHETIC_MODEL = "<synthetic>"
-
-
-def sidecar_ledger_path():
-    return (os.environ.get("SIDECAR_LEDGER_PATH")
-            or os.path.expanduser("~/.claude/sidecar_ledger.jsonl"))
+DEFAULT_LOGIN = "~/.claude"
 
 
 def _number(value):
@@ -76,40 +64,21 @@ def iter_records(path, bad=None):
 
 
 def reduce_records(records):
-    """One pass over a transcript's records.
-
-    Returns `calls` (the last assistant record of each message id, in first-seen order; a record
-    with no id falls back to its own uuid), `recs` (assistant records seen), the `models` and
-    `efforts` those records name, and `first`/`last`: the datetimes spanning every timestamped record.
-    """
-    calls, order, recs = {}, [], 0
-    models, efforts = set(), set()
-    first = last = None
+    """{calls, models}: `calls` is (message id, last assistant record) per id, in first-seen order;
+    `models` is every model name the assistant records use. A record with no id keys on its uuid."""
+    calls, order, models, count = {}, [], set(), 0
     for o in records:
-        ts = o.get("timestamp")
-        if ts:
-            try:
-                t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                first = t if first is None else min(first, t)
-                last = t if last is None else max(last, t)
-            except Exception:
-                pass
-        if o.get("type") != "assistant":
+        if o.get("type") != "assistant" or not isinstance(o.get("message"), dict):
             continue
-        recs += 1
-        if isinstance(o.get("effort"), str) and o["effort"]:
-            efforts.add(o["effort"])
-        m = o.get("message")
-        if not isinstance(m, dict):
-            continue
+        count += 1
+        m = o["message"]
         if isinstance(m.get("model"), str) and m["model"]:
             models.add(m["model"])
-        mid = m.get("id") or o.get("uuid") or ("rec-%d" % recs)
+        mid = m.get("id") or o.get("uuid") or ("rec-%d" % count)
         if mid not in calls:
             order.append(mid)
         calls[mid] = o
-    return dict(calls=[(mid, calls[mid]) for mid in order], recs=recs, models=models,
-                efforts=efforts, first=first, last=last)
+    return {"calls": [(mid, calls[mid]) for mid in order], "models": models}
 
 
 def call_usage(mid, record):
@@ -127,28 +96,10 @@ def call_usage(mid, record):
         cw1h=_number(split.get("ephemeral_1h_input_tokens")))
 
 
-def ledger_records(path=None):
-    """Every JSON object of the sidecar spend ledger: its segments (`spend_ledger`), oldest first, then the live file."""
-    for file in spend_ledger.paths(path or sidecar_ledger_path()):
-        yield from iter_records(file)
-
-
-def ledger_transports(path=None):
-    """{sessionId: transport} from the sidecar spend ledger; {} when it is absent."""
-    out = {}
-    for rec in ledger_records(path):
-        sid, transport = rec.get("sessionId"), rec.get("transport")
-        if sid and transport:
-            out[str(sid)] = str(transport)
-    return out
-
-
-def session_transport(session, models, ledger):
-    if session and session in ledger:
-        return ledger[session]
+def transport_of(models):
     if any(not str(m).startswith("claude-") for m in models if m != SYNTHETIC_MODEL):
         return PROXIED
-    return HOST_TRANSPORT
+    return ANTHROPIC
 
 
 def _session_from_path(path):
@@ -159,14 +110,12 @@ def _session_from_path(path):
     return os.path.splitext(parts[-1])[0]
 
 
-def read_transcript(path, ledger=None, bad=None):
-    """{path, session, transport, calls, models} for one transcript, JSONL stream or agent file."""
+def read_transcript(path, bad=None):
+    """{path, session, transport, calls, models} for one transcript or subagent file."""
     red = reduce_records(iter_records(path, bad))
     calls = [call_usage(mid, rec) for mid, rec in red["calls"]]
     session = next((c["session"] for c in calls if c["session"]), None) or _session_from_path(path)
-    ledger = ledger_transports() if ledger is None else ledger
-    return dict(path=path, session=session, calls=calls, models=red["models"],
-                transport=session_transport(session, red["models"], ledger))
+    return dict(path=path, session=session, calls=calls, models=red["models"], transport=transport_of(red["models"]))
 
 
 def transcript_files(root, since=None):
@@ -184,42 +133,58 @@ def transcript_files(root, since=None):
             yield full
 
 
-def scan(root=None, since=None, ledger_path=None):
-    """Host-transport calls across every transcript under `root` (default: this session's login).
+def login_dirs():
+    """Every login directory, expanded, each once: the default, `CLAUDE_CONFIG_DIR`, then each seat's `configDir`."""
+    found = [DEFAULT_LOGIN]
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        found.append(os.environ["CLAUDE_CONFIG_DIR"])
+    found += [row["configDir"] for row in launch_check.seat_rows().values() if row.get("configDir")]
+    out = []
+    for path in found:
+        full = os.path.abspath(os.path.expanduser(path))
+        if full not in out:
+            out.append(full)
+    return out
 
-    `since` skips files last modified before that epoch. A message id seen in several files (a
-    resumed session copies its history) counts once, with its largest output. Returns `calls`,
-    `excluded` ({session: transport} for non-host sessions), `files` scanned, and the malformed line
+
+def projects_dirs():
+    return [os.path.join(login, "projects") for login in login_dirs()]
+
+
+def scan(roots, since=None):
+    """Calls across every transcript under `roots`, one per message id, each with its session's `transport`.
+
+    `since` skips files last modified before that epoch. A message id seen in several files (a resumed
+    session copies its history) counts once, with its largest output. Synthetic calls are dropped.
+    Returns `calls`, `files` scanned, `gaps` (roots that are not directories), and the malformed line
     count with the files that held them.
     """
-    root = root or model_registry.session_projects_dir()
-    ledger = ledger_transports(ledger_path)
-    best, excluded, files, bad_lines, bad_files = {}, {}, 0, 0, []
-    for path in transcript_files(root, since):
-        files += 1
-        bad = {}
-        t = read_transcript(path, ledger, bad)
-        if bad.get("lines") or bad.get("unreadable"):
-            bad_lines += bad.get("lines", 0)
-            bad_files.append(path)
-        if not t["calls"]:
+    best, files, bad_lines, bad_files, gaps = {}, 0, 0, [], []
+    for root in roots:
+        if not os.path.isdir(root):
+            gaps.append(root)
             continue
-        if t["transport"] != HOST_TRANSPORT:
-            excluded[t["session"]] = t["transport"]
-            continue
-        for c in t["calls"]:
-            if c["model"] == SYNTHETIC_MODEL:
-                continue
-            prior = best.get(c["id"])
-            if prior is None or (c["out"] or 0) > (prior["out"] or 0):
-                best[c["id"]] = c
-    return dict(calls=list(best.values()), excluded=excluded, files=files,
+        for path in transcript_files(root, since):
+            files += 1
+            bad = {}
+            t = read_transcript(path, bad)
+            if bad.get("lines") or bad.get("unreadable"):
+                bad_lines += bad.get("lines", 0)
+                bad_files.append(path)
+            for c in t["calls"]:
+                if c["model"] == SYNTHETIC_MODEL:
+                    continue
+                c["transport"] = t["transport"]
+                prior = best.get(c["id"])
+                if prior is None or (c["out"] or 0) > (prior["out"] or 0):
+                    best[c["id"]] = c
+    return dict(calls=list(best.values()), files=files, gaps=gaps,
                 unparseable_lines=bad_lines, unparseable_files=bad_files)
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print(__doc__.strip().splitlines()[-1].strip(), file=sys.stderr)
+        print("usage: transcript_usage.py <transcript.jsonl>", file=sys.stderr)
         sys.exit(2)
     for row in read_transcript(sys.argv[1])["calls"]:
         print(json.dumps(row))
