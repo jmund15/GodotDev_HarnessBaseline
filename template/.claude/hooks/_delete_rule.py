@@ -421,8 +421,13 @@ def _pushed(repo: Path, reasons: list[str], prefix: str = "", also: Path | None 
     default = (_git(["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"], repo) or "").strip()
     refs = [default] if default else []
     local = default.split("/", 1)[-1]
-    if refs and local_default and "/" in default and _git(["rev-parse", "--verify", "-q", "refs/heads/" + local], repo):
-        refs.insert(0, "refs/heads/" + local)  # a job's work lands here first; skip the remote's full scan
+    if refs and local_default and "/" in default:
+        # A job's work lands on the local default first. The remote's scan is skipped when both name one commit:
+        # every read of `_landed_on` depends only on the ref's commit, so it would answer the same.
+        mine = (_git(["rev-parse", "--verify", "-q", "refs/heads/" + local + "^{commit}"], repo) or "").strip()
+        if mine:
+            theirs = (_git(["rev-parse", "--verify", "-q", default + "^{commit}"], repo) or "").strip()
+            refs = ["refs/heads/" + local] + ([default] if theirs != mine else [])
     if any(_landed_on(repo, ref) for ref in refs):
         return True
     reasons.append(prefix + "HEAD " + (_git(["rev-parse", "--short", "HEAD"], repo) or "(unreadable)").strip()

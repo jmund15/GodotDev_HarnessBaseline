@@ -310,6 +310,23 @@ def test_a_sync_branch_of_an_open_pr_keeps_its_checkout(world, prs, want):
         assert world.retired(path)[0] is want
 
 
+def test_a_remote_default_naming_the_local_defaults_commit_is_scanned_once(world):
+    """`_landed_on` reads only the ref's commit, so a second scan of the same commit is the same answer."""
+    path = world.wt("ahead_once")
+    write(path, "b.txt", "b\n")
+    git(path, "add", "b.txt")
+    git(path, "commit", "-qm", "local only")
+    scanned = []
+    with patch.object(rule, "_landed_on", lambda repo, ref: scanned.append(ref) or False):
+        got, reasons = world.retired(path)
+        assert not got and "is on no remote branch" in reasons[0] and scanned == ["refs/heads/main"]
+        other = git(path, "commit-tree", "HEAD^{tree}", "-m", "elsewhere").strip()
+        git(path, "update-ref", "refs/remotes/origin/main", other)
+        scanned.clear()
+        world.retired(path)
+    assert scanned == ["refs/heads/main", "origin/main"]
+
+
 def test_a_branch_that_heads_an_open_pr_keeps_its_checkout(world):
     path = world.wt("pr_head", branch="feat/open-pr-head")
     with patch.object(rule, "_open_prs", lambda root: [(9, "feat/open-pr-head")]):
