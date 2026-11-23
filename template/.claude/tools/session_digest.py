@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Recover one session from its append-only transcript, or read one explore Workflow's journal.
 
+Usage:
   session_digest.py                      the transcript written just before the active session's (--previous)
   session_digest.py --session <id>       the session with that id or a unique prefix, in this checkout or a worktree
   session_digest.py --match-file PATH    the session whose assistant wrote the text in PATH (a pasted message)
@@ -26,6 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 from _hook_state import replace_path  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cli_usage  # noqa: E402
 from _transcript_summary import TranscriptSummaryBuilder, owner_line  # noqa: E402
 from _owner_text import classify, meta_arguments  # noqa: E402
 import _background_tasks  # noqa: E402
@@ -1117,7 +1120,7 @@ def write_text_atomic(path: Path, text: str) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=cli_usage.usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     pick = ap.add_mutually_exclusive_group()
     pick.add_argument("--session", metavar="ID", help="session id or unique prefix")
     pick.add_argument("--previous", action="store_true",
