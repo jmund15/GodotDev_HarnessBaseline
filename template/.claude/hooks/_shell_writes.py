@@ -88,9 +88,14 @@ def _verb(words):
     return (posixpath.basename(words[i]).lower().removesuffix(".exe"), words[i + 1:]) if i < len(words) else ("", [])
 
 
+def _lines(text):
+    """The simple commands of PowerShell `text`, cut at `;`, newline and `|` outside quotes."""
+    return [text[seg.start:seg.end] for seg in lex(text)]
+
+
 def _ps_targets(text):
     found = []
-    for line in re.split(r"[;\n|]", text):
+    for line in _lines(text):
         tokens = [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "'\"" else t for t in _PS_TOKEN.findall(line)]
         start = next((i for i, t in enumerate(tokens) if t.lower().lstrip("{(&") in _PS_CMDLETS), None)
         if start is None:
@@ -226,7 +231,7 @@ def deleted_targets(command, cwd=""):
 def written_targets(command, tool="Bash", cwd=""):
     """The `Write` rows for `command`, in the forms the module docstring lists."""
     if tool == "PowerShell":
-        return [Write(p, None, cwd, "") for line in re.split(r"[;\n]", command)
+        return [Write(p, None, cwd, "") for line in _lines(command)
                 for p in _ps_targets(line) + list(_redirect_targets(line))]
     found = []
     for base, segment, words in segment_states(command, cwd):

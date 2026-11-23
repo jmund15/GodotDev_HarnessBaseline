@@ -58,10 +58,10 @@ Match the engine's real inputs and output schema by reading the script. Doctrine
 An advisory is `hookSpecificOutput.additionalContext` with exit 0; a block is exit 2 with stderr, or a `permissionDecision`. An allow covers the whole command, so validate all it runs.
 
 ### 14. Registration
-Prove a hook live: clean, planted violation, clean, through its real output. A settings entry naming a deleted file breaks every call its matcher covers.
+Prove a hook as `rules/harness_tooling.md` §How a test is shaped says. A settings entry naming a deleted file breaks every call its matcher covers.
 
 ### 15. Cost
-Measure a hook's runtime and emitted text. Add to the event's one entry rather than a new process. Write shared state atomically.
+Measure a hook's runtime and emitted text. Add to the event's one entry rather than a new process (`rules/harness_tooling.md` §Where a new piece goes). Write shared state atomically.
 
 ### 16. Fail posture
 A floor guard denies on its own failure; any other hook reports the lost check and continues. A docstring states live behaviour.

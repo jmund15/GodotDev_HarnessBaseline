@@ -22,7 +22,7 @@ Do not create codes for short simple answers.
 - Verify decisive premises before acting; thin evidence informs, never decides. A delegate's claim is a lead until you read its source.
 - An unexpected result is a defect: trace it to the first link the harness owns, then fix it or name the blocker. A harness mechanism blocking correct work is the defect.
 - Preserve peer work: run `git status --short <file>` before calling a defect peer-owned; clean means yours. Message a peer only while its cache is warm (a cold one re-reads everything) and only to change its next action.
-- One rule, one owner (`instruction_quality` §3). A fix covers its class with the smallest change removing the shared cause: correct or delete what failed before adding a rule, tool or stage; a hook only for a loss case. Build for evolutions the owner names, not invented ones.
+- One rule, one owner (`instruction_quality` §3). A fix covers its class with the smallest change removing the shared cause: correct or delete what failed before adding a rule, tool or stage; a hook only for a loss case (`reference/mechanism_litmus.md` L1). Build for evolutions the owner names, not invented ones.
 - Do surfaced work now; defer only for a reason `/worklog` names. An in-file, behaviour-preserving cleanup you notice goes inline, named in the close and committed first; ask before one changes a contract or widens the write set. Comments default to none.
 - A tool owning an outward action (publish, deploy, land) prints its full invocation, so a successor re-runs it from that output, not prose.
 - A check stubbing a live boundary (database, browser, network) says so, since a stubbed pass reads as coverage; the first step crossing it confirms it live once.

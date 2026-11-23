@@ -5,6 +5,7 @@
     walk(command)              -> (kind, text, [Segment], depth) for the command and every body it runs: `$(...)`,
                                   backticks, `<(...)`, `bash -c`, `eval`, `watch`, `cmd /c`, `pwsh -Command`, and a
                                   heredoc fed to a shell
+    split_at(command, op)      -> [str]  the text cut only at one operator (`|`, `&&`), other operators kept inside
     options(args, ...)         -> Options  GNU/git option parsing: bundled and split short flags, a value in the
                                   bundle or the next word, unique long prefixes, `--name=value`, options after
                                   operands, `--`
@@ -383,6 +384,21 @@ class _Lexer:
 def lex(command):
     """The simple commands of `command`, in source order (module docstring)."""
     return _Lexer(str(command or "")).run()
+
+
+def split_at(command, op):
+    """The source text of `command` cut only after each simple command ended by operator `op` (`"|"`, `"&&"`):
+    the pieces keep every other operator inside them. An operator in quotes or a substitution never cuts."""
+    command = str(command or "")
+    pieces, begin = [], None
+    for seg in lex(command):
+        begin = seg.start if begin is None else begin
+        if seg.op == op:
+            pieces.append(command[begin:seg.end])
+            begin = None
+    if begin is not None:
+        pieces.append(command[begin:])
+    return pieces
 
 
 # -- bodies a segment runs ----------------------------------------------------------------------------------------

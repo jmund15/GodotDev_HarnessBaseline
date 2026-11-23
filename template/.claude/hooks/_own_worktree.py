@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 from pathlib import Path
 
 import _git_commit
 import _git_run
+from _shell_lex import lex, split_at
 from _git_commit import (resolve_cd, segments, git_invocation, cd_target,
                          executable_text, literal_assignments, expand_literal)
 from _transcript_calls import Call, Result, session_events
@@ -47,11 +47,9 @@ def _added_worktrees(command: str, cwd: str) -> list[Path]:
         start = text.find(part, cursor)
         separators.append(text[cursor:start].strip())
         cursor = start + len(part)
-        try:
-            words = shlex.split(part, comments=True)
-        except ValueError:
-            return []
-        if (not words or '#' in part or '\\' in part
+        words = [w.value for seg in lex(part) for w in seg.words]
+        # An unterminated quote lexes as a literal character; the shell would refuse the command.
+        if (not words or any(c in w for w in words for c in "'\"") or '#' in part or '\\' in part
                 or not (git_invocation(part) or cd_target(part) is not None
                         or words[0] in ('true', 'false', 'echo', 'printf', 'sleep')
                         or all(re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=[^;|&(){}<>]*', w)
@@ -116,7 +114,7 @@ _EXIT_CODE = re.compile(r'\(exit code (\d+)\)')
 
 def _visible_git_invocation(segment: str, cwd: str):
     """A literal git call with visible errors and at most the supported tail filter."""
-    pipeline = segment.split('|')
+    pipeline = split_at(segment, '|')
     if len(pipeline) > 2 or (len(pipeline) == 2 and not _TAIL_FILTER.fullmatch(pipeline[1])):
         return []
     head = pipeline[0].strip()
@@ -161,7 +159,7 @@ def _first_visible_add(command: str, cwd: str) -> list[Path]:
             return []
         moved = cd_target(first) if '$' not in first and '`' not in first else None
         if moved is None:
-            parsed = git_invocation(first.split('|')[0].strip().removesuffix('2>&1').strip())
+            parsed = git_invocation(next(iter(split_at(first, '|')), '').strip().removesuffix('2>&1').strip())
             if parsed and parsed[0][:2] == ['worktree', 'add']:
                 break
             words = first.split()
@@ -220,10 +218,7 @@ def _unrolled_loops(command: str) -> str | None:
     if re.search(r'\bIFS\s*=', text):
         return None
     for match in _LOOP.finditer(text):
-        try:
-            words = shlex.split(match['words'])
-        except ValueError:
-            return None
+        words = [w.value for seg in lex(match['words']) for w in seg.words]
         var, body = match['var'], match['body']
         split = re.match(r'\s*set\s+--\s+\$' + re.escape(var) + r'\s*;\s*', body)
         if not words or any(not re.fullmatch(r'[\w.@%+=,:/ \t-]+', w) or w.startswith('-') for w in words):
@@ -259,10 +254,10 @@ def _lane_created_name(command: str) -> str | None:
     newline, an expansion or a background `&` make its run unknown. A trailing `2>&1` and `| tail -N` are kept."""
     if re.search(r'\|\||;|\n|[$`\\<]|(?<![&>])&(?!&)', command):
         return None
-    for part in (part.strip() for part in command.split('&&')):
+    for part in (part.strip() for part in split_at(command, '&&')):
         if cd_target(part) is not None:
             continue
-        pipeline = part.split('|')
+        pipeline = split_at(part, '|')
         if len(pipeline) > 2 or (len(pipeline) == 2 and not _TAIL_FILTER.fullmatch(pipeline[1])):
             return None
         match = _LANE_CREATE.match(pipeline[0].strip().removesuffix('2>&1').strip())
