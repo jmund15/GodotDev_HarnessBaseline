@@ -3,7 +3,7 @@
 Contract: an absent file gives every default silently; a valid key replaces its default; a wrong-typed
 key keeps its default and prints one stderr line naming the file; a dotted key reads into a table; the
 `tag` lookup returns a `sensitivity_tags` entry's folders; `get`, `run` and `tag` exit as the module says.
-Per-layer `adaptation.<layer>.defaults.json` files are not read. Fixtures live under pytest's tmp_path.
+Per-layer defaults files are not read (the one negative case names one). Fixtures live under pytest's tmp_path.
 
     python -m pytest .claude/tests/test_adaptation.py -q
 """
@@ -94,12 +94,12 @@ def test_dropped_layer_files_are_not_read(tmp_path):
 
 def test_dotted_key_reads_a_table_sub_key(tmp_path, capsys):
     claude = _claude_dir(tmp_path, {"review": {"checklists": ["commands/checklists/a.md"]},
-                                    "seat": {"pre_launch": "check.sh", "post_return": 5}})
+                                    "dispatch": {"pre_launch": "check.sh", "post_return": 5}})
     assert adaptation.get(claude, "review.checklists") == ["commands/checklists/a.md"]
-    assert adaptation.get(claude, "seat.pre_launch") == "check.sh"
-    assert adaptation.get(claude, "seat.post_return") == ""  # wrong-typed sub-key keeps its default
+    assert adaptation.get(claude, "dispatch.pre_launch") == "check.sh"
+    assert adaptation.get(claude, "dispatch.post_return") == ""  # wrong-typed sub-key keeps its default
     err = capsys.readouterr().err
-    assert "seat.post_return" in err and len(err.strip().splitlines()) == 1
+    assert "dispatch.post_return" in err and len(err.strip().splitlines()) == 1
 
 
 def test_get_defaults_a_missing_key_and_returns_none_for_unknown(tmp_path):
@@ -108,11 +108,23 @@ def test_get_defaults_a_missing_key_and_returns_none_for_unknown(tmp_path):
     assert adaptation.get(claude, "no_such_key") is None
 
 
-def test_overnight_dir_and_seat_hooks_read_their_values(tmp_path):
-    claude = _claude_dir(tmp_path, {"overnight_dir": "D:/Vault/Overnight", "seat": {"pre_launch": "pre.sh"}})
+def test_overnight_dir_dispatch_hooks_and_pr_checks_read_their_values(tmp_path):
+    claude = _claude_dir(tmp_path, {"overnight_dir": "D:/Vault/Overnight", "dispatch": {"pre_launch": "pre.sh"},
+                                    "pr_ready": {"checks": ["checks/boot.md"]}})
     assert adaptation.get(claude, "overnight_dir") == "D:/Vault/Overnight"
-    assert adaptation.get(claude, "seat.pre_launch") == "pre.sh"
-    assert adaptation.get(claude, "seat.post_return") == ""
+    assert adaptation.get(claude, "dispatch.pre_launch") == "pre.sh"
+    assert adaptation.get(claude, "dispatch.post_return") == ""
+    assert adaptation.get(claude, "pr_ready.checks") == ["checks/boot.md"]
+
+
+def test_every_top_level_key_reads_back_from_a_fixture(tmp_path):
+    values = {}
+    for key, default in adaptation.DEFAULTS.items():
+        if key in adaptation._SUB_TYPES:  # table keys read back through their sub-keys (above)
+            continue
+        values[key] = {"x": "y"} if isinstance(default, dict) else ["x"] if isinstance(default, list) else "x"
+    result = _load(_claude_dir(tmp_path, values))
+    assert {key: result[key] for key in values} == values
 
 
 def test_project_name_and_vault_root_are_strings(tmp_path):
