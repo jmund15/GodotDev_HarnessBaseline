@@ -22,7 +22,6 @@ from test_workflow_transport import plant  # noqa: E402
 @pytest.fixture(autouse=True)
 def not_a_delegate(monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_SIDECAR", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_SIDECAR_KIND", raising=False)
 
 
 @pytest.fixture
@@ -169,6 +168,17 @@ def test_a_failing_post_return_marks_that_job_failed(tmp_path, planted, monkeypa
     out = post(tmp_path, {"spillDir": SPILL, "jobs": [job_with_targets(tmp_path, "reviewer"), other]})
     assert out["decision"] == "block" and "r: dispatch.post_return refused: answer-rejected" in out["reason"]
     assert "ok:" not in out["reason"]
+
+
+@pytest.mark.parametrize("key", ["argsFile", "jobsFile"])
+def test_post_return_checks_the_jobs_of_a_call_that_carried_only_a_file(tmp_path, planted, monkeypatch, key):
+    """PostToolUse may carry the call's original `{argsFile}` / `{jobsFile}` form, never the expanded args."""
+    monkeypatch.setattr(pwd.launch_check, "run_hook", lambda key, args, cwd, lookup=None: (1, "answer-rejected") if args[3] == "r" else (0, ""))
+    (tmp_path / ".claude" / "scratch").mkdir(parents=True)
+    (tmp_path / ".claude" / "scratch" / "a.json").write_text(
+        json.dumps({"spillDir": SPILL, "jobs": [job_with_targets(tmp_path, "reviewer")]}), encoding="utf-8")
+    out = post(tmp_path, {key: ".claude/scratch/a.json"})
+    assert out["decision"] == "block" and "r: dispatch.post_return refused: answer-rejected" in out["reason"]
 
 
 def test_the_spawned_entry_is_silent_after_a_workflow_with_no_post_return_hook(tmp_path):

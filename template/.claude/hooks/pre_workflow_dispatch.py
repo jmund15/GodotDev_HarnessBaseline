@@ -198,9 +198,16 @@ def launch_checks(payload, root):
 
 def post_return(payload, root):
     """PostToolUse(Workflow): the project's `dispatch.post_return` hook, once per job, free and deterministic.
-    A refusal is that job's failure; the reason reaches the session through `decision: block`."""
-    args, _as_text = _args_of(payload.get("tool_input") or {})
+    A refusal is that job's failure; the reason reaches the session through `decision: block`. The payload carries the
+    call's original `args`, so a file form is expanded the way the pre step expands it."""
     reasons = []
+    for expand in (expand_args_file, expand_jobs_file):
+        refused, update = expand(payload, root)
+        if refused:
+            return refused
+        if update is not None:
+            payload = dict(payload, tool_input=update)
+    args, _as_text = _args_of(payload.get("tool_input") or {})
     for job in _jobs_of(args or {}):
         brief = job.get("promptPath")
         label = job.get("label") or job.get("key") or "(unlabeled)"
