@@ -16,7 +16,7 @@ Three things live here and nothing else does:
               either one shows up as drift at the next session start.
 
 The checks `stamp` re-runs first (`preflight`) come from the layer modules installed beside this
-file. The core has none of its own: a consumer without a layer module is refused for nothing.
+file. The core's own is the `core.hooksPath` audit; a consumer without a layer module is refused for nothing else.
 
 Profile: `~/.claude/workstation_profile.json` — never under a redirected Documents folder, and
 overridable with WORKSTATION_PROFILE_PATH so a proof can plant one. Writes are whole-file atomic.
@@ -372,22 +372,44 @@ def _load_module(name, path):
     return module
 
 
+HOOKS_PATH = ".claude/githooks"
+
+
+def hooks_path_failures(root):
+    """`[reason]` when the repo's `core.hooksPath` is not exactly `.claude/githooks`, else `[]`. A relative value
+    resolves per worktree, so a commit from a worktree runs that worktree's hooks; an absolute value (or any other
+    path) runs one checkout's hooks from every worktree. A directory that is no repository has none to audit."""
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=10)
+    try:
+        if git("rev-parse", "--git-dir").returncode != 0:
+            return []
+        value = git("config", "--get", "core.hooksPath").stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        return ["core.hooksPath could not be read: %s: %s" % (type(exc).__name__, exc)]
+    if value == HOOKS_PATH:
+        return []
+    return ["core.hooksPath is %s, not the relative `%s` (run `git -C <repo> config core.hooksPath %s`)"
+            % (repr(value) if value else "unset", HOOKS_PATH, HOOKS_PATH)]
+
+
 def preflight(root):
     """The cheap checks `stamp` re-runs before it records anything. A non-empty list refuses.
 
     These are the stamp's own observations, never a count handed in by the caller: a stamp
-    certifying a machine whose toolchain is absent is worse than no stamp at all. The checks belong
-    to the layer module installed beside this file; with none installed there are none to run. An
-    installed module that cannot load, or has no `preflight`, refuses the stamp: a broken check
-    must not read as a passed one.
+    certifying a machine whose toolchain is absent is worse than no stamp at all. The core checks
+    `hooks_path_failures`; the rest belong to the layer module installed beside this file, and with
+    none installed there are none to run. An installed module that cannot load, or has no
+    `preflight`, refuses the stamp: a broken check must not read as a passed one.
     """
+    failures = hooks_path_failures(root)
     try:
         name = "workstation_profile_godot"
         if not os.path.isfile(_sibling_path(name)):
-            return []
-        return list(_load_module(name, _sibling_path(name)).preflight(root))
+            return failures
+        return failures + list(_load_module(name, _sibling_path(name)).preflight(root))
     except Exception as exc:
-        return ["%s could not load or run: %s: %s" % (name, type(exc).__name__, exc)]
+        return failures + ["%s could not load or run: %s: %s" % (name, type(exc).__name__, exc)]
 
 
 def record(ai_worker_value=None):
