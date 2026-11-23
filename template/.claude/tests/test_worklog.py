@@ -6,8 +6,6 @@ neutral text: no game noun, no person, no machine path. The canonical class and 
 planted here, and every `add` run is pointed at the plant, so the proof passes in a project whose
 worklog_reference names other domains. `last_updated` / `Last synced` are set to a fixed old date
 so a run on any day proves the bump.
-
-    python -m pytest .claude/tests/test_worklog.py -q
 """
 import datetime
 import json
@@ -15,23 +13,20 @@ import os
 import pathlib
 import subprocess
 import sys
-import tempfile
+import contextlib
+import importlib.util
+import io
+import types
+
+import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 TOOL = REPO / ".claude" / "tools" / "worklog.py"
 TODAY = datetime.date.today().isoformat()
 OLD = "2026-01-01"
 
-failures = []
-ran = 0
-
-
 def check(label, cond, detail=""):
-    global ran
-    ran += 1
-    print("%-4s %s" % ("ok" if cond else "FAIL", label))
-    if not cond:
-        failures.append("%s %s" % (label, detail))
+    assert cond, "%s %s" % (label, detail)
 
 
 # --- planted canonical tables (shaped like the real SKILL.md, naming no project's domains) ---
@@ -317,26 +312,45 @@ def stage(tmp, worklog=W1, archive=A1, mirror=M1):
     return p
 
 
+spec = importlib.util.spec_from_file_location("worklog_tool", str(TOOL))
+tool = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tool)
+
+
+def _dir(tmp_path, name):
+    path = tmp_path / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _call(argv, session=None):
+    """The tool's `main(argv)` in process, with the runtime session id planted; a result shaped like a process's."""
+    out, err = io.StringIO(), io.StringIO()
+    saved = os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+    if session:
+        os.environ["CLAUDE_CODE_SESSION_ID"] = session
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = tool.main(argv) or 0
+            except SystemExit as exc:  # argparse refusals exit 2
+                code = exc.code if isinstance(exc.code, int) else 1
+    finally:
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        if saved is not None:
+            os.environ["CLAUDE_CODE_SESSION_ID"] = saved
+    return types.SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr=err.getvalue())
+
+
 def run(p, *args, archive_name="Worklog-Archive.md"):
-    cmd = [sys.executable, str(TOOL), "complete", *args,
-           "--worklog", str(p / "Worklog.md"),
-           "--archive", str(p / archive_name),
-           "--mirror", str(p / "worklog-titles.md")]
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+    return _call(["complete", *args, "--worklog", str(p / "Worklog.md"), "--archive", str(p / archive_name),
+                  "--mirror", str(p / "worklog-titles.md")])
 
 
 def run_add(p, *args, skill=None, session=None):
     skill = str(p / "SKILL.md") if skill is None else skill
-    cmd = [sys.executable, str(TOOL), "add", *args,
-           "--skill", skill,
-           "--worklog", str(p / "Worklog.md"),
-           "--archive", str(p / "Worklog-Archive.md"),
-           "--mirror", str(p / "worklog-titles.md")]
-    env = dict(os.environ)
-    env.pop("CLAUDE_CODE_SESSION_ID", None)
-    if session:
-        env["CLAUDE_CODE_SESSION_ID"] = session
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env)
+    return _call(["add", *args, "--skill", skill, "--worklog", str(p / "Worklog.md"),
+                  "--archive", str(p / "Worklog-Archive.md"), "--mirror", str(p / "worklog-titles.md")], session)
 
 
 def snapshot(p):
@@ -347,456 +361,496 @@ def read(p, name):
     return (p / name).read_bytes().decode("utf-8")
 
 
-# --- exact title: block gone, XLINE last in its domain, both dates bumped, mirror line gone ---
-p = stage(tempfile.mkdtemp(prefix="wl_exact_"))
-r = run(p, TARGET, "--ref", "0b820491e")
-check("exact title completes (rc=0)", r.returncode == 0, r.stderr[-400:])
-wl = read(p, "Worklog.md")
-check("exact: block gone", TARGET_BLOCK not in wl)
-check("exact: the next block survives", "Probe the runner retries" in wl)
-check("exact: worklog last_updated bumped", "last_updated: %s" % TODAY in wl, wl[:120])
-expected_wl = W1.replace(TARGET_BLOCK, "").replace("last_updated: " + OLD, "last_updated: " + TODAY)
-check("exact: every other worklog byte unchanged", wl == expected_wl)
-ar = read(p, "Worklog-Archive.md")
-check("exact: XLINE is the last line of its domain section", ar == A1.replace(
-    "last_updated: " + OLD, "last_updated: " + TODAY) + XLINE + "\n", ar[-260:])
-mi = read(p, "worklog-titles.md")
-check("exact: mirror line gone", MIRROR_LINE + "\n" not in mi)
-check("exact: mirror Last synced bumped", "Last synced: %s" % TODAY in mi)
-check("exact: mirror Active count decremented", "## Active (1)" in mi)
-expected_mi = (M1.replace("Last synced: " + OLD, "Last synced: " + TODAY)
-               .replace(MIRROR_LINE + "\n", "").replace("## Active (2)", "## Active (1)"))
-check("exact: every other mirror byte unchanged", mi == expected_mi)
 
-# --- every optional sub-bullet leaves with the block ---
-p = stage(tempfile.mkdtemp(prefix="wl_opts_"), worklog=W3, mirror=M3)
-r = run(p, "Run the probe models through a sibling transport")
-wl = read(p, "Worklog.md")
-check("optional sub-bullets: completes (rc=0)", r.returncode == 0, r.stderr[-400:])
-check("optional sub-bullets: no line of the block survives",
-      not any(s in wl for s in ("Plan doc: [[Probe-Transport]]",
-                                "Quick-win: flagged 2026-10-20",
-                                "When: after the owner runs `probe login`")))
-check("optional sub-bullets: next block survives", "Probe the runner retries" in wl)
+def table_slice(text, start_marker, end_marker):
+    body = text.split(start_marker, 1)[1].split(end_marker, 1)[0]
+    return [line for line in body.splitlines() if line.startswith("|")]
 
-# --- last item of a domain: heading goes too, in Worklog and the mirror; new archive domain ---
-p = stage(tempfile.mkdtemp(prefix="wl_last_"), worklog=W2, mirror=M2)
-r = run(p, "Apply the board sweep", "--ref", "abc1234")
-wl = read(p, "Worklog.md")
-check("last item: completes (rc=0)", r.returncode == 0, r.stderr[-400:])
-check("last item: worklog domain heading gone", "### Other" not in wl)
-check("last item: other domain heading stays", "### Delta" in wl)
-mi = read(p, "worklog-titles.md")
-check("last item: mirror category heading gone", "### Other" not in mi)
-check("last item: mirror ledger heading stays", "### Delta" in mi)
-check("last item: mirror Active count decremented", "## Active (0)" in mi)
-ar = read(p, "Worklog-Archive.md")
-new_x = "- [x] `chore` · scope `2` · Apply the board sweep (completed %s, abc1234)" % TODAY
-check("missing archive domain: new section appended",
-      ar == A1.replace("last_updated: " + OLD, "last_updated: " + TODAY)
-      + "\n## Other\n" + new_x + "\n")
 
-# --- archive does not exist: create it ---
-p = stage(tempfile.mkdtemp(prefix="wl_noarch_"), archive=None)
-r = run(p, TARGET, "--ref", "0b820491e", archive_name="new-archive.md")
-check("missing archive: completes (rc=0)", r.returncode == 0, r.stderr[-400:])
-ar = read(p, "new-archive.md") if (p / "new-archive.md").exists() else ""
-check("missing archive: frontmatter and heading", ar.startswith(
-    "---\ntitle: Worklog Archive\nstatus: archive\nlast_updated: %s\n---\n\n# Worklog Archive\n" % TODAY))
-check("missing archive: opacity note", "> Completed worklog items" in ar)
-check("missing archive: domain section holds the XLINE", "## Alpha\n" + XLINE + "\n" in ar)
-check("missing archive: worklog block gone", TARGET_BLOCK not in read(p, "Worklog.md"))
+def is_domain_row(row):
+    cell = row.split("|")[1].strip()
+    return cell not in ("", "Long form (Active section header)") and set(cell) - set("-: ")
 
-# --- ambiguous: exit 2, nothing written ---
-p = stage(tempfile.mkdtemp(prefix="wl_amb_"))
-before = (read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md"))
-r = run(p, "run")
-check("ambiguous: exit 2", r.returncode == 2, r.returncode)
-check("ambiguous: candidates listed", "Probe the runner retries" in r.stdout and "Probe the queue repeat runs" in r.stdout, r.stdout)
-check("ambiguous: no write", (read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md")) == before)
 
-# --- no match: exit 2, nothing written ---
-p = stage(tempfile.mkdtemp(prefix="wl_none_"))
-before = (read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md"))
-r = run(p, "zzz no such item")
-check("no match: exit 2", r.returncode == 2, r.returncode)
-check("no match: no write", (read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md")) == before)
+SID_A, SID_B = "probe-session-a", "probe-session-b"
 
-# --- CRLF files stay CRLF ---
-p = stage(tempfile.mkdtemp(prefix="wl_crlf_"),
-          worklog=W1.replace("\n", "\r\n"), archive=A1.replace("\n", "\r\n"),
-          mirror=M1.replace("\n", "\r\n"))
-r = run(p, TARGET, "--ref", "0b820491e")
-check("crlf: completes (rc=0)", r.returncode == 0, r.stderr[-400:])
-for name in ("Worklog.md", "Worklog-Archive.md", "worklog-titles.md"):
-    b = (p / name).read_bytes()
-    check("crlf: %s has no bare LF" % name, b.count(b"\n") == b.count(b"\r\n"))
-check("crlf: block gone", TARGET_BLOCK.replace("\n", "\r\n").encode() not in (p / "Worklog.md").read_bytes())
-check("crlf: XLINE appended", XLINE.encode() in (p / "Worklog-Archive.md").read_bytes())
-
-# --- dry run writes nothing and prints the plan ---
-p = stage(tempfile.mkdtemp(prefix="wl_dry_"))
-before = (read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md"))
-r = run(p, TARGET, "--ref", "0b820491e", "--dry-run")
-check("dry run: rc=0", r.returncode == 0, r.stderr[-400:])
-check("dry run: no write", (read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md")) == before)
-check("dry run: prints the block with its range", "lines 12-15" in r.stdout and TARGET in r.stdout, r.stdout)
-check("dry run: prints the XLINE", XLINE in r.stdout, r.stdout)
-check("dry run: prints the archive section", "## Alpha" in r.stdout, r.stdout)
-check("dry run: prints the mirror line", MIRROR_LINE in r.stdout, r.stdout)
-
-# --- --from: one good line, one bad line ---
-p = stage(tempfile.mkdtemp(prefix="wl_from_"))
-(p / "batch.jsonl").write_text(
-    json.dumps({"title": TARGET, "ref": "0b820491e"}) + "\n" +
-    json.dumps({"title": "zzz no such item", "ref": "deadbee"}) + "\n", encoding="utf-8")
-r = run(p, "--from", str(p / "batch.jsonl"))
-check("--from: nonzero exit when a line misses", r.returncode != 0, r.returncode)
-check("--from: completed line reported", "completed:" in r.stdout and TARGET in r.stdout, r.stdout)
-check("--from: missed line reported", "no-match:" in r.stdout, r.stdout)
-check("--from: the good item still completed", TARGET_BLOCK not in read(p, "Worklog.md"))
-check("--from: the bad item wrote nothing", "zzz no such item" not in read(p, "Worklog-Archive.md"))
-
-# ================================ add ================================
 
 def add(p, title, cls, scope, domain, context="probe context", *extra):
     return run_add(p, title, "--class", cls, "--scope", str(scope), "--domain", domain,
                    "--context", context, "--date", TODAY, *extra)
 
-
-# --- Active add into an existing domain: top of the section, both dates, mirror line ---
 T1 = "Probe the add tool's Active route"
+
 T1_BLOCK = ("- [ ] **%s** — `chore` · scope `1` · added %s\n"
             "  - Context: probe context line\n" % (T1, TODAY))
-p = stage(tempfile.mkdtemp(prefix="wl_add_active_"), worklog=W4, mirror=M4)
-r = add(p, T1, "chore", 1, "Alpha", "probe context line")
-check("add active: rc=0", r.returncode == 0, r.stderr[-400:])
-wl = read(p, "Worklog.md")
-expected_wl = (W4.replace("### Alpha\n", "### Alpha\n" + T1_BLOCK + "\n", 1)
-               .replace("last_updated: " + OLD, "last_updated: " + TODAY))
-check("add active: block is the first block of its domain", wl == expected_wl, wl[:600])
-check("add active: item date is the add date", "added %s" % TODAY in wl)
-check("add active: archive untouched", read(p, "Worklog-Archive.md") == A1)
-mi = read(p, "worklog-titles.md")
-expected_mi = (M4.replace("## Active (2)", "## Active (3)", 1)
-               .replace("### Alpha\n", "### Alpha\n- chore · 1 · " + T1 + "\n", 1)
-               .replace("Last synced: " + OLD, "Last synced: " + TODAY))
-check("add active: mirror line and count, every other byte unchanged", mi == expected_mi, mi[:600])
 
-# --- every optional field ---
 T2 = "Plan the probe follow-up"
+
 T2_BLOCK = ("- [ ] **%s** — `design` · scope `4` · added %s\n"
             "  - Context: probe context for the plan\n"
             "  - Where: tools/probe.py\n"
             "  - Source: session probe\n"
             "  - Plan doc: [[Probe-Plan-Doc]]\n" % (T2, TODAY))
+
 T2_LINKED = ('- [[Probe-Plan-Doc]] — probe context for the plan (Active: "%s", added %s)'
              % (T2, TODAY))
-p = stage(tempfile.mkdtemp(prefix="wl_add_opts_"), worklog=W4, mirror=M4)
-r = add(p, T2, "design", 4, "Alpha", "probe context for the plan",
-        "--where", "tools/probe.py", "--source", "session probe",
-        "--plan-doc", "Probe-Plan-Doc")
-check("add options: rc=0", r.returncode == 0, r.stderr[-400:])
-wl = read(p, "Worklog.md")
-check("add options: block carries Context, Where, Source, Plan doc in order",
-      "### Alpha\n" + T2_BLOCK in wl, wl[:900])
-check("add options: plan doc joins Linked Docs", T2_LINKED + "\n" in wl)
-check("add options: Linked Docs keeps its existing entry",
-      "- [[Existing-Doc]] — existing doc (Active: \"Some item\", added 2025-12-01)" in wl)
 
-# --- When: after lands in the Ledger, with the mirror suffix ---
 T3 = "Probe the add tool's Ledger route"
+
 T3_BLOCK = ("- [ ] **%s** — `chore` · scope `2` · added %s\n"
             "  - Context: probe context for the ledger\n"
             "  - When: after the probe lands\n" % (T3, TODAY))
-p = stage(tempfile.mkdtemp(prefix="wl_add_ledger_"), worklog=W4, mirror=M4)
-r = add(p, T3, "chore", 2, "Delta", "probe context for the ledger",
-        "--when", "after the probe lands")
-check("add ledger: rc=0", r.returncode == 0, r.stderr[-400:])
-wl = read(p, "Worklog.md")
-ledger = wl.split("## Ledger\n", 1)[1]
-check("add ledger: block is the first block of the Ledger domain",
-      "### Delta" in ledger and T3_BLOCK in ledger, ledger[:400])
-check("add ledger: not in Active", T3 not in wl.split("## Active\n", 1)[1].split("## Ledger", 1)[0])
-check("add ledger: When line records the condition", "  - When: after the probe lands\n" in wl)
-mi = read(p, "worklog-titles.md")
-check("add ledger: mirror suffix", T3 in mi and "after: the probe lands" in mi, mi[-400:])
-check("add ledger: ledger count bumped", "## Ledger (2)" in mi and "## Active (2)" in mi)
-check("add ledger: Last synced bumped", "Last synced: %s" % TODAY in mi)
 
-# --- Future Scope: existing sub-heading ---
 T4 = "Probe the Future Scope route"
+
 FS4 = "> - `chore` · scope `1` · %s (added %s; a probe future item)" % (T4, TODAY)
-p = stage(tempfile.mkdtemp(prefix="wl_add_fs_"), worklog=W4, mirror=M4)
-r = add(p, T4, "chore", 1, "Alpha", "a probe future item", "--when", "future")
-check("add future: rc=0", r.returncode == 0, r.stderr[-400:])
-wl = read(p, "Worklog.md")
-check("add future: FSLINE is the first line of its Future Scope sub-heading",
-      "> ### Alpha\n" + FS4 + "\n" in wl, wl[-900:])
-check("add future: item count bumped", "> [!example]- Future Scope (3 items)" in wl)
-check("add future: not in Active or Ledger",
-      T4 not in wl.split("## Future Scope")[0])
-check("add future: mirror untouched", read(p, "worklog-titles.md") == M4)
-check("add future: last_updated bumped", "last_updated: %s" % TODAY in wl)
 
-# --- Future Scope: sub-heading missing, created before the callout close ---
 T5 = "Probe a new Future Scope domain"
-FS5 = "> - `chore` · scope `1` · %s (added %s; another probe)" % (T5, TODAY)
-p = stage(tempfile.mkdtemp(prefix="wl_add_fs_new_"), worklog=W4, mirror=M4)
-r = add(p, T5, "chore", 1, "Other", "another probe", "--when", "future")
-check("add future new domain: rc=0", r.returncode == 0, r.stderr[-400:])
-wl = read(p, "Worklog.md")
-check("add future new domain: heading and line at the callout end",
-      ">\n> ### Other\n" + FS5 + "\n\n## Linked Docs" in wl, wl[-700:])
-check("add future new domain: count bumped", "> [!example]- Future Scope (3 items)" in wl)
-check("add future new domain: mirror untouched", read(p, "worklog-titles.md") == M4)
 
-# --- Active domain with no heading yet ---
+FS5 = "> - `chore` · scope `1` · %s (added %s; another probe)" % (T5, TODAY)
+
 T6 = "Probe a new Active domain"
+
 T6_BLOCK = ("- [ ] **%s** — `chore` · scope `1` · added %s\n"
             "  - Context: probe context\n" % (T6, TODAY))
-p = stage(tempfile.mkdtemp(prefix="wl_add_domain_"), worklog=W4, mirror=M4)
-r = add(p, T6, "chore", 1, "Other", "probe context")
-check("add new domain: rc=0", r.returncode == 0, r.stderr[-400:])
-wl = read(p, "Worklog.md")
-check("add new domain: heading ends ## Active, just before ## Ledger",
-      "### Other\n" + T6_BLOCK + "\n## Ledger" in wl, wl[:1200])
-mi = read(p, "worklog-titles.md")
-check("add new domain: mirror category appended at the end of Active",
-      "### Other\n- chore · 1 · " + T6 + "\n\n## Ledger" in mi, mi[:900])
-check("add new domain: mirror Active count bumped", "## Active (3)" in mi)
 
-# --- a domain is accepted in the table's short form, and the heading keeps the long form ---
 T7 = "Probe the short domain spelling"
+
 T7_BLOCK = ("- [ ] **%s** — `chore` · scope `1` · added %s\n"
             "  - Context: probe context\n" % (T7, TODAY))
-p = stage(tempfile.mkdtemp(prefix="wl_add_short_"), worklog=W4, mirror=M4)
-r = add(p, T7, "chore", 1, "beta", "probe context")
-check("add short domain: rc=0", r.returncode == 0, r.stderr[-400:])
-wl = read(p, "Worklog.md")
-check("add short domain: long-form heading carries the block",
-      "### Beta / Gamma\n" + T7_BLOCK + "\n" in wl, wl[:1200])
-check("add short domain: no short-form heading written", "### beta" not in wl)
-mi = read(p, "worklog-titles.md")
-check("add short domain: mirror category uses the long form",
-      "### Beta / Gamma\n- chore · 1 · " + T7 + "\n" in mi, mi[:900])
 
-# --- exact duplicate: case-insensitive, exit 2, nothing written ---
-p = stage(tempfile.mkdtemp(prefix="wl_add_dup_"), worklog=W4, mirror=M4)
-before = snapshot(p)
-line_no = W4.splitlines().index(A_BLOCK.splitlines()[0]) + 1
-for title in (A_TITLE, A_TITLE.lower()):
-    r = add(p, title, "chore", 1, "Alpha", "probe context")
-    check("add duplicate (%r): exit 2" % title[:20], r.returncode == 2, r.returncode)
-    check("add duplicate (%r): names the existing item and line" % title[:20],
-          "duplicate" in r.stdout and "line %d" % line_no in r.stdout, r.stdout)
-check("add duplicate: no write", snapshot(p) == before)
-
-# --- near-duplicate in the same domain: blocked, then allowed by --distinct ---
-p = stage(tempfile.mkdtemp(prefix="wl_add_near_"), worklog=W4, mirror=M4)
-before = snapshot(p)
-r = add(p, A_TITLE_NEAR, "fix", 2, "Alpha", "probe context")
-check("add near-duplicate: exit 2", r.returncode == 2, r.returncode)
-check("add near-duplicate: says near and offers --distinct",
-      "near-duplicate" in r.stdout and "--distinct" in r.stdout, r.stdout)
-check("add near-duplicate: no write", snapshot(p) == before)
-r = add(p, A_TITLE_NEAR, "fix", 2, "Alpha", "probe context", "--distinct")
-check("add near-duplicate --distinct: added", r.returncode == 0 and "added:" in r.stdout, r.stdout)
-check("add near-duplicate --distinct: item written", A_TITLE_NEAR in read(p, "Worklog.md"))
-p = stage(tempfile.mkdtemp(prefix="wl_add_near_exact_"), worklog=W4, mirror=M4)
-r = add(p, A_TITLE, "fix", 2, "Alpha", "probe context", "--distinct")
-check("add --distinct never overrides an exact title", r.returncode == 2, r.returncode)
-
-# --- each invalid field: exit 2, names the allowed values, writes nothing ---
-def invalid_case(label, title, cls, scope, domain, *extra, needle=""):
-    p = stage(tempfile.mkdtemp(prefix="wl_add_bad_"), worklog=W4, mirror=M4)
+def invalid_case(tmp_path, label, title, cls, scope, domain, *extra, needle=""):
+    p = stage(_dir(tmp_path, "bad_" + "".join(c if c.isalnum() else "_" for c in label)), worklog=W4, mirror=M4)
     before = snapshot(p)
     r = add(p, title, cls, scope, domain, "probe context", *extra)
     check("add invalid %s: exit 2" % label, r.returncode == 2, (r.returncode, r.stderr[-300:]))
     check("add invalid %s: names the allowed values" % label, needle in r.stderr, r.stderr[-400:])
     check("add invalid %s: no write" % label, snapshot(p) == before)
 
-
-invalid_case("class", "Bad class probe", "bug", 1, "Alpha", needle="chore")
-invalid_case("scope", "Bad scope probe", "chore", 5, "Alpha", needle="1, 2, 3 or 4")
-invalid_case("domain", "Bad domain probe", "chore", 1, "Nonsense", needle="Alpha")
-invalid_case("plan doc", "No plan doc probe", "design", 4, "Alpha", needle="plan-doc")
-invalid_case("future plan doc", "Future plan doc probe", "design", 4, "Alpha",
-             "--when", "future", "--plan-doc", "Probe-Plan-Doc", needle="Future Scope")
-
-# --- a missing or table-less canonical owner is a refusal that names the file ---
-p = stage(tempfile.mkdtemp(prefix="wl_add_noskill_"), worklog=W4, mirror=M4)
-before = snapshot(p)
-absent = str(p / "absent-skill.md")
-r = run_add(p, "Probe a missing owner", "--class", "chore", "--scope", "1", "--domain", "alpha",
-            "--context", "probe context", "--date", TODAY, skill=absent)
-check("missing canonical owner: exit 2", r.returncode == 2, r.returncode)
-check("missing canonical owner: names the file", absent in r.stderr, r.stderr)
-check("missing canonical owner: no write", snapshot(p) == before)
-
-p = stage(tempfile.mkdtemp(prefix="wl_add_badskill_"), worklog=W4, mirror=M4)
-(p / "SKILL.md").write_text("# Reference\n\n## Classification\n\nNo table here.\n", encoding="utf-8")
-before = snapshot(p)
-r = add(p, "Probe a table-less owner", "chore", 1, "alpha", "probe context")
-check("table-less canonical owner: exit 2", r.returncode == 2, r.returncode)
-check("table-less canonical owner: names the file", "SKILL.md" in r.stderr, r.stderr)
-check("table-less canonical owner: no write", snapshot(p) == before)
-
-# --- CRLF files stay CRLF ---
-p = stage(tempfile.mkdtemp(prefix="wl_add_crlf_"),
-          worklog=W4.replace("\n", "\r\n"), mirror=M4.replace("\n", "\r\n"),
-          archive=A1.replace("\n", "\r\n"))
-r = add(p, T1, "chore", 1, "Alpha", "probe context line")
-check("add crlf: rc=0", r.returncode == 0, r.stderr[-400:])
-for name in ("Worklog.md", "Worklog-Archive.md", "worklog-titles.md"):
-    b = (p / name).read_bytes()
-    check("add crlf: %s has no bare LF" % name, b.count(b"\n") == b.count(b"\r\n"))
-check("add crlf: block written with CRLF",
-      T1_BLOCK.replace("\n", "\r\n").encode() in (p / "Worklog.md").read_bytes())
-
-# --- dry run: writes nothing, prints block, section and mirror line ---
-p = stage(tempfile.mkdtemp(prefix="wl_add_dry_"), worklog=W4, mirror=M4)
-before = snapshot(p)
-r = add(p, T1, "chore", 1, "Alpha", "probe context line", "--dry-run")
-check("add dry run: rc=0", r.returncode == 0, r.stderr[-400:])
-check("add dry run: no write", snapshot(p) == before)
-check("add dry run: prints the BLOCK",
-      all(("  " + line) in r.stdout for line in T1_BLOCK.splitlines()), r.stdout)
-check("add dry run: prints the section and line",
-      "section:" in r.stdout and "Active" in r.stdout and "Alpha" in r.stdout, r.stdout)
-check("add dry run: prints the mirror line", "mirror line:" in r.stdout and T1 in r.stdout, r.stdout)
-
-# --- --from: one good line, one bad line; continues; nonzero exit ---
 T12 = "Probe the --from batch item"
-p = stage(tempfile.mkdtemp(prefix="wl_add_from_"), worklog=W4, mirror=M4)
-(p / "batch.jsonl").write_text(
-    json.dumps({"title": T12, "class": "chore", "scope": 1,
-                "domain": "Alpha", "context": "batch context"}) + "\n" +
-    json.dumps({"title": "Bad batch row", "class": "bug", "scope": 1,
-                "domain": "Alpha", "context": "batch context"}) + "\n",
-    encoding="utf-8")
-r = run_add(p, "--from", str(p / "batch.jsonl"))
-check("add --from: nonzero exit when a line is invalid", r.returncode == 2, r.returncode)
-check("add --from: added line reported", "added: " + T12 in r.stdout, r.stdout)
-check("add --from: invalid line reported", "invalid:" in r.stdout and "bug" in r.stdout, r.stdout)
-check("add --from: the good item was written", T12 in read(p, "Worklog.md"))
-check("add --from: the bad item wrote nothing", "Bad batch row" not in read(p, "Worklog.md"))
 
-# --- round trip: add then complete returns both files except dates and the archive line ---
 T13 = "Probe the round-trip item"
-p = stage(tempfile.mkdtemp(prefix="wl_add_round_"))
-r = add(p, T13, "chore", 1, "Alpha", "round trip context")
-check("round trip: add rc=0", r.returncode == 0, r.stderr[-400:])
-r = run(p, T13)
-check("round trip: complete rc=0", r.returncode == 0, r.stderr[-400:])
-check("round trip: Worklog is its starting bytes but for last_updated",
-      read(p, "Worklog.md") == W1.replace("last_updated: " + OLD, "last_updated: " + TODAY),
-      read(p, "Worklog.md")[:500])
-check("round trip: mirror is its starting bytes but for Last synced",
-      read(p, "worklog-titles.md") == M1.replace("Last synced: " + OLD, "Last synced: " + TODAY),
-      read(p, "worklog-titles.md")[:500])
-check("round trip: archive gained exactly the XLINE",
-      read(p, "Worklog-Archive.md") == A1.replace("last_updated: " + OLD, "last_updated: " + TODAY)
-      + "- [x] `chore` · scope `1` · %s (completed %s)\n" % (T13, TODAY))
 
-# --- round trip through a domain and mirror category that the add creates ---
 T14 = "Probe a new-domain round-trip item"
-p = stage(tempfile.mkdtemp(prefix="wl_add_round_new_"), worklog=W4, mirror=M4)
-r = add(p, T14, "chore", 1, "Other", "round trip context")
-check("round trip new domain: add rc=0", r.returncode == 0, r.stderr[-400:])
-check("round trip new domain: heading created", "### Other\n" in read(p, "Worklog.md"))
-r = run(p, T14)
-check("round trip new domain: complete rc=0", r.returncode == 0, r.stderr[-400:])
-check("round trip new domain: Worklog is its starting bytes but for last_updated",
-      read(p, "Worklog.md") == W4.replace("last_updated: " + OLD, "last_updated: " + TODAY),
-      read(p, "Worklog.md")[:500])
-check("round trip new domain: mirror is its starting bytes but for Last synced",
-      read(p, "worklog-titles.md") == M4.replace("Last synced: " + OLD, "Last synced: " + TODAY),
-      read(p, "worklog-titles.md")[:500])
-
-# --- the vault TODO dir comes from the lock substitutions, and refuses without them ---
-import importlib.util
 
 
-def test_proof():
-    """The whole worklog proof, in process: one case per check, reported in order."""
-    spec = importlib.util.spec_from_file_location("worklog_tool", str(TOOL))
-    tool = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(tool)
 
-    v = pathlib.Path(tempfile.mkdtemp(prefix="wl_vault_"))
+def test_exact_title_block_gone_xline_last_in_its_domain_both_dates_b(tmp_path):
+    p = stage(_dir(tmp_path, "wl_exact_"))
+    r = run(p, TARGET, "--ref", "0b820491e")
+    assert (r.returncode == 0), "exact title completes (rc=0)"
+    wl = read(p, "Worklog.md")
+    assert (TARGET_BLOCK not in wl), "exact: block gone"
+    assert ("Probe the runner retries" in wl), "exact: the next block survives"
+    assert ("last_updated: %s" % TODAY in wl), "exact: worklog last_updated bumped"
+    expected_wl = W1.replace(TARGET_BLOCK, "").replace("last_updated: " + OLD, "last_updated: " + TODAY)
+    assert (wl == expected_wl), "exact: every other worklog byte unchanged"
+    ar = read(p, "Worklog-Archive.md")
+    assert (ar == A1.replace(
+        "last_updated: " + OLD, "last_updated: " + TODAY) + XLINE + "\n"), "exact: XLINE is the last line of its domain section"
+    mi = read(p, "worklog-titles.md")
+    assert (MIRROR_LINE + "\n" not in mi), "exact: mirror line gone"
+    assert ("Last synced: %s" % TODAY in mi), "exact: mirror Last synced bumped"
+    assert ("## Active (1)" in mi), "exact: mirror Active count decremented"
+    expected_mi = (M1.replace("Last synced: " + OLD, "Last synced: " + TODAY)
+                   .replace(MIRROR_LINE + "\n", "").replace("## Active (2)", "## Active (1)"))
+    assert (mi == expected_mi), "exact: every other mirror byte unchanged"
+
+
+
+def test_every_optional_sub_bullet_leaves_with_the_block(tmp_path):
+    p = stage(_dir(tmp_path, "wl_opts_"), worklog=W3, mirror=M3)
+    r = run(p, "Run the probe models through a sibling transport")
+    wl = read(p, "Worklog.md")
+    assert (r.returncode == 0), "optional sub-bullets: completes (rc=0)"
+    assert (not any(s in wl for s in ("Plan doc: [[Probe-Transport]]",
+                                    "Quick-win: flagged 2026-10-20",
+                                    "When: after the owner runs `probe login`"))), "optional sub-bullets: no line of the block survives"
+    assert ("Probe the runner retries" in wl), "optional sub-bullets: next block survives"
+
+
+
+def test_last_item_of_a_domain_heading_goes_too_in_worklog_and_the_mi(tmp_path):
+    p = stage(_dir(tmp_path, "wl_last_"), worklog=W2, mirror=M2)
+    r = run(p, "Apply the board sweep", "--ref", "abc1234")
+    wl = read(p, "Worklog.md")
+    assert (r.returncode == 0), "last item: completes (rc=0)"
+    assert ("### Other" not in wl), "last item: worklog domain heading gone"
+    assert ("### Delta" in wl), "last item: other domain heading stays"
+    mi = read(p, "worklog-titles.md")
+    assert ("### Other" not in mi), "last item: mirror category heading gone"
+    assert ("### Delta" in mi), "last item: mirror ledger heading stays"
+    assert ("## Active (0)" in mi), "last item: mirror Active count decremented"
+    ar = read(p, "Worklog-Archive.md")
+    new_x = "- [x] `chore` · scope `2` · Apply the board sweep (completed %s, abc1234)" % TODAY
+    assert (ar == A1.replace("last_updated: " + OLD, "last_updated: " + TODAY)
+          + "\n## Other\n" + new_x + "\n"), "missing archive domain: new section appended"
+
+
+
+def test_archive_does_not_exist_create_it(tmp_path):
+    p = stage(_dir(tmp_path, "wl_noarch_"), archive=None)
+    r = run(p, TARGET, "--ref", "0b820491e", archive_name="new-archive.md")
+    assert (r.returncode == 0), "missing archive: completes (rc=0)"
+    ar = read(p, "new-archive.md") if (p / "new-archive.md").exists() else ""
+    assert (ar.startswith(
+        "---\ntitle: Worklog Archive\nstatus: archive\nlast_updated: %s\n---\n\n# Worklog Archive\n" % TODAY)), "missing archive: frontmatter and heading"
+    assert ("> Completed worklog items" in ar), "missing archive: opacity note"
+    assert ("## Alpha\n" + XLINE + "\n" in ar), "missing archive: domain section holds the XLINE"
+    assert (TARGET_BLOCK not in read(p, "Worklog.md")), "missing archive: worklog block gone"
+
+
+
+def test_ambiguous_exit_2_nothing_written(tmp_path):
+    p = stage(_dir(tmp_path, "wl_amb_"))
+    before = (read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md"))
+    r = run(p, "run")
+    assert (r.returncode == 2), "ambiguous: exit 2"
+    assert ("Probe the runner retries" in r.stdout and "Probe the queue repeat runs" in r.stdout), "ambiguous: candidates listed"
+    assert ((read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md")) == before), "ambiguous: no write"
+
+
+
+def test_no_match_exit_2_nothing_written(tmp_path):
+    p = stage(_dir(tmp_path, "wl_none_"))
+    before = (read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md"))
+    r = run(p, "zzz no such item")
+    assert (r.returncode == 2), "no match: exit 2"
+    assert ((read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md")) == before), "no match: no write"
+
+
+
+def test_crlf_files_stay_crlf(tmp_path):
+    p = stage(_dir(tmp_path, "wl_crlf_"),
+              worklog=W1.replace("\n", "\r\n"), archive=A1.replace("\n", "\r\n"),
+              mirror=M1.replace("\n", "\r\n"))
+    r = run(p, TARGET, "--ref", "0b820491e")
+    assert (r.returncode == 0), "crlf: completes (rc=0)"
+    for name in ("Worklog.md", "Worklog-Archive.md", "worklog-titles.md"):
+        b = (p / name).read_bytes()
+        check("crlf: %s has no bare LF" % name, b.count(b"\n") == b.count(b"\r\n"))
+    assert (TARGET_BLOCK.replace("\n", "\r\n").encode() not in (p / "Worklog.md").read_bytes()), "crlf: block gone"
+    assert (XLINE.encode() in (p / "Worklog-Archive.md").read_bytes()), "crlf: XLINE appended"
+
+
+
+def test_dry_run_writes_nothing_and_prints_the_plan(tmp_path):
+    p = stage(_dir(tmp_path, "wl_dry_"))
+    before = (read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md"))
+    r = run(p, TARGET, "--ref", "0b820491e", "--dry-run")
+    assert (r.returncode == 0), "dry run: rc=0"
+    assert ((read(p, "Worklog.md"), read(p, "Worklog-Archive.md"), read(p, "worklog-titles.md")) == before), "dry run: no write"
+    assert ("lines 12-15" in r.stdout and TARGET in r.stdout), "dry run: prints the block with its range"
+    assert (XLINE in r.stdout), "dry run: prints the XLINE"
+    assert ("## Alpha" in r.stdout), "dry run: prints the archive section"
+    assert (MIRROR_LINE in r.stdout), "dry run: prints the mirror line"
+
+
+
+def test_from_one_good_line_one_bad_line(tmp_path):
+    p = stage(_dir(tmp_path, "wl_from_"))
+    (p / "batch.jsonl").write_text(
+        json.dumps({"title": TARGET, "ref": "0b820491e"}) + "\n" +
+        json.dumps({"title": "zzz no such item", "ref": "deadbee"}) + "\n", encoding="utf-8")
+    r = run(p, "--from", str(p / "batch.jsonl"))
+    assert (r.returncode != 0), "--from: nonzero exit when a line misses"
+    assert ("completed:" in r.stdout and TARGET in r.stdout), "--from: completed line reported"
+    assert ("no-match:" in r.stdout), "--from: missed line reported"
+    assert (TARGET_BLOCK not in read(p, "Worklog.md")), "--from: the good item still completed"
+    assert ("zzz no such item" not in read(p, "Worklog-Archive.md")), "--from: the bad item wrote nothing"
+
+
+
+def test_active_add_into_an_existing_domain_top_of_the_section_both_d(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_active_"), worklog=W4, mirror=M4)
+    r = add(p, T1, "chore", 1, "Alpha", "probe context line")
+    assert (r.returncode == 0), "add active: rc=0"
+    wl = read(p, "Worklog.md")
+    expected_wl = (W4.replace("### Alpha\n", "### Alpha\n" + T1_BLOCK + "\n", 1)
+                   .replace("last_updated: " + OLD, "last_updated: " + TODAY))
+    assert (wl == expected_wl), "add active: block is the first block of its domain"
+    assert ("added %s" % TODAY in wl), "add active: item date is the add date"
+    assert (read(p, "Worklog-Archive.md") == A1), "add active: archive untouched"
+    mi = read(p, "worklog-titles.md")
+    expected_mi = (M4.replace("## Active (2)", "## Active (3)", 1)
+                   .replace("### Alpha\n", "### Alpha\n- chore · 1 · " + T1 + "\n", 1)
+                   .replace("Last synced: " + OLD, "Last synced: " + TODAY))
+    assert (mi == expected_mi), "add active: mirror line and count, every other byte unchanged"
+
+
+
+def test_every_optional_field(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_opts_"), worklog=W4, mirror=M4)
+    r = add(p, T2, "design", 4, "Alpha", "probe context for the plan",
+            "--where", "tools/probe.py", "--source", "session probe",
+            "--plan-doc", "Probe-Plan-Doc")
+    assert (r.returncode == 0), "add options: rc=0"
+    wl = read(p, "Worklog.md")
+    assert ("### Alpha\n" + T2_BLOCK in wl), "add options: block carries Context, Where, Source, Plan doc in order"
+    assert (T2_LINKED + "\n" in wl), "add options: plan doc joins Linked Docs"
+    assert ("- [[Existing-Doc]] — existing doc (Active: \"Some item\", added 2025-12-01)" in wl), "add options: Linked Docs keeps its existing entry"
+
+
+
+def test_when_after_lands_in_the_ledger_with_the_mirror_suffix(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_ledger_"), worklog=W4, mirror=M4)
+    r = add(p, T3, "chore", 2, "Delta", "probe context for the ledger",
+            "--when", "after the probe lands")
+    assert (r.returncode == 0), "add ledger: rc=0"
+    wl = read(p, "Worklog.md")
+    ledger = wl.split("## Ledger\n", 1)[1]
+    assert ("### Delta" in ledger and T3_BLOCK in ledger), "add ledger: block is the first block of the Ledger domain"
+    assert (T3 not in wl.split("## Active\n", 1)[1].split("## Ledger", 1)[0]), "add ledger: not in Active"
+    assert ("  - When: after the probe lands\n" in wl), "add ledger: When line records the condition"
+    mi = read(p, "worklog-titles.md")
+    assert (T3 in mi and "after: the probe lands" in mi), "add ledger: mirror suffix"
+    assert ("## Ledger (2)" in mi and "## Active (2)" in mi), "add ledger: ledger count bumped"
+    assert ("Last synced: %s" % TODAY in mi), "add ledger: Last synced bumped"
+
+
+
+def test_future_scope_existing_sub_heading(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_fs_"), worklog=W4, mirror=M4)
+    r = add(p, T4, "chore", 1, "Alpha", "a probe future item", "--when", "future")
+    assert (r.returncode == 0), "add future: rc=0"
+    wl = read(p, "Worklog.md")
+    assert ("> ### Alpha\n" + FS4 + "\n" in wl), "add future: FSLINE is the first line of its Future Scope sub-heading"
+    assert ("> [!example]- Future Scope (3 items)" in wl), "add future: item count bumped"
+    assert (T4 not in wl.split("## Future Scope")[0]), "add future: not in Active or Ledger"
+    assert (read(p, "worklog-titles.md") == M4), "add future: mirror untouched"
+    assert ("last_updated: %s" % TODAY in wl), "add future: last_updated bumped"
+
+
+
+def test_future_scope_sub_heading_missing_created_before_the_callout_(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_fs_new_"), worklog=W4, mirror=M4)
+    r = add(p, T5, "chore", 1, "Other", "another probe", "--when", "future")
+    assert (r.returncode == 0), "add future new domain: rc=0"
+    wl = read(p, "Worklog.md")
+    assert (">\n> ### Other\n" + FS5 + "\n\n## Linked Docs" in wl), "add future new domain: heading and line at the callout end"
+    assert ("> [!example]- Future Scope (3 items)" in wl), "add future new domain: count bumped"
+    assert (read(p, "worklog-titles.md") == M4), "add future new domain: mirror untouched"
+
+
+
+def test_active_domain_with_no_heading_yet(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_domain_"), worklog=W4, mirror=M4)
+    r = add(p, T6, "chore", 1, "Other", "probe context")
+    assert (r.returncode == 0), "add new domain: rc=0"
+    wl = read(p, "Worklog.md")
+    assert ("### Other\n" + T6_BLOCK + "\n## Ledger" in wl), "add new domain: heading ends ## Active, just before ## Ledger"
+    mi = read(p, "worklog-titles.md")
+    assert ("### Other\n- chore · 1 · " + T6 + "\n\n## Ledger" in mi), "add new domain: mirror category appended at the end of Active"
+    assert ("## Active (3)" in mi), "add new domain: mirror Active count bumped"
+
+
+
+def test_a_domain_is_accepted_in_the_table_s_short_form_and_the_headi(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_short_"), worklog=W4, mirror=M4)
+    r = add(p, T7, "chore", 1, "beta", "probe context")
+    assert (r.returncode == 0), "add short domain: rc=0"
+    wl = read(p, "Worklog.md")
+    assert ("### Beta / Gamma\n" + T7_BLOCK + "\n" in wl), "add short domain: long-form heading carries the block"
+    assert ("### beta" not in wl), "add short domain: no short-form heading written"
+    mi = read(p, "worklog-titles.md")
+    assert ("### Beta / Gamma\n- chore · 1 · " + T7 + "\n" in mi), "add short domain: mirror category uses the long form"
+
+
+
+def test_exact_duplicate_case_insensitive_exit_2_nothing_written(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_dup_"), worklog=W4, mirror=M4)
+    before = snapshot(p)
+    line_no = W4.splitlines().index(A_BLOCK.splitlines()[0]) + 1
+    for title in (A_TITLE, A_TITLE.lower()):
+        r = add(p, title, "chore", 1, "Alpha", "probe context")
+        check("add duplicate (%r): exit 2" % title[:20], r.returncode == 2, r.returncode)
+        check("add duplicate (%r): names the existing item and line" % title[:20],
+              "duplicate" in r.stdout and "line %d" % line_no in r.stdout, r.stdout)
+    assert (snapshot(p) == before), "add duplicate: no write"
+
+
+
+def test_near_duplicate_in_the_same_domain_blocked_then_allowed_by_di(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_near_"), worklog=W4, mirror=M4)
+    before = snapshot(p)
+    r = add(p, A_TITLE_NEAR, "fix", 2, "Alpha", "probe context")
+    assert (r.returncode == 2), "add near-duplicate: exit 2"
+    assert ("near-duplicate" in r.stdout and "--distinct" in r.stdout), "add near-duplicate: says near and offers --distinct"
+    assert (snapshot(p) == before), "add near-duplicate: no write"
+    r = add(p, A_TITLE_NEAR, "fix", 2, "Alpha", "probe context", "--distinct")
+    assert (r.returncode == 0 and "added:" in r.stdout), "add near-duplicate --distinct: added"
+    assert (A_TITLE_NEAR in read(p, "Worklog.md")), "add near-duplicate --distinct: item written"
+    p = stage(_dir(tmp_path, "wl_add_near_exact_"), worklog=W4, mirror=M4)
+    r = add(p, A_TITLE, "fix", 2, "Alpha", "probe context", "--distinct")
+    assert (r.returncode == 2), "add --distinct never overrides an exact title"
+
+
+
+def test_each_invalid_field_exit_2_names_the_allowed_values_writes_no(tmp_path):
+    invalid_case(tmp_path, "class", "Bad class probe", "bug", 1, "Alpha", needle="chore")
+    invalid_case(tmp_path, "scope", "Bad scope probe", "chore", 5, "Alpha", needle="1, 2, 3 or 4")
+    invalid_case(tmp_path, "domain", "Bad domain probe", "chore", 1, "Nonsense", needle="Alpha")
+    invalid_case(tmp_path, "plan doc", "No plan doc probe", "design", 4, "Alpha", needle="plan-doc")
+    invalid_case(tmp_path, "future plan doc", "Future plan doc probe", "design", 4, "Alpha",
+                 "--when", "future", "--plan-doc", "Probe-Plan-Doc", needle="Future Scope")
+
+
+
+def test_a_missing_or_table_less_canonical_owner_is_a_refusal_that_na(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_noskill_"), worklog=W4, mirror=M4)
+    before = snapshot(p)
+    absent = str(p / "absent-skill.md")
+    r = run_add(p, "Probe a missing owner", "--class", "chore", "--scope", "1", "--domain", "alpha",
+                "--context", "probe context", "--date", TODAY, skill=absent)
+    assert (r.returncode == 2), "missing canonical owner: exit 2"
+    assert (absent in r.stderr), "missing canonical owner: names the file"
+    assert (snapshot(p) == before), "missing canonical owner: no write"
+    p = stage(_dir(tmp_path, "wl_add_badskill_"), worklog=W4, mirror=M4)
+    (p / "SKILL.md").write_text("# Reference\n\n## Classification\n\nNo table here.\n", encoding="utf-8")
+    before = snapshot(p)
+    r = add(p, "Probe a table-less owner", "chore", 1, "alpha", "probe context")
+    assert (r.returncode == 2), "table-less canonical owner: exit 2"
+    assert ("SKILL.md" in r.stderr), "table-less canonical owner: names the file"
+    assert (snapshot(p) == before), "table-less canonical owner: no write"
+
+
+
+def test_crlf_files_stay_crlf_2(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_crlf_"),
+              worklog=W4.replace("\n", "\r\n"), mirror=M4.replace("\n", "\r\n"),
+              archive=A1.replace("\n", "\r\n"))
+    r = add(p, T1, "chore", 1, "Alpha", "probe context line")
+    assert (r.returncode == 0), "add crlf: rc=0"
+    for name in ("Worklog.md", "Worklog-Archive.md", "worklog-titles.md"):
+        b = (p / name).read_bytes()
+        check("add crlf: %s has no bare LF" % name, b.count(b"\n") == b.count(b"\r\n"))
+    assert (T1_BLOCK.replace("\n", "\r\n").encode() in (p / "Worklog.md").read_bytes()), "add crlf: block written with CRLF"
+
+
+
+def test_dry_run_writes_nothing_prints_block_section_and_mirror_line(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_dry_"), worklog=W4, mirror=M4)
+    before = snapshot(p)
+    r = add(p, T1, "chore", 1, "Alpha", "probe context line", "--dry-run")
+    assert (r.returncode == 0), "add dry run: rc=0"
+    assert (snapshot(p) == before), "add dry run: no write"
+    assert (all(("  " + line) in r.stdout for line in T1_BLOCK.splitlines())), "add dry run: prints the BLOCK"
+    assert ("section:" in r.stdout and "Active" in r.stdout and "Alpha" in r.stdout), "add dry run: prints the section and line"
+    assert ("mirror line:" in r.stdout and T1 in r.stdout), "add dry run: prints the mirror line"
+
+
+
+def test_from_one_good_line_one_bad_line_continues_nonzero_exit(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_from_"), worklog=W4, mirror=M4)
+    (p / "batch.jsonl").write_text(
+        json.dumps({"title": T12, "class": "chore", "scope": 1,
+                    "domain": "Alpha", "context": "batch context"}) + "\n" +
+        json.dumps({"title": "Bad batch row", "class": "bug", "scope": 1,
+                    "domain": "Alpha", "context": "batch context"}) + "\n",
+        encoding="utf-8")
+    r = run_add(p, "--from", str(p / "batch.jsonl"))
+    assert (r.returncode == 2), "add --from: nonzero exit when a line is invalid"
+    assert ("added: " + T12 in r.stdout), "add --from: added line reported"
+    assert ("invalid:" in r.stdout and "bug" in r.stdout), "add --from: invalid line reported"
+    assert (T12 in read(p, "Worklog.md")), "add --from: the good item was written"
+    assert ("Bad batch row" not in read(p, "Worklog.md")), "add --from: the bad item wrote nothing"
+
+
+
+def test_round_trip_add_then_complete_returns_both_files_except_dates(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_round_"))
+    r = add(p, T13, "chore", 1, "Alpha", "round trip context")
+    assert (r.returncode == 0), "round trip: add rc=0"
+    r = run(p, T13)
+    assert (r.returncode == 0), "round trip: complete rc=0"
+    assert (read(p, "Worklog.md") == W1.replace("last_updated: " + OLD, "last_updated: " + TODAY)), "round trip: Worklog is its starting bytes but for last_updated"
+    assert (read(p, "worklog-titles.md") == M1.replace("Last synced: " + OLD, "Last synced: " + TODAY)), "round trip: mirror is its starting bytes but for Last synced"
+    assert (read(p, "Worklog-Archive.md") == A1.replace("last_updated: " + OLD, "last_updated: " + TODAY)
+          + "- [x] `chore` · scope `1` · %s (completed %s)\n" % (T13, TODAY)), "round trip: archive gained exactly the XLINE"
+
+
+
+def test_round_trip_through_a_domain_and_mirror_category_that_the_add(tmp_path):
+    p = stage(_dir(tmp_path, "wl_add_round_new_"), worklog=W4, mirror=M4)
+    r = add(p, T14, "chore", 1, "Other", "round trip context")
+    assert (r.returncode == 0), "round trip new domain: add rc=0"
+    assert ("### Other\n" in read(p, "Worklog.md")), "round trip new domain: heading created"
+    r = run(p, T14)
+    assert (r.returncode == 0), "round trip new domain: complete rc=0"
+    assert (read(p, "Worklog.md") == W4.replace("last_updated: " + OLD, "last_updated: " + TODAY)), "round trip new domain: Worklog is its starting bytes but for last_updated"
+    assert (read(p, "worklog-titles.md") == M4.replace("Last synced: " + OLD, "Last synced: " + TODAY)), "round trip new domain: mirror is its starting bytes but for Last synced"
+
+
+
+def test_vault_todo_dir_and_project_domains_come_from_adaptation_json(tmp_path):
+    v = _dir(tmp_path, "wl_vault_")
     adaptation_json = v / "skills" / "project_subsystems" / "adaptation.json"
     adaptation_json.parent.mkdir(parents=True)
     adaptation_json.write_text(json.dumps({"vault_root": "/vault", "project_name": "Sample",
                                            "worklog_domains": [["Gameplay / Combat", "gameplay"]]}), encoding="utf-8")
-    check("vault dir: built from adaptation.json vault_root and project_name",
-          tool.vault_todo(v) == pathlib.Path("/vault/DevProjects/Sample/Claude/TODO"), tool.vault_todo(v))
-    check("project domains: read from adaptation.json worklog_domains as (long, short)",
-          tool.project_domains(v) == (("Gameplay / Combat", "gameplay"),), tool.project_domains(v))
-    v = pathlib.Path(tempfile.mkdtemp(prefix="wl_vault_none_"))
+    assert (tool.vault_todo(v) == pathlib.Path("/vault/DevProjects/Sample/Claude/TODO")), "vault dir: built from adaptation.json vault_root and project_name"
+    assert (tool.project_domains(v) == (("Gameplay / Combat", "gameplay"),)), "project domains: read from adaptation.json worklog_domains as (long, short)"
+    v = _dir(tmp_path, "wl_vault_none_")
     try:
         tool.vault_todo(v)
         raised = ""
     except ValueError as exc:
         raised = str(exc)
-    check("vault dir: an unset vault_root refuses and names adaptation.json",
-          "vault_root" in raised and "adaptation.json" in raised, raised)
-
-    # --- the tool's canonical reader agrees with the planted and the real SKILL tables ---
-    def table_slice(text, start_marker, end_marker):
-        body = text.split(start_marker, 1)[1].split(end_marker, 1)[0]
-        return [line for line in body.splitlines() if line.startswith("|")]
+    assert ("vault_root" in raised and "adaptation.json" in raised), "vault dir: an unset vault_root refuses and names adaptation.json"
 
 
-    def is_domain_row(row):
-        cell = row.split("|")[1].strip()
-        return cell not in ("", "Long form (Active section header)") and set(cell) - set("-: ")
 
 
-    # ================================ session record ================================
-    SID_A, SID_B = "probe-session-a", "probe-session-b"
-
+def test_add_without_source_records_the_runtime_session_on_the_block_(tmp_path):
+    d = str(tmp_path)
     # --- add without --source records the runtime session on the block, after Context ---
     T6 = "Probe the session record"
-    p = stage(tempfile.mkdtemp(prefix="wl_add_sess_"), worklog=W4, mirror=M4)
+    p = stage(_dir(tmp_path, "wl_add_sess_"), worklog=W4, mirror=M4)
     r = run_add(p, T6, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "session context",
                 "--date", TODAY, session=SID_A)
-    check("session: add rc=0", r.returncode == 0, r.stderr[-400:])
+    assert (r.returncode == 0), "session: add rc=0"
     wl = read(p, "Worklog.md")
-    check("session: block records the runtime session after Context",
-          ("### Alpha\n- [ ] **%s** — `chore` · scope `1` · added %s\n  - Context: session context\n"
-           "  - Session: %s\n") % (T6, TODAY, SID_A) in wl, wl[:900])
+    assert (("### Alpha\n- [ ] **%s** — `chore` · scope `1` · added %s\n  - Context: session context\n"
+                   "  - Session: %s\n") % (T6, TODAY, SID_A) in wl), "session: block records the runtime session after Context"
 
+
+def test_a_source_pr_ref_stays_and_the_session_is_recorded_on_its_own(tmp_path):
+    d = str(tmp_path)
     # --- a --source PR ref stays, and the session is recorded on its own line ---
     T7 = "Probe a source ref item"
-    p = stage(tempfile.mkdtemp(prefix="wl_add_sess_pr_"), worklog=W4, mirror=M4)
+    p = stage(_dir(tmp_path, "wl_add_sess_pr_"), worklog=W4, mirror=M4)
     r = run_add(p, T7, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "ctx",
                 "--date", TODAY, "--source", "PR #42", session=SID_A)
     wl = read(p, "Worklog.md")
-    check("session: PR ref source stays and the session is recorded too",
-          "  - Source: PR #42\n  - Session: %s\n" % SID_A in wl, wl[:900])
+    assert ("  - Source: PR #42\n  - Session: %s\n" % SID_A in wl), "session: PR ref source stays and the session is recorded too"
 
+
+def test_a_source_that_already_is_the_runtime_session_is_the_record_n(tmp_path):
+    d = str(tmp_path)
     # --- a --source that already is the runtime session is the record: no second line ---
     T8 = "Probe a session source item"
-    p = stage(tempfile.mkdtemp(prefix="wl_add_sess_src_"), worklog=W4, mirror=M4)
+    p = stage(_dir(tmp_path, "wl_add_sess_src_"), worklog=W4, mirror=M4)
     r = run_add(p, T8, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "ctx",
                 "--date", TODAY, "--source", SID_A, session=SID_A)
     wl = read(p, "Worklog.md")
-    check("session: source naming the runtime session adds no Session line",
-          "  - Source: %s\n" % SID_A in wl and "  - Session:" not in wl, wl[:900])
+    assert ("  - Source: %s\n" % SID_A in wl and "  - Session:" not in wl), "session: source naming the runtime session adds no Session line"
 
+
+def test_fsline_records_the_session_as_a_trailing_tag_parenthetical_u(tmp_path):
+    d = str(tmp_path)
     # --- FSLINE records the session as a trailing tag, parenthetical unchanged ---
     T9 = "Probe a future session item"
-    p = stage(tempfile.mkdtemp(prefix="wl_add_sess_fs_"), worklog=W4, mirror=M4)
+    p = stage(_dir(tmp_path, "wl_add_sess_fs_"), worklog=W4, mirror=M4)
     r = run_add(p, T9, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "a probe future item",
                 "--date", TODAY, "--when", "future", session=SID_A)
     wl = read(p, "Worklog.md")
-    check("session: FSLINE carries the session tag",
-          "> - `chore` · scope `1` · %s (added %s; a probe future item) · session %s\n" % (T9, TODAY, SID_A) in wl,
-          wl[-900:])
+    assert ("> - `chore` · scope `1` · %s (added %s; a probe future item) · session %s\n" % (T9, TODAY, SID_A) in wl), "session: FSLINE carries the session tag"
 
+
+def test_the_close_s_read_exactly_the_two_items_session_a_added_none_(tmp_path):
+    d = str(tmp_path)
     # --- the close's read: exactly the two items session A added, none of session B's or the untagged one ---
-    p = stage(tempfile.mkdtemp(prefix="wl_session_read_"), worklog=W4, mirror=M4)
+    p = stage(_dir(tmp_path, "wl_session_read_"), worklog=W4, mirror=M4)
     run_add(p, "Tighten the alpha seam", "--class", "chore", "--scope", "1", "--domain", "Alpha",
             "--context", "active context", "--date", TODAY, session=SID_A)
     run_add(p, "Plan epsilon migration", "--class", "design", "--scope", "2", "--domain", "Alpha",
@@ -807,21 +861,16 @@ def test_proof():
             "--context", "untagged context", "--date", TODAY)
     wl = read(p, "Worklog.md")
     got = tool.session_additions(wl, SID_A)
-    check("session read: lists exactly the two items session A added, in document order",
-          got == [("Tighten the alpha seam", "active context"), ("Plan epsilon migration", "future context")], got)
-    check("session read: session B's read lists only its own item",
-          tool.session_additions(wl, SID_B) == [("Rename the beta probe", "other context")])
+    assert (got == [("Tighten the alpha seam", "active context"), ("Plan epsilon migration", "future context")]), "session read: lists exactly the two items session A added, in document order"
+    assert (tool.session_additions(wl, SID_B) == [("Rename the beta probe", "other context")]), "session read: session B's read lists only its own item"
 
-    p = pathlib.Path(tempfile.mkdtemp(prefix="wl_canon_"))
+    p = _dir(tmp_path, "wl_canon_")
     (p / "SKILL.md").write_text(SKILL_PLANT, encoding="utf-8")
     planted_classes, planted_domains = tool.read_canonical(p / "SKILL.md")
-    check("planted canonical: project domains follow the table's rows",
-          tool.read_canonical(p / "SKILL.md", (("Gameplay / Combat", "gameplay"),))[1]
-          == PLANT_DOMAINS + (("Gameplay / Combat", "gameplay"),))
-    check("planted canonical: the tool reads the planted class rows",
-          planted_classes == PLANT_CLASSES, planted_classes)
-    check("planted canonical: the tool reads each planted long/short pair",
-          planted_domains == PLANT_DOMAINS, planted_domains)
+    assert (tool.read_canonical(p / "SKILL.md", (("Gameplay / Combat", "gameplay"),))[1]
+                  == PLANT_DOMAINS + (("Gameplay / Combat", "gameplay"),)), "planted canonical: project domains follow the table's rows"
+    assert (planted_classes == PLANT_CLASSES), "planted canonical: the tool reads the planted class rows"
+    assert (planted_domains == PLANT_DOMAINS), "planted canonical: the tool reads each planted long/short pair"
 
     skill_md = (REPO / ".claude" / "skills" / "worklog_reference" / "SKILL.md").read_text(encoding="utf-8")
     skill_classes = [row.split("|")[1].strip().strip("`")
@@ -834,14 +883,15 @@ def test_proof():
                     for row in table_slice(skill_md, "## Canonical domain list", "## Full Trigger Catalog")
                     if is_domain_row(row)]
     real_classes, real_domains = tool.read_canonical(REPO / ".claude" / "skills" / "worklog_reference" / "SKILL.md")
-    check("canonical classes: the tool list matches the skill",
-          list(real_classes) == skill_classes, (real_classes, skill_classes))
-    check("canonical domains: the tool list matches the skill",
-          [long for long, _ in real_domains] == skill_domains, (real_domains, skill_domains))
-    check("canonical domains: every short form matches its row",
-          [short for _, short in real_domains] == skill_shorts, (real_domains, skill_shorts))
+    assert (list(real_classes) == skill_classes), "canonical classes: the tool list matches the skill"
+    assert ([long for long, _ in real_domains] == skill_domains), "canonical domains: the tool list matches the skill"
+    assert ([short for _, short in real_domains] == skill_shorts), "canonical domains: every short form matches its row"
 
-    print("\n%d checks, %d failed" % (ran, len(failures)))
-    for f in failures:
-        print("FAILED:", f)
-    assert not failures, failures
+
+
+def test_cli_entry_point_runs_as_a_script(tmp_path):
+    p = stage(_dir(tmp_path, "cli"))
+    r = subprocess.run([sys.executable, str(TOOL), "complete", TARGET, "--ref", "0b820491e",
+                        "--worklog", str(p / "Worklog.md"), "--archive", str(p / "Worklog-Archive.md"),
+                        "--mirror", str(p / "worklog-titles.md")], capture_output=True, text=True, encoding="utf-8")
+    assert r.returncode == 0 and TARGET_BLOCK not in read(p, "Worklog.md"), r.stderr[-300:]

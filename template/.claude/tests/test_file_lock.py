@@ -1,17 +1,16 @@
-"""Re-runnable proof for hooks/_file_lock.py and its consumers.
+"""Proof for hooks/_file_lock.py and its consumers.
 
 The lock's liveness evidence is the holder's open handle, never the lock's age: a live
 holder that stalls keeps its lock, and a holder that exits (however it exits) releases it.
-
-    python3 .claude/tests/test_file_lock.py
 """
 import importlib.util
 import os
 import subprocess
 import sys
-import tempfile
 import time
 import types
+
+import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.normpath(os.path.join(HERE, "..", "hooks"))
@@ -83,185 +82,141 @@ def stop(process):
     process.communicate(timeout=10)
 
 
-def main():
-    cases = []
-    root = tempfile.mkdtemp(prefix="filelock_")
+@pytest.fixture(scope="module")
+def file_lock():
+    return load("_file_lock_under_test", FILE_LOCK_PATH)
 
+
+@pytest.fixture
+def holder_of():
+    """`start(module_path, kind, path, mode)` starts a holder process; every one still running is killed at teardown."""
+    started = []
+
+    def start(*args, **kwargs):
+        process, ready = start_holder(*args, **kwargs)
+        started.append(process)
+        return process, ready
+    yield start
+    for process in started:
+        stop(process)
+
+
+def test_an_old_lock_held_by_a_live_process_is_never_stolen_nor_the_owner_terminated(file_lock, holder_of, tmp_path):
+    live = str(tmp_path / "owner-probe.lock")
+    holder, ready = holder_of(FILE_LOCK_PATH, "file_lock", live)
+    ancient = time.time() - 3600
+    os.utime(live, (ancient, ancient))
+    with pytest.raises(TimeoutError):
+        with file_lock.locked(live, 0.3):
+            pass
+    assert ready and file_lock.acquire(live, 0.2) is None
+    assert holder.poll() is None, "probing a live lock owner terminated it"
+
+
+def test_a_killed_owners_lock_is_recovered_and_removed_on_release(file_lock, holder_of, tmp_path):
+    live = str(tmp_path / "owner-probe.lock")
+    holder, ready = holder_of(FILE_LOCK_PATH, "file_lock", live)
+    assert ready
+    holder.kill()
+    holder.wait(timeout=10)
+    with file_lock.locked(live, 5.0):
+        pass
+    assert not os.path.exists(live)
+
+
+def test_a_lock_abandoned_by_an_exited_owner_is_recovered(file_lock, tmp_path):
+    crashed = str(tmp_path / "crashed-owner.lock")
+    crash = subprocess.run([sys.executable, "-c", HOLDER, FILE_LOCK_PATH, "file_lock", crashed, "crash"],
+                           capture_output=True, text=True, timeout=60)
+    assert crash.stdout.strip() == "held" and os.path.exists(crashed)
+    with file_lock.locked(crashed, 5.0):
+        pass
+    assert not os.path.exists(crashed)
+
+
+def test_a_legacy_mkdir_lock_directory_is_removed_and_the_file_lock_acquired(file_lock, tmp_path):
+    legacy = str(tmp_path / "legacy-dir.lock")
+    os.mkdir(legacy)
+    handle = file_lock.acquire(legacy, 2.0)
     try:
-        file_lock = load("_file_lock_under_test", FILE_LOCK_PATH)
-    except Exception as exc:  # the module is the subject; its absence fails its cases
-        print("cannot load _file_lock: %s: %s" % (type(exc).__name__, exc))
-        file_lock = None
-
-    if file_lock is not None:
-        # A live holder whose lock is ancient keeps it; probing it never ends the holder.
-        live = os.path.join(root, "owner-probe.lock")
-        holder, ready = start_holder(FILE_LOCK_PATH, "file_lock", live)
-        try:
-            ancient = time.time() - 3600
-            os.utime(live, (ancient, ancient))
-            try:
-                with file_lock.locked(live, 0.3):
-                    live_rejected = False
-            except TimeoutError:
-                live_rejected = True
-            acquire_refused = file_lock.acquire(live, 0.2) is None
-            survived = holder.poll() is None
-            holder.kill()
-            holder.wait(timeout=10)
-            try:
-                with file_lock.locked(live, 5.0):
-                    killed_recovered = True
-            except TimeoutError:
-                killed_recovered = False
-        finally:
-            stop(holder)
-        cases.append(("an old lock held by a live process is never stolen",
-                      ready and live_rejected and acquire_refused))
-        cases.append(("probing a live lock owner never terminates it", survived))
-        cases.append(("a killed owner's lock is recovered and removed on release",
-                      killed_recovered and not os.path.exists(live)))
-
-        crashed = os.path.join(root, "crashed-owner.lock")
-        crash = subprocess.run(
-            [sys.executable, "-c", HOLDER, FILE_LOCK_PATH, "file_lock", crashed, "crash"],
-            capture_output=True, text=True, timeout=60,
-        )
-        crash_left_lock = crash.stdout.strip() == "held" and os.path.exists(crashed)
-        try:
-            with file_lock.locked(crashed, 5.0):
-                crashed_recovered = True
-        except TimeoutError:
-            crashed_recovered = False
-        cases.append(("a lock abandoned by an exited owner is recovered",
-                      crash_left_lock and crashed_recovered and not os.path.exists(crashed)))
-
-        legacy = os.path.join(root, "legacy-dir.lock")
-        os.mkdir(legacy)
-        handle = file_lock.acquire(legacy, 2.0)
-        legacy_taken = handle is not None and os.path.isfile(legacy)
-        if handle is not None:
-            file_lock.release(handle)
-        cases.append(("a legacy mkdir lock directory is removed and the file lock acquired",
-                      legacy_taken and not os.path.exists(legacy)))
-
-        if os.name != "nt":
-            # A contender that tries the lock once while another caller is still creating it must
-            # leave exactly one holder. The seam runs the contender at the creator's first flock.
-            creating = os.path.join(root, "creating.lock")
-            real_fcntl = file_lock.fcntl
-            contender = []
-
-            def flock_after_contender(fd, operation):
-                if not contender:
-                    contender.append(None)
-                    contender[0] = file_lock.acquire(creating, 0)
-                return real_fcntl.flock(fd, operation)
-
-            file_lock.fcntl = types.SimpleNamespace(
-                flock=flock_after_contender, LOCK_EX=real_fcntl.LOCK_EX, LOCK_NB=real_fcntl.LOCK_NB)
-            try:
-                creator = file_lock.acquire(creating, 0)
-            finally:
-                file_lock.fcntl = real_fcntl
-            holders = [h for h in (creator, contender[0] if contender else None) if h is not None]
-            one_holder = (len(holders) == 1 and os.path.exists(creating)
-                          and os.path.samestat(os.fstat(holders[0].fd), os.stat(creating)))
-            for held in holders:
-                file_lock.release(held)
-            cases.append(("a contender arriving while the lock is created leaves one holder, never none",
-                          one_holder and not os.path.exists(creating)))
-
-            unlinkable = os.path.join(root, "no-hard-links", "fat.lock")
-            real_link = os.link
-
-            def link_unsupported(*_args, **_kwargs):
-                raise PermissionError(1, "Operation not permitted")
-
-            os.link = link_unsupported
-            try:
-                in_place = file_lock.acquire(unlinkable, 1.0)
-                rival = file_lock.acquire(unlinkable, 0) if in_place is not None else None
-            finally:
-                os.link = real_link
-            in_place_held = in_place is not None and rival is None and os.path.isfile(unlinkable)
-            file_lock.release(in_place)
-            cases.append(("a filesystem without hard links still locks in place and leaves no staged file",
-                          in_place_held and os.listdir(os.path.dirname(unlinkable)) == []))
-
-        blocker = os.path.join(root, "not-a-directory")
-        with open(blocker, "w", encoding="ascii") as fh:
-            fh.write("x")
-        try:
-            impossible = file_lock.acquire(os.path.join(blocker, "child.lock"), 0.2)
-            total = impossible is None
-        except Exception:
-            total = False
-        cases.append(("acquire is total: an impossible lock path returns None", total))
-        file_lock.release(None)
-        cases.append(("release(None) is a no-op", True))
-
-        counter = os.path.join(root, "counter.txt")
-        with open(counter, "w", encoding="ascii") as fh:
-            fh.write("0")
-        workers = [subprocess.Popen([sys.executable, "-c", COUNTER, FILE_LOCK_PATH, counter, "25"],
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                   for _ in range(6)]
-        outcomes = [worker.communicate(timeout=120) + (worker.returncode,) for worker in workers]
-        with open(counter, encoding="ascii") as fh:
-            total_count = fh.read()
-        cases.append(("six processes incrementing under the lock lose no update",
-                      all(outcome[2] == 0 for outcome in outcomes) and total_count == "150"))
-    else:
-        for label in ("an old lock held by a live process is never stolen",
-                      "probing a live lock owner never terminates it",
-                      "a killed owner's lock is recovered and removed on release",
-                      "a lock abandoned by an exited owner is recovered",
-                      "a legacy mkdir lock directory is removed and the file lock acquired",
-                      "a contender arriving while the lock is created leaves one holder, never none",
-                      "a filesystem without hard links still locks in place and leaves no staged file",
-                      "acquire is total: an impossible lock path returns None",
-                      "release(None) is a no-op",
-                      "six processes incrementing under the lock lose no update"):
-            cases.append((label, False))
-
-    # _hook_state: a live holder stalled past the stale threshold keeps its lock. The threshold
-    # is injected short (0.05 s) so the stall is real without a 30 s sleep.
-    hook_state = load("_hook_state_under_test", HOOK_STATE_PATH)
-    stalled_state = os.path.join(root, "stalled", "state.json")
-    holder, ready = start_holder(HOOK_STATE_PATH, "hook_state", stalled_state)
-    try:
-        hook_state._LOCK_STALE_SECONDS = 0.05
-        time.sleep(0.3)
-        written, result = hook_state.update_json_locked(stalled_state, lambda state: "stole")
-        survived = holder.poll() is None
+        assert handle is not None and os.path.isfile(legacy)
     finally:
-        stop(holder)
-    cases.append(("_hook_state: a live holder stalled past the stale threshold keeps its lock",
-                  ready and written is False and result is None and survived
-                  and not os.path.exists(stalled_state)))
+        file_lock.release(handle)
+    assert not os.path.exists(legacy)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock seam is POSIX-only")
+def test_a_contender_arriving_while_the_lock_is_created_leaves_one_holder(file_lock, tmp_path, monkeypatch):
+    # The seam runs the contender at the creator's first flock.
+    creating = str(tmp_path / "creating.lock")
+    real_fcntl = file_lock.fcntl
+    contender = []
+
+    def flock_after_contender(fd, operation):
+        if not contender:
+            contender.append(None)
+            contender[0] = file_lock.acquire(creating, 0)
+        return real_fcntl.flock(fd, operation)
+
+    monkeypatch.setattr(file_lock, "fcntl", types.SimpleNamespace(
+        flock=flock_after_contender, LOCK_EX=real_fcntl.LOCK_EX, LOCK_NB=real_fcntl.LOCK_NB))
+    creator = file_lock.acquire(creating, 0)
+    monkeypatch.undo()
+    holders = [h for h in (creator, contender[0] if contender else None) if h is not None]
+    assert len(holders) == 1 and os.path.samestat(os.fstat(holders[0].fd), os.stat(creating))
+    for held in holders:
+        file_lock.release(held)
+    assert not os.path.exists(creating)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="hard-link refusal seam is POSIX-only")
+def test_a_filesystem_without_hard_links_still_locks_in_place(file_lock, tmp_path, monkeypatch):
+    unlinkable = str(tmp_path / "no-hard-links" / "fat.lock")
+
+    def link_unsupported(*_args, **_kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "link", link_unsupported)
+    in_place = file_lock.acquire(unlinkable, 1.0)
+    rival = file_lock.acquire(unlinkable, 0) if in_place is not None else None
+    monkeypatch.undo()
+    assert in_place is not None and rival is None and os.path.isfile(unlinkable)
+    file_lock.release(in_place)
+    assert os.listdir(os.path.dirname(unlinkable)) == [], "a staged file was left"
+
+
+def test_acquire_is_total_and_release_none_is_a_no_op(file_lock, tmp_path):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("x", encoding="ascii")
+    assert file_lock.acquire(str(blocker / "child.lock"), 0.2) is None
+    file_lock.release(None)
+
+
+def test_six_processes_incrementing_under_the_lock_lose_no_update(tmp_path):
+    counter = tmp_path / "counter.txt"
+    counter.write_text("0", encoding="ascii")
+    workers = [subprocess.Popen([sys.executable, "-c", COUNTER, FILE_LOCK_PATH, str(counter), "25"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(6)]
+    codes = [worker.communicate(timeout=120) and worker.returncode for worker in workers]
+    assert codes == [0] * 6 and counter.read_text(encoding="ascii") == "150"
+
+
+def test_hook_state_a_live_holder_stalled_for_a_while_keeps_its_lock(holder_of, tmp_path):
+    # Liveness is the holder's open handle, not the lock's age (the old stale threshold no longer exists).
+    hook_state = load("_hook_state_under_test", HOOK_STATE_PATH)
+    stalled_state = str(tmp_path / "stalled" / "state.json")
+    holder, ready = holder_of(HOOK_STATE_PATH, "hook_state", stalled_state)
+    time.sleep(0.3)
+    written, result = hook_state.update_json_locked(stalled_state, lambda state: "stole")
+    assert ready and written is False and result is None and holder.poll() is None
+    assert not os.path.exists(stalled_state)
+    stop(holder)
     written_after, _ = hook_state.update_json_locked(stalled_state, lambda state: "after")
-    cases.append(("_hook_state: the lock is recovered once the stalled holder is gone",
-                  written_after is True))
+    assert written_after is True, "the lock was not recovered once the stalled holder was gone"
 
+
+def test_hook_state_loaded_by_file_path_from_a_foreign_cwd_still_locks_and_writes(tmp_path):
     path_loaded = subprocess.run(
-        [sys.executable, "-c", PATH_LOADED_HOOK_STATE, HOOK_STATE_PATH,
-         os.path.join(root, "path-loaded", "state.json")],
-        capture_output=True, text=True, timeout=60, cwd=root,
-    )
-    cases.append(("_hook_state loaded by file path from a foreign cwd still locks and writes",
-                  path_loaded.returncode == 0 and path_loaded.stdout.strip() == "True ran"))
-
-    failures = [label for label, ok in cases if not ok]
-    for label, ok in cases:
-        print("%-4s %s" % ("ok" if ok else "FAIL", label))
-    print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    return 1 if failures else 0
-
-
-def test_proof():
-    assert main() == 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+        [sys.executable, "-c", PATH_LOADED_HOOK_STATE, HOOK_STATE_PATH, str(tmp_path / "path-loaded" / "state.json")],
+        capture_output=True, text=True, timeout=60, cwd=tmp_path)
+    assert path_loaded.returncode == 0 and path_loaded.stdout.strip() == "True ran"
