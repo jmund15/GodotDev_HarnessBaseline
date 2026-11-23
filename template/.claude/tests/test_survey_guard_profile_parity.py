@@ -50,3 +50,7 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def test_proof():
+    assert main() == 0
