@@ -6,7 +6,7 @@ Usage:
   session_digest.py --session <id>       the session with that id or a unique prefix, in this checkout or a worktree
   session_digest.py --match-file PATH    the session whose assistant wrote the text in PATH (a pasted message)
   session_digest.py --list N             the newest N transcripts, one line each
-  session_digest.py ... --full           write the whole session as Markdown to logs/ and print its path
+  session_digest.py ... --full           write the whole session as Markdown to .claude/scratch/ and print its path
   session_digest.py --workflow-dir DIR   one explore Workflow's journal as JSON (hash, lenses, claims, gaps)
 
 The packet is the resume packet: the task anchor, the owner's latest directive, the agent's own work (commits,
@@ -53,7 +53,7 @@ _SUBSTANTIVE_CONTROL_COMMANDS = frozenset({
 })
 _SUBSTANTIVE_ROUTING_COMMANDS = frozenset({"/effort"})
 _TASK_ANCHOR_WRAPPER_COMMANDS = frozenset({
-    "/overnight", "/session_end", "/commit_push", "/clean_push", "/create_pr", "/pr_ready",
+    "/overnight", "/close", "/commit_push", "/create_pr", "/pr_ready",
 })
 _SUBSTANTIVE_SLASH_RE = re.compile(r"/[\w:.-]+$")
 
@@ -188,10 +188,10 @@ def assistant_blocks(path: Path, min_len: int = 200):
                     yield text
 
 
-def list_sessions(pdir: Path, n: int) -> str:
-    """The newest N transcripts, one line each: prefix, last write, size, first real prompt."""
+def list_sessions(stores: list[Path], n: int) -> str:
+    """The newest N transcripts across `stores`, one line each: prefix, last write, size, first real prompt."""
     out = []
-    for path in _transcripts([pdir])[:n]:
+    for path in _transcripts(stores)[:n]:
         st = path.stat()
         when = datetime.fromtimestamp(st.st_mtime).strftime("%m-%d %H:%M")
         first = ""
@@ -1119,6 +1119,14 @@ def write_text_atomic(path: Path, text: str) -> None:
         raise
 
 
+def export_full(d: dict, path: Path, cwd: str) -> Path:
+    """Write the whole session under the checkout's scratch folder (pruned there, never in the tree)."""
+    export = Path(cwd) / ".claude" / "scratch" / f"session_digest_{path.stem[:8]}.full.md"
+    export.parent.mkdir(parents=True, exist_ok=True)
+    write_text_atomic(export, render_full(d, path, cwd) + "\n")
+    return export
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=cli_usage.usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)
     pick = ap.add_mutually_exclusive_group()
@@ -1145,7 +1153,7 @@ def main() -> None:
         return
     cwd = os.getcwd()
     if a.list is not None:
-        print(list_sessions(session_store(cwd), a.list))
+        print(list_sessions(project_dirs(cwd), a.list))
         return
     path = locate(cwd, a)
     d = digest(path, cwd)
