@@ -57,6 +57,9 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _shell_lex import lex  # noqa: E402
+
 SCRIPT_DIR_MARKER = "/.claude/scripts/"
 GUARDED_SUFFIXES = (".sh",)
 
@@ -94,7 +97,9 @@ def _parse_processes(stdout: str) -> dict:
         if not stripped:
             continue
         if "|" in stripped:                      # Windows: pid|ppid|cmdline
-            parts = stripped.split("|", 2)
+            pid_part, _, rest = stripped.partition("|")      # a process table row, not shell text
+            ppid_part, _, cmd_part = rest.partition("|")
+            parts = [pid_part, ppid_part, cmd_part] if rest and "|" in rest else []
         else:                                    # POSIX: pid ppid args...
             parts = stripped.split(None, 2)
         if len(parts) < 3:
@@ -143,11 +148,7 @@ def _program(token: str) -> str:
 
 
 def _split(cmd: str) -> list:
-    try:
-        import shlex
-        return shlex.split(cmd, posix=False)
-    except ValueError:
-        return cmd.split()
+    return [w.text for seg in lex(cmd) for w in seg.words]
 
 
 def _is_invocation(cmd: str, basename: str) -> bool:
