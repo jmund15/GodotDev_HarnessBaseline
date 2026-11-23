@@ -210,6 +210,12 @@ def test_former_rewrites_are_denied(command):
     assert '-uu' in hso['permissionDecisionReason'], hso['permissionDecisionReason']
 
 
+@pytest.mark.parametrize('command', ["stdbuf -oL grep -r foo .", "time -p grep -r foo .",
+                                     "bash <<'EOF'\ngrep -r foo .\nEOF"])
+def test_a_grep_behind_a_wrapper_option_or_in_a_shell_heredoc_is_denied(command):
+    assert hook_verdict(command, REPO).get('permissionDecision') == 'deny', command
+
+
 def test_deny_names_the_bounded_forms():
     reason = hook_verdict('grep -rn foo .', REPO)['permissionDecisionReason']
     assert 'Grep tool' in reason and 'head_limit' in reason

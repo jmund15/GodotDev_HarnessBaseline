@@ -84,6 +84,7 @@ def repo_with_head(tmp, label, trailer):
 @pytest.mark.parametrize("label,trailer,command,bridge,kind", [
     ("own HEAD", OWN, "git commit --amend --no-edit", "session_OWN", "allow"),
     ("peer HEAD", PEER, "git commit --amend --no-edit", "session_OWN", "deny"),
+    ("peer HEAD, --amend abbreviated", PEER, "git commit --amen --no-edit", "session_OWN", "deny"),
     ("owner HEAD, no trailer", "", "git commit --amend -m reworded", "session_OWN", "deny"),
     ("a new commit on a peer HEAD", PEER, "git commit -m next", "session_OWN", "allow"),
     ("own trailer unresolvable", OWN, "git commit --amend --no-edit", None, "deny"),

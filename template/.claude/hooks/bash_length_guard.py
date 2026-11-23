@@ -8,9 +8,6 @@ The rule's home is `CLAUDE.core.md` §Shell Discipline (Bash calls).
 Channel: hookSpecificOutput.permissionDecision.
 Proof: tests/test_bash_length_guard.py.
 """
-import json
-import sys
-
 LIMIT = 8191
 
 
@@ -29,17 +26,3 @@ def check(payload):
         return None
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                    "permissionDecisionReason": reason(len(command))}}
-
-
-def main():
-    try:
-        out = check(json.load(sys.stdin))
-    except Exception:
-        return 0
-    if out:
-        sys.stdout.write(json.dumps(out))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

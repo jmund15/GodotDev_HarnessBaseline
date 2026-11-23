@@ -2,7 +2,9 @@
 """Guard irreversible stops (class floor, T1): `_floor.py` runs `check(payload)` for Bash, PowerShell and
 TaskStop calls; a fault denies the call.
 
-Bash/PowerShell kills resolve each PID before acting and refuse harness-critical processes. A kill addressed
+Bash/PowerShell kills resolve each PID before acting and refuse harness-critical processes. Every stage and each body
+it runs is read through `_shell_lex`, and each kill's options as its tool reads them (`kill -s SIG -- <pid>...`,
+`taskkill /PID`, `-pid`, `//PID`, `killall --regexp`, `Stop-Process -n`, any order).A kill addressed
 by name or pattern (`pkill`, `killall`, `taskkill /IM` or /FI, `Stop-Process -Name` or -Id, `Get-Process <n> | Stop-Process`,
 `wmic process where ... delete`, a Win32_Process Terminate, and `kill $(pgrep ...)`, `pgrep ... | xargs kill` or
 `$(pidof ...)`) resolves to the live processes it would stop, read from the same process table the
@@ -65,19 +67,6 @@ SCRIPT_REF_RE = re.compile(r"[^\s\"'|;&<>()=*?\[\]]+\.(?:sh|py|ps1|js|cmd|bat)(?
 # The process-table read runs inside the hook's 20 s settings budget (HOOK_BUDGET_S below).
 TABLE_TIMEOUT_S = 10
 MAX_SCRIPT_BYTES = 512 * 1024
-SEGMENT_SPLIT_RE = re.compile(r"&&|\|\||[;|&\n(`]|\$\(")
-
-KILL_WORD = r"(?:^|[\s;&|(`])kill\s"
-# A quoted argument a shell-code reader runs is code; `_code_text` matches it unquoted. `body` is the program a
-# `-c` reader takes (`bash -lc '…'`, `pwsh -Command "…"`, `su root -c "…"`, `flock f -c`, `script -c`), `direct`
-# the first quoted argument of a reader that runs its arguments as a command (`eval "…"`, `watch -n 5 "…"`). The `-c`
-# readers are `_shell_lex._SHELL_WORDS`, so `shell_code` and this match agree on which heads are readers.
-SHELL_PROGRAM_RE = re.compile(
-    r"""(?:^|(?<=[\s;&|(`]))(?:\S*[/\\])?(?:""" + "|".join(sorted(_shell_lex._SHELL_WORDS)) + r""")(?:\.exe)?"""
-    r"""(?:\s+[^\s"';&|]+)*?\s+-[a-z]*c[a-z]*\s+(?P<body>"(?:\\.|[^"\\])*"|'[^']*')"""
-    r"""|(?:^|(?<=[\s;&|(`]))(?:eval|watch)(?:\s+[^\s"';&|]+)*?\s+(?P<direct>"(?:\\.|[^"\\])*"|'[^']*')""",
-    re.I | re.S)
-PID_RE = re.compile(r"(?:/PID|/pid|-PID)\s+(\d+)|" + KILL_WORD + r"+(?!-0\s)(?:-\w+\s+)?(\d+)\b")
 # settings.json gives this hook 20 s. Every PID lookup runs inside one budget under it; a lookup the
 # budget cannot afford resolves nothing, so the kill fails closed instead of the hook timing out open.
 HOOK_BUDGET_S = 15.0
@@ -157,64 +146,19 @@ def _local_path(token, cwd):
     return path if os.path.isabs(path) else os.path.join(cwd or os.getcwd(), path)
 
 
-def _shell_segments(command):
-    """Executing stages, with quoted separators preserved and substitutions visited separately."""
-    def scan(start, stop=None):
-        stages, substitutions, text, quote, depth = [], [], [], None, 0
-        i = start
-        while i < len(command):
-            char = command[i]
-            if char == "\\" and quote != "'" and i + 1 < len(command):
-                text.append(command[i:i + 2])
-                i += 2
-                continue
-            if stop == ")" and quote is None:
-                if char == "(":
-                    depth += 1
-                elif char == ")" and depth:
-                    depth -= 1
-                    text.append(char)
-                    i += 1
-                    continue
-            if char == stop and quote is None:
-                stages.append("".join(text))
-                return stages + substitutions, i + 1
-            if quote != "'" and (command.startswith("$(", i) or char == "`"):
-                backtick = char == "`"
-                nested, i = scan(i + (1 if backtick else 2), "`" if backtick else ")")
-                substitutions.extend(nested)
-                text.append("''")
-                continue
-            if char in ("'", '"'):
-                if quote == char:
-                    quote = None
-                elif quote is None:
-                    quote = char
-            boundary = SEGMENT_SPLIT_RE.match(command, i) if quote is None else None
-            # Parentheses in inline Python/PowerShell are calls, not shell stage boundaries.
-            if boundary and boundary.group() != "(":
-                if boundary.group() == "|":
-                    text.append("|")
-                stages.append("".join(text))
-                text = []
-                i = boundary.end()
-            else:
-                text.append(char)
-                i += 1
-        stages.append("".join(text))
-        return stages + substitutions, i
-
-    return [stage for stage in scan(0)[0] if stage.strip()]
+def _stages(command):
+    """(segment, words, previous segment's operator, body text) for every simple command `command` runs, its
+    substitutions and launcher bodies included (`_shell_lex.walk`)."""
+    for _kind, text, segments, _depth in _shell_lex.walk(command):
+        previous = ""
+        for seg in segments:
+            yield seg, [w.value for w in seg.words], previous, text
+            previous = seg.op
 
 
-def _run_refs(command):
-    """The script each executing stage runs: its first script reference. Later ones are arguments."""
-    refs = []
-    for segment in _shell_segments(command):
-        found = SCRIPT_REF_RE.findall(segment)
-        if found:
-            refs.append(found[0])
-    return refs
+def _run_ref(words):
+    """The script a stage runs: its first script reference. Later ones are arguments."""
+    return next((m.group(0) for m in map(SCRIPT_REF_RE.search, words) if m), None)
 
 
 def _read_script(token, cwd):
@@ -271,14 +215,19 @@ def taskstop_decision(transcript_path, tool_input):
 
 
 def pid_forms(cmd):
-    """[(pid, is_kill)]: `is_kill` marks the Git Bash `kill <pid>` form, whose number is an MSYS pid;
-    `/PID <pid>` (taskkill, Stop-Process) is a Windows pid."""
-    return [(m.group(1) or m.group(2), m.group(2) is not None) for m in PID_RE.finditer(cmd)
-            if m.group(1) or m.group(2)]
-
-
-def pids_in(cmd):
-    return [pid for pid, _ in pid_forms(cmd)]
+    """[(pid, is_kill)] for every pid a stage of `cmd` names to a kill: `is_kill` marks the Git Bash `kill <pid>`
+    form (every operand, after any signal option), whose number is an MSYS pid; a `/PID <pid>` switch (taskkill, in
+    any case, `-PID` and `//PID` included) is a Windows pid. A `kill` word anywhere in a stage counts (behind `xargs`,
+    `sudo`, `timeout`), a quoted mention never does."""
+    out = []
+    for _seg, words, _previous, _text in _stages(cmd):
+        for k, word in enumerate(words):
+            if _shell_lex.base(word) == "kill":
+                operands, sends = _kill_operands(words[k + 1:])
+                out += [(o.lstrip("-"), True) for o in operands if sends and o.lstrip("-").isdigit()]
+            elif re.fullmatch(r"(?:/{1,2}|-)pid", word, re.I) and k + 1 < len(words) and words[k + 1].isdigit():
+                out.append((words[k + 1], False))
+    return out
 
 
 def _now():
@@ -354,53 +303,69 @@ def commandline(pid, msys_first=False, deadline=None):
     return line                        # "" = resolved, and the process is gone; None = unresolvable
 
 
-NAME_KILL_PREFILTER_RE = re.compile(
-    r"pkill|pgrep|killall|pidof|taskkill|stop-process|spps|wmic|win32_process|xargs|\bgps\b|get-process", re.I)
-NAME_WRAPPERS = ("sudo", "env", "nohup", "xargs", "exec", "command", "time", "start", "call")
-NAME_BOUNDARY = (r"(?:^|(?<=[;&|(`\"'])|" + "|".join(r"(?<=\b%s\s)" % w for w in NAME_WRAPPERS)
-                 + r"|(?<=\s)(?:/c|-c|-lc|-Command|-ec)\s+|(?:^|(?<=\s))\w+=\S*\s+)\s*")
-NAME_VERB_RE = re.compile(
-    NAME_BOUNDARY + r"(?P<verb>pkill|pgrep|killall|pidof|taskkill|stop-process|spps|get-process|gps|wmic|xargs|kill)"
-    r"(?:\.exe)?(?=[\s\"']|$)", re.I)
+# Prefixes after which the next word is the program a stage runs, beyond `_shell_lex.command_index`'s wrappers.
+NAME_RUNNERS = ("xargs", "start", "call")
 NAME_EXTRA_READERS = frozenset(("echo", "printf", "man", "which", "type", "help"))
-PKILL_ARG_OPTS = frozenset("uUgGPstTFOdL")
-PKILL_ARG_LONG = frozenset((
-    "uid", "euid", "group", "pgroup", "parent", "session", "signal", "terminal", "ns", "nslist", "delimiter",
-    "pidfile", "runstates", "env", "cgroup"))
+PKILL_ARG_OPTS = "uUgGPstTFOdL"
+PKILL_ARG_LONG = ("uid", "euid", "group", "pgroup", "parent", "session", "signal", "terminal", "ns", "nslist",
+                  "delimiter", "pidfile", "runstates", "env", "cgroup", "older", "queue")
+PKILL_LONG = ("full", "exact", "ignore-case", "inverse", "list-name", "list-full", "count", "newest", "oldest", "echo",
+              "lightweight", "logpidfile", "require-handler")
+KILLALL_ARG_OPTS = "suoynZ"
+KILLALL_ARG_LONG = ("signal", "user", "older-than", "younger-than", "ns", "context")
+KILLALL_LONG = ("regexp", "exact", "ignore-case", "process-group", "interactive", "quiet", "verbose", "wait",
+                "version")
+_SIGNAL_WORD = re.compile(r"-(?:\d+|(?:SIG)?[A-Z]{2,7}\d*)")
 PS_NAME_FLAG_RE = re.compile(r"-n(?:a(?:m(?:e)?)?)?", re.I)
 WHERE_CLAUSE_RE = re.compile(
     r"(name|commandline|executablepath|caption|processid)\s*(=|like)\s*(?:'([^']*)'|\"([^\"]*)\"|([^\s)]+))", re.I)
 MAX_MATCH_LINES = 5
 
 
-def _kill_args(rest):
-    """Tokens of the text after a kill verb, quotes removed. They end at the first unquoted `; | & newline` or at a
-    quote that never closes: the end of a `bash -c "..."` or `powershell -Command "..."` payload."""
-    tokens, buf, i, has = [], [], 0, False
-    while i < len(rest):
-        ch = rest[i]
-        if ch == "\\" and i + 1 < len(rest) and rest[i + 1] in "\"'":
+def _verbs(words):
+    """(verb, its arguments) at each command position of one stage: its program after assignments and wrapper prefixes
+    (`_shell_lex.command_index`, `sudo` included), and the program each runner (`xargs`, `start`, `call`) runs. A
+    runner's arguments are its own options."""
+    out, k = [], 0
+    while k < len(words):
+        k += _shell_lex.command_index(words[k:], through=("sudo",))
+        if k >= len(words):
             break
-        if ch in "\"'":
-            end = rest.find(ch, i + 1)
-            if end < 0:
-                break
-            buf.append(rest[i + 1:end])
-            has = True
-            i = end + 1
-            continue
-        if ch in ";|&\n\r":
+        verb = _shell_lex.base(words[k])
+        if verb not in NAME_RUNNERS:
+            out.append((verb, words[k + 1:]))
             break
-        if ch.isspace():
-            if buf or has:
-                tokens.append("".join(buf))
-            buf, has = [], False
-        else:
-            buf.append(ch)
+        j = k + 1
+        while j < len(words) and words[j][:1] in ("-", "/") and len(words[j]) > 1:
+            j += 2 if words[j] in _shell_lex.XARGS_VALUES else 1
+        out.append((verb, words[k + 1:j]))
+        k = j
+    return out
+
+
+def _kill_operands(args):
+    """(operands, sends a signal) of `kill <args>`: `-s SIG`, `-n NUM`, `--signal SIG`, `-SIG`, `-NUM`, `--`, and
+    `-l`/`-L` (a listing, no kill). Signal 0 probes and sends nothing. After the first operand a `-N` is a process
+    group, read as its number."""
+    operands, signal, i = [], None, 0
+    while i < len(args):
+        a = args[i]
         i += 1
-    if buf or has:
-        tokens.append("".join(buf))
-    return tokens
+        if a == "--":
+            operands += args[i:]
+            break
+        if operands or not a.startswith("-") or a == "-":
+            operands.append(a)
+        elif a in ("-l", "-L", "--list", "--table"):
+            return [], False
+        elif a in ("-s", "-n", "--signal", "-q", "--queue", "--timeout"):
+            signal = (args[i] if i < len(args) else "") if a in ("-s", "-n", "--signal") else signal
+            i += 1
+        elif a.startswith("--signal="):
+            signal = a.split("=", 1)[1]
+        else:
+            signal = a[1:]
+    return operands, (signal or "").upper().removeprefix("SIG") != "0"
 
 
 def _bare(name):
@@ -427,35 +392,11 @@ def _pid_in(pids):
 def _pkill_selector(verb, args):
     """(label, predicate) for pkill/pgrep options, predicate None when the pattern is not a regex. Filters on user,
     group or parent are ignored, which only widens the match."""
-    full = exact = icase = invert = False
-    positional, i = [], 0
-    while i < len(args):
-        tok = args[i]
-        i += 1
-        if tok == "--":
-            positional.extend(args[i:])
-            break
-        if tok.startswith("--"):
-            flag = tok[2:].split("=")[0]
-            full |= flag == "full"
-            exact |= flag == "exact"
-            icase |= flag == "ignore-case"
-            invert |= flag == "inverse"
-            if "=" not in tok and flag in PKILL_ARG_LONG:
-                i += 1
-        elif tok.startswith("-") and len(tok) > 1:
-            if re.fullmatch(r"-(?:\d+|(?:SIG)?[A-Z]{2,7}\d*)", tok):
-                continue
-            letters = tok[1:]
-            full |= "f" in letters
-            exact |= "x" in letters
-            icase |= "i" in letters
-            invert |= "v" in letters
-            if letters[-1] in PKILL_ARG_OPTS:
-                i += 1
-        else:
-            positional.append(tok)
-    pattern = positional[0] if positional else ""
+    parsed = _shell_lex.options([a for a in args if not _SIGNAL_WORD.fullmatch(a)], short_values=PKILL_ARG_OPTS,
+                                long=PKILL_LONG, long_values=PKILL_ARG_LONG)
+    full, exact = bool(parsed.flags & {"f", "full"}), bool(parsed.flags & {"x", "exact"})
+    icase, invert = bool(parsed.flags & {"i", "ignore-case"}), bool(parsed.flags & {"v", "inverse"})
+    pattern = parsed.operands[0] if parsed.operands else ""
     label = "%s %s%s" % (verb, "-f " if full else "", pattern or "(no pattern)")
     try:
         rx = re.compile("^(?:%s)$" % pattern if exact else pattern, re.I if icase else 0)
@@ -472,16 +413,9 @@ def _pkill_selector(verb, args):
 
 
 def _killall_selector(args):
-    regexp, names, i = False, [], 0
-    while i < len(args):
-        tok = args[i]
-        i += 1
-        if tok.startswith("-") and len(tok) > 1 and not tok.startswith("--"):
-            regexp |= "r" in tok[1:]
-            if tok[-1] in "su":
-                i += 1
-        elif not tok.startswith("-"):
-            names.append(tok)
+    parsed = _shell_lex.options([a for a in args if not _SIGNAL_WORD.fullmatch(a)], short_values=KILLALL_ARG_OPTS,
+                                long=KILLALL_LONG, long_values=KILLALL_ARG_LONG)
+    regexp, names = bool(parsed.flags & {"r", "regexp"}), parsed.operands
     label = "killall %s" % (" ".join(names) or "(no name)")
     if not names:
         return label, None
@@ -519,10 +453,16 @@ def _where_selector(label, text):
     return label, lambda row: combine(p(row) for p in preds)
 
 
+def _taskkill_switch(word):
+    """A taskkill switch name, lowercase (`/IM`, `//IM` from Git Bash, `-im`), or ''."""
+    m = re.fullmatch(r"(?:/{1,2}|-)(\w+)", word)
+    return m.group(1).lower() if m else ""
+
+
 def _taskkill_selectors(args):
     out, i = [], 0
     while i < len(args):
-        flag = args[i].lstrip("/").lower() if args[i].startswith("/") else ""
+        flag = _taskkill_switch(args[i])
         value = args[i + 1] if i + 1 < len(args) else ""
         if flag == "im":
             out.append(("taskkill /IM %s" % value, _name_glob([value])))
@@ -549,15 +489,17 @@ def _stop_process_selectors(args, producer_names):
         tok = args[i]
         i += 1
         low = tok.lower()
-        if PS_NAME_FLAG_RE.fullmatch(low):
-            names += [n for n in (args[i] if i < len(args) else "").split(",") if n]
-            i += 1
-        elif low == "-id":
-            ids += [n for n in (args[i] if i < len(args) else "").split(",") if n]
-            i += 1
-        elif re.fullmatch(r"-in\w*", low):
+        value = low.split(":", 1)[1] if ":" in low else None
+        if _shell_lex.ps_param(tok, "name") or _shell_lex.ps_param(tok, "processname", 2):
+            names += [n for n in (tok.split(":", 1)[1] if value is not None else args[i] if i < len(args) else "")
+                      .split(",") if n]
+            i += value is None
+        elif _shell_lex.ps_param(tok, "id", 2):
+            ids += [n for n in (value if value is not None else args[i] if i < len(args) else "").split(",") if n]
+            i += value is None
+        elif _shell_lex.ps_param(tok, "inputobject", 2):
             opaque = True
-            i += 1
+            i += value is None
         elif tok.startswith("-"):
             continue
         elif tok.isdigit():
@@ -580,12 +522,12 @@ def _stop_process_selectors(args, producer_names):
     return out
 
 
-def _get_process_names(piece):
-    """Names a bare `Get-Process ...` pipeline head selects, or None when the piece is anything else."""
-    m = NAME_VERB_RE.search(piece)
-    if not m or m.group("verb").lower() not in ("get-process", "gps"):
+def _get_process_names(words):
+    """Names a bare `Get-Process ...` pipeline head selects, or None when the stage is anything else."""
+    verbs = _verbs(words)
+    if not verbs or verbs[0][0] not in ("get-process", "gps"):
         return None
-    args, names, i = _kill_args(piece[m.end():]), [], 0
+    args, names, i = verbs[0][1], [], 0
     while i < len(args):
         tok = args[i]
         i += 1
@@ -600,24 +542,34 @@ def _get_process_names(piece):
     return [n for n in names if n]
 
 
+def _producer(n, segments):
+    """Names the one `Get-Process` stage piped into stage `n` selects, or None (no single readable producer)."""
+    chain, j = [], n - 1
+    while j >= 0 and segments[j].op == "|":
+        chain.insert(0, segments[j])
+        j -= 1
+    return _get_process_names([w.value for w in chain[0].words]) if len(chain) == 1 else None
+
+
 def _name_selectors(cmd):
     """[(label, predicate-or-None)] for every name- or pattern-addressed kill in the executing stages of `cmd`.
     None marks a form whose target set cannot be resolved."""
     readers = READ_ONLY_VERBS | NAME_EXTRA_READERS
-    stages = [s for s in _shell_segments(cmd) if _segment_verb(s) not in readers
-              and not (_segment_verb(s) in ("python", "python3", "py") and re.search(r"(?:^|[\s/\\\"'])reap\.py\b", s))]
-    verbs = [m.group("verb").lower() for s in stages for m in NAME_VERB_RE.finditer(s)]
-    kills = any(v in ("kill", "taskkill", "stop-process", "spps") for v in verbs) or any(
-        re.search(r"\bxargs\b[^|;&]*\b(?:kill|taskkill)\b", s, re.I) for s in stages)
+    stages = []
+    for _kind, text, segments, _depth in _shell_lex.walk(cmd):
+        for n, seg in enumerate(segments):
+            words = [w.value for w in seg.words]
+            verb = _segment_verb(words)
+            if not words or verb in readers or (verb in ("python", "python3", "py")
+                                                and any(_shell_lex.base(w) == "reap.py" for w in words)):
+                continue
+            stages.append((n, segments, words, _verbs(words), text[seg.start:seg.end]))
+    verbs = [v for stage in stages for v, _args in stage[3]]
+    kills = any(v in ("kill", "taskkill", "stop-process", "spps") for v in verbs)
     out = []
-    for n, stage in enumerate(stages):
-        piped = n > 0 and stages[n - 1].rstrip().endswith("|")
-        hits = list(NAME_VERB_RE.finditer(stage))
-        for k, m in enumerate(hits):
-            verb = m.group("verb").lower()
-            rest = stage[m.end():hits[k + 1].start() if k + 1 < len(hits) else len(stage)]
-            args = _kill_args(rest)
-            head = stage[:m.start()]
+    for n, segments, words, chain, _raw in stages:
+        piped = n > 0 and segments[n - 1].op == "|"
+        for k, (verb, args) in enumerate(chain):
             if verb in ("pkill", "pgrep"):
                 if verb == "pkill" or kills:
                     out.append(_pkill_selector(verb, args))
@@ -628,85 +580,62 @@ def _name_selectors(cmd):
                     out.append(("pidof %s" % " ".join(args), _name_is(*args)))
             elif verb == "taskkill":
                 out.extend(_taskkill_selectors(args))
-            elif verb in ("stop-process", "spps") or (verb == "kill" and not any(a.isdigit() for a in args)
-                                                      and (piped or re.search(r"\|\s*$", head))):
-                if re.search(r"\|\s*$", head):
-                    pieces = [p for p in head.rstrip().rstrip("|").split("|") if p.strip()]
-                    producer = _get_process_names(pieces[0]) if len(pieces) == 1 else None
-                elif piped:
-                    chain, j = [], n - 1
-                    while j >= 0 and stages[j].rstrip().endswith("|"):
-                        chain.insert(0, stages[j].rstrip()[:-1])
-                        j -= 1
-                    producer = _get_process_names(chain[0]) if len(chain) == 1 else None
-                else:
-                    producer = None
-                out.extend(_stop_process_selectors(args, producer))
+            elif verb in ("stop-process", "spps") or (verb == "kill" and piped and not any(a.isdigit() for a in args)):
+                out.extend(_stop_process_selectors(args, _producer(n, segments) if piped else None))
             elif verb == "wmic":
+                rest = " ".join(args)
                 w = re.search(r"\bprocess\b\s+where\b(?P<cond>.*?)\b(?:delete|call\s+terminate)\b", rest, re.I | re.S)
                 if w:
                     out.append(_where_selector("wmic process where%s" % w.group("cond").rstrip(), w.group("cond")))
                 elif re.search(r"\bprocess\b.*\b(?:delete|call\s+terminate)\b", rest, re.I | re.S):
                     out.append(("wmic process with no condition", None))
-            elif verb == "xargs" and not _quoted_at(stage, m.start("verb")):
-                if re.match(r"(?:\s+-\S+(?:\s+\d+)?)*\s+(?:kill|taskkill)(?:\.exe)?\b", stage[m.end():], re.I) \
-                        and not any(v in ("pkill", "pgrep") for v in verbs):
-                    out.append(("xargs kill fed by a pipeline", None))
-    joined = " ".join(stages)
+            elif verb == "xargs" and k + 1 < len(chain) and chain[k + 1][0] in ("kill", "taskkill") \
+                    and not any(v in ("pkill", "pgrep") for v in verbs):
+                out.append(("xargs kill fed by a pipeline", None))
+    joined = " ".join(raw for *_rest, raw in stages)
     if re.search(r"win32_process", joined, re.I) and re.search(
             r"\bTerminate\b|Remove-(?:Cim|Wmi)(?:Instance|Object)", joined, re.I):
-        f = re.search(r"-(?:Filter|Query)\s+(?:\"([^\"]*)\"|'([^']*)')", joined, re.I)
-        if f and not re.search(r"where-object|\|\s*\?|\|\s*where\b", joined, re.I):
-            out.append(_where_selector("Win32_Process Terminate", f.group(1) or f.group(2)))
+        filters = [words[k + 1] for _n, _s, words, _c, _r in stages for k in range(len(words) - 1)
+                   if _shell_lex.ps_param(words[k], "filter", 2) or _shell_lex.ps_param(words[k], "query", 2)]
+        piped_where = any(v in ("where-object", "where", "?") for v in verbs)
+        if filters and not piped_where:
+            out.append(_where_selector("Win32_Process Terminate", filters[0]))
         else:
             out.append(("Win32_Process Terminate with no readable filter", None))
     return out
-
-
-def _quoted_at(text, pos):
-    """True when `pos` in `text` lies inside a quoted span: a mention, never a stage verb. A `-c`/`-Command`/`eval`
-    body is code, and `_code_text` already appends it unquoted."""
-    quote, i = None, 0
-    while i < pos:
-        ch = text[i]
-        if ch == "\\" and quote != "'":
-            i += 2
-            continue
-        if ch in "'\"":
-            quote = None if quote == ch else (ch if quote is None else quote)
-        i += 1
-    return quote is not None
 
 
 def _unnamed_pid_kills(cmd):
     """Labels of the kills whose pids the call does not name (K-XA, owner 2026-11-23): a `kill`, `taskkill /PID` or
     `Stop-Process -Id` operand read from a variable or a substitution. `$!` (the call's own background job), a
     `kill -0` probe and a pgrep/pidof substitution (resolved by name in `_name_selectors`) are named."""
-    resolved = re.search(r"(?:\$\(|`)\s*(?:pgrep|pidof)\b", cmd)
     out = []
-    for stage in _shell_segments(cmd):
-        if _segment_verb(stage) in READ_ONLY_VERBS | NAME_EXTRA_READERS:
+    for _seg, words, _previous, _text in _stages(cmd):
+        if _segment_verb(words) in READ_ONLY_VERBS | NAME_EXTRA_READERS:
             continue
-        hits = list(NAME_VERB_RE.finditer(stage))
-        for k, m in enumerate(hits):
-            verb = m.group("verb").lower()
-            if _quoted_at(stage, m.start("verb")):
-                continue
-            args = _kill_args(stage[m.end():hits[k + 1].start() if k + 1 < len(hits) else len(stage)])
+        for verb, args in _verbs(words):
             if verb == "kill":
-                if "-0" in args:
+                operands, sends = _kill_operands(args)
+                if not sends:
                     continue
-                operands = [a for a in args if not a.startswith("-")]
             elif verb == "taskkill":
-                operands = [args[i + 1] for i, a in enumerate(args[:-1]) if a.lower() == "/pid"]
+                operands = [args[i + 1] for i, a in enumerate(args[:-1]) if _taskkill_switch(a) == "pid"]
             elif verb in ("stop-process", "spps"):
-                operands = [args[i + 1] for i, a in enumerate(args[:-1]) if a.lower() == "-id"]
+                operands = [args[i + 1] for i, a in enumerate(args[:-1]) if _shell_lex.ps_param(a, "id", 2)]
             else:
                 continue
-            if any((a.startswith("$") and a != "$!") or a.startswith("`") or (a == "" and not resolved)
-                   for a in operands):
+            if any(_unnamed(a) for a in operands):
                 out.append("%s %s" % (verb, " ".join(args)))
     return out
+
+
+def _unnamed(operand):
+    """True when a pid operand is read from a variable or a substitution, other than `$!` (the call's own job) and a
+    pgrep/pidof substitution (resolved by name in `_name_selectors`)."""
+    if operand == "$!" or not operand.startswith(("$", "`")):
+        return False
+    body = operand[2:] if operand.startswith("$(") else operand[1:] if operand.startswith("`") else ""
+    return not re.match(r"\s*(?:pgrep|pidof)\b", body)
 
 
 def _protected_reason(row):
@@ -718,8 +647,6 @@ def _protected_reason(row):
 
 
 def _name_kill_problems(cmd):
-    if not NAME_KILL_PREFILTER_RE.search(cmd):
-        return []
     selectors = _name_selectors(cmd)
     problems = ["  `%s`: the target set cannot be resolved. A kill is irreversible and an unresolved "
                 "pattern is an unread target." % label for label, pred in selectors if pred is None]
@@ -742,8 +669,6 @@ def _name_kill_problems(cmd):
 
 
 def _pid_problems(cmd, env):
-    if "taskkill" not in cmd and not re.search(KILL_WORD, cmd):
-        return []
     allowed = {p.strip() for p in (env.get("HARNESS_ALLOW_KILL") or "").replace(",", " ").split() if p}
     problems = []
     deadline = _now() + _git_run.remaining(HOOK_BUDGET_S)
@@ -766,32 +691,7 @@ def _pid_problems(cmd, env):
     return problems
 
 
-def _code_text(cmd):
-    """`cmd` with each heredoc body and inline program blanked unless its reader is a shell, plus each quoted
-    argument a shell-code reader runs (SHELL_PROGRAM_RE) unquoted on its own line. A kill a python program holds is
-    data, a kill `bash -c '…'` or `eval "…"` runs is code, and a kill only named inside a quoted argument
-    (`echo "kill 1"`) is a mention. A shelled-out kill inside an interpreter program (`os.system`) is out of this
-    guard's reach, as `os.kill` always was. A reader this cannot parse leaves the text whole. Each reader's program
-    is taken from `cmd` when its head survives in the blanked text: `shell_code` reads the word before `-c` as the
-    program, so it blanks `su root -c "…"`, while a reader inside a data heredoc has no surviving head."""
-    code = cmd
-    if "<<" in cmd or re.search(r"\s-[cep]\s", cmd):
-        try:
-            code = _shell_lex.shell_code(cmd)
-        except Exception:
-            code = cmd
-
-    def programs(text):
-        for m in SHELL_PROGRAM_RE.finditer(text):
-            group = "body" if m.group("body") is not None else "direct"
-            yield m.group(0)[:m.start(group) - m.start()], m.group(group)[1:-1]
-
-    heads = {head for head, _ in programs(code)}
-    return "\n".join([code] + [body for head, body in programs(cmd) if head in heads])
-
-
 def verdict(cmd, env):
-    cmd = _code_text(cmd)
     pid_problems = _pid_problems(cmd, env)
     name_problems = _name_kill_problems(cmd) + [
         "  `%s`: the call does not name the pids it stops, so they cannot be read before it acts." % label
@@ -811,23 +711,25 @@ def verdict(cmd, env):
 # Closing terminal windows by handle, title or host process. Every Windows Terminal window belongs to
 # one WindowsTerminal.exe, and a title follows the foreground command, so a `python.exe` title is a
 # live session as often as a dead launch-error window.
+# The text is any language (a scratch .py or .ps1 the call runs), so this stays a text match; its switch spellings are
+# every form taskkill (`/IM`, `//IM`, `-im`) and Stop-Process (`-Name` by any prefix, `-ProcessName`) accept.
 WINDOW_CLOSE_RE = re.compile(
     r"CloseMainWindow|\bWM_CLOSE\b|\bSC_CLOSE\b|0xF060"
     r"|\b(?:Post|Send)Message\w*\s*\([^)]*0x(?:0*10|112)\b"
-    r"|taskkill[^\n;|]*?/IM\s+['\"]?(?:WindowsTerminal|wt|OpenConsole|conhost)\b"
-    r"|Stop-Process[^\n;|]*?-Name\s+['\"]?(?:WindowsTerminal|wt|OpenConsole|conhost)\b"
+    r"|taskkill[^\n;|]*?(?:/{1,2}|-)IM[\s:]+['\"]?(?:WindowsTerminal|wt|OpenConsole|conhost)\b"
+    r"|Stop-Process[^\n;|]*?-(?:n(?:a(?:m(?:e)?)?)?|processname)[\s:]+['\"]?(?:WindowsTerminal|wt|OpenConsole|conhost)\b"
     r"|(?:WindowsTerminal|OpenConsole|conhost)\b[^\n]*\|\s*Stop-Process", re.I)
 
 
-# Reader arguments are data; _shell_segments visits their executing substitutions separately.
+# Reader arguments are data; `_stages` visits their executing substitutions separately.
 READ_ONLY_VERBS = frozenset((
     "grep", "egrep", "fgrep", "rg", "cat", "head", "tail", "less", "more", "wc", "ls", "stat", "file", "diff",
     "select-string", "get-content", "gc"))
 
 
-def _segment_verb(segment):
-    words = [w for w in segment.split() if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
-    return words[0].strip("\"'").replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe") if words else ""
+def _segment_verb(words):
+    words = [w for w in words if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
+    return _shell_lex.base(words[0]) if words else ""
 
 
 def window_close_verdict(cmd, cwd=None):
@@ -836,15 +738,17 @@ def window_close_verdict(cmd, cwd=None):
     Quoted reader arguments are data; substitutions and every non-reader stage are inspected.
     Proof and hook bodies outside `.claude/scratch/` are not scanned.
     """
-    stages = [segment for segment in _shell_segments(cmd)
-              if _segment_verb(segment) not in READ_ONLY_VERBS]
-    texts = ["\n".join(stages)]
-    for segment in stages:
-        for token in _run_refs(segment):
-            scratch = "/.claude/scratch/" in "/" + token.replace("\\", "/").lstrip("/")
-            body = _read_script(token, cwd) if scratch else None
-            if body:
-                texts.append(body)
+    every = list(_stages(cmd))
+    stages = [(seg, words, text) for seg, words, _previous, text in every if _segment_verb(words) not in READ_ONLY_VERBS]
+    # A heredoc body is a program in any language (`python3 - <<EOF`), so its text is read whoever reads it.
+    texts = ["\n".join([text[seg.start:seg.end] + ("|" if seg.op == "|" else "") for seg, _words, text in stages]
+                       + [hd.body for seg, _words, _previous, _text in every for hd in seg.heredocs])]
+    for _seg, words, _text in stages:
+        token = _run_ref(words)
+        scratch = token and "/.claude/scratch/" in "/" + token.replace("\\", "/").lstrip("/")
+        body = _read_script(token, cwd) if scratch else None
+        if body:
+            texts.append(body)
     if not any(WINDOW_CLOSE_RE.search(t) for t in texts):
         return None
     return ("BLOCKED window close (CLAUDE.core.md §Shell Discipline) — terminal windows share one WindowsTerminal.exe, "

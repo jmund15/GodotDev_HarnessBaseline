@@ -11,7 +11,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "hooks"))
 
-from _command_text import executable_text  # noqa: E402
+from _shell_lex import executable_text  # noqa: E402
 
 fails = 0
 
@@ -30,7 +30,7 @@ def check(name, got, want_in=(), want_not_in=()):
 def main():
     global fails
     fails = 0
-    print("_command_text.executable_text — heredoc body scrubbing")
+    print("_shell_lex.executable_text — heredoc body scrubbing")
 
     # 1. The real shape that was denied: a script written via heredoc that MENTIONS a gate.
     cmd1 = "cat > run.ps1 <<'EOF'\n# gate: final\n& pwsh gate_chain.ps1\nEOF\necho written"

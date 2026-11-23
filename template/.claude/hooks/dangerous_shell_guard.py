@@ -24,7 +24,8 @@ Blocks, each judged on the resolved target and never on the command's wording:
   commit an index write precedes in the same command where git's commit-msg hook cannot re-check it
   (`SAME_COMMAND_WRITE`, `_unhooked_publish`).
 
-Quoted spans and heredoc bodies are data, never commands. `git` parsing goes through `_git_commit.py`.
+Every command is read through `_shell_lex` (a quoted span is one word, a heredoc body is data unless a shell reads it,
+each body a launcher or substitution runs is judged too); `git` parsing goes through `_git_commit.py`.
 
 Second caller: `.claude/githooks/commit-msg` runs `dangerous_shell_guard.py --commit-msg <file>`, which re-runs
 the stage-record and peer-revert checks against the index git is about to write; exit 1 refuses with one line.
@@ -40,49 +41,86 @@ from pathlib import Path
 _HOOKS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _HOOKS_DIR not in sys.path:
     sys.path.insert(0, _HOOKS_DIR)
-from _command_text import executable_text, executable_spans, command_words, _REDIRECTION  # noqa: E402
+from _shell_lex import (base, cmd_switches, command_words, executable_spans, executable_text, lex,  # noqa: E402
+                        options, ps_param, walk)
 from _delete_rule import (ANY_SESSION_ID, empty_leftover, is_regenerable_clone,  # noqa: E402
                           is_plant_exhaust, is_proof_plant, is_retired_worktree, lossless_orphan_worktree,
                           regenerable_segments, worktree_unstored)
 from _own_worktree import session_created_worktree  # noqa: E402
 import _git_commit  # noqa: E402
-if _git_commit.executable_index is None or _git_commit.command_substitutions is None:
+if _git_commit.lex is None:
     raise ImportError("_shell_lex failed to import: %s" % _git_commit.LEXER_ERROR)
-from _git_commit import (literal_assignments, expand_literal, resolve_cd, segments,  # noqa: E402
+from _git_commit import (literal_assignments, expand_literal, resolve_cd,  # noqa: E402
                          git_invocations, run_git, resolve_index, in_project, parse_commit_args, _pathspec_file,
-                         _SHORT_VALUE_LETTERS)
+                         commit_options, GLOBAL_FLAGS_WITH_VALUE)
 from _commit_scope import publishes_index, stage_record_base, stage_record_path, writes_index  # noqa: E402
 from _checkout_root import worktree_chain  # noqa: E402
 import _git_run  # noqa: E402
 from _transcript_calls import Call, Result, session_events  # noqa: E402
 
 
-# Dangerous command patterns — applied to BOTH the Bash and PowerShell tools
-# (PowerShell text also reaches Bash via `powershell -Command "..."`).
-DANGEROUS_BASH_PATTERNS = [
-    # Windows dangerous commands
-    (r'del\s+/[sq]', 'BLOCKED: Dangerous recursive delete (del /s or /q)'),
-    (r'rd\s+/[sq]', 'BLOCKED: Dangerous recursive directory removal (rd /s)'),
-    (r'rmdir\s+/[sq]', 'BLOCKED: Dangerous recursive directory removal (rmdir /s)'),
-    (r'\bformat\s+[a-zA-Z]:', 'BLOCKED: Format drive command detected'),
-    # PowerShell recursive delete — Remove-Item and its delete aliases with
-    # -Recurse (PS requires at least -recurse-unambiguous spelling; -r alone
-    # errors as ambiguous, so matching the full word keeps false positives low).
-    (r'(?i)\b(remove-item|ri|del|erase)\b[^|;\n]*\s-recurse\b', 'BLOCKED: Dangerous recursive delete (Remove-Item -Recurse)'),
-    # Block rm with any recursive flag cluster. Plain "rm -f <file>" is a safe
-    # single-file delete (force = suppress prompt) and is commonly used for temp
-    # cleanup, so it is NOT blocked. Recursion requires -r / -R / --recursive —
-    # that is what we actually need to block. `git rm` stays allowed via the
-    # lookbehind (version-controlled, recoverable).
-    # The intermediate (?:[^\s]+\s+)* span catches separated-flag cases like
-    # `rm -f -r dir/` or `rm foo -r` that a stricter prefix match would miss.
-    # The token scan stops at a command separator. Without that bound it runs to end-of-line and
-    # reads a LATER command's flag as this delete's own -- `rm -f a.txt; tool -R out.json` denied
-    # five times in one session, every one a safe delete followed by an unrelated -R.
-    # Regression: .claude/tests/floor/test_floor_delete.py (the rm-scope rows)
-    (r'(?<!git\s)\brm\s+(?:[^\s;|&\n]+\s+)*-[a-zA-Z]*[rR]', 'BLOCKED: Dangerous recursive delete (rm -r / -R / -rf)'),
-    (r'(?<!git\s)\brm\s+--recursive\b', 'BLOCKED: Dangerous recursive delete (rm --recursive)'),
-]
+# Each delete the floor blocks, in the order its message is chosen, and its deny text. `_delete_kind` reads each from
+# the parsed words of its command (applied to the Bash and PowerShell tools alike; PowerShell text also reaches Bash
+# through `powershell -Command "..."`). Plain `rm -f <file>` is a single-file delete and is not blocked; `git rm` is
+# version-controlled and recoverable.
+DELETES = (
+    ("del", "BLOCKED: Dangerous recursive delete (del /s or /q)"),
+    ("rd", "BLOCKED: Dangerous recursive directory removal (rd /s)"),
+    ("rmdir", "BLOCKED: Dangerous recursive directory removal (rmdir /s)"),
+    ("format", "BLOCKED: Format drive command detected"),
+    ("remove-item", "BLOCKED: Dangerous recursive delete (Remove-Item -Recurse)"),
+    ("rm", "BLOCKED: Dangerous recursive delete (rm -r / -R / -rf)"),
+    ("rm-long", "BLOCKED: Dangerous recursive delete (rm --recursive)"),
+)
+_RECURSIVE = frozenset(key for key, message in DELETES if "recursive" in message.lower())
+# GNU rm's long options, so a typed prefix (`--rec`) resolves as rm resolves it.
+_RM_LONG = ("force", "interactive", "one-file-system", "no-preserve-root", "preserve-root", "recursive", "dir",
+            "verbose", "help", "version")
+# PowerShell's names for Remove-Item; `-Recurse` may be spelled by any prefix (`-r`), as PowerShell binds it.
+_PS_REMOVE = frozenset(("remove-item", "ri", "del", "erase", "rd", "rmdir", "rm"))
+
+
+def _git_subcommand(words, k):
+    """True when `words[k]` is the subcommand of a git call in the same segment (`git -C x rm`)."""
+    for j in range(k - 1, -1, -1):
+        if base(words[j]) == "git":
+            i = j + 1
+            while i < k and words[i].startswith("-"):
+                i += 2 if words[i] in GLOBAL_FLAGS_WITH_VALUE else 1
+            return i == k
+    return False
+
+
+def _delete_kind(words, k):
+    """The `DELETES` key of the delete `words[k]` runs with the words after it in its segment, or None. Every word
+    is a candidate, not only the command position: a delete behind `sudo`, `xargs`, `find -exec` or any other
+    runner is still judged, and a quoted argument (`grep "rm -rf"`) is one word, never a delete."""
+    name, args = base(words[k]), words[k + 1:]
+    if name == "rm" and _git_subcommand(words, k):
+        return None
+    if name == "rm":
+        flags = options(args, long=_RM_LONG).flags
+        if flags & {"r", "R"}:
+            return "rm"
+        if "recursive" in flags:
+            return "rm-long"
+    if name in ("del", "erase", "rd", "rmdir") and any(sw[:1] in ("s", "q") for sw in cmd_switches(args)):
+        return "del" if name == "erase" else name
+    if name == "format" and any(re.match(r"[A-Za-z]:", a) for a in args):
+        return "format"
+    if name in _PS_REMOVE and any(ps_param(a, "recurse") for a in args):
+        return "remove-item"
+    return None
+
+
+def _deletes(command):
+    """[(key, depth, segment, index)] for each delete in `command` and every body it runs (`_shell_lex.walk`)."""
+    found = []
+    for _kind, _text, segments, depth in walk(command):
+        for seg in segments:
+            values = [w.value for w in seg.words]
+            found += [(key, depth, seg, k) for k in range(len(values)) for key in [_delete_kind(values, k)] if key]
+    return found
 
 
 # Regenerable caches a recursive delete may target without asking are `_delete_rule.regenerable_segments`:
@@ -114,33 +152,6 @@ def _inside_root(token: str, cwd: str | None) -> bool:
         return False
 
 
-def _cleanup_tokens(raw: str) -> list[str] | None:
-    """Shell tokens of the unblanked command: quotes removed, backslashes kept (Windows paths),
-    redirections and their targets dropped (`_command_text`'s grammar), since they are plumbing,
-    never arguments. None when the quoting does not parse, which never allows anything."""
-    import shlex
-    lexer = shlex.shlex(raw, posix=True)
-    lexer.whitespace_split = True
-    lexer.escape = ""
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return None
-    kept, target_next = [], False
-    for token in tokens:
-        if target_next:
-            target_next = False
-            continue
-        redirect = _REDIRECTION.match(token)
-        if redirect and redirect.end() > 0:
-            # A bare operator (`>`, `2>`) takes the next token as its target; `2>&1` and
-            # `>/dev/null` carry theirs.
-            target_next = redirect.end() == len(token) and '&' not in token.lstrip('0123456789')
-            continue
-        kept.append(token)
-    return kept
-
-
 def _is_cache_path(token: str, cwd: str | None = None) -> bool:
     """True when `token` is a literal path at or under an allowlisted cache segment and resolves
     inside the project root."""
@@ -150,90 +161,6 @@ def _is_cache_path(token: str, cwd: str | None = None) -> bool:
     if not parts or ".." in parts:
         return False
     return regenerable_segments(parts) and _inside_root(token, cwd)
-
-
-# A quoted FLAG is still a flag: `rm "-r" build/` reaches the shell as `rm -r build/`, but
-# blanking quoted spans erases it and the guard reports clean. Unwrapping only quote-wrapped flag
-# tokens keeps the blanking that stops `grep "rm -rf"` from being read as a delete.
-_QUOTED_FLAG = re.compile(r"""(['"])(-{1,2}[A-Za-z][A-Za-z-]*)\1""")
-
-
-def _unwrap_quoted_flags(command: str) -> str:
-    return _QUOTED_FLAG.sub(r"\2", command)
-
-
-def _strip_quoted(command: str) -> str:
-    """Blank single/double-quoted spans so a dangerous-looking pattern that is merely a
-    QUOTED argument (e.g. `grep "rm -rf"`, an echo, a commit body) isn't mistaken for a
-    real command. A genuine `rm -rf "<target>"` still trips the guard — only the quoted
-    target blanks; the unquoted `rm -rf` remains to match. A `$(...)` or backtick span
-    inside double quotes still runs, so it stays, and quoting restarts inside it."""
-    return _strip_span(command, 0, "")[0]
-
-
-def _strip_span(s: str, i: int, close: str) -> tuple[str, int]:
-    """Blank quoted text from `i` until the unquoted `close` (")" or "`"; "" = end of input).
-    Returns the kept text and the index just past `close`."""
-    out, depth, cases = [], 0, 0
-    while i < len(s):
-        ch = s[i]
-        word = re.match(r"(case|esac)(?![\w-])", s[i:]) if ch in "ce" else None
-        if word and (i == 0 or not (s[i - 1].isalnum() or s[i - 1] in "_-")):
-            cases += 1 if word.group(1) == "case" else -1 if cases else 0
-            out.append(word.group(1))
-            i += 4
-        elif ch == "\\":
-            out.append(s[i:i + 2])
-            i += 2
-        elif ch == ")" and cases:
-            out.append(ch)  # a case arm's pattern closer, not the substitution's
-            i += 1
-        elif close == ")" and ch == ")" and depth == 0:
-            return "".join(out), i + 1
-        elif close == "`" and ch == "`":
-            return "".join(out), i + 1
-        elif s.startswith("$'", i):
-            j = i + 2  # ANSI-C quoting: a backslash escapes the next char, including a quote
-            while j < len(s) and s[j] != "'":
-                j += 2 if s[j] == "\\" else 1
-            i = j + 1
-            out.append(" ")
-        elif ch == "'":
-            end = s.find("'", i + 1)
-            i = len(s) if end < 0 else end + 1
-            out.append(" ")
-        elif ch == '"':
-            kept, i = _strip_double(s, i + 1)
-            out.append(" " + kept + " ")
-        elif s.startswith("$(", i):
-            inner, i = _strip_span(s, i + 2, ")")
-            out.append("$(" + inner + ")")
-        elif ch == "`":
-            inner, i = _strip_span(s, i + 1, "`")
-            out.append("`" + inner + "`")
-        else:
-            depth += (ch == "(") - (ch == ")")
-            out.append(ch)
-            i += 1
-    return "".join(out), i
-
-
-def _strip_double(s: str, i: int) -> tuple[str, int]:
-    """Inside a double-quoted string starting at `i`: drop literal text, keep each command
-    substitution. Returns the kept substitutions and the index just past the closing quote."""
-    kept = []
-    while i < len(s) and s[i] != '"':
-        if s[i] == "\\":
-            i += 2
-        elif s.startswith("$(", i):
-            inner, i = _strip_span(s, i + 2, ")")
-            kept.append("$(" + inner + ")")
-        elif s[i] == "`":
-            inner, i = _strip_span(s, i + 1, "`")
-            kept.append("`" + inner + "`")
-        else:
-            i += 1
-    return " ".join(kept), i + 1
 
 
 def _registered_worktrees() -> list[str]:
@@ -446,8 +373,7 @@ def rewrite_absent_forced_deletes(command: str, cwd: str | None = None) -> str |
     here = cwd or _project_root()
     elisions, found = [], False
     for start, end, segment in spans:
-        delete_shape = any(re.search(p, _strip_quoted(segment), re.IGNORECASE)
-                           for p in _RECURSIVE_DELETE_PATTERNS)
+        delete_shape = any(key in _RECURSIVE for key, *_ in _deletes(segment))
         parsed = command_words(segment)
         if parsed is None:
             if delete_shape:
@@ -485,13 +411,6 @@ _DELETE_CMD_NAMES = frozenset({'rm', 'del', 'erase', 'ri', 'remove-item'})
 _VAR_TOKEN_RE = re.compile(r'^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$')
 # The value must END at the substitution: a suffix (`$(mktemp -d)/..`, `/*`) points outside the directory.
 _MKTEMP_ASSIGN_VALUE_RE = re.compile(r'\$\(\s*mktemp\s+-d(?:\s+-t\s+[^\s)/]+)?\s*\)(?=[\s;&|]|$)')
-_RECURSIVE_DELETE_PATTERNS = [p for p, m in DANGEROUS_BASH_PATTERNS if 'recursive' in m.lower()]
-
-
-def _blank_quotes_samelen(command: str) -> str:
-    """Like `_strip_quoted`, but each quoted span is replaced by spaces of the SAME length, so
-    positions found in the blanked text still index correctly into the original string."""
-    return re.sub(r"'[^']*'|\"[^\"]*\"", lambda m: ' ' * len(m.group(0)), command)
 
 
 def _is_mktemp_owned(name: str, raw: str) -> bool:
@@ -513,18 +432,7 @@ def _is_mktemp_owned(name: str, raw: str) -> bool:
 # same command assigns once, and the tracked `cd`; every one must land strictly below the system temp
 # directory, in a named subdirectory of `.claude/scratch`, or in a regenerable cache of this checkout
 # or one of its `.claude/worktrees/*` checkouts. The classifier still judges what passes here.
-_SEPARATORS = re.compile(r'&&|\|\||[;|&\n]')
 _GLOB_CHARS = re.compile(r'[*?\[\]]')
-
-
-def _segments_with_quotes(raw: str) -> list[str]:
-    blanked = _blank_quotes_samelen(raw)
-    out, pos = [], 0
-    for m in _SEPARATORS.finditer(blanked):
-        out.append(raw[pos:m.start()].strip())
-        pos = m.end()
-    out.append(raw[pos:].strip())
-    return [s for s in out if s]
 
 
 def _norm(path: str) -> str:
@@ -598,11 +506,10 @@ def _is_regenerable_or_scratch(path: str) -> bool:
 def _mkdir_targets(command: str, cwd: str | None) -> list[str]:
     """Normalized paths a flagless `mkdir` in `command` names, resolved through literal assignments and the
     tracked `cd`. A heredoc body is data, so a `mkdir` written there names nothing."""
-    text = executable_text(command)
-    assignments = literal_assignments(text, cwd)
+    assignments = literal_assignments(executable_text(command), cwd)
     here, out = cwd, []
-    for segment in segments(text):
-        tokens = _cleanup_tokens(segment)
+    for seg in lex(command):
+        tokens = [w.text for w in seg.words]
         if not tokens:
             continue
         if tokens[0] == "cd" and len(tokens) == 2:
@@ -658,20 +565,25 @@ def _delete_targets(raw: str, cwd: str | None):
     delete removes, expanded through assignments the command makes and resolved later against the tracked `cd`
     `here`, or its directory for a glob in the last part; None when it cannot be proved (an unexpanded value, `~`,
     `%`, a glob in a directory part, an unknown cwd). None for the whole command when a delete does not head its
-    segment (inside `$(...)`, backticks, behind `sudo`/`xargs`) or names no target, or when no segment deletes."""
-    assignments = literal_assignments(raw)
+    segment (inside `$(...)`, backticks, a launcher body, behind `sudo`/`xargs`) or names no target, or when no
+    segment deletes."""
+    deletes = [d for d in _deletes(raw) if d[0] in _RECURSIVE]
+    if any(depth or k for _key, depth, _seg, k in deletes):
+        return None
+    heads = {seg.start for _key, _depth, seg, _k in deletes}
+    assignments = literal_assignments(executable_text(raw))
     here = cwd or _project_root()
     found = []
-    for segment in _segments_with_quotes(raw):
-        tokens = _cleanup_tokens(segment)
+    for seg in lex(raw):
+        tokens = [w.text for w in seg.words]
         if tokens and tokens[0] == "cd" and len(tokens) == 2:
             moved = expand_literal(tokens[1], assignments)
             here = (resolve_cd(here, moved)
                     if here is not None and moved and not _GLOB_CHARS.search(moved) else None)
             continue
-        if not any(re.search(p, _strip_quoted(segment), re.IGNORECASE) for p in _RECURSIVE_DELETE_PATTERNS):
+        if seg.start not in heads:
             continue
-        if not tokens or tokens[0].lower() not in _DELETE_CMD_NAMES or '`' in segment or '$(' in segment:
+        if tokens[0].lower() not in _DELETE_CMD_NAMES or seg.substitutions:
             return None
         targets = [t for t in tokens[1:] if not t.startswith('-')]
         if not targets:
@@ -700,26 +612,6 @@ def _deletable(raw: str, cwd: str | None, transcript_path: str | None) -> bool:
         if path is None or not _deletable_by_fact(path, here, transcript_path):
             return False
     return True
-
-
-# `git`'s global options sit BETWEEN `git` and the subcommand (`git -C <path> rm ...`),
-# which defeats the fixed-width `(?<!git\s)` lookbehind that exempts `git rm` below —
-# the four chars before `rm` are the tail of <path>, not "git ". Collapsing the globals
-# first restores the exemption as written, with no change to any pattern.
-# Only `git rm` is affected: destructive git subcommands are parsed properly by the
-# sibling `git_guardrails.py`, which tokenizes and skips these same globals.
-_GIT_GLOBALS_RE = re.compile(
-    r'\bgit\s+(?:-C\s+\S+|-c\s+\S+|--git-dir=\S+|--work-tree=\S+|--namespace=\S+)\s+'
-)
-
-
-def _normalize_git_globals(scan: str) -> str:
-    """Rewrite `git -C <path> <sub>` to `git <sub>` so subcommand-anchored lookbehinds
-    match. Purely a matching aid — never consulted for what the command actually does."""
-    prev = None
-    while prev != scan:                       # loop: globals may repeat (`git -C x -c k=v rm`)
-        prev, scan = scan, _GIT_GLOBALS_RE.sub('git ', scan)
-    return scan
 
 
 def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> str:
@@ -754,24 +646,19 @@ def check_bash_command(command: str, cwd: str | None = None,
 
 
 def _check_bash_command(command: str, cwd: str | None, transcript_path: str | None) -> tuple[bool, str]:
-    # A heredoc body is data handed to another program, not something this command runs --
-    # the same reason quoted spans blank above. Writing a script or a prompt that MENTIONS a
-    # recursive delete was denied repeatedly while no delete was ever going to execute.
-    raw = _unwrap_quoted_flags(executable_text(command))
-    scan = _normalize_git_globals(_strip_quoted(raw))
-    for pattern, message in DANGEROUS_BASH_PATTERNS:
-        if re.search(pattern, scan, re.IGNORECASE):
-            # Allow recursive deletes confined to regenerable harness scratch, or every target a
-            # `NAME=$(mktemp -d)` variable this same command owns; never relax a drive-format
-            # block regardless of target.
-            if 'format' not in message.lower() and _deletable(raw, cwd, transcript_path):
-                continue
-            if 'recursive' in message.lower():
-                return True, (message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
-                              + _CACHE_HINT + _delete_reason(raw, cwd, transcript_path))
-            return True, message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
+    found = {key for key, *_ in _deletes(command)}
+    for key, message in DELETES:
+        if key not in found:
+            continue
+        # A recursive delete confined to regenerable harness scratch, or to a `NAME=$(mktemp -d)` directory this same
+        # command owns, passes; a drive format never does.
+        if key != "format" and _deletable(command, cwd, transcript_path):
+            continue
+        if key in _RECURSIVE:
+            return True, (message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
+                          + _CACHE_HINT + _delete_reason(command, cwd, transcript_path))
+        return True, message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
     return False, ""
-
 
 
 # --- Git losses ---------------------------------------------------------------------------------------------------
@@ -793,13 +680,42 @@ SAME_COMMAND_WRITE = ("BLOCKED commit (CLAUDE.core.md §Shell Discipline: an ind
                       "call, then commit.")
 
 
-def short_flag_chars(args):
-    """Characters of single-dash bundled flags, e.g. -fdx -> {'f','d','x'}."""
-    chars = set()
-    for a in args:
-        if a.startswith("-") and not a.startswith("--"):
-            chars.update(a[1:])
-    return chars
+# The options of each git subcommand a discard case reads, as git's parse-options reads them (`_shell_lex.options`:
+# bundles, a value in the bundle or the next word, unique long prefixes, options after operands until `--`): short
+# letters taking a value, long names, long names taking a value. A long list is complete enough to
+# resolve a prefix the way git does; a prefix that could mean a dangerous option counts as that option.
+_GIT_OPTIONS = {
+    "branch": ("u",
+               ("delete", "force", "quiet", "remotes", "all", "list", "move", "copy", "verbose", "track", "no-track",
+                "set-upstream-to", "unset-upstream", "edit-description", "contains", "no-contains", "merged",
+                "no-merged", "points-at", "sort", "format", "color", "column", "abbrev", "ignore-case", "omit-empty",
+                "create-reflog", "recurse-submodules", "show-current"),
+               ("set-upstream-to", "points-at", "sort", "format")),
+    "reset": ("",
+              ("hard", "soft", "mixed", "merge", "keep", "quiet", "patch", "intent-to-add", "recurse-submodules",
+               "pathspec-from-file", "pathspec-file-nul", "refresh", "no-refresh"), ("pathspec-from-file",)),
+    "clean": ("e", ("dry-run", "force", "interactive", "quiet", "exclude"), ("exclude",)),
+    "push": ("o",
+             ("all", "branches", "mirror", "delete", "tags", "follow-tags", "dry-run", "porcelain", "force",
+              "force-with-lease", "force-if-includes", "repo", "set-upstream", "thin", "no-thin", "quiet", "verbose",
+              "progress", "recurse-submodules", "verify", "no-verify", "signed", "atomic", "push-option", "ipv4",
+              "ipv6", "receive-pack", "exec", "prune"), ("repo", "receive-pack", "exec", "push-option")),
+    "checkout": ("bB",
+                 ("quiet", "progress", "force", "ours", "theirs", "track", "no-track", "guess", "detach", "orphan",
+                  "ignore-skip-worktree-bits", "merge", "conflict", "patch", "ignore-other-worktrees",
+                  "overwrite-ignore", "recurse-submodules", "overlay", "no-overlay", "pathspec-from-file",
+                  "pathspec-file-nul"), ("orphan", "conflict", "pathspec-from-file")),
+    "restore": ("s",
+                ("source", "staged", "worktree", "ours", "theirs", "merge", "conflict", "ignore-unmerged", "overlay",
+                 "no-overlay", "quiet", "progress", "patch", "pathspec-from-file", "pathspec-file-nul",
+                 "recurse-submodules", "ignore-skip-worktree-bits"), ("source", "pathspec-from-file")),
+    "gc": ("", ("prune", "no-prune", "aggressive", "auto", "quiet", "force", "keep-largest-pack", "cruft",
+                     "max-cruft-size", "expire-to", "detach"), ()),
+}
+
+
+def _git_opts(sub, args):
+    return options(list(args), *_GIT_OPTIONS[sub])
 
 
 _SIDE_UNSAFE = (".tscn", ".tres")
@@ -808,7 +724,6 @@ _SIDE_UNSAFE = (".tscn", ".tres")
 # Options a path-scoped discard may carry and still be judged by the worktree diff alone. Any other
 # (`--staged`/`-S`, `--worktree`/`-W`, a short `-s <tree>`, `-f`, a bundle) reads as a loss.
 _NO_LOSS_OPTS = {"--theirs", "--ours", "-q", "--quiet"}
-_PUSH_FORCE = {"--force", "--force-with-lease", "--force-if-includes"}
 
 
 @dataclass(frozen=True)
@@ -845,24 +760,46 @@ def _bulk(paths, cwd):
                or (cwd and os.path.isdir(os.path.join(cwd, p))) for p in paths)
 
 
+def _is_commit(name, cwd):
+    """True when `name` names a commit in `cwd`, so `git checkout <name> [<path>...]` reads it as a ref; without a
+    readable repository the first operand is taken as the ref, as git's own parse leans."""
+    if cwd is None or name == "-" or name.startswith("@{"):
+        return True
+    return run_git(["rev-parse", "--verify", "-q", name + "^{commit}"], cwd) is not None
+
+
 def _parse_tree(sub, rest, cwd):
-    """A checkout or restore that overwrites worktree paths, or None (a branch switch, a staged-only restore)."""
-    if sub == "checkout" and not ("--" in rest or "." in rest):
-        return None
-    staged_only = ({"--staged", "-S"} & set(rest)
-                   and not ("--worktree" in rest or "W" in short_flag_chars(rest)))
-    if sub == "restore" and staged_only:
-        return None
+    """A checkout or restore that overwrites worktree paths, a forced checkout (every uncommitted edit), or None (a
+    branch switch, a branch creation, a staged-only restore). Without `--`, `git checkout <a> [<b>...]` reads `<a>` as
+    a ref when it names a commit and as a path otherwise, as git does."""
     split = rest.index("--") if "--" in rest else len(rest)
-    head = rest[:split]
-    paths = tuple(rest[split + 1:]) if "--" in rest else tuple(a for a in rest if not a.startswith("-"))
+    head, separated = rest[:split], "--" in rest
+    parsed = _git_opts(sub, head)
     flags = tuple(a for a in head if a.startswith("-"))
-    return Discard(sub, paths=paths,
-                   refs=tuple(a for a in head if not a.startswith("-")) if sub == "checkout" else (),
-                   flags=flags,
-                   source=next((a.split("=", 1)[1] for a in flags if a.startswith("--source=")), None),
+    source = next((a.split("=", 1)[1] for a in flags if a.startswith("--source=")), None)
+    if sub == "restore":
+        if (("S" in parsed.flags or "staged" in parsed.exact)
+                and not ("W" in parsed.flags or "worktree" in parsed.flags)):
+            return None
+        refs, paths = (), tuple(parsed.operands) + tuple(rest[split + 1:])
+    else:
+        if parsed.flags & {"b", "B", "orphan"}:
+            return None
+        forced = bool(parsed.flags & {"f", "force"})
+        named = parsed.operands
+        if separated:
+            refs, paths = tuple(named), tuple(rest[split + 1:])
+        elif named and _is_commit(named[0], cwd):
+            refs, paths = (named[0],), tuple(named[1:])
+        else:
+            refs, paths = (), tuple(named)
+        if not paths and not forced:
+            return None
+        # v1 read `git checkout .` as an unseparated discard; it keeps that reading.
+        separated = separated or (bool(paths) and "." not in rest)
+    return Discard(sub, paths=paths, refs=refs, flags=flags, source=source,
                    side="theirs" if "--theirs" in flags else "ours" if "--ours" in flags else None,
-                   separated="--" in rest, bulk=_bulk(paths, cwd))
+                   separated=separated, bulk=_bulk(paths, cwd))
 
 
 def _flags(rest):
@@ -1015,7 +952,17 @@ def _tip_holds_stash(tip, stash, worktree_paths, index_paths, untracked_paths, c
     return True
 
 
-_BRANCH_DELETE_FLAGS = ("-D", "--delete", "--force", "-f", "-q", "--quiet")
+_BRANCH_DELETE_FLAGS = ("-D", "-d", "--delete", "--force", "-f", "-q", "--quiet")
+
+
+def _branch_delete(rest):
+    """`git branch <rest>` as a force delete (`-D`, `-d -f`, `-df`, `--delete --force`, any prefix, either order,
+    before or after the names), or None: Discard with each option spelled `-x`/`--name` and the named branches."""
+    parsed = _git_opts("branch", rest)
+    if not ("D" in parsed.flags or (parsed.flags & {"d", "delete"} and parsed.flags & {"f", "force"})):
+        return None
+    flags = tuple(sorted(("-" if len(f) == 1 else "--") + f for f in parsed.flags))
+    return Discard("branch-delete", flags=flags, targets=tuple(parsed.operands))
 
 
 def _branch_deletion_problems(names, flags, cwd, git_env=None):
@@ -1067,6 +1014,10 @@ def _worktree_clean(cwd, git_env):
 def _tree_facts(d, cwd, git_env, transcript_path):
     if any((git_env or {}).get(k) for k in ('GIT_DIR', 'GIT_WORK_TREE')):
         return Evidence(redirected=True)
+    if d.action == "checkout" and not d.paths:  # a forced switch discards every uncommitted change
+        if cwd is not None and _worktree_clean(cwd, git_env):
+            return Evidence(lossless=True)
+        return Evidence(owned=_in_own_worktree(cwd, git_env, transcript_path))
     judged, lost = _lost_path(d, cwd, git_env)
     if judged and lost is None:
         return Evidence(lossless=True)
@@ -1087,7 +1038,9 @@ _SAVE_FIRST = "save it first: `git update-ref refs/preserve/<name> $(git hash-ob
 
 
 def _checkout_denial(d, ev):
-    if d.bulk:
+    if not d.paths:
+        retry = "then commit or save each edit and switch without `-f`."
+    elif d.bulk:
         retry = "then name each file: `git checkout -- <file>` for one saved edit at a time."
     elif d.refs:
         retry = "then run `git restore --source=%s -- <path>`." % d.refs[0]
@@ -1101,7 +1054,7 @@ def _checkout_denial(d, ev):
 def _restore_denial(d, ev):
     if d.bulk:
         retry = "then name each file: `git restore <file>` for one saved edit at a time."
-    elif "--worktree" in d.flags or "W" in short_flag_chars(d.flags):
+    elif {"W", "worktree"} & _git_opts("restore", d.flags).flags:
         retry = "then run it without `--worktree`/`-W` (restore's default), one saved file at a time."
     elif "-s" in d.flags:
         retry = "then spell the source `--source=<ref>` and name one saved file."
@@ -1131,6 +1084,17 @@ def _stash_drop_denial(d, ev):
 _GO_AHEAD = "(CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first) — "
 
 
+def _clean_forced(parsed):
+    """`git clean` that deletes: forced, and no dry run (`-n`, or `--dry-run` spelled in full as v1 read it)."""
+    return bool(parsed.flags & {"f", "force"}) and "n" not in parsed.flags and "dry-run" not in parsed.exact
+
+
+def _push_forced(parsed):
+    """A push that may overwrite remote history: `-f`, a `--force*` option, or a `+<refspec>`."""
+    return (bool(parsed.flags & {"f", "force", "force-with-lease", "force-if-includes"})
+            or any(op.startswith("+") for op in parsed.operands[1:]))
+
+
 @dataclass(frozen=True)
 class Case:
     """One git discard the floor judges. `parse(sub, rest, cwd)` returns the parsed call or None; `facts(d, cwd,
@@ -1148,22 +1112,20 @@ CASES = (
          _tree_facts, _tree_passes),
     Case(lambda sub, rest, cwd: _parse_tree(sub, rest, cwd) if sub == "restore" else None, _restore_denial,
          _tree_facts, _tree_passes),
-    Case(lambda sub, rest, cwd: Discard("reset --hard", flags=_flags(rest)) if sub == "reset" and "--hard" in rest
-         else None,
+    Case(lambda sub, rest, cwd: Discard("reset --hard", flags=_flags(rest))
+         if sub == "reset" and "hard" in _git_opts("reset", rest).flags else None,
          "BLOCKED `git reset --hard` " + _GO_AHEAD + "discards every uncommitted change in the shared worktree with "
          "no undo. Use `git reset --keep` to move HEAD and keep local edits.",
          _reset_facts, lambda ev: ev.owned and ev.clean),
-    Case(lambda sub, rest, cwd: Discard("clean") if sub == "clean" and "n" not in short_flag_chars(rest)
-         and "--dry-run" not in rest and ("f" in short_flag_chars(rest) or "--force" in rest) else None,
+    Case(lambda sub, rest, cwd: Discard("clean") if sub == "clean" and _clean_forced(_git_opts("clean", rest))
+         else None,
          "BLOCKED `git clean -f` " + _GO_AHEAD + "deletes untracked files permanently (git has no copy). Run the "
          "same command with `-n` first, then ask the user to confirm."),
-    Case(lambda sub, rest, cwd: Discard("force-push") if sub == "push" and (
-         _PUSH_FORCE & set(rest) or any(a.startswith(("--force-with-lease=", "--force-if-includes=")) for a in rest)
-         or "f" in short_flag_chars(rest)) else None,
+    Case(lambda sub, rest, cwd: Discard("force-push") if sub == "push" and _push_forced(_git_opts("push", rest))
+         else None,
          "BLOCKED force-push " + _GO_AHEAD + "rewrites remote history and can erase commits other checkouts still "
          "depend on. Rebase onto the remote and push normally."),
-    Case(lambda sub, rest, cwd: Discard("branch-delete", flags=_flags(rest), targets=_operands(rest))
-         if sub == "branch" and ("-D" in rest or ("--delete" in rest and "--force" in rest)) else None,
+    Case(lambda sub, rest, cwd: _branch_delete(rest) if sub == "branch" else None,
          _branch_denial,
          lambda d, cwd, git_env, tp: Evidence(problems=tuple(_branch_deletion_problems(d.targets, d.flags, cwd,
                                                                                          git_env))),
@@ -1179,8 +1141,8 @@ CASES = (
     Case(lambda sub, rest, cwd: Discard("reflog-expire") if sub == "reflog" and "expire" in rest else None,
          "BLOCKED `git reflog expire` " + _GO_AHEAD + "the reflog is the last recovery path for lost commits. Leave "
          "expiry to git's own schedule."),
-    Case(lambda sub, rest, cwd: Discard("gc-prune") if sub == "gc" and any(
-         a == "--prune" or a.startswith("--prune=") for a in rest) else None,
+    Case(lambda sub, rest, cwd: Discard("gc-prune") if sub == "gc" and "prune" in _git_opts("gc", rest).flags
+         else None,
          "BLOCKED `git gc --prune` " + _GO_AHEAD + "permanently removes unreachable objects that reflog recovery "
          "depends on. Run `git gc` without `--prune`."),
     Case(lambda sub, rest, cwd: Discard(sub) if sub in ("filter-branch", "filter-repo") else None,
@@ -1439,19 +1401,9 @@ def commit_msg_check(message_path, environ=None, cwd=None):
 
 
 def _skips_hooks(rest):
-    """True when a commit-like call's own flags skip git's commit-msg hook (`-n`, `--no-verify`, a bundled `n`)."""
-    for a in rest:
-        if a == "--":
-            break
-        if a == "--no-verify":
-            return True
-        if a.startswith("-") and not a.startswith("--"):
-            for letter in a[1:]:
-                if letter == "n":
-                    return True
-                if letter in _SHORT_VALUE_LETTERS:
-                    break
-    return False
+    """True when a commit-like call's own flags skip git's commit-msg hook (`-n` in any bundle, `--no-verify` by any
+    prefix)."""
+    return "n" in commit_options(rest).flags
 
 
 def _unhooked_publish(args, cwd, git_env, command):
@@ -1498,7 +1450,6 @@ def _init_target(rest, target, git_env, expand):
 def git_verdict(command, cwd, transcript_path=None, session_id=None):
     """The first git loss in `command`, or None. A call inside a shell launcher body (`bash -c`, `eval`, ...)
     borrows no worktree ownership; its resolved repository facts still count."""
-    command = executable_text(command)
     if "git" not in command:
         return None
     cwd = cwd or "."

@@ -55,6 +55,45 @@ RM_SCOPE_BLOCK = [
     "P=.claude/scratch/x; for P in src; do rm -rf $P; done",
     'rm "-r" build/',
     "rm '-rf' build/",
+    # FL1: every spelling rm, cmd and a launcher accept, judged from the parsed words.
+    "rm -f --recursive src",
+    "rm src --recursive",
+    "rm --recur src",
+    "rm --rec src",
+    "rm --r src",
+    '"rm" -rf src',
+    "'rm' -rf src",
+    "rm.exe -rf src",
+    'bash -c "rm -rf src"',
+    "sh -c 'rm -rf src'",
+    'bash -lc "rm -rf src"',
+    'eval "rm -rf src"',
+    "bash <<'EOF'\nrm -rf src\nEOF",
+    "cat <<EOF\n$(rm -rf src)\nEOF",
+    "del src /s",
+    "del /f /s src",
+    "del /F/S src",
+    "erase /s src",
+    "rd src /s",
+    "rmdir src /s /q",
+    'cmd //c "rd /s /q src"',
+    'cmd.exe /c "del /s /q src"',
+    'powershell -Command "Remove-Item -Recurse src"',
+    'pwsh -c "Remove-Item src -r"',
+    'powershell -NoProfile -Command "Remove-Item -Recurse -Force src"',
+    'powershell.exe -Command "rd -Recurse src"',
+    "format /q C:",
+]
+# FL1: Remove-Item and its aliases with `-Recurse` spelled by any prefix, on the PowerShell tool.
+RM_SCOPE_BLOCK_POWERSHELL = [
+    "Remove-Item -r src",
+    "Remove-Item -rec src",
+    "Remove-Item -Recur src",
+    "Remove-Item -Path src -Force -r",
+    "ri -r src",
+    "rmdir -Recurse src",
+    "rd -Recurse src",
+    "del -r src",
 ]
 RM_SCOPE_PASS = [
     "rm -rf .claude/scratch/ladder_audit/fanout && echo ok",
@@ -107,6 +146,11 @@ def plain_temp(plant):
 @pytest.mark.parametrize("command", RM_SCOPE_BLOCK)
 def test_rm_scope_must_block(plant, plain_temp, command):
     assert bash(command.replace("{temp}", plain_temp), plant).denied
+
+
+@pytest.mark.parametrize("command", RM_SCOPE_BLOCK_POWERSHELL)
+def test_rm_scope_must_block_powershell(plant, command):
+    assert bash(command, plant, tool="PowerShell").denied
 
 
 @pytest.mark.parametrize("command", RM_SCOPE_PASS)

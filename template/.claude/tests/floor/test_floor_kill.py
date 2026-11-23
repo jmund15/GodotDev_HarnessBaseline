@@ -59,7 +59,10 @@ PID_DENIED = [
     'sh -c "kill 21764"', "echo `kill 21764`", "x=$(kill 21764)", "(kill -9 21764)", 'echo "$(kill 21764)"',
     "bash -lc 'sleep 1; kill 21764'")] + [("a quoted kill a code reader runs: " + c, c, "BLOCKED") for c in (
     'eval "kill 21764"', "eval 'sleep 1; kill 21764'", 'watch -n 5 "kill 21764"', 'su -c "kill 21764"',
-    'su root -c "kill 21764"', 'flock /tmp/x.lock -c "kill 21764"', "script -q -c 'kill 21764' /dev/null")]
+    'su root -c "kill 21764"', 'flock /tmp/x.lock -c "kill 21764"', "script -q -c 'kill 21764' /dev/null")] + [
+    ("FL1: a kill in a spelling kill or taskkill accepts: " + c, c, "21764") for c in (
+        "kill -s KILL 21764", "kill -- 21764", "kill -9 -- 21764", "kill 9001 21764", "kill -9 9001 21764",
+        "/bin/kill 21764", "\\kill 21764", '"kill" 21764', "taskkill /Pid 21764", "taskkill -pid 21764")]
 PID_ALLOWED = [
     ("a heredoc fed to python is data", "python3 - <<'EOF'\nkill 21764\ntaskkill /PID 21764 /T /F\npkill -f regression_gate_poll\nEOF"),
     ("a heredoc fed to cat is data", "cat > notes.md <<'EOF'\nkill 21764\ntaskkill /PID 21764 /T /F\npkill -f regression_gate_poll\nEOF"),
@@ -174,6 +177,11 @@ NAME_KILLS_DENIED = {
     "HARNESS_ALLOW_KILL does not cover a name kill": "HARNESS_ALLOW_KILL=100 pkill claude",
     "pkill with an invalid regex fails closed": "pkill -f '('",
     "pkill with no pattern fails closed": "pkill -9",
+    "FL1: taskkill -im": "taskkill -im claude.exe",
+    "FL1: taskkill -IM after /F": "taskkill /F -IM claude.exe",
+    "FL1: killall --regexp": "killall --regexp claud",
+    "FL1: killall --regex (a unique prefix)": "killall --regex claud",
+    "FL1: a pkill behind timeout": "timeout 5 pkill claude",
 }
 NAME_KILLS_ALLOWED = {
     "pkill -f of an unprotected pattern": "pkill -f http.server",
@@ -239,6 +247,9 @@ WINDOW_DENIED = list(WINDOW_CLOSERS.values()) + [
     "cat $(powershell -c (Get-Process WindowsTerminal).CloseMainWindow())",
     "grep -n WM_CLOSE x.py; " + WINDOW_CLOSERS["Stop-Process -Name WindowsTerminal"],
     "HARNESS_ALLOW_WINDOW_CLOSE=x taskkill /IM WindowsTerminal.exe /F",
+    "taskkill -im WindowsTerminal.exe /F",
+    "powershell -Command \"Stop-Process -n WindowsTerminal\"",
+    "powershell -Command \"Stop-Process -ProcessName WindowsTerminal\"",
 ]
 WINDOW_ALLOWED = [
     "powershell -Command \"Get-Process WindowsTerminal | Select-Object Id,MainWindowTitle\"",
