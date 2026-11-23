@@ -47,7 +47,7 @@ hook) and its `adaptation.json`.
 
 `.github/workflows/baseline.yml` runs one job, `baseline`, the status context the branch ruleset requires:
 
-- `python tools/ci_totals.py <previous commit>` prints code, test and prose totals and each one's change since the
+- `python template/.claude/tools/ci_totals.py <previous commit> template/.claude/` prints code, test and prose totals and each one's change since the
   previous run.
 - `python -m pytest -n auto -q --durations=20 tests template/.claude/tests` runs every shared test, slowest 20
   listed. `tests/test_context_budget.py` fails a push that takes the always-loaded text past 15 KB or the

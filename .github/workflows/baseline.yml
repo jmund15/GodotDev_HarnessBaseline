@@ -23,7 +23,7 @@ jobs:
 
       # The previous run's commit is the push's `before` (the branch tip the last run built) or the PR's base.
       - name: totals (code, test, prose) and their change
-        run: python tools/ci_totals.py "${{ github.event.before || github.event.pull_request.base.sha }}"
+        run: python template/.claude/tools/ci_totals.py "${{ github.event.before || github.event.pull_request.base.sha }}" template/.claude/
 
       # `--durations=20` prints the slowest tests, so a slow test shows in its own log (K2).
       - name: tests
