@@ -199,7 +199,9 @@ def _discards_nothing(sub, rest, cwd, git_env=None):
             if not (unmerged or "").strip():
                 return False
             continue
-        if sub == "restore" and not path.startswith(":") and not os.path.lexists(os.path.join(cwd, path)):
+        # An unresolved `-C "$VAR"` target is no directory, and every path is absent from it.
+        if (sub == "restore" and not path.startswith(":") and os.path.isdir(cwd)
+                and not os.path.lexists(os.path.join(cwd, path))):
             continue
         diff = ["diff", "--quiet", "--ignore-cr-at-eol"] + ([base] if base else []) + ["--", path]
         if (run_git(diff, cwd, git_env) is None and not (base and _clean_in_head(path, cwd, git_env))
