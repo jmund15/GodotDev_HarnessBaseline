@@ -76,13 +76,8 @@ check("a non-invocable skill gets no stub", not os.path.exists(os.path.join(agen
 hooks = json.loads(read("hooks.json"))
 cmd = hooks["project-guards"]["PreToolUse"][0]["hooks"][0]["command"]
 check("hooks route every tool call through the bridge", "agy_hook_bridge.py" in cmd and cmd.endswith("PreToolUse"), cmd)
-post = [h["command"] for g in hooks.get("project-records", {}).get("PostToolUse", []) for h in g.get("hooks", [])]
-check("finished tool calls reach the bridge's PostToolUse",
-      len(post) == 1 and "agy_hook_bridge.py" in post[0] and post[0].endswith("PostToolUse"), json.dumps(hooks))
-for event in ("SessionStart", "Stop"):
-    entries = [h["command"] for group in hooks.values() for h in group.get(event, [])]
-    check(f"agy's {event} reaches the bridge's {event}",
-          len(entries) == 1 and "agy_hook_bridge.py" in entries[0] and entries[0].endswith(event), json.dumps(hooks))
+check("the floor's PreToolUse is the only event registered: the bridge answers {} to every other",
+      [event for group in hooks.values() for event in group] == ["PreToolUse"], json.dumps(hooks))
 servers = json.loads(read("mcp_config.json"))["mcpServers"]
 native = ROOT.replace("\\", "/")
 check("only the read-only project server is wired, with the root substituted",

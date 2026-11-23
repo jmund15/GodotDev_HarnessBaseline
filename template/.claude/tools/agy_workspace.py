@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Write the `.agents/` workspace that gives the Antigravity CLI this project's harness: its CLAUDE layers and memory index
-as always-on rules, its path rules and skills as on-demand pointers, its tool, SessionStart and Stop hooks through
+as always-on rules, its path rules and skills as on-demand pointers, its shell-call hook (the loss floor) through
 `hooks/agy_hook_bridge.py`, and its read-only MCP servers.
 
     agy_workspace.py write --root <checkout>     regenerate <checkout>/.agents; prints `wrote N` or `skipped: <why>`
@@ -88,29 +88,24 @@ def skills(root):
     return out
 
 
-def _bridge_timeout(root, event="PreToolUse"):
-    """Seconds agy waits for the bridge: the sum of every `event` hook timeout settings.json registers, since the
+def _bridge_timeout(root):
+    """Seconds agy waits for the bridge: the sum of every PreToolUse hook timeout settings.json registers, since the
     bridge runs the matching ones in sequence and agy must not cut it before the slowest chain decides."""
     try:
         settings = json.load(open(os.path.join(root, ".claude", "settings.json"), encoding="utf-8"))
     except (OSError, ValueError):
         return DEFAULT_HOOK_TIMEOUT
     return sum(h.get("timeout") or DEFAULT_HOOK_TIMEOUT
-               for group in settings.get("hooks", {}).get(event, []) for h in group.get("hooks", []))
+               for group in settings.get("hooks", {}).get("PreToolUse", []) for h in group.get("hooks", []))
 
 
 def hooks(root):
+    """Only PreToolUse: the bridge acts on it alone and answers {} to every other event, so registering one would
+    spawn a bridge per agy call for nothing."""
     bridge = os.path.join(root, ".claude", "hooks", "agy_hook_bridge.py").replace("\\", "/")
-    cmd = f'python3 "{bridge}"'
     return {"hooks.json": json.dumps({
-        "project-guards": {"PreToolUse": [{"matcher": "*", "hooks": [{"command": f"{cmd} PreToolUse",
+        "project-guards": {"PreToolUse": [{"matcher": "*", "hooks": [{"command": f'python3 "{bridge}" PreToolUse',
                                                                       "timeout": _bridge_timeout(root)}]}]},
-        "project-records": {"PostToolUse": [{"matcher": "*", "hooks": [{"command": f"{cmd} PostToolUse",
-                                                                       "timeout": _bridge_timeout(root, "PostToolUse")}]}]},
-        "project-advisories": {"PreInvocation": [{"command": f"{cmd} PreInvocation", "timeout": 10}]},
-        "project-session": {"SessionStart": [{"command": f"{cmd} SessionStart",
-                                              "timeout": _bridge_timeout(root, "SessionStart")}],
-                            "Stop": [{"command": f"{cmd} Stop", "timeout": _bridge_timeout(root, "Stop")}]},
     }, indent=2) + "\n"}
 
 
