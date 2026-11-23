@@ -300,9 +300,9 @@ def session_created_worktree(path: str, transcript_path: str | None) -> bool:
         target = Path(path).resolve(strict=True)
         if not (target / '.git').is_file():
             return False
-        top = _git(['rev-parse', '--show-toplevel'], target)
-        gitdir = _git(['rev-parse', '--absolute-git-dir'], target)
-        common = _git(['rev-parse', '--path-format=absolute', '--git-common-dir'], target)
+        paths = (_git(['rev-parse', '--path-format=absolute', '--show-toplevel', '--absolute-git-dir',
+                       '--git-common-dir'], target) or '').splitlines()
+        top, gitdir, common = paths if len(paths) == 3 and all(p.strip() for p in paths) else ('', '', '')
         if (not top or not gitdir or not common
                 or not _same_path(Path(top.strip()).resolve(), target)
                 or _same_path(Path(gitdir.strip()).resolve(), Path(common.strip()).resolve())):
