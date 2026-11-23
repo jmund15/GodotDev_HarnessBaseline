@@ -62,9 +62,9 @@ const engineNames = fs.readdirSync(WORKFLOWS)
 // (c) a CLOSE-CHECK block edit (a comment) is not schema drift.
 {
   const r = sandboxRun(claude => {
-    const file = path.join(claude, 'workflows', 'review_fanout.js')
+    const file = path.join(claude, 'workflows', 'worklog_relevance.js')
     const src = fs.readFileSync(file, 'utf8')
-    assert.ok(src.includes('// CLOSE-CHECK-BEGIN\n'), 'fixture anchor in review_fanout.js')
+    assert.ok(src.includes('// CLOSE-CHECK-BEGIN\n'), 'fixture anchor in worklog_relevance.js')
     fs.writeFileSync(file, src.replace('// CLOSE-CHECK-BEGIN\n', '// CLOSE-CHECK-BEGIN\n// reworded\n'))
   })
   assert.equal(r.status, 0, 'edited block exit: ' + r.status + ' stderr=' + r.stderr.slice(0, 400))
@@ -74,13 +74,13 @@ const engineNames = fs.readdirSync(WORKFLOWS)
 // (d) a structural change to one engine's evidence schema is DIVERGED, naming the engine.
 {
   const r = sandboxRun(claude => {
-    const file = path.join(claude, 'workflows', 'review_fanout.js')
+    const file = path.join(claude, 'workflows', 'worklog_relevance.js')
     const src = fs.readFileSync(file, 'utf8')
-    assert.ok(src.includes('"type": "array"'), 'fixture anchor in review_fanout.js')
+    assert.ok(src.includes('"type": "array"'), 'fixture anchor in worklog_relevance.js')
     fs.writeFileSync(file, src.replace('"type": "array"', '"type": "object"'))
   })
   assert.equal(r.status, 1, 'drifted schema exit: ' + r.status)
-  assert.match(r.stderr, /DIVERGED evidence schema: review_fanout/)
+  assert.match(r.stderr, /DIVERGED evidence schema: worklog_relevance/)
   console.log('ok   (d) an engine whose evidence schema differs in structure is DIVERGED')
 }
 
