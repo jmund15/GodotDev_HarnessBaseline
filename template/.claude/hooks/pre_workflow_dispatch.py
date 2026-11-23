@@ -1,50 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hook: PreToolUse dispatcher for the Workflow|Agent tool family. Class: process guard (each member keeps its own).
+Hook: the one PreToolUse entry for the Workflow|Agent tools. Class: process guard.
 
-One settings entry replacing five. The client shows one deny reason per tool call, so five hooks that
-each denied for their own precondition showed the first and left the rest for the retry
-(instruction_quality section 3: a guard with several preconditions names every unmet one in a single deny).
-This module runs the members in-process, like `pre_bash_dispatch.py` and `pre_read_dispatch.py`, but
-collects every deny instead of stopping at the first.
+Steps, each reading the call the step before left (a rewritten call reaches every later step):
+  1. subagent_dispatch_guard   a delegate or sidecar child may not dispatch. A deny ends the chain.   (Workflow, Agent)
+  2. expand_args_file          `args: {argsFile: <path>}` reads a JSON object under the session's .claude/scratch/.
+  3. expand_jobs_file          `args.jobsFile` reads the jobs (and chains) from .claude/scratch/; the engines cannot
+                               read files. A deny ends the chain.                                       (Workflow)
+  4. launch checks             tools/launch_check.py, the module `seat.sh` also calls: each job's brief and inputs
+                               resolve, a read-only job names no other target, then the project's
+                               `dispatch.pre_launch` hook runs for the job.                             (Workflow)
+  5. transport                 hooks/workflow_transport.py injects the keys the engines read. It fails closed: a
+                               file it cannot read denies the call, since no engine can run without its pins. (Workflow)
+  6. workflow_script_lf_guard  rewrites a harness script's CRLF to LF before the permission handler reads it. (Workflow)
 
-Members, in order (each keeps its own `main()` and CLI contract, so its own proof stays standalone):
-  0. expand_args_file           `args: {argsFile: <path>}` expands from a repo-relative JSON file under the
-                               session's own `.claude/scratch/`, so every later member reads the real args. A
-                               Workflow script has no filesystem, so the hook, not the engine, reads it.
-  0b. fill_efforts             fills each job's effort in `args.jobs` and every `args.chains[].jobs` from its reading and
-                               the ladder cell, the same fill the fan-out runs; its lines return as additionalContext.
-  1. subagent_dispatch_guard   a delegate or sidecar child may not dispatch. A deny here ends the chain: the
-                               orchestrator's preconditions below are not the delegate's to meet.
-  2. workflow_script_lf_guard  rewrites a harness script's CRLF to LF before the permission handler reads it.
-  3. dispatch_mechanism_guard  nested fan-out in a brief; a script typing its own `evidence`; dispatch
-                               doctrine not in context.
-  4. workflow_provider_guard   tool profile, vocabulary, provider capacity, tier, five-hour width; its
-                               `updatedInput` injects `args.__transport` and the rails.
-  5. readonly_marker_arm       arms the read-only fan-out marker. Runs only when nothing denied, since a denied
-                               dispatch starts no lens for the marker to cover.
+Merge: deny reasons, every one in step order, each once; one reason is emitted verbatim, several are numbered.
+updatedInput is the call after the last rewrite. A step that raises denies the call and names the step, so a fault
+never lets an unchecked Workflow through.
 
-Merge:
-  deny            every member's reason, each once, in member order. One reason is emitted verbatim; several
-                  are numbered under a one-line header.
-  additionalContext  every note, each once, in member order.
-  jobsFile        a Workflow call whose `args.jobsFile` names a file under .claude/scratch/ is expanded first (the
-                  engines cannot read files); a refused file denies alone, since no member can read the call.
-  updatedInput    chained: after a member rewrites the input, later members receive the rewritten call, so a
-                  later rewrite is a superset of an earlier one. A partial rewrite overlays the call's own
-                  `tool_input` keys. A denied call carries none.
-
-Fail posture: a member exception, import fault or exit outside {0, 2} is reported on stderr and in
-`additionalContext`, naming the lost check and repair; the next member runs. The exceptions, on a Workflow
-call, are `_FAIL_CLOSED_ON_WORKFLOW`: `dispatch_mechanism_guard`, whose doctrine check stands in front of paid
-spend, and `workflow_provider_guard`, without whose `args.__transport` every engine refuses to run. Their fault
-denies with the error. An Agent call keeps the advisory. A fault reaches the model as the traceback's exception line
-and innermost frame (`_fault`); the whole traceback goes to stderr. A member's exit 2 joins the deny with its stderr as
-the reason.
-
-Wired in: settings.json hooks.PreToolUse, matcher "Workflow|Agent"; timeout covers the members run in
-sequence (the provider guard bounds its own work at DEADLINE_SECONDS).
+Wired in: settings.json hooks.PreToolUse, matcher "Workflow|Agent".
 """
 
 import importlib
@@ -53,22 +28,18 @@ import os
 import sys
 from pathlib import Path
 
+CLAUDE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(CLAUDE_DIR / "tools"))
 
 from _inprocess_hook import hook_output, run_hook  # noqa: E402
+import launch_check  # noqa: E402
+import workflow_transport  # noqa: E402
 
-_ROLE_GATE = "subagent_dispatch_guard"
-_RUNS_WHEN_ALLOWED = "readonly_marker_arm"
-# Members whose fault denies a Workflow call (instruction_quality section 16): the doctrine check stands in front of
-# paid spend, and the provider guard injects the vocabulary every engine needs. Names, so an import stub keeps it.
-_FAIL_CLOSED_ON_WORKFLOW = {
-    "dispatch_mechanism_guard": "it checks the dispatch doctrine and pins before a paid run starts",
-    "workflow_provider_guard": "it could not inject `args.__transport`, the model vocabulary every engine refuses "
-                               "to run without",
-}
-_DECISION_RANK = {"deny": 3, "ask": 2, "allow": 1}
-_ARGS_FILE_NEXT = ("write the run's args with `python3 .claude/tools/lens_briefs.py prepare --spec <spec.json> "
-                   "--out <run dir>`, then pass only `{argsFile: \"<run dir>/args.json\"}`")
+JOBS_FILE_ROOT = ".claude/scratch"
+OWNER_LIFTS = ("currency", "currencyReason")
+ARGS_FILE_NEXT = ("write the run's args with `python3 .claude/tools/lens_briefs.py prepare --spec <spec.json> "
+                  "--out <run dir>`, then pass only `{argsFile: \"<run dir>/args.json\"}`")
 
 
 def _session_root(payload):
@@ -81,215 +52,176 @@ def _session_root(payload):
     if isinstance(cwd, str) and cwd.strip():
         return Path(cwd).resolve()
     env = os.environ.get("CLAUDE_PROJECT_DIR")
-    return Path(env).resolve() if env else Path(__file__).resolve().parents[2]
+    return Path(env).resolve() if env else CLAUDE_DIR.parent
 
 
-def _args_deny(reason):
-    return {"permissionDecision": "deny", "permissionDecisionReason": reason}
-
-
-def expand_args_file(payload, root=None):
-    """Expand `tool_input.args = {argsFile: <path>}` to the file's JSON object, or deny.
-
-    Returns None when the call does not use the member, so a call without `argsFile` is untouched. The path
-    is repository-relative under the session's own `.claude/scratch/`; containment is decided after
-    `realpath` and `normcase`, so a junction or symlink that resolves outside scratch denies and a
-    case-different spelling of a real scratch file passes."""
-    if payload.get("tool_name") != "Workflow":
-        return None
-    tool_input = payload.get("tool_input") or {}
-    args = tool_input.get("args")
-    if isinstance(args, str):
+def _args_of(tool_input):
+    """(args dict or None, whether the call carried them as a JSON string)."""
+    raw = tool_input.get("args")
+    if isinstance(raw, str):
         try:
-            args = json.loads(args)
+            return json.loads(raw), True
         except ValueError:
-            return None
-    if not isinstance(args, dict) or "argsFile" not in args:
-        return None
+            return None, True
+    if raw is None:
+        return {}, False
+    return (raw if isinstance(raw, dict) else None), False
+
+
+def _with_args(tool_input, args, as_text):
+    return dict(tool_input, args=json.dumps(args) if as_text else args)
+
+
+def _jobs_of(args):
+    """Every job-shaped entry of a call: `jobs`, each `chains[].jobs`, and `lenses` (explore)."""
+    return workflow_transport.jobs_of(args)
+
+
+def expand_args_file(payload, root):
+    """(reasons, tool_input). `args` carrying only `argsFile` is replaced by that file's JSON object."""
+    tool_input = payload.get("tool_input") or {}
+    args, as_text = _args_of(tool_input)
+    if args is None or "argsFile" not in args:
+        return [], None
     given = args.get("argsFile")
     if set(args) != {"argsFile"}:
-        return _args_deny(f"`args` carries argsFile beside other keys ({', '.join(sorted(set(args) - {'argsFile'}))}); "
-                          f"pass argsFile alone. {_ARGS_FILE_NEXT}")
+        return ["`args` carries argsFile beside other keys (%s); pass argsFile alone. %s"
+                % (", ".join(sorted(set(args) - {"argsFile"})), ARGS_FILE_NEXT)], None
     if not isinstance(given, str) or not given.strip():
-        return _args_deny(f"argsFile must be a non-empty repository-relative path. {_ARGS_FILE_NEXT}")
+        return ["argsFile must be a non-empty repository-relative path. " + ARGS_FILE_NEXT], None
     if "\\" in given:
-        return _args_deny(f"argsFile {given!r} uses backslashes; write it repository-relative with forward "
-                          f"slashes. {_ARGS_FILE_NEXT}")
+        return ["argsFile %r uses backslashes; write it repository-relative with forward slashes. %s"
+                % (given, ARGS_FILE_NEXT)], None
     if Path(given).is_absolute() or (len(given) > 1 and given[1] == ":"):
-        return _args_deny(f"argsFile {given!r} is absolute; it must be relative to the session root. {_ARGS_FILE_NEXT}")
-    base = Path(root).resolve() if root else _session_root(payload)
-    scratch = (base / ".claude" / "scratch").resolve()
-    target = (base / given).resolve()
-    inside = os.path.normcase(str(target)).startswith(os.path.normcase(str(scratch)) + os.sep)
-    if not inside:
-        return _args_deny(f"argsFile {given!r} resolves to {target.as_posix()}, outside the session's own "
-                          f"{scratch.as_posix()}; an args file lives under this checkout's .claude/scratch/. "
-                          f"{_ARGS_FILE_NEXT}")
+        return ["argsFile %r is absolute; it must be relative to the session root. %s" % (given, ARGS_FILE_NEXT)], None
+    scratch = (root / ".claude" / "scratch").resolve()
+    target = (root / given).resolve()
+    if not os.path.normcase(str(target)).startswith(os.path.normcase(str(scratch)) + os.sep):
+        return ["argsFile %r resolves to %s, outside the session's %s; an args file lives under this checkout's "
+                ".claude/scratch/. %s" % (given, target.as_posix(), scratch.as_posix(), ARGS_FILE_NEXT)], None
     try:
-        text = target.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        return _args_deny(f"argsFile {given!r} is unreadable: {exc}. {_ARGS_FILE_NEXT}")
-    try:
-        expanded = json.loads(text)
-    except ValueError as exc:
-        return _args_deny(f"argsFile {given!r} holds invalid JSON: {exc}. {_ARGS_FILE_NEXT}")
+        expanded = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return ["argsFile %r could not be read as a JSON object (%s: %s). %s"
+                % (given, type(exc).__name__, exc, ARGS_FILE_NEXT)], None
     if not isinstance(expanded, dict):
-        return _args_deny(f"argsFile {given!r} holds a {type(expanded).__name__}, not a JSON object. "
-                          f"{_ARGS_FILE_NEXT}")
-    return {"updatedInput": {"args": expanded}}
+        return ["argsFile %r holds a %s, not a JSON object. %s" % (given, type(expanded).__name__, ARGS_FILE_NEXT)], None
+    return [], _with_args(tool_input, expanded, as_text)
 
 
-class _ExpandArgsFile:
-    """The first member: expand `argsFile` before every later member reads `args`."""
-
-    __name__ = "expand_args_file"
-    __file__ = "pre_workflow_dispatch.py"
-
-    def main(self):
-        try:
-            payload = json.loads(sys.stdin.read() or "{}")
-        except ValueError:
-            return 0
-        if not isinstance(payload, dict):
-            return 0
-        result = expand_args_file(payload)
-        if result:
-            sys.stdout.write(json.dumps({"hookSpecificOutput": dict(result, hookEventName="PreToolUse")}))
-        return 0
-
-
-EXPAND_ARGS_MEMBER = _ExpandArgsFile()
-
-
-def fill_efforts(payload):
-    """Fill each job's effort in `args.jobs` and every `args.chains[].jobs` from its reading and the ladder cell
-    (`model_registry.fill_job_efforts`, the same fill the fan-out runs), or None when nothing changes.
-
-    The changed `args` returns through `updatedInput`; each line naming a computed or capped effort returns as
-    `additionalContext`, so the call's record names the effort that runs."""
-    if payload.get("tool_name") != "Workflow":
-        return None
-    args = (payload.get("tool_input") or {}).get("args")
-    as_text = isinstance(args, str)
-    if as_text:
-        try:
-            args = json.loads(args)
-        except ValueError:
-            return None
-    if not isinstance(args, dict):
-        return None
-    groups = [args.get("jobs") or []] + [c.get("jobs") or [] for c in (args.get("chains") or []) if isinstance(c, dict)]
-    if not any(groups):
-        return None
-    tools = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools")
-    if tools not in sys.path:
-        sys.path.insert(0, tools)
-    import model_registry
-    data = model_registry.load()
-    measured = bool(args.get("measurement"))
-    justification = args.get("justification")
-    for jobs in groups:
-        for job in jobs:
-            if isinstance(job, dict) and isinstance(justification, str) and justification and not job.get("justification"):
-                job["justification"] = justification
-    lines = [line for jobs in groups for line in model_registry.fill_job_efforts(jobs, data, measured)]
-    if not lines:
-        return None
-    return {"updatedInput": {"args": json.dumps(args) if as_text else args},
-            "additionalContext": "\n".join(lines)}
-
-
-class _FillEfforts:
-    """The second member: a job with a reading and no effort gets the computed one before any later member reads it."""
-
-    __name__ = "fill_efforts"
-    __file__ = "pre_workflow_dispatch.py"
-
-    def main(self):
-        try:
-            payload = json.loads(sys.stdin.read() or "{}")
-        except ValueError:
-            return 0
-        if not isinstance(payload, dict):
-            return 0
-        result = fill_efforts(payload)
-        if result:
-            sys.stdout.write(json.dumps({"hookSpecificOutput": dict(result, hookEventName="PreToolUse")}))
-        return 0
-
-
-FILL_EFFORTS_MEMBER = _FillEfforts()
-
-
-
-class _ImportStub:
-    """Stands in for a member that failed to import, so the others still run and the fault reaches the caller."""
-
-    def __init__(self, name, error):
-        self.__name__ = name
-        self.__file__ = name + ".py"
-        self.error = error
-
-    def main(self):
-        sys.stderr.write("%s failed to import (%s)\n" % (self.__name__, self.error))
-        return 1
-
-
-def _failed_import(name, exc):
-    return _ImportStub(name, "%s: %s" % (type(exc).__name__, exc))
-
-
-def _load(name):
+def _jobs_file_load(args, root):
+    """(expanded args, None) or (None, refusal) for a call whose args name a `jobsFile`."""
+    path = args.get("jobsFile")
+    if not isinstance(path, str) or not path.strip():
+        return None, "args.jobsFile must be a non-empty path string."
+    beside = [k for k in ("jobs", "chains") if k in args]
+    if beside:
+        return None, ("args.jobsFile sits beside args.%s: a call carries its jobs in the file or inline, never both. "
+                      "Send only {jobsFile}." % "/args.".join(beside))
+    base = os.path.realpath(str(root))
+    full = os.path.realpath(path if os.path.isabs(path) else os.path.join(base, path))
+    scratch = os.path.normcase(os.path.join(base, *JOBS_FILE_ROOT.split("/"))) + os.sep
+    if not os.path.normcase(full).startswith(scratch):
+        return None, "args.jobsFile %r is outside %s of this checkout; the fan-out writes it there." % (path, JOBS_FILE_ROOT)
     try:
-        return importlib.import_module(name)
-    except Exception as exc:
-        return _failed_import(name, exc)
+        with open(full, encoding="utf-8") as fh:
+            loaded = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return None, "args.jobsFile %r could not be read as JSON (%s: %s)." % (path, type(exc).__name__, exc)
+    if not isinstance(loaded, dict):
+        return None, "args.jobsFile %r must hold a JSON object of Workflow args." % path
+    for holder in [loaded] + _jobs_of(loaded):
+        for key in holder:
+            if key.startswith("__") or key in OWNER_LIFTS:
+                return None, ("args.jobsFile %r holds %r. Injected keys and the currency lifts stay inline and are "
+                              "the owner's to give." % (path, key))
+    return dict(loaded, **{k: v for k, v in args.items() if k != "jobsFile"}), None
 
 
-# Import with the real stdout bound; some members reconfigure it on import.
-subagent_dispatch_guard = _load("subagent_dispatch_guard")
-workflow_script_lf_guard = _load("workflow_script_lf_guard")
-dispatch_mechanism_guard = _load("dispatch_mechanism_guard")
-workflow_provider_guard = _load("workflow_provider_guard")
-readonly_marker_arm = _load("readonly_marker_arm")
-
-HOOKS = (
-    (EXPAND_ARGS_MEMBER, ()),
-    (FILL_EFFORTS_MEMBER, ()),
-    (subagent_dispatch_guard, ()),
-    (workflow_script_lf_guard, ()),
-    (dispatch_mechanism_guard, ()),
-    (workflow_provider_guard, ()),
-    (readonly_marker_arm, ()),
-)
+def expand_jobs_file(payload, root):
+    tool_input = payload.get("tool_input") or {}
+    args, as_text = _args_of(tool_input)
+    if args is None or "jobsFile" not in args:
+        return [], None
+    expanded, refusal = _jobs_file_load(args, root)
+    if refusal:
+        return [refusal + " Correct that and re-issue the call."], None
+    return [], _with_args(tool_input, expanded, as_text)
 
 
-def _once(items):
-    seen, kept = set(), []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            kept.append(item)
-    return kept
+def launch_checks(payload, root):
+    """Each job's launch checks, then its project pre-launch hook: the same module `seat.sh` calls for a seat."""
+    args, _as_text = _args_of(payload.get("tool_input") or {})
+    if not args:
+        return [], None
+    reasons = []
+    for job in _jobs_of(args):
+        brief = job.get("promptPath")
+        label = job.get("label") or job.get("key") or "(unlabeled)"
+        if not isinstance(brief, str) or not brief:
+            continue
+        # A native job has no out file: the brief stands in, so a read-only job naming any target is refused.
+        writes = "yes" if job.get("kind") == "author" else "no"
+        causes = launch_check.check(brief, brief, str(root), writes)
+        if causes:
+            reasons.append("%s: %s" % (label, causes[0]))
+            continue
+        rc, err = launch_check.run_hook(launch_check.PRE_KEY, ["workflow", brief, brief, label], str(root))
+        if rc:
+            reasons.append("%s: dispatch.pre_launch refused: %s" % (label, err.strip() or "exit %s" % rc))
+    return reasons, None
 
 
-def _fault(err):
-    """The exception line of a member's traceback and the innermost frame inside this harness (else the innermost
-    frame): what a repair starts from. The whole traceback goes to the user's stderr."""
-    lines = [line.strip() for line in err.strip().splitlines() if line.strip()]
-    if not lines:
-        return "no error text"
-    frames = [line for line in lines if line.startswith("File ")]
-    own = [line for line in frames if ".claude" in line.replace("\\", "/")]
-    frame = (own or frames or [""])[-1]
-    return lines[-1][-300:] + (" (%s)" % frame[-200:] if frame else "")
+def transport(payload, root):
+    tool_input = payload.get("tool_input") or {}
+    args, as_text = _args_of(tool_input)
+    if args is None:
+        return ["the Workflow call's args are not a JSON object; nothing was dispatched."], None
+    try:
+        injected = workflow_transport.inject(args, cwd=str(root))
+    except workflow_transport.TransportError as exc:
+        return ["%s. Nothing was dispatched; repair it, then re-issue the call." % exc], None
+    return [], _with_args(tool_input, injected, as_text)
 
 
-def _fail_closed_reason(name, code, err):
-    return ("%s failed (exit %s); %s, so nothing was dispatched. Repair .claude/hooks/%s.py or the module its "
-            "error names (`git status --short .claude/hooks` shows whether a peer's edit is mid-flight; re-issue "
-            "once it lands), then re-issue the call. Its error: %s"
-            % (name, code, _FAIL_CLOSED_ON_WORKFLOW[name], name, _fault(err)))
+def _member(name):
+    return importlib.import_module(name)
+
+
+def _helper(name, payload):
+    """A V16 helper run in process: (reasons, tool_input). Its exit 2 is a deny; any other fault denies the call."""
+    code, out, err = run_hook(_member(name), [], json.dumps(payload))
+    if code == 2:
+        return [err.strip() or "%s blocked the call." % name], None
+    if code != 0:
+        return ["%s failed (exit %s): %s. Repair .claude/hooks/%s.py, then re-issue the call."
+                % (name, code, err.strip()[-400:], name)], None
+    hso = hook_output(out)
+    if hso.get("permissionDecision") == "deny":
+        return [hso.get("permissionDecisionReason") or "%s denied the call." % name], None
+    update = hso.get("updatedInput")
+    # A partial rewrite overlays the call's own tool_input keys.
+    return [], (dict(payload.get("tool_input") or {}, **update) if isinstance(update, dict) else None)
+
+
+def subagent_gate(payload, root):
+    return _helper("subagent_dispatch_guard", payload)
+
+
+def lf_guard(payload, root):
+    return _helper("workflow_script_lf_guard", payload)
+
+
+WORKFLOW_STEPS = (expand_args_file, expand_jobs_file, launch_checks, transport, lf_guard)
+STOP_ON_DENY = (expand_args_file, expand_jobs_file)
+
+
+def _step(fn, payload, root):
+    try:
+        return fn(payload, root)
+    except Exception as exc:  # a fault denies the call: it never lets an unchecked dispatch through
+        return ["%s failed (%s: %s); nothing was dispatched. Repair .claude/hooks/pre_workflow_dispatch.py."
+                % (fn.__name__, type(exc).__name__, exc)], None
 
 
 def _joined(reasons):
@@ -299,82 +231,35 @@ def _joined(reasons):
             % (len(reasons), "\n".join("%d. %s" % (i, r) for i, r in enumerate(reasons, 1))))
 
 
-def _jobs_file(tool_input):
-    """(refusal, None) when `args.jobsFile` cannot be expanded; (None, args) with the file's jobs in place of
-    the path, in the form the call carried them (a JSON string stays a string); (None, None) without one."""
-    try:
-        import _dispatch_pins
-        reason = _dispatch_pins.jobs_file_refusal(tool_input)
-        expanded = None if reason else _dispatch_pins.expanded_args(tool_input)
-    except Exception as exc:
-        return "args.jobsFile could not be checked (%s: %s). Nothing was dispatched." % (type(exc).__name__, exc), None
-    if reason or expanded is None:
-        return reason, None
-    return None, json.dumps(expanded) if isinstance(tool_input.get("args"), str) else expanded
-
-
-def dispatch(raw_payload, hooks=HOOKS):
-    """Run the chain and return (exit_code, stdout_text, stderr_text) for the dispatcher process."""
+def dispatch(raw_payload):
+    """Run the steps and return (exit_code, stdout_text, stderr_text) for the dispatcher process."""
     payload = json.loads(raw_payload)
-    reasons, contexts, user_stderr = [], [], []
-    decision, rewritten = None, None
-    if payload.get("tool_name") == "Workflow":
-        refusal, expanded = _jobs_file(payload.get("tool_input") or {})
-        if refusal:
-            return 0, json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": refusal + " Correct that and re-issue the call."}}), ""
-        if expanded is not None:
-            rewritten = dict(payload["tool_input"], args=expanded)
-            payload["tool_input"] = rewritten
-            raw_payload = json.dumps(payload)
-    for module, argv_tail in hooks:
-        name = module.__name__
-        if name == _RUNS_WHEN_ALLOWED and reasons:
-            continue
-        code, out, err = run_hook(module, argv_tail, raw_payload)
-        before = len(reasons)
-        if code == 2:
-            reasons.append(err.strip() or "%s blocked the call." % name)
-        elif code != 0:
-            user_stderr.append("[pre_workflow_dispatch] %s exited %s: %s" % (name, code, err.strip()[-1500:]))
-            if name in _FAIL_CLOSED_ON_WORKFLOW and payload.get("tool_name") == "Workflow":
-                reasons.append(_fail_closed_reason(name, code, err))
-            else:
-                contexts.append("[pre_workflow_dispatch] %s exited %s: %s; its checks did not run. "
-                                "Repair .claude/hooks/%s.py." % (name, code, _fault(err), name))
-        else:
-            hso = hook_output(out)
-            note = hso.get("additionalContext")
-            if isinstance(note, str) and note.strip():
-                contexts.append(note)
-            verdict = hso.get("permissionDecision")
-            if verdict == "deny":
-                reasons.append(hso.get("permissionDecisionReason") or "%s denied the call." % name)
-            elif verdict in _DECISION_RANK and _DECISION_RANK[verdict] > _DECISION_RANK.get(decision, 0):
-                decision = verdict
-            if isinstance(hso.get("updatedInput"), dict):
-                rewritten = dict(payload.get("tool_input") or {}, **hso["updatedInput"])
-                payload["tool_input"] = rewritten
-                raw_payload = json.dumps(payload)
-        if name == _ROLE_GATE and len(reasons) > before:
+    root = _session_root(payload)
+    reasons, _none = _step(subagent_gate, payload, root)
+    if reasons:
+        return 0, _emit(reasons, None), ""
+    if payload.get("tool_name") != "Workflow":
+        return 0, "", ""
+    rewritten = None
+    for fn in WORKFLOW_STEPS:
+        step_reasons, update = _step(fn, payload, root)
+        reasons += step_reasons
+        if update is not None:
+            payload = dict(payload, tool_input=update)
+            rewritten = update
+        if step_reasons and fn in STOP_ON_DENY:
             break
+    return 0, _emit(reasons, rewritten), ""
 
-    reasons = _once(reasons)
+
+def _emit(reasons, rewritten):
     result = {"hookEventName": "PreToolUse"}
     if reasons:
         result["permissionDecision"] = "deny"
         result["permissionDecisionReason"] = _joined(reasons)
-    else:
-        if decision:
-            result["permissionDecision"] = decision
-        if rewritten is not None:
-            result["updatedInput"] = rewritten
-    contexts = _once(contexts)
-    if contexts:
-        result["additionalContext"] = "\n\n".join(contexts)
-    stdout_text = json.dumps({"hookSpecificOutput": result}) if len(result) > 1 else ""
-    return 0, stdout_text, "\n".join(user_stderr)
+    elif rewritten is not None:
+        result["updatedInput"] = rewritten
+    return json.dumps({"hookSpecificOutput": result}) if len(result) > 1 else ""
 
 
 def main():

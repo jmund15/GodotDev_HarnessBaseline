@@ -41,7 +41,7 @@ async function run(script, args) {
   let result
   try {
     result = await new AsyncFunction('args', 'agent', 'parallel', 'phase', 'log', body('dispatch.js'))(
-      { __transport: HOST, __toolProfiles: profilesOf(args), ...args }, agent, parallel, () => {}, line => logs.push(String(line)))
+      { __transport: HOST, __toolProfiles: profilesOf(args), __railsText: 'Standing rules for the proof.', ...args }, agent, parallel, () => {}, line => logs.push(String(line)))
   } catch (e) {
     result = { crash: String((e && e.stack) || e) }
   }

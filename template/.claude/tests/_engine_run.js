@@ -28,12 +28,13 @@ const load = (script, transform = source => source) => {
 const ROW = { add: [], remove: [], overrideMode: 'shape-default', enforcement: 'inherited', effectiveMcp: 'unknown/inherited',
   mcpServers: ['semantic-search', 'ai-worker'] }
 const KIND_ROWS = {
-  scout: { ...ROW, kind: 'scout', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-survey', tier: 'fanout', guard: 'survey', disclosure: 'bare' },
-  lens: { ...ROW, kind: 'lens', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-survey', tier: 'fanout', guard: 'survey', disclosure: 'pointer' },
-  reviewer: { ...ROW, kind: 'reviewer', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-review', tier: 'executor', guard: 'review', disclosure: 'full' },
-  author: { ...ROW, kind: 'author', builtins: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], agentType: 'lane-author', tier: 'executor', guard: 'author', disclosure: 'full' },
-  judge: { ...ROW, kind: 'judge', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-review', tier: 'executor', guard: 'common', disclosure: 'full' },
+  scout: { ...ROW, kind: 'scout', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-survey' },
+  lens: { ...ROW, kind: 'lens', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-survey' },
+  reviewer: { ...ROW, kind: 'reviewer', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-review' },
+  author: { ...ROW, kind: 'author', builtins: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], agentType: 'lane-author' },
+  judge: { ...ROW, kind: 'judge', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-review' },
 }
+const RAILS_FIXTURE = '## Fixture rails\n\nStanding rules for the proof.'
 const withKinds = (args) => {
   const a = { ...args }
   const entries = [
@@ -45,6 +46,8 @@ const withKinds = (args) => {
   const profiles = { 'review:merge': KIND_ROWS.reviewer, 'review:fold': KIND_ROWS.author }
   for (const [entry, key] of entries) if (entry && key && KIND_ROWS[entry.kind]) profiles[key] = KIND_ROWS[entry.kind]
   a.__toolProfiles = { ...profiles, ...(a.__toolProfiles || {}) }
+  // The entry injects guards/rails.md as one string (T4); a fixture stands in for it unless the case sets its own.
+  if (a.__railsText === undefined) a.__railsText = RAILS_FIXTURE
   if (a.kind && KIND_ROWS[a.kind] && a.__kindProfile === undefined) a.__kindProfile = KIND_ROWS[a.kind]
   return a
 }

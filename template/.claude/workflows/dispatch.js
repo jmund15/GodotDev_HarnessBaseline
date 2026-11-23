@@ -57,8 +57,6 @@ const VALID_EFFORTS = transport.efforts
 const TOOLP = (A.__toolProfiles && typeof A.__toolProfiles === 'object') ? A.__toolProfiles : {}
 // ENGINE-BLOCK-END TOOLP
 const profileOf = (j) => (j && TOOLP[j.label]) || null
-// A job's own `tier` wins; one that writes none takes its kind row's tier.
-const tierOfJob = (j) => j.tier || (profileOf(j) || {}).tier || A.tier || '-'
 
 // REQUIRED `kind` on every job, with no default: this engine mixes read-only and authoring jobs in one
 // run, so any default would silently buy the wrong tool set. A job still carrying `agentType`, `shape` or
@@ -130,7 +128,7 @@ const pinBasis = (j) => (j.pick !== undefined ? ' pick:' + j.pick : '') + (j.spe
 // ENGINE-BLOCK-BEGIN effortRecord
 const effortRecord = (j) => { const ec = (j.effortCases || {})[j.model] || {}; return ' req:' + (ec.requestedEffort || '-') + ' case:' + (ec.effortCase || '-') }
 // ENGINE-BLOCK-END effortRecord
-log('PINS ' + JSON.stringify(Object.fromEntries(jobs.map(j => [j.label, PIN(j.model) + '/' + EFF(j.effort) + '/' + profileOf(j).agentType + ' tier:' + tierOfJob(j) + pinBasis(j) + effortRecord(j)]))))
+log('PINS ' + JSON.stringify(Object.fromEntries(jobs.map(j => [j.label, PIN(j.model) + '/' + EFF(j.effort) + '/' + profileOf(j).agentType + pinBasis(j) + effortRecord(j)]))))
 const justified = Object.fromEntries(jobs.filter(j => j.justification).map(j => [j.label, j.justification]))
 if (Object.keys(justified).length) log('JUSTIFICATION ' + JSON.stringify(justified))
 log('ENDPOINT: ' + transport.name + ' — pins are that transport\'s registry pins')
@@ -144,7 +142,7 @@ const SHARED = Array.isArray(A.sharedSingleFlight) ? A.sharedSingleFlight : []
 const guardFor = (lane, j) => {
   if (lanes.length < 2 && SHARED.length === 0) return ''
   const lines = ['', '=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===',
-    'Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. Your delegate rails name this project\'s others; a build, typecheck or test command they do not name is not single-flight, so run your brief\'s own checks with it. Python and Node proofs under .claude/tests/ are not single-flight'
+    'Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. A command the project does not list as single-flight in .claude/guards/single_flight.json is not single-flight, so run your brief\'s own checks with it. Python and Node proofs under .claude/tests/ are not single-flight'
       + (noShell(j) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s own test file (`python -m pytest <file> -q`) before you return (rules/harness_tooling.md).')
       + ' If your task file mandates a single-flight run, STOP and report that it needs a serialized dispatch.']
   if (lanes.length > 1 && lane.exclusiveResource) lines.push('You are the ONLY agent in your own lane (' + lane.exclusiveResource + '), which you own outright for the duration of your task.')
@@ -152,60 +150,19 @@ const guardFor = (lane, j) => {
   return lines.join('\n')
 }
 
-// Delegate rails — ONE home (.claude/guards/). The entry injects the assembled text as `args.__railsText`,
-// because this script cannot read files. Every route carries the SAME two sections: common.md's plus the kind's guard file.
-// The Read pointer is only the fallback: delegates followed it in about half of measured cells
-// (gotcha_delegate_rails_pointer_followed_half_the_time).
-// Guard tier per RECEIVING model is injected as `args.__rails`; a model the map does not name reads `detailed`.
-// ENGINE-BLOCK-BEGIN RAILS
-const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
-// ENGINE-BLOCK-END RAILS
-const guardOf = (j) => profileOf(j).guard
-// A job's own `railTier` wins over the map: it holds the model fixed while the tier varies. `none` sends no rails block.
-const VALID_RAIL_TIERS = ['detailed', 'condensed', 'minimal', 'none']
-const badTier = jobs.filter(j => j.railTier !== undefined && !VALID_RAIL_TIERS.includes(j.railTier))
-if (badTier.length > 0) {
-  return { error: 'railTier must be one of [' + VALID_RAIL_TIERS.join('|') + '] when set.', badJobs: badTier.map(j => j.label) }
-}
-const tierOf = (j) => j.railTier || RAILS[j.model] || 'detailed'
+// Delegate rails: one text for every model and kind (guards/rails.md). The entry injects it as `args.__railsText`,
+// because this script cannot read files. The Read pointer is only the fallback: delegates followed it in about half
+// of measured cells (gotcha_delegate_rails_pointer_followed_half_the_time).
 // ENGINE-BLOCK-BEGIN RAILS_TEXT
-const RAILS_TEXT = (A.__railsText && typeof A.__railsText === 'object') ? A.__railsText : {}
+const RAILS_TEXT = typeof A.__railsText === 'string' ? A.__railsText : ''
 // ENGINE-BLOCK-END RAILS_TEXT
+if (!RAILS_TEXT.trim()) return { error: 'dispatch: args.__railsText is missing; the entry injects guards/rails.md.' }
 // ENGINE-BLOCK-BEGIN RAILS_HEADER
 const RAILS_HEADER = '=== DELEGATE RAILS (standing rules for how you work; your task is the brief above) ==='
 // ENGINE-BLOCK-END RAILS_HEADER
-// ENGINE-BLOCK-BEGIN inlineRails
-const inlineRails = (label, guard, tier) => {
-  const text = RAILS_TEXT[guard + '/' + tier]
-  if (typeof text === 'string' && text.trim()) return ['', RAILS_HEADER, text].join('\n')
-  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + guard + '/' + tier)
-  return null
-}
-// ENGINE-BLOCK-END inlineRails
-// Registry driverNotes per pinned model; rails key on (guard, tier) and carry no model, so notes travel in args.__driverNotes.
-// ENGINE-BLOCK-BEGIN DRIVER_NOTES
-const DRIVER_NOTES = (A.__driverNotes && typeof A.__driverNotes === 'object') ? A.__driverNotes : {}
-// ENGINE-BLOCK-END DRIVER_NOTES
-// ENGINE-BLOCK-BEGIN driverNotes
-const driverNotes = (model) => (typeof DRIVER_NOTES[model] === 'string' && DRIVER_NOTES[model].trim()) ? '\n\n' + DRIVER_NOTES[model] : ''
-// ENGINE-BLOCK-END driverNotes
-const guardRef = (x) => { const r = railsRef(x); return r && r + driverNotes(x.model) }
-const railsRef = (j) => {
-  const tier = tierOf(j)
-  if (tier === 'none') return ''
-  const guard = guardOf(j)
-  const inline = inlineRails(j.label, guard, tier)
-  if (inline) return inline
-  const files = guard === 'common'
-    ? '.claude/guards/common.md'
-    : '.claude/guards/common.md and .claude/guards/' + guard + '.md'
-  return [
-    '',
-    '=== DELEGATE RAILS ===',
-    'Read ' + files + ' with the Read tool and follow the `## ' + tier + '` section of each. Read ONLY that section — the other tiers are for other models.',
-  ].join('\n')
-}
-log('KINDS ' + JSON.stringify(Object.fromEntries(jobs.map(j => [j.label, j.kind + '/' + tierOf(j)]))))
+// ENGINE-BLOCK-BEGIN railsRef
+const railsRef = () => ['', RAILS_HEADER, RAILS_TEXT].join('\n')
+// ENGINE-BLOCK-END railsRef
 
 // TOOL PROFILES — what each child of this run launches with. Every job runs as its kind row's generated
 // agent type, whose `tools` frontmatter is the whole inventory, so an entry is `agent-type`.
@@ -315,6 +272,7 @@ phase(chainsIn.length > 0 ? 'Chains' : 'Dispatch')
 const notRun = []
 const results = await parallel(lanes.map(c => async () => {
   const laneOut = []
+  const postOut = []
   for (let i = 0; i < c.jobs.length; i++) {
     const j = c.jobs[i]
     const ctx = [A.contextPath].concat(Array.isArray(j.contextPaths) ? j.contextPaths : []).filter(p => typeof p === 'string' && p)
@@ -327,7 +285,7 @@ const results = await parallel(lanes.map(c => async () => {
       + handoff(c, i)
       + shellWriteGuard(j)
       + guardFor(c, j)
-      + guardRef(j)
+      + railsRef()
       + spillContract(j)
       + choicesContract(j)
     const opts = { label: j.label, phase: chainsIn.length > 0 ? 'Chains' : 'Dispatch', model: PIN(j.model), effort: EFF(j.effort), agentType: profileOf(j).agentType }
@@ -348,10 +306,20 @@ const results = await parallel(lanes.map(c => async () => {
       log('lane ' + c.name + ': stopped at ' + (i + 1) + '/' + c.jobs.length + ' (no result from ' + j.label + ')')
       break
     }
+    // Post-return (Q13 O1): the project's `dispatch.post_return` hook runs in the job's cwd through one agent that
+    // runs launch_check.py. The entry injects `__postReturn` only when the project sets the hook. A native job has
+    // no out file, so its brief path stands for it.
+    if (A.__postReturn) {
+      const cmd = 'python3 .claude/tools/launch_check.py post_return native ' + j.promptPath + ' ' + j.promptPath + ' ' + j.label
+      const post = await agent('Run this command exactly with the Bash tool and return its exit code and any stderr, verbatim. Do nothing else: ' + cmd,
+        { label: j.label + ' post-return', phase: 'Dispatch', model: PIN(j.model), effort: EFF(j.effort), agentType: profileOf(j).agentType })
+      postOut.push([j.label + ':post_return', post])
+      if (post == null) log('lane ' + c.name + ': post-return agent for ' + j.label + ' returned nothing')
+    }
     log('lane ' + c.name + ': ' + (i + 1) + '/' + c.jobs.length + ' done (' + j.label + ')')
   }
   for (const rest of c.jobs.slice(laneOut.length)) notRun.push(rest.label)
-  return laneOut
+  return laneOut.concat(postOut)
 }))
 
 const out = Object.fromEntries(results.flat().filter(Boolean))
