@@ -453,6 +453,8 @@ OWNED_PASS = [
     'TMPD=$(mktemp -d -t fooXXXXXX); rm -rf "$TMPD"',
     'd=$(mktemp -d) && cd "$d" && git init -q && cd / && rm -rf "$d"',
     'TMP=$(mktemp -d); awk "/x/" f > "$TMP/o"; rm -r' 'f "$TMP"',
+    'T=$(mktemp -d)\necho hi > "$T/a"\nrm -rf "$T"',
+    'A=$(mktemp -d); B=$(mktemp -d); rm -rf "$A" "$B"',
 ]
 
 

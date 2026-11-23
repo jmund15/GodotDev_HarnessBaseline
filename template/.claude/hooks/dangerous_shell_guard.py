@@ -406,27 +406,6 @@ def _deletable_by_fact(target: str, here: str | None = None, transcript_path: st
             or _session_made_dir(target, here, transcript_path))
 
 
-def _is_safe_ephemeral_cleanup(scan: str, raw: str, cwd: str | None = None,
-                               transcript_path: str | None = None) -> bool:
-    """True only for a single (non-chained) recursive delete whose every path argument satisfies
-    `_deletable_by_fact`: a regenerable cache inside the project, this session's own scratch output, a
-    target git cannot lose, or a folder this session's own mkdir made.
-
-    Control operators are judged on the quote-blanked `scan`, so a chained second delete cannot
-    ride along. Path arguments come from shell-tokenizing the unblanked `raw`, so a quoted literal
-    target is judged as the path it names. Any other path token disqualifies the command; the check
-    can only over-block, never green-light a broad delete."""
-    if re.search(r'&&|\|\||;|\||`|\$\(', scan):
-        return False
-    tokens = _cleanup_tokens(raw)
-    if tokens is None:
-        return False
-    paths = [t for t in tokens
-             if not t.startswith('-')
-             and t.lower() not in ('rm', 'del', 'erase', 'ri', 'remove-item')]
-    return bool(paths) and all(_deletable_by_fact(p, cwd, transcript_path) for p in paths)
-
-
 def _forces_removal(args: list[str]) -> bool:
     """True when a flag stops the delete reporting an absent operand, so deleting nothing exits 0
     (`rm -f`, `-rf`, `-fr`, `--force`). Only then does `true` stand in for the segment."""
@@ -501,11 +480,8 @@ def rewrite_absent_forced_deletes(command: str, cwd: str | None = None) -> str |
 
 
 # A4: `NAME=$(mktemp -d)` (or `-t <template>` with no `/` in the template) is ownership evidence a
-# literal path never carries. Everything else surrounding it — cd, a subshell pipeline that reads
-# the transcript, a printf | hook | grep | cut probe — is unrelated chaining and stays unrestricted;
-# only each delete-shaped segment's own targets and the assigning variable are judged.
+# literal path never carries; a delete target that is exactly `$NAME` of such a variable is the command's own.
 _DELETE_CMD_NAMES = frozenset({'rm', 'del', 'erase', 'ri', 'remove-item'})
-_CHAIN_SEP_RE = re.compile(r'&&|\|\||;|\|')
 _VAR_TOKEN_RE = re.compile(r'^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$')
 # The value must END at the substitution: a suffix (`$(mktemp -d)/..`, `/*`) points outside the directory.
 _MKTEMP_ASSIGN_VALUE_RE = re.compile(r'\$\(\s*mktemp\s+-d(?:\s+-t\s+[^\s)/]+)?\s*\)(?=[\s;&|]|$)')
@@ -516,20 +492,6 @@ def _blank_quotes_samelen(command: str) -> str:
     """Like `_strip_quoted`, but each quoted span is replaced by spaces of the SAME length, so
     positions found in the blanked text still index correctly into the original string."""
     return re.sub(r"'[^']*'|\"[^\"]*\"", lambda m: ' ' * len(m.group(0)), command)
-
-
-def _split_top_level(raw: str) -> list[str]:
-    """`raw` cut at `&&`, `||`, `;` and `|` that sit outside any quoted span — a `|` inside a
-    `$(...)` subshell argument (e.g. `T=$(ls ... | head -1)`) is quoted-blanked away first only
-    for locating the cut points, then sliced from the real `raw`, so quotes stay intact."""
-    blanked = _blank_quotes_samelen(raw)
-    segments = []
-    pos = 0
-    for m in _CHAIN_SEP_RE.finditer(blanked):
-        segments.append(raw[pos:m.start()])
-        pos = m.end()
-    segments.append(raw[pos:])
-    return segments
 
 
 def _is_mktemp_owned(name: str, raw: str) -> bool:
@@ -545,39 +507,6 @@ def _is_mktemp_owned(name: str, raw: str) -> bool:
         return False
     tail = raw[matches[0].end() + 1:]
     return _MKTEMP_ASSIGN_VALUE_RE.match(tail) is not None
-
-
-def _is_owned_temp_cleanup(raw: str) -> bool:
-    """True when EVERY delete-shaped top-level segment in `raw` targets exactly one variable,
-    all of whose targets in that segment are `"$NAME"`, `$NAME` or `${NAME}`, where `_is_mktemp_owned`
-    holds for NAME. One unowned or mixed-target delete segment anywhere disqualifies the whole
-    command — chaining a second, unrelated delete alongside a legitimate one must not ride along."""
-    # A segment is judged when any recursive-delete pattern matches it, wherever the delete sits:
-    # a delete inside `$(...)`, backticks, or behind `sudo` does not head its segment and so
-    # disqualifies the whole command.
-    delete_segments = []
-    for segment in _split_top_level(raw):
-        if not any(re.search(p, _strip_quoted(segment), re.IGNORECASE) for p in _RECURSIVE_DELETE_PATTERNS):
-            continue
-        tokens = _cleanup_tokens(segment)
-        if not tokens or tokens[0].lower() not in _DELETE_CMD_NAMES:
-            return False
-        delete_segments.append(tokens)
-    if not delete_segments:
-        return False
-    for tokens in delete_segments:
-        paths = [t for t in tokens[1:] if not t.startswith('-')]
-        if not paths:
-            return False
-        names = set()
-        for p in paths:
-            m = _VAR_TOKEN_RE.match(p)
-            if not m:
-                return False
-            names.add(m.group(1))
-        if len(names) != 1 or not _is_mktemp_owned(names.pop(), raw):
-            return False
-    return True
 
 
 # Resolved-target allow: each delete segment's targets resolve through literal paths, variables the
@@ -724,15 +653,15 @@ def _is_regenerable_resolved(target: str, here: str) -> bool:
     return _is_regenerable_or_scratch(_norm(resolve_cd(here, target)))
 
 
-def _is_resolved_safe_cleanup(raw: str, cwd: str | None, accept) -> bool:
-    """True when every recursive-delete segment in `raw` is a plain delete command whose targets
-    all satisfy `accept(target, base directory)`.
-    A delete that does not head its segment (inside `$(...)`, backticks, behind `sudo`/`xargs`), a
-    glob in a directory part or a `cd`, `~`, `%` or any unresolvable target disqualifies the whole
-    command (KFM #50). A glob in the last part is judged by its directory."""
+def _delete_targets(raw: str, cwd: str | None):
+    """Every target of every recursive-delete segment in `raw`, as (token, path, here): `path` is the literal the
+    delete removes, expanded through assignments the command makes and resolved later against the tracked `cd`
+    `here`, or its directory for a glob in the last part; None when it cannot be proved (an unexpanded value, `~`,
+    `%`, a glob in a directory part, an unknown cwd). None for the whole command when a delete does not head its
+    segment (inside `$(...)`, backticks, behind `sudo`/`xargs`) or names no target, or when no segment deletes."""
     assignments = literal_assignments(raw)
     here = cwd or _project_root()
-    found = False
+    found = []
     for segment in _segments_with_quotes(raw):
         tokens = _cleanup_tokens(segment)
         if tokens and tokens[0] == "cd" and len(tokens) == 2:
@@ -743,21 +672,34 @@ def _is_resolved_safe_cleanup(raw: str, cwd: str | None, accept) -> bool:
         if not any(re.search(p, _strip_quoted(segment), re.IGNORECASE) for p in _RECURSIVE_DELETE_PATTERNS):
             continue
         if not tokens or tokens[0].lower() not in _DELETE_CMD_NAMES or '`' in segment or '$(' in segment:
-            return False
+            return None
         targets = [t for t in tokens[1:] if not t.startswith('-')]
         if not targets:
-            return False
+            return None
         for token in targets:
             value = expand_literal(token, assignments)
-            if value is None or here is None or value.startswith('~') or '%' in value:
-                return False
-            head, tail = os.path.split(value.replace("\\", "/").rstrip("/"))
-            if _GLOB_CHARS.search(head):
-                return False
-            if not accept(head if _GLOB_CHARS.search(tail) else value, here):
-                return False
-        found = True
-    return found
+            path = None
+            if value is not None and here is not None and not value.startswith('~') and '%' not in value:
+                head, tail = os.path.split(value.replace("\\", "/").rstrip("/"))
+                if not _GLOB_CHARS.search(head):
+                    path = head if _GLOB_CHARS.search(tail) else value
+            found.append((token, path, here))
+    return found or None
+
+
+def _deletable(raw: str, cwd: str | None, transcript_path: str | None) -> bool:
+    """Every recursive-delete target in `raw` needs no owner answer: a `$NAME` of the command's own
+    `NAME=$(mktemp -d)`, or a proved path `_deletable_by_fact` admits. One unproved target denies the command."""
+    targets = _delete_targets(raw, cwd)
+    if not targets:
+        return False
+    for token, path, here in targets:
+        var = _VAR_TOKEN_RE.match(token)
+        if var and _is_mktemp_owned(var.group(1), raw):
+            continue
+        if path is None or not _deletable_by_fact(path, here, transcript_path):
+            return False
+    return True
 
 
 # `git`'s global options sit BETWEEN `git` and the subcommand (`git -C <path> rm ...`),
@@ -783,37 +725,24 @@ def _normalize_git_globals(scan: str) -> str:
 def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> str:
     """Why the first worktree, scratch or worktree-shaped (a `.git` file) target this delete names is not
     removable, or ''."""
-    assignments = literal_assignments(raw)
-    here = cwd or _project_root()
     home = _norm(os.path.join(_project_root(), '.claude', 'worktrees'))
     scratch = _norm(os.path.join(_project_root(), '.claude', 'scratch'))
-    for segment in _segments_with_quotes(raw):
-        tokens = _cleanup_tokens(segment)
-        if tokens and tokens[0] == 'cd' and len(tokens) == 2:
-            moved = expand_literal(tokens[1], assignments)
-            here = resolve_cd(here, moved) if here and moved else None
+    for _token, value, here in _delete_targets(raw, cwd) or ():
+        if not value or _UNSAFE_PATH_CHARS.search(value):
             continue
-        if not tokens or tokens[0].lower() not in _DELETE_CMD_NAMES or here is None:
-            continue
-        for token in tokens[1:]:
-            if token.startswith('-'):
-                continue
-            value = expand_literal(token, assignments)
-            if not value or _UNSAFE_PATH_CHARS.search(value):
-                continue
-            target = _norm(resolve_cd(here, value))
-            reasons = []
-            if target == home or _strictly_under(target, home):
-                if not _is_regenerable_target(value, here, transcript_path, reasons):
-                    return ' %s is not retired: %s.' % (value, '; '.join(reasons))
-            elif _strictly_under(target, scratch):
-                clone_reasons = []
-                if not (is_regenerable_clone(value, here, _project_root(), clone_reasons)
-                        or _is_regenerable_target(value, here, transcript_path, reasons)):
-                    return ' %s is not removable: %s; %s.' % (value, clone_reasons[0], reasons[0])
-            elif os.path.isfile(os.path.join(target, '.git')) \
-                    and not _is_regenerable_target(value, here, transcript_path, reasons):
-                return ' %s is not removable: %s.' % (value, '; '.join(dict.fromkeys(reasons)))
+        target = _norm(resolve_cd(here, value))
+        reasons = []
+        if target == home or _strictly_under(target, home):
+            if not _is_regenerable_target(value, here, transcript_path, reasons):
+                return ' %s is not retired: %s.' % (value, '; '.join(reasons))
+        elif _strictly_under(target, scratch):
+            clone_reasons = []
+            if not (is_regenerable_clone(value, here, _project_root(), clone_reasons)
+                    or _is_regenerable_target(value, here, transcript_path, reasons)):
+                return ' %s is not removable: %s; %s.' % (value, clone_reasons[0], reasons[0])
+        elif os.path.isfile(os.path.join(target, '.git')) \
+                and not _is_regenerable_target(value, here, transcript_path, reasons):
+            return ' %s is not removable: %s.' % (value, '; '.join(dict.fromkeys(reasons)))
     return ''
 
 
@@ -835,10 +764,7 @@ def _check_bash_command(command: str, cwd: str | None, transcript_path: str | No
             # Allow recursive deletes confined to regenerable harness scratch, or every target a
             # `NAME=$(mktemp -d)` variable this same command owns; never relax a drive-format
             # block regardless of target.
-            if ('format' not in message.lower()
-                    and (_is_safe_ephemeral_cleanup(scan, raw, cwd, transcript_path) or _is_owned_temp_cleanup(raw)
-                         or _is_resolved_safe_cleanup(
-                             raw, cwd, lambda value, here: _deletable_by_fact(value, here, transcript_path)))):
+            if 'format' not in message.lower() and _deletable(raw, cwd, transcript_path):
                 continue
             if 'recursive' in message.lower():
                 return True, (message + " (CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first)."
