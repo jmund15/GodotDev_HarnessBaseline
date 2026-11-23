@@ -4,7 +4,6 @@ because it resolves its repository from its own location. No network."""
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,8 +22,8 @@ def run(repo, *args):
                           cwd=str(repo), capture_output=True, text=True, encoding="utf-8")
 
 
-def contract(temp_root):
-    repo = Path(temp_root) / "repo"
+def test_contract(tmp_path):
+    repo = tmp_path / "repo"
     (repo / ".claude" / "scripts").mkdir(parents=True)
     shutil.copyfile(SCRIPT, repo / ".claude" / "scripts" / "doc_diff_check.py")
     git(repo, "init", "-q")
@@ -43,9 +42,3 @@ def contract(temp_root):
 
     bad_rev = run(repo, "no-such-revision")
     assert bad_rev.returncode == 2 and "failed" in bad_rev.stderr, (bad_rev.returncode, bad_rev.stderr[-300:])
-
-
-if __name__ == "__main__":
-    with tempfile.TemporaryDirectory(prefix="doc_diff_check_proof_") as tmp:
-        contract(tmp)
-    print("ok doc_diff_check.py")

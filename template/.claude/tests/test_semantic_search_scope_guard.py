@@ -4,7 +4,7 @@ searchDir is not a git top-level, or whose restrictToDir is non-POSIX, is blocke
 stderr) through both process() directly and the real pre_read_dispatch.py channel. Other tools and
 well-formed calls pass.
 
-    python3 .claude/tests/test_semantic_search_scope_guard.py
+    python -m pytest .claude/tests/test_semantic_search_scope_guard.py -q
 """
 import json
 import os
@@ -244,6 +244,15 @@ def main():
         print("%-4s %s" % ("ok" if ok else "FAIL", label))
     print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
     return 1 if failures else 0
+
+
+def test_proof():
+    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code
+    assert code in (None, 0), code
 
 
 if __name__ == "__main__":

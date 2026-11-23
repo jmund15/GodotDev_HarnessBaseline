@@ -7,7 +7,7 @@ with WORKSTATION_PROFILE_PATH, the MCP config walk with CLAUDE_CONFIG_DIR and SC
 real subprocess is `git`, for the main-checkout/worktree keying. The core runs alone in a temp
 `tools/` for the seam cases, so they prove what a consumer without the engine layer receives.
 
-    python3 .claude/tests/test_workstation_profile.py
+    python -m pytest .claude/tests/test_workstation_profile.py -q
 """
 import contextlib
 import importlib.util
@@ -476,6 +476,15 @@ def main():
         print("\nFAILED:\n  " + "\n  ".join(FAILURES))
         sys.exit(1)
     print("all ok")
+
+
+def test_proof():
+    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code
+    assert code in (None, 0), code
 
 
 if __name__ == "__main__":

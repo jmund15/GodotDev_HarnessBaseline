@@ -7,7 +7,7 @@ planted here, and every `add` run is pointed at the plant, so the proof passes i
 worklog_reference names other domains. `last_updated` / `Last synced` are set to a fixed old date
 so a run on any day proves the bump.
 
-    python3 .claude/tests/test_worklog.py
+    python -m pytest .claude/tests/test_worklog.py -q
 """
 import datetime
 import json
@@ -740,123 +740,127 @@ check("round trip new domain: mirror is its starting bytes but for Last synced",
 
 # --- the vault TODO dir comes from the lock substitutions, and refuses without them ---
 import importlib.util
-spec = importlib.util.spec_from_file_location("worklog_tool", str(TOOL))
-tool = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(tool)
-
-v = pathlib.Path(tempfile.mkdtemp(prefix="wl_vault_"))
-(v / ".claude").mkdir()
-(v / ".claude" / "baseline.lock.json").write_text(json.dumps(
-    {"substitutions": {tool.TOKEN % "VAULT_ROOT": "/vault",
-                       tool.TOKEN % "PROJECT_NAME": "Sample"}}), encoding="utf-8")
-check("vault dir: built from the lock's substitutions",
-      tool.vault_todo(v) == pathlib.Path("/vault/DevProjects/Sample/Claude/TODO"), tool.vault_todo(v))
-v = pathlib.Path(tempfile.mkdtemp(prefix="wl_vault_none_"))
-try:
-    tool.vault_todo(v)
-    raised = ""
-except ValueError as exc:
-    raised = str(exc)
-check("vault dir: a lock without substitutions refuses and names it",
-      str(v / ".claude" / "baseline.lock.json") in raised, raised)
-
-# --- the tool's canonical reader agrees with the planted and the real SKILL tables ---
-def table_slice(text, start_marker, end_marker):
-    body = text.split(start_marker, 1)[1].split(end_marker, 1)[0]
-    return [line for line in body.splitlines() if line.startswith("|")]
 
 
-def is_domain_row(row):
-    cell = row.split("|")[1].strip()
-    return cell not in ("", "Long form (Active section header)") and set(cell) - set("-: ")
+def test_proof():
+    """The whole worklog proof, in process: one case per check, reported in order."""
+    spec = importlib.util.spec_from_file_location("worklog_tool", str(TOOL))
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+
+    v = pathlib.Path(tempfile.mkdtemp(prefix="wl_vault_"))
+    (v / ".claude").mkdir()
+    (v / ".claude" / "baseline.lock.json").write_text(json.dumps(
+        {"substitutions": {tool.TOKEN % "VAULT_ROOT": "/vault",
+                           tool.TOKEN % "PROJECT_NAME": "Sample"}}), encoding="utf-8")
+    check("vault dir: built from the lock's substitutions",
+          tool.vault_todo(v) == pathlib.Path("/vault/DevProjects/Sample/Claude/TODO"), tool.vault_todo(v))
+    v = pathlib.Path(tempfile.mkdtemp(prefix="wl_vault_none_"))
+    try:
+        tool.vault_todo(v)
+        raised = ""
+    except ValueError as exc:
+        raised = str(exc)
+    check("vault dir: a lock without substitutions refuses and names it",
+          str(v / ".claude" / "baseline.lock.json") in raised, raised)
+
+    # --- the tool's canonical reader agrees with the planted and the real SKILL tables ---
+    def table_slice(text, start_marker, end_marker):
+        body = text.split(start_marker, 1)[1].split(end_marker, 1)[0]
+        return [line for line in body.splitlines() if line.startswith("|")]
 
 
-# ================================ session record ================================
-SID_A, SID_B = "probe-session-a", "probe-session-b"
+    def is_domain_row(row):
+        cell = row.split("|")[1].strip()
+        return cell not in ("", "Long form (Active section header)") and set(cell) - set("-: ")
 
-# --- add without --source records the runtime session on the block, after Context ---
-T6 = "Probe the session record"
-p = stage(tempfile.mkdtemp(prefix="wl_add_sess_"), worklog=W4, mirror=M4)
-r = run_add(p, T6, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "session context",
-            "--date", TODAY, session=SID_A)
-check("session: add rc=0", r.returncode == 0, r.stderr[-400:])
-wl = read(p, "Worklog.md")
-check("session: block records the runtime session after Context",
-      ("### Alpha\n- [ ] **%s** — `chore` · scope `1` · added %s\n  - Context: session context\n"
-       "  - Session: %s\n") % (T6, TODAY, SID_A) in wl, wl[:900])
 
-# --- a --source PR ref stays, and the session is recorded on its own line ---
-T7 = "Probe a source ref item"
-p = stage(tempfile.mkdtemp(prefix="wl_add_sess_pr_"), worklog=W4, mirror=M4)
-r = run_add(p, T7, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "ctx",
-            "--date", TODAY, "--source", "PR #42", session=SID_A)
-wl = read(p, "Worklog.md")
-check("session: PR ref source stays and the session is recorded too",
-      "  - Source: PR #42\n  - Session: %s\n" % SID_A in wl, wl[:900])
+    # ================================ session record ================================
+    SID_A, SID_B = "probe-session-a", "probe-session-b"
 
-# --- a --source that already is the runtime session is the record: no second line ---
-T8 = "Probe a session source item"
-p = stage(tempfile.mkdtemp(prefix="wl_add_sess_src_"), worklog=W4, mirror=M4)
-r = run_add(p, T8, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "ctx",
-            "--date", TODAY, "--source", SID_A, session=SID_A)
-wl = read(p, "Worklog.md")
-check("session: source naming the runtime session adds no Session line",
-      "  - Source: %s\n" % SID_A in wl and "  - Session:" not in wl, wl[:900])
+    # --- add without --source records the runtime session on the block, after Context ---
+    T6 = "Probe the session record"
+    p = stage(tempfile.mkdtemp(prefix="wl_add_sess_"), worklog=W4, mirror=M4)
+    r = run_add(p, T6, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "session context",
+                "--date", TODAY, session=SID_A)
+    check("session: add rc=0", r.returncode == 0, r.stderr[-400:])
+    wl = read(p, "Worklog.md")
+    check("session: block records the runtime session after Context",
+          ("### Alpha\n- [ ] **%s** — `chore` · scope `1` · added %s\n  - Context: session context\n"
+           "  - Session: %s\n") % (T6, TODAY, SID_A) in wl, wl[:900])
 
-# --- FSLINE records the session as a trailing tag, parenthetical unchanged ---
-T9 = "Probe a future session item"
-p = stage(tempfile.mkdtemp(prefix="wl_add_sess_fs_"), worklog=W4, mirror=M4)
-r = run_add(p, T9, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "a probe future item",
-            "--date", TODAY, "--when", "future", session=SID_A)
-wl = read(p, "Worklog.md")
-check("session: FSLINE carries the session tag",
-      "> - `chore` · scope `1` · %s (added %s; a probe future item) · session %s\n" % (T9, TODAY, SID_A) in wl,
-      wl[-900:])
+    # --- a --source PR ref stays, and the session is recorded on its own line ---
+    T7 = "Probe a source ref item"
+    p = stage(tempfile.mkdtemp(prefix="wl_add_sess_pr_"), worklog=W4, mirror=M4)
+    r = run_add(p, T7, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "ctx",
+                "--date", TODAY, "--source", "PR #42", session=SID_A)
+    wl = read(p, "Worklog.md")
+    check("session: PR ref source stays and the session is recorded too",
+          "  - Source: PR #42\n  - Session: %s\n" % SID_A in wl, wl[:900])
 
-# --- the close's read: exactly the two items session A added, none of session B's or the untagged one ---
-p = stage(tempfile.mkdtemp(prefix="wl_session_read_"), worklog=W4, mirror=M4)
-run_add(p, "Tighten the alpha seam", "--class", "chore", "--scope", "1", "--domain", "Alpha",
-        "--context", "active context", "--date", TODAY, session=SID_A)
-run_add(p, "Plan epsilon migration", "--class", "design", "--scope", "2", "--domain", "Alpha",
-        "--context", "future context", "--date", TODAY, "--when", "future", session=SID_A)
-run_add(p, "Rename the beta probe", "--class", "chore", "--scope", "1", "--domain", "Alpha",
-        "--context", "other context", "--date", TODAY, session=SID_B)
-run_add(p, "Measure gamma latency", "--class", "chore", "--scope", "1", "--domain", "Alpha",
-        "--context", "untagged context", "--date", TODAY)
-wl = read(p, "Worklog.md")
-got = tool.session_additions(wl, SID_A)
-check("session read: lists exactly the two items session A added, in document order",
-      got == [("Tighten the alpha seam", "active context"), ("Plan epsilon migration", "future context")], got)
-check("session read: session B's read lists only its own item",
-      tool.session_additions(wl, SID_B) == [("Rename the beta probe", "other context")])
+    # --- a --source that already is the runtime session is the record: no second line ---
+    T8 = "Probe a session source item"
+    p = stage(tempfile.mkdtemp(prefix="wl_add_sess_src_"), worklog=W4, mirror=M4)
+    r = run_add(p, T8, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "ctx",
+                "--date", TODAY, "--source", SID_A, session=SID_A)
+    wl = read(p, "Worklog.md")
+    check("session: source naming the runtime session adds no Session line",
+          "  - Source: %s\n" % SID_A in wl and "  - Session:" not in wl, wl[:900])
 
-p = pathlib.Path(tempfile.mkdtemp(prefix="wl_canon_"))
-(p / "SKILL.md").write_text(SKILL_PLANT, encoding="utf-8")
-planted_classes, planted_domains = tool.read_canonical(p / "SKILL.md")
-check("planted canonical: the tool reads the planted class rows",
-      planted_classes == PLANT_CLASSES, planted_classes)
-check("planted canonical: the tool reads each planted long/short pair",
-      planted_domains == PLANT_DOMAINS, planted_domains)
+    # --- FSLINE records the session as a trailing tag, parenthetical unchanged ---
+    T9 = "Probe a future session item"
+    p = stage(tempfile.mkdtemp(prefix="wl_add_sess_fs_"), worklog=W4, mirror=M4)
+    r = run_add(p, T9, "--class", "chore", "--scope", "1", "--domain", "Alpha", "--context", "a probe future item",
+                "--date", TODAY, "--when", "future", session=SID_A)
+    wl = read(p, "Worklog.md")
+    check("session: FSLINE carries the session tag",
+          "> - `chore` · scope `1` · %s (added %s; a probe future item) · session %s\n" % (T9, TODAY, SID_A) in wl,
+          wl[-900:])
 
-skill_md = (REPO / ".claude" / "skills" / "worklog_reference" / "SKILL.md").read_text(encoding="utf-8")
-skill_classes = [row.split("|")[1].strip().strip("`")
-                 for row in table_slice(skill_md, "## Classification", "## Scope")
-                 if row.split("|")[1].strip().startswith("`")]
-skill_domains = [row.split("|")[1].strip()
-                 for row in table_slice(skill_md, "## Canonical domain list", "## Full Trigger Catalog")
-                 if is_domain_row(row)]
-skill_shorts = [row.split("|")[2].strip().strip("`")
-                for row in table_slice(skill_md, "## Canonical domain list", "## Full Trigger Catalog")
-                if is_domain_row(row)]
-real_classes, real_domains = tool.read_canonical(REPO / ".claude" / "skills" / "worklog_reference" / "SKILL.md")
-check("canonical classes: the tool list matches the skill",
-      list(real_classes) == skill_classes, (real_classes, skill_classes))
-check("canonical domains: the tool list matches the skill",
-      [long for long, _ in real_domains] == skill_domains, (real_domains, skill_domains))
-check("canonical domains: every short form matches its row",
-      [short for _, short in real_domains] == skill_shorts, (real_domains, skill_shorts))
+    # --- the close's read: exactly the two items session A added, none of session B's or the untagged one ---
+    p = stage(tempfile.mkdtemp(prefix="wl_session_read_"), worklog=W4, mirror=M4)
+    run_add(p, "Tighten the alpha seam", "--class", "chore", "--scope", "1", "--domain", "Alpha",
+            "--context", "active context", "--date", TODAY, session=SID_A)
+    run_add(p, "Plan epsilon migration", "--class", "design", "--scope", "2", "--domain", "Alpha",
+            "--context", "future context", "--date", TODAY, "--when", "future", session=SID_A)
+    run_add(p, "Rename the beta probe", "--class", "chore", "--scope", "1", "--domain", "Alpha",
+            "--context", "other context", "--date", TODAY, session=SID_B)
+    run_add(p, "Measure gamma latency", "--class", "chore", "--scope", "1", "--domain", "Alpha",
+            "--context", "untagged context", "--date", TODAY)
+    wl = read(p, "Worklog.md")
+    got = tool.session_additions(wl, SID_A)
+    check("session read: lists exactly the two items session A added, in document order",
+          got == [("Tighten the alpha seam", "active context"), ("Plan epsilon migration", "future context")], got)
+    check("session read: session B's read lists only its own item",
+          tool.session_additions(wl, SID_B) == [("Rename the beta probe", "other context")])
 
-print("\n%d checks, %d failed" % (ran, len(failures)))
-for f in failures:
-    print("FAILED:", f)
-sys.exit(1 if failures else 0)
+    p = pathlib.Path(tempfile.mkdtemp(prefix="wl_canon_"))
+    (p / "SKILL.md").write_text(SKILL_PLANT, encoding="utf-8")
+    planted_classes, planted_domains = tool.read_canonical(p / "SKILL.md")
+    check("planted canonical: the tool reads the planted class rows",
+          planted_classes == PLANT_CLASSES, planted_classes)
+    check("planted canonical: the tool reads each planted long/short pair",
+          planted_domains == PLANT_DOMAINS, planted_domains)
+
+    skill_md = (REPO / ".claude" / "skills" / "worklog_reference" / "SKILL.md").read_text(encoding="utf-8")
+    skill_classes = [row.split("|")[1].strip().strip("`")
+                     for row in table_slice(skill_md, "## Classification", "## Scope")
+                     if row.split("|")[1].strip().startswith("`")]
+    skill_domains = [row.split("|")[1].strip()
+                     for row in table_slice(skill_md, "## Canonical domain list", "## Full Trigger Catalog")
+                     if is_domain_row(row)]
+    skill_shorts = [row.split("|")[2].strip().strip("`")
+                    for row in table_slice(skill_md, "## Canonical domain list", "## Full Trigger Catalog")
+                    if is_domain_row(row)]
+    real_classes, real_domains = tool.read_canonical(REPO / ".claude" / "skills" / "worklog_reference" / "SKILL.md")
+    check("canonical classes: the tool list matches the skill",
+          list(real_classes) == skill_classes, (real_classes, skill_classes))
+    check("canonical domains: the tool list matches the skill",
+          [long for long, _ in real_domains] == skill_domains, (real_domains, skill_domains))
+    check("canonical domains: every short form matches its row",
+          [short for _, short in real_domains] == skill_shorts, (real_domains, skill_shorts))
+
+    print("\n%d checks, %d failed" % (ran, len(failures)))
+    for f in failures:
+        print("FAILED:", f)
+    assert not failures, failures

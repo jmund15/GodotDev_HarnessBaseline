@@ -6,7 +6,7 @@ answers the two commands the tool issues: the transcript fetch (`youtube_transcr
 json`) and the metadata print (`yt-dlp --skip-download --print`). The transcript library exits 0
 and prints prose when a video has no transcript, so that shape is planted as the no-captions case.
 
-    python3 .claude/tests/test_yt_transcript.py
+    python -m pytest .claude/tests/test_yt_transcript.py -q
 """
 import importlib.util
 import io
@@ -140,6 +140,15 @@ def report(cases):
         print(("ok   " if ok else "FAIL ") + name + ("" if ok else "   [%s]" % str(detail)[:500]))
     print("\n%d/%d passed" % (len(cases) - len(failed), len(cases)))
     return 1 if failed else 0
+
+
+def test_proof():
+    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code
+    assert code in (None, 0), code
 
 
 if __name__ == "__main__":

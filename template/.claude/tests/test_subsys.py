@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal proof for tools/subsys.py: a planted detail catalog, one unknown id refused, one known id returned.
 
-    python3 .claude/tests/test_subsys.py
+    python -m pytest .claude/tests/test_subsys.py -q
 
 The tool reads its catalog beside itself, so the proof copies the tool into a temp root and plants the catalog there.
 """
@@ -76,6 +76,15 @@ def main():
             shutil.rmtree(root, ignore_errors=True)
     print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
     return 1 if failures else 0
+
+
+def test_proof():
+    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
+    try:
+        code = main()
+    except SystemExit as exc:
+        code = exc.code
+    assert code in (None, 0), code
 
 
 if __name__ == "__main__":
