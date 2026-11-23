@@ -6,6 +6,7 @@ const src = fs.readFileSync(path.join(__dirname, '..', 'workflows', 'dispatch.js
 const body = src.replace(/^export const meta = \{[\s\S]*?^\}\r?\n/m, '')
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor
 // The vocabulary the provider guard injects on every Workflow call; the engine holds none of its own.
+const RAILS = 'Standing rules for the proof.'
 const HOST_TRANSPORT = { name: 'host', ids: ['opus', 'sonnet', 'haiku', 'fable'] }
 // The rows the provider guard resolves from a job's `kind` into args.__toolProfiles (by label).
 const ROW = { add: [], remove: [], overrideMode: 'shape-default', enforcement: 'inherited', effectiveMcp: 'unknown/inherited',
@@ -17,8 +18,8 @@ const KINDS = {
 const profilesOf = (args) => Object.fromEntries(((args && args.chains) || []).flatMap(c => c.jobs || [])
   .filter(j => j && KINDS[j.kind]).map(j => [j.label, KINDS[j.kind]]))
 const withHost = (args) => Object.prototype.hasOwnProperty.call(args || {}, '__transport')
-  ? { __toolProfiles: profilesOf(args), ...args }
-  : { __toolProfiles: profilesOf(args), ...args, __transport: HOST_TRANSPORT }
+  ? { __toolProfiles: profilesOf(args), __railsText: RAILS, ...args }
+  : { __toolProfiles: profilesOf(args), __railsText: RAILS, ...args, __transport: HOST_TRANSPORT }
 
 let passed = 0
 let failed = 0
@@ -56,11 +57,11 @@ async function run(args, agentResults = null) {
   check('no injected vocabulary fails closed naming __transport',
     String(absent.result.error || '').includes('__transport') && absent.calls.length === 0, JSON.stringify(absent.result))
   const host = await run({
-    chains: [{ name: 'lane', jobs: [{ label: 'a', promptPath: 'a.md', model: 'opus', effort: 'low', kind: 'reviewer', tier: 'architect' }] }],
+    chains: [{ name: 'lane', jobs: [{ label: 'a', promptPath: 'a.md', model: 'opus', effort: 'low', kind: 'reviewer' }] }],
   })
-  check('an injected transport with no declared efforts accepts its ids and `tier`', !host.result.error, JSON.stringify(host.result))
+  check('an injected transport with no declared efforts accepts its ids', !host.result.error, JSON.stringify(host.result))
   check('the kind row sets the agent type passed to agent()', host.calls[0] && host.calls[0].agentType === 'lane-review', JSON.stringify(host.calls))
-  check('PINS logs the declared tier beside the pin', host.logs.some(l => String(l).startsWith('PINS ') && String(l).includes('tier:architect')), JSON.stringify(host.logs))
+  check('PINS logs the pin with no tier field (T4 drops tiers)', host.logs.some(l => String(l).startsWith('PINS ') && !String(l).includes('tier:')), JSON.stringify(host.logs))
 
   const codex = await run({
     __transport: {

@@ -82,9 +82,6 @@ const cases = [
   ['dispatch.js', {
     jobs: ['one', 'two'].map(label => ({ label, promptPath: label + '.md', model: 'sonnet', effort: 'low', kind: 'author' })),
   }, 'done'],
-  ['dispatch_chains.js', {
-    chains: ['one', 'two'].map(name => ({ name, jobs: [{ label: name, promptPath: name + '.md', model: 'sonnet', effort: 'low', kind: 'author' }] })),
-  }, 'done'],
 ]
 
 ;(async () => {

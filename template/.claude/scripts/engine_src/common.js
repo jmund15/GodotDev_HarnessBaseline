@@ -24,29 +24,16 @@ const pinBasis = (j) => (j.pick !== undefined ? ' pick:' + j.pick : '') + (j.spe
 // ENGINE-BLOCK-BEGIN effortRecord
 const effortRecord = (j) => { const ec = (j.effortCases || {})[j.model] || {}; return ' req:' + (ec.requestedEffort || '-') + ' case:' + (ec.effortCase || '-') }
 // ENGINE-BLOCK-END effortRecord
-// ENGINE-BLOCK-BEGIN RAILS
-const RAILS = (A.__rails && typeof A.__rails === 'object') ? A.__rails : {}
-// ENGINE-BLOCK-END RAILS
 // ENGINE-BLOCK-BEGIN RAILS_TEXT
-const RAILS_TEXT = (A.__railsText && typeof A.__railsText === 'object') ? A.__railsText : {}
+const RAILS_TEXT = typeof A.__railsText === 'string' ? A.__railsText : ''
 // ENGINE-BLOCK-END RAILS_TEXT
+if (!RAILS_TEXT.trim()) return { error: 'dispatch: args.__railsText is missing; the entry injects guards/rails.md.' }
 // ENGINE-BLOCK-BEGIN RAILS_HEADER
 const RAILS_HEADER = '=== DELEGATE RAILS (standing rules for how you work; your task is the brief above) ==='
 // ENGINE-BLOCK-END RAILS_HEADER
-// ENGINE-BLOCK-BEGIN inlineRails
-const inlineRails = (label, guard, tier) => {
-  const text = RAILS_TEXT[guard + '/' + tier]
-  if (typeof text === 'string' && text.trim()) return ['', RAILS_HEADER, text].join('\n')
-  if (Object.keys(RAILS_TEXT).length > 0) log('RAILS-FALLBACK ' + label + ' ' + guard + '/' + tier)
-  return null
-}
-// ENGINE-BLOCK-END inlineRails
-// ENGINE-BLOCK-BEGIN DRIVER_NOTES
-const DRIVER_NOTES = (A.__driverNotes && typeof A.__driverNotes === 'object') ? A.__driverNotes : {}
-// ENGINE-BLOCK-END DRIVER_NOTES
-// ENGINE-BLOCK-BEGIN driverNotes
-const driverNotes = (model) => (typeof DRIVER_NOTES[model] === 'string' && DRIVER_NOTES[model].trim()) ? '\n\n' + DRIVER_NOTES[model] : ''
-// ENGINE-BLOCK-END driverNotes
+// ENGINE-BLOCK-BEGIN railsRef
+const railsRef = () => ['', RAILS_HEADER, RAILS_TEXT].join('\n')
+// ENGINE-BLOCK-END railsRef
 // ENGINE-BLOCK-BEGIN TOOLP
 const TOOLP = (A.__toolProfiles && typeof A.__toolProfiles === 'object') ? A.__toolProfiles : {}
 // ENGINE-BLOCK-END TOOLP
@@ -65,10 +52,6 @@ const projectRootOf = (a) => repoRootOf(a).replace(/\/\.claude\/worktrees\/[^/]+
 // ENGINE-BLOCK-BEGIN RELAY_LINE
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
 // ENGINE-BLOCK-END RELAY_LINE
-// The key hooks/amend_delivery.py reads to deliver a parent's amendment to a running author job.
-// ENGINE-BLOCK-BEGIN AMEND_LINE
-const AMEND_LINE = (promptPath) => 'Amendments: the harness delivers ' + promptPath + '.amend.md to you when your parent writes or changes it; a delivered amendment overrides the brief, and your report names what you applied.'
-// ENGINE-BLOCK-END AMEND_LINE
 // ENGINE-BLOCK-BEGIN repoRootOf
 function repoRootOf(a) {
   const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
@@ -97,122 +80,23 @@ const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
   return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
 })
 // ENGINE-BLOCK-END applyVerdicts
-// ENGINE-BLOCK-BEGIN verifierAgent
-const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
-  const msg = String((e && e.message) || e)
-  if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-  log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
-  return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
+// ENGINE-BLOCK-BEGIN boundedVerification
+const boundedVerification = verification => ({
+  status: verification.status, counts: verification.counts, report: verification.report,
+  ...(verification.note ? { note: verification.note } : {}),
+  nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
 })
-// ENGINE-BLOCK-END verifierAgent
+// ENGINE-BLOCK-END boundedVerification
 // ENGINE-BLOCK-BEGIN closeCheck
-const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, expectTotal, expectSources, ledger, fold, seats = [] }) => {
+// The engine verifies no claim: /review checks a findings file with tools/quote_check.py (T4). Every item stays
+// UNCHECKED, so callers read the same shape and no verifier agent is launched.
+const closeCheck = async (mode, { items, keyOf }) => {
   const keys = items.map(keyOf)
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
     || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
-  const quoteArg = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'"
-  // The verifier finds its journal by this label, and every review numbers its findings F1..Fn: the run's own report
-  // path keeps two runs with the same ids apart, and a resumed run keeps its label.
-  const identity = JSON.stringify([mode, out, items.map(keyOf)])
-  let hash = 2166136261
-  for (let i = 0; i < identity.length; i++) hash = Math.imul(hash ^ identity.charCodeAt(i), 16777619)
-  const label = 'verify-' + (hash >>> 0).toString(36)
-  out = rootedPath(A, out.replace(/\.json$/, '-' + label + '.json'))
-  // The verifier may report --out resolved (absolute, either separator) and may trail prose; the report must LEAD with the file.
-  const reportsOut = report => {
-    const lead = String(report).replace(/\\/g, '/').trim().match(/^(.*?\.json)(?![\w-])/), o = out.replace(/\\/g, '/').replace(/^\.\//, '')
-    return !!lead && (lead[1] === o || lead[1].endsWith('/' + o))
-  }
-  const profile = A.__toolProfiles && A.__toolProfiles.verify
-  const transport = A.__transport
-  const checker = A.checker || {}
-  const model = checker.model
-  const effort = checker.effort
-  if (typeof model !== 'string' || !Array.isArray(transport.ids) || !transport.ids.includes(model)) {
-    throw new Error('closeCheck: args.checker.model is missing or outside args.__transport.ids; refusing the checked route')
-  }
-  if (Array.isArray(transport.efforts) && !transport.efforts.includes(effort)) {
-    throw new Error('closeCheck: args.checker.effort is missing or outside args.__transport.efforts; refusing the checked route')
-  }
-  const schema = {
-    type: 'object', required: ['status', 'counts', 'verdicts', 'report'], additionalProperties: false,
-    properties: {
-      status: { type: 'string', enum: ['pass', 'fail', 'unavailable'] },
-      counts: { type: 'object', required: VERDICTS, additionalProperties: false,
-        properties: Object.fromEntries(VERDICTS.map(v => [v, { type: 'integer', minimum: 0 }])) },
-      verdicts: { type: 'object', additionalProperties: { type: 'string', enum: VERDICTS } },
-      report: { type: 'string' },
-      note: { type: 'string' },
-    },
-  }
-  let verification
-  try {
-    if (!profile || !profile.agentType || profile.tier !== 'fanout') throw new Error('missing verifier fanout profile')
-    let command = 'python3 .claude/tools/post_check.py ' + mode
-      + (fold && fold.findings ? ' --findings ' + quoteArg(fold.findings) : ' --run-label ' + label)
-      + ' --out ' + (/^[\w./:-]+$/.test(out) ? out : quoteArg(out))
-    if (fold && fold.findings) {
-      if (fold.digest) command += ' --digest ' + quoteArg(fold.digest)
-      if (fold.snapshot) command += ' --snapshot ' + quoteArg(fold.snapshot)
-    }
-    // A subject the fold skipped writes no digest, so each subject's snapshot also names the files the review read.
-    for (const subject of (fold && !fold.findings && Array.isArray(fold.subjects) ? fold.subjects : [])) {
-      if (subject && subject.snapshot) command += ' --reviewed-snapshot ' + quoteArg(subject.snapshot)
-    }
-    if (root) command += ' --root ' + quoteArg(root)
-    if (spillDir) command += ' --spill-dir ' + quoteArg(rootedPath(A, spillDir))
-    if (expectTotal !== undefined) command += ' --expect-total ' + expectTotal
-    if (expectSources !== undefined) command += ' --expect-sources ' + expectSources
-    if (ledger) {
-      for (const [field, flag] of Object.entries({stage: 'stage', subject: 'subject', roster: 'roster', scopeJson: 'scope-json', task: 'task', premiseCommits: 'premise-commits', head: 'head', blobs: 'blobs'})) {
-        if (ledger[field]) command += ' --' + flag + ' ' + quoteArg(ledger[field])
-      }
-      if (ledger.noNewDecision) command += ' --no-new-decision'
-    }
-    const seatsFile = out.replace(/\.json$/, '.seats.json')
-    const launched = Object.fromEntries(seats.map(seat => [seat.label, {
-      model: seat.model, effort: seat.effort, tier: seat.tier || null,
-      mandates: seat.mandates || [], mustRead: seat.mustRead || [],
-    }]))
-    if (new Set(seats.map(seat => seat.label)).size !== seats.length) throw new Error('duplicate launched seat label')
-    // The agent Bash route cuts a command near 8K characters mid-quote, so the seats file is written in parts.
-    const COMMAND_BUDGET = 6000
-    const writer = 'import sys; from pathlib import Path; p=Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); f=p.open(sys.argv[2], encoding="utf-8", newline=""); f.write(sys.argv[3]); f.close()'
-    const writes = []
-    for (let rest = JSON.stringify(launched); rest.length;) {
-      const prefix = cdRootPrefix(A) + 'python3 -c ' + quoteArg(writer) + ' ' + quoteArg(seatsFile) + ' ' + (writes.length ? 'a' : 'w') + ' '
-      if ((prefix + "'{}'").length > COMMAND_BUDGET) throw new Error('verifier seats-file path leaves no room within the command budget')
-      let size = rest.length
-      while ((prefix + quoteArg(rest.slice(0, size))).length > COMMAND_BUDGET) size = Math.max(1, Math.floor(size * 0.9))
-      if (size < rest.length && /[\uD800-\uDBFF]/.test(rest[size - 1])) size -= 1
-      writes.push(prefix + quoteArg(rest.slice(0, size)))
-      rest = rest.slice(size)
-    }
-    if (mode === 'review') command += ' --seats-file ' + quoteArg(seatsFile)
-    const printer = 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps({"status": r["status"], "counts": r["counts"], "verdicts": {k: v["verdict"] for k, v in r["verdicts"].items()}}))'
-    command = cdRootPrefix(A) + command + ' ; python3 -c ' + quoteArg(printer) + ' ' + quoteArg(out)
-    log('PINS ' + JSON.stringify({[label]: model + '/' + effort + '/' + profile.agentType + ' tier:fanout'}))
-    verification = await verifierAgent('Run each seats-file write below with Bash first, one call per line, in order:\n' + writes.join('\n')
-      + '\nRun exactly this command with Bash: ' + command
-      + '\nIts last output line is one JSON object holding status, counts and verdicts, read from the --out file; it prints even when the check exits 1.'
-      + ' Return ONLY {status, counts, verdicts, report, note}: copy status, counts and verdicts from that line unchanged. Set report to the --out path and nothing else; put any observation in note (optional).'
-      + ' Do not check evidence yourself, change permissions, or run any other command.',
-    { label, phase: 'Verify', agentType: profile.agentType, model, effort, schema })
-    if (!verification || !['pass', 'fail'].includes(verification.status) || !reportsOut(verification.report)
-      || !verification.verdicts || !verification.counts
-      || items.some(item => !VERDICTS.includes(verification.verdicts[keyOf(item)]))) throw new Error('incomplete verifier report')
-    const reported = Object.values(verification.verdicts)
-    if (reported.some(v => !VERDICTS.includes(v))) throw new Error('illegal verifier verdict')
-    const observed = Object.fromEntries(VERDICTS.map(v => [v, reported.filter(verdict => verdict === v).length]))
-    if (VERDICTS.some(v => verification.counts[v] !== observed[v])
-      || new Set(items.map(keyOf)).size !== items.length
-      || (verification.status === 'pass' && (observed.UNVERIFIED > 0 || observed.UNCHECKED > 0))) throw new Error('inconsistent verifier report')
-    verification.report = out  // the checker's text only proves it read this file; readers open the engine's own path
-  } catch (e) {
-    verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-      verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: out,
-      note: String((e && e.message) || e) }
-  }
+  const verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
+    verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: null,
+    note: 'claims are checked by /review (tools/quote_check.py); the engine checks none' }
   return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
 }
 // ENGINE-BLOCK-END closeCheck
