@@ -8,10 +8,10 @@ authors (a skill dir, a command path, a workflow's `meta.name`), drops every ent
 `reference/skill_listing_kept.json` keeps, and reports the rest.
 
 Rule each reported entry: keep it (add it to `kept` with the reason it applies here), or hide it. Hide a
-skill with a `skillOverrides` entry in `.claude/settings.project.json`, which every checkout shares, then run `python3 .claude/tools/baseline_sync.py compose`
+skill with a `skillOverrides` entry in `.claude/settings.json`
 (`user-invocable-only` keeps it typable, `off` removes it); a plugin's skills through `/plugin`; claude.ai synced skills with
 `syncClaudeAiSkills: false` in user settings. A `skillOverrides` hide stops the report at once, before a fresh
-listing drops the entry: the check also reads the composed `settings.json`.
+listing drops the entry: the check also reads `settings.json`.
 
 Usage: python3 .claude/tools/skill_listing_review.py [--transcripts <dir>]   (prints the banner, or nothing)
 """
@@ -63,7 +63,7 @@ def listed_names(transcripts: Path):
 
 
 def hidden(claude: Path) -> set:
-    """Names the composed settings hide; a listing recorded before the hide still carries them."""
+    """Names `settings.json` hides; a listing recorded before the hide still carries them."""
     settings = claude / "settings.json"
     if not settings.is_file():
         return set()
@@ -92,7 +92,7 @@ def banner(transcripts: Path, claude: Path = CLAUDE_DIR) -> str:
     return (f"[skill-listing] {len(new)} listing entr{'y' if len(new) == 1 else 'ies'} no one has ruled on, "
             f"each paid every turn: {', '.join(new)}. Bring them to the owner as one packet: keep (add to "
             f"{LEDGER.as_posix()} with why it applies) or hide (skillOverrides user-invocable-only|off in "
-            f"settings.project.json; /plugin; syncClaudeAiSkills). Recipe: tools/skill_listing_review.py docstring.")
+            f"settings.json; /plugin; syncClaudeAiSkills). Recipe: tools/skill_listing_review.py docstring.")
 
 
 def main(argv=None) -> int:
