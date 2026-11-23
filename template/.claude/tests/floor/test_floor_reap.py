@@ -5,6 +5,7 @@ Decision rows run `reap.main` in process on a planted process table, environment
 Two Windows rows read live processes, because the process is the subject: the Win32 snapshot holds this process,
 and a real stop of a child this test starts. One spawned case runs the entry point.
 """
+import ctypes
 import io
 import json
 import os
@@ -12,6 +13,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
+from ctypes import wintypes
 from types import SimpleNamespace
 
 import pytest
@@ -428,6 +430,21 @@ def test_the_win32_snapshot_holds_this_process_and_spawns_no_cim(monkeypatch):
     me = reap.process_table().get(os.getpid(), {})
     assert not spawned and me.get("ppid") == os.getppid() and me.get("start") and me.get("cpu") is not None
     assert os.path.basename(sys.executable).lower().split(".")[0] in me.get("cmd", "").lower()
+
+
+def _live_pids():
+    """Every pid `EnumProcesses` lists: a second reader of the process list, one call and no spawn."""
+    listed, got = (wintypes.DWORD * 16384)(), wintypes.DWORD()
+    assert ctypes.WinDLL("kernel32").K32EnumProcesses(listed, ctypes.sizeof(listed), ctypes.byref(got))
+    return set(listed[:got.value // ctypes.sizeof(wintypes.DWORD)])
+
+
+@WINDOWS
+def test_the_win32_snapshot_lists_every_process_that_lived_through_it():
+    before = _live_pids()
+    table = reap.process_table()
+    alive = before & _live_pids()
+    assert len(alive) > 20 and alive <= set(table), sorted(alive - set(table))
 
 
 @WINDOWS

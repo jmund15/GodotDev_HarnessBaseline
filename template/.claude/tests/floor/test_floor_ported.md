@@ -150,9 +150,9 @@ Dropped, subject gone (plan line): the sidecar launch tags, prompt file and `-R`
 servers, detached seats, launchers and the shared-proxy never-kill (V7: `seat.sh` replaces the sidecar launchers);
 the reason classes' own rows (above); `live-launch`'s 33 rows, `end-seat`, the `sidecar_stopped_launches` hook
 state, `inspect`'s 11 rows and `leftovers`' classification and live spawn (T1's small stop tool; V7); the help's
-reason-flag table (`test_cli_refusal_shapes.py`'s reap row now checks the usage shape only). Dropped as
-over-computational: the Win32-versus-CIM process count (a PowerShell spawn per run); the Win32 row that reads this
-process covers the reader. `_bounded_run.job_env`'s `REAP_JOB_ID`, read only by `queued`, is cut with it.
+reason-flag table (`test_cli_refusal_shapes.py`'s reap row now checks the usage shape only). The Win32-versus-CIM
+process count (a PowerShell spawn per run) is replaced by a row that holds the table against `EnumProcesses` (one call, no
+spawn: every pid alive before and after the snapshot is in it); the row that reads this process covers the rest. `_bounded_run.job_env`'s `REAP_JOB_ID`, read only by `queued`, is cut with it.
 
 `kill_guard`: the protected patterns for `sidecar_fanout.py`, the `*_sidecar.sh`/`sidecar_launch.py` launchers (V7)
 and `harness_tests.py` (V9) are cut with their five rows (four kill rows and the harness proof run's TaskStop row); the rows that used the fan-out as their protected example
