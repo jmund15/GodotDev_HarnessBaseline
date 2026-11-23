@@ -35,13 +35,15 @@ Read `agents/documentation_structure.md` (folder structure) and the `obsidian_co
 
 ## Phase 2 — Parallel Documentation
 
-Dispatch all 3 agents as one fan-out through `/delegate`: write each brief to `.claude/scratch/doc_full/prompt_<label>.md` and pass `jobs: [{ label, promptPath, model: "<executor>", effort: "<resolved effort>" }, …]`. Pin the executor tier for creative and technical depth, at its ladder cell for directed work: the folder structure is supplied and the prose is not. Results return together when the run completes; never poll.
+Fill `<project_name>` in each brief below with what `python3 .claude/tools/adaptation.py get project_name` prints.
+
+Dispatch all 3 agents as one fan-out through `/delegate`: write each brief to `.claude/scratch/doc_full/prompt_<label>.md` and pass `jobs: [{ label, promptPath, model: "<executor>", effort: "<resolved effort>" }, …]`. Pin each job from `orchestration`'s model table for directed writing that needs creative and technical depth: the folder structure is supplied and the prose is not. Results return together when the run completes; never poll.
 
 **`write_doc` availability:** Check it live. If unavailable, agents author the prose natively per `obsidian_conventions`, still following their command file's structure and voice rules.
 
 ### Usage Agent
 
-> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).
+> You are writing documentation for the **{SystemName}** system in the <project_name> project (stack per `.claude/reference/project_stack.md`).
 >
 > Read `.claude/commands/doc_usage.md` for the complete documentation procedure, then execute it step by step for this system.
 >
@@ -53,7 +55,7 @@ Dispatch all 3 agents as one fan-out through `/delegate`: write each brief to `.
 
 ### Architecture Agent
 
-> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).
+> You are writing documentation for the **{SystemName}** system in the <project_name> project (stack per `.claude/reference/project_stack.md`).
 >
 > Read `.claude/commands/doc_architecture.md` for the complete documentation procedure, then execute it step by step for this system.
 >
@@ -65,7 +67,7 @@ Dispatch all 3 agents as one fan-out through `/delegate`: write each brief to `.
 
 ### Retrospective Agent
 
-> You are writing documentation for the **{SystemName}** system in the {{PROJECT_NAME}} project (stack per `.claude/reference/project_stack.md`).
+> You are writing documentation for the **{SystemName}** system in the <project_name> project (stack per `.claude/reference/project_stack.md`).
 >
 > Read `.claude/commands/doc_retrospective.md` for the complete documentation procedure, then execute it step by step for this system.
 >

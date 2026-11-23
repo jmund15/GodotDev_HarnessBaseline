@@ -207,7 +207,7 @@ one NOT-ADOPTED row and skips the steps: work runs on native Workflows alone, an
 
 ## Phase 6 — Obsidian vault
 
-1. The vault paths CLAUDE.md §3 names resolve under `<vault_root>\DevProjects\`, where
+1. The vault paths the repo's `CLAUDE.md` §Design Source (Obsidian) names resolve under `<vault_root>\DevProjects\`, where
    `python3 .claude/tools/adaptation.py get vault_root` prints `<vault_root>`.
 2. A different vault location on this machine → report the delta. The root is the `vault_root` key of
    `.claude/skills/project_subsystems/adaptation.json`, so the user changes it, or approves the edit.

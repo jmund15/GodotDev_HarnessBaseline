@@ -46,7 +46,6 @@ Verify:
   > **Why the threshold?** Rebase replays each commit individually — excellent for isolation, but at 50+ commits the same file can conflict repeatedly, causing resolution fatigue and silent errors. Merge resolves each conflict exactly once with full branch context. The conflict resolution rules (interface checks, data-file verification, feature spot-checks) apply equally to both strategies.
 
   Ask user to confirm before syncing.
-  > **Note (when called from `/review_prs`):** The orchestrator may have already synced this branch preemptively in Phase 3. This mergeability check is a safety net that catches any remaining issues (e.g., conflicts from fix commits applied in Phase 2).
 - If a submodule pointer changed: warn about merge order. The paired submodule PR merges to the submodule's primary branch FIRST.
   - Find the paired submodule branch by the project's pairing convention (the submodule's path-scoped rule names it) and verify it exists: `git -C <submodule> ls-remote --heads origin`.
   - If the submodule PR conflicts with its primary branch: sync it the same way as Step 1, then push.
@@ -134,14 +133,6 @@ Resolution:
 #### Claude-Specific Files (`.claude/`)
 
 These files are modified by multiple worktree sessions and frequently conflict.
-
-**Accumulative data files** — content from ALL branches must be preserved:
-
-| File | Resolution | Rationale |
-|------|-----------|-----------|
-| `self_evaluate_archive.json` | **Union all entries.** Each evaluation is a timestamped snapshot — append all, sort by date. | Independent session evaluations, no conflicts possible if appended correctly |
-
-> **Merge technique for accumulative JSON:** Load both sides via `git show :2:<file>` and `:3:<file>` with Python (use `stdout.decode('utf-8')` to avoid Windows cp1252 errors). Union arrays by unique key (title/date), sort chronologically, renumber IDs sequentially, write result.
 
 **Functional files** — take the NEWER (more recently edited) version:
 
@@ -236,7 +227,7 @@ Verdict: PROCEED TO MERGE | RESOLVE CRITICALS FIRST
 - **PR title/labels checkbox:** `[ ]` initially (verified in Step 8). The orchestrator may render `[—]` here if Step 8 has already run in this session.
 - **Manual verification checkbox:** `[—]` when Step 3's classification needs no manual verification. `[x]` if Step 7's checklist is 100% complete or auto-approved (B.1/B.3). `[ ]` if Step 7 returned partial coverage and user chose "Merge anyway" — note partial coverage in commit footer.
 
-**Decision rule (same shape as `/session_end` Phase 7a):**
+**Decision rule:**
 - All items `[x]` or `[—]` → proceed to Step 7 (or Step 8 if Step 7 was N/A).
 - Any item `[ ]` → STOP. Use `AskUserQuestion` to either resolve, acknowledge with rationale, or abort the merge.
 

@@ -12,7 +12,7 @@ Establish what an engine, library, runtime, or spec **actually does**, when the 
 
 The next step depends on an external fact: engine or library behavior, a version claim, spec text, a library evaluation, game-design prior art. Mid-execution, during debugging, or from any planning surface.
 
-**SKIP** when the question is answerable from the repo (`/explore`), when one source settles it (the local docs cache, or `WebFetch` direct — CLAUDE.md §4's fetch order), when the output would be a decision (`/architecture_brainstorm`), or when the question needs open discovery across the whole web rather than this stack's sources — say so and hand off to the built-in deep-research workflow rather than growing toward it.
+**SKIP** when the question is answerable from the repo (`/explore`), when one source settles it (the local docs cache, or `WebFetch` direct, per [`source_trust.md`](../reference/source_trust.md) §Fetch order), when the output would be a decision (`/architecture_brainstorm`), or when the question needs open discovery across the whole web rather than this stack's sources — say so and hand off to the built-in deep-research workflow rather than growing toward it.
 
 ## Phase 1: Questions & Shape
 

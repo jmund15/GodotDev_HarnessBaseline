@@ -70,7 +70,7 @@ Before scanning transcripts, examine all hyper-specific entries in local and use
 ### 7. Scan current session for ephemeral one-time allows
 After the settings file diff and generalization pass, scan **this session only** for tools that were used but aren't in any settings file (tracked, local, or user-global). These represent one-time session approvals that the user might want to promote.
 
-**Scope:** this session's transcript, `~/.claude/projects/<project>/<session id>.jsonl`. It is append-only across compactions, so it holds the calls your context window no longer shows. Do NOT scan another session's transcript.
+**Scope:** this session's transcript, `~/.claude/projects/<project>/<session-id>.jsonl`. It is append-only across compactions, so it holds the calls your context window no longer shows. Do NOT scan another session's transcript.
 
 **How to extract:**
 1. Parse the transcript for `"type":"tool_use"` entries to extract tool names and Bash command prefixes, and deduplicate

@@ -14,8 +14,8 @@ disable-model-invocation: true
 > commands operate on.
 
 ## Documentation Root
-- **Root:** `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/`
-- **Filesystem path (when Bash needed):** `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\Claude\Documentation\`
+- **Root:** `DevProjects/<project_name>/Claude/Documentation/`
+- **Filesystem path (when Bash needed):** `<vault_root>\DevProjects\<project_name>\Claude\Documentation\`, where `python3 .claude/tools/adaptation.py get vault_root` and `get project_name` print the two values
 
 ## Folder Classification
 
@@ -31,7 +31,7 @@ When doc commands scan the Documentation folder, classify each item by content:
 Classification is content-based. Folders transition between types automatically as contents change (e.g., adding system subfolders to an empty folder makes it a domain folder). No per-command exclusion lists.
 
 ## Folder Naming Convention
-Applies to `Documentation/` system and domain folders. (Brainstorm topic folders use a different `YYYY-MM-DD-<kebab-topic>/` convention; `doc_conventions.md §5` owns it where the project ships that file.)
+Applies to `Documentation/` system and domain folders. (Brainstorm topic folders use a different `YYYY-MM-DD-<kebab-topic>/` convention; [`doc_conventions.md`](../../skills/_brainstorm_shared/doc_conventions.md) §5 owns it.)
 
 - **PascalCase, no spaces:** `RequestPipeline/` not `Request Pipeline/`
 - **Descriptive compound noun** — the name should pass the scan test: "Can someone unfamiliar with the codebase guess what this folder documents?"

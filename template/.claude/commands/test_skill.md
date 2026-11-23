@@ -8,8 +8,6 @@ description: Pressure-test a skill by dispatching adversarial subagent scenarios
 
 Adversarial integration tests for `.claude/skills/<name>/SKILL.md`. For each rationalization, red-flag, or rule documented in the target skill, a fresh subagent is dispatched with the skill in-context against a prompt that *invites* the rationalization, then scored COMPLIES / DRIFTS / FAILS. The deterministic orchestration (surface detection, the ≤15 cap, single-message parallel dispatch, the validate-EVERY-COMPLIES gate, calibration independence) lives in the workflow `.claude/workflows/test_skill_pressure.js` — this command assembles its input and renders its output.
 
-**Sibling command:** the coding layer's agent-test command runs integration tests for review/audit *agents*. Both gate COMPLIES verdicts on independent validation.
-
 **Arguments:** `$ARGUMENTS`
 - Required: a single skill name (e.g., `/test_skill testing`, `/test_skill debugging`).
 
@@ -38,7 +36,7 @@ Workflow({
 })
 ```
 
-Pin `subject` to a fanout-tier row that can be tempted, since the test needs a subject able to capitulate. Pin `scorer` and `validator` to rows whose ladder `±` covers judging a response against the rule. Choose all three by the ladder's selection line; the engine fills none.
+Pin all three from `orchestration`'s model table; the engine fills none. `subject` takes a model that can be tempted, since the test needs a subject able to capitulate. `scorer` and `validator` take the row for judging a response against a rule.
 
 The workflow returns:
 ```
