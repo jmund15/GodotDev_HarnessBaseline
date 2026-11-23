@@ -26,13 +26,17 @@ def write(root, rel, text):
     path.write_bytes(text.encode("utf-8"))
 
 
-def commit(repo, files=None, drop=()):
-    """Write `files` (paths relative to template/.claude/), delete `drop`, commit; return the new HEAD sha."""
+def commit(repo, files=None, drop=(), executable=()):
+    """Write `files` (paths relative to template/.claude/), delete `drop`, commit; return the new HEAD sha.
+
+    `executable` paths are committed with blob mode 100755 (index-only, so it holds on any host)."""
     for rel, text in (files or {}).items():
         write(repo, "template/.claude/" + rel, text)
     for rel in drop:
         (Path(repo) / "template/.claude" / rel).unlink()
     git(repo, "add", "-A")
+    for rel in executable:
+        git(repo, "update-index", "--chmod=+x", "template/.claude/" + rel)
     git(repo, "commit", "-q", "-m", "change")
     return git(repo, "rev-parse", "HEAD")
 
@@ -143,3 +147,41 @@ def test_cli_pull_then_status_exit_codes(source, project):
     assert (project / ".claude/tools/a.py").is_file()
     status = subprocess.run([sys.executable, tool, "status", "--project", str(project)], capture_output=True, text=True)
     assert status.returncode == 1 and "floor hook not registered" in status.stdout
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+def test_pull_keeps_the_executable_bit(source, project):
+    head = commit(source, {"githooks/commit-msg": "#!/bin/sh\n"}, executable=["githooks/commit-msg"])
+    hs.pull(head, str(source), str(project))
+    assert (project / ".claude/githooks/commit-msg").stat().st_mode & 0o111
+    assert not (project / ".claude/tools/a.py").stat().st_mode & 0o111
+
+
+def test_status_reports_a_broken_settings_file_as_one_error_line(source, project):
+    hs.pull("HEAD", str(source), str(project))
+    write(project, hs.SETTINGS, "{not json")
+    text, code = hs.status(str(project))
+    assert code == 1 and len(text.splitlines()) == 1
+    assert text.startswith("ERROR") and hs.SETTINGS in text
+
+
+@pytest.mark.parametrize("event, matcher, registered_ok", [
+    ("PreToolUse", "Bash", True),
+    ("PreToolUse", "Edit|Bash", True),
+    ("PreToolUse", "", True),
+    ("PreToolUse", "Edit", False),
+    ("PostToolUse", "Bash", False),
+])
+def test_status_accepts_the_floor_only_as_a_pretooluse_bash_command(source, project, event, matcher, registered_ok):
+    hs.pull("HEAD", str(source), str(project))
+    command = r"python3 .claude\hooks\pre_bash.py"  # backslashes: a Windows-written settings.json
+    write(project, hs.SETTINGS, json.dumps({"hooks": {event: [{"matcher": matcher, "hooks": [
+        {"type": "command", "command": command}]}]}}))
+    assert (hs.status(str(project))[1] == 0) is registered_ok
+
+
+def test_cli_pull_prints_its_invocation_first(source, project):
+    tool = str(TOOLS / "harness_sync.py")
+    argv = ["pull", "HEAD", "--source", str(source), "--project", str(project)]
+    done = subprocess.run([sys.executable, tool, *argv], capture_output=True, text=True)
+    assert done.stdout.splitlines()[0] == "harness_sync.py " + " ".join(argv)

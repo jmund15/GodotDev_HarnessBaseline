@@ -15,6 +15,7 @@ fix for an edit is to push it upstream.
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -53,7 +54,8 @@ def read_manifest(project):
 
 
 def source_files(source, ref):
-    """The commit <ref> names, and {project path: bytes} for every blob under the shared prefix at that commit.
+    """The commit <ref> names, {project path: bytes} for every blob under the shared prefix at that commit, and
+    the set of those paths whose blob mode is 100755.
 
     Raw blobs, not `git archive`: archive applies eol conversion, and shared files must be byte-identical (T7)."""
     commit = git(source, "rev-parse", "--verify", f"{ref}^{{commit}}")
@@ -61,12 +63,14 @@ def source_files(source, ref):
                              capture_output=True)
     if listing.returncode:
         raise SyncError(f"git ls-tree failed for {commit}: {listing.stderr.decode(errors='replace').strip()}")
-    entries = []
+    entries, executable = [], set()
     for item in filter(None, listing.stdout.split(b"\0")):
         meta, path = item.split(b"\t", 1)
-        _mode, kind, oid = meta.decode().split()
+        mode, kind, oid = meta.decode().split()
         if kind == "blob":
             entries.append((path.decode(), oid))
+            if mode == "100755":
+                executable.add(DEST_PREFIX + path.decode()[len(SOURCE_PREFIX):])
     if not entries:
         raise SyncError(f"no files under {SOURCE_PREFIX} at {commit}")
     blobs = subprocess.run(["git", "-C", str(source), "cat-file", "--batch"],
@@ -79,7 +83,7 @@ def source_files(source, ref):
         size = int(out[pos:end].split()[2])
         files[DEST_PREFIX + path[len(SOURCE_PREFIX):]] = out[end + 1:end + 1 + size]
         pos = end + 1 + size + 1
-    return commit, files
+    return commit, files, executable
 
 
 def plan_pull(project, incoming, manifest):
@@ -106,7 +110,7 @@ def plan_pull(project, incoming, manifest):
 
 
 def pull(ref, source, project):
-    commit, incoming = source_files(source, ref)
+    commit, incoming, executable = source_files(source, ref)
     manifest = read_manifest(project)
     writes, deletes, conflicts = plan_pull(project, incoming, manifest)
     if conflicts:
@@ -115,6 +119,8 @@ def pull(ref, source, project):
         target = Path(project) / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(incoming[rel])
+        if rel in executable:
+            target.chmod(target.stat().st_mode | 0o111)
     for rel in deletes:
         (Path(project) / rel).unlink()
     new = {"ref": commit, "files": {rel: sha256(data) for rel, data in sorted(incoming.items())}, "floor": FLOOR}
@@ -124,15 +130,13 @@ def pull(ref, source, project):
     return f"pulled {commit[:12]}: {len(writes)} written, {len(deletes)} deleted", 0
 
 
-def _strings(node):
-    if isinstance(node, dict):
-        for value in node.values():
-            yield from _strings(value)
-    elif isinstance(node, list):
-        for item in node:
-            yield from _strings(item)
-    elif isinstance(node, str):
-        yield node
+def floor_commands(settings):
+    """The command strings of hooks registered under PreToolUse for a matcher that covers Bash, separators as `/`."""
+    for entry in settings.get("hooks", {}).get("PreToolUse", []):
+        matcher = entry.get("matcher") or ".*"
+        if re.search(matcher, "Bash"):
+            for hook in entry.get("hooks", []):
+                yield str(hook.get("command", "")).replace("\\", "/")
 
 
 def status(project):
@@ -148,7 +152,13 @@ def status(project):
         elif sha256(local) != digest:
             lines.append(f"edited  {rel}")
     settings = Path(project) / SETTINGS
-    commands = list(_strings(json.loads(settings.read_text(encoding="utf-8")).get("hooks", {}))) if settings.is_file() else []
+    commands = []
+    if settings.is_file():
+        try:
+            commands = list(floor_commands(json.loads(settings.read_text(encoding="utf-8"))))
+        except (ValueError, AttributeError, TypeError, re.error) as err:
+            lines.append(f"ERROR {SETTINGS} is not a readable hooks file: {err}")
+            return "\n".join(lines), 1
     for rel in manifest["floor"]:
         if not any(rel in command for command in commands):
             lines.append(f"ERROR floor hook not registered in {SETTINGS}: {rel}")
@@ -202,6 +212,8 @@ def main(argv=None):
     for verb in (pull_verb, status_verb, push_verb):
         verb.add_argument("--project", default=".", help="the project checkout (default: the current directory)")
     args = parser.parse_args(argv)
+    if args.verb != "status":
+        print("harness_sync.py " + " ".join(sys.argv[1:] if argv is None else argv))
     try:
         if args.verb == "pull":
             text, code = pull(args.ref, args.source, args.project)
