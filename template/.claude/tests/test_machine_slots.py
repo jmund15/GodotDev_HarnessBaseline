@@ -66,73 +66,6 @@ class MachineSlots(unittest.TestCase):
         finally:
             slots.release_all(other)
 
-    def test_run_passes_a_proof_runner_through_without_a_lane(self):
-        # A wrapped runner held one lane for its whole batch and ran every proof serially inside it, so an
-        # exclusive head waited out the batch while the rest of the pool sat idle.
-        runner = Path(self.tmp.name) / 'harness_tests.py'
-        runner.write_text('import os; print(os.environ.get("HARNESS_SLOT_BUDGET"))', encoding='utf-8')
-        held = slots.take(True)
-        try:
-            out = subprocess.run([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--deadline', str(time.time() + 3),
-                                  '--', sys.executable, str(runner), '--proofs-for', 'x.py'],
-                                 capture_output=True, text=True, timeout=60)
-        finally:
-            slots.release_all(held)
-        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
-        self.assertEqual(out.stdout.strip(), 'None', 'the runner admits itself per proof, never in an inherited lane')
-
-    def test_run_still_queues_a_proof_that_names_the_runner_as_an_argument(self):
-        held = slots.take(True)
-        try:
-            out = subprocess.run([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--deadline', str(time.time() + 1),
-                                  '--', sys.executable, '-c', 'print(1)', 'harness_tests.py'],
-                                 capture_output=True, text=True, timeout=60)
-        finally:
-            slots.release_all(held)
-        self.assertEqual(out.returncode, 2, out.stdout + out.stderr)
-
-    def test_a_dispatched_jobs_run_gives_up_its_place_in_a_full_pool_and_names_the_run_owed(self):
-        held = slots.take(True)
-        out = Path(self.tmp.name) / 'out.txt'
-        argv = ['machine_slots.py', 'run', '--', sys.executable, 'test_x.py']
-        try:
-            with patch.dict(os.environ, {'CLAUDE_CODE_SIDECAR': 'anthropic', 'CLAUDE_CODE_SIDECAR_KIND': 'author'}), \
-                    patch.object(slots, 'JOB_WAIT_S', 0.3), patch.object(sys, 'argv', argv), \
-                    open(out, 'w', encoding='utf-8') as fh, contextlib.redirect_stdout(fh), \
-                    contextlib.redirect_stderr(fh):
-                began = time.monotonic()
-                code = slots.main()
-                waited = time.monotonic() - began
-        finally:
-            slots.release_all(held)
-        text = out.read_text(encoding='utf-8')
-        self.assertEqual(code, 2, text)
-        self.assertLess(waited, 10, 'the job waits one bounded call, not for as long as the pool stays full')
-        self.assertIn('test_x.py', text, 'the line names the run the job owes its dispatcher')
-
-    def test_only_a_dispatched_non_gate_job_gets_the_bound(self):
-        with patch.dict(os.environ, {'CLAUDE_CODE_SIDECAR': 'anthropic', 'CLAUDE_CODE_SIDECAR_KIND': 'author'}):
-            self.assertIsNotNone(slots.job_deadline())
-        with patch.dict(os.environ, {'CLAUDE_CODE_SIDECAR': 'anthropic', 'CLAUDE_CODE_SIDECAR_KIND': 'gate'}):
-            self.assertIsNone(slots.job_deadline(), 'a gate job exists to run the wide run, queue included')
-        with patch.dict(os.environ):
-            os.environ.pop('CLAUDE_CODE_SIDECAR', None)
-            self.assertIsNone(slots.job_deadline(), 'the session itself is woken by its watcher and keeps its place')
-
-    def test_a_dispatched_jobs_proof_process_gives_up_its_place_the_same_way(self):
-        # sitecustomize admits a direct `python test_x.py` through admit(); None makes it exit 2.
-        held = slots.take(True)
-        out = Path(self.tmp.name) / 'admit.txt'
-        try:
-            with patch.dict(os.environ, {'CLAUDE_CODE_SIDECAR': 'anthropic', 'CLAUDE_CODE_SIDECAR_KIND': 'author'}), \
-                    patch.object(slots, 'JOB_WAIT_S', 0.3), open(out, 'w', encoding='utf-8') as fh, \
-                    contextlib.redirect_stderr(fh):
-                got = slots.admit(['python', 'test_x.py'])
-        finally:
-            slots.release_all(held)
-        self.assertIsNone(got)
-        self.assertIn('test_x.py', out.read_text(encoding='utf-8'))
-
     def test_windows_root_ignores_proof_home(self):
         with patch.object(slots.os, 'name', 'nt'), patch.dict(os.environ, {'USERPROFILE': 'C:/Users/worker', 'HOME': 'X:/fixture'}):
             os.environ.pop('HARNESS_SLOT_DIR')
@@ -366,6 +299,24 @@ class MachineSlots(unittest.TestCase):
         finally:
             slots.release_all(holder)
 
+    def test_a_guard_says_it_queued_only_when_asked(self):
+        import io
+        os.environ['HARNESS_MACHINE_SLOTS'] = '1'
+        os.environ['HARNESS_DEADLINE'] = str(time.time() + .3)
+        self.addCleanup(os.environ.pop, 'HARNESS_DEADLINE', None)
+        holder = slots.take(False)
+        try:
+            with patch.object(slots, 'NOTICE_AFTER', 0), patch.object(sys, 'stderr', io.StringIO()) as err:
+                with self.assertRaises(slots.SlotStoreError), slots.guard(notice=True):
+                    pass
+                self.assertIn('queued', err.getvalue())
+                err.truncate(0)
+                with self.assertRaises(slots.SlotStoreError), slots.guard():
+                    pass
+                self.assertEqual(err.getvalue(), '')
+        finally:
+            slots.release_all(holder)
+
     def test_a_dead_waiters_ticket_does_not_block_the_line(self):
         os.environ['HARNESS_MACHINE_SLOTS'] = '1'
         crash = subprocess.run([sys.executable, '-c',
@@ -496,125 +447,23 @@ class MachineSlots(unittest.TestCase):
         self.assertIn('HARNESS_WINDOWS_SLOT_SCRIPT', script)
         self.assertLess(script.index('HARNESS_WINDOWS_SLOT_SCRIPT'), script.index('HOME="$D/a.home"'))
 
-    def test_delegate_shell_and_powershell_proofs_queue(self):
-        sys.path.insert(0, str(ROOT / '.claude/tests'))
-        from _sidecar_launch import bash_exe
-        shell = Path(self.tmp.name) / 'test_probe.sh'
-        shell.write_text('printf "%s\\n" "${HARNESS_SLOT_BUDGET:-missing}"\n', encoding='utf-8')
-        command = [bash_exe(), str(shell)]
-        self._queued_script(command, slots.proof_environment(os.environ))
-        import shutil
-        if shutil.which('pwsh'):
-            proof = Path(self.tmp.name) / 'test_probe.ps1'
-            proof.write_text('[Console]::WriteLine($env:HARNESS_SLOT_BUDGET)\n', encoding='utf-8')
-            text = 'pwsh -NoProfile -File "' + proof.as_posix() + '"'
-            self._queued_script([bash_exe(), '-c', text], slots.proof_environment(os.environ))
-
-    def test_a_shell_whose_bash_env_is_another_checkouts_bootstrap_still_queues(self):
-        """The publish battery runs proofs in a second checkout under its own bootstrap: chaining that copy as the
-        previous BASH_ENV made it source itself until the shell crashed (0xC0000005, no output)."""
-        sys.path.insert(0, str(ROOT / '.claude/tests'))
-        from _sidecar_launch import bash_exe
-        import shutil
-        foreign = Path(self.tmp.name) / 'other_checkout' / 'bash_slots.sh'
-        foreign.parent.mkdir()
-        shutil.copy(ROOT / '.claude/scripts/_slot_bootstrap/bash_slots.sh', foreign)
-        shell = Path(self.tmp.name) / 'test_probe.sh'
-        shell.write_text('printf "%s\\n" "${HARNESS_SLOT_BUDGET:-missing}"\n', encoding='utf-8')
-        with patch.dict(os.environ, {'BASH_ENV': foreign.as_posix()}):
-            env = slots.proof_environment(os.environ)
-        self._queued_script([bash_exe(), str(shell)], env)
-
-    def test_delegate_shell_charges_the_script_it_runs_not_a_test_file_it_names(self):
-        """`harness_tests.py --proofs-for tests/test_x.py` is a coordinator, not a proof: a lane would serialize it."""
-        sys.path.insert(0, str(ROOT / '.claude/tests'))
-        from _sidecar_launch import bash_exe
-        tool = Path(self.tmp.name) / 'runner_tool.py'
-        tool.write_text("import os;print(os.environ.get('HARNESS_SLOT_BUDGET','missing'),flush=True)\n", encoding='utf-8')
-        named = (Path(self.tmp.name) / 'test_named.py').as_posix()
+    def test_proof_environment_injects_no_bootstrap_and_the_lease_still_admits(self):
+        """A delegate shell inherits no slot bootstrap: `proof_environment` keeps only the pool root, and `run` takes
+        one lane for its command, so a product run still queues behind a full pool."""
+        base = {'PYTHONPATH': '/x', 'NODE_OPTIONS': '--trace', 'BASH_ENV': '/y'}
+        env = slots.proof_environment(dict(base))
+        self.assertEqual({k: env[k] for k in base}, base)
+        self.assertEqual(env['HARNESS_MACHINE_ROOT'], slots.machine_root())
         held = slots.take(True)
-        child = subprocess.Popen([bash_exe(), '-c', 'python3 "%s" --proofs-for "%s"' % (tool.as_posix(), named)],
-                                 env=slots.proof_environment(os.environ), stdout=subprocess.PIPE, text=True)
-        ready, lines = threading.Event(), []
-        thread = threading.Thread(target=lambda: (lines.append(child.stdout.readline()), ready.set()))
-        thread.start()
         try:
-            self.assertTrue(ready.wait(15), 'the coordinator waited for a lane the pool never freed')
-            self.assertEqual(lines, ['missing\n'])
+            out = subprocess.run([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--deadline', str(time.time() + 1),
+                                  '--', sys.executable, '-c', 'print("ran")'], env=env, capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(out.stdout, 'ran\n', 'a full pool admitted a product run')
         finally:
             slots.release_all(held)
-            child.wait(timeout=15)
-            child.stdout.close()
-            thread.join(15)
-
-    def test_a_function_the_caller_exports_keeps_its_name_in_a_child_shell(self):
-        """A proof fakes a missing interpreter with `python3() { return 127; }; export -f python3`; the bootstrap
-        redefined python3 in every child shell, so under a fan-out the child ran the real Python."""
-        sys.path.insert(0, str(ROOT / '.claude/tests'))
-        from _sidecar_launch import bash_exe
-        env = slots.proof_environment(os.environ)
-        planted = "python3() { return 127; }; export -f python3; bash -c 'python3 -c pass; echo rc=$?'"
-        r = subprocess.run([bash_exe(), '-c', planted], env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual(r.stdout.strip(), 'rc=127', r.stdout + r.stderr)
-        r = subprocess.run([bash_exe(), '-c', "bash -c 'type -t python3; python3 -c pass; echo rc=$?'"], env=env,
-                           capture_output=True, text=True, timeout=60)
-        self.assertEqual(r.stdout.split(), ['function', 'rc=0'], r.stdout + r.stderr)
-
-    def test_delegate_node_proof_queues(self):
-        import shutil
-        node = shutil.which('node')
-        if not node:
-            self.skipTest('Node unavailable')
-        proof = Path(self.tmp.name) / 'probe_test.js'
-        proof.write_text('console.log(process.env.HARNESS_SLOT_BUDGET || "missing");\n', encoding='utf-8')
-        self._queued_script([node, str(proof)], slots.proof_environment(os.environ))
-
-    def test_bootstrap_preserves_existing_python_startup(self):
-        prior = Path(self.tmp.name) / 'prior'
-        prior.mkdir()
-        (prior / 'sitecustomize.py').write_text('import os;os.environ["PRIOR_STARTUP"]="seen"\n', encoding='utf-8')
-        proof = Path(self.tmp.name) / 'test_startup.py'
-        proof.write_text('import os;print(os.environ.get("HARNESS_SLOT_BUDGET", "missing")+":"+os.environ.get("PRIOR_STARTUP","missing"),flush=True)\n', encoding='utf-8')
-        env = slots.proof_environment(dict(os.environ, PYTHONPATH=str(prior)))
-        self._queued_script([sys.executable, str(proof)], env, '1:seen\n')
-
-    def test_bootstrap_and_read_recorder_start_in_either_order(self):
-        """A runner started inside an admitted shell hands each proof the recorder first and the inherited bootstrap
-        after it (`run_proof`); the fan-out puts the bootstrap first. Each shadows the other's sitecustomize, so
-        either order must start, and the recorder must still log the proof's reads."""
-        recorder = str(ROOT / '.claude/scripts/_read_recorder')
-        bootstrap = str(ROOT / '.claude/scripts/_slot_bootstrap')
-        proof = Path(self.tmp.name) / 'test_order.py'
-        proof.write_text('import os;print("started:"+os.environ.get("HARNESS_SLOT_BUDGET","missing"),flush=True)\n', encoding='utf-8')
-        # `run_proof` also sets the budget itself: the recorder runs the bootstrap through runpy, which hides the proof's
-        # script name from the bootstrap's admission, so a proof started in that order inherits its lane from the runner.
-        for order, held in (((recorder, bootstrap), {'HARNESS_SLOT_BUDGET': '1'}), ((bootstrap, recorder), {})):
-            with self.subTest(order=[Path(p).name for p in order]):
-                log = Path(self.tmp.name) / ('reads_' + Path(order[0]).name)
-                env = dict(os.environ, PYTHONPATH=os.pathsep.join(order), HARNESS_READ_LOG=str(log),
-                           HARNESS_READ_RECORDER=recorder, **held)
-                done = subprocess.run([sys.executable, str(proof)], env=env, capture_output=True, text=True, timeout=60)
-                self.assertEqual((done.returncode, done.stdout, done.stderr), (0, 'started:1\n', ''))
-                self.assertIn(str(proof).lower(), ''.join(p.read_text(encoding='utf-8') for p in log.glob('*.jsonl')).lower().replace('\\\\', '\\'))
-
-    def test_bootstrap_leaves_a_proof_its_own_checkouts_harness_modules(self):
-        """A delegate's worktree proof runs under the main checkout's bootstrap. The harness modules the bootstrap
-        imports to take a lane must not stay cached or ahead on the path, or the proof tests main's copy of them."""
-        hooks = Path(self.tmp.name) / 'wt/.claude/hooks'
-        hooks.mkdir(parents=True)
-        for name in ('_hook_state', '_file_lock'):
-            (hooks / (name + '.py')).write_text('MARK = "worktree"\n', encoding='utf-8')
-        proof = Path(self.tmp.name) / 'wt/.claude/tests/test_own.py'
-        proof.parent.mkdir(parents=True)
-        proof.write_text(
-            'import sys\nfrom pathlib import Path\n'
-            'sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))\n'
-            'import _hook_state, _file_lock\n'
-            'print(getattr(_hook_state, "MARK", "main") + ":" + getattr(_file_lock, "MARK", "main"), flush=True)\n',
-            encoding='utf-8')
-        env = slots.proof_environment(dict(os.environ))
-        done = subprocess.run([sys.executable, str(proof)], env=env, capture_output=True, text=True, timeout=60)
-        self.assertEqual((done.returncode, done.stdout), (0, 'worktree:worktree\n'), done.stderr)
+        out = subprocess.run([sys.executable, str(TOOLS / 'machine_slots.py'), 'run', '--', sys.executable, '-c',
+                              'print("ran")'], env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual((out.returncode, out.stdout), (0, 'ran\n'), out.stderr)
 
     def _queued_script(self, command, env, expected='1\n'):
         held = slots.take(True)
@@ -634,30 +483,6 @@ class MachineSlots(unittest.TestCase):
             child.wait(timeout=15)
             child.stdout.close()
             thread.join(15)
-
-    def test_fanout_bootstrap_charges_a_direct_proof(self):
-        proof = Path(self.tmp.name) / 'test_probe.py'
-        proof.write_text("import os;print(os.environ.get('HARNESS_SLOT_BUDGET','missing'),flush=True)\n", encoding='utf-8')
-        env = slots.proof_environment(dict(os.environ))
-        env['HARNESS_MACHINE_SLOTS'] = '1'
-        held = slots.take(True)
-        child = subprocess.Popen([sys.executable, str(proof)], env=env, stdout=subprocess.PIPE, text=True)
-        ready, lines = threading.Event(), []
-        thread = threading.Thread(target=lambda: (lines.append(child.stdout.readline()), ready.set()))
-        thread.start()
-        try:
-            self.assertFalse(ready.wait(.15))
-            slots.release_all(held)
-            held = []
-            self.assertTrue(ready.wait(10))
-            self.assertEqual(lines, ['1\n'])
-            self.assertEqual(child.wait(timeout=10), 0)
-        finally:
-            slots.release_all(held)
-            child.wait(timeout=10)
-            child.stdout.close()
-            thread.join(10)
-
 
 if __name__ == '__main__':
     unittest.main()
