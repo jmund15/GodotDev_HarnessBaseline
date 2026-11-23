@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """The state-file hook: a write to a state file points the session at it; SessionStart(compact) re-prints it.
 
-A state file is `.claude/work/<slug>.md` (T5). PostToolUse(Write|Edit) of one writes the session's pointer,
-`.claude/scratch/active_state_<session_id>`, holding the file's project-relative path. SessionStart(compact)
-prints the file that pointer names, so its standing facts and slices survive compaction. No pointer, no output.
+A state file is `.claude/work/<slug>.md` (T5). The `post_edit` chain runs `process` on a Write|Edit of one, which writes the session's pointer,
+`.claude/scratch/active_state_<session_id>`, holding the file's project-relative path. SessionStart(compact), this file's own
+registered command, prints the file that pointer names, so its standing facts and slices survive compaction. No pointer, no output.
 The client caps one hook's output at 10,000 characters: a long file prints its standing facts first, then as
 much as fits, and a line names the file to read in full.
 """
@@ -20,7 +20,9 @@ FACTS = re.compile(r"(?ms)^## Standing facts\n.*?(?=^## |\Z)")
 
 
 def project_dir(payload):
-    return Path(os.environ.get("CLAUDE_PROJECT_DIR") or payload.get("cwd") or os.getcwd())
+    """The payload's cwd first: a session in a linked worktree has its own `.claude/`, while `CLAUDE_PROJECT_DIR`
+    can name the main checkout."""
+    return Path(payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
 
 
 def pointer(root, session_id):
@@ -57,6 +59,11 @@ def on_write(payload, root):
     pointer(root, session_id).write_text(rel + "\n", encoding="utf-8")
 
 
+def process(payload):
+    """The `post_edit` chain member: a state-file write writes the pointer; it never has anything to say."""
+    on_write(payload, project_dir(payload))
+
+
 def on_compact(payload, root):
     session_id = payload.get("session_id") or ""
     if not re.fullmatch(r"[\w-]+", session_id):
@@ -76,13 +83,9 @@ def main():
     if not isinstance(payload, dict):
         return 0
     root = project_dir(payload)
-    event = payload.get("hook_event_name")
-    if event == "PostToolUse":
-        on_write(payload, root)
-    elif event == "SessionStart":
-        text = on_compact(payload, root)
-        if text:
-            sys.stdout.buffer.write(text.encode("utf-8"))
+    text = on_compact(payload, root) if payload.get("hook_event_name") == "SessionStart" else ""
+    if text:
+        sys.stdout.buffer.write(text.encode("utf-8"))
     return 0
 
 

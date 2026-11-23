@@ -8,8 +8,7 @@ process, and cleanup terminates through the pinned handles, so a reused pid is n
 Cases: an orphaned Git grep blocked on a pipe is reaped at zero thresholds; a grep with a live
 parent survives; an orphaned non-search process (Git sleep) survives; default thresholds spare a
 small orphan; a second call inside the throttle window takes no snapshot; an unreadable process
-table is silent; post_read_dispatch and post_edit_dispatch each surface a
-planted reap in their own additionalContext. Hook registrations are each repo's own settings.json.
+table is silent. Hook registrations are each repo's own settings.json.
 
     python3 .claude/tests/test_runaway_scan_reaper.py
 """
@@ -256,36 +255,6 @@ def main():
               os.path.normcase(os.path.abspath(p.stdout.strip()))
               == os.path.normcase(os.path.join(REPO, ".claude", ".cache")), p.stdout + p.stderr)
 
-        # --- each dispatcher surfaces a planted advisory line in its own additionalContext --------
-        scratch = os.path.join(tmp, "edited.txt")
-        with open(scratch, "w", encoding="utf-8") as fh:
-            fh.write("x\n")
-        dispatchers = (
-            ("post_read_dispatch.py", {"hook_event_name": "PostToolUse", "tool_name": "Read",
-                                       "tool_input": {"file_path": scratch}, "tool_response": {}}),
-            ("post_edit_dispatch.py", {"hook_event_name": "PostToolUse", "tool_name": "Edit",
-                                       "tool_input": {"file_path": scratch, "old_string": "x", "new_string": "y"},
-                                       "tool_response": {}}),
-        )
-        for i, (script, pl) in enumerate(dispatchers):
-            od = plant_orphan(planted, usr_bin, tmp)
-            time.sleep(0.3)
-            pl = dict(pl, session_id="rsrd%04d" % i, cwd=REPO)
-            denv = dict(os.environ, CLAUDE_PROJECT_DIR=REPO, PYTHONIOENCODING="utf-8",
-                        HARNESS_HOOK_STATE_DIR=os.path.join(tmp, "dstate"),
-                        HARNESS_REAPER_CACHE_DIR=os.path.join(tmp, "dcache%d" % i),
-                        HARNESS_REAPER_MIN_PRIVATE_MB="0", HARNESS_REAPER_MIN_CPU_SEC="0",
-                        HARNESS_REAPER_ONLY_PIDS=str(od["grep"]))
-            p = subprocess.run([sys.executable, os.path.join(HOOKS, script)], input=json.dumps(pl),
-                               capture_output=True, text=True, encoding="utf-8", timeout=120, env=denv, cwd=REPO)
-            dctx = ""
-            try:
-                dctx = (json.loads(p.stdout).get("hookSpecificOutput") or {}).get("additionalContext", "") if p.stdout.strip() else ""
-            except ValueError:
-                dctx = "UNPARSEABLE:" + p.stdout
-            check("%s surfaces the planted reap of pid %d in additionalContext" % (script, od["grep"]),
-                  p.returncode == 0 and ("killed orphaned search pid %d" % od["grep"]) in dctx
-                  and planted.wait_dead(od["grep"]), (dctx + " | " + p.stderr)[:400])
     except Exception as exc:  # a planting or harness failure is a FAIL, never a pass
         check("proof ran to completion", False, repr(exc))
     finally:

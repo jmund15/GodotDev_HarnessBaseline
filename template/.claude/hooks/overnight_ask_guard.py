@@ -5,7 +5,7 @@ Homes: commands/overnight.md §Step 2 (the guard); commands/overnight_review.md 
 and --archive-closed, which read Close docs and never touch markers). State is active-<session-id>.json under
 .claude/scratch/overnight; legacy anonymous active.json is never claimed.
 Expired owned state is removed. Only the owner typing `/overnight off` or running `/overnight_review`
-ends the run: a UserPromptSubmit whose owner text holds either (prompt_dispatch CHAIN member) removes
+ends the run: a UserPromptSubmit whose owner text holds either (`_chain.EVENTS` prompt member) removes
 the marker; any other owner text keeps it and prints a one-line reminder. The model has no disarm command, so work
 after the Close doc (a /close the goal names) stays unattended.
 Ending a run writes ended-<session-id>.json with the Q numbers then open in this session's Close doc, and the

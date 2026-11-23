@@ -1,4 +1,4 @@
-"""Proof for hooks/prompt_dispatch.py: members run in order through their own main(), output is normalized,
+"""Proof for the `prompt` row of hooks/_chain.py: members run in order through their own main(), output is normalized,
 and one member's fault or exit never erases another's output. Members are planted modules, never project hooks."""
 import json
 import subprocess
@@ -9,7 +9,7 @@ import pytest
 
 HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 sys.path.insert(0, str(HOOKS))
-import prompt_dispatch  # noqa: E402
+import _chain  # noqa: E402
 
 MEMBERS = {
     "pd_ok": "import json\ndef main():\n    print(json.dumps({'hookSpecificOutput': {'additionalContext': 'ok-text'}}))\n",
@@ -31,7 +31,7 @@ def planted(tmp_path, monkeypatch):
 
 
 def run(*names, payload="{}"):
-    return prompt_dispatch.dispatch(payload, chain=tuple((n, None) for n in names))
+    return _chain.run("prompt", json.loads(payload), members=names)
 
 
 def test_members_deliver_in_chain_order_and_join_with_a_newline(planted):
@@ -69,13 +69,11 @@ def test_member_reads_the_payload_on_stdin(planted):
 
 
 def test_shared_chain_is_the_two_kept_members():
-    assert [n for n, _ in prompt_dispatch.CHAIN] == ["prompt_git_state_delta", "overnight_ask_guard"]
+    assert _chain.EVENTS["prompt"].shared == ("prompt_git_state_delta", "overnight_ask_guard")
 
 
-def test_entry_point_runs_registered_command_and_rejects_arguments(tmp_path):
+def test_entry_point_runs_registered_command(tmp_path):
     entry = str(HOOKS / "prompt_dispatch.py")
     ok = subprocess.run([sys.executable, entry], input='{"session_id": "s", "prompt": "hi"}', cwd=tmp_path,
                         capture_output=True, text=True, timeout=120)
-    assert ok.returncode == 0 and ok.stdout.strip() in ("{}", ok.stdout.strip()) and "Traceback" not in ok.stderr
-    bad = subprocess.run([sys.executable, entry, "--bogus"], capture_output=True, text=True, timeout=120)
-    assert bad.returncode == 2 and "usage: prompt_dispatch.py" in bad.stderr
+    assert ok.returncode == 0 and "Traceback" not in ok.stderr

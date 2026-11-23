@@ -53,7 +53,7 @@ def run_dispatch_out(payload):
 
 
 def rewrite_of(result):
-    return (result or {}).get("rewrite") or {}
+    return (result or {}).get("updatedInput") or {}
 
 
 def run_dispatch(payload, env=None):
@@ -64,7 +64,7 @@ def run_dispatch(payload, env=None):
         full_env.update(env)
     r = subprocess.run([sys.executable, DISPATCH], input=raw, capture_output=True,
                         text=True, encoding="utf-8", timeout=60, env=full_env)
-    return r.returncode, r.stderr or ""
+    return r.returncode, (r.stderr or "") + (r.stdout or "")  # a deny is a permission decision on stdout, exit 0
 
 
 def main():
@@ -225,13 +225,13 @@ def main():
     rc, err = run_dispatch({"tool_name": TOOL, "tool_input": {"searchDir": OUTSIDE},
                              "cwd": ROOT})
     cases.append(("real pre_read_dispatch.py channel: an outside searchDir denied",
-                  rc == 2 and "BLOCKED (reference/semantic_search.md)" in err
+                  rc == 0 and '"deny"' in err and "BLOCKED (reference/semantic_search.md)" in err
                   and "searchDir" in err))
     rc, err = run_dispatch({"tool_name": TOOL,
                             "tool_input": {"searchDir": ROOT, "restrictToDir": "../Tests"},
                             "cwd": ROOT})
     cases.append(("real dispatcher channel: non-canonical restrictToDir cites memory rule + next step",
-                  rc == 2 and "reference/semantic_search.md Roots" in err and "searchDir" in err))
+                  rc == 0 and '"deny"' in err and "reference/semantic_search.md Roots" in err and "searchDir" in err))
     rc, err = run_dispatch({"tool_name": TOOL, "tool_input": {"searchDir": ROOT}, "cwd": ROOT})
     cases.append(("real pre_read_dispatch.py channel: project-root searchDir allowed",
                   rc == 0))

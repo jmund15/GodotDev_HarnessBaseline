@@ -42,7 +42,7 @@ def test_import_fault_isolated_per_member(monkeypatch, tmp_path):
     assert faults == [('broken', 'planted import fault')]
 
 
-def test_chain_appends_the_projects_installed_members_after_the_shared_ones(monkeypatch, tmp_path):
+def test_members_appends_the_projects_installed_modules_after_the_shared_ones(monkeypatch, tmp_path):
     sys.path.insert(0, str(HOOKS))
     import _optional_hooks as loader
     claude = tmp_path / ".claude"
@@ -56,12 +56,12 @@ def test_chain_appends_the_projects_installed_members_after_the_shared_ones(monk
     adaptation_file = claude / "skills" / "project_subsystems" / "adaptation.json"
     monkeypatch.setattr(loader, "HOOKS_DIR", claude / "hooks")
     monkeypatch.delitem(sys.modules, "adaptation", raising=False)
-    shared = (("shared_a", "advisory"), ("shared_gone", "advisory"))
+    shared = ("shared_a", "shared_gone")
     adaptation_file.write_text(json.dumps({"hook_members": {"pre_edit": ["project_b", "project_gone", 7]}}), encoding="utf-8")
-    assert loader.chain("pre_edit", shared, "x") == (("shared_a", "advisory"), ("project_b", "x"))
-    assert loader.chain("post_edit", shared, "x") == (("shared_a", "advisory"),)
+    assert loader.members("pre_edit", shared) == ("shared_a", "project_b")
+    assert loader.members("post_edit", shared) == ("shared_a",)
     adaptation_file.write_text("{not json", encoding="utf-8")
-    assert loader.chain("pre_edit", shared, "x") == (("shared_a", "advisory"),)
+    assert loader.members("pre_edit", shared) == ("shared_a",)
 
 
 def main():
@@ -80,9 +80,6 @@ def main():
             check("a single name returns the bare module", loader.load("present_guard") is present)
             check("present() is true only for an installed sub-hook",
                   loader.present("present_guard") and not loader.present("absent_guard"))
-            chain = (("present_guard", "advisory"), ("absent_guard", "enforcement"))
-            check("adopted() keeps only installed entries of a chain",
-                  loader.adopted(chain) == (("present_guard", "advisory"),), loader.adopted(chain))
             try:
                 loader.load("broken_guard")
                 check("a present sub-hook that cannot import raises", False, "no exception")
