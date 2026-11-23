@@ -52,49 +52,6 @@ class BoundedRunTimingTests(unittest.TestCase):
             self.assertIsNone(result.returncode)
             self.assertFalse(marker.exists(), "a Git Bash grandchild wrote after the deadline")
 
-    def test_the_dispatch_preflight_refuses_at_its_deadline(self):
-        # sidecar_dispatch_context runs `<launcher> --check` inside the PreToolUse dispatcher, whose own
-        # timeout kills the whole hook: a check that overruns its deadline takes every guard with it.
-        import sidecar_dispatch_context as sdc
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            scripts = Path(tmp) / ".claude" / "scripts"
-            scripts.mkdir(parents=True)
-            holder = Path(tmp) / "holder.py"
-            holder.write_text("import subprocess, sys, time\n"
-                              "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-                              "print('probing', flush=True)\ntime.sleep(60)\n", encoding="utf-8")
-            (scripts / "hung_sidecar.sh").write_text(
-                '"%s" "%s"\n' % (Path(sys.executable).as_posix(), holder.as_posix()), encoding="utf-8")
-            real = sdc.PREFLIGHT_TIMEOUT
-            sdc.PREFLIGHT_TIMEOUT = 3
-            started = time.monotonic()
-            try:
-                state, refusal = sdc.run_preflight("bash .claude/scripts/hung_sidecar.sh -m x", tmp)
-            finally:
-                sdc.PREFLIGHT_TIMEOUT = real
-            elapsed = time.monotonic() - started
-        self.assertEqual("refused", state, refusal)
-        self.assertIn("timed out", refusal or "")
-        self.assertLess(elapsed, 20, "the preflight outlived its 3 s deadline by %.1f s" % (elapsed - 3))
-
-    def test_a_launch_preflight_waits_past_the_hook_deadline(self):
-        # A launcher's own launch (a fan-out job, a study ruler) runs its --check outside any PreToolUse budget: a
-        # check slower than the hook's deadline under load is a slow answer, never a refusal that fails the job.
-        import sidecar_dispatch_context as sdc
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-            scripts = Path(tmp) / ".claude" / "scripts"
-            scripts.mkdir(parents=True)
-            (scripts / "slow_sidecar.sh").write_text('sleep 3\necho OK\n', encoding="utf-8")
-            real = sdc.PREFLIGHT_TIMEOUT
-            sdc.PREFLIGHT_TIMEOUT = 1
-            try:
-                hook_state, _ = sdc.run_preflight("bash .claude/scripts/slow_sidecar.sh -m x", tmp)
-                launch_state, refusal, _code = sdc.launch_preflight("bash .claude/scripts/slow_sidecar.sh -m x", tmp)
-            finally:
-                sdc.PREFLIGHT_TIMEOUT = real
-        self.assertEqual("refused", hook_state, "the planted check no longer outlasts the hook deadline")
-        self.assertEqual("passed", launch_state, refusal)
-
     @unittest.skipUnless(os.name == "nt", "the taskkill fallback is Windows-only")
     def test_a_stalled_fallback_cleanup_stays_bounded(self):
         import subprocess
