@@ -288,6 +288,20 @@ def spans_of(text: str):
     return out, rest
 
 
+def link_rows(text: str, rs: Resolver, doc: str | None = None):
+    """(target, status, detail) per Markdown link destination in `text`, resolved from the citing doc."""
+    for match in MARKDOWN_LINK.finditer(text):
+        target = match.group(1) or match.group(2)
+        if target.startswith(('#', '//')) or re.match(r'^[A-Za-z][A-Za-z0-9+.-]*:', target):
+            continue
+        target = target.split('#', 1)[0]
+        if PLACEHOLDER.search(target):
+            yield target, 'unparseable', 'placeholder'
+        else:
+            relative = target if target.startswith(('./', '../', '/', '~')) else './' + target
+            yield (target, *rs.resolve_path(relative, doc))
+
+
 def collect(text: str, kinds, rs: Resolver, doc: str | None = None):
     """Citation rows {kind,text,status,detail}, one per distinct (kind, text), in first-seen order."""
     rows, seen = [], set()
@@ -341,17 +355,8 @@ def collect(text: str, kinds, rs: Resolver, doc: str | None = None):
 
     spans, rest = spans_of(text)
     if 'path' in kinds:
-        for match in MARKDOWN_LINK.finditer(rest):
-            target = match.group(1) or match.group(2)
-            if target.startswith(('#', '//')) or re.match(r'^[A-Za-z][A-Za-z0-9+.-]*:', target):
-                continue
-            target = target.split('#', 1)[0]
-            if PLACEHOLDER.search(target):
-                add('path', target, 'unparseable', 'placeholder')
-            else:
-                relative = target if target.startswith(('./', '../', '/', '~')) else './' + target
-                status, detail = rs.resolve_path(relative, doc)
-                add('path', target, status, detail)
+        for target, status, detail in link_rows(rest, rs, doc):
+            add('path', target, status, detail)
     if 'path' in kinds or 'flag' in kinds:
         for span in spans:
             tokens = [t for t in (clean_token(x) for x in span.split()) if t]

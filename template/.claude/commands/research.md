@@ -128,7 +128,7 @@ You are res-field. You establish what practitioners REPORT — issues, proposals
 
 ### Artifact
 
-Write `<vault_root>/DevProjects/<project_name>/Claude/Research/<slug>.md`, each value printed by `python3 .claude/tools/adaptation.py get <key>`. When the finding concerns a repo in `adaptation.json` `paired_repos`, write it under that repo's vault folder instead, so other projects built on it find it. Frontmatter carries `researched:`, `questions:`, and `expires-with:` (the versions the answers are true for, from the pins `.claude/reference/project_stack.md` names). Every claim line ends `— [title](url) [P1] · fetched <date>`. Gaps get their own section; a research file that hides its gaps is worse than one that reports none. Scratchpad instead of the vault only when the run is consumed in-session and nothing durable comes out of it.
+Write `<vault_root>/DevProjects/<project_name>/Claude/Research/<slug>.md`, each value printed by `python3 .claude/tools/adaptation.py get <key>`. When the finding concerns a repo in `adaptation.json` `paired_repos`, write it under that repo's vault folder instead, so other projects built on it find it. Frontmatter carries `researched:`, `questions:`, and `expires-with:` (the versions the answers are true for, from the pins `.claude/reference/project_stack.md` names). Every claim line ends `— [title](https://...) [P1] · fetched <date>`. Gaps get their own section; a research file that hides its gaps is worse than one that reports none. Scratchpad instead of the vault only when the run is consumed in-session and nothing durable comes out of it.
 
 ### Lifecycle
 

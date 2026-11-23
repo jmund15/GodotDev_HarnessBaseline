@@ -5,6 +5,7 @@
 Both sides are counted the same way, from the files git tracks at that commit, so the previous run's
 totals need no stored state: the workflow passes the commit the previous run built (the push's `before`
 or the PR's base). With no BASE, or one git cannot resolve, only the current totals print.
+Only the shared tree, `template/.claude/`, is counted: `v2/` migration files and repo-root files are not shared core.
 Code is source files, test is code under a `tests` directory or named `test_*`, prose is `.md`.
 """
 import io
@@ -15,6 +16,7 @@ from pathlib import PurePosixPath
 
 CODE = {".py", ".js", ".mjs", ".sh", ".ps1", ".cs", ".gd"}
 KINDS = ("code", "test", "prose")
+SHARED = "template/.claude/"
 
 
 def kind(path):
@@ -32,7 +34,7 @@ def totals(rev):
     out = {k: [0, 0, 0] for k in KINDS}
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         for member in tar:
-            k = member.isfile() and kind(member.name)
+            k = member.isfile() and member.name.startswith(SHARED) and kind(member.name)
             if k:
                 data = tar.extractfile(member).read()
                 row = out[k]

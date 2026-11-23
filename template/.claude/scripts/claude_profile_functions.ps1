@@ -24,7 +24,7 @@ function Invoke-ClaudeInLogin {
 
 function Get-SeatConfigDir {
     param([Parameter(Mandatory)][string]$Seat)
-    $seats = Join-Path $PSScriptRoot '..\seats.json'
+    $seats = Join-Path (Split-Path $PSScriptRoot -Parent) 'seats.json'
     $row = (Get-Content $seats -Raw | ConvertFrom-Json).seats.$Seat
     if (-not $row -or -not $row.configDir) { return $null }
     if ($row.configDir -match '^~') { Join-Path $HOME ($row.configDir -replace '^~[\/]*', '') } else { $row.configDir }
@@ -37,6 +37,6 @@ function Invoke-ClaudeSeat {
     Invoke-ClaudeInLogin $dir @rest
 }
 
-function claude-primary { Invoke-ClaudeInLogin "$HOME\.claude" @args }
+function claude-primary { Invoke-ClaudeInLogin (Join-Path $HOME '.claude') @args }
 
 function claude-secondary { Invoke-ClaudeSeat 'claude-secondary' @args }
