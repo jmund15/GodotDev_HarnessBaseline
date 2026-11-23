@@ -1,19 +1,26 @@
 ---
 name: Change Control
 description: >-
-  Load when deciding how a change is classified, gated or reviewed: which gate a commit or
-  merge needs, whether a gate is advisory or blocking, and release mechanics. SKIP for running
-  the gate itself and for test mechanics (the project's testing skill).
+  Use to decide which check a change runs and when: inside a slice, at a drive's close, after the land.
+  SKIP writing or judging tests (testing).
 ---
 
-# {{PROJECT_NAME}} — Change Control
+# Change Control — gate cadence
 
-<!-- PROJECT-OWNED SEED. Fill in at adoption; never synced. CLAUDE.core.md cites this skill for gate cadence and release mechanics. -->
+This file says when each check runs and why. The commands are the project's: `skills/project_subsystems/adaptation.json` `gate_cadence` holds them, one key per row below.
 
-## Gate cadence
+The gate asks whether a change broke anything outside the scope it was made in. That question has no answer until work in that scope stops, so the unit is the commit, never the slice.
 
-<Which gate each change class needs, and when it runs.>
+| When | Run (`gate_cadence` key) | Why at this point |
+|---|---|---|
+| Inside a slice, a delegate's whole job included | `slice`: the changed unit's own tests; after a failure, only the failed tests | Fast feedback on the unit; a wider run here re-proves code nobody changed |
+| Once at a drive's close, before the push | `close`: the scoped run over the drive's accumulated changes | Catches interactions between earlier slices and later edits to shared code |
+| After each land on the default branch | `main`: the full gate, run by the main check (`adaptation.json` `main_check`) | The full gate costs minutes; after the land it costs the session nothing |
 
-## Release mechanics
+- **A harness change** runs its own unit's test file and nothing wider; the shared repository's CI runs the whole harness suite on every push.
+- **A session runs the full gate itself** only to reproduce a red the main check found.
+- **A skipped check names the trigger that brings it back.** An unnamed skip reads the same as a broken check.
 
-<Branching, merge order, submodule pointers and push authorization.>
+## A red after the land
+
+Landing first moves the full gate after the push, so its red needs an owner. The session whose commits a red names fixes it before its turn ends; once that session has ended, the next session working in that area fixes it. A red blocks no other work: later checks read it as pre-existing, which excuses only the same failures. A red in another repository's CI that tests this one at its default branch is a red here, owned by whoever landed the range since that CI's last green.
