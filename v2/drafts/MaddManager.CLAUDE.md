@@ -6,7 +6,6 @@
 
 ## Build and Test
 - `npm run typecheck` (`tsc -b` and the Convex project), `npm run test` (vitest), `npm run staging:deploy` then `npm run staging:e2e` (Playwright, staging only). `npm run verify` runs all three; `change_control` §Gate cadence sets which rows run when.
-- A harness change runs its unit's test file; the main check runs the MaddManager-local harness tests after the land.
 
 ## Development Philosophy: Hybrid TDD
 - **Test-first:** server and logic code gets a failing test before the code, and the red run is kept as evidence: Convex functions and model rules (`convex/**/*.test.ts`, vitest `convex` project) and pure logic in `shared/`, `src/**/*.ts` and `convex/**/*.node.test.ts` (vitest `domain` project, node, no DOM). A component's logic moves into a pure `.ts` module so it can be tested this way.
