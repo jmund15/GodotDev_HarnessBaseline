@@ -4,7 +4,7 @@
 # login comes from the shipped seats.json.
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot '..\scripts\claude_profile_functions.ps1')
+. (Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts/claude_profile_functions.ps1')
 
 $script:Failed = 0
 function Assert-True {
@@ -19,11 +19,11 @@ function claude { $script:Seen = "$env:CLAUDE_CONFIG_DIR|$($args -join ' ')" }
 
 $env:CLAUDE_CONFIG_DIR = 'outer'
 claude-primary --resume abc
-Assert-True ($script:Seen -eq "$HOME\.claude|--resume abc") 'claude-primary runs the default login with its arguments' $script:Seen
+Assert-True ($script:Seen -eq "$(Join-Path $HOME .claude)|--resume abc") 'claude-primary runs the default login with its arguments' $script:Seen
 Assert-True ($env:CLAUDE_CONFIG_DIR -eq 'outer') 'claude-primary restores CLAUDE_CONFIG_DIR'
 
 claude-secondary -p hi
-Assert-True ($script:Seen -eq "$HOME\.claude-secondary|-p hi") 'claude-secondary runs the login seats.json names for it' $script:Seen
+Assert-True ($script:Seen -eq "$(Join-Path $HOME .claude-secondary)|-p hi") 'claude-secondary runs the login seats.json names for it' $script:Seen
 Assert-True ($env:CLAUDE_CONFIG_DIR -eq 'outer') 'claude-secondary restores CLAUDE_CONFIG_DIR'
 
 Assert-True ($null -eq (Get-SeatConfigDir 'antigravity')) 'a seat with an empty configDir has no login'
