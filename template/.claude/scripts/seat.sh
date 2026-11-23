@@ -7,6 +7,8 @@
 #   - a writing seat is not started in its own linked worktree;
 #   - the seat already runs max_concurrent jobs on this machine;
 #   - tools/capacity.py reports the login at its exhaust floor (exit 3). Any other exit warns and launches.
+# The adapter reads one prompt, <slot>/prompt.md: guards/rails.md, then the brief. The seat's environment carries
+# CLAUDE_CODE_SIDECAR=1, which the kept hooks read to know a sidecar child runs.
 # Then the project's dispatch.pre_launch hook runs; after the CLI exits 0, dispatch.post_return runs in the workdir.
 # Exit 0 means <out.md> is written. Any other exit carries the CLI's stderr verbatim.
 set -u
@@ -77,18 +79,13 @@ esac
 
 python3 "$lc" pre_launch "$seat" "$brief_abs" "$out_abs" "$label" || exit 2
 
-# The wait checks ride into every seat, whatever its workdir: the seat gets no completion wake of its own.
-# A writing seat also gets the workdir fence, which keeps its writes out of the main checkout.
-fence=""
-if [ "$SEAT_WRITES" = yes ]; then
-  fence=",{\"matcher\": \"Write|Edit|NotebookEdit|Bash\", \"hooks\": [{\"type\": \"command\", \"command\": \"python3 '$here/hooks/sidecar_workdir_guard.py' '$workdir' '$main_checkout' '$claimed' '$brief_abs'\"}]}"
-fi
-cat > "$claimed/settings.json" <<EOF
-{"hooks": {"PreToolUse": [{"matcher": "Bash|PowerShell", "hooks": [{"type": "command", "command": "python3 '$here/hooks/foreground_wait_guard.py'"}]}$fence]}}
-EOF
+# launch_check.py stage writes the seat's prompt (rails, then the brief) and its settings (the floor, plus the workdir
+# fence for a writing seat). Its spill dir is the output directory.
+python3 "$lc" stage "$claimed" "$brief_abs" "$out_abs" "$here" "$workdir" "${main_checkout:-}" || exit 2
 
+export CLAUDE_CODE_SIDECAR=1
 export SEAT_CONFIG_DIR SEAT_MODEL SEAT_WRITES SEAT_SETTINGS="$claimed/settings.json" SEAT_HERE="$here"
-bash "$here/$SEAT_ADAPTER" "$brief_abs" "$workdir" > "$claimed/out.md" 2> "$claimed/err.txt"
+bash "$here/$SEAT_ADAPTER" "$claimed/prompt.md" "$workdir" > "$claimed/out.md" 2> "$claimed/err.txt"
 rc=$?
 if [ "$rc" -ne 0 ]; then
   cat "$claimed/err.txt" >&2

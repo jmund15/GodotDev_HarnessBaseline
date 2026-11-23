@@ -32,6 +32,7 @@ def put(rel, text):
 
 
 put(".claude/CLAUDE.core.md", "core\n")
+put(".claude/CLAUDE.godot.md", "a layer the harness no longer ships\n")
 put(".claude/auto-memory/MEMORY.md", "# Memory Index\n")
 put(".claude/rules/cs.md", '---\npaths:\n  - "**/*.cs"\n  - "Jmodot/**"\n---\nbody\n')
 put(".claude/rules/nopaths.md", "no frontmatter\n")
@@ -63,7 +64,7 @@ core = read("rules/claude_core.md")
 def main():
     check("a CLAUDE layer is an always-on rule that includes its source",
           "trigger: always_on" in core and "@[CLAUDE.core.md](../../.claude/CLAUDE.core.md)" in core, core)
-    check("an absent layer gets no rule", not os.path.exists(os.path.join(agents, "rules", "claude_godot.md")))
+    check("a layer the harness no longer ships gets no rule, though a file of that name exists", not os.path.exists(os.path.join(agents, "rules", "claude_godot.md")))
     memory = read("rules/memory_index.md")
     check("the memory index is an always-on rule that includes its source, as Claude Code loads it every session",
           "trigger: always_on" in memory and "(../../.claude/auto-memory/MEMORY.md)" in memory, memory)

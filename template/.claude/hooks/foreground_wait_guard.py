@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hook: PreToolUse (Bash|PowerShell), armed by scripts/seat.sh for every seat.
+Hook: PreToolUse (Bash|PowerShell). The seat launcher arms it through the floor entry, hooks/pre_bash.py (tools/launch_check.py stage).
 
 A never-woken caller (a Workflow subagent, a `claude -p` child, a seat) gets no completion wake, so a backgrounded
 job never wakes it. Two checks keep its foreground waits inside its prompt cache:
