@@ -73,6 +73,20 @@ def test_pull_writes_files_and_manifest(source, project):
     assert b"\r" not in (project / hs.MANIFEST).read_bytes()
 
 
+def test_pull_names_the_written_files_the_projects_gitignore_hides(source, project):
+    git(project, "init", "-q")
+    write(project, ".gitignore", ".claude/tools/\n")
+    text, code = hs.pull("HEAD", str(source), str(project))
+    assert code == 0
+    assert "gitignored" in text and ".claude/tools/a.py" in text and "git add -f" in text
+    assert ".claude/hooks/pre_bash.py" not in text.split("gitignored", 1)[1]
+
+
+def test_pull_into_a_folder_that_is_no_repo_names_nothing_ignored(source, project):
+    text, code = hs.pull("HEAD", str(source), str(project))
+    assert code == 0 and "gitignored" not in text
+
+
 def test_pull_updates_an_unedited_file_and_deletes_a_dropped_one(source, project):
     hs.pull("HEAD", str(source), str(project))
     new_head = commit(source, {"tools/a.py": "a = 2\n"}, drop=["tools/gone.py"])

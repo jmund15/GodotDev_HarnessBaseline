@@ -10,7 +10,8 @@ The shared repo keeps the files under template/.claude/; a project keeps the sam
 manifest .claude/harness.manifest.json records the pulled commit, each file's sha256 and the floor hook paths, so
 pull and status tell an unedited file from a hand edit. Pull checks every write and delete before it makes one:
 a file that differs from the manifest is refused and nothing is written. A repo never forks a shared file, so the
-fix for an edit is to push it upstream.
+fix for an edit is to push it upstream. Pull names every shared file the project's gitignore hides: `git add` skips
+it, so it needs `git add -f` or no commit carries it.
 """
 import argparse
 import hashlib
@@ -127,7 +128,26 @@ def pull(ref, source, project):
     target = Path(project) / MANIFEST
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes((json.dumps(new, indent=2) + "\n").encode("utf-8"))
-    return f"pulled {commit[:12]}: {len(writes)} written, {len(deletes)} deleted", 0
+    text = f"pulled {commit[:12]}: {len(writes)} written, {len(deletes)} deleted"
+    hidden = ignored(project, sorted(incoming))
+    if hidden:
+        text += (f"\n{len(hidden)} shared files are gitignored, so `git add` skips them and no commit carries them;"
+                 f" stage them with `git add -f`: " + " ".join(hidden))
+    return text, 0
+
+
+def ignored(project, paths):
+    """The `paths` the project's gitignore hides and git does not track; none when the project is no repo."""
+    done = subprocess.run(["git", "-C", str(project), "check-ignore", "--no-index", "--stdin", "-z"],
+                          input="\0".join(paths).encode("utf-8"), capture_output=True)
+    if done.returncode not in (0, 1):
+        return []
+    hits = [p for p in done.stdout.decode("utf-8", errors="replace").split("\0") if p]
+    if not hits:
+        return []
+    tracked = subprocess.run(["git", "-C", str(project), "ls-files", "-z", "--", *hits], capture_output=True)
+    known = set(tracked.stdout.decode("utf-8", errors="replace").split("\0"))
+    return [p for p in hits if p not in known]
 
 
 def floor_commands(settings):
