@@ -14,8 +14,7 @@ path outside the main checkout stay allowed. A brief that is absent, unreadable 
 wherever it sits (spill dir, workdir, a declared dir, outside the checkout): the guard re-reads its writeSet on
 every call, so a child that could edit it would widen its own allowance. A job whose workdir is the main checkout is unaffected.
 A payload it cannot parse is denied. A Bash target it cannot resolve statically (variable, substitution, glob) is allowed.
-Armed by lib/sidecar_common.sh from adaptation.json sidecar_hook_rows; rule home: reference/sidecar_dispatch.md.
-Channel: exit 2 + stderr.
+Armed by the seat launcher for writing seats. Channel: exit 2 + stderr.
 """
 import json
 import os
@@ -35,8 +34,8 @@ GIT_WRITES = {"add", "rm", "mv", "commit", "reset", "checkout", "restore", "stas
 _UNRESOLVED = re.compile(r"[$`*?\[\]{}()~]")
 
 
-BRIEF_DENY = ("Denied: %s is this job's brief, whose writeSet this guard enforces; a job never edits it "
-              "(reference/sidecar_dispatch.md, worktree jobs). Write your output under the job's workdir or spill dir.\n")
+BRIEF_DENY = ("Denied: %s is this job's brief, whose writeSet this guard enforces; a job never edits it. "
+              "Write your output under the job's workdir or spill dir.\n")
 
 
 def parts(p, base=""):
@@ -70,7 +69,7 @@ def declared_roots(brief, work):
         return ()
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
     try:
-        from dispatch_result import task_block
+        from brief_block import task_block
         with open(brief, encoding="utf-8") as fh:
             task = task_block(fh.read()) or {}
     except (OSError, ValueError, ImportError):
@@ -142,8 +141,8 @@ def main():
         if hit:
             hit = hit[0]
             sys.stderr.write(
-                "Denied: this command writes %s in the main checkout, outside this job's workdir %s "
-                "(reference/sidecar_dispatch.md, worktree jobs). Write under %s instead.\n"
+                "Denied: this command writes %s in the main checkout, outside this job's workdir %s. "
+                "Write under %s instead.\n"
                 % (hit, sys.argv[1], sys.argv[1]))
             return 2
         return 0
@@ -159,11 +158,12 @@ def main():
             return 2
         if inside(path, main_root) and not allowed(path, work, spill, declared):
             sys.stderr.write(
-                "Denied: %s is in the main checkout, outside this job's workdir %s "
-                "(reference/sidecar_dispatch.md, worktree jobs). Write the file under %s instead.\n"
+                "Denied: %s is in the main checkout, outside this job's workdir %s. "
+                "Write the file under %s instead.\n"
                 % (raw, sys.argv[1], sys.argv[1]))
             return 2
     return 0
 
 
-sys.exit(main())
+if __name__ == "__main__":
+    sys.exit(main())
