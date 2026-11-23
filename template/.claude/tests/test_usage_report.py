@@ -76,5 +76,25 @@ def test_cli_names_a_missing_root_as_a_gap(tmp_path, capsys):
     assert "missing transcript root: %s" % missing in capsys.readouterr().out
 
 
+def test_default_window_starts_at_the_last_weekly_reset_and_says_so(monkeypatch, capsys):
+    monkeypatch.setattr(usage_report.capacity, "last_weekly_reset", lambda: 1000.0)
+    seen = {}
+    monkeypatch.setattr(usage_report.transcript_usage, "scan",
+                        lambda roots, since: seen.update(since=since) or {"files": 0, "calls": [], "gaps": [],
+                                                                         "unparseable_lines": 0, "unparseable_files": []})
+    usage_report.main(["--root", PROJECTS])
+    assert seen["since"] == 1000.0
+    assert "since the plan's last weekly reset" in capsys.readouterr().out
+
+
+def test_default_window_is_a_rolling_week_when_the_reset_is_unknown_and_days_overrides(monkeypatch, capsys):
+    monkeypatch.setattr(usage_report.capacity, "last_weekly_reset", lambda: None)
+    usage_report.main(["--root", PROJECTS])
+    assert "last 7 days" in capsys.readouterr().out
+    monkeypatch.setattr(usage_report.capacity, "last_weekly_reset", lambda: 1000.0)
+    usage_report.main(["--root", PROJECTS, "--days", "3"])
+    assert "last 3 days" in capsys.readouterr().out
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

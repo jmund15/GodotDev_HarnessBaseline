@@ -53,6 +53,19 @@ def _run(monkeypatch, windows, argv=("capacity.py", "claude-secondary")):
     return capacity.main(list(argv))
 
 
+def test_last_weekly_reset_is_the_seven_day_reset_minus_a_week_or_none(monkeypatch):
+    seven_day = {"seven_day": {"used": 5.0, "resets": "2026-11-27T10:00:00+00:00"}}
+    monkeypatch.setattr(capacity, "read_anthropic", lambda row: seven_day)
+    assert capacity.last_weekly_reset() == 1795773600.0 - 7 * 86400
+    monkeypatch.setattr(capacity, "read_anthropic", lambda row: {"five_hour": {"used": 1.0, "resets": None}})
+    assert capacity.last_weekly_reset() is None
+
+    def fail(row):
+        raise capacity.Unreadable("down")
+    monkeypatch.setattr(capacity, "read_anthropic", fail)
+    assert capacity.last_weekly_reset() is None
+
+
 def test_main_exit_codes_follow_the_floor(monkeypatch, capsys):
     ok = {"five_hour": {"used": 10.0, "resets": "t"}, "seven_day": {"used": 50.0, "resets": "t"}}
     assert _run(monkeypatch, ok) == capacity.OK

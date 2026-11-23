@@ -4,7 +4,8 @@
     python3 .claude/tools/usage_report.py [--days N] [--top N] [--root DIR ...]
 
 Reads every login's transcripts (transcript_usage.projects_dirs; --root replaces them) in files modified
-in the last N days (default 7), and prints the calls and token parts per session and model with their USD
+since the plan's last weekly reset (capacity.last_weekly_reset), else in the last 7 days; --days N sets the
+window to the last N days. The first output line names the window used. It prints the calls and token parts per session and model with their USD
 cost, then totals by model and by transport.
 
 Prices are seats.json `models.<id>.price`, USD per 1M tokens: fresh input at cacheMissPer1M, cache reads at
@@ -17,6 +18,7 @@ import os
 import sys
 import time
 
+import capacity
 import launch_check
 import transcript_usage
 
@@ -77,9 +79,9 @@ HEADER = "%-36s %-28s %6s %12s %12s %12s %10s  %s" % (
     "session", "model", "calls", "fresh", "cache_read", "cache_write", "output", "USD")
 
 
-def render(tables, found, days, top):
-    lines = ["Spend, transcripts modified in the last %g days: %d files, %d calls; "
-             "%d unparseable lines in %d files." % (days, found["files"], len(found["calls"]),
+def render(tables, found, window, top):
+    lines = ["Spend, transcripts modified %s: %d files, %d calls; "
+             "%d unparseable lines in %d files." % (window, found["files"], len(found["calls"]),
                                                   found["unparseable_lines"], len(found["unparseable_files"]))]
     lines += ["missing transcript root: %s" % gap for gap in found["gaps"]]
     lines += ["", HEADER]
@@ -101,13 +103,16 @@ def render(tables, found, days, top):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--days", type=float, default=7)
+    parser.add_argument("--days", type=float, default=None, help="window of the last N days (default: since the plan's last weekly reset)")
     parser.add_argument("--top", type=int, default=15)
     parser.add_argument("--root", action="append", default=None, help="a projects dir to read; repeatable")
     args = parser.parse_args(argv)
     roots = args.root or transcript_usage.projects_dirs()
-    found = transcript_usage.scan(roots, since=time.time() - args.days * 86400)
-    print(render(report(found["calls"], load_prices()), found, args.days, args.top))
+    reset = None if args.days else capacity.last_weekly_reset()
+    since = reset if reset else time.time() - (args.days or 7) * 86400
+    window = "since the plan's last weekly reset" if reset else "in the last %g days" % (args.days or 7)
+    found = transcript_usage.scan(roots, since=since)
+    print(render(report(found["calls"], load_prices()), found, window, args.top))
     return 0
 
 

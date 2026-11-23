@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 CLAUDE = Path(__file__).resolve().parents[1]
@@ -122,6 +123,16 @@ def describe(name, windows):
     parts = [f"{LABEL[key]} {windows[key]['used']:.1f}% used, resets {windows[key]['resets'] or 'unknown'}"
              for key in FLOOR if key in windows]
     return f"{name}: " + "; ".join(parts)
+
+
+def last_weekly_reset():
+    """Epoch seconds of the session login's last 7-day window reset (its next reset minus a week), or None when
+    the read fails or the window carries no reset time. tools/usage_report.py starts its default window here."""
+    try:
+        resets = read_anthropic(seat_row("session"))["seven_day"]["resets"]
+        return datetime.fromisoformat(resets).timestamp() - 7 * 86400
+    except (Unreadable, OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def main(argv):
