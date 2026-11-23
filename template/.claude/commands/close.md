@@ -14,7 +14,7 @@ Resolve every open choice before step 4. Apply your recommendation to a reversib
 
 ## Steps
 
-1. **State file.** `.claude/scratch/active_state_<session_id>` names this session's state file. When it exists, update the file's `## Standing facts`: each standing permission the owner gave (push authority included), with the owner's words and where they said them, and for each outward action the tool or file that owns its call. Remove a permission the owner withdrew. Slice status is `/drive`'s, not this step's. No pointer means no state file: skip.
+1. **State file.** `.claude/scratch/active_state_<session_id>` (the `Session id:` line SessionStart printed; its `State file:` line names the file) names this session's state file. When it exists, update the file's `## Standing facts`: each standing permission the owner gave (push authority included), with the owner's words and where they said them, and for each outward action the tool or file that owns its call. Remove a permission the owner withdrew. Slice status is `/drive`'s, not this step's. No pointer means no state file: skip.
 2. **Subsystems.** Run `/sync_subsystems` when a changed file adds or empties a folder, which changes folder shape. Otherwise skip.
 3. **Worklog.** Run `/worklog sweep`, each half only when its input exists: the completion half when the session worked a worklog item, the add half when it deferred or parked work it named. Vault edits stay out of the git commit.
 4. **Commit and push.** Run [`/commit_push`](commit_push.md). Invoking `/close` is push authority for the active branch, `main` included.

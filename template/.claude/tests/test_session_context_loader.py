@@ -66,9 +66,7 @@ def main():
             "is_cloud": lambda: False,
             "sweep_stray_search_indexes": lambda _root: None,
             "setup_submodule": lambda _root: "OK",
-            "sidecar_health": lambda _root: {
-                "sidecar-a": "opus: OK (model=m endpoint=ENDPOINT-DETAIL) window=off-peak until 01:00 UTC",
-                "sidecar-b": "sol: shape rating: none exists"},
+            "sidecar_health": lambda _root: {"seat-b": "UNAVAILABLE (adapters/b.py not present)"},
             "get_git_branch": lambda: "main",
             "get_uncommitted_count": lambda: 0,
             "get_upstream_drift": lambda: (24, 3, 30.0),
@@ -77,11 +75,19 @@ def main():
         output = run_main(main_root, patches)
         check("a fresh startup carries no reload reminder (the session_digest listing owns pickup)",
               "<context-reload-reminder>" not in output and "session_digest.py" not in output, output[-600:])
-        check("an OK sidecar prints its model and trailing facts, not its probe detail",
-              "sidecar-a: opus OK window=off-peak until 01:00 UTC" in output
-              and "ENDPOINT-DETAIL" not in output, output[:800])
-        check("a sidecar that is not OK keeps its full status",
-              "sidecar-b: sol: shape rating: none exists" in output, output[:800])
+        check("a seat that is not ready keeps its full status",
+              "seat-b: UNAVAILABLE (adapters/b.py not present)" in output, output[:800])
+        quiet_seats = run_main(main_root, dict(patches, sidecar_health=lambda _root: {}))
+        check("no seat problem: no seat line", "seat-" not in quiet_seats, quiet_seats[:600])
+        check("no pointer: the session id prints and no state file is named",
+              "Session id: main-proof" in output and "State file:" not in output, output[:600])
+        pointer = main_root / ".claude" / "scratch" / "active_state_main-proof"
+        pointer.parent.mkdir(parents=True, exist_ok=True)
+        pointer.write_text(".claude/work/slug.md", encoding="utf-8")
+        pointed = run_main(main_root, patches)
+        check("a pointer prints the state file path beside the session id",
+              "State file: .claude/work/slug.md" in pointed and "Session id: main-proof" in pointed, pointed[:600])
+        shutil.rmtree(main_root / ".claude")
         check("a local session gets no cloud contract", "<cloud-session>" not in output)
         check("a fresh startup repeats no branch or commit block the client already shows, but keeps the upstream drift",
               "Git: main" not in output and "Recent commits:" not in output
@@ -232,11 +238,14 @@ def main():
               scl._step_fault("mod", ImportError("boom")) is None and "mod import ImportError: boom" in scl._STEP_FAULTS)
         scl._STEP_FAULTS.clear()
 
-    # The runsettings entry point without the engine module installed generates nothing.
-    with patch.object(scl, "_STEP_MODULES", ()), contextlib.redirect_stdout(io.StringIO()) as printed:
-        code = scl.runsettings_cli(["unused"])
-    check("--setup-runsettings without the engine module prints SKIPPED and exits 1",
-          code == 1 and printed.getvalue().startswith("SKIPPED"), printed.getvalue())
+    check("the loader carries no runsettings entry point", not hasattr(scl, "runsettings_cli"))
+    src = Path(scl.__file__).read_text(encoding="utf-8")
+    check("the loader carries no project literal (baseline, fixed offset, inline worklog)",
+          not any(x in src for x in ("237/wk", "-06:00", "WORKLOG_INLINE", "sidecar-")))
+    seat_root = Path(tempfile.mkdtemp(prefix="scl_seat_"))
+    (seat_root / ".claude").mkdir()
+    check("a root with no seats.json reports no seat problem", scl.sidecar_health(seat_root) == {})
+    shutil.rmtree(seat_root, ignore_errors=True)
 
     # A project gets the generic context.
     with tempfile.TemporaryDirectory(prefix="scl_plain_") as plain_dir:
