@@ -49,6 +49,26 @@ already did); a temp tree holding repositories keeps v1's deny for the owner to 
 | D-LS | PP's allow of a loose file directly in a worktree's or scratch clone's `.claude/scratch/` (PP `test_pattern_enforcer_own_worktree` `job_output.txt`, PP `test_regenerable_clone.py` `notes.md`) | MM `7b8e6e66` denies it: a loose scratch file is evidence, not a job's output folder; v2 carries MM's `_regenerable_clone.py` hunks. | Loss of the PP allow: such a worktree deletion asks the owner. |
 | D-TT | a recursive delete of a temp tree this session made that holds git repositories (S4's `v2s4_s4b`, five repos) | v1 denies (a temp path must hold no repository); `CLAUDE.core.md` exempts temp dirs without saying whether one holding repositories counts. | v2 keeps the deny; the owner rules. |
 
+## Branch read (plan R1)
+
+Method: the table rows ran under a line recorder over `dangerous_shell_guard.py`, `kill_guard.py` and `_floor.py`;
+each unexecuted line was read for a deny or allow branch. `test_floor_r1_branches.py` adds a row for each v1 branch
+no v1 test reached that a row can reach in process: the `--force-with-lease=`/`--force-if-includes=` and bundled
+`-f` push spellings, `branch -D` naming no branch, the absent-target rewrite to `true` (and its present-target
+deny), an invalid `killall -r` pattern, `Stop-Process -InputObject`, an unconditioned `wmic process delete`,
+`xargs <opts> kill` fed by a non-pgrep producer, and a Win32_Process Terminate with no readable filter. Each asserts
+v1's own answer.
+
+Left without an in-process row: the registered-worktree and live-peer reasons of the scratch and worktree delete
+checks (the carried `test_regenerable_clone*.py` reach them through the spawned entry), fail-closed returns on a git
+read that fails (`_stash_changes_held`, `stage_record_loss`), message variants of a branch whose deny a row already
+asserts (`HEAD cannot be read` on amend, the `.git`-file reason), and the live process-table and PID readers
+(`reap.process_table`, the CIM and `ps` lookups), which every row plants.
+
+| id | finding | v2 |
+|---|---|---|
+| K-XA | `kill_guard.py`'s docstring refuses "an `xargs kill` fed by anything but pgrep", but the bare `<producer> \| xargs kill` passes: `kill` matches as its own verb, so the xargs selector never sees it. Only `xargs <option> kill` denies. | carries v1's answer; the owner rules whether the bare shape should deny (it would be a deny v1's code does not make) |
+
 ## Not carried as decision rows
 
 - V1's Lost column (plan V1): `git_guardrails.py`'s process advisories and their rows — proof-required and unproven
