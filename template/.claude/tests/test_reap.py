@@ -681,21 +681,12 @@ def main():
                           environ=tagged("11111111-2222-3333-4444-555555555555"))
     ck("... and refused when its tag names another session", rc == 2 and killed == [], out[-300:])
 
-    # 16. a child launched before the tag existed: its prompt file, launched by this session's own
-    #     transcript, proves it; the same env with no such launch in the transcript refuses.
-    with tempfile.TemporaryDirectory() as td:
-        brief = os.path.join(td, "fold_brief.md").replace("\\", "/")
-        env_prompt = lambda pid: b"PATH=/usr/bin\0CLAUDE_CODE_SIDECAR_PROMPT_FILE=" + brief.encode() + b"\0"
-        launch = {"type": "assistant", "sessionId": SID, "cwd": td, "message": {"role": "assistant", "content": [
-            {"type": "tool_use", "name": "Bash", "input": {"command":
-             "D=%s && bash .claude/scripts/codex_proxy_sidecar.sh -m sol -e high -f $D/fold_brief.md -R $D/r.json -X" % td.replace("\\", "/")}}]}}
-        rows_with_launch = [owner_row("run the sidecar")] + [launch]
-        rc, killed, out = run(["400", "--reason", "orphan", "--why", "over-pinned fold child"], table([child]),
-                              environ=env_prompt, transcript=rows_with_launch)
-        ck("an untagged sidecar child whose prompt file this session launched is ours: killed",
-           rc == 0 and killed == [400], out[-300:])
-        rc, killed, out = run(["400", "--reason", "orphan", "--why", "x"], table([child]), environ=env_prompt)
-        ck("... and refused when this session never launched that prompt file", rc == 2 and killed == [], out[-300:])
+    # 16. a child launched before the tag existed carries only its prompt file: nothing ties it to a session
+    #     (the transcript scan that once proved it went with the *_sidecar.sh launchers), so it is refused.
+    brief = "/tmp/fold_brief.md"
+    env_prompt = lambda pid: b"PATH=/usr/bin\0CLAUDE_CODE_SIDECAR_PROMPT_FILE=" + brief.encode() + b"\0"
+    rc, killed, out = run(["400", "--reason", "orphan", "--why", "x"], table([child]), environ=env_prompt)
+    ck("an untagged sidecar child carrying only a prompt file is refused", rc == 2 and killed == [], out[-300:])
 
     # 17. dispatch servers: a sidecar starts a claude-code-proxy and a text-only shim under
     #     nohup and kills them in an exit trap, which a TerminateProcess never runs. Their SIDECAR_LAUNCH_ID
