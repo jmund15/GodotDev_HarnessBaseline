@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Hook: PreToolUse (Bash|PowerShell), run by pre_bash_dispatch and armed by scripts/seat.sh for every seat.
+Hook: PreToolUse (Bash|PowerShell), armed by scripts/seat.sh for every seat.
 
 A never-woken caller (a Workflow subagent, a `claude -p` child, a seat) gets no completion wake, so a backgrounded
 job never wakes it. Two checks keep its foreground waits inside its prompt cache:
@@ -9,7 +9,7 @@ job never wakes it. Two checks keep its foreground waits inside its prompt cache
 2. Hand-back: the clamped time of this caller's wait loops, totalled since its last non-wait call, past HANDBACK_MS
    (30 min) denies the next wait with the hand-back text.
 A woken caller (the interactive session, an Agent-tool subagent) passes untouched. `never_woken` tells them apart and
-run_call_router reads it. Rule homes: guards/common.md, CLAUDE.core.md §Shell Discipline.
+run_call_router reads it. Rule homes: guards/rails.md, CLAUDE.core.md §Shell Discipline.
 State: the shared per-session file (_hook_state), key `wait_loops`, one entry per caller, swept past STALE_SECONDS.
 """
 import json
@@ -36,7 +36,7 @@ _LOOP_SLEEP = re.compile(
 )
 CLAMP_NOTE = (
     "[wait] Clamped this foreground call's timeout from %d to %d ms: a longer call returns to an expired 5-minute "
-    "prompt cache and rewrites your whole context (guards/common.md)."
+    "prompt cache and rewrites your whole context (guards/rails.md)."
 )
 CLAMP_WAIT = (
     " If it is still running then, the client moves it to the background and names its output file; this call now "
@@ -46,7 +46,7 @@ HANDBACK_REASON = (
     "BLOCKED wait: this caller's foreground loop waits total %d minutes since its last non-wait call, past the %d minutes "
     "after which the parent's one wake costs less than these polls, and no wake reaches a subagent or `claude -p` child. "
     "Return now with the log path, pid, expected end and the steps left after it, so the parent waits for it "
-    "(guards/common.md; the same hand-back `bench wait` gives)."
+    "(guards/rails.md; the same hand-back `bench wait` gives)."
 )
 
 

@@ -8,10 +8,8 @@ process, and cleanup terminates through the pinned handles, so a reused pid is n
 Cases: an orphaned Git grep blocked on a pipe is reaped at zero thresholds; a grep with a live
 parent survives; an orphaned non-search process (Git sleep) survives; default thresholds spare a
 small orphan; a second call inside the throttle window takes no snapshot; an unreadable process
-table is silent; pre_bash_dispatch, post_read_dispatch and post_edit_dispatch each surface a
-planted reap in their own additionalContext; the registrations are UserPromptSubmit plus the
-anchored PostToolUse matcher (never `*`), both run through Git Bash, and the registered
-PreToolUse dispatcher denies a recursive grep through Git Bash.
+table is silent; post_read_dispatch and post_edit_dispatch each surface a
+planted reap in their own additionalContext. Hook registrations are each repo's own settings.json.
 
     python3 .claude/tests/test_runaway_scan_reaper.py
 """
@@ -25,7 +23,6 @@ import tempfile
 import time
 
 import _platform_skip
-import _settings_probe
 
 if os.name != "nt":
     _platform_skip.skip_proof("runaway-scan reaper", "its planted-process table and pinned Windows handles need Win32")
@@ -36,9 +33,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
 HOOKS = os.path.join(REPO, ".claude", "hooks")
 REAPER = os.path.join(HOOKS, "runaway_scan_reaper.py")
-SETTINGS = _settings_probe.settings_path(os.path.join(REPO, ".claude"))
-REAPER_CMD_TAIL = ".claude/hooks/runaway_scan_reaper.py"
-NARROW_MATCHER = "^(?:Agent|Workflow|TaskStop|TaskOutput|Skill|ToolSearch|LSP|NotebookEdit|mcp__.*)$"
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 k32.OpenProcess.restype = wintypes.HANDLE
@@ -60,8 +54,8 @@ def check(label, ok, detail=""):
 def git_bash():
     """Git Bash, never WSL: CLAUDE_CODE_GIT_BASH_PATH, else PATH, rejected under System32."""
     sys.path.insert(0, os.path.join(HERE, "..", "tools"))
-    import sidecar_launch
-    path = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") or sidecar_launch.git_bash()
+    import reap
+    path = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") or reap.git_bash()
     if not path or "system32" in path.lower() or "windowsapps" in path.lower():
         return None
     return path
@@ -267,8 +261,6 @@ def main():
         with open(scratch, "w", encoding="utf-8") as fh:
             fh.write("x\n")
         dispatchers = (
-            ("pre_bash_dispatch.py", {"hook_event_name": "PreToolUse", "tool_name": "Bash",
-                                      "tool_input": {"command": "git status --short | head -1"}}),
             ("post_read_dispatch.py", {"hook_event_name": "PostToolUse", "tool_name": "Read",
                                        "tool_input": {"file_path": scratch}, "tool_response": {}}),
             ("post_edit_dispatch.py", {"hook_event_name": "PostToolUse", "tool_name": "Edit",
@@ -294,54 +286,6 @@ def main():
             check("%s surfaces the planted reap of pid %d in additionalContext" % (script, od["grep"]),
                   p.returncode == 0 and ("killed orphaned search pid %d" % od["grep"]) in dctx
                   and planted.wait_dead(od["grep"]), (dctx + " | " + p.stderr)[:400])
-
-        # --- registration, run through Git Bash ---------------------------------------------------
-        with open(SETTINGS, encoding="utf-8") as fh:
-            hooks = json.load(fh)["hooks"]
-
-        def commands(event, want_matcher=None):
-            found = []
-            for entry in hooks.get(event, []):
-                if want_matcher is not None and entry.get("matcher") != want_matcher:
-                    continue
-                for h in entry.get("hooks", []):
-                    if REAPER_CMD_TAIL in h.get("command", ""):
-                        found.append((entry.get("matcher"), h))
-            return found
-
-        benv = dict(os.environ, CLAUDE_PROJECT_DIR=REPO.replace("\\", "/"), PYTHONIOENCODING="utf-8",
-                    HARNESS_REAPER_CACHE_DIR=os.path.join(tmp, "cache5"), HARNESS_REAPER_ONLY_PIDS="-1",
-                    HARNESS_REAPER_MIN_PRIVATE_MB="0", HARNESS_REAPER_MIN_CPU_SEC="0")
-        all_post = commands("PostToolUse")
-        check("PostToolUse registers the reaper exactly once, never on `*`",
-              len(all_post) == 1 and all_post[0][0] == NARROW_MATCHER, all_post)
-        for event, matcher in (("PostToolUse", NARROW_MATCHER), ("UserPromptSubmit", None)):
-            found = commands(event, matcher)
-            check("%s registers the reaper (matcher %r)" % (event, matcher), len(found) == 1, found)
-            for m, h in found:
-                pl = json.dumps({"hook_event_name": event, "session_id": "rsr00002", "tool_name": "Bash",
-                                 "prompt": "x", "tool_input": {}})
-                p = subprocess.run([bash, "-c", h["command"]], input=pl, capture_output=True, text=True,
-                                   encoding="utf-8", timeout=60, env=benv, cwd=REPO)
-                check("%s registered command runs through Git Bash: exit 0, no traceback (timeout %s)"
-                      % (event, h.get("timeout")), p.returncode == 0 and "Traceback" not in p.stderr
-                      and "No such file" not in p.stderr, p.stderr)
-
-        pre = [h for e in hooks.get("PreToolUse", []) if e.get("matcher") == "Bash|PowerShell|Monitor"
-               for h in e.get("hooks", []) if "pre_bash_dispatch.py" in h.get("command", "")]
-        check("PreToolUse Bash|PowerShell|Monitor registers pre_bash_dispatch.py", len(pre) == 1, pre)
-        for h in pre:
-            pl = json.dumps({"hook_event_name": "PreToolUse", "session_id": "rsr00003", "tool_name": "Bash",
-                             "cwd": REPO, "tool_input": {"command": "find . -type f | xargs grep -l ProjectSuite"}})
-            p = subprocess.run([bash, "-c", h["command"]], input=pl, capture_output=True, text=True,
-                               encoding="utf-8", timeout=90, env=dict(benv, HARNESS_HOOK_STATE_DIR=os.path.join(tmp, "st")), cwd=REPO)
-            decision = ""
-            try:
-                decision = (json.loads(p.stdout).get("hookSpecificOutput") or {}).get("permissionDecision", "")
-            except ValueError:
-                pass
-            check("registered pre_bash_dispatch command denies a recursive grep through Git Bash",
-                  p.returncode == 0 and decision == "deny", p.stdout[:200] + p.stderr[:200])
     except Exception as exc:  # a planting or harness failure is a FAIL, never a pass
         check("proof ran to completion", False, repr(exc))
     finally:
@@ -361,6 +305,11 @@ def main():
     for f in failures:
         print("  " + f)
     return 1 if failures else 0
+
+
+
+def test_proof():
+    assert main() in (None, 0)
 
 
 if __name__ == "__main__":

@@ -403,14 +403,14 @@ def ai_worker_cases(tmp, state):
          lambda: eq(walk(), "absent"))
 
     def unloadable():
-        with patched(ws, "_tool_profiles", _raise):
+        with patched(ws, "_registered_servers", _raise):
             return eq(ws.ai_worker(), None)
 
     case("a config walk that cannot run is None, not absent", unloadable)
 
 
 def _raise(*_args, **_kwargs):
-    raise RuntimeError("tool_profiles unavailable")
+    raise RuntimeError("registration read unavailable")
 
 
 def record_cases(tmp, state):

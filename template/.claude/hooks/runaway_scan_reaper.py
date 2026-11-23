@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hook: UserPromptSubmit and PostToolUse — kill orphaned runaway search processes.
 
-Coverage: `check(payload)` runs in-process inside pre_bash_dispatch (Bash, PowerShell, Monitor),
+Coverage: `check(payload)` runs in-process inside the floor entry (Bash, PowerShell, Monitor),
 post_read_dispatch (read family, Write, WebFetch, WebSearch) and post_edit_dispatch (Write, Edit).
 This file's own PostToolUse registration uses the anchored matcher
 `^(?:Agent|Workflow|TaskStop|TaskOutput|Skill|ToolSearch|LSP|NotebookEdit|mcp__.*)$` for the
@@ -316,7 +316,7 @@ def _kill_verified(pid, ppid, first):
 def check(payload=None):
     """Advisory lines for this call's reaps; [] when throttled, off Windows, or on any error.
 
-    The in-process entry for pre_bash_dispatch; `process` wraps it for post_read_dispatch and
+    The in-process entry for the floor entry (`_floor.HELPER_NAMES`); `process` wraps it for post_read_dispatch and
     post_edit_dispatch, which append the lines to their own additionalContext. Throttled like main() and never raises.
     """
     try:

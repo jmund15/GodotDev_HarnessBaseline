@@ -58,5 +58,10 @@ def main():
     print("all ok")
 
 
+
+def test_proof():
+    assert main() in (None, 0)
+
+
 if __name__ == "__main__":
     main()

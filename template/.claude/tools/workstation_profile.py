@@ -6,7 +6,7 @@ Three things live here and nothing else does:
   record      probes `nvidia-smi` and records `{gpu, local_tier}`. The tier thresholds live in
               this file alone, in MiB, with their basis beside them: a percentage or a GB figure
               is not what `nvidia-smi` reports, so a conversion anywhere else is a second opinion.
-  ai_worker   NEVER recorded, always read live through `tools/tool_profiles.load_registrations`
+  ai_worker   NEVER recorded, always read live through `_registered_servers`
               (the one owner of "is this MCP server registered" across user, local, project and
               plugin scopes). An installed-or-not fact goes stale the moment `~/.claude.json`
               changes, and a stale "present" routes bulk I/O at a server that is not there.
@@ -21,8 +21,7 @@ file. The core has none of its own: a consumer without a layer module is refused
 Profile: `~/.claude/workstation_profile.json` — never under a redirected Documents folder, and
 overridable with WORKSTATION_PROFILE_PATH so a proof can plant one. Writes are whole-file atomic.
 
-Imported by `hooks/budget_posture.py`, whose text the UserPromptSubmit dispatcher runs in-process,
-so this module keeps the prompt-dispatch contract: it never rebinds a stream, writes file
+Imported in-process by a UserPromptSubmit hook, so this module keeps the prompt-dispatch contract: it never rebinds a stream, writes file
 descriptor 1, changes the working directory, or registers an exit or signal handler.
 
 CLI:
@@ -73,7 +72,6 @@ REFERENCE_PREFIX = "workstation_setup_"
 
 GPU_QUERY = ("nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader")
 
-_TOOL_PROFILES = None
 
 
 # ------------------------------------------------------------------ the GPU tier
@@ -174,29 +172,35 @@ def local_tier():
     return tier if tier in TIERS else None
 
 
-def _tool_profiles():
-    """`tools/tool_profiles.py`, loaded by sibling path so any cwd works. Cached per process."""
-    global _TOOL_PROFILES
-    if _TOOL_PROFILES is None:
-        import importlib.util
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tool_profiles.py")
-        spec = importlib.util.spec_from_file_location("tool_profiles", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        _TOOL_PROFILES = module
-    return _TOOL_PROFILES
+def _registered_servers():
+    """Names of the MCP servers the session's config scopes register: the project's rows and the user's
+    in `<config dir>/.claude.json`, then the project's `.mcp.json` beside the workdir. Raises on nothing
+    but a missing home; an unreadable file counts as no rows."""
+    def load(path):
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~")
+    workdir = os.path.normcase(os.path.abspath(os.environ.get("SC_WORKDIR") or os.getcwd()))
+    state = load(os.path.join(cfg, ".claude.json"))
+    names = set(state.get("mcpServers") or {})
+    for project, values in (state.get("projects") or {}).items():
+        if os.path.normcase(os.path.abspath(project)) == workdir:
+            names |= set((values or {}).get("mcpServers") or {})
+    names |= set(load(os.path.join(workdir, ".mcp.json")).get("mcpServers") or {})
+    return names
 
 
 def ai_worker():
-    """`"present" | "absent"`, read live, or None when the registration walk cannot run.
-
-    `tool_profiles.load_registrations` owns the walk; this only names the logical server. A
-    recorded install fact is deliberately not consulted — `~/.claude.json` is the truth and it
-    changes without this file hearing about it.
-    """
+    """`"present" | "absent"`, read live, or None when the registration read cannot run. A recorded install
+    fact is deliberately not consulted: `~/.claude.json` is the truth and it changes without this file
+    hearing about it."""
     try:
-        tools = _tool_profiles()
-        return "present" if tools.registered_key("ai-worker", tools.load_registrations()) else "absent"
+        return "present" if "ai-worker" in {n.lower().replace("_", "-") for n in _registered_servers()} else "absent"
     except Exception:
         return None
 

@@ -39,7 +39,7 @@ check, re-entered on the first Monitor command containing `\\`), and a `claude -
 PreToolUse event on a Workflow call, so repair inside such a child is unverified.
 
 Channel: hookSpecificOutput.updatedInput, permissionDecision: deny, or additionalContext, through `check(payload)`.
-Last in `_floor.HELPER_NAMES` (and in v1's pre_bash_dispatch.HOOKS), so every deny wins before this rewrites.
+Last in `_floor.HELPER_NAMES`, so every deny wins before this rewrites.
 Proofs: tests/test_bash_backslash_fidelity.py, tests/test_bash_fidelity_probe.py.
 """
 import json

@@ -38,8 +38,8 @@ import workflow_transport  # noqa: E402
 
 JOBS_FILE_ROOT = ".claude/scratch"
 OWNER_LIFTS = ("currency", "currencyReason")
-ARGS_FILE_NEXT = ("write the run's args with `python3 .claude/tools/lens_briefs.py prepare --spec <spec.json> "
-                  "--out <run dir>`, then pass only `{argsFile: \"<run dir>/args.json\"}`")
+ARGS_FILE_NEXT = ("write the run's args to a file in the run dir, "
+                  "then pass only `{argsFile: \"<run dir>/args.json\"}`")
 
 
 def _session_root(payload):

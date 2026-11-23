@@ -306,28 +306,6 @@ def handle_hoarders(rows, floor: int = HANDLE_HOARD_FLOOR) -> str:
                      for pid, name, count in sorted(rows, key=lambda row: -row[2]) if count > floor)
 
 
-def roster_health(root: Path) -> str:
-    """Benchmark rosters that stopped writing before a terminal marker (bench_lib.roster_summary).
-
-    A roster in a wait loop and one killed by a reboot leave the same silent log; the pid file separates
-    them (2026-09-11: two rosters died at a reboot and nothing said so for five days). Discovery failure
-    stays UNKNOWN -- an absent BenchmarkArms tree is not a clean one. The arms root comes from the suite's roots
-    table (core/roots.py), so its BENCH_ROOTS override reaches this banner too."""
-    try:
-        bench = os.path.join(root, ".claude", "scripts", "benchmark_campaign")
-        if not os.path.isdir(bench):
-            return ""  # a project without the battery has no rosters to check
-        sys.path[:0] = [bench, os.path.join(bench, "scoring")]
-        from core import roots
-        import bench_lib
-        logs = roots.logs_dir()
-        if not os.path.isdir(logs):
-            return "UNKNOWN (no logs dir at %s)" % logs
-        return bench_lib.roster_summary(logs)
-    except Exception as error:
-        return f"UNKNOWN ({type(error).__name__}: {error})"
-
-
 def sidecar_health(root: Path) -> dict[str, str]:
     """One line per seat in `seats.json` that is not ready: its adapter script or its login config dir is missing.
     Static, so a session start runs no CLI; the seat launcher refuses the same gaps at launch. {} when the table
@@ -351,21 +329,6 @@ def sidecar_health(root: Path) -> dict[str, str]:
 def _sidecar_delegate() -> bool:
     """A sidecar child (CLAUDE_CODE_SIDECAR, set by its launcher) executes a brief; owner-facing banners skip it."""
     return bool(os.environ.get("CLAUDE_CODE_SIDECAR"))
-
-
-def ladder_banner(root: Path) -> str:
-    """One line when a board task has cells the model ladder was not swept for, or a ladder row's model version moved since its clauses were audited; empty when current or in a delegate."""
-    if _sidecar_delegate():
-        return ""
-    try:
-        bench = os.path.join(root, ".claude", "scripts", "benchmark_campaign")
-        if not os.path.isfile(os.path.join(bench, "scoring", "ladder_lag.py")):
-            return ""  # a project without the battery has no board to lag
-        sys.path[:0] = [bench, os.path.join(bench, "scoring")]
-        import ladder_lag
-        return " | ".join(filter(None, (ladder_lag.banner(), ladder_lag.audit_banner())))
-    except Exception as error:
-        return f"ladder: UNKNOWN ({type(error).__name__}: {error})"
 
 
 def skill_listing_banner(root: Path, input_data: dict) -> str:
@@ -713,11 +676,8 @@ def main():
         for status in _step_results("local_checks", root):
             setup_results.update(status)
 
-    if not cloud:  # seats and benchmark rosters live on the workstation only
+    if not cloud:  # seats live on the workstation only
         setup_results.update(sidecar_health(root))
-        rosters = roster_health(root)
-        if rosters:
-            setup_results["rosters"] = rosters
         hoarders = handle_hoarders(process_handle_counts())
         if hoarders:
             setup_results["handles"] = hoarders
@@ -770,10 +730,6 @@ def main():
     if env_parts:
         output_lines.append("")
         output_lines.append("Env: " + " | ".join(env_parts))
-    if not cloud:
-        ladder_line = ladder_banner(root)
-        if ladder_line:
-            output_lines.append(ladder_line)
     listing_line = skill_listing_banner(root, input_data)
     if listing_line:
         output_lines.append(listing_line)
@@ -817,8 +773,7 @@ def main():
     # Worklog titles mirror — NOT injected. The mirror grows unbounded with the backlog and is
     # paid by EVERY session, while the question it answers ("does an open item overlap what I am
     # about to do?") is asked better once, at scope-definition time, by a delegate that reads the
-    # file itself: .claude/workflows/worklog_relevance.js (Anthropic) or
-    # .claude/scripts/worklog_relevance_sidecar.sh (DeepSeek).
+    # file itself: .claude/workflows/worklog_relevance.js.
     # Flip to True to restore verbatim injection. A size-tiered domain+count digest was built and
     # dropped the same day — it was unread middle ground, so it is not kept here as dead code.
     WORKLOG_INLINE = False

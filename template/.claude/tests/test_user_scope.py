@@ -1156,3 +1156,13 @@ def test_s9_retired_row_without_registration_is_green():
         expect(sb.run("check").code == 0, "unregistered retired row must be green")
     finally:
         sb.close()
+
+
+def test_secret_fixtures_match_their_lint_shapes():
+    """Moved from `test_scan_fixtures.py`: the assembled secret tokens in `_scan_fixtures.py` reach the lint."""
+    us = tool()
+    secrets = {"SK_KEY": fx.SK_KEY, "AWS_KEY": fx.AWS_KEY, "GITHUB_TOKEN": fx.GITHUB_TOKEN,
+               "SLACK_TOKEN": fx.SLACK_TOKEN, "PEM_HEADER": fx.PEM_HEADER}
+    missed = [name for name, value in secrets.items()
+              if not any(pattern.search(value) for _, pattern in us.SECRET_SHAPES)]
+    assert not missed, missed

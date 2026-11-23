@@ -69,7 +69,6 @@ def main():
             "sidecar_health": lambda _root: {
                 "sidecar-a": "opus: OK (model=m endpoint=ENDPOINT-DETAIL) window=off-peak until 01:00 UTC",
                 "sidecar-b": "sol: shape rating: none exists"},
-            "roster_health": lambda _root: "OK",
             "get_git_branch": lambda: "main",
             "get_uncommitted_count": lambda: 0,
             "get_upstream_drift": lambda: (24, 3, 30.0),
@@ -239,11 +238,9 @@ def main():
     check("--setup-runsettings without the engine module prints SKIPPED and exits 1",
           code == 1 and printed.getvalue().startswith("SKIPPED"), printed.getvalue())
 
-    # A project without the benchmark battery gets the generic context and no roster status.
+    # A project gets the generic context.
     with tempfile.TemporaryDirectory(prefix="scl_plain_") as plain_dir:
         plain_root = Path(plain_dir)
-        check("a project without the benchmark battery reports no roster status",
-              scl.roster_health(plain_root) == "", scl.roster_health(plain_root))
         for is_cloud_session in (False, True):
             plain_out = run_main(plain_root, dict(patches, is_cloud=lambda: is_cloud_session,
                                                   is_worktree=lambda: True), source="compact")
@@ -377,6 +374,11 @@ def main():
         print("\nFAILED:\n  " + "\n  ".join(failures))
         sys.exit(1)
     print("all ok")
+
+
+
+def test_proof():
+    assert main() in (None, 0)
 
 
 if __name__ == "__main__":

@@ -126,7 +126,7 @@ def snapshot_rate_limits(raw):
     caller can keep last-known-good instead of overwriting a real capture with
     nulls.
 
-    spend_limit is captured but not rendered: budget_posture.py reads this file
+    spend_limit is captured but not rendered
     by window name, so a window absent here can never reach the gate.
     """
     if not isinstance(raw, dict):
@@ -361,7 +361,7 @@ def external_model_tag(model_block, cwd):
     per-project, so it is located by walking up from the payload's cwd.
 
     NEVER raises: this process also writes cc-cachestat-<session>.json, the sole
-    input budget_posture.py reads to gate paid dispatch.
+    input the cache-state reads use.
     """
     try:
         display = str((model_block or {}).get("display_name") or "")
@@ -375,18 +375,16 @@ def external_model_tag(model_block, cwd):
             return None, False
         here = os.path.abspath(str(cwd))
         for _ in range(24):
-            candidate = os.path.join(here, ".claude", "reference", "external_models.json")
+            candidate = os.path.join(here, ".claude", "seats.json")
             if os.path.isfile(candidate):
                 with open(candidate, encoding="utf-8") as handle:
-                    for entry in (json.load(handle) or {}).get("models") or []:
-                        if entry.get("id") in wanted or entry.get("alias") in wanted:
-                            if entry.get("transport") == "anthropic":
-                                return None, False
+                    for key, entry in ((json.load(handle) or {}).get("models") or {}).items():
+                        # A `claude-*` row prices the secondary Claude seat; the session's own model is no seat.
+                        if key in wanted and not key.startswith("claude-"):
                             rate = (entry.get("price") or {}).get("cacheMissPer1M")
-                            alias = str(entry.get("alias") or entry.get("id"))
+                            alias = key.rsplit("/", 1)[-1]
                             # Drop an alias the display name already carries as
-                            # a WORD — `gpt-6-astra astra`, `muse muse` — while
-                            # keeping the price, which the display name never
+                            # a WORD, keeping the price, which the display name never
                             # supplies. Word-level, not substring: alias `pro`
                             # has to survive a display name like `Prometheus`.
                             words = display.lower().replace("-", " ").replace("_", " ").split()
