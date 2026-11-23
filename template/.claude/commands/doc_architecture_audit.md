@@ -92,6 +92,8 @@ It returns:
 
 Lens agents produce **false absences**: they read a bounded slice and report the unread remainder as missing. Confirming presence needs one hit; confirming absence needs exhaustive coverage — and an agent cannot distinguish "I looked everywhere" from "I stopped early." Treat every absence-shaped finding as unverified until you check it yourself.
 
+First run `python3 .claude/tools/quote_check.py <engine result.json> --root <vault root>`: a printed miss is a finding to read at its source, and a quote it does not print is confirmed. It checks quotes and git-command output only, never an absence, so the gate below still applies.
+
 **Qualifying shape** — the description asserts something does not exist: *missing, absent, broken, unresolvable, does not link back, not found, orphaned, no longer exists*. Usual carriers: X1, X2, S1, S2, D1, D5.
 
 | Claim | Verification | Trap it catches |

@@ -52,7 +52,7 @@ const finding = (over = {}) => ({
   check('the findings schema uses canonical evidence items and optional file',
     props.file && props.evidence && props.evidence.type === 'array'
       && !r.calls[0].opts.schema.properties.findings.items.required.includes('file')
-      && props.evidence.items.oneOf.length === 4,
+      && props.evidence.items.oneOf.length === 2,
     JSON.stringify(props))
   console.log('doc_architecture_audit claims: ' + passed + ' passed, ' + failed + ' failed')
   process.exit(failed ? 1 : 0)

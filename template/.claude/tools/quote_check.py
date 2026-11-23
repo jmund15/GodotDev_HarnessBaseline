@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Check the evidence a review's findings cite against the bytes they cite.
+"""Check the evidence a review's findings or a Workflow engine's claims cite against the bytes they cite.
 
-    quote_check.py <findings.md> --root <checkout>
+    quote_check.py <findings.md | result.json> --root <checkout>
 
-The findings file is markdown. Each `##` section holds fenced ```json blocks, and each block is a list of
+A `.json` input is a Workflow engine's returned result: every object in it that carries an `evidence` list is one
+claim, headed by its `id` or `lens#index`, and each item of that list is checked as below. The findings file is
+markdown. Each `##` section holds fenced ```json blocks, and each block is a list of
 evidence items, one source per item:
 
   {"file": "<path>[:N[-M]]", "quote": "<text>"}      the quote is in that file. A relative path is taken from
@@ -262,6 +264,22 @@ def label(item):
     return item.get("command") or item.get("file") or "(no source)"
 
 
+def claims_items(data, found=None):
+    """[(heading, items)] for every object under `data` that carries an `evidence` list of objects."""
+    found = [] if found is None else found
+    if isinstance(data, dict):
+        evidence = data.get("evidence")
+        if isinstance(evidence, list) and evidence and all(isinstance(item, dict) for item in evidence):
+            head = data.get("id") or "%s#%s" % (data.get("lens", "claim"), data.get("index", len(found) + 1))
+            found.append((str(head), evidence))
+        for value in data.values():
+            claims_items(value, found)
+    elif isinstance(data, list):
+        for value in data:
+            claims_items(value, found)
+    return found
+
+
 def findings_items(text):
     """[(heading, items)] for every fenced json block under a `##` heading. ValueError when a block is not a
     JSON list of objects."""
@@ -291,8 +309,8 @@ def main(argv=None):
         return 2
     try:
         text = Path(args.findings).read_text(encoding="utf-8", errors="replace")
-        sections = findings_items(text)
-    except (OSError, ValueError) as exc:
+        sections = claims_items(json.loads(text)) if args.findings.endswith(".json") else findings_items(text)
+    except (OSError, ValueError) as exc:  # a JSON decode error is a ValueError
         print("quote_check: %s" % exc, file=sys.stderr)
         return 2
     total = misses = 0

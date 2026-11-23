@@ -88,15 +88,15 @@ const boundedVerification = verification => ({
 })
 // ENGINE-BLOCK-END boundedVerification
 // ENGINE-BLOCK-BEGIN closeCheck
-// The engine verifies no claim: /review checks a findings file with tools/quote_check.py (T4). Every item stays
-// UNCHECKED, so callers read the same shape and no verifier agent is launched.
+// The engine verifies no claim: the caller runs `tools/quote_check.py <result.json> --root <checkout>` over the
+// engine's returned result (T4). Every item stays UNCHECKED, so callers read the same shape and no verifier agent runs.
 const closeCheck = async (mode, { items, keyOf }) => {
   const keys = items.map(keyOf)
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
     || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
   const verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
     verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: null,
-    note: 'claims are checked by /review (tools/quote_check.py); the engine checks none' }
+    note: 'the engine checks no claim: run tools/quote_check.py <result.json> --root <checkout> over this result' }
   return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
 }
 // ENGINE-BLOCK-END closeCheck

@@ -7,6 +7,9 @@ filesystem, so each key reaches the engine only through this injection:
   __transport     {name, ids, efforts?}: the native pin vocabulary, the `native` block of `seats.json`.
   __toolProfiles  {job label or lens key: {kind, agentType, builtins, mcpServers}}, one row per job from
                   `guards/tool_profiles.json`.
+  __kindProfile   the same row for the call's own `args.kind`, which a single-kind engine (doc audit, worklog
+                  relevance, idea fanout, test_skill_pressure) runs every child as. Omitted when the call names no
+                  kind or the kind has no engine row.
   __railsText     `guards/rails.md`, whole: one file for every model (rails Q7).
   __repoRoot      the checkout root (git toplevel of the session cwd). Omitted when git cannot answer.
   __postReturn    true when the project sets `dispatch.post_return` in adaptation.json. The engine then runs
@@ -57,19 +60,35 @@ def jobs_of(args):
     return jobs + [l for l in args.get("lenses") or [] if isinstance(l, dict)]
 
 
+def _kinds(claude_dir):
+    return _json(Path(claude_dir) / "guards" / "tool_profiles.json").get("kinds") or {}
+
+
+def _profile(kinds, kind):
+    """The profile of one kind, or None when no row serves the engine route."""
+    row = kinds.get(kind) if isinstance(kind, str) else None
+    if not row or ENGINE_ROUTE not in (row.get("routes") or []):
+        return None
+    profile = {"kind": kind}
+    profile.update({key: row.get(key) for key in PROFILE_KEYS})
+    return profile
+
+
 def tool_profiles(args, claude_dir=CLAUDE_DIR):
     """One profile per job whose `kind` row serves the engine route, keyed by the job's label (or a lens's key)."""
-    kinds = _json(Path(claude_dir) / "guards" / "tool_profiles.json").get("kinds") or {}
+    kinds = _kinds(claude_dir)
     out = {}
     for job in jobs_of(args):
         name = job.get("label") or job.get("key")
-        row = kinds.get(job.get("kind"))
-        if not name or not row or ENGINE_ROUTE not in (row.get("routes") or []):
-            continue
-        profile = {"kind": job["kind"]}
-        profile.update({key: row.get(key) for key in PROFILE_KEYS})
-        out[name] = profile
+        profile = _profile(kinds, job.get("kind"))
+        if name and profile:
+            out[name] = profile
     return out
+
+
+def kind_profile(args, claude_dir=CLAUDE_DIR):
+    """The profile of the call's own `args.kind`, or None. A single-kind engine runs every child as that kind."""
+    return _profile(_kinds(claude_dir), args.get("kind"))
 
 
 def rails_text(claude_dir=CLAUDE_DIR):
@@ -108,6 +127,9 @@ def inject(args, cwd=None, claude_dir=CLAUDE_DIR):
     out = dict(args)
     out["__transport"] = native_vocabulary(claude_dir)
     out["__toolProfiles"] = tool_profiles(args, claude_dir)
+    call_profile = kind_profile(args, claude_dir)
+    if call_profile:
+        out["__kindProfile"] = call_profile
     out["__railsText"] = rails_text(claude_dir)
     root = repo_root(cwd)
     if root:
