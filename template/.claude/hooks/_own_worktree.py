@@ -115,8 +115,8 @@ _EXIT_CODE = re.compile(r'\(exit code (\d+)\)')
 def _visible_git_invocation(segment: str, cwd: str):
     """A literal git call with visible errors and at most the supported tail filter."""
     pipeline = split_at(segment, '|')
-    if len(pipeline) > 2 or (len(pipeline) == 2 and not _TAIL_FILTER.fullmatch(pipeline[1])):
-        return []
+    if not pipeline or len(pipeline) > 2 or (len(pipeline) == 2 and not _TAIL_FILTER.fullmatch(pipeline[1])):
+        return []  # a blank or comment-only segment lexes to no pipeline stage
     head = pipeline[0].strip()
     if head.endswith('2>&1'):
         head = head[:-4].strip()
@@ -258,7 +258,7 @@ def _lane_created_name(command: str) -> str | None:
         if cd_target(part) is not None:
             continue
         pipeline = split_at(part, '|')
-        if len(pipeline) > 2 or (len(pipeline) == 2 and not _TAIL_FILTER.fullmatch(pipeline[1])):
+        if not pipeline or len(pipeline) > 2 or (len(pipeline) == 2 and not _TAIL_FILTER.fullmatch(pipeline[1])):
             return None
         match = _LANE_CREATE.match(pipeline[0].strip().removesuffix('2>&1').strip())
         return match.group(1) if match else None

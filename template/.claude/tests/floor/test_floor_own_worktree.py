@@ -634,3 +634,35 @@ def test_scratch_output_goes_with_any_pushed_worktree_but_not_a_loose_file_or_a_
 
 def test_another_sessions_worktree_stays_denied(own):
     assert own.blocked([])
+
+
+# --- an empty pipeline segment in a recorded call (`split_at('', '|')` is `[]`) --------------------------------
+CREATE = "git worktree add -q -b scratch/mine .claude/worktrees/mine HEAD"
+
+
+@pytest.mark.parametrize("tail", [";\n", " ; ; ", " && ;", " |", "\n\n", " ;\n# done"])
+def test_a_blank_or_trailing_segment_after_the_add_does_not_crash_the_floor(own, tail):
+    own.dirty(own.wt)
+    rows = [own.created_row(CREATE + tail), own.result_row()]
+    assert not own.run("git -C .claude/worktrees/mine checkout HEAD -- .gitignore", rows).denied
+
+
+def test_head_checkout_of_a_file_in_the_own_worktree_allows_after_a_blank_segment(own):
+    own.dirty(own.wt)
+    rows = [own.created_row(CREATE + ";\n;"), own.result_row()]
+    assert not own.run("git checkout HEAD -- .gitignore", rows, cwd=own.wt).denied
+
+
+def test_blank_segment_helpers_return_nothing_not_raise():
+    import _own_worktree as ow
+    for segment in ("", "  ", "|", "# note"):
+        assert ow._visible_git_invocation(segment, "/x") == []
+        assert ow._visible_add_target(segment, "/x") == []
+    for command in ("", "# note", "a && # c", " && "):
+        assert ow._lane_created_name(command) is None
+
+
+def test_a_blank_segment_does_not_hide_a_peer_checkout(own):
+    own.dirty(own.root)
+    rows = [own.created_row(CREATE + ";\n"), own.result_row()]
+    assert own.run("git checkout HEAD -- .gitignore", rows, cwd=own.root).denied
