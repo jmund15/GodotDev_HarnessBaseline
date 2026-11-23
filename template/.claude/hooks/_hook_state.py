@@ -90,7 +90,6 @@ HARNESS_DIRS = (
     ".claude/workflows",
     ".claude/tests",
     ".claude/settings.json",
-    ".claude/settings.*.json",
 )
 
 # Which harness paths are code (a script or a settings file): the proof runner's binding and the fold

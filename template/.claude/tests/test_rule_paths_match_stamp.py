@@ -37,7 +37,6 @@ REPRESENTATIVE = {
     ".claude/workflows": ".claude/workflows/dispatch.js",
     ".claude/tests": ".claude/tests/test_rule_paths_match_stamp.py",
     ".claude/settings.json": ".claude/settings.json",
-    ".claude/settings.*.json": ".claude/settings.base.json",
 }
 
 
