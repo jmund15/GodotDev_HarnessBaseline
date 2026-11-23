@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from case import bash
+from conftest import seed_repo
 
 NEEDLE = "would revert a peer's commit"
 OWN = "Claude-Session: https://claude.ai/code/session_OWN"
@@ -38,13 +39,7 @@ def commit(repo, name, text, message):
 
 
 def make_repo(tmp, label):
-    repo = Path(tmp, label)
-    repo.mkdir(parents=True)
-    g(repo, "init", "-q", "-b", "main")
-    g(repo, "config", "user.email", "t@t")
-    g(repo, "config", "user.name", "t")
-    commit(repo, "seed.txt", "seed\n", "seed")
-    return repo
+    return seed_repo(Path(tmp, label), files=(("seed.txt", "seed\n"),), branch="main")
 
 
 def publish_default(repo):

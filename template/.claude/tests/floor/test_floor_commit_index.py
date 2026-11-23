@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from case import bash
+from conftest import seed_repo
 
 
 def g(repo, *args, env=None):
@@ -30,16 +31,7 @@ def write(repo, rel, text="x = 1\n"):
 
 
 def make_repo(tmp, name="repo"):
-    repo = Path(tmp, name)
-    repo.mkdir(parents=True)
-    g(repo, "init", "-q")
-    g(repo, "config", "user.email", "t@t.example")
-    g(repo, "config", "user.name", "t")
-    g(repo, "config", "commit.gpgsign", "false")
-    write(repo, "README.md", "seed\n")
-    g(repo, "add", "-A")
-    g(repo, "commit", "-q", "-m", "seed")
-    return repo
+    return seed_repo(Path(tmp, name))
 
 
 def alt(repo, index, *args):

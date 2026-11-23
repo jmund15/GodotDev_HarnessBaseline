@@ -3,7 +3,9 @@
 Every row calls the floor the way the client does, in process: `_floor.decide(payload)` with a PreToolUse
 payload, through `case.decide`. One spawned case per entry point lives in `test_floor_entry.py`.
 """
+import atexit
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -78,6 +80,30 @@ def write(root, rel, text="x\n"):
     return path
 
 
+_SEEDS = {}
+
+
+def seed_repo(dest, files=(("README.md", "seed\n"),), branch=None):
+    """A repository at `dest` with one commit "seed" of `files`, its identity set and signing off. Built once per shape
+    per process and copied (`.git` included) after that, so no row pays a `git init`, three configs and a commit
+    (about 0.2 s each); every copy shares the seed commit and nothing else, and a row that needs a second history
+    builds it on top. `branch` None is `main`."""
+    key = (tuple(files), branch)
+    if key not in _SEEDS:
+        template = Path(tempfile.mkdtemp(prefix="floor_seed_"))
+        atexit.register(shutil.rmtree, template, True)
+        git(template, "init", "-q", *(["-b", branch] if branch else []))
+        for name, value in (("user.email", "t@t.example"), ("user.name", "t"), ("commit.gpgsign", "false")):
+            git(template, "config", name, value)
+        for name, text in files:
+            write(template, name, text)
+        git(template, "add", "-A")
+        git(template, "commit", "-qm", "seed")
+        _SEEDS[key] = template
+    shutil.copytree(_SEEDS[key], dest, symlinks=True)
+    return Path(dest)
+
+
 @pytest.fixture(scope="session")
 def _planted_template(tmp_path_factory):
     project = tmp_path_factory.mktemp("plant_template") / "project"
@@ -94,7 +120,6 @@ def plant(tmp_path, monkeypatch, _planted_template):
     """A planted project root with one commit and an empty `.claude/scratch`, and a guard temp dir beside it
     (so the project is never "a plain temp path"). CLAUDE_PROJECT_DIR and the cwd point at the project. The repo
     is built once and copied per case, `.git` included, so no state crosses cases."""
-    import shutil
     project = tmp_path / "project"
     guard_temp = tmp_path / "guard_temp"
     shutil.copytree(_planted_template, project)
