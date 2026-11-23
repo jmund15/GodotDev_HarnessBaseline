@@ -1,6 +1,6 @@
 """Proof for .claude/tools/user_scope.py: every case runs against a temp home and a planted scope dir.
 
-    python3 .claude/tests/test_user_scope.py
+    python -m pytest .claude/tests/test_user_scope.py -q
 
 Prints one `ok` or `FAIL` line per case and exits 1 when any case fails.
 """
@@ -21,14 +21,6 @@ import _scan_fixtures as fx
 REPO = Path(__file__).resolve().parents[2]
 TOOL = REPO / ".claude" / "tools" / "user_scope.py"
 REAL_SCOPE = REPO / ".claude" / "user_scope"
-CASES = []
-
-
-def case(fn):
-    CASES.append(fn)
-    return fn
-
-
 def tool():
     sys.path.insert(0, str(TOOL.parent))
     spec = importlib.util.spec_from_file_location("user_scope", TOOL)
@@ -107,8 +99,7 @@ def expect_manifest_error(sb, must_name, command="check"):
 
 # --------------------------------------------------------------------------- S1: file items, manifest, check/install
 
-@case
-def s1_empty_home_every_file_item_missing():
+def test_s1_empty_home_every_file_item_missing():
     sb = default_sandbox()
     try:
         done = sb.run("check", "--json")
@@ -118,8 +109,7 @@ def s1_empty_home_every_file_item_missing():
         sb.close()
 
 
-@case
-def s1_install_then_check_exits_zero():
+def test_s1_install_then_check_exits_zero():
     sb = default_sandbox()
     try:
         expect(sb.run("install").code == 0, "install did not exit 0")
@@ -129,8 +119,7 @@ def s1_install_then_check_exits_zero():
         sb.close()
 
 
-@case
-def s1_drift_kept_byte_exact_and_exits_zero():
+def test_s1_drift_kept_byte_exact_and_exits_zero():
     sb = default_sandbox()
     try:
         (sb.home / ".claude").mkdir(parents=True)
@@ -144,8 +133,7 @@ def s1_drift_kept_byte_exact_and_exits_zero():
         sb.close()
 
 
-@case
-def s1_second_install_changes_no_mtime():
+def test_s1_second_install_changes_no_mtime():
     sb = default_sandbox()
     try:
         expect(sb.run("install").code == 0, "first install did not exit 0")
@@ -159,8 +147,7 @@ def s1_second_install_changes_no_mtime():
         sb.close()
 
 
-@case
-def s1_drift_row_prints_adopt_and_copy_commands():
+def test_s1_drift_row_prints_adopt_and_copy_commands():
     sb = default_sandbox()
     try:
         (sb.home / ".claude").mkdir(parents=True)
@@ -176,14 +163,13 @@ def s1_drift_row_prints_adopt_and_copy_commands():
 def commit_template(sb, src, data):
     git = ["git", "-C", str(sb.scope), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.autocrlf=false"]
     if not (sb.scope / ".git").exists():
-        subprocess.run(git + ["init", "-q"], check=True, timeout=60)
+        subprocess.run(git + ["init", "-q"], check=True, timeout=60, capture_output=True)
     sb.template(src, data)
-    subprocess.run(git + ["add", src], check=True, timeout=60)
-    subprocess.run(git + ["commit", "-q", "-m", "t"], check=True, timeout=60)
+    subprocess.run(git + ["add", src], check=True, timeout=60, capture_output=True)
+    subprocess.run(git + ["commit", "-q", "-m", "t"], check=True, timeout=60, capture_output=True)
 
 
-@case
-def s1_home_copy_of_an_earlier_template_commit_is_stale_and_install_updates_it():
+def test_s1_home_copy_of_an_earlier_template_commit_is_stale_and_install_updates_it():
     sb = default_sandbox()
     try:
         commit_template(sb, "a.txt", b"alpha old\n")
@@ -201,8 +187,7 @@ def s1_home_copy_of_an_earlier_template_commit_is_stale_and_install_updates_it()
         sb.close()
 
 
-@case
-def s1_home_edit_beside_template_history_stays_drift():
+def test_s1_home_edit_beside_template_history_stays_drift():
     sb = default_sandbox()
     try:
         commit_template(sb, "a.txt", b"alpha old\n")
@@ -216,8 +201,7 @@ def s1_home_edit_beside_template_history_stays_drift():
         sb.close()
 
 
-@case
-def s1_manifest_unknown_kind_exits_2():
+def test_s1_manifest_unknown_kind_exits_2():
     sb = Sandbox()
     try:
         sb.manifest([{"id": "k1", "kind": "bogus"}])
@@ -226,8 +210,7 @@ def s1_manifest_unknown_kind_exits_2():
         sb.close()
 
 
-@case
-def s1_manifest_misspelled_field_exits_2():
+def test_s1_manifest_misspelled_field_exits_2():
     sb = default_sandbox()
     try:
         sb.manifest([file_item("f1", "a.txt", "~/.claude/a.txt", platfrom="win32")])
@@ -237,8 +220,7 @@ def s1_manifest_misspelled_field_exits_2():
         sb.close()
 
 
-@case
-def s1_manifest_duplicate_id_across_files_exits_2():
+def test_s1_manifest_duplicate_id_across_files_exits_2():
     sb = default_sandbox()
     try:
         sb.manifest([file_item("dup", "a.txt", "~/.claude/a.txt")])
@@ -248,8 +230,7 @@ def s1_manifest_duplicate_id_across_files_exits_2():
         sb.close()
 
 
-@case
-def s1_manifest_src_named_claude_md_exits_2():
+def test_s1_manifest_src_named_claude_md_exits_2():
     sb = Sandbox()
     try:
         sb.template("CLAUDE.md", b"nested memory\n")
@@ -259,8 +240,7 @@ def s1_manifest_src_named_claude_md_exits_2():
         sb.close()
 
 
-@case
-def s1_manifest_dest_escaping_home_exits_2():
+def test_s1_manifest_dest_escaping_home_exits_2():
     sb = default_sandbox()
     try:
         sb.manifest([file_item("esc", "a.txt", "~/../escape.txt")])
@@ -269,8 +249,7 @@ def s1_manifest_dest_escaping_home_exits_2():
         sb.close()
 
 
-@case
-def s1_manifest_missing_src_exits_2():
+def test_s1_manifest_missing_src_exits_2():
     sb = default_sandbox()
     try:
         sb.manifest([{"id": "nosrc-item", "kind": "file", "dest": "~/.claude/a.txt"}])
@@ -279,8 +258,7 @@ def s1_manifest_missing_src_exits_2():
         sb.close()
 
 
-@case
-def s1_manifest_src_absent_on_disk_exits_2():
+def test_s1_manifest_src_absent_on_disk_exits_2():
     sb = default_sandbox()
     try:
         sb.manifest([file_item("ghost", "nope.txt", "~/.claude/a.txt")])
@@ -289,8 +267,7 @@ def s1_manifest_src_absent_on_disk_exits_2():
         sb.close()
 
 
-@case
-def s1_malformed_manifest_json_exits_2_and_writes_nothing():
+def test_s1_malformed_manifest_json_exits_2_and_writes_nothing():
     sb = default_sandbox()
     try:
         (sb.scope / "manifest.json").write_text("{bad", encoding="utf-8")
@@ -300,8 +277,7 @@ def s1_malformed_manifest_json_exits_2_and_writes_nothing():
         sb.close()
 
 
-@case
-def s1_crlf_home_file_equals_lf_template():
+def test_s1_crlf_home_file_equals_lf_template():
     sb = default_sandbox()
     try:
         (sb.home / ".claude").mkdir(parents=True)
@@ -311,8 +287,7 @@ def s1_crlf_home_file_equals_lf_template():
         sb.close()
 
 
-@case
-def s1_non_ascii_template_and_home_compare_equal():
+def test_s1_non_ascii_template_and_home_compare_equal():
     sb = Sandbox()
     try:
         sb.template("a.txt", "x — y\n".encode("utf-8"))
@@ -327,8 +302,7 @@ def s1_non_ascii_template_and_home_compare_equal():
         sb.close()
 
 
-@case
-def s1_platform_mismatch_is_skipped_and_writes_nothing():
+def test_s1_platform_mismatch_is_skipped_and_writes_nothing():
     sb = Sandbox()
     try:
         sb.template("a.txt", b"alpha\n")
@@ -341,8 +315,7 @@ def s1_platform_mismatch_is_skipped_and_writes_nothing():
         sb.close()
 
 
-@case
-def s1_check_json_lists_every_item_with_id_kind_status():
+def test_s1_check_json_lists_every_item_with_id_kind_status():
     sb = default_sandbox()
     try:
         rows = json.loads(sb.run("check", "--json").out)["items"]
@@ -391,8 +364,7 @@ def session_commands(settings):
             for hook in group.get("hooks", [])]
 
 
-@case
-def s2_register_on_empty_home_writes_only_registered_keys():
+def test_s2_register_on_empty_home_writes_only_registered_keys():
     sb = registered_sandbox()
     try:
         expect(sb.run("check").code == 1, "check on an empty home is not red")
@@ -412,8 +384,7 @@ def s2_register_on_empty_home_writes_only_registered_keys():
         sb.close()
 
 
-@case
-def s2_install_output_names_each_action():
+def test_s2_install_output_names_each_action():
     sb = registered_sandbox()
     try:
         out = sb.run("install").out.splitlines()
@@ -423,8 +394,7 @@ def s2_install_output_names_each_action():
         sb.close()
 
 
-@case
-def s2_file_present_but_unregistered_is_red():
+def test_s2_file_present_but_unregistered_is_red():
     sb = registered_sandbox()
     try:
         (sb.home / ".claude" / "hooks").mkdir(parents=True)
@@ -435,8 +405,7 @@ def s2_file_present_but_unregistered_is_red():
         sb.close()
 
 
-@case
-def s2_unrelated_keys_survive_and_identical_hook_is_not_doubled():
+def test_s2_unrelated_keys_survive_and_identical_hook_is_not_doubled():
     sb = registered_sandbox()
     try:
         hook = posix(sb.home / ".claude" / "hooks" / "h.py")
@@ -455,8 +424,7 @@ def s2_unrelated_keys_survive_and_identical_hook_is_not_doubled():
         sb.close()
 
 
-@case
-def s2_existing_statusline_is_kept_and_reported_register_differs():
+def test_s2_existing_statusline_is_kept_and_reported_register_differs():
     sb = registered_sandbox()
     try:
         other = {"type": "command", "command": "python other.py", "padding": 2}
@@ -470,8 +438,7 @@ def s2_existing_statusline_is_kept_and_reported_register_differs():
         sb.close()
 
 
-@case
-def s2_backup_holds_original_bytes_and_is_written_once():
+def test_s2_backup_holds_original_bytes_and_is_written_once():
     sb = registered_sandbox()
     try:
         original = b'{"theme": "dark"}\n'
@@ -491,8 +458,7 @@ def s2_backup_holds_original_bytes_and_is_written_once():
         sb.close()
 
 
-@case
-def s2_malformed_settings_exits_2_and_writes_nothing():
+def test_s2_malformed_settings_exits_2_and_writes_nothing():
     sb = registered_sandbox()
     try:
         write_settings(sb, b"{bad")
@@ -506,8 +472,7 @@ def s2_malformed_settings_exits_2_and_writes_nothing():
         sb.close()
 
 
-@case
-def s2_failed_settings_write_leaves_original_and_no_tmp():
+def test_s2_failed_settings_write_leaves_original_and_no_tmp():
     sb = registered_sandbox()
     tool_module = tool()
     real_replace = tool_module._replace
@@ -531,8 +496,7 @@ def s2_failed_settings_write_leaves_original_and_no_tmp():
         sb.close()
 
 
-@case
-def s2_manifest_register_with_bad_shape_exits_2():
+def test_s2_manifest_register_with_bad_shape_exits_2():
     sb = Sandbox()
     try:
         sb.template("a.txt", b"alpha\n")
@@ -546,8 +510,7 @@ def s2_manifest_register_with_bad_shape_exits_2():
         sb.close()
 
 
-@case
-def s2_matcher_hook_registers_under_its_matcher_group():
+def test_s2_matcher_hook_registers_under_its_matcher_group():
     sb = Sandbox()
     try:
         sb.template("hooks/h.py", b"print('hook')\n")
@@ -562,8 +525,7 @@ def s2_matcher_hook_registers_under_its_matcher_group():
         sb.close()
 
 
-@case
-def s2_settings_write_retries_a_reader_that_holds_the_target():
+def test_s2_settings_write_retries_a_reader_that_holds_the_target():
     sb = registered_sandbox()
     real_replace = os.replace
     held = {"settings": False}
@@ -586,8 +548,7 @@ def s2_settings_write_retries_a_reader_that_holds_the_target():
         sb.close()
 
 
-@case
-def s2_unregistered_rows_name_the_settings_write():
+def test_s2_unregistered_rows_name_the_settings_write():
     sb = registered_sandbox()
     try:
         (sb.home / ".claude" / "hooks").mkdir(parents=True)
@@ -629,8 +590,7 @@ def env_sandbox(platform="win32"):
     return sb
 
 
-@case
-def s3_env_unset_is_set_once_through_the_setter():
+def test_s3_env_unset_is_set_once_through_the_setter():
     sb = env_sandbox()
     try:
         mod = tool()
@@ -648,8 +608,7 @@ def s3_env_unset_is_set_once_through_the_setter():
         sb.close()
 
 
-@case
-def s3_env_present_is_not_set_again():
+def test_s3_env_present_is_not_set_again():
     sb = env_sandbox()
     try:
         mod = tool()
@@ -665,8 +624,7 @@ def s3_env_present_is_not_set_again():
         sb.close()
 
 
-@case
-def s3_env_platform_mismatch_is_skipped():
+def test_s3_env_platform_mismatch_is_skipped():
     sb = env_sandbox(platform="win32")
     try:
         mod = tool()
@@ -681,8 +639,7 @@ def s3_env_platform_mismatch_is_skipped():
         sb.close()
 
 
-@case
-def s3_env_without_a_windows_platform_exits_2():
+def test_s3_env_without_a_windows_platform_exits_2():
     item = {"id": "bg-shell", "kind": "env", "name": "CLAUDE_TEST_VAR", "value": "1"}
     for variant in ({}, {"platform": "plan9"}):
         sb = Sandbox()
@@ -698,8 +655,7 @@ def s3_env_without_a_windows_platform_exits_2():
             sb.close()
 
 
-@case
-def s3_unset_env_row_names_the_variable_and_value():
+def test_s3_unset_env_row_names_the_variable_and_value():
     sb = env_sandbox(platform="win32")
     try:
         mod = tool()
@@ -713,8 +669,7 @@ def s3_unset_env_row_names_the_variable_and_value():
         sb.close()
 
 
-@case
-def s3_substitute_dest_quotes_only_a_spaced_home_path():
+def test_s3_substitute_dest_quotes_only_a_spaced_home_path():
     mod = tool()
     expect(mod.substitute_dest("python {dest}", Path("C:/Users/John Smith/.claude/statusline.py"))
            == 'python "C:/Users/John Smith/.claude/statusline.py"', "a spaced home path was not quoted")
@@ -722,8 +677,7 @@ def s3_substitute_dest_quotes_only_a_spaced_home_path():
            == "python C:/Users/zq/.claude/statusline.py", "a space-free home path changed")
 
 
-@case
-def s3_powershell_hang_becomes_a_fail():
+def test_s3_powershell_hang_becomes_a_fail():
     mod = tool()
 
     def hung(argv, **kwargs):
@@ -739,8 +693,7 @@ def s3_powershell_hang_becomes_a_fail():
             raise AssertionError("a hung powershell did not raise Fail")
 
 
-@case
-def s3_lint_red_on_a_manifest_value():
+def test_s3_lint_red_on_a_manifest_value():
     sb = Sandbox()
     try:
         sb.manifest([{"id": "bg", "kind": "env", "platform": "win32", "name": "TOOL_NAME",
@@ -766,8 +719,7 @@ class FakeRun:
         return self.argv[-1]
 
 
-@case
-def s3_powershell_boundary_quotes_names_and_values_and_fails_closed():
+def test_s3_powershell_boundary_quotes_names_and_values_and_fails_closed():
     mod = tool()
     real_run = mod.subprocess.run
     try:
@@ -793,8 +745,7 @@ def s3_powershell_boundary_quotes_names_and_values_and_fails_closed():
         mod.subprocess.run = real_run
 
 
-@case
-def s3_local_entries_are_listed_green_and_never_written():
+def test_s3_local_entries_are_listed_green_and_never_written():
     sb = Sandbox()
     try:
         sb.manifest([{"id": "machine-local", "kind": "local",
@@ -808,8 +759,7 @@ def s3_local_entries_are_listed_green_and_never_written():
         sb.close()
 
 
-@case
-def s3_lint_green_on_placeholder_assignment():
+def test_s3_lint_green_on_placeholder_assignment():
     sb = Sandbox()
     try:
         sb.template("a.txt", b"NAME_KEY=<placeholder>\nNAME_TOKEN=\n")
@@ -820,8 +770,7 @@ def s3_lint_green_on_placeholder_assignment():
         sb.close()
 
 
-@case
-def s3_lint_red_for_each_pattern_family():
+def test_s3_lint_red_for_each_pattern_family():
     families = [
         ("home path", lambda sb: f"path {sb.home.as_posix()}\n"),
         ("user name", lambda sb: f"owner {fx.HOME_USER} here\n"),
@@ -845,8 +794,7 @@ def s3_lint_red_for_each_pattern_family():
     expect(not missed, f"lint was green for: {missed}")
 
 
-@case
-def s3_lint_green_on_the_real_templates():
+def test_s3_lint_green_on_the_real_templates():
     sb = Sandbox()
     try:
         done = sb.run("lint", scope=REAL_SCOPE)
@@ -855,8 +803,7 @@ def s3_lint_green_on_the_real_templates():
         sb.close()
 
 
-@case
-def s3_adopt_copies_home_over_template_with_crlf_folded():
+def test_s3_adopt_copies_home_over_template_with_crlf_folded():
     sb = default_sandbox()
     try:
         (sb.home / ".claude").mkdir(parents=True)
@@ -868,8 +815,7 @@ def s3_adopt_copies_home_over_template_with_crlf_folded():
         sb.close()
 
 
-@case
-def s3_adopt_refuses_an_equal_pair_and_leaves_template():
+def test_s3_adopt_refuses_an_equal_pair_and_leaves_template():
     sb = default_sandbox()
     try:
         (sb.home / ".claude").mkdir(parents=True)
@@ -882,8 +828,7 @@ def s3_adopt_refuses_an_equal_pair_and_leaves_template():
         sb.close()
 
 
-@case
-def s3_adopt_lint_hit_refuses_and_leaves_template():
+def test_s3_adopt_lint_hit_refuses_and_leaves_template():
     sb = default_sandbox()
     try:
         (sb.home / ".claude").mkdir(parents=True)
@@ -895,8 +840,7 @@ def s3_adopt_lint_hit_refuses_and_leaves_template():
         sb.close()
 
 
-@case
-def s3_adopt_refuses_local_and_unknown_ids():
+def test_s3_adopt_refuses_local_and_unknown_ids():
     sb = default_sandbox()
     try:
         sb.manifest([file_item("tool-a", "a.txt", "~/.claude/a.txt"),
@@ -912,8 +856,7 @@ def s3_adopt_refuses_local_and_unknown_ids():
         sb.close()
 
 
-@case
-def s3_adopt_and_lint_keep_non_ascii_bytes_without_utf8_mode():
+def test_s3_adopt_and_lint_keep_non_ascii_bytes_without_utf8_mode():
     sb = Sandbox()
     try:
         sb.template("a.txt", "x — y\n".encode("utf-8"))
@@ -934,8 +877,7 @@ def setting_item(item_id="no-connectors", key="disableClaudeAiConnectors", value
     return {"id": item_id, "kind": "setting", "key": key, "value": value}
 
 
-@case
-def s4_unset_setting_is_red_then_installed_once_and_green():
+def test_s4_unset_setting_is_red_then_installed_once_and_green():
     sb = Sandbox()
     try:
         sb.manifest([setting_item()])
@@ -951,8 +893,7 @@ def s4_unset_setting_is_red_then_installed_once_and_green():
         sb.close()
 
 
-@case
-def s4_setting_with_another_value_is_kept_and_green():
+def test_s4_setting_with_another_value_is_kept_and_green():
     sb = Sandbox()
     try:
         sb.manifest([setting_item()])
@@ -966,8 +907,7 @@ def s4_setting_with_another_value_is_kept_and_green():
         sb.close()
 
 
-@case
-def s4_setting_compares_by_type_not_by_python_equality():
+def test_s4_setting_compares_by_type_not_by_python_equality():
     sb = Sandbox()
     try:
         sb.manifest([setting_item()])
@@ -977,8 +917,7 @@ def s4_setting_compares_by_type_not_by_python_equality():
         sb.close()
 
 
-@case
-def s4_install_adds_the_key_beside_hooks_and_statusline_without_touching_them():
+def test_s4_install_adds_the_key_beside_hooks_and_statusline_without_touching_them():
     sb = registered_sandbox()
     try:
         items = json.loads((sb.scope / "manifest.json").read_text(encoding="utf-8"))["items"]
@@ -996,8 +935,7 @@ def s4_install_adds_the_key_beside_hooks_and_statusline_without_touching_them():
         sb.close()
 
 
-@case
-def s4_setting_item_with_a_bad_shape_exits_2():
+def test_s4_setting_item_with_a_bad_shape_exits_2():
     for raw in ({"id": "a", "kind": "setting", "key": "k"},
                 {"id": "a", "kind": "setting", "value": True},
                 {"id": "a", "kind": "setting", "key": "", "value": True},
@@ -1030,8 +968,7 @@ def local_settings(sb):
     return sb.repo / ".claude" / "settings.local.json"
 
 
-@case
-def s5_claude_json_key_absent_is_a_manual_step_and_never_written():
+def test_s5_claude_json_key_absent_is_a_manual_step_and_never_written():
     sb = Sandbox()
     try:
         sb.manifest([chrome_item()])
@@ -1048,8 +985,7 @@ def s5_claude_json_key_absent_is_a_manual_step_and_never_written():
         sb.close()
 
 
-@case
-def s5_claude_json_reports_the_key_without_printing_anything_else():
+def test_s5_claude_json_reports_the_key_without_printing_anything_else():
     sb = Sandbox()
     try:
         sb.manifest([chrome_item()])
@@ -1065,8 +1001,7 @@ def s5_claude_json_reports_the_key_without_printing_anything_else():
         sb.close()
 
 
-@case
-def s5_unreadable_claude_json_is_reported_not_fatal_and_not_touched():
+def test_s5_unreadable_claude_json_is_reported_not_fatal_and_not_touched():
     sb = Sandbox()
     try:
         sb.manifest([chrome_item()])
@@ -1079,8 +1014,7 @@ def s5_unreadable_claude_json_is_reported_not_fatal_and_not_touched():
         sb.close()
 
 
-@case
-def s5_local_store_is_installed_with_the_repo_path_and_kept_when_it_differs():
+def test_s5_local_store_is_installed_with_the_repo_path_and_kept_when_it_differs():
     sb = Sandbox()
     try:
         sb.manifest([memory_item()])
@@ -1099,8 +1033,7 @@ def s5_local_store_is_installed_with_the_repo_path_and_kept_when_it_differs():
         sb.close()
 
 
-@case
-def s5_local_store_keeps_other_keys_backs_up_once_and_refuses_bad_json():
+def test_s5_local_store_keeps_other_keys_backs_up_once_and_refuses_bad_json():
     sb = Sandbox()
     try:
         sb.manifest([memory_item()])
@@ -1119,8 +1052,7 @@ def s5_local_store_keeps_other_keys_backs_up_once_and_refuses_bad_json():
         sb.close()
 
 
-@case
-def s5_unknown_store_exits_2():
+def test_s5_unknown_store_exits_2():
     sb = Sandbox()
     try:
         sb.manifest([{"id": "x", "kind": "setting", "key": "k", "value": 1, "store": "registry"}])
@@ -1135,8 +1067,7 @@ RETIRED = {"id": "large-read-reminder", "dest": "~/.claude/hooks/large_read_remi
            "event": "PostToolUse", "matcher": "Read", "command": "python {dest}"}
 
 
-@case
-def s9_install_keeps_a_hook_that_only_names_the_retired_path():
+def test_s9_install_keeps_a_hook_that_only_names_the_retired_path():
     sb = Sandbox()
     try:
         sb.manifest([], name="manifest.json")
@@ -1158,8 +1089,7 @@ def s9_install_keeps_a_hook_that_only_names_the_retired_path():
         sb.close()
 
 
-@case
-def s9_retired_entry_without_its_command_is_refused():
+def test_s9_retired_entry_without_its_command_is_refused():
     sb = Sandbox()
     try:
         sb.manifest([], name="manifest.json")
@@ -1172,8 +1102,7 @@ def s9_retired_entry_without_its_command_is_refused():
         sb.close()
 
 
-@case
-def s9_check_fails_when_retired_hook_is_registered():
+def test_s9_check_fails_when_retired_hook_is_registered():
     sb = Sandbox()
     try:
         sb.manifest([], name="manifest.json")
@@ -1192,8 +1121,7 @@ def s9_check_fails_when_retired_hook_is_registered():
         sb.close()
 
 
-@case
-def s9_install_removes_only_retired_command_and_keeps_sibling():
+def test_s9_install_removes_only_retired_command_and_keeps_sibling():
     sb = Sandbox()
     try:
         sb.manifest([], name="manifest.json")
@@ -1218,8 +1146,7 @@ def s9_install_removes_only_retired_command_and_keeps_sibling():
         sb.close()
 
 
-@case
-def s9_retired_row_without_registration_is_green():
+def test_s9_retired_row_without_registration_is_green():
     sb = Sandbox()
     try:
         sb.manifest([], name="manifest.json")
@@ -1229,21 +1156,3 @@ def s9_retired_row_without_registration_is_green():
         expect(sb.run("check").code == 0, "unregistered retired row must be green")
     finally:
         sb.close()
-
-
-def main():
-    failed = 0
-    for fn in CASES:
-        try:
-            fn()
-        except Exception as exc:
-            failed += 1
-            print(f"FAIL {fn.__name__}: {type(exc).__name__}: {exc}")
-        else:
-            print(f"ok {fn.__name__}")
-    print(f"{len(CASES) - failed}/{len(CASES)} passed")
-    return 1 if failed else 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
