@@ -14,8 +14,7 @@ paths:
 
 # Harness Tooling (loads when you edit a hook, harness script, tool, workflow or test)
 
-`instruction_quality` holds the code-facing rules: §3 sorts facts from judgment in any output an agent acts on, §13 the channel a hook's output reaches, §16 fail posture. `reference/mechanism_litmus.md` decides whether a test, check or hook should exist at all. Outline a Python file with `python3 .claude/tools/python_outline.py <path>`. Python file writes use LF (`newline="
-"` or bytes), since a CRLF script breaks Bash and dirties diffs.
+`instruction_quality` holds the code-facing rules: §3 sorts facts from judgment in any output an agent acts on, §13 the channel a hook's output reaches, §16 fail posture. `reference/mechanism_litmus.md` decides whether a test, check or hook should exist at all. Outline a Python file with `python3 .claude/tools/python_outline.py <path>`. Python file writes use LF (`newline="\n"` or bytes), since a CRLF script breaks Bash and dirties diffs.
 
 ## A change runs its unit's own test; CI runs the suite
 
