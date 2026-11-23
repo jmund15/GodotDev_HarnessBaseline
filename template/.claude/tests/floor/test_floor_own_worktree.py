@@ -58,6 +58,25 @@ class Own:
         write(self.root, ".claude/worktrees/mine/notes/evidence.txt", "a job's own scratch\n")
         self.wt = self.root / ".claude/worktrees/mine"
 
+    def copy_to(self, tmp):
+        """This fixture copied under `tmp`, `.git` included, with the worktree's two link files repointed and the
+        worktree `.git` file's mtime kept (the ownership check compares it with the transcript window)."""
+        import copy
+        import shutil
+        other = copy.copy(self)
+        other.tmp, other.root = tmp, tmp / "repo"
+        shutil.copytree(self.root, other.root, symlinks=True)
+        other.wt = other.root / ".claude/worktrees/mine"
+        link, admin = other.wt / ".git", other.root / ".git/worktrees/mine/gitdir"
+        stamp = (self.wt / ".git").stat()
+        for path, text in ((link, "gitdir: %s\n" % (other.root / ".git/worktrees/mine").as_posix()),
+                           (admin, "%s\n" % link.as_posix())):
+            with open(path, "r+", encoding="utf-8", newline="\n") as fh:  # git hides `.git`; "w" cannot open it
+                fh.write(text)
+                fh.truncate()
+        os.utime(link, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        return other
+
     def created_row(self, command=None):
         row = json.loads(json.dumps(ROW))
         row["cwd"] = str(self.root)
@@ -97,19 +116,27 @@ class Own:
         return self.run(command, rows).denied
 
 
+@pytest.fixture(scope="session")
+def _own_template(tmp_path_factory):
+    saved = {k: os.environ.pop(k) for k in [k for k in os.environ if k.startswith("GIT_")]}
+    try:
+        return Own(tmp_path_factory.mktemp("own_template"))
+    finally:
+        os.environ.update(saved)
+
+
 @pytest.fixture
-def own(tmp_path, monkeypatch):
+def own(tmp_path, monkeypatch, _own_template):
+    """v1's fixture, built once and copied per case (`.git` included), so no state crosses cases."""
     elsewhere = tmp_path.parent / ("elsewhere_" + tmp_path.name)
     elsewhere.mkdir(exist_ok=True)
     monkeypatch.setattr(tempfile, "tempdir", str(elsewhere))
     for k in [k for k in os.environ if k.startswith("GIT_")]:
         monkeypatch.delenv(k)
-    fixture = Own(tmp_path)
+    fixture = _own_template.copy_to(tmp_path)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(fixture.root))
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
-    yield fixture
-    subprocess.run(["git", "-C", str(fixture.root), "worktree", "remove", "--force", ".claude/worktrees/mine"],
-                   capture_output=True)
+    return fixture
 
 
 # --- discards in the owned worktree (test_git_guardrails_checkout_own_worktree.py) -----------------------------

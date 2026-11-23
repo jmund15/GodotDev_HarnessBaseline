@@ -31,6 +31,7 @@ from collections import Counter
 from fnmatch import fnmatchcase
 from pathlib import Path
 
+import _git_commit
 import _git_run
 from _git_commit import (resolve_cd, segments, git_invocation, cd_target,
                          executable_text, literal_assignments, expand_literal)
@@ -53,11 +54,19 @@ def _git(args: list[str], cwd: Path, stdin: str | None = None) -> str | None:
       would otherwise leave a stale `index.lock`.
     - `GIT_CEILING_DIRECTORIES` stops git from climbing into an enclosing repository when the
       target's `.git` disappears mid-check; git would otherwise lock and judge the project repo.
+    Inside `_git_commit.memoized()` (one floor decision) a repeated call answers from its first run.
     """
+    memo = _git_commit._memo
+    key = ("_regenerable_clone", tuple(args), os.path.normcase(str(cwd)), stdin)
+    if memo is not None and key in memo:
+        return memo[key]
     env = {"GIT_CEILING_DIRECTORIES": str(cwd.parent)}
-    return _git_run.soft_text(args, cwd=str(cwd), env=env, optional_locks=False,
-                              input=stdin.encode() if isinstance(stdin, str) else stdin,
-                              timeout=_GIT_TIMEOUT_S)
+    out = _git_run.soft_text(args, cwd=str(cwd), env=env, optional_locks=False,
+                             input=stdin.encode() if isinstance(stdin, str) else stdin,
+                             timeout=_GIT_TIMEOUT_S)
+    if memo is not None:
+        memo[key] = out
+    return out
 
 
 def _same_path(a: Path, b: Path) -> bool:
