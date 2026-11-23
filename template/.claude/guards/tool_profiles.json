@@ -10,7 +10,7 @@
       "denyTools": ["mcp__ai-worker__write_doc"],
       "disclosure": "bare",
       "guard": "survey",
-      "agentType": "lane-survey",
+      "agentType": "delegate-survey",
       "tier": "fanout",
       "internal": false,
       "routes": ["launcher", "fanout", "engine", "agent"]
@@ -21,7 +21,7 @@
       "denyTools": ["mcp__ai-worker__write_doc"],
       "disclosure": "pointer",
       "guard": "survey",
-      "agentType": "lane-survey",
+      "agentType": "delegate-survey",
       "tier": "fanout",
       "internal": false,
       "routes": ["launcher", "fanout", "engine", "agent"]
@@ -32,7 +32,7 @@
       "denyTools": ["mcp__ai-worker__write_doc"],
       "disclosure": "full",
       "guard": "review",
-      "agentType": "lane-review",
+      "agentType": "delegate-review",
       "tier": "executor",
       "internal": false,
       "routes": ["launcher", "fanout", "engine", "agent"]
@@ -42,7 +42,7 @@
       "mcpServers": ["semantic-search", "ai-worker"],
       "disclosure": "full",
       "guard": "author",
-      "agentType": "lane-author",
+      "agentType": "delegate-author",
       "tier": "executor",
       "writes": true,
       "internal": false,
@@ -54,7 +54,7 @@
       "denyTools": ["mcp__ai-worker__write_doc"],
       "disclosure": "full",
       "guard": "common",
-      "agentType": "lane-review",
+      "agentType": "delegate-review",
       "tier": "executor",
       "internal": false,
       "routes": ["launcher", "fanout", "engine", "agent"]
@@ -64,7 +64,7 @@
       "mcpServers": [],
       "disclosure": "full",
       "guard": "gate",
-      "agentType": "lane-gate",
+      "agentType": "delegate-gate",
       "tier": "fanout",
       "internal": false,
       "routes": ["launcher", "fanout", "engine", "agent"]
@@ -96,7 +96,7 @@
       "mcpServers": [],
       "disclosure": null,
       "guard": null,
-      "agentType": "lane-verify",
+      "agentType": "delegate-verify",
       "tier": "fanout",
       "internal": true,
       "routes": ["engine"]
@@ -114,6 +114,6 @@
     }
   },
   "variants": [
-    {"kind": "reviewer", "add": ["Bash"], "agentType": "lane-review-sh"}
+    {"kind": "reviewer", "add": ["Bash"], "agentType": "delegate-review-sh"}
   ]
 }

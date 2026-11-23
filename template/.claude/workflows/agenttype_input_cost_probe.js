@@ -23,7 +23,7 @@ const PROMPT = 'Reply with exactly the word: ok\n\nUse no tools. Do not explain.
 
 // args.models: the model ids to hold fixed, one cell per agentType per model. Effort stays low: the prompt
 // ends in one turn, so effort cannot move first-turn input.
-const AGENT_TYPES = ['Explore', 'general-purpose', 'lane-survey', 'lane-review', 'lane-author']
+const AGENT_TYPES = ['Explore', 'general-purpose', 'delegate-survey', 'delegate-review', 'delegate-author']
 const MODELS = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return (a && a.models) || [] } catch (e) { return [] } })()
 if (!MODELS.length) throw new Error('args.models is required: the model ids to probe')
 const CELLS = MODELS.flatMap(m => AGENT_TYPES.map(t => ({
