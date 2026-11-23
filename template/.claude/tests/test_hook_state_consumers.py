@@ -22,11 +22,22 @@ def source(consumer):
     return io.open(os.path.join(HOOKS, consumer), encoding="utf-8").read()
 
 
-for consumer, label in (
-    ("tool_routing_cumulative_reset.py", "turn reset uses the shared locked update"),
-    ("prompt_memory_loader.py", "memory reminder state uses the shared locked update"),
-):
-    check(label, "update_json_locked(" in source(consumer))
+def main():
+    global failures
+    failures = 0
+    for consumer, label in (
+        ("tool_routing_cumulative_reset.py", "turn reset uses the shared locked update"),
+        ("prompt_memory_loader.py", "memory reminder state uses the shared locked update"),
+    ):
+        check(label, "update_json_locked(" in source(consumer))
 
-print("all ok" if not failures else "%d failure(s)" % failures)
-sys.exit(int(bool(failures)))
+    print("all ok" if not failures else "%d failure(s)" % failures)
+    return 1 if failures else 0
+
+
+def test_proof():
+    assert main() == 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
