@@ -149,12 +149,48 @@ def test_gate_cadence_good_table_validates_and_bad_rows_are_named():
         ("slice", dict(GOOD_CADENCE, slice="run")),
         ("merge[0]", dict(GOOD_CADENCE, merge=[""])),
         ("unknown keys wide", dict(GOOD_CADENCE, wide=[])),
-        ("unknown keys reach", dict(GOOD_CADENCE, reach=[])),
-        ("unknown keys main", dict(GOOD_CADENCE, main={})),
+        ("unknown keys reach_fallbak", dict(GOOD_CADENCE, reach_fallbak="x")),
+        ("unknown keys mian", dict(GOOD_CADENCE, mian={})),
     ]
     for needle, value in bad:
         errors = adaptation.gate_cadence_errors(value)
         assert any(needle in e for e in errors), (needle, errors)
+
+
+# The rows MaddManager's `main_check.py` (`main`) and `reach_run.py` (`reach`, `reach_exempt`, `reach_fallback`) read.
+READER_CADENCE = dict(
+    GOOD_CADENCE,
+    main={"command": ["python3", "scripts/verify-main.mjs"], "retry_exits": [7], "outputs": ["a.json"]},
+    reach=[{"name": "tests", "paths": ["src/**"], "cmd": "npx vitest related --run {paths}"}],
+    reach_exempt=["docs/**", "*.md"], reach_fallback="npm run typecheck")
+
+
+def test_gate_cadence_accepts_the_rows_project_readers_read():
+    assert adaptation.gate_cadence_errors(READER_CADENCE) == []
+
+
+@pytest.mark.parametrize("needle, key, value", [
+    ("main is not an object", "main", ["x"]),
+    ("main.command", "main", {"command": []}),
+    ("main.command", "main", {"command": "node x"}),
+    ("main.retry_exits", "main", {"command": ["x"], "retry_exits": ["7"]}),
+    ("main.outputs", "main", {"command": ["x"], "outputs": [1]}),
+    ("reach is not a list", "reach", {"name": "a"}),
+    ("reach[0]", "reach", [{"name": "a", "paths": [], "cmd": "x"}]),
+    ("reach[0]", "reach", [{"name": "a", "paths": ["a"], "cmd": " "}]),
+    ("reach[0]", "reach", ["x"]),
+    ("reach_exempt", "reach_exempt", "docs/**"),
+    ("reach_exempt", "reach_exempt", [1]),
+    ("reach_fallback", "reach_fallback", ["x"]),
+])
+def test_gate_cadence_reader_rows_are_shape_checked(needle, key, value):
+    errors = adaptation.gate_cadence_errors(dict(READER_CADENCE, **{key: value}))
+    assert any(needle in e for e in errors), (needle, errors)
+
+
+def test_get_gate_cadence_exits_0_for_a_project_with_reader_rows(tmp_path):
+    claude = _claude_dir(tmp_path, {"gate_cadence": READER_CADENCE}, name="reader")
+    assert _spawn_get(claude, "gate_cadence").returncode == 0
 
 
 def test_gate_cadence_wrong_type_falls_back_to_empty_table(tmp_path, capsys):

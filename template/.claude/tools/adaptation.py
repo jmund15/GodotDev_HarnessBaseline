@@ -14,7 +14,7 @@ Command line (run from the repo root):
     (`playtest-subject-folders`). An unknown id exits 2.
 
 `gate_cadence` is a job's cadence data: `slice`, `merge` and `close` are command forms a rails' `Your checks`
-line prints verbatim. `gate_cadence_errors` validates the table; a malformed row fails `get gate_cadence` (exit 1).
+line prints verbatim; `main`, `reach`, `reach_exempt` and `reach_fallback` are rows a project's own readers read. `gate_cadence_errors` validates the table; a malformed row fails `get gate_cadence` (exit 1).
 `pre_bash` is the floor's project data: `protected` rows ({pattern, why}: a command whose kill is denied) and
 `router_entrypoints` rows ({name, redirect?, detach_flag?}: a script the call router runs from main's copy unless
 `redirect` is false, backgrounds for a delegate, and backgrounds for every caller without its `detach_flag`). A
@@ -120,6 +120,49 @@ _SUB_TYPES: dict = {
 _MISSING = object()
 
 CADENCE_KEYS = ("slice", "merge", "close")
+# Rows a project's own reader reads, each shape-checked below: `main` (`scripts/main_check.py`: the main-check gate the
+# plan declares), `reach`, `reach_exempt`, `reach_fallback` (`tools/reach_run.py`: the checks the changed paths reach).
+CADENCE_READER_KEYS = ("main", "reach", "reach_exempt", "reach_fallback")
+
+
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _cadence_reader_errors(value) -> list:
+    errors = []
+    if "main" in value:
+        main = value["main"]
+        if not isinstance(main, dict):
+            errors.append("main is not an object")
+        else:
+            command = main.get("command")
+            if not (isinstance(command, list) and command and all(isinstance(p, str) and p for p in command)):
+                errors.append("main.command is not a non-empty list of strings")
+            retry = main.get("retry_exits", [])
+            if not (isinstance(retry, list) and all(_is_int(c) for c in retry)):
+                errors.append("main.retry_exits is not a list of integers")
+            outputs = main.get("outputs", [])
+            if not (isinstance(outputs, list) and all(isinstance(p, str) and p for p in outputs)):
+                errors.append("main.outputs is not a list of paths")
+    if "reach" in value:
+        rows = value["reach"]
+        if not isinstance(rows, list):
+            errors.append("reach is not a list")
+        else:
+            for index, row in enumerate(rows):
+                if (not isinstance(row, dict) or not isinstance(row.get("name"), str)
+                        or not isinstance(row.get("cmd"), str) or not row["cmd"].strip()
+                        or not isinstance(row.get("paths"), list) or not row["paths"]
+                        or not all(isinstance(p, str) for p in row["paths"])):
+                    errors.append("reach[%d] needs name (str), paths (non-empty list of str) and cmd (str)" % index)
+    if "reach_exempt" in value:
+        exempt = value["reach_exempt"]
+        if not (isinstance(exempt, list) and all(isinstance(p, str) for p in exempt)):
+            errors.append("reach_exempt is not a list of strings")
+    if "reach_fallback" in value and not isinstance(value["reach_fallback"], str):
+        errors.append("reach_fallback is not a string")
+    return errors
 
 
 def _cadence_list(value, key: str) -> list:
@@ -137,12 +180,12 @@ def gate_cadence_errors(value) -> list:
     if not isinstance(value, dict):
         return ["is not an object"]
     errors = []
-    unknown = sorted(set(value) - set(CADENCE_KEYS))
+    unknown = sorted(set(value) - set(CADENCE_KEYS) - set(CADENCE_READER_KEYS))
     if unknown:
         errors.append("has unknown keys %s" % ", ".join(unknown))
     for key in CADENCE_KEYS:
         errors += _cadence_list(value, key)
-    return errors
+    return errors + _cadence_reader_errors(value)
 
 
 def adaptation_path(claude_dir) -> Path:
