@@ -566,7 +566,9 @@ async function startStock({ cwd, pluginRoot = PLUGIN } = {}) {
 	}
 }
 
-const IDLE_MS = 3000
+const IDLE_MS = 1000
+// A guest window several times the host's, so a wait past the host's still sits inside the guest's.
+const GUEST_IDLE_MIN = String((5 * IDLE_MS) / 60000)
 const IDLE_ENV = { SEMANTIC_SEARCH_IDLE_MINUTES: String(IDLE_MS / 60000) }
 
 test('S2.1 an idle window closes the backend child, the frontend survives, and the next call boots a new child', async () => {
@@ -598,7 +600,7 @@ test('S2.1 an idle window closes the backend child, the frontend survives, and t
 test('S2.2 startup, tools/list and pings neither boot a child nor keep one alive', async () => {
 	const quiet = await startFrontend({ cwd: fx, env: { SEMANTIC_SEARCH_IDLE_DEBUG: '1', ...IDLE_ENV } })
 	try {
-		await new Promise((r) => setTimeout(r, IDLE_MS + 2000))
+		await new Promise((r) => setTimeout(r, IDLE_MS + 1000))
 		await listTools(quiet)
 		await new Promise((r) => setTimeout(r, 500))
 		assert.deepEqual(quiet.pids(), [], 'no search was ever called, so no child may exist')
@@ -612,7 +614,7 @@ test('S2.2 startup, tools/list and pings neither boot a child nor keep one alive
 		const [pid] = fe.pids()
 		OWNED_PIDS.add(pid)
 		// Keep asking for the tool list across the window: a list must not reset the timer.
-		const deadline = Date.now() + IDLE_MS + 4000
+		const deadline = Date.now() + IDLE_MS + 2000
 		while (Date.now() < deadline) {
 			await listTools(fe)
 			await new Promise((r) => setTimeout(r, 400))
@@ -767,9 +769,9 @@ test('S2.9 a cancelled call is forwarded as a cancellation and leaves the proxy 
 		assert.match(readFileSync(logPath, 'utf8'), /cancelled id=\d+ inflight=true/, 'the cancellation never reached the backend')
 
 		writeFileSync(logPath, '')
-		const after = await callSearch(fe, { query: 'still-here', searchDir: '.' }, 40000)
+		const after = await callSearch(fe, { query: 'quick-still-here', searchDir: '.' }, 40000)
 		assert.notEqual(after.isError, true, `the proxy was left unusable: ${resultText(after)}`)
-		assert.match(resultText(after), /^fake:still-here:/)
+		assert.match(resultText(after), /^fake:quick-still-here:/)
 	} finally {
 		await fe.close()
 	}
@@ -1173,7 +1175,7 @@ test('S3.4 a hard-killed host fails the guest call it dispatched, without resend
 })
 
 test('S3.5 a host whose stdin closes finishes the dispatched guest call and keeps the root until its backend exits', { timeout: 90000 }, async () => {
-	const c = fakeCase('s3-5', { FAKE_DELAY_MS: '1500', FAKE_EXIT_DELAY_MS: '1500' })
+	const c = fakeCase('s3-5', { FAKE_DELAY_MS: '800', FAKE_EXIT_DELAY_MS: '800' })
 	const a = startRawFrontend({ cwd: c.root, pluginRoot: c.pluginRoot, env: c.baseEnv })
 	const b = await c.start()
 	const d = await c.start()
@@ -1207,7 +1209,7 @@ test('S3.5 a host whose stdin closes finishes the dispatched guest call and keep
 		await b.close()
 	}
 
-	const c2 = fakeCase('s3-5b', { FAKE_DELAY_MS: '8000' })
+	const c2 = fakeCase('s3-5b', { FAKE_DELAY_MS: '3000' })
 	const a2 = await c2.start()
 	const b2 = await c2.start()
 	try {
@@ -1226,7 +1228,7 @@ test('S3.5 a host whose stdin closes finishes the dispatched guest call and keep
 
 test('S3.6 an idle host answers closing until its backend exits, then a guest re-elects', { timeout: 90000 }, async () => {
 	// Under the SDK close's 2 s grace, so the fake logs its own exit instead of being killed.
-	const c = fakeCase('s3-6', { ...IDLE_ENV, FAKE_EXIT_DELAY_MS: '1500' })
+	const c = fakeCase('s3-6', { ...IDLE_ENV, FAKE_EXIT_DELAY_MS: '700' })
 	const a = await c.start()
 	const b = await c.start()
 	try {
@@ -1249,7 +1251,7 @@ test('S3.6 an idle host answers closing until its backend exits, then a guest re
 })
 
 test('S3.7 cancelling one guest call cancels only that call, even when two guests use the same id', { timeout: 60000 }, async () => {
-	const c = fakeCase('s3-7', { FAKE_DELAY_MS: '4000' })
+	const c = fakeCase('s3-7', { FAKE_DELAY_MS: '2000' })
 	const a = await c.start()
 	const b = await c.start()
 	const d = await c.start()
@@ -1430,7 +1432,7 @@ test('S3.13 a junction and its target are one root: one backend, one searchDir s
 })
 
 test('S3.14 a guest\'s longer idle window keeps the shared backend alive', { timeout: 120000 }, async () => {
-	const GUEST_IDLE = { SEMANTIC_SEARCH_IDLE_MINUTES: '0.25' }
+	const GUEST_IDLE = { SEMANTIC_SEARCH_IDLE_MINUTES: GUEST_IDLE_MIN }
 	const c = fakeCase('s3-14', IDLE_ENV)
 	const a = await c.start()
 	const b = await c.start(GUEST_IDLE)
@@ -1440,8 +1442,8 @@ test('S3.14 a guest\'s longer idle window keeps the shared backend alive', { tim
 		await callSearch(b, { query: 'quick-b', searchDir: '.' })
 		const [pid] = a.pids()
 		own(a)
-		await sleep(IDLE_MS + 4000)
-		assert.ok(pidAlive(pid), 'the guest\'s 15 s window must outlast the host\'s 3 s window')
+		await sleep(IDLE_MS + 1500)
+		assert.ok(pidAlive(pid), 'the guest\'s window must outlast the host\'s')
 
 		// A guest whose own call boots the backend, after a planted death.
 		process.kill(pid, 'SIGKILL')
@@ -1451,7 +1453,7 @@ test('S3.14 a guest\'s longer idle window keeps the shared backend alive', { tim
 		const reborn = a.pids().at(-1)
 		own(a)
 		assert.notEqual(reborn, pid, 'the guest\'s call booted a fresh backend')
-		await sleep(IDLE_MS + 4000)
+		await sleep(IDLE_MS + 1500)
 		assert.ok(pidAlive(reborn), 'the guest\'s window also governs a backend its own call booted')
 	} finally {
 		await b.close()
@@ -1460,7 +1462,7 @@ test('S3.14 a guest\'s longer idle window keeps the shared backend alive', { tim
 })
 
 test('S3.15 a closing reply to a second call leaves the guest\'s earlier dispatched call to finish', { timeout: 60000 }, async () => {
-	const c = fakeCase('s3-15', { FAKE_DELAY_MS: '1500', FAKE_EXIT_DELAY_MS: '500' })
+	const c = fakeCase('s3-15', { FAKE_DELAY_MS: '800', FAKE_EXIT_DELAY_MS: '500' })
 	const a = startRawFrontend({ cwd: c.root, pluginRoot: c.pluginRoot, env: c.baseEnv })
 	const b = await c.start()
 	try {
@@ -1507,14 +1509,14 @@ test('S3.16 a client that connects and never says hello cannot stall a release',
 test('S3.17 a departing guest\'s longer idle window stops counting', { timeout: 60000 }, async () => {
 	const c = fakeCase('s3-17', IDLE_ENV)
 	const a = await c.start()
-	const b = await c.start({ SEMANTIC_SEARCH_IDLE_MINUTES: '0.25' })
+	const b = await c.start({ SEMANTIC_SEARCH_IDLE_MINUTES: GUEST_IDLE_MIN })
 	try {
 		await callSearch(a, { query: 'quick-a', searchDir: '.' })
 		await callSearch(b, { query: 'quick-b', searchDir: '.' })
 		const [pid] = a.pids()
 		own(a)
 		await b.close()
-		assert.ok(await waitForExit(pid, IDLE_MS + 5000), 'after the 15 s guest leaves, the host\'s 3 s window must govern')
+		assert.ok(await waitForExit(pid, IDLE_MS + 5000), 'after the longer-window guest leaves, the host\'s window must govern')
 	} finally {
 		await b.close()
 		await a.close()
