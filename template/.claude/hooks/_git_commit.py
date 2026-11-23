@@ -160,6 +160,10 @@ def git_invocation(segment):
     while j < len(args) and args[j].startswith("-"):
         if args[j] == "-C" and j + 1 < len(args):
             chdirs.append(args[j + 1])
+        if args[j] == "-c" and j + 1 < len(args):
+            # `-c key=value` reaches the judging reads as git's own env form, so `git config --get` sees it.
+            entry = "'%s'" % args[j + 1].replace("'", "'\\''")
+            inline_env["GIT_CONFIG_PARAMETERS"] = (inline_env.get("GIT_CONFIG_PARAMETERS", "") + " " + entry).strip()
         for flag, var in _REPO_FLAGS:
             if args[j] == flag and j + 1 < len(args):
                 inline_env[var] = args[j + 1]

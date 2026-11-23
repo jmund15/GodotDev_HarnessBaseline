@@ -120,6 +120,12 @@ def fixtures(tmp_path_factory):
     git(saved2, "hash-object", "-w", "f.txt")
     git(saved2, "hash-object", "-w", "g.txt")
     out["saved2"] = saved2
+
+    out["sq"] = _squashed(tmp_path_factory, "sq_rows")
+    norf = _squashed(tmp_path_factory, "norf")
+    git(norf, "config", "clean.requireForce", "false")
+    write(norf, "junk/u.txt", "untracked\n")
+    out["norf"] = norf
     return out
 
 
@@ -244,6 +250,88 @@ ROWS = [
     ("repo", "bash <<'EOF'\ngit reset --hard\nEOF", "deny", None),
     ("repo", "git checkout clean.txt", "allow", None),
     ("repo", "git clean -fn", "allow", None),
+    # onr O1.1: `switch -f` / `--discard-changes` discards worktree edits like `checkout -f`; a clean tree loses none.
+    ("repo", "git switch -f main", "deny", "git switch"),
+    ("repo", "git switch --force main", "deny", None),
+    ("repo", "git switch --discard-changes main", "deny", "-f"),
+    ("repo", "git switch --discard main", "deny", None),
+    ("repo", "git switch -fd main", "deny", None),
+    ("repo", "git switch -f -c fresh", "deny", None),
+    ("repo", "git switch main", "allow", None),
+    ("repo", "git switch -c fresh", "allow", None),
+    ("repo", "git switch -d HEAD", "allow", None),
+    ("sq", "git switch -f other", "allow", None),
+    ("sq", "git switch --discard-changes other", "allow", None),
+    # onr O1.2: `branch -M/-C/-f` onto an existing branch overwrites its ref like `branch -D`; judged the same way.
+    ("sq", "git branch -M uniq", "deny", "uniq"),
+    ("sq", "git branch -M other uniq", "deny", "uniq"),
+    ("sq", "git branch -C other uniq", "deny", "uniq"),
+    ("sq", "git branch -f uniq other", "deny", "uniq"),
+    ("sq", "git branch --force uniq other", "deny", None),
+    ("sq", "git branch -m -f other uniq", "deny", None),
+    ("sq", "git branch --move --force other uniq", "deny", None),
+    ("sq", "git branch --copy --force other uniq", "deny", None),
+    ("sq", "git branch -f uniq", "deny", None),
+    ("sq", "git -C . branch -M other uniq", "deny", None),
+    ("sq", "git branch -f sq other", "allow", None),
+    ("sq", "git branch -M other sq", "allow", None),
+    ("sq", "git branch -m fresh", "allow", None),
+    ("sq", "git branch -m other fresh", "allow", None),
+    ("sq", "git branch -M fresh", "allow", None),
+    ("sq", "git branch -M other fresh", "allow", None),
+    ("sq", "git branch -C other fresh", "allow", None),
+    ("sq", "git branch -f fresh other", "allow", None),
+    ("sq", "git branch -m other uniq", "allow", None),
+    ("sq", "git branch fresh other", "allow", None),
+    ("sq", "git branch --list", "allow", None),
+    # onr O1.3: remote ref deletes by every spelling
+    ("repo", "git push --delete origin topic", "deny", "topic"),
+    ("repo", "git push origin --delete topic", "deny", "topic"),
+    ("repo", "git push -d origin topic", "deny", "topic"),
+    ("repo", "git push --del origin topic", "deny", None),
+    ("repo", "git push origin :topic", "deny", "topic"),
+    ("repo", "git push origin :refs/heads/topic", "deny", None),
+    ("repo", "git push origin main :topic", "deny", None),
+    ("repo", "git push --mirror", "deny", "mirror"),
+    ("repo", "git push --mirror origin", "deny", None),
+    ("repo", "git push --mir origin", "deny", None),
+    ("repo", "git -C . push origin :topic", "deny", None),
+    ("repo", "git push origin main", "allow", None),
+    ("repo", "git push origin HEAD:main", "allow", None),
+    ("repo", "git push -u origin main", "allow", None),
+    ("repo", "git push origin main:topic", "allow", None),
+    ("repo", "git push --dry-run origin main", "allow", None),
+    ("repo", "git push --tags", "allow", None),
+    # onr O1.4: clean without -f deletes when clean.requireForce=false (repo config, or -c on the call)
+    ("norf", "git clean -d", "deny", "requireForce"),
+    ("norf", "git clean -dx", "deny", None),
+    ("norf", "git clean", "deny", None),
+    ("norf", "git clean -fd", "deny", None),
+    ("norf", "git clean -n -d", "allow", None),
+    ("norf", "git clean -nd", "allow", None),
+    ("norf", "git clean --dry-run -d", "allow", None),
+    ("norf", "git clean -i -d", "allow", None),
+    ("repo", "git -c clean.requireForce=false clean -d", "deny", "requireForce"),
+    ("repo", "git -c clean.requireforce=no clean -d", "deny", None),
+    ("repo", "git -c clean.requireForce=false clean -nd", "allow", None),
+    ("repo", "git -c clean.requireForce=true clean -d", "allow", None),
+    ("repo", "git clean -d", "allow", None),
+    ("repo", "git clean -n -d", "allow", None),
+    ("repo", "git clean -fd", "deny", None),
+    ("norf", "git -c clean.requireForce=true clean -d", "allow", None),
+    # onr O1.5: reflog delete and update-ref -d drop a recovery point or a ref
+    ("repo", "git reflog delete HEAD@{1}", "deny", "HEAD@{1}"),
+    ("repo", "git reflog delete --rewrite HEAD@{1}", "deny", None),
+    ("repo", "git reflog show", "allow", None),
+    ("repo", "git reflog", "allow", None),
+    ("sq", "git update-ref -d refs/heads/uniq", "deny", "refs/heads/uniq"),
+    ("sq", "git update-ref -d refs/heads/uniq HEAD", "deny", None),
+    ("sq", "git update-ref -d HEAD", "deny", None),
+    ("sq", "git update-ref -d refs/stash", "allow", None),
+    ("sq", "git update-ref -d refs/heads/sq", "allow", None),
+    ("sq", "git update-ref -d refs/remotes/origin/main", "allow", None),
+    ("sq", "git update-ref refs/preserve/x uniq", "allow", None),
+    ("sq", "git update-ref -m why refs/preserve/y HEAD", "allow", None),
 ]
 
 
@@ -427,7 +515,9 @@ def test_stash_drop_held_by_a_ref_tip(tmp_path_factory, label, scenario, work, s
 
 # One unproven call per `CASES` row: each row parses its own sample and denies it when no repository can be read.
 CASE_SAMPLES = ["checkout -- f.txt", "restore f.txt", "reset --hard", "clean -fd", "push -f", "branch -D x",
-                "stash drop", "stash clear", "reflog expire", "gc --prune=now", "filter-branch"]
+                "stash drop", "stash clear", "reflog expire", "gc --prune=now", "filter-branch",
+                "switch -f x", "push --delete origin x", "clean -d", "branch -M x", "update-ref -d refs/heads/x",
+                "reflog delete HEAD@{1}"]
 
 
 def test_every_discard_case_has_its_deny_row():

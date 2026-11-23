@@ -83,6 +83,16 @@ RM_SCOPE_BLOCK = [
     'powershell -NoProfile -Command "Remove-Item -Recurse -Force src"',
     'powershell.exe -Command "rd -Recurse src"',
     "format /q C:",
+    # FL1 (onr): `find -delete` is a recursive delete by another verb.
+    "find . -name x -delete",
+    "find src -type f -delete",
+    "find -delete",
+    "find -L src -delete",
+    "find .claude/scratch -delete",
+    "find .claude/scratch/x src -name '*.tmp' -delete",
+    "find .claude/hooks -name x -delete",
+    "echo hi; find src -delete",
+    "find $UNSET -delete",
 ]
 # FL1: Remove-Item and its aliases with `-Recurse` spelled by any prefix, on the PowerShell tool.
 RM_SCOPE_BLOCK_POWERSHELL = [
@@ -115,6 +125,12 @@ RM_SCOPE_PASS = [
     "rm -rf .claude/worktrees/uid-header-backfill/.godot",
     "rm -rf .godot && echo reimport",
     "rm -rf src/.godot",
+    "find . -name x",
+    "find src -name '*.tmp' -print",
+    "find .claude/scratch/ladder_audit/fanout -name '*.tmp' -delete",
+    "find .claude/hooks/__pycache__ -name '*.pyc' -delete",
+    "find .claude/.cache -type f -delete",
+    'grep "find . -delete" notes.md',
 ]
 # v1 spawned the hook for these; the deny and its citation carry, in process.
 RM_SCOPE_DANGEROUS = [

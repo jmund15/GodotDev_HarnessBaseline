@@ -14,10 +14,13 @@ Blocks, each judged on the resolved target and never on the command's wording:
   repository. A chained second delete, a glob in a directory part, `~`, `%`, an unresolvable target, a target a
   live peer session works in, or another session's id folder disqualifies it. A forced `rm` whose every target is
   a literal path proven absent inside `.claude/scratch/` removes nothing and is rewritten to `true`.
+  `find <roots> -delete` is judged as `rm -rf <roots>`.
 - Git discards (`verdict`): `reset --hard` outside a clean worktree this session created, `clean -f`, a checkout or
   restore that overwrites an edit git holds nowhere else (outside this session's own worktrees), force-push,
-  `branch -D` of a branch no other ref holds, `stash drop` of an entry no ref holds, `stash clear`,
-  `reflog expire`, `gc --prune` and `filter-*`. A call inside a shell launcher body borrows no worktree ownership.
+  `branch -D` of a branch no other ref holds (and `branch -M/-C/-f` onto such a branch), `switch -f`,
+  `push --delete`/`:ref`/`--mirror`, `clean` without `-f` where `clean.requireForce=false`, `update-ref -d` of a
+  ref no other ref holds, `stash drop` of an entry no ref holds, `stash clear`, `reflog expire`/`delete`,
+  `gc --prune` and `filter-*`. A call inside a shell launcher body borrows no worktree ownership.
 - Peer losses at commit: a private index over a moved stage base (`stage_record_loss`), an index whose blobs
   revert a peer's newer commit (`stale_loss`), an amend of a HEAD this session did not make (`amend_loss`), an
   index the floor cannot read (#16), a publish whose repository cannot be proved (`UNPROVED_TARGET`), and a
@@ -97,6 +100,21 @@ class Delete:
     judged: tuple = ()
     absent_ok: object = None
     tree: bool = True
+    operands: object = None   # `operands(args)` -> the targets among the words after the name; None: every non-dash word
+
+
+def _find_roots(args):
+    """The start paths of a `find` call: the words after any leading `-H`/`-L`/`-P` up to the first expression word
+    (`-name`, `(`, `!`). None named means find starts at `.`, which no row judges, so the delete is denied."""
+    i = 0
+    while i < len(args) and args[i] in ("-H", "-L", "-P"):
+        i += 1
+    roots = []
+    for word in args[i:]:
+        if word.startswith(("-", "(", "!", "\\(")):
+            break
+        roots.append(word)
+    return roots
 
 
 # Each delete, in the order its deny is chosen; a word two rows' names share is the first matching row's. Plain
@@ -110,6 +128,8 @@ DELETES = (
            "BLOCKED: Format drive command detected", tree=False),
     Delete("rm", ("rm",), lambda args: bool(_rm_flags(args) & {"r", "R"}),
            "BLOCKED: Dangerous recursive delete (rm -r / -R / -rf)", judged=("rm",), absent_ok=_forces_removal),
+    Delete("find", ("find",), lambda args: "-delete" in args,
+           "BLOCKED: Dangerous recursive delete (find -delete)", judged=("find",), operands=_find_roots),
     Delete("rm-long", ("rm",), lambda args: "recursive" in _rm_flags(args),
            "BLOCKED: Dangerous recursive delete (rm --recursive)", judged=("rm",), absent_ok=_forces_removal),
     # PowerShell's names for Remove-Item; `-Recurse` may be spelled by any prefix (`-r`), as PowerShell binds it.
@@ -607,7 +627,8 @@ def _delete_targets(raw: str, cwd: str | None):
             continue
         if tokens[0].lower() not in heads[seg.start].judged or seg.substitutions:
             return None
-        targets = [t for t in tokens[1:] if not t.startswith('-')]
+        row = heads[seg.start]
+        targets = row.operands(tokens[1:]) if row.operands else [t for t in tokens[1:] if not t.startswith('-')]
         if not targets:
             return None
         for token in targets:
@@ -731,6 +752,11 @@ _GIT_OPTIONS = {
                 ("source", "staged", "worktree", "ours", "theirs", "merge", "conflict", "ignore-unmerged", "overlay",
                  "no-overlay", "quiet", "progress", "patch", "pathspec-from-file", "pathspec-file-nul",
                  "recurse-submodules", "ignore-skip-worktree-bits"), ("source", "pathspec-from-file")),
+    "switch": ("cC",
+               ("create", "force-create", "detach", "guess", "no-guess", "force", "discard-changes", "merge",
+                "conflict", "orphan", "track", "no-track", "quiet", "progress", "recurse-submodules",
+                "ignore-other-worktrees"), ("create", "force-create", "conflict", "orphan")),
+    "update-ref": ("m", ("no-deref", "stdin", "create-reflog"), ()),
     "gc": ("", ("prune", "no-prune", "aggressive", "auto", "quiet", "force", "keep-largest-pack", "cruft",
                      "max-cruft-size", "expire-to", "detach"), ()),
 }
@@ -1016,6 +1042,66 @@ def _branch_deletion_problems(names, flags, cwd, git_env=None):
     return problems
 
 
+_BRANCH_CREATE_FLAGS = {"f", "force", "q", "quiet", "track", "no-track", "create-reflog"}
+
+
+def _branch_overwrite(rest):
+    """`git branch -M/-C/-f` (or `-m`/`-c` with `-f`, any prefix, either order) as a Discard naming the branch it
+    writes over: the last operand of a move or copy, the first of a forced create. None for any other call
+    (a delete is `_branch_delete`'s, a list or a rename without force never overwrites)."""
+    parsed = _git_opts("branch", rest)
+    flags, names = parsed.flags, parsed.operands
+    if flags & {"d", "D", "delete"} or not names:
+        return None
+    forced = bool(flags & {"f", "force"})
+    if flags & {"M", "C"} or (forced and flags & {"m", "move", "c", "copy"}):
+        target = names[-1]
+    elif forced and flags <= _BRANCH_CREATE_FLAGS:
+        target = names[0]
+    else:
+        return None
+    return Discard("branch-overwrite", flags=tuple(sorted(("-" if len(f) == 1 else "--") + f for f in flags)),
+                   targets=(target,))
+
+
+def _overwrite_facts(d, cwd, git_env, transcript_path):
+    """A branch that does not exist yet loses nothing; an existing one is judged as `branch -D` judges it."""
+    if cwd:
+        tip = run_git(["rev-parse", "--verify", "-q", "refs/heads/" + d.targets[0]], cwd, git_env)
+        if tip is None or not tip.strip():
+            return Evidence()
+    return Evidence(problems=tuple(_branch_deletion_problems(d.targets, (), cwd, git_env)))
+
+
+def _update_ref_delete(rest):
+    parsed = _git_opts("update-ref", rest)
+    if "d" not in parsed.flags:
+        return None
+    return Discard("update-ref-delete", flags=_flags(rest), targets=tuple(parsed.operands[:1]))
+
+
+def _ref_deletion_problems(d, cwd, git_env):
+    """Why `update-ref -d` would lose a commit, as `_branch_deletion_problems` words it: a branch is judged as
+    `branch -D` judges it; any other ref (tag, remote-tracking, preserve, stash) is safe when another ref holds its
+    tip. An absent ref removes nothing; a name outside `refs/` or a symbolic ref cannot be proved."""
+    if not cwd or not d.targets:
+        return ["no ref is named, or the repository cannot be read"]
+    ref = d.targets[0]
+    if not ref.startswith("refs/"):
+        return ["`%s` is not a full ref name (`refs/...`), so the ref it deletes is not proved" % ref]
+    if run_git(["symbolic-ref", "-q", ref], cwd, git_env):
+        return ["`%s` is a symbolic ref, so the delete lands on the ref it names" % ref]
+    tip = run_git(["rev-parse", "--verify", "-q", ref], cwd, git_env)
+    if tip is None or not tip.strip():
+        return []
+    if ref.startswith("refs/heads/"):
+        return _branch_deletion_problems([ref[len("refs/heads/"):]], (), cwd, git_env)
+    holders = run_git(["for-each-ref", "--contains", tip.strip(), "--format=%(refname)"], cwd, git_env)
+    if any(r and r != ref for r in (holders or "").splitlines()):
+        return []
+    return ["`%s` holds commits no other ref has" % ref]
+
+
 def _in_own_worktree(cwd, git_env, transcript_path):
     """True when `cwd` (resolved through `-C`) lies in a worktree this session created, a submodule checked out
     inside one included: that clone is the session's own. Redirected git state or an unknown session reads False."""
@@ -1036,7 +1122,7 @@ def _worktree_clean(cwd, git_env):
 def _tree_facts(d, cwd, git_env, transcript_path):
     if any((git_env or {}).get(k) for k in ('GIT_DIR', 'GIT_WORK_TREE')):
         return Evidence(redirected=True)
-    if d.action == "checkout" and not d.paths:  # a forced switch discards every uncommitted change
+    if d.action in ("checkout", "switch") and not d.paths:  # a forced switch discards every uncommitted change
         if cwd is not None and _worktree_clean(cwd, git_env):
             return Evidence(lossless=True)
         return Evidence(owned=_in_own_worktree(cwd, git_env, transcript_path))
@@ -1087,13 +1173,29 @@ def _restore_denial(d, ev):
             "needs the owner's words first. To discard your own edit, " + _SAVE_FIRST + retry)
 
 
+def _switch_denial(d, ev):
+    return ("BLOCKED `git switch -f` (CLAUDE.core.md §Shell Discipline: an unsaved edit would be lost) — "
+            "`-f`/`--discard-changes` throws away every uncommitted edit in this worktree, which may be another "
+            "session's; another session's edit needs the owner's words first. To discard your own, "
+            + _SAVE_FIRST + "then commit or save each edit and switch without `-f`.")
+
+
+# What each ref-losing call is called in its deny: (the call, what it does to the ref, the retry noun).
+_REF_VERBS = {"branch-delete": ("`git branch -D`", "force-deleting", "delete"),
+              "branch-overwrite": ("`git branch -M/-C/-f`", "overwriting", "call"),
+              "update-ref-delete": ("`git update-ref -d`", "deleting", "delete")}
+
+
 def _branch_denial(d, ev):
+    call, doing, noun = _REF_VERBS[d.action]
     unreachable = [p for p in ev.problems if p.endswith("holds commits no other ref has")]
-    return ("BLOCKED `git branch -D` (CLAUDE.core.md §Shell Discipline: unreachable commits would be lost) — "
-            "force-deleting would lose commits: " + "; ".join(ev.problems) + ". "
-            + ("Name only local branches, with no flag beyond `-D`. " if len(unreachable) < len(ev.problems) else "")
+    return ("BLOCKED %s (CLAUDE.core.md §Shell Discipline: unreachable commits would be lost) — " % call
+            + ("%s %s" % (doing, ", ".join("`%s`" % t for t in d.targets)) if d.action != "branch-delete" else doing)
+            + " would lose commits: " + "; ".join(ev.problems) + ". "
+            + ("Name only local branches, with no flag beyond `-D`. "
+               if d.action == "branch-delete" and len(unreachable) < len(ev.problems) else "")
             + ("Keep each branch's commits reachable with `git update-ref refs/preserve/<name> <branch>`, "
-               "then the same delete passes." if unreachable else ""))
+               "then the same %s passes." % noun if unreachable else ""))
 
 
 def _stash_drop_denial(d, ev):
@@ -1109,6 +1211,47 @@ _GO_AHEAD = "(CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead f
 def _clean_forced(parsed):
     """`git clean` that deletes: forced, and no dry run (`-n`, or `--dry-run` spelled in full as v1 read it)."""
     return bool(parsed.flags & {"f", "force"}) and "n" not in parsed.flags and "dry-run" not in parsed.exact
+
+
+def _clean_unforced(parsed):
+    """`git clean` with no `-f`, no dry run and no `-i`: it deletes only where `clean.requireForce` is false."""
+    return (not parsed.flags & {"f", "force", "n", "i", "interactive"} and "dry-run" not in parsed.exact)
+
+
+def _clean_config_facts(d, cwd, git_env, transcript_path):
+    """`clean.requireForce` as git reads it for this call (repo config, then `-c`): only an explicit false makes
+    the unforced clean delete. An unset or unreadable value is git's default, which refuses. No repository to
+    read leaves the call unproved."""
+    if cwd is None:
+        return Evidence()
+    value = run_git(["config", "--type=bool", "--get", "clean.requireForce"], cwd, git_env)
+    return Evidence(lossless=not (value is not None and value.strip() == "false"))
+
+
+def _push_specs(parsed):
+    """The refspec operands of a push: all but the remote, unless `--repo` names the remote."""
+    return parsed.operands if parsed.values.get("repo") else parsed.operands[1:]
+
+
+def _push_deletes(parsed):
+    """A push that deletes remote refs: `--delete`/`-d`, `--mirror`, or a `:<ref>` refspec."""
+    return bool(parsed.flags & {"d", "delete", "mirror"}) or any(op.startswith(":") for op in _push_specs(parsed))
+
+
+def _push_delete_denial(d, ev):
+    refs = ", ".join("`%s`" % t.lstrip(":") for t in d.targets)
+    if any(f.startswith("--m") for f in d.flags):
+        what = "`--mirror` makes the remote's refs match this clone's, deleting every ref this clone lacks"
+    else:
+        what = "deletes %s on the remote" % (refs or "a ref")
+    return ("BLOCKED `git push` that deletes remote refs " + _GO_AHEAD + what + ", and the commits only that ref "
+            "held with it. Leave the remote's refs; ask the user before deleting one.")
+
+
+def _reflog_delete_denial(d, ev):
+    names = ", ".join("`%s`" % t for t in d.targets) or "reflog entries"
+    return ("BLOCKED `git reflog delete` " + _GO_AHEAD + "deleting %s drops a recovery point, and the reflog is the "
+            "last recovery path for lost commits. Leave it." % names)
 
 
 def _push_forced(parsed):
@@ -1147,6 +1290,28 @@ CASES = (
          else None,
          "BLOCKED force-push " + _GO_AHEAD + "rewrites remote history and can erase commits other checkouts still "
          "depend on. Rebase onto the remote and push normally."),
+    Case(lambda sub, rest, cwd: Discard("switch", flags=_flags(rest))
+         if sub == "switch" and _git_opts("switch", rest).flags & {"f", "force", "discard-changes"} else None,
+         _switch_denial, _tree_facts, _tree_passes),
+    Case(lambda sub, rest, cwd: Discard("push-delete", flags=_flags(rest),
+                                        targets=tuple(_push_specs(_git_opts("push", rest))))
+         if sub == "push" and _push_deletes(_git_opts("push", rest)) else None,
+         _push_delete_denial),
+    Case(lambda sub, rest, cwd: Discard("clean-config") if sub == "clean" and _clean_unforced(_git_opts("clean", rest))
+         else None,
+         "BLOCKED `git clean` without `-f` " + _GO_AHEAD + "`clean.requireForce` is false here, so clean deletes "
+         "untracked files permanently (git has no copy) without `-f`. Run it with `-n` first, then ask the user to "
+         "confirm.",
+         _clean_config_facts, lambda ev: ev.lossless),
+    Case(lambda sub, rest, cwd: _branch_overwrite(rest) if sub == "branch" else None,
+         _branch_denial, _overwrite_facts, lambda ev: not ev.problems),
+    Case(lambda sub, rest, cwd: _update_ref_delete(rest) if sub == "update-ref" else None,
+         _branch_denial,
+         lambda d, cwd, git_env, tp: Evidence(problems=tuple(_ref_deletion_problems(d, cwd, git_env))),
+         lambda ev: not ev.problems),
+    Case(lambda sub, rest, cwd: Discard("reflog-delete", targets=_operands(rest[1:]))
+         if sub == "reflog" and rest[:1] == ("delete",) else None,
+         _reflog_delete_denial),
     Case(lambda sub, rest, cwd: _branch_delete(rest) if sub == "branch" else None,
          _branch_denial,
          lambda d, cwd, git_env, tp: Evidence(problems=tuple(_branch_deletion_problems(d.targets, d.flags, cwd,
