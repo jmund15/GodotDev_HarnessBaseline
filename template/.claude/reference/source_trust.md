@@ -1,6 +1,6 @@
 # Source Trust Tiers
 
-Doctrine for any claim about behavior **outside this repo** — engine, library, runtime, spec, tooling. Loaded by reference, not by path: every research or external-truth lens points here, and none carries a copy. A stack layer may add its own trusted sources and fetch mechanisms in a sibling file; its always-loaded layer doctrine names that file.
+Doctrine for any claim about behavior **outside this repo** — engine, library, runtime, spec, tooling. Loaded by reference, not by path: every research or external-truth lens points here, and none carries a copy. A project may add its own trusted sources and fetch mechanisms in a sibling file; its `CLAUDE.md` names that file.
 
 Claims about behavior **inside** this repo take the other axis — inference distance, not source authority: `claim_confidence.md`.
 
@@ -34,7 +34,7 @@ The claims schema carries no `tier` field, so tier rides in the fields it alread
 - `file` — the source cited: the URL fetched, or the local path when the source IS local (a
   version-pinned docs cache).
 - `artifact` — the local bytes the quote was taken from, when any exist. This is what makes the
-  quote checkable (`.claude/tools/verify_claims.py`; verdicts per `reference/evidence_contract.md`); `fetch_source.sh`'s TSV manifest carries the
+  quote checkable (`tools/quote_check.py` matches it against the artifact file); `fetch_source.sh`'s TSV manifest carries the
   URL→artifact mapping that joins the two. A local artifact is *stronger* evidence than a URL, never
   a missing one.
 - `evidence` — the VERBATIM sentence from that source. A paraphrase is not a citation.
@@ -46,10 +46,10 @@ The claims schema carries no `tier` field, so tier rides in the fields it alread
 
 ## Fetch order
 
-`CLAUDE.core.md` §4 points here; this section owns the order and each tier's mechanism.
+This section owns the order and each tier's mechanism.
 
 1. **A version-pinned local docs cache**, where the project keeps one.
-2. **`scripts/fetch_source.sh`** — bytes to disk, free, quotable. Landed bytes are what make a quote checkable: `tools/verify_claims.py` grades them VERIFIED, UNVERIFIED or UNCHECKED, advisory-only, and never rewrites a claim into a gap (`reference/evidence_contract.md`). GitHub file reads use raw.githubusercontent.com — browse/tree URLs have no raw form.
+2. **`scripts/fetch_source.sh`** — bytes to disk, free, quotable. Landed bytes are what make a quote checkable by `tools/quote_check.py`. GitHub file reads use raw.githubusercontent.com — browse/tree URLs have no raw form.
 3. **`WebFetch`** — one URL.
 4. **context7** — a resolved library id; needs the context7 plugin enabled.
 5. **`read_web`** — multi-page synthesis only.
