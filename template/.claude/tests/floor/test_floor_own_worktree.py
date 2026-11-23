@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from case import bash
+from case import bash, derived
 from conftest import write
 
 ROW = {"type": "assistant", "message": {"role": "assistant", "content": [{
@@ -554,11 +554,6 @@ def test_loop_with_a_failure_line_or_foreign_timestamp_stays_unproven(own):
     assert own.blocked([early, own.result_row("")])
 
 
-def _derived(sid, *entries):
-    return {"type": "derived-from", "v": 1, "sessionId": sid,
-            "sessions": [{"type": "claude_code_session", "id": i, "via": v} for i, v in entries]}
-
-
 def _lineage_blocked(own, entries=(("parent", "clear"),), parent_head=(), began=60):
     """True when the ownership probe is denied in `child.jsonl`, which lists `entries` as its `derived-from` row and
     whose first row is stamped `began` seconds after the worktree was created; `parent.jsonl` holds the creation
@@ -566,7 +561,7 @@ def _lineage_blocked(own, entries=(("parent", "clear"),), parent_head=(), began=
     parent = [*parent_head, own.created_row(), own.result_row()]
     (own.tmp / "parent.jsonl").write_text("".join(json.dumps(r) + "\n" for r in parent), encoding="utf-8")
     first = datetime.fromisoformat(own.finished) + timedelta(seconds=began)
-    child = [_derived("child", *entries), {"type": "user", "timestamp": first.isoformat(), "message": {"role": "user", "content": "go"}}]
+    child = [derived("child", *entries), {"type": "user", "timestamp": first.isoformat(), "message": {"role": "user", "content": "go"}}]
     (own.tmp / "child.jsonl").write_text("".join(json.dumps(r) + "\n" for r in child), encoding="utf-8")
     return bash(PROBE, own.root, session_id="own-discard", transcript_path=own.tmp / "child.jsonl").denied
 
@@ -585,7 +580,7 @@ def test_an_env_var_alone_reaches_no_earlier_transcript(own, monkeypatch):
 
 @pytest.mark.parametrize("label,entries,head", [
     ("a resume entry between the clear and the parent", (("parent", "clear"), ("parent", "resume"), ("child", "compact")), ()),
-    ("a parent that was itself resumed", (("parent", "clear"),), [_derived("parent", ("parent", "resume"))]),
+    ("a parent that was itself resumed", (("parent", "clear"),), [derived("parent", ("parent", "resume"))]),
     ("a parent reached by a subprocess entry", (("parent", "subprocess"), ("child", "compact")), ()),
 ])
 def test_creation_behind_a_resume_is_another_processs(own, label, entries, head):

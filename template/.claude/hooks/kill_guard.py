@@ -98,15 +98,6 @@ PAID_RUNNING = ("Stop running paid work %s (%s)? Its finished agents' results st
                 "A stop of a running dispatch is the owner's call (CLAUDE.core.md §Shell Discipline).")
 
 
-def _before(row, until):
-    """True when a row of an ancestor transcript is stamped before its child began (`until` None: the hook's own file,
-    whose rows all count). An unstamped ancestor row proves nothing."""
-    if until is None:
-        return True
-    stamp = _session_lineage.row_stamp(row)
-    return stamp is not None and stamp < until
-
-
 def _task_facts(transcript_path, task_id, until):
     """(the task's completion notice is in the file, the tool_use id the file's launch result names or None), one pass
     over the lines naming `task_id`.
@@ -119,7 +110,7 @@ def _task_facts(transcript_path, task_id, until):
             row = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(row, dict) or not _before(row, until):
+        if not isinstance(row, dict) or not _session_lineage.counts(_session_lineage.row_stamp(row), until):
             continue
         if any(notice["task_id"] == task_id for notice in _background_tasks.ended_notices(row)):
             ended = True
@@ -139,7 +130,7 @@ def _launch_call(transcript_path, use_id, until):
             row = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(row, dict) or not _before(row, until):
+        if not isinstance(row, dict) or not _session_lineage.counts(_session_lineage.row_stamp(row), until):
             continue
         if row.get("isSidechain"):
             return None

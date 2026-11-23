@@ -20,6 +20,12 @@ class Decision:
         return self.kind == "deny"
 
 
+def derived(sid, *entries):
+    """A `derived-from` transcript row: `entries` are (session id, via) pairs, oldest first."""
+    return {"type": "derived-from", "v": 1, "sessionId": sid,
+            "sessions": [{"type": "claude_code_session", "id": i, "via": v} for i, v in entries]}
+
+
 def read(output):
     """A Decision from the hook output dict `_floor.decide` returns (None is allow)."""
     if not output:

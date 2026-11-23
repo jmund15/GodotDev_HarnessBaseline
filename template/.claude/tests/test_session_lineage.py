@@ -18,16 +18,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import _session_lineage as sl  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "floor"))
+from case import derived  # noqa: E402
+
 STAMPS = {n: "2026-11-2%dT10:00:00.000Z" % n for n in range(1, 10)}
 
 
 def epoch(text):
     return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
-
-
-def derived(sid, *entries):
-    return {"type": "derived-from", "v": 1, "sessionId": sid,
-            "sessions": [{"type": "claude_code_session", "id": i, "via": v} for i, v in entries]}
 
 
 def stamped(day=1):

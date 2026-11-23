@@ -43,6 +43,13 @@ def row_stamp(row) -> float | None:
         return None
 
 
+def counts(stamp: float | None, until: float | None) -> bool:
+    """True when a row stamped `stamp` is this session's under its file's `until`: every row of the hook's own file
+    (`until` None), and only rows stamped before the child began in an ancestor. An unstamped ancestor row proves
+    nothing. Every reader of `lineage()` filters through this."""
+    return until is None or (stamp is not None and stamp < until)
+
+
 def _scan(path: str) -> tuple[list | None, float | None, str | None]:
     """(entries of the file's last `derived-from` row or None, first top-level timestamp or None, that row's
     `sessionId`). One streaming pass: a resume row can sit mid-file, so it cannot stop early. Memoized by path,

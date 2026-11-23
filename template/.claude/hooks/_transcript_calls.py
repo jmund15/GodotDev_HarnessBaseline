@@ -3,7 +3,9 @@
 `session_events(transcript_path)` yields one event list per transcript file of the session's lineage
 (`_session_lineage.lineage`: the hook's own file, then each file a `/clear` or compaction of the same process came
 from, newest first). An ancestor's list holds only events stamped before its child began, so rows a later process
-appended to it never count. Events keep file order: a `Call` (a Bash
+appended to it never count. A call and its result or task notification pair only inside one file's list, so a
+backgrounded call launched before a `/clear` whose notification lands after it is not paired (fails closed).
+Events keep file order: a `Call` (a Bash
 tool_use), the `Result` of a Bash call seen earlier, and a `Notice` for each `<task-notification>` a harness row
 carries. A sidechain row (a subagent's) yields nothing. A caller pairs ids and tests creation times against the
 stamps; a missing stamp stays None and the caller fails closed.
@@ -131,4 +133,4 @@ def session_events(transcript_path: str | None):
     A generator: an ancestor is read only when the caller asks for it."""
     for path, until in _session_lineage.lineage(transcript_path):
         events = _events_of(path)
-        yield events if until is None else [e for e in events if e.stamp is not None and e.stamp < until]
+        yield events if until is None else [e for e in events if _session_lineage.counts(e.stamp, until)]

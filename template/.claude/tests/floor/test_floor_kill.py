@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 import kill_guard as kg
-from case import bash, decide, taskstop
+from case import bash, decide, derived, taskstop
 
 FAKE = {
     "21764": "python3 tools/regression_gate_poll.py --live|python.exe",
@@ -497,11 +497,6 @@ def _at(rows, day):
     return [{**row, "timestamp": _day(day)} for row in rows]
 
 
-def _derived(sid, *entries):
-    return {"type": "derived-from", "v": 1, "sessionId": sid,
-            "sessions": [{"type": "claude_code_session", "id": i, "via": v} for i, v in entries]}
-
-
 def _file(tmp_path, sid, *rows):
     path = tmp_path / (sid + ".jsonl")
     path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
@@ -511,8 +506,8 @@ def _file(tmp_path, sid, *rows):
 def _chain(tmp_path, origin_rows, *, middle_entries=(("origin", "clear"),), middle_head=(), new_rows=(), middle_rows=()):
     """origin <- middle <- new, each cleared from the one before; `taskstop` reads the returned `new` file."""
     _file(tmp_path, "origin", *middle_head, *origin_rows)
-    _file(tmp_path, "middle", _derived("middle", *middle_entries), *_at([_text_row("ok")], 2), *middle_rows)
-    return _file(tmp_path, "new", _derived("new", ("middle", "clear")), *_at([_text_row("ok")], 3), *new_rows)
+    _file(tmp_path, "middle", derived("middle", *middle_entries), *_at([_text_row("ok")], 2), *middle_rows)
+    return _file(tmp_path, "new", derived("new", ("middle", "clear")), *_at([_text_row("ok")], 3), *new_rows)
 
 
 def _workflow_rows(task):
@@ -568,7 +563,7 @@ def test_taskstop_a_peers_launch_in_a_file_beside_the_chain_denies(tmp_path):
 
 
 def test_taskstop_a_launch_in_the_current_file_still_beats_an_unreadable_ancestor(tmp_path):
-    new = _file(tmp_path, "new", _derived("new", ("gone", "clear")), *_at(_launch_rows("bgnow001", "sleep 600"), 3))
+    new = _file(tmp_path, "new", derived("new", ("gone", "clear")), *_at(_launch_rows("bgnow001", "sleep 600"), 3))
     assert taskstop("bgnow001", new).kind == "allow"
 
 
@@ -586,7 +581,7 @@ def test_taskstop_deny_names_the_transcripts_it_read(tmp_path):
 def test_taskstop_deny_says_when_the_walk_hit_the_depth_limit(tmp_path):
     _file(tmp_path, "s0", *_at(_launch_rows("bgdeep001", "sleep 600"), 1))
     for n in range(1, 19):
-        last = _file(tmp_path, "s%d" % n, _derived("s%d" % n, ("s%d" % (n - 1), "clear")), *_at([_text_row("ok")], 2))
+        last = _file(tmp_path, "s%d" % n, derived("s%d" % n, ("s%d" % (n - 1), "clear")), *_at([_text_row("ok")], 2))
     got = taskstop("bgdeep001", last)
     assert got.denied and "depth limit" in got.reason and "(read: 17; the walk stopped at the depth limit" in got.reason
 
