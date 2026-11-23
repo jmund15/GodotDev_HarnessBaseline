@@ -54,6 +54,9 @@ NOT-ADOPTED row for them, runs every other phase, and counts the gap as no failu
 4. `git -C <repo> config core.hooksPath .claude/githooks`; `git -C <repo> config --get core.hooksPath`
    prints `.claude/githooks`. Its commit-msg hook re-checks at commit time that the commit reverts no
    peer's commit.
+5. `git -C <repo> config core.longpaths true`; `git -C <repo> config --get core.longpaths` prints `true`.
+   Deep tracked paths under `.claude/worktrees/<name>/` pass Windows' 260-char path cap, and without
+   it `git worktree add` aborts with `Could not reset index file to revision 'HEAD'`.
 
 ## Phase 1 — Prerequisites (verify, report versions)
 
@@ -83,13 +86,12 @@ runs: it carries the registered settings into the seat logins.
 
 1. `python3 .claude/tools/user_scope.py check`. A `drift` or `register-differs` row is PROVISIONED, with the
    copy commands `check` prints in Evidence (the owner edits these files live; `adopt <id>` carries a home
-   edit into the template). A `missing`, `unregistered`, `unset` variable or `unset` key row is the next step's; a `differs` key keeps the
+   edit into the template). A `missing`, `stale` (an earlier committed template), `unregistered`, `unset` variable or `unset` key row is the next step's; a `differs` key keeps the
    home value; a `manual` row is DEGRADED until the owner makes the change it prints in the app; an `unreadable`
    row is DEGRADED until `~/.claude.json` parses, so run `check` again.
-2. Ask the owner, naming each missing file, each key it adds to `settings.json` or this checkout's
-   `settings.local.json`, each hook command it registers and each user environment variable it sets; on a yes,
-   `python3 .claude/tools/user_scope.py install`, then `check` again. `install` writes only what was missing and
-   keeps a `.pre-user-scope` copy of the first edit to each settings file.
+2. `python3 .claude/tools/user_scope.py install`, then `check` again; every row reads `same` or `set`. Name each
+   file it copied, key it set, hook it registered and user environment variable it set in the report's Evidence.
+   `install` writes only what was missing and keeps a `.pre-user-scope` copy of the first edit to each settings file.
 3. `python --version` from the Bash tool, the shell the registered hook commands run in (the table above proves only
    `python3`). A failure → DEGRADED for the statusline and hook consumers.
 4. Credential files and per-machine values (the manifest's `local` entries) are reported by their own phases
@@ -233,7 +235,7 @@ project's land runner proves and lands every push to a branch under that prefix,
 those pushes queue. An empty or absent `land_prefix` → one NOT-ADOPTED row, skip the steps. A machine
 the user does not land from → DEGRADED, skip the steps.
 
-Run the three checks of [`workstation_setup_land_runner.md`](reference/workstation_setup_land_runner.md).
+Run the checks of [`workstation_setup_land_runner.md`](reference/workstation_setup_land_runner.md).
 
 ## Phase 8 — Engine toolchain
 

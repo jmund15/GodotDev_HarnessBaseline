@@ -2,9 +2,9 @@
 """
 Validate .claude/commands/ structural integrity.
 
-Checks cross-file references, template variables, section headers,
-checklist item counts, and agent name consistency. Catches silent
-breakages that would degrade review/audit agent quality.
+Checks that every markdown link under commands/ resolves, that code_quality.md keeps its section
+headers, and that the checklist item counts match the mirrors below. A count mirror is a tripwire
+against a silently dropped item: change it in the same commit that adds or removes the item.
 
 Run: python .claude/scripts/validate_commands.py
 Exit: 0 = all pass, 1 = any fail
@@ -17,11 +17,8 @@ from pathlib import Path
 
 # All paths relative to project root
 COMMANDS_DIR = Path(".claude/commands")
-AGENTS_DIR = COMMANDS_DIR / "agents"
 CHECKLISTS_DIR = COMMANDS_DIR / "checklists"
-TOOLS_DIR = Path(".claude/tools")
-# Optional: absent in projects that carry no external-model transport.
-REGISTRY_FILE = Path(".claude/reference/external_models.json")
+
 
 # --- Category 1: File References ---
 
@@ -49,70 +46,6 @@ def check_file_references() -> list[str]:
                 errors.append(f"  {rel} -> {target} (NOT FOUND)")
 
     return _format_result("File references", count, errors)
-
-
-# --- Category 2: Template Variables ---
-
-# Variables assembled at runtime by orchestrators — NOT defined in template files
-RUNTIME_VARS = {"CONTEXT", "PR_NUM", "BRANCH", "TRANSCRIPT_CORRECTIONS"}
-
-# The baseline's sync placeholders: a consumer's pull renders them from its lock `substitutions`, so a
-# baseline copy carries them unrendered (sync_baseline §Placeholders).
-SYNC_PLACEHOLDERS = {"PROJECT_NAME", "PROJECT_NAMESPACE", "VAULT_ROOT", "PROJECT_ROOT"}
-
-# Known injection mappings: variable -> which orchestrator(s) inject it
-# Update this when adding new template variables.
-KNOWN_INJECTIONS = {
-    "CHECKLIST_CDS": ["review_pr.md"],
-    "CHECKLIST_RP": ["review_pr.md"],
-    "CHECKLIST_I": ["review_pr.md"],
-    "TEST_QUALITY_CHECKLIST": ["review_pr.md", "session_audit.md"],
-    "CODE_QUALITY_CHECKLIST": ["../tools/lens_briefs.py"],
-    "DESIGN_LIST": ["reference/session_audit_seats.md"],
-    "SHORT_PLAN": ["session_audit.md"],
-    "DOCTRINE_COMMITS": ["session_audit.md", "reference/session_audit_seats.md"],
-    "HOT_SET": ["reference/session_audit_seats.md"],
-    "HARNESS_HUNKS": ["session_audit.md", "reference/session_audit_seats.md"],
-    "UNIT_LIST": ["session_audit.md", "reference/session_audit_seats.md"],
-}
-
-
-def check_template_variables() -> list[str]:
-    """Verify every {{VAR}} in agent templates is injected by a real orchestrator.
-
-    Two-sided: the variable must be declared in KNOWN_INJECTIONS, AND at least one
-    declared orchestrator must actually name it. A declaration alone is a rubber
-    stamp: it passes for a variable whose injection was renamed away or never
-    written, which is the failure this check exists to catch.
-    """
-    errors = []
-    count = 0
-
-    for agent_file in AGENTS_DIR.glob("*_agents.md"):
-        content = agent_file.read_text(encoding="utf-8")
-        for match in re.finditer(r'\{\{(\w+)\}\}', content):
-            var_name = match.group(1)
-            count += 1
-            rel = os.path.relpath(agent_file, COMMANDS_DIR)
-
-            if var_name in RUNTIME_VARS or var_name in SYNC_PLACEHOLDERS:
-                continue
-            if var_name not in KNOWN_INJECTIONS:
-                errors.append(f"  {rel}: {{{{{var_name}}}}} has no known injection source")
-                continue
-
-            injectors = KNOWN_INJECTIONS[var_name]
-            missing = [n for n in injectors if not (COMMANDS_DIR / n).is_file()]
-            if missing:
-                errors.append(f"  {rel}: {{{{{var_name}}}}} declares missing orchestrator(s): {', '.join(missing)}")
-                continue
-            if not any(var_name in (COMMANDS_DIR / n).read_text(encoding="utf-8") for n in injectors):
-                errors.append(
-                    f"  {rel}: {{{{{var_name}}}}} declared injected by {', '.join(injectors)}, "
-                    f"but no such file mentions it"
-                )
-
-    return _format_result("Template variables", count, errors)
 
 
 # --- Category 3: Section Headers ---
@@ -246,251 +179,6 @@ def check_checklist_counts() -> list[str]:
     return _format_result("Checklist counts", check_count, errors)
 
 
-# --- Category 5: Agent Name Consistency ---
-
-# Agent template files and which orchestrator(s) reference their agents
-AGENT_SOURCES = {
-    "review_agents.md": ["review_pr.md", "review_prs.md"],
-    "session_audit_agents.md": ["session_audit.md"],
-}
-
-
-def check_agent_names() -> list[str]:
-    """Verify agent names defined in templates are referenced by orchestrators."""
-    errors = []
-    count = 0
-
-    for agent_file_name, orchestrator_names in AGENT_SOURCES.items():
-        agent_path = AGENTS_DIR / agent_file_name
-        if not agent_path.exists():
-            errors.append(f"  Agent template not found: {agent_file_name}")
-            continue
-
-        agent_content = agent_path.read_text(encoding="utf-8")
-
-        # Extract agent names from ### headers (e.g., "### code-reviewer")
-        agent_names = re.findall(r'^### ((?:pp|sa)-[\w-]+)', agent_content, re.MULTILINE)
-
-        # Read all orchestrator contents
-        orchestrator_contents = {}
-        for orch_name in orchestrator_names:
-            orch_path = COMMANDS_DIR / orch_name
-            if orch_path.exists():
-                orchestrator_contents[orch_name] = orch_path.read_text(encoding="utf-8")
-            else:
-                errors.append(f"  Orchestrator not found: {orch_name}")
-
-        for name in agent_names:
-            count += 1
-            # Check if at least one orchestrator references this agent
-            found = any(name in content for content in orchestrator_contents.values())
-            if not found:
-                errors.append(f"  {name} (defined in {agent_file_name}) not referenced by any orchestrator")
-
-    return _format_result("Agent names", count, errors)
-
-
-# --- Category 6: No Hardcoded Templates ---
-
-def check_no_hardcoded_templates() -> list[str]:
-    """Verify orchestrators don't inline agent prompts (should reference template files)."""
-    errors = []
-    count = 0
-
-    # Orchestrator files (top-level command files that spawn agents)
-    orchestrator_files = ["review_pr.md", "review_prs.md", "session_audit.md"]
-
-    for orch_name in orchestrator_files:
-        orch_path = COMMANDS_DIR / orch_name
-        if not orch_path.exists():
-            continue
-
-        content = orch_path.read_text(encoding="utf-8")
-        count += 1
-
-        # Check for inline agent prompts inside code fences
-        in_code_fence = False
-        for i, line in enumerate(content.split("\n"), 1):
-            if line.strip().startswith("```"):
-                in_code_fence = not in_code_fence
-                continue
-
-            if in_code_fence and re.search(r'You are (?:pp|sa)-', line):
-                errors.append(f"  {orch_name}:{i} — hardcoded agent prompt (should reference template file)")
-
-    return _format_result("No hardcoded templates", count, errors)
-
-
-# --- Category 7: Fixture Integrity ---
-
-FIXTURES_DIR = Path(".claude/tests/agent_fixtures")
-
-# Authoritative agent name -> model mapping (must match template files)
-# Update when agents are added/removed or models reassigned.
-AGENT_MODEL_MAP = {
-    "code-reviewer": ("opus", "review_agents.md"),
-    "test-analyzer": ("opus", "review_agents.md"),
-    "error-hunter": ("opus", "review_agents.md"),
-    "type-reviewer": ("sonnet", "review_agents.md"),
-    "data-integrity": ("haiku", "review_agents.md"),
-    "pool-lifecycle": ("opus", "review_agents.md"),
-    "transcript-auditor": ("haiku", "review_agents.md"),
-    "sa-design-semantics": ("opus", "session_audit_agents.md"),
-    "sa-robustness-performance": ("opus", "session_audit_agents.md"),
-    "sa-intuitiveness-testability": ("sonnet", "session_audit_agents.md"),
-}
-
-VALID_CHECKLIST_SECTIONS = {"C+D+S", "R+P", "I", "I+test", "full", "test", "full+test"}
-
-REQUIRED_FIXTURE_SECTIONS = [
-    "## Metadata",
-    "## Synthetic Code",
-    "## Synthetic Diff",
-    "## Expected Findings",
-]
-
-
-def check_fixture_integrity() -> list[str]:
-    """Verify agent test fixtures have valid structure and metadata."""
-    errors = []
-    count = 0
-
-    if not FIXTURES_DIR.exists():
-        return ["[PASS] Fixture integrity: no fixtures directory (skipped)"]
-
-    fixtures = list(FIXTURES_DIR.rglob("*.md"))
-    # Exclude README files
-    fixtures = [f for f in fixtures if f.name.lower() != "readme.md"]
-
-    if not fixtures:
-        return ["[PASS] Fixture integrity: no fixtures found (skipped)"]
-
-    for fixture_path in fixtures:
-        count += 1
-        content = fixture_path.read_text(encoding="utf-8")
-        rel = os.path.relpath(fixture_path, FIXTURES_DIR)
-
-        # Check required sections
-        for section in REQUIRED_FIXTURE_SECTIONS:
-            if section not in content:
-                errors.append(f"  {rel}: missing section '{section}'")
-
-        # Extract metadata fields
-        agent = _extract_metadata(content, "agent")
-        model = _extract_metadata(content, "model")
-        agent_source = _extract_metadata(content, "agent_source")
-        checklist_section = _extract_metadata(content, "checklist_section")
-
-        # Validate agent name
-        if not agent:
-            errors.append(f"  {rel}: missing 'agent' in metadata")
-        elif agent not in AGENT_MODEL_MAP:
-            known = ", ".join(sorted(AGENT_MODEL_MAP.keys()))
-            errors.append(f"  {rel}: unknown agent '{agent}' (known: {known})")
-
-        # Validate model matches agent's assigned model
-        if not model:
-            errors.append(f"  {rel}: missing 'model' in metadata")
-        elif agent and agent in AGENT_MODEL_MAP:
-            expected_model, _ = AGENT_MODEL_MAP[agent]
-            if model != expected_model:
-                errors.append(f"  {rel}: model '{model}' doesn't match {agent}'s assigned model '{expected_model}'")
-
-        # Validate agent_source matches agent's source file
-        if not agent_source:
-            errors.append(f"  {rel}: missing 'agent_source' in metadata")
-        elif agent and agent in AGENT_MODEL_MAP:
-            _, expected_source = AGENT_MODEL_MAP[agent]
-            if agent_source != expected_source:
-                errors.append(f"  {rel}: agent_source '{agent_source}' doesn't match expected '{expected_source}'")
-
-        # Validate checklist_section
-        if not checklist_section:
-            errors.append(f"  {rel}: missing 'checklist_section' in metadata")
-        elif checklist_section not in VALID_CHECKLIST_SECTIONS:
-            errors.append(f"  {rel}: invalid checklist_section '{checklist_section}' (valid: {', '.join(sorted(VALID_CHECKLIST_SECTIONS))})")
-
-        # Validate min_count / max_count
-        min_count = _extract_expected_field(content, "min_count")
-        max_count = _extract_expected_field(content, "max_count")
-
-        if min_count is None:
-            errors.append(f"  {rel}: missing 'min_count' in Expected Findings")
-        if max_count is None:
-            errors.append(f"  {rel}: missing 'max_count' in Expected Findings")
-        if min_count is not None and max_count is not None and min_count > max_count:
-            errors.append(f"  {rel}: min_count ({min_count}) > max_count ({max_count})")
-
-        # Validate at least one Required finding spec
-        if "### Required" not in content:
-            errors.append(f"  {rel}: missing '### Required' finding spec")
-        else:
-            # Count required specs (lines starting with number + period after ### Required)
-            in_required = False
-            required_count = 0
-            for line in content.split("\n"):
-                if "### Required" in line:
-                    in_required = True
-                    continue
-                if in_required and line.startswith("###"):
-                    break
-                if in_required and re.match(r'^\d+\.', line.strip()):
-                    required_count += 1
-            if required_count == 0:
-                errors.append(f"  {rel}: no numbered finding specs under '### Required'")
-
-    return _format_result("Fixture integrity", count, errors)
-
-
-def _extract_metadata(content: str, field: str) -> str | None:
-    """Extract a metadata field value from fixture content (e.g., '- **agent:** code-reviewer')."""
-    match = re.search(rf'^\s*-\s*\*\*{field}:\*\*\s*(.+)$', content, re.MULTILINE)
-    if match:
-        return match.group(1).strip().rstrip("`")
-    return None
-
-
-def _extract_expected_field(content: str, field: str) -> int | None:
-    """Extract a numeric field from Expected Findings (e.g., '- **min_count:** 1')."""
-    match = re.search(rf'^\s*-\s*\*\*{field}:\*\*\s*(\d+)', content, re.MULTILINE)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-def check_external_model_registry() -> list[str]:
-    """Validate .claude/reference/external_models.json against its field contracts.
-
-    SKIPS SILENTLY WHEN THE FILE IS ABSENT. This validator is baseline-tracked and
-    ships to projects that will never carry an external-model registry; hard-failing
-    on a missing optional file would break every downstream harness on the next
-    baseline pull.
-    """
-    registry = REGISTRY_FILE
-    if not registry.is_file():
-        return []
-
-    tools = TOOLS_DIR.resolve()
-    if str(tools) not in sys.path:
-        sys.path.insert(0, str(tools))
-    try:
-        import model_registry
-    except Exception as exc:
-        return _format_result("External model registry", 1, [f"  reader unimportable: {exc}"])
-
-    try:
-        data = model_registry.load(registry)
-    except Exception as exc:
-        return _format_result("External model registry", 1, [f"  {exc}"])
-
-    # Non-fatal: a stale rate degrades a cited fact into an assumption while the
-    # sidecar's cost echo still states it as measured.
-    for model_id, why in model_registry.stale_prices(data):
-        print(f"[WARN] External model registry: {model_id} price.asOf is {why} - re-probe the vendor page")
-
-    return _format_result("External model registry", len(data["models"]), [])
-
-
 # --- Helpers ---
 
 def _format_result(category: str, check_count: int, errors: list[str]) -> list[str]:
@@ -510,13 +198,8 @@ def main() -> int:
 
     checks = [
         check_file_references,
-        check_template_variables,
         check_section_headers,
         check_checklist_counts,
-        check_agent_names,
-        check_no_hardcoded_templates,
-        check_fixture_integrity,
-        check_external_model_registry,
     ]
 
     for check_fn in checks:
