@@ -6,11 +6,11 @@ description: Pull the current branch fully up to date, guarding dirty work with 
 
 ## Scope
 
-This command is the inverse of `/clean_push`. It brings the current branch **fully
+This command is the inverse of `/commit_push --all`. It brings the current branch **fully
 synchronized** with its remote counterpart — fetching, pulling, and restoring any
 stashed work — without losing uncommitted changes.
 
-A layer or project with builds or post-pull integrity checks inserts those steps after step 2b
+A project with builds or post-pull integrity checks inserts those steps after step 2b
 and adds the tool grants they need to `allowed-tools`. Paired repos are read from `paired_repos`
 in `.claude/skills/project_subsystems/adaptation.json` — never hardcode a path here.
 

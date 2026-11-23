@@ -9,7 +9,7 @@ Apply fixes from the documentation architecture audit report.
 
 ## Architecture: 8-Phase Orchestrator (One Fold Author)
 
-The fix command is a thin dispatcher — it delegates to existing commands (`/doc_full`, `/doc_start_here_update`) or performs inline native vault operations (`Read`/`Write`/`Edit`). No parallel agents needed; the inline rows share one fold author job.
+The fix command is a thin dispatcher — it delegates to existing commands (`/doc_full`, `/doc_start_here_update`) or performs inline native vault operations (`Read`/`Write`/`Edit`). No parallel agents needed.
 
 ```
 Phase 1: INGEST          (read audit report, parse findings, validate freshness)
@@ -44,7 +44,7 @@ $ARGUMENTS — Optional filter:
 Documentation reads/writes use native `Read`/`Write`/`Edit`/`Grep`/`Glob` on the vault path — see the `obsidian_conventions` skill.
 
 ### 1b. Read Audit Report
-Use `Read` on the vault path to read `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/Claude/Audit Reports/Documentation Audit.md`.
+Use `Read` on the vault path to read `DevProjects/<project_name>/Claude/Documentation/Claude/Audit Reports/Documentation Audit.md` (`<project_name>` is what `python3 .claude/tools/adaptation.py get project_name` prints).
 
 If no audit report exists, abort: **"No audit report found. Run `/doc_architecture_audit` first."**
 
@@ -191,11 +191,11 @@ Delegate commands create/update files that inline fixes may depend on.
 
 After delegate commands complete (new files exist), apply inline fixes.
 
-The inline rows (S4, X1, X2, X4) run the protocol's standalone fold (`agents/orchestrator_action_protocol.md` Step 4) over one blob subject: `root` is the vault directory, and `files` are each row's `file` plus, for S4, every file `Grep` (path set to the vault directory) finds referencing the old filename. Write each row as a FIX finding with its `old`/`new`:
-- **S4 (Usage → Designer Usage):** the path FIX `Usage.md` → `Designer Usage.md` per [`review_fold.md`](agents/review_fold.md), `Designer Usage.md` declared in `--new-paths` at the snapshot and each reference rewritten.
+Apply the inline rows (S4, X1, X2, X4) with `Edit` in the vault. Each row is one literal `old` to `new` replacement in its `file`; the audit report is the evidence, so no review fold runs over them:
+- **S4 (Usage → Designer Usage):** rename `Usage.md` to `Designer Usage.md`, then rewrite each reference to the old filename that `Grep` (path set to the vault directory) finds.
 - **X1 (add missing Related Systems entry):** `old` is the target QR's existing `> [!info] Related Systems` callout and `new` is that callout plus the line `> - [[{System}/Quick Reference|{System}]] — {relationship}`.
 - **X2 (broken wikilink), X4:** `old` is the broken link text and `new` the corrected link.
-- **Idempotent:** drop a row from the findings file before the snapshot when its `old` text is already absent from its file (the fix is already applied).
+- **Idempotent:** skip a row whose `old` text is already absent from its file (the fix is already applied).
 
 ### 4c. Start Here Reconciliation Last
 

@@ -4,9 +4,9 @@ allowed-tools: Bash(gh pr create:*), Bash(gh pr list:*), Bash(gh pr edit:*), Bas
 description: Create or update the branch's PR with enforced conventions - labels, body template, fidelity rules
 ---
 
-Create a {{PROJECT_NAME}} PR (or update the branch's existing one) with enforced conventions: labels, body template, and fidelity-preserving updates.
+Create the project's PR (or update the branch's existing one) with enforced conventions: labels, body template, and fidelity-preserving updates.
 
-**Prerequisite:** Branch is pushed to origin (run `/commit_push` or `/clean_push` first).
+**Prerequisite:** Branch is pushed to origin (run `/commit_push` first).
 
 Read the paired repos from `adaptation.json` `paired_repos` and each one's rule file from `paired_repo_rules`. A paired repo's PR must merge first, and its rule file names the pairing procedure: detect the pointer change after Step 1, create or find the paired PR before Step 3-Create, update it after Step 3, and cross-reference both bodies.
 
@@ -42,11 +42,11 @@ gh pr list --head <current-branch> --state open --json number,title,body
 
 ## Step 2: Classify & Label
 
-If the project ships a PR classification procedure (the coding layer supplies one among the command agents), classify and label per that procedure (Domain, Type, Label Colors, and `gh label` commands). Otherwise classify by conventional-commit type alone (`feat`/`fix`/`refactor`/`chore`/`docs`) and apply matching labels if the repo defines them. Use `git diff main..HEAD --name-only` to determine changed files.
+Classify and label per the [PR Classification](agents/pr_classification.md) procedure (Domain, Type, Label Colors, and `gh label` commands). Use `git diff main..HEAD --name-only` to determine changed files.
 
 ---
 
-## Step 3-Create: Create {{PROJECT_NAME}} PR (CREATE mode only)
+## Step 3-Create: Create the PR (CREATE mode only)
 
 ### Title
 Use `$ARGUMENTS` if provided. Otherwise, derive from commit history:
@@ -78,7 +78,7 @@ Use `$ARGUMENTS` if provided. Otherwise, derive from commit history:
 
 **Template rules:**
 - **Key design decisions:** Only include if there are notable architectural choices. Omit for simple fixes.
-- **Verification:** One optional notes line; omit when the Summary already makes it obvious. (A layer with a test suite replaces this with its own test-plan template.)
+- **Verification:** One optional notes line; omit when the Summary already makes it obvious.
 
 ### Apply Labels (Step 2)
 
@@ -86,13 +86,13 @@ After PR creation, apply the labels determined in Step 2.
 
 ---
 
-## Step 3-Update: Update existing {{PROJECT_NAME}} PR (UPDATE mode only)
+## Step 3-Update: Update the existing PR (UPDATE mode only)
 
 Append a `## Review-pass updates` (or `## Follow-up commits`) section to the cached body. Two hard rules:
 
 **Rule 1 — Preserve original body fidelity.** Summary + Key design decisions from the cached body stay verbatim, EXCEPT for surgical fixes to claims invalidated by new commits (e.g., a removed field that the original body described as load-bearing). Call out each surgical fix in the new section so the diff is visible. Never rewrite the original PR's prose — that's revisionism that obscures original intent and erases reviewer history.
 
-**Rule 2 — Update length must be proportional to commits added.** Update sections are NOT mini-PR-bodies. Detail belongs in commit messages; the PR body needs only the WHAT changed at a high level. An update section tells a reviewer what the new commits change, in proportion to them, and never outgrows the original summary. New commits that form a separate concern stay on this PR under their own update heading (`CLAUDE.core.md` §5–6).
+**Rule 2 — Update length must be proportional to commits added.** Update sections are NOT mini-PR-bodies. Detail belongs in commit messages; the PR body needs only the WHAT changed at a high level. An update section tells a reviewer what the new commits change, in proportion to them, and never outgrows the original summary. New commits that form a separate concern stay on this PR under their own update heading (`CLAUDE.core.md` §Git).
 
 Cite the commit range once at the section top; let reviewers click through for per-commit detail rather than restating it in the body.
 

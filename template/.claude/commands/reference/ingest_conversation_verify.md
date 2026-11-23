@@ -75,9 +75,9 @@ adjectival: something reasons about each problem before seeing the chosen answer
    verbatim constraints both parties stated, premise-check repo facts. The participants' chosen
    answers are REMOVED — the blind brief is the de-biasing mechanism (the `--design_panel`
    blind-attempt structure).
-3. **Dispatch ONE blind job** through `/delegate` at the architect tier: its lowest ladder effort level for interpersonal or process contention,
-   a higher effort level when a brief turns on repo facts the arm must discover. **Never use a fanout-tier row**: those fabricate
-   on open judgment (their `±` cells in `reference/model_ladder_evidence.md`). Read-only; repo access allowed for feasibility. Deliverable: the distinct directions
+3. **Dispatch ONE blind job** through `/delegate` on `orchestration`'s model-table row for open judgment: its starting effort for
+   interpersonal or process contention, a higher effort when a brief turns on repo facts the model must discover. Never a model the
+   table does not list for open judgment, because a weaker model fabricates there. Read-only; repo access allowed for feasibility. Deliverable: the distinct directions
    per brief, each with tradeoffs. Record the pin in the run report.
 4. **Compare and write `## Outside read`** (session): delegate directions vs what was concluded vs
    the repo. Entry tiers: `missed direction` / `misframe` / `unpriced risk` /

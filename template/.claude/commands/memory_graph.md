@@ -13,7 +13,7 @@ Scan `.claude/auto-memory/**/*.md` (skip `MEMORY.md` itself and any `.search-ind
 
 1. **Gather** the memory files and their wikilink edges. A deterministic pass: `Grep -o "\[\[[^]]+\]\]"` per file for edges, plus a frontmatter read for `name`/`type`/`tier`. An unresolved `[[name]]` (no matching file) is a valid edge to a not-yet-written memory — render it as a leaf node, don't drop it.
 
-2. **Update the Obsidian document** at `DevProjects/{{PROJECT_NAME}}/Claude/Meta/Memory Knowledge Graph.md` with:
+2. **Update the Obsidian document** at `DevProjects/<project_name>/Claude/Meta/Memory Knowledge Graph.md` (`<project_name>` is what `python3 .claude/tools/adaptation.py get project_name` prints) with:
 
    ### Frontmatter
    ```yaml

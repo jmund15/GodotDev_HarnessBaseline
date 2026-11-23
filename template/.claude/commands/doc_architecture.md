@@ -24,7 +24,7 @@ Generate the prose through `write_doc`, not by hand — follow **Reason, Then De
 
 ## Document Structure
 
-Place at: `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/{SystemName}/Architecture.md` (absolute vault path → `doc_path`)
+Place at: `DevProjects/<project_name>/Claude/Documentation/{SystemName}/Architecture.md` (absolute vault path → `doc_path`; `<project_name>` is what `python3 .claude/tools/adaptation.py get project_name` prints)
 
 ```markdown
 # {SystemName} — Architecture

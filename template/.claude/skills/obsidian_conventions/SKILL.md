@@ -6,11 +6,11 @@ description: >-
 # Obsidian Vault Conventions
 
 Universal rules for any interaction with the Obsidian vault — every command,
-skill, or ad-hoc edit that touches `DevProjects/{{PROJECT_NAME}}/` or a sibling folder
+skill, or ad-hoc edit that touches `DevProjects/<project_name>/` or a sibling folder
 `reference/vault_taxonomy.md` lists.
 
 ## Tooling — native-first
-The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAME}}\`. Vault files are edited with native `Read`/`Edit`/`Write`; the Obsidian MCP is retired.
+The vault is a normal filesystem path: `<vault_root>\DevProjects\<project_name>\`, where `python3 .claude/tools/adaptation.py get vault_root` and `get project_name` print the two values. Vault files are edited with native `Read`/`Edit`/`Write`; the Obsidian MCP is retired.
 
 | Operation | Tool |
 |---|---|
@@ -25,7 +25,7 @@ The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAM
 > Residual edge case: a native write to a doc with *unsaved edits open in the app* could race the editor buffer — both land on disk, so the unsaved buffer conflicts regardless of writer.
 ## Vault taxonomy — live vs legacy
 
-- **Live design surface: `<vault>/{{PROJECT_NAME}}/Claude/`.** All agent reads and writes land here. `reference/vault_taxonomy.md` maps its folders, the sibling project folders and any legacy areas.
+- **Live design surface: `DevProjects/<project_name>/Claude/`.** All agent reads and writes land here. `reference/vault_taxonomy.md` maps its folders, the sibling project folders and any legacy areas.
 - **Design-session state is a vault artifact, not scratch.** Each `BrainstormingDesigns/<topic>/` folder carries a `decisions.md` alongside its `ideas.md` / `arch*.md` / `roadmap.md` — the durable decision frontier (the brainstorm procedure that writes it owns the schema and append rules). It is written during the session, never deleted at doc-save, and never mirrored into `.claude/scratch/`.
 - **`Claude/Research/`** — research-command artifacts, transient by design. Frontmatter carries `expires-with:` (engine/library version); stale the moment that version moves — re-run or delete, never edit in place. Durable findings promote to cold auto-memory or the design doc first.
 
@@ -49,7 +49,7 @@ All cross-doc references **MUST** be wikilinks — never plain text, bold, or in
 **Common verbatim pitfalls** — all three fail SILENTLY (anchor falls through to file-top, no error):
 - `## Section N — Title` headings: keep BOTH the `Section ` prefix AND the ` — ` em-dash. `[[doc#Section 6 — Migration Plan]]` resolves; `[[doc#6 Migration Plan]]` does not.
 - `### N.M — Title` headings: keep the ` — ` em-dash. `[[doc#1.4 — LevelPersistence × StateScope Mapping]]` resolves; `[[doc#1.4 LevelPersistence × StateScope Mapping]]` does not.
-- **Parts in roadmap.md tables are NOT headings.** `[[other-roadmap#Part Name]]` will never resolve regardless of capitalization. Cross-roadmap Part references use file wikilink + prose: `[[../folder/roadmap\|folder]] § "Part Name"`. Intra-roadmap Part references use `[[#Parts\|Part Name]]` (links to the `## Parts` heading, displays the Part name).
+- **Parts in roadmap.md tables are NOT headings.** `[[other-roadmap#Part Name]]` will never resolve regardless of capitalization. Cross-roadmap Part references follow [`roadmap_schema.md`](../_brainstorm_shared/roadmap_schema.md) §6.8 Cross-folder dep resolution. Intra-roadmap Part references use `[[#Parts\|Part Name]]` (links to the `## Parts` heading, displays the Part name).
 - A single Part / claim that spans 2+ design-doc sections needs 2+ wikilinks joined by ` + ` — fabricating `#A and B` joined anchors never resolves.
 
 ## File Moves and Renames
@@ -73,10 +73,10 @@ Rewrite the body so the doc reads as one continuous, current account, as if writ
 - Keep examples concrete — "set ProjectileCount to 3" not "configure the count property".
 - No screenshots. Focus on textual descriptions.
 - Search Obsidian first — do not guess file paths.
-- Formulas: CLAUDE.md §3. Read them from the vault. If missing, ask the user.
+- Formulas: the repo's `CLAUDE.md` §Design Source (Obsidian). Read them from the vault. If missing, ask the user.
 
 ## Cross-references
 - [`agents/documentation_structure.md`](../../commands/agents/documentation_structure.md) — `/doc_*` documentation-folder structure: folder classification, the 4-doc system template, domain routing, Related Systems callouts
 - `mermaid_diagrams` skill — mermaid conventions for any diagram emitted into a vault doc
-- CLAUDE.md §3 *Obsidian (The Design Source)* — always-loaded summary of this convention
+- The repo's `CLAUDE.md` §Design Source (Obsidian) — always-loaded summary of this convention
 - `ai-worker prompts/modifier.obsidian.md` — worker-side output-affecting subset, auto-applied to vault `write_doc` calls. Lives with the ai-worker server (separate host, not in this repo — provenance/availability: `environment_bootstrap` skill); sync when either changes *and* the server is reachable

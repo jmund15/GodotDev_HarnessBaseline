@@ -69,7 +69,7 @@ Follow steps 1-2 from [Doc Before Writing](agents/doc_before_writing.md). Target
 
 ## Document Structure
 
-Place at: `DevProjects/{{PROJECT_NAME}}/Claude/Documentation/{SystemName}/Retrospective.md`
+Place at: `DevProjects/<project_name>/Claude/Documentation/{SystemName}/Retrospective.md` (`<project_name>` is what `python3 .claude/tools/adaptation.py get project_name` prints)
 
 ```markdown
 # {SystemName} — Development Retrospective

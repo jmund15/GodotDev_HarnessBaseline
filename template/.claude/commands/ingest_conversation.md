@@ -30,7 +30,7 @@ A conversation happened (voice note, call, live session) and its decisions, idea
 Seven steps in order. Read each step's reference file at the step that runs it — none of it is needed before then.
 
 1. **Step 1 — Intake.** Create the dated Meetings folder and copy the transcript in byte-verbatim; speaker labels decide whether the collaboration read runs at all — [`reference/ingest_conversation_extract.md`](reference/ingest_conversation_extract.md) §Step 1 — Intake.
-2. **Step 2 — Extract.** ONE fan-out through `/delegate` carrying two jobs, both on a fanout-tier row whose ladder `±` covers tight-spec extraction, at its cell's effort for it (converged spec, evidence extraction — neither job renders judgment); record both pins in the run report. Job specs, the args-transport rule and the STT rule — [`reference/ingest_conversation_extract.md`](reference/ingest_conversation_extract.md) §Step 2 — Extract.
+2. **Step 2 — Extract.** ONE fan-out through `/delegate` carrying two jobs, both pinned from `orchestration`'s model table for tight-spec extraction (converged spec, evidence extraction: neither job renders judgment); record both pins in the run report. Job specs, the args-transport rule and the STT rule — [`reference/ingest_conversation_extract.md`](reference/ingest_conversation_extract.md) §Step 2 — Extract.
 3. **Step 3 — Dedup.** The session gathers the corpus and pushes it into the dispatch prompt; the delegate never discovers by search — [`reference/ingest_conversation_extract.md`](reference/ingest_conversation_extract.md) §Step 3 — Dedup.
 4. **Step 3.5 — Premise check** (session model). Verify the conversation's factual claims about the codebase before classification turns them into staged work — [`reference/ingest_conversation_verify.md`](reference/ingest_conversation_verify.md) §Step 3.5 — Premise check.
 5. **Step 3.7 — Outside read** (session + one blind dispatch). Solution-stripped briefs, one blind job, compared against what the conversation concluded — [`reference/ingest_conversation_verify.md`](reference/ingest_conversation_verify.md) §Step 3.7 — Outside read.
@@ -54,5 +54,5 @@ Seven steps in order. Read each step's reference file at the step that runs it �
 ## Cross-references
 
 - [`/worklog`](worklog.md) — executor for archetype (d) adds
-- The project's roadmap-update command, where the coding layer ships one — executor for archetype (e)
+- [`/update_roadmap`](update_roadmap.md) — executor for archetype (e)
 - [`obsidian_conventions`](../skills/obsidian_conventions/SKILL.md) — vault taxonomy; `Meetings/` is a Live-design-surface folder

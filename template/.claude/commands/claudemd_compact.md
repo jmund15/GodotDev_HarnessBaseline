@@ -3,11 +3,11 @@ description: Audit and compress CLAUDE.md when it exceeds the always-loaded byte
 disable-model-invocation: true
 ---
 
-Audit and compress the CLAUDE.md bundle when it passes M1's Phase B threshold. In this command, CLAUDE.md means that bundle: `.claude/CLAUDE.md` plus every file it `@`-imports, measured and audited together.
+Audit and compress the CLAUDE.md bundle when the always-loaded set passes M1's bound. In this command, CLAUDE.md means that bundle: `.claude/CLAUDE.md` plus every file it `@`-imports, measured and audited together.
 
 Over-long always-loaded files reduce instruction-following adherence (per [Anthropic guidance](https://code.claude.com/docs/llms.txt)) — this is a correctness gate, not just a cost lever.
 
-**Universal principles** live in the [`instruction_quality` skill](../skills/instruction_quality/SKILL.md) — single source of truth shared with `/instruction_audit`. CLAUDE.md-specific extensions (the standard below, compression workflow, inaugural-run don'ts) live here.
+**Universal principles** live in the [`instruction_quality` skill](../skills/instruction_quality/SKILL.md). CLAUDE.md-specific extensions (the standard below, compression workflow, inaugural-run don'ts) live here.
 
 ## The Standard
 
@@ -15,16 +15,14 @@ What earns a place in CLAUDE.md, and how deeply it may explain itself. Apply at 
 
 Gaps at M2–M4, M7, M8 are intentional, not renumbered away: the labels are stable citation anchors (`reference/memory_domains.md` cites M5 by number) and closing the gaps would silently repoint every existing citation at the wrong rule.
 
-- **M1 — Budget bytes, not lines.** Band **28–32 KB** (30 KB centre), advisory 32–35 KB, Phase B above 35 KB. The gate mechanism (`wc -c`, not line count) is `instruction_quality` §5 **A1**.
-
-  The band is **derived, not borrowed**: apply the `instruction_quality` §5 **A2** admission test section by section to THIS project's CLAUDE.md and measure what survives — that number is the band's centre. An aspirational figure copied from a smaller file just gets missed every run and then ignored — re-derive it when the retained set changes materially, rather than treating it as fixed.
-- The surface-independent rules that used to sit at M2/M3/M4/M7 — admission ordering, enforcement-tier-sets-depth, never-restate-a-SessionStart-injection, and the density census+delta method — now live at `instruction_quality` §5 **A2–A5**. This file states only what is genuinely CLAUDE.md-specific below.
+- **M1 — Budget bytes, not lines.** The always-loaded set per repo, the bundle plus the hot `auto-memory/MEMORY.md` index, stays at most 15 KB, with `CLAUDE.core.md` at most 8 KB: every session pays those bytes before its first decision. S7's budget test enforces the bound, and this command is the remedy it names. Measure with `wc -c`, never line counts. The index's own remedy is `/memory_audit`.
+- The surface-independent rules that used to sit at M2/M3/M4/M7 (admission, fixing the cause rather than a rule's reason) live in `instruction_quality` §5. This file states only what is CLAUDE.md-specific below.
 - **M5 — Never name which skill to load.** Skill descriptions are auto-injected with full trigger and SKIP text, so a "load skill X for domain Y" mapping is already in context. CLAUDE.md may carry only what a description structurally cannot — a memory search term, a cross-domain sequencing rule.
 - **M6 — Exempt: identity and refusal.** The author's-voice framing section, Core Principles, and the rationalizations-to-refuse table are never compressed, path-scoped, or extracted. The first two are the orienting frame every other rule is read against; the third fires under user pressure, which no trigger models.
 
 ## When to invoke
 
-- The bundle's `wc -c` total passes M1's Phase B threshold (don't churn at the boundary).
+- The always-loaded `wc -c` total passes M1's bound.
 - After major harness additions that visibly bloated CLAUDE.md.
 - Periodic hygiene (quarterly is reasonable; the harness moves fast enough that drift is real).
 
@@ -33,10 +31,9 @@ Gaps at M2–M4, M7, M8 are intentional, not renumbered away: the labels are sta
 ### Phase A — Measure (no edits)
 
 1. Run `wc -c` over every bundle file and take the total. Bytes are the gate per M1; report `wc -l` alongside as a secondary readout only. ⚠ NEVER `Measure-Object -Line` for the line readout — it skips blank lines and undercounts by ~20%.
-2. **Inside or below M1's band:** Report "no action needed" and exit. Do not audit just because the user invoked the command — `/claudemd_compact` is a no-op when CLAUDE.md is already in spec.
-3. **In M1's advisory range:** Advisory only. Report the current size + headline targets but do NOT proceed. *"Approaching cap; track but no urgency"* unless the user overrides with `--force`.
-4. **Past M1's Phase B threshold:** Proceed to Phase B.
-5. **Emit the census regardless of verdict**, per `instruction_quality` §5 **A5**'s method (per-section bytes sorted descending, plus each section's byte delta) — this file's delta anchor is the *previous compaction commit*. This is the artifact that makes density drift visible; a size verdict without it hides the sections that actually grew.
+2. **Inside M1's bound:** Report "no action needed" and exit, unless the user passed `--force`. `/claudemd_compact` is a no-op when CLAUDE.md is already in spec.
+3. **Past M1's bound:** Proceed to Phase B.
+4. **Emit the census regardless of verdict:** per-section bytes sorted descending, plus each section's byte delta against the *previous compaction commit*. This is the artifact that makes density drift visible; a size verdict without it hides the sections that actually grew.
 
 ```bash
 for f in .claude/CLAUDE.md $(sed -n 's/^@//p' .claude/CLAUDE.md | sed 's|^|.claude/|'); do
@@ -44,9 +41,9 @@ for f in .claude/CLAUDE.md $(sed -n 's/^@//p' .claude/CLAUDE.md | sed 's|^|.clau
 done | sort -rn
 ```
 
-### Phase B — Audit (read-only, four audit agents in parallel via `dispatch.js` with `agentType: 'Explore'` + explicit model/effort pins — these lenses read and report rather than apply project doctrine, so the scout dispatch fits and costs about half; `orchestration` §5)
+### Phase B — Audit (read-only, four audit agents in parallel via `dispatch.js` with `kind: 'scout'` and explicit model and effort pins from `orchestration`'s model table; these lenses read and report rather than apply project doctrine, so the scout dispatch fits and costs about half)
 
-Dispatch all four in a single message. **Do NOT pass `args.spillDir`** — `Explore` has no `Write` tool, so a spilling scout job silently returns its deliverable inline and the bounded-return contract is lost without an error.
+Dispatch all four in a single message. **Do NOT pass `args.spillDir`** — `scout` has no `Write` tool, so a spilling scout job silently returns its deliverable inline and the bounded-return contract is lost without an error.
 
 **Brief every lens with the §Don'ts list below.** Each returns a focused report; do NOT pre-read CLAUDE.md sections yourself before delegating — that defeats the cost model. An agent's EMPTY search result is INCONCLUSIVE, not evidence of "UNIQUE" / "no conflict" — re-run that specific search yourself before accepting a no-finding verdict. Each lens's done-condition requires a fenced `claims` block holding every claim about a CLAUDE.md section or another file, one JSON object per line with `file` and a verbatim `evidence` quote; the parent consumes the claims per `commands/agents/orchestrator_action_protocol.md` Step 1.5.
 
@@ -79,7 +76,7 @@ Pattern: structured data vs prose drift. Report each finding with quoted text fr
 
 Its question is ordering, not conditionality: *when is this decision made, and does the proposed home load strictly before that moment?* Same-moment (a stub announcing a `paths:`-scoped rule) ⇒ redundant. Strictly-after (a fallback needed the instant a tool turns out to be missing) ⇒ earns its place. Richest territory is whatever Agents 1–3 marked UNIQUE or WRONG-MECHANISM. Hunt: content triggered by an explicitly-invoked command; provenance and retired-approach history; reference detail (extension lists, index paths, measurements) inside a section whose *rule* content is pre-trigger. Verdicts: `EARNS-IT` / `MOVE` / `COMPRESS` / `CUT`, each with exact current and replacement text, plus the proposal it is least confident in.
 
-Pin this lens one rung above Agents 1–3: it is open discovery with no supplied inventory.
+Pin this lens one effort level above Agents 1–3: it is open discovery with no supplied inventory.
 
 **Re-read any text an agent quotes as "exact current text" before applying it.** `Edit`'s exact-match failure is the backstop; a looser apply deletes content silently.
 
@@ -92,7 +89,7 @@ Synthesize agent findings into a phased plan at `.claude/plans/<YYYY-MM-DD>-clau
 3. **Conflict resolutions** — pick the single source of truth, update the loser to point at it.
 4. **Section compressions** — target lines per section, with rationale.
 
-Each phase shippable independently. Estimate BYTE savings per phase, measured against the live file (M1 / `instruction_quality` §5 A5's census) — never estimated by eye. Goal: land inside M1's band. When the measured cuts cannot reach it, say so with the arithmetic and treat the band as the standing target across runs, rather than inventing thinner-evidenced cuts to close the gap in one pass.
+Each phase shippable independently. Estimate BYTE savings per phase, measured against the live file (M1, Phase A's census) — never estimated by eye. Goal: land inside M1's bound. When the measured cuts cannot reach it, say so with the arithmetic and treat the bound as the standing target across runs, rather than inventing thinner-evidenced cuts to close the gap in one pass.
 
 ### Phase D — Execute (after the user approves the plan file)
 
@@ -104,10 +101,10 @@ Apply edits in dependency order:
 
 ### Phase E — Verify
 
-1. The bundle's `wc -c` total — confirm the band, and re-run the `instruction_quality` §5 **A5** census (previous compaction commit as delta anchor) to confirm every section outside the M6 exemptions was migrated or compressed in Phase D.
+1. The always-loaded `wc -c` total — confirm the bound, and re-run the Phase A census (previous compaction commit as delta anchor) to confirm every section outside the M6 exemptions was migrated or compressed in Phase D.
 2. **Path-scope sanity:** open a representative file from each new rule's `paths:` glob via Read in a fresh session, run `/memory`, confirm the rule appears in the loaded list. If a rule doesn't load, the YAML frontmatter likely failed to parse — common cause is inline-vs-list-form syntax mismatch with the loader.
 3. **Internal-conflict regression check:** re-run Agent 3's conflict scan against the new state. Should report zero findings.
-4. Capture in autolearn: what was extracted, what duplications were eliminated, what conflicts were resolved.
+4. Report what was extracted, what duplications were eliminated and what conflicts were resolved.
 
 ## Frontmatter format for rule files
 
@@ -130,7 +127,7 @@ A rule WITHOUT `paths:` loads always — equivalent to inline CLAUDE.md content 
 - **Don't compress a lookup table's FORMAT — but do re-derive whether each column still describes a live mechanism.** Dense tables scan efficiently and lose information per byte when squeezed. That protects the shape, not the content: a memory-recall table's "avoid" column may describe a keyword-matching mechanism long after recall moved to semantic search, where the failure it warns about cannot occur. A column whose mechanism is gone is dead weight in a live format. Ask per column, not per table.
 - **Don't move Core Principles out of CLAUDE.md.** They are the orienting frame every other rule is read against; path-scoping or skill-extraction defeats the purpose (M6).
 - **Don't extract `Build & Test Commands` to a separate rule file.** The load-bearing rules (`--filter`, `--no-build`) need to be visible to *every* test-adjacent action. Inline or skill cross-reference; not path-scoped.
-- **Don't touch the path-scoped rule files** to hit the budget. The byte band is for CLAUDE.md. Rule files load conditionally — their size is amortized across only the sessions that load them.
+- **Don't touch the path-scoped rule files** to hit the budget. The byte bound is for the always-loaded set. Rule files load conditionally — their size is amortized across only the sessions that load them.
 - **Don't skip Phase B to save time.** The compression IS the audit; bypassing the read-only agent scans means you're guessing where the bloat is.
 
 ## Inaugural-run reference data
