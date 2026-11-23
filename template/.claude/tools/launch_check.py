@@ -17,6 +17,7 @@ worktree, a full seat, a login at its capacity floor) stay in `seat.sh`; they me
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -25,6 +26,8 @@ CLAUDE_DIR = Path(__file__).resolve().parents[1]
 PRE_KEY = "dispatch.pre_launch"
 POST_KEY = "dispatch.post_return"
 SEATS = "seats.json"
+# Python resolves a bare `bash` to System32ash.exe (WSL) on Windows, which cannot read Git Bash paths.
+BASH = shutil.which("bash") or "bash"
 LIST_HEADERS = ("inputs:", "targets:")
 
 
@@ -99,7 +102,7 @@ def run_hook(key, args, cwd, lookup=_adaptation_get):
     if not command:
         return 0, ""
     line = " ".join([command] + [shlex.quote(arg) for arg in args])  # argv via the string: Git Bash drops positional args of `bash -c`
-    done = subprocess.run(["bash", "-c", line], cwd=cwd,
+    done = subprocess.run([BASH, "-c", line], cwd=cwd, stdin=subprocess.DEVNULL,
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
     return done.returncode, done.stderr
 

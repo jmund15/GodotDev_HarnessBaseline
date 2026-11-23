@@ -102,5 +102,6 @@ def test_main_pre_launch_refuses_with_the_hook_stderr(tmp_path, monkeypatch, cap
 def test_spawned_check_refuses_a_read_only_job_naming_a_peer_target(tmp_path):
     brief = _brief(tmp_path, "targets:\n- other.md\n")
     done = subprocess.run([sys.executable, str(LAUNCH_CHECK), "check", "--brief", brief, "--out", "out.md",
-                           "--root", str(tmp_path), "--writes", "no"], capture_output=True, text=True)
+                           "--root", str(tmp_path), "--writes", "no"], capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL)
     assert done.returncode == 2 and "launch refused" in done.stderr
