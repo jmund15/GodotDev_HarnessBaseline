@@ -234,22 +234,11 @@ def _strip_double(s: str, i: int) -> tuple[str, int]:
     return " ".join(kept), i + 1
 
 
-_git_memo: dict | None = None  # one `check_bash_command` call's git answers, so each of its targets reuses them
-
-
-def _memoized(key, compute):
-    if _git_memo is None:
-        return compute()
-    if key not in _git_memo:
-        _git_memo[key] = compute()
-    return _git_memo[key]
-
-
 def _registered_worktrees() -> list[str]:
     """Normalized paths of the project's registered worktrees; an unreadable list holds the project root,
     so every scratch target counts as holding one and the delete stays denied."""
     root = _project_root()
-    return _memoized(('worktrees', root), lambda: _list_registered_worktrees(root))
+    return _git_commit.cached(('worktrees', root), lambda: _list_registered_worktrees(root))
 
 
 def _list_registered_worktrees(root: str) -> list[str]:
@@ -332,7 +321,7 @@ def _scratch_bases(root: str, cwd: str | None) -> list[str]:
     stats every registered worktree) is read only for a different one."""
     bases = [root]
     if cwd and os.path.isdir(cwd):
-        top = _memoized(('toplevel', cwd), lambda: _git_toplevel(cwd))
+        top = _git_commit.cached(('toplevel', cwd), lambda: _git_toplevel(cwd))
         if top and _norm(top) != _norm(root) and os.path.isfile(os.path.join(top, '.git')) \
                 and _norm(top) in _registered_worktrees():
             bases.append(top)
@@ -832,12 +821,8 @@ def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> st
 def check_bash_command(command: str, cwd: str | None = None,
                        transcript_path: str | None = None) -> tuple[bool, str]:
     """Check bash command for dangerous patterns. Returns (blocked, message)."""
-    global _git_memo
-    _git_memo = {}
-    try:
+    with _git_commit.memoized():
         return _check_bash_command(command, cwd, transcript_path)
-    finally:
-        _git_memo = None
 
 
 def _check_bash_command(command: str, cwd: str | None, transcript_path: str | None) -> tuple[bool, str]:

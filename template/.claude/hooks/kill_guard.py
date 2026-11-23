@@ -39,6 +39,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _background_tasks  # noqa: E402
+import _git_run  # noqa: E402
 import _msys  # noqa: E402
 import _shell_lex  # noqa: E402
 from _win_path import native_path  # noqa: E402
@@ -257,7 +258,7 @@ def _process_table():
             return {}
     try:
         import reap
-        return reap.process_table(timeout=TABLE_TIMEOUT_S)
+        return reap.process_table(timeout=_git_run.remaining(TABLE_TIMEOUT_S))
     except Exception:
         return {}
 
@@ -761,7 +762,7 @@ def _pid_problems(cmd, env):
         return []
     allowed = {p.strip() for p in (env.get("HARNESS_ALLOW_KILL") or "").replace(",", " ").split() if p}
     problems = []
-    deadline = _now() + HOOK_BUDGET_S
+    deadline = _now() + _git_run.remaining(HOOK_BUDGET_S)
     for pid, is_kill in pid_forms(cmd):
         if pid in allowed:
             continue

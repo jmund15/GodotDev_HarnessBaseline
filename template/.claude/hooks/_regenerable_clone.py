@@ -56,17 +56,12 @@ def _git(args: list[str], cwd: Path, stdin: str | None = None) -> str | None:
       target's `.git` disappears mid-check; git would otherwise lock and judge the project repo.
     Inside `_git_commit.memoized()` (one floor decision) a repeated call answers from its first run.
     """
-    memo = _git_commit._memo
-    key = ("_regenerable_clone", tuple(args), os.path.normcase(str(cwd)), stdin)
-    if memo is not None and key in memo:
-        return memo[key]
     env = {"GIT_CEILING_DIRECTORIES": str(cwd.parent)}
-    out = _git_run.soft_text(args, cwd=str(cwd), env=env, optional_locks=False,
-                             input=stdin.encode() if isinstance(stdin, str) else stdin,
-                             timeout=_GIT_TIMEOUT_S)
-    if memo is not None:
-        memo[key] = out
-    return out
+    return _git_commit.cached(
+        ("_regenerable_clone", tuple(args), os.path.normcase(str(cwd)), stdin),
+        lambda: _git_run.soft_text(args, cwd=str(cwd), env=env, optional_locks=False,
+                                   input=stdin.encode() if isinstance(stdin, str) else stdin,
+                                   timeout=_GIT_TIMEOUT_S))
 
 
 def _same_path(a: Path, b: Path) -> bool:

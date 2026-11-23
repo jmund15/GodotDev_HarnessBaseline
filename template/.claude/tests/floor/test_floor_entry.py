@@ -183,6 +183,17 @@ def test_a_floor_deny_wins_over_a_helper_rewrite(monkeypatch, plant):
     assert bash("git reset --hard", plant).denied
 
 
+def test_a_decision_whose_git_reads_run_out_of_time_denies(monkeypatch, plant):
+    """Review finding 5 of S5: the client treats a hook it kills on timeout as a non-blocking error, so the floor
+    ends its own git reads first and denies the call they left unjudged."""
+    command = "git commit -q --allow-empty -m x"
+    assert bash(command, plant).kind == "allow"
+    monkeypatch.setattr(_floor, "BUDGET_S", 0.0)
+    got = bash(command, plant)
+    assert got.denied and "budget" in got.reason
+    assert bash("ls", plant).kind == "allow"  # no git read, nothing cut short
+
+
 @pytest.mark.parametrize("payload", [None, [1], "x", {"tool_name": "Bash", "tool_input": "notadict"}])
 def test_a_payload_the_floor_cannot_read_denies(payload):
     got = decide(payload)
