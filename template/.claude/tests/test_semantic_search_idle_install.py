@@ -26,8 +26,8 @@ import semantic_search_idle_install as inst  # noqa: E402
 REGISTRY_SOURCE = (Path(os.environ.get("HARNESS_CALLER_HOME") or Path.home())
                    / ".claude" / "plugins" / "installed_plugins.json")
 if not REGISTRY_SOURCE.exists():
-    print("PLATFORM-SKIP-PROOF test_semantic_search_idle_install: no semantic-search plugin is installed on this machine")
-    sys.exit(0)
+    import _platform_skip
+    _platform_skip.skip_proof("test_semantic_search_idle_install", "no semantic-search plugin is installed on this machine")
 PLUGIN_KEY = "semantic-search@dreb"
 STOCK_ENTRY = {"command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/bin/server.js"]}
 
