@@ -44,6 +44,7 @@ import os
 import re
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 __all__ = [
@@ -305,11 +306,104 @@ def mark_skill_in_context(session_id, name, agent_id=""):
     fire_once_since_compaction(session_id, "skill_in_context:" + name + _agent_suffix(agent_id))
 
 
+TRUNCATION_NOTICE = "truncated for compaction"
+_NOTICE_TAIL_CHARS = 300
+_BASE_LINE = re.compile(r"\ABase directory for this skill:[^\n]*\n+")
+_FRONTMATTER = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.S)
+# The client appends a skill's invocation arguments after the body; they are the caller's text, not SKILL.md.
+_ARGUMENTS = re.compile(r"\n\n+ARGUMENTS: .*", re.S)
+_REATTACH_SCANNER = []
+
+
+def skill_body(text):
+    """The skill body both a `SKILL.md` on disk and the client's attached copy carry: frontmatter and the
+    `Base directory for this skill:` line removed, a trailing `ARGUMENTS:` block removed, blank edges trimmed."""
+    text = _BASE_LINE.sub("", str(text or ""), count=1)
+    text = _FRONTMATTER.sub("", text, count=1)
+    return _ARGUMENTS.sub("", text).strip()
+
+
+def skill_body_digest(text):
+    return hashlib.sha256(skill_body(text).encode("utf-8")).hexdigest()
+
+
+def skill_file_digest(name, root):
+    """`skill_body_digest` of skill `name`'s `SKILL.md` under `root`, else under the user skills dir; None when
+    neither file exists (a bundled or plugin skill no disk change can stale)."""
+    name = str(name or "")
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        return None
+    config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    roots = [(os.path.join(str(root), ".claude", "skills") if root else None),
+             os.path.join(config, "skills"), os.path.expanduser("~/.claude/skills")]
+    seen = set()
+    for base in roots:
+        if not base or os.path.normcase(base) in seen:
+            continue
+        seen.add(os.path.normcase(base))
+        try:
+            with open(os.path.join(base, name, "SKILL.md"), encoding="utf-8") as fh:
+                return skill_body_digest(fh.read())
+        except OSError:
+            continue
+    return None
+
+
+def _reattach_feed(state, _index, line):
+    """Fold one transcript line: each compact boundary clears the attachment; an `invoked_skills` attachment
+    records the skills the client re-attached whole after the latest boundary."""
+    if "compact_boundary" not in line and "invoked_skills" not in line:
+        return
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(entry, dict) or entry.get("isSidechain"):
+        return
+    if entry.get("subtype") == "compact_boundary":
+        state.update(count=state["count"] + 1, times=[entry.get("timestamp")], attached=False, whole={})
+        return
+    attachment = entry.get("attachment") or {}
+    if entry.get("type") == "attachment" and attachment.get("type") == "invoked_skills":
+        whole = {}
+        for skill in attachment.get("skills") or []:
+            name = str(skill.get("name") or "").split(":")[-1]
+            content = skill.get("content")
+            if name and isinstance(content, str) and TRUNCATION_NOTICE not in content.rstrip()[-_NOTICE_TAIL_CHARS:]:
+                whole[name] = skill_body_digest(content)
+        state.update(attached=True, whole=whole)
+
+
+def reattached_whole(transcript_path, after_epoch=None):
+    """`{skill: body digest}` for each copy the client re-attached whole after the latest written boundary, or
+    None when no attachment for a boundary stamped after `after_epoch` (the PreCompact clear) is on disk yet.
+    The digest is of `skill_body`, so a caller credits only a copy whose body still matches the file on disk."""
+    import _transcript_scan  # lazy: that module imports this one
+    if not _REATTACH_SCANNER:
+        _REATTACH_SCANNER.append(_transcript_scan.Scanner(
+            "reattached_skills", lambda: {"count": 0, "times": [], "attached": False, "whole": {}},
+            _reattach_feed, sources=(os.path.abspath(__file__),)))
+    state = _transcript_scan.scan(transcript_path, _REATTACH_SCANNER[0])
+    if not state["count"] or not state["attached"]:
+        return None
+    stamp = _epoch(state["times"][-1])
+    if after_epoch is not None and (stamp is None or stamp < after_epoch):
+        return None
+    return dict(state["whole"])
+
+
+def _epoch(stamp):
+    try:
+        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=None):
     """True when skill `name` was loaded since the session started or last compacted, in the subagent's own
     context when `agent_id` is given. With the main thread's `transcript_path`, a skill the client re-attached
     whole after the latest compaction counts too, but only while that copy's body still matches the skill's
-    `SKILL.md` under `root` (`_compaction_record.skill_file_digest`); the attachment is a session-start snapshot,
+    `SKILL.md` under `root` (`skill_file_digest`); the attachment is a session-start snapshot,
     so a whole copy can be stale. The first such read marks every current skill of that attachment. A skill with
     no `SKILL.md` on disk (bundled or plugin) cannot go stale, so it counts. `root` defaults to
     `CLAUDE_PROJECT_DIR` (a Git Bash `/c/...` spelling is converted for Windows Python) else the cwd; a root
@@ -323,9 +417,8 @@ def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=N
     if agent_id or not transcript_path:
         return False
     try:
-        import _compaction_record
         import _win_path
-        whole = _compaction_record.reattached_whole(transcript_path, state.get(_COMPACTED_AT_KEY))
+        whole = reattached_whole(transcript_path, state.get(_COMPACTED_AT_KEY))
     except Exception:
         return False
     if not whole:
@@ -334,7 +427,7 @@ def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=N
     if not os.path.isdir(root):
         return False
     current = [skill for skill, digest in whole.items()
-               if _compaction_record.skill_file_digest(skill, root) in (None, digest)]
+               if skill_file_digest(skill, root) in (None, digest)]
     for skill in current:
         mark_skill_in_context(session_id, skill)
     return name in current
