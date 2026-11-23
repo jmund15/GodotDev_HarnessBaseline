@@ -8,13 +8,13 @@ export const meta = {
   ],
 }
 // KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge|gate) for every child it spawns;
-// hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
+// hooks/workflow_transport.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
 // child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
 // entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
 const KIND_ARGS = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return a || {} } catch (e) { return {} } })()
 const KP = (KIND_ARGS.__kindProfile && typeof KIND_ARGS.__kindProfile === 'object') ? KIND_ARGS.__kindProfile : null
 if (typeof KIND_ARGS.kind !== 'string' || !KIND_ARGS.kind.trim() || !KP || KP.kind !== KIND_ARGS.kind || !KP.agentType) {
-  return { error: 'test-skill-pressure: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. Every child of the run launches as that kind.' }
+  return { error: 'test-skill-pressure: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_transport.py into args.__kindProfile. Every child of the run launches as that kind.' }
 }
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 // POST-CHECK exempt (benchmark/probe self-scoring): it scores its own pressure prompts' output.
@@ -37,7 +37,7 @@ if (!SKILL_CONTENT) {
   return { error: 'No skillContent in args. The /test_skill command (Claude) must Read the SKILL.md and pass its full text via args.skillContent — workflow scripts cannot read files.' }
 }
 
-// Endpoint vocabulary -- hooks/workflow_provider_guard.py injects __transport off-Anthropic: {name, ids, efforts?}.
+// Endpoint vocabulary -- hooks/workflow_transport.py injects __transport off-Anthropic: {name, ids, efforts?}.
 // On a provider session that transport's own registry ids are the legal vocabulary and a role name is DENIED
 // before this script runs. The caller pins each role, {model, effort} apiece: args.subject (the tempted subagent,
 // a model able to capitulate), args.scorer (the judgment of the response) and args.validator (the second judgment on

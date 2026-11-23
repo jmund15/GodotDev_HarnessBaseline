@@ -19,7 +19,7 @@
       ],
       "properties": {
         "evidence": {
-          "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
+          "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; the /review quote check (tools/quote_check.py) is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
           "type": "array",
           "items": {
             "oneOf": [
@@ -157,7 +157,7 @@
         ],
         "properties": {
           "evidence": {
-            "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
+            "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; the /review quote check (tools/quote_check.py) is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
             "type": "array",
             "items": {
               "oneOf": [

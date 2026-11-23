@@ -5,9 +5,8 @@ export const meta = {
   phases: [{ title: 'Relevance', detail: 'one agent judges backlog overlap against the stated scope' }],
 }
 // Titles and provenance close against canonical evidence before consumption.
-// Args: {scope, model, effort, tier, kind, checker: {model, effort}, domains?, promptPath?, justification?}. model and effort
-// pin the relevance agent and are required; checker pins the closeCheck verifier this engine always starts. Both are
-// validated before any agent starts. No engine supplies a default pin.
+// Args: {scope, model, effort, tier, kind, domains?, promptPath?, justification?}. model and effort
+// pin the relevance agent and are required. No engine supplies a default pin.
 
 // Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
 // string (the natural "just hand it the scope" call) is a caller mistake, but an uncaught
@@ -24,17 +23,17 @@ try {
 }
 
 // KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge|gate) for every child it spawns;
-// hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
+// hooks/workflow_transport.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
 // child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
 // entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
 const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
 if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
-  return { error: 'worklog-relevance: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. The relevance delegate runs as that kind.' }
+  return { error: 'worklog-relevance: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_transport.py into args.__kindProfile. The relevance delegate runs as that kind.' }
 }
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 // EVIDENCE-SSOT-BEGIN
 const EVIDENCE_SCHEMA = {
-  "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
+  "description": "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; the /review quote check (tools/quote_check.py) is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
   "type": "array",
   "items": {
     "oneOf": [
@@ -124,7 +123,7 @@ const EVIDENCE_SCHEMA = {
     ]
   }
 }
-const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; tools/verify_claims.py is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
+const EVIDENCE_RULES = "The evidence contract's machine twin (reference/evidence_contract.md owns the semantics; the /review quote check (tools/quote_check.py) is the one executable implementation). A claim's `evidence` is a list of items, each exactly one of four kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
 // EVIDENCE-SSOT-END
 
 // CLOSE-CHECK-BEGIN
@@ -156,11 +155,13 @@ const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
   return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
 })
 // ENGINE-BLOCK-END applyVerdicts
+// ENGINE-BLOCK-BEGIN boundedVerification
 const boundedVerification = verification => ({
   status: verification.status, counts: verification.counts, report: verification.report,
   ...(verification.note ? { note: verification.note } : {}),
   nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
 })
+// ENGINE-BLOCK-END boundedVerification
 // A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
 // ENGINE-BLOCK-BEGIN verifierAgent
 const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
@@ -171,119 +172,21 @@ const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
 })
 // ENGINE-BLOCK-END verifierAgent
 // ENGINE-BLOCK-BEGIN closeCheck
-const closeCheck = async (mode, { items, keyOf, out, root = A.root, spillDir, expectTotal, expectSources, ledger, fold, seats = [] }) => {
+// The engine verifies no claim: /review checks a findings file with tools/quote_check.py (T4). Every item stays
+// UNCHECKED, so callers read the same shape and no verifier agent is launched.
+const closeCheck = async (mode, { items, keyOf }) => {
   const keys = items.map(keyOf)
   if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
     || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
-  const quoteArg = value => "'" + String(value).replace(/'/g, "'\"'\"'") + "'"
-  // The verifier finds its journal by this label, and every review numbers its findings F1..Fn: the run's own report
-  // path keeps two runs with the same ids apart, and a resumed run keeps its label.
-  const identity = JSON.stringify([mode, out, items.map(keyOf)])
-  let hash = 2166136261
-  for (let i = 0; i < identity.length; i++) hash = Math.imul(hash ^ identity.charCodeAt(i), 16777619)
-  const label = 'verify-' + (hash >>> 0).toString(36)
-  out = rootedPath(A, out.replace(/\.json$/, '-' + label + '.json'))
-  // The verifier may report --out resolved (absolute, either separator) and may trail prose; the report must LEAD with the file.
-  const reportsOut = report => {
-    const lead = String(report).replace(/\\/g, '/').trim().match(/^(.*?\.json)(?![\w-])/), o = out.replace(/\\/g, '/').replace(/^\.\//, '')
-    return !!lead && (lead[1] === o || lead[1].endsWith('/' + o))
-  }
-  const profile = A.__toolProfiles && A.__toolProfiles.verify
-  const transport = A.__transport
-  const checker = A.checker || {}
-  const model = checker.model
-  const effort = checker.effort
-  if (typeof model !== 'string' || !Array.isArray(transport.ids) || !transport.ids.includes(model)) {
-    throw new Error('closeCheck: args.checker.model is missing or outside args.__transport.ids; refusing the checked route')
-  }
-  if (Array.isArray(transport.efforts) && !transport.efforts.includes(effort)) {
-    throw new Error('closeCheck: args.checker.effort is missing or outside args.__transport.efforts; refusing the checked route')
-  }
-  const schema = {
-    type: 'object', required: ['status', 'counts', 'verdicts', 'report'], additionalProperties: false,
-    properties: {
-      status: { type: 'string', enum: ['pass', 'fail', 'unavailable'] },
-      counts: { type: 'object', required: VERDICTS, additionalProperties: false,
-        properties: Object.fromEntries(VERDICTS.map(v => [v, { type: 'integer', minimum: 0 }])) },
-      verdicts: { type: 'object', additionalProperties: { type: 'string', enum: VERDICTS } },
-      report: { type: 'string' },
-      note: { type: 'string' },
-    },
-  }
-  let verification
-  try {
-    if (!profile || !profile.agentType || profile.tier !== 'fanout') throw new Error('missing verifier fanout profile')
-    let command = 'python3 .claude/tools/post_check.py ' + mode
-      + (fold && fold.findings ? ' --findings ' + quoteArg(fold.findings) : ' --run-label ' + label)
-      + ' --out ' + (/^[\w./:-]+$/.test(out) ? out : quoteArg(out))
-    if (fold && fold.findings) {
-      if (fold.digest) command += ' --digest ' + quoteArg(fold.digest)
-      if (fold.snapshot) command += ' --snapshot ' + quoteArg(fold.snapshot)
-    }
-    // A subject the fold skipped writes no digest, so each subject's snapshot also names the files the review read.
-    for (const subject of (fold && !fold.findings && Array.isArray(fold.subjects) ? fold.subjects : [])) {
-      if (subject && subject.snapshot) command += ' --reviewed-snapshot ' + quoteArg(subject.snapshot)
-    }
-    if (root) command += ' --root ' + quoteArg(root)
-    if (spillDir) command += ' --spill-dir ' + quoteArg(rootedPath(A, spillDir))
-    if (expectTotal !== undefined) command += ' --expect-total ' + expectTotal
-    if (expectSources !== undefined) command += ' --expect-sources ' + expectSources
-    if (ledger) {
-      for (const [field, flag] of Object.entries({stage: 'stage', subject: 'subject', roster: 'roster', scopeJson: 'scope-json', task: 'task', premiseCommits: 'premise-commits', head: 'head', blobs: 'blobs'})) {
-        if (ledger[field]) command += ' --' + flag + ' ' + quoteArg(ledger[field])
-      }
-      if (ledger.noNewDecision) command += ' --no-new-decision'
-    }
-    const seatsFile = out.replace(/\.json$/, '.seats.json')
-    const launched = Object.fromEntries(seats.map(seat => [seat.label, {
-      model: seat.model, effort: seat.effort, tier: seat.tier || null,
-      mandates: seat.mandates || [], mustRead: seat.mustRead || [],
-    }]))
-    if (new Set(seats.map(seat => seat.label)).size !== seats.length) throw new Error('duplicate launched seat label')
-    // The agent Bash route cuts a command near 8K characters mid-quote, so the seats file is written in parts.
-    const COMMAND_BUDGET = 6000
-    const writer = 'import sys; from pathlib import Path; p=Path(sys.argv[1]); p.parent.mkdir(parents=True, exist_ok=True); f=p.open(sys.argv[2], encoding="utf-8", newline=""); f.write(sys.argv[3]); f.close()'
-    const writes = []
-    for (let rest = JSON.stringify(launched); rest.length;) {
-      const prefix = cdRootPrefix(A) + 'python3 -c ' + quoteArg(writer) + ' ' + quoteArg(seatsFile) + ' ' + (writes.length ? 'a' : 'w') + ' '
-      if ((prefix + "'{}'").length > COMMAND_BUDGET) throw new Error('verifier seats-file path leaves no room within the command budget')
-      let size = rest.length
-      while ((prefix + quoteArg(rest.slice(0, size))).length > COMMAND_BUDGET) size = Math.max(1, Math.floor(size * 0.9))
-      if (size < rest.length && /[\uD800-\uDBFF]/.test(rest[size - 1])) size -= 1
-      writes.push(prefix + quoteArg(rest.slice(0, size)))
-      rest = rest.slice(size)
-    }
-    if (mode === 'review') command += ' --seats-file ' + quoteArg(seatsFile)
-    const printer = 'import json, sys; r = json.load(open(sys.argv[1], encoding="utf-8")); print(json.dumps({"status": r["status"], "counts": r["counts"], "verdicts": {k: v["verdict"] for k, v in r["verdicts"].items()}}))'
-    command = cdRootPrefix(A) + command + ' ; python3 -c ' + quoteArg(printer) + ' ' + quoteArg(out)
-    log('PINS ' + JSON.stringify({[label]: model + '/' + effort + '/' + profile.agentType + ' tier:fanout'}))
-    verification = await verifierAgent('Run each seats-file write below with Bash first, one call per line, in order:\n' + writes.join('\n')
-      + '\nRun exactly this command with Bash: ' + command
-      + '\nIts last output line is one JSON object holding status, counts and verdicts, read from the --out file; it prints even when the check exits 1.'
-      + ' Return ONLY {status, counts, verdicts, report, note}: copy status, counts and verdicts from that line unchanged. Set report to the --out path and nothing else; put any observation in note (optional).'
-      + ' Do not check evidence yourself, change permissions, or run any other command.',
-    { label, phase: 'Verify', agentType: profile.agentType, model, effort, schema })
-    if (!verification || !['pass', 'fail'].includes(verification.status) || !reportsOut(verification.report)
-      || !verification.verdicts || !verification.counts
-      || items.some(item => !VERDICTS.includes(verification.verdicts[keyOf(item)]))) throw new Error('incomplete verifier report')
-    const reported = Object.values(verification.verdicts)
-    if (reported.some(v => !VERDICTS.includes(v))) throw new Error('illegal verifier verdict')
-    const observed = Object.fromEntries(VERDICTS.map(v => [v, reported.filter(verdict => verdict === v).length]))
-    if (VERDICTS.some(v => verification.counts[v] !== observed[v])
-      || new Set(items.map(keyOf)).size !== items.length
-      || (verification.status === 'pass' && (observed.UNVERIFIED > 0 || observed.UNCHECKED > 0))) throw new Error('inconsistent verifier report')
-    verification.report = out  // the checker's text only proves it read this file; readers open the engine's own path
-  } catch (e) {
-    verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-      verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: out,
-      note: String((e && e.message) || e) }
-  }
+  const verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
+    verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: null,
+    note: 'claims are checked by /review (tools/quote_check.py); the engine checks none' }
   return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
 }
 // ENGINE-BLOCK-END closeCheck
 // CLOSE-CHECK-END
 
-// Model vocabulary comes only from args.__transport, which hooks/workflow_provider_guard.py injects on
+// Model vocabulary comes only from args.__transport, which hooks/workflow_transport.py injects on
 // every Workflow call: {name, ids, efforts?}. This engine holds no model list, so a
 // call the guard did not rewrite fails closed. Inlined per script because the Workflow sandbox has
 // no require/import.
@@ -296,7 +199,7 @@ const validStringList = (value) => Array.isArray(value) && value.length > 0
 // ENGINE-BLOCK-END validStringList
 if (!TRANSPORT || typeof TRANSPORT !== 'object' || !validStringList(TRANSPORT.ids)
   || (TRANSPORT.efforts !== undefined && !validStringList(TRANSPORT.efforts))) {
-  return { error: 'worklog-relevance: args.__transport is missing or malformed. hooks/workflow_provider_guard.py injects the endpoint\'s model vocabulary ({name, ids, efforts?}); without it this engine has no legal pins and refuses to guess.' }
+  return { error: 'worklog-relevance: args.__transport is missing or malformed. hooks/workflow_transport.py injects the endpoint\'s model vocabulary ({name, ids, efforts?}); without it this engine has no legal pins and refuses to guess.' }
 }
 // ENGINE-BLOCK-BEGIN PIN
 const PIN = (m) => m
@@ -324,12 +227,6 @@ if (!scope) {
 }
 if (!VALID_MODELS.includes(A.model) || (VALID_EFFORTS !== undefined && !VALID_EFFORTS.includes(A.effort))) {
   return { error: 'worklog-relevance: pin model and effort on every job (orchestration §5). Unpinned or illegal: worklog:relevance (args.model, args.effort). Each job needs ' + pinVocab + '.' }
-}
-// closeCheck runs on every relevance pass, so its verifier pin is always required; refuse before the agent starts.
-const checkerOk = !!A.checker && typeof A.checker === 'object' && VALID_MODELS.includes(A.checker.model)
-  && (VALID_EFFORTS === undefined || VALID_EFFORTS.includes(A.checker.effort))
-if (!checkerOk) {
-  return { error: 'worklog-relevance: args.checker = {model, effort} is required because every run starts the closeCheck verifier; args.checker must pin ' + pinVocab + '. Refusing before any agent starts.' }
 }
 
 log('PINS ' + JSON.stringify({ 'worklog:relevance': PIN(A.model) + '/' + EFF(A.effort) + ' tier:' + A.tier }))

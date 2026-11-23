@@ -24,12 +24,12 @@ try {
   return { error: 'idea-fanout: args must be JSON-serializable {generators: [{key, instr, model, effort}, ...], contextPrefix}. Received a non-JSON string. ' + ((e && e.message) || '') }
 }
 // KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge|gate) for every child it spawns;
-// hooks/workflow_provider_guard.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
+// hooks/workflow_transport.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
 // child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
 // entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
 const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
 if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
-  return { error: 'idea-fanout: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_provider_guard.py into args.__kindProfile. Every generator and critic runs as that kind; ideation returns structured data and writes nothing.' }
+  return { error: 'idea-fanout: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_transport.py into args.__kindProfile. Every generator and critic runs as that kind; ideation returns structured data and writes nothing.' }
 }
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
 const generators = Array.isArray(A.generators) ? A.generators : []
@@ -43,7 +43,7 @@ if (generators.length < 2) {
   return { error: 'Fan-out needs >=2 DISTINCT lenses (diversity is the lever). One lens is just the single-agent Diverge phase — run that inline instead of dispatching this engine.' }
 }
 
-// Model vocabulary comes only from args.__transport, which hooks/workflow_provider_guard.py injects on
+// Model vocabulary comes only from args.__transport, which hooks/workflow_transport.py injects on
 // every Workflow call: {name, ids, efforts?}. This engine holds no model list, so a
 // call the guard did not rewrite fails closed. Inlined per script because the Workflow sandbox has
 // no require/import.
@@ -56,7 +56,7 @@ const validStringList = (value) => Array.isArray(value) && value.length > 0
 // ENGINE-BLOCK-END validStringList
 if (!TRANSPORT || typeof TRANSPORT !== 'object' || !validStringList(TRANSPORT.ids)
   || (TRANSPORT.efforts !== undefined && !validStringList(TRANSPORT.efforts))) {
-  return { error: 'idea-fanout: args.__transport is missing or malformed. hooks/workflow_provider_guard.py injects the endpoint\'s model vocabulary ({name, ids, efforts?}); without it this engine has no legal pins and refuses to guess.' }
+  return { error: 'idea-fanout: args.__transport is missing or malformed. hooks/workflow_transport.py injects the endpoint\'s model vocabulary ({name, ids, efforts?}); without it this engine has no legal pins and refuses to guess.' }
 }
 // ENGINE-BLOCK-BEGIN PIN
 const PIN = (m) => m
