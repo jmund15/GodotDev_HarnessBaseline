@@ -1,73 +1,330 @@
-# Delete list: the cutover PR's deletes from the shared tree
+# Delete list: what the cutover removes from the shared tree
 
-**v2 shared set: 457 files** under `template/.claude/` (`git ls-files template/.claude | wc -l` after A11, which deleted two more: §Deleted by A11). B16's done-condition holds when that command prints this number.
+**Range:** `9aceeed..9091bba`. `9aceeed` is the fork point (`git merge-base v2 origin/main`); `9091bba` is the v2 tip this list was generated at. Earlier lists used `3f8d3d2` and `6f21a0d`, which miss the deletes before them. Re-run the derivation below after any later lane lands.
 
-Written by TB3 (the first table) and B16 (the rest). B16 deleted every path below from the template; the cutover PR deletes the same paths from each consumer repo that holds them, unless the path is PushinPotions- or MaddManager-local, in which case S9 places it in that repo (the **local** list).
+**Counts:** `template/.claude/` held 1667 files at the fork point and holds 414 at the tip; 1340 paths were deleted and 87 added. Of the deleted: 898 are true deletes, 255 PushinPotions-local, 2 MaddManager-local, 185 local to each repo (each repo keeps its own copy; `auto-memory/` is 175 of them).
 
-Base for every row: `v2` at `6f21a0d`. Class and reason per group; the S4 class table is stale for the files named under "Kept".
+A **local** path leaves the shared tree but not the repo that owns it: S9 keeps it where it is. A path under PushinPotions that MaddManager also holds is MaddManager's own copy, as the reverse is. Nothing here is a PushinPotions Godot or C# file the shared tree still carries (K6, Q1).
 
-## Deleted by B16, by reason
-
-| Group | Count | Reason | Replacement or need |
-|---|---|---|---|
-| Local, project-owned and bench-moved files | 421 | Each repo owns its own copy (T7); Godot and C# game files are PushinPotions-local (K6, Q1); `auto-memory/` is V14 local; benchmarking moves to HarnessBench (V6) | S9 places each local file in its repo |
-| V7 external-provider dispatch and its tests | see list | Replaced by `seat.sh`, `seats.json`, `capacity.py` and the login pair (Q3 O2) | `scripts/seat*.sh`, `tools/launch_check.py` |
-| V8 review ledger family | see list | `/review` and `quote_check.py` replace it | `commands/review.md` |
-| V9 proof runner (`scripts/harness_tests.py` and 40 of its tests) | see list | pytest and the shared CI replace it (T6) | `pytest -n auto` |
-| V10 baseline sync and publish tools | see list | `harness_sync.py` replaces them (T7); S7 deletes the repo-root half | `tools/harness_sync.py` |
-| V11 census, retirement, routing and advisory hooks | see list | They police doctrine volume v2 caps by budget | S7's budget test |
-| Q15 O1: `/self_evaluate`, `/eval_dashboard`, rail and routing batteries | see list | Nothing in v2 reads what they chart | none |
-| `hooks/git_guardrails.py` and 11 tests | 1 + 11 | The floor (`dangerous_shell_guard.py`, `kill_guard.py`) carries every loss deny; the advisories are V1's lost column | `tests/floor/` |
-| The ten v1 guard files | 10 | `guards/rails.md` replaces them (A3's hand-off) | `guards/rails.md` |
-| `schemas/review_findings.json`, orphaned fixtures and helpers | see list | No reader remains | none |
-
-## Deleted by A11
-
-| File | Class | Reason |
-|---|---|---|
-| `commands/roadmap_next.md` | MaddManager-local | The plan's §Capabilities keeps MM `/roadmap_next` MaddManager-local: PushinPotions has no copy. MaddManager keeps its own (S8) |
-| `skills/godot_architecture/SKILL.md` | delete | A Godot skill (Q1) no repo uses: PushinPotions' lock records it declined (`status: local`, `absent: true`) and MaddManager has no Godot code |
-
-## Kept although S4 classed them delete or local
-
-| File | Why kept |
-|---|---|
-| `tools/cli_usage.py` | Q10 O1: 34 kept tools import it |
-| `hooks/foreground_wait_guard.py` and its test | Q9 O1: the wait backstop `seat.sh` arms; `run_call_router.py` imports `never_woken` |
-| `tools/session_digest.py`, `commands/session_digest.md`, `tools/usage_report.py`, `tools/guard_denials.py`, `commands/{commit_push,update_roadmap,harness_prune,overnight_review}.md`, `commands/reference/update_roadmap_*.md`, `commands/agents/redteam_agents.md`, `hooks/{unbounded_scan_guard,bash_backslash_fidelity,semantic_search_scope_guard}.py` | Q2: the plan keeps each by name |
-| `scripts/engine_src/common.js` | `scripts/schema_parity.js` builds the engines from it |
-| `tools/tree-sitter-c_sharp.{wasm,LICENSE,provenance.json}` | `semantic_search_idle_install.py` copies them to the home install |
-| `tools/reap.py` | T1's small stop tool, rewritten in place by S5d; `kill_guard.py` calls `reap.process_table`. S5d deleted `tests/test_reap.py`, `test_reap_native_env.py` and `floor/test_floor_carried.py`: their kept cases are `floor/test_floor_reap.py`'s rows (`floor/test_floor_ported.md`) |
-
-## Rows added by B16 to TB3's table
-
-| File dropped (`template/.claude/tests/`) | Subject at base | Why dropped | Need or replacement |
-|---|---|---|---|
-| `test_scan_fixtures.py` | `baseline_identity.scan_tree` and `_scan_fixtures.py` | the whole-tree scan case's subject is V10; the secret-shape case moved | `test_user_scope.py::test_secret_fixtures_match_their_lint_shapes` |
-| `test_run_call_router.py` | `run_call_router.py` driven through `pre_bash_dispatch.dispatch` | the dispatcher is deleted; `run_call_router.py` has no caller on `v2` until its rewrite (plan V9) | S5d: `run_call_router.py` is a `_floor.HELPER_NAMES` helper; its 59 checks are `floor/test_floor_run_router.py`'s 47 rows |
-| `test_bash_backslash_fidelity.py` | `hooks/bash_backslash_fidelity.py` through settings composition | it composed `settings.json` from the deleted layers | `tests/floor/test_floor_entry.py` backslash-repair case only; the class rows are not carried (S5c) |
-| `test_python_null_stdin.py`, `test_settings_composed.py`, `test_prose_adaptation_seams.py`, `test_claude_core_standalone.py` | the template's composed `settings.json`, `adaptation.json` and `CLAUDE.md` | those files are each repo's own (T7) | run in each repo by S9 if wanted |
-| `test_compaction_state.py`, `test_hook_state_compaction_keep.py` | `_hook_state.skill_in_context` | the skill-in-context marker and its only reader are deleted | none |
-| `test_codify_prompt.py`, `test_doc_diff_check.py`, `test_doc_warning_check.py`, `test_kernel_pool.py`, `test_lf_normalize.py` | tools absent from the shared tree | their subjects are MaddManager- or PushinPotions-only | each repo |
-| `test_session_digest*.py` (five) | v1 `session_digest.py` internals | B8 rewrote the tool; `test_session_digest_cli.py` is its proof | `test_session_digest_cli.py` |
-| `lean_type_fallback_test.js` | the engines' verifier fallback | B15 removed the verification stub | none |
-
-## Local files for S9 (leave the shared tree; each repo keeps its own)
-
-`auto-memory/`: all 175 files (V14 local).
-
-### Local files other than auto-memory (246)
+## Derivation and sum check
 
 ```
-CLAUDE.godot.md
+git merge-base v2 origin/main
+git diff --diff-filter=D --name-only <base> <tip> -- template/.claude      # the deleted set
+git diff --diff-filter=A --name-only <base> <tip> -- template/.claude      # the added set
+```
+
+The sum check reads this file's two block kinds (`### Local ...` and `### Delete`) and the git counts; it must print `ok`. Run from the lane root; set `B` and `T` to re-check a later tip:
+
+```
+python3 -c "
+import subprocess as s, re
+g = lambda *a: [l for l in s.run(['git', *a], capture_output=True, text=True).stdout.split('\n') if l]
+P = 'template/.claude'; B, T = '9aceeed', '9091bba'
+n = lambda r: len(g('ls-tree', '-r', '--name-only', r, '--', P))
+dele = len(g('diff', '--diff-filter=D', '--name-only', B, T, '--', P)); add = len(g('diff', '--diff-filter=A', '--name-only', B, T, '--', P))
+doc = open('v2/delete_list.md', encoding='utf-8').read()
+listed = sum(len(b.strip().split('\n')) for b in re.findall(r'(?m)^### (?:Local|Delete)[^\n]*\n\x60\x60\x60\n(.*?)\x60\x60\x60', doc, re.S))
+print('base', n(B), '+ added', add, '- deleted', dele, '= tip', n(T), 'tip tree', n('HEAD'), '| listed', listed)
+print('ok' if n(B) + add - dele == n(T) and listed == dele else 'MISMATCH')
+"
+```
+
+Output at generation: `base 1667 + added 87 - deleted 1340 = tip 414`, listed 1340, `ok`.
+
+## First pull: the cutover recipe
+
+`harness_sync.py pull` with no manifest refuses every v1 file whose bytes differ from v2's, and writes nothing. S8 and S9 therefore remove the v1 shared set first: every row of the repo's `.claude/baseline.lock.json` whose `status` is `tracked` or `forked`, except a path this file lists as local. `composed` rows (`settings.json`, `memory_domains.md`) are hand-owned or local and stay; `local` rows were never shared. A file that is neither in the lock nor in the manifest and sits at a v2 path is a stray, and `pull` still refuses it by name.
+
+```
+python3 -c "
+import json, os, re
+doc = open('<shared repo>/v2/delete_list.md', encoding='utf-8').read()
+keep = {'.claude/' + p for b in re.findall(r'(?m)^### Local[^\n]*\n\x60\x60\x60\n(.*?)\x60\x60\x60', doc, re.S) for p in b.split()}
+rows = json.load(open('.claude/baseline.lock.json'))['files']
+for path, row in sorted(rows.items()):
+    if row.get('status') in ('tracked', 'forked') and path not in keep and os.path.isfile(path):
+        os.remove(path); print('removed', path)
+"
+python3 <shared repo>/template/.claude/tools/harness_sync.py pull <ref> --source <shared repo>
+```
+
+Dry run on a copy of PushinPotions' lock-listed files (its checkout of 2026-11-23): the recipe removes 1,199 files, and `plan_pull` then plans 406 writes, 0 deletes and 7 refusals, each a `local` lock row at a path v2 now ships (`local_rewires.md` §Pull refusals). The removal is recoverable from git (the cutover commit is one revert, Q6 O1). A path S9 places local that the lock marks `tracked` is in the lists below; PushinPotions' `skills/project_subsystems/adaptation.json`, `CLAUDE.md` and `settings.json` are `local` or `composed` rows and are never touched.
+
+## True deletes, by the commit that deleted them
+
+| Paths | Commit | Subject |
+|---|---|---|
+| 556 | `5696d6f` | chore(tree): delete v1 delegation, benchmark, eval, proof-runner, publish and routing machinery with its tests (B16) |
+| 77 | `48c0f43` | chore(tools): drop 17 helpers no kept file imports, with their own tests (B15) |
+| 42 | `fdf2100` | chore(residue): drop callerless tree_cpu, session_timeline, validate_commands and orphan test infrastructure |
+| 20 | `e245566` | B2: delete the provider probes and quota tools that tools/capacity.py replaces |
+| 17 | `c491dec` | chore(commands): delete the commands v2 drops; copy the Q12 set out |
+| 16 | `be097a1` | refactor(skills): orchestration rewritten to v2's routes, model table and capacity line |
+| 15 | `61f0e8f` | v2 (B14c): delete _prompt_provenance.py with its three unwired importers, and the cases that drove unwired members throu |
+| 11 | `77edb9a` | feat(doctrine): /plan and /drive replace the five drive commands and the drive spine |
+| 10 | `6c3004b` | chore(v2): delete dropped doctrine tools, their doc and two stale tests (B13) |
+| 10 | `bc54e1b` | feat(floor): T1's one deletion rule replaces _regenerable_clone.py (S5 review findings 1-2) |
+| 10 | `953c742` | Delete the usage tools superseded by usage_report, and their tests |
+| 9 | `3082449` | feat(review): /review replaces /plan_check and /session_audit (Q6 O2) |
+| 9 | `8df43c1` | chore(v2): delete benchmark, eval, routing and daemon residue (B13) |
+| 8 | `d975db2` | B7: delete the v1 compaction ledger, rails and sidecar reprompt hooks |
+| 8 | `db240e4` | feat(floor): the kept Bash helpers run through the one entry (B10, S5 review finding 7) |
+| 7 | `63206e3` | redesign(worklog): one path per job; drive selects and /drive ships; the forked skill reconciles |
+| 6 | `3fee481` | workflows: delete the review, probe and bench workflows that v2 drops |
+| 4 | `b263c64` | feat(commands): /close ends a session by composing /commit_push; --all absorbs /clean_push |
+| 4 | `e9f8a29` | redesign(codify): one-page /codify per Q5 O2; the top-5% fix-count rule carries its command |
+| 4 | `7a1b61f` | refactor(skills): instruction_quality is one file under 6 KB |
+| 4 | `db8b30e` | v2 (TB3): drop four doctrine-contract tests whose subjects are gone |
+| 4 | `fc7d937` | refactor(hooks): one chain runner for the five event dispatchers; the reaper runs once; the anchor finds worktrees |
+| 3 | `3ad8fea` | machine_slots: take PushinPotions' M1 bytes; drop the slot bootstrap |
+| 3 | `79c552e` | Delete the layer defaults files; the prose-seams proof loses its layer column |
+| 3 | `63d8b39` | chore(v2): delete the semantic-search memory measurements (B13) |
+| 3 | `7cffa6e` | v2 (C3): git_guardrails keeps its loss denies and drops the v1 close and proof machinery |
+| 2 | `efdc0d3` | B7: move the skill re-attach reader into _hook_state; delete _compaction_record.py and _compaction_rail.py |
+| 2 | `57926fc` | refactor(doctrine): A1 reference files drop deleted machinery |
+| 2 | `1eedb74` | refactor(skills): testing keeps the stack-neutral half |
+| 2 | `bade7bb` | test(suite): the case pool is deleted; its five users run as plain pytest functions |
+| 2 | `ee739b5` | tests: dispatch tests cover the one engine, not the removed files |
+| 2 | `00064bd` | dispatch.js and engine_src: one rails text, per-job post-return, closeCheck checks no claim |
+| 2 | `cbe9aa6` | refactor(workflows): the engines carry no verification stub, so the claim check has one path (B15) |
+| 2 | `71d29f6` | v2 (B14c): the five non-Bash dispatchers keep only shared members and run them in one path |
+| 2 | `45a6185` | refactor(floor): reap.py becomes the small stop tool kill_guard admits (S5d) |
+| 2 | `78485fc` | test(lf-guard): port the shell proof to pytest in process; delete the stale subagent-fallback proof |
+| 2 | `ac490ec` | v2 (C3): delete tools/work_key.py and its proof; no kept command needs a finished-work refusal |
+| 1 | `38716df` | refactor(doctrine): v2 shared core at 8 KB; CLAUDE.coding.md folds into it |
+| 1 | `3747664` | refactor(commands): /delegate launches native jobs and seats; the action protocol goes |
+| 1 | `5f59322` | refactor(commands): session scope and the subsystem gate leave the close receipt chain |
+| 1 | `cf1de7a` | refactor(commands): /harness_prune trimmed to plans, state files, worktrees, scratch and strays |
+| 1 | `e8f92fd` | refactor(profiles): the profile table keeps only fields a reader reads |
+| 1 | `ddbd89d` | fix(floor): one shell lexer; each delete and git discard judged from its parsed words |
+| 1 | `7aa2a28` | refactor(skills): architecture_philosophy, structure rules and design litmus tightened |
+| 1 | `c357073` | refactor(skills): debugging is stack-neutral with one router lookup |
+| 1 | `a80a748` | chore(tree): delete roadmap_next (MaddManager-local) and godot_architecture (no consumer) (A11) |
+| 1 | `e89a16a` | Replace the digest identity and full-output proof with per-mode tests (B8) |
+| 1 | `8635e71` | guard_denials: per-day and per-100-call output; logins from transcript_usage |
+| 1 | `f57f03c` | fix(digest): the resume tool drops its unread census and does one job per path |
+| 1 | `bb05104` | dispatch: one Workflow engine takes jobs or chains, and drops the verifier path |
+
+## Local files for S9
+
+Local files that were never in the shared tree and are named only so S9 keeps them: `tools/vault_sync.project.json` and `user_scope/manifest.local.json` (both `local` lock rows).
+
+### Local: MaddManager (2)
+```
+commands/review_prs.md
+commands/roadmap_next.md
+```
+
+`commands/review_prs.md` is pending Q2; `commands/review.md:14` still points at it and is left alone.
+
+### Local: each repo, outside auto-memory (10)
+```
 CLAUDE.md
+commands/checklists/known_failure_modes.md
+reference/memory_domains.md
+settings.base.json
+settings.coding.json
+settings.godot.json
+settings.project.json
+skills/project_subsystems/SKILL.md
+skills/project_subsystems/adaptation.json
+worklog-titles.md
+```
+
+Every path under `auto-memory/` is local to each repo (V14).
+
+### Local: each repo, auto-memory (175)
+```
+auto-memory/MEMORY.md
+auto-memory/arch_rule_closed_set_switch.md
+auto-memory/arch_rule_packedscene_resource_inline_copy.md
+auto-memory/arch_rule_resource_config_runtime_split.md
+auto-memory/archive/.gitkeep
+auto-memory/archive/Blackboard_NullStorage_Asymmetry.md
+auto-memory/archive/arch_rule_absent_input_needs_its_own_outcome_value.md
+auto-memory/archive/arch_rule_atomic_rename_tmp_is_durable.md
+auto-memory/archive/arch_rule_autoload_line_earns_its_place.md
+auto-memory/archive/arch_rule_autonomous_loop_positive_liveness.md
+auto-memory/archive/arch_rule_bb_flag_cross_system.md
+auto-memory/archive/arch_rule_constraint_scope_match_input_axis.md
+auto-memory/archive/arch_rule_convention_binds_only_authored_artifacts.md
+auto-memory/archive/arch_rule_event_not_magnitude_gates_behavior.md
+auto-memory/archive/arch_rule_frozen_upstream_needs_informed_ordering.md
+auto-memory/archive/arch_rule_greedy_commit_honor_declared_choice.md
+auto-memory/archive/arch_rule_hysteresis_for_analog_hsm_boundaries.md
+auto-memory/archive/arch_rule_invulnerability_via_health_flags.md
+auto-memory/archive/arch_rule_latch_after_the_operation_it_guards.md
+auto-memory/archive/arch_rule_onexit_must_not_clobber_consumer_onenter.md
+auto-memory/archive/arch_rule_pragmatic_narrowing_at_boundary.md
+auto-memory/archive/arch_rule_rule_state_scope_via_context.md
+auto-memory/archive/arch_rule_test_namespace_matches_gate_filter.md
+auto-memory/archive/arch_rule_transition_condition_stateless.md
+auto-memory/archive/arch_rule_windowed_history_component_condition_split.md
+auto-memory/archive/arch_rule_world_space_constant_hides_geometry_assumption.md
+auto-memory/archive/archive_claude_code_permissions_location.md
+auto-memory/archive/archive_hook_gotchas.md
+auto-memory/archive/diagnose_specific_objection_before_pivot.md
+auto-memory/archive/feedback_absence_is_not_a_defect_until_dated.md
+auto-memory/archive/feedback_brief_the_defect_class_not_your_candidate_list.md
+auto-memory/archive/feedback_briefing_context_gates_not_flow.md
+auto-memory/archive/feedback_command_descriptions_one_line.md
+auto-memory/archive/feedback_considerations_consume_perception_not_queries.md
+auto-memory/archive/feedback_control_run_before_bisecting_a_runtime_failure.md
+auto-memory/archive/feedback_controlled_contrast_or_it_proves_nothing.md
+auto-memory/archive/feedback_dont_batch_dependent_call_with_its_inputs.md
+auto-memory/archive/feedback_dont_compress_socratic_on_rich_prompt.md
+auto-memory/archive/feedback_dont_defer_existing_framework_abstractions.md
+auto-memory/archive/feedback_enforce_not_promise.md
+auto-memory/archive/feedback_excluded_and_broken_look_identical.md
+auto-memory/archive/feedback_fix_self_introduced_regression_immediately.md
+auto-memory/archive/feedback_gate_invalid_targeted_verification.md
+auto-memory/archive/feedback_godot_signal_test_via_emitsignal.md
+auto-memory/archive/feedback_harness_rules_are_agent_actionable.md
+auto-memory/archive/feedback_live_hook_edits_keep_each_state_importable.md
+auto-memory/archive/feedback_lsp_default_for_csharp.md
+auto-memory/archive/feedback_memory_file_refs_no_markdown_links.md
+auto-memory/archive/feedback_memory_md_is_auto_managed.md
+auto-memory/archive/feedback_model_agnostic_core_scoped_overlays.md
+auto-memory/archive/feedback_move_destination_must_be_read.md
+auto-memory/archive/feedback_no_performative_agreement.md
+auto-memory/archive/feedback_nullable_return_naming.md
+auto-memory/archive/feedback_one_observation_licenses_a_hypothesis_never_a_scope_decision.md
+auto-memory/archive/feedback_orchestration_skill_model_agnostic.md
+auto-memory/archive/feedback_pathspec_commit_stage_infra_deps.md
+auto-memory/archive/feedback_pin_derivations_across_parameter_sweep.md
+auto-memory/archive/feedback_plan_check_auto_surface_on_exit.md
+auto-memory/archive/feedback_plan_files_are_context_free_execution_docs.md
+auto-memory/archive/feedback_plan_mode_retired_from_planning_flow.md
+auto-memory/archive/feedback_plan_pending_requires_impl_arch_not_seam.md
+auto-memory/archive/feedback_prefer_data_params_over_injected_delegates.md
+auto-memory/archive/feedback_prescribe_verification_not_cognition.md
+auto-memory/archive/feedback_read_files_enumerate_first.md
+auto-memory/archive/feedback_read_files_output_volume_governs_spill.md
+auto-memory/archive/feedback_reconcile_structure_against_existing_subsystems.md
+auto-memory/archive/feedback_review_cannot_see_a_wrong_altitude_seam.md
+auto-memory/archive/feedback_session_end_command_over_passive_nudge.md
+auto-memory/archive/feedback_session_end_full_scope.md
+auto-memory/archive/feedback_session_start_hook_does_not_override_skill_procedure.md
+auto-memory/archive/feedback_skill_vs_command_frontmatter_convention.md
+auto-memory/archive/feedback_slash_command_naming.md
+auto-memory/archive/feedback_test_fixture_must_match_production_topology.md
+auto-memory/archive/feedback_tool_routing_discipline.md
+auto-memory/archive/feedback_typed_state_over_bb_flag_soup.md
+auto-memory/archive/feedback_user_distress_lexicon.md
+auto-memory/archive/feedback_verify_type_contract_before_design_lock.md
+auto-memory/archive/gotcha_author_lane_edit_clips_method_header.md
+auto-memory/archive/gotcha_authoring_validator_needs_static_resolvable_reference.md
+auto-memory/archive/gotcha_baseline_forked_file_drifts_behind.md
+auto-memory/archive/gotcha_baseline_wrong_repo_url_silent_fallback.md
+auto-memory/archive/gotcha_bash_windows_path_separator_mixing.md
+auto-memory/archive/gotcha_blackboard_stringname_variant_boxing.md
+auto-memory/archive/gotcha_blackboard_valuetype_subscriber_gets_variant.md
+auto-memory/archive/gotcha_component_caches_bb_dependency_post_init_injection_noop.md
+auto-memory/archive/gotcha_config_exception_node_bound_not_static.md
+auto-memory/archive/gotcha_default_interface_method_for_base_member.md
+auto-memory/archive/gotcha_editing_shell_script_corrupts_running_instances.md
+auto-memory/archive/gotcha_editor_resave_drops_unloadable_ext_resource.md
+auto-memory/archive/gotcha_empty_tween_never_fires_finished.md
+auto-memory/archive/gotcha_errorsonly_build_hides_cref_drift.md
+auto-memory/archive/gotcha_explicit_dim_orphans_on_base_interface_removal.md
+auto-memory/archive/gotcha_gdunit4_filter_uses_test_class_name.md
+auto-memory/archive/gotcha_global_vs_project_claude_dir.md
+auto-memory/archive/gotcha_godot_resource_cache_stateful_tres_test_isolation.md
+auto-memory/archive/gotcha_godot_resourcesaver_extension_dispatch.md
+auto-memory/archive/gotcha_godot_variant_int64_fold.md
+auto-memory/archive/gotcha_long_context_gpt_sessions_cost_by_context_size.md
+auto-memory/archive/gotcha_merge_silently_drops_one_sided_add.md
+auto-memory/archive/gotcha_model_availability_probe_error_is_generic.md
+auto-memory/archive/gotcha_namespace_rename_breaks_relative_using.md
+auto-memory/archive/gotcha_native_workflow_agent_compaction.md
+auto-memory/archive/gotcha_program_spawned_shell_is_not_your_shell.md
+auto-memory/archive/gotcha_prove_a_guard_by_making_it_fire.md
+auto-memory/archive/gotcha_pure_clr_poco_mirror_payload_type.md
+auto-memory/archive/gotcha_registry_prose_asserts_world_state.md
+auto-memory/archive/gotcha_regression_gate_baseline_inflation.md
+auto-memory/archive/gotcha_relocation_doccomment_cref_boundary.md
+auto-memory/archive/gotcha_schedulewakeup_is_loop_only.md
+auto-memory/archive/gotcha_schema_version_bump_breaks_version_tests.md
+auto-memory/archive/gotcha_session_start_submodule_autofix_detaches_head.md
+auto-memory/archive/gotcha_sidecar_lane_routes_report_through_write_doc.md
+auto-memory/archive/gotcha_simulateframes_no_physics_tick.md
+auto-memory/archive/gotcha_sprite3d_typed_ref_excludes_animatedsprite3d.md
+auto-memory/archive/gotcha_type_name_equals_namespace_leaf.md
+auto-memory/archive/gotcha_workflow_args_generation_fidelity.md
+auto-memory/archive/gotcha_workflow_args_permission_control_chars.md
+auto-memory/archive/gotcha_workflow_fanout_search_false_absence.md
+auto-memory/archive/gotcha_workflow_single_flight_concurrency.md
+auto-memory/archive/gotcha_write_doc_callout_embedded_table_missing_prefix.md
+auto-memory/archive/ground_in_system_purpose_before_subpart_plan.md
+auto-memory/archive/jmodot_2d_movement_architecture.md
+auto-memory/archive/jmodot_combat_factory_defaults_seam.md
+auto-memory/archive/jmodot_framework_boundary_rule.md
+auto-memory/archive/powershell_emit_pollutes_return_value.md
+auto-memory/archive/powershell_statement_paren_gotcha.md
+auto-memory/archive/precedent_is_evidence_not_authority.md
+auto-memory/archive/process_rule_plan_high_execute_lower.md
+auto-memory/feedback_completion_is_not_engagement.md
+auto-memory/feedback_design_workflow_model_mix.md
+auto-memory/feedback_dispatch_transport_is_session_bound.md
+auto-memory/feedback_doc_revision_in_place.md
+auto-memory/feedback_dont_unilaterally_reduce_planned_scope.md
+auto-memory/feedback_fix_the_class_not_the_instance.md
+auto-memory/feedback_honor_execution_directive.md
+auto-memory/feedback_inspect_existing_abstractions_first.md
+auto-memory/feedback_no_unilateral_condensation.md
+auto-memory/feedback_orchestrate_loads_orchestration_skill.md
+auto-memory/feedback_plan_worklog_items_from_source_not_mirror.md
+auto-memory/feedback_prefer_typed_shapes_over_empty_markers.md
+auto-memory/feedback_price_the_tradeoff_before_recommending_it.md
+auto-memory/feedback_read_files_multifile_completeness_directive.md
+auto-memory/feedback_recommended_fix_means_implement.md
+auto-memory/feedback_refactor_parity_audit.md
+auto-memory/feedback_resolve_questions_in_plan_not_execution.md
+auto-memory/feedback_separate_preexisting_changes_before_commit.md
+auto-memory/feedback_spec_strength_sets_agent_tier.md
+auto-memory/feedback_verbatim_content_to_review_agents.md
+auto-memory/feedback_verify_explore_agent_empirical_claims.md
+auto-memory/feedback_verify_plan_integration_target_is_live.md
+auto-memory/gotcha_auto_mode_classifier_fail_closed.md
+auto-memory/gotcha_baseline_clone_push_workflow.md
+auto-memory/gotcha_cascade_gate_vacuous_without_godot_bin.md
+auto-memory/gotcha_cross_project_memory_index_autoload.md
+auto-memory/gotcha_design_doc_cross_section_prescriptions.md
+auto-memory/gotcha_editor_reserialize_value_export_null_strip.md
+auto-memory/gotcha_export_enum_out_of_range_silent_false.md
+auto-memory/gotcha_gdunit4_simulateframes_is_process_frames.md
+auto-memory/gotcha_getfirstchildof_logs_error_on_miss.md
+auto-memory/gotcha_gitignore_build_glob_swallows_production_dirs.md
+auto-memory/gotcha_godot4_uid_only_refs_break_orphan_detection.md
+auto-memory/gotcha_godot_editor_plugin_pair_conflict.md
+auto-memory/gotcha_godot_typed_dictionary.md
+auto-memory/gotcha_grep_brace_glob_silent_zero.md
+auto-memory/gotcha_inherited_scene_empty_resource_slot.md
+auto-memory/gotcha_inherited_scene_override_replaces_never_merges.md
+auto-memory/gotcha_self_reported_model_identity_is_not_authority.md
+auto-memory/gotcha_semantic_search_restricttodir_posix.md
+auto-memory/gotcha_subscribe_before_synchronous_fire_bind.md
+auto-memory/gotcha_survey_absence_feature_lives_on_unmerged_branch.md
+auto-memory/gotcha_synthetic_fixture_hides_real_input_failure.md
+auto-memory/gotcha_tscn_csharp_node_exports_need_node_paths.md
+auto-memory/gotcha_unhandled_ready_exception_invisible_in_log.md
+auto-memory/process_rule_spec_doc_coverage.md
+auto-memory/user_feedback_is_speech_to_text.md
+```
+
+### Local: PushinPotions (255)
+```
+CLAUDE.godot.md
 cloud-setup.sh
 commands/agents/pr_test_checklist_conventions.md
 commands/agents/structure_audit_agents.md
+commands/aiworker_write_doc_audit.md
 commands/analyze_godot_logs.md
 commands/audit_test_accessors.md
 commands/checklists/code_quality_godot.md
 commands/checklists/test_quality_godot.md
+commands/doc_workflow_battery.md
 commands/pr_test_checklist.md
 commands/reference/create_pr_jmodot.md
 commands/reference/pr_ready_boot_correlation.md
@@ -76,6 +333,7 @@ commands/reference/workstation_setup_toolchain.md
 commands/regression_gate.md
 commands/structure_audit.md
 commands/test_compact.md
+commands/worker_audit.md
 githooks/pre-commit
 githooks/pre-merge-commit
 guards/author.godot.md
@@ -109,12 +367,14 @@ hooks/uid_cache_audit.py
 prototype_registry.md
 reference/godot_class_index.md
 reference/project_stack.md
+reference/rules/csharp_lsp_examples.md
 reference/rules/csharp_patterns_examples.md
 reference/rules/jmodot_utilities_examples.md
 reference/scene_construction.md
 reference/source_trust_godot.md
 reference/vault_taxonomy.md
 rules/cloud_dev.md
+rules/csharp_lsp.md
 rules/csharp_patterns.md
 rules/godot_files.md
 rules/hsm_bt_patterns.md
@@ -138,6 +398,8 @@ scripts/TreeDigest.ps1
 scripts/TwinCheckout.ps1
 scripts/WideRunGuard.ps1
 scripts/batch_diagnosis.ps1
+scripts/doc_diff_check.py
+scripts/doc_warning_check.sh
 scripts/engine_userdata.py
 scripts/fetch_source.d/godot_docs.sh
 scripts/fetch_source.sh
@@ -156,10 +418,6 @@ scripts/sdf_suite/envelope_head.txt
 scripts/sdf_suite/preflight_opencode.py
 scripts/sdf_suite/proposed/generate_breakdown.SDF_RESULT_FILES.patch
 scripts/verify.ps1
-settings.base.json
-settings.coding.json
-settings.godot.json
-settings.project.json
 skills/benchmark_design/SKILL.md
 skills/benchmark_design/reference/axis_design.md
 skills/benchmark_design/reference/board_publication.md
@@ -171,6 +429,7 @@ skills/benchmark_design/reference/grid_health.md
 skills/benchmark_design/reference/scoring.md
 skills/benchmark_design/reference/staircase_construction.md
 skills/benchmark_design/reference/validation_probes.md
+skills/debugging/reference/symptom_router_godot.md
 skills/diagnostics_toolkit/scripts/classify_godot_log.ps1
 skills/environment_bootstrap/SKILL.md
 skills/game_vision/SKILL.md
@@ -195,19 +454,22 @@ skills/parameterized_asset_pipeline/templates/icons.py
 skills/parameterized_asset_pipeline/templates/lint_core.py
 skills/parameterized_asset_pipeline/templates/palette.py
 skills/parameterized_asset_pipeline/templates/theme_gen.py
-skills/project_subsystems/SKILL.md
-skills/project_subsystems/adaptation.json
+skills/project_subsystems/adaptation.godot.json
 skills/prototype/SKILL.md
 skills/prototype/reference/probe_verification.md
 skills/refactor_procedure/SKILL.md
 skills/shader_authoring/SKILL.md
 skills/sprite_authoring/SKILL.md
 skills/status_effect_authoring/SKILL.md
+skills/testing/advanced.md
+skills/testing/reference/authoring.md
+skills/testing/scene_runner.md
 skills/vfx_patterns/SKILL.md
 skills/vfx_patterns/reference/glow_and_particles.md
 skills/vfx_patterns/reference/interfaces_and_files.md
 tests/_commit_guard_cases.py
 tests/_merge_guard_cases.py
+tests/_pwsh_drive.py
 tests/agent_fixtures/linux_proc/dotnet_test_capture.json
 tests/csharp-ls-adapter_contract_test.js
 tests/test_CSharpSource.py
@@ -251,6 +513,9 @@ tests/test_main_check.py
 tests/test_merge_build_check.py
 tests/test_pattern_enforcer_autofix.py
 tests/test_pattern_enforcer_logging_scope.py
+tests/test_pattern_enforcer_own_worktree_part2.py
+tests/test_pattern_enforcer_own_worktree_part3.py
+tests/test_pattern_enforcer_own_worktree_part4.py
 tests/test_pattern_enforcer_tool_cascade.py
 tests/test_pr_playtest_source_contract.py
 tests/test_prototype_containment_guard_commit_detection.py
@@ -303,38 +568,90 @@ tools/test_profile.py
 tools/type_decls.py
 tools/void_check.py
 tools/workstation_profile_godot.py
+user_scope/hooks/ollama_healthcheck.py
 workflows/effort_on_agenttype_probe.js
-worklog-titles.md
 ```
 
-## Every other deleted path (V7, V8, V9, V10, V11, Q15, floor-absorbed, replaced guards, dead tests)
+## Delete
 
-### commands/ (1)
-
+### Delete (898)
 ```
+CLAUDE.coding.md
+commands/agents/orchestrator_action_protocol.md
+commands/agents/plan_check_agents.md
+commands/agents/review_agents.md
 commands/agents/review_agents_godot.md
-```
-
-### guards/ (7)
-
-```
+commands/agents/review_fold.md
+commands/agents/session_audit_agents.md
+commands/agents/transcript_nuance_recall.md
+commands/apply_harness_edits.md
+commands/autolearn.md
+commands/clean_push.md
+commands/delegation_usage.md
+commands/design_drive.md
+commands/eval_dashboard.md
+commands/feature_drive.md
+commands/instruction_audit.md
+commands/ladder_ingest.md
+commands/orchestration_metrics.md
+commands/part_drive.md
+commands/part_execute.md
+commands/pin_ab.md
+commands/plan_check.md
+commands/plan_handoff.md
+commands/quota_dashboard.md
+commands/reference/codify_derivation.md
+commands/reference/codify_landing.md
+commands/reference/codify_memory.md
+commands/reference/codify_text_probe.md
+commands/reference/eval_analysis.md
+commands/reference/harness_prune_census.md
+commands/reference/ladder_board_sweep.md
+commands/reference/plan_check_detail.md
+commands/reference/session_audit_parity.md
+commands/reference/session_audit_seats.md
+commands/reference/session_end_main_check.md
+commands/reference/sync_baseline_maintainer.md
+commands/reference/worklog_add.md
+commands/reference/worklog_complete.md
+commands/reference/worklog_drive_execute.md
+commands/reference/worklog_mirror.md
+commands/reference/worklog_promote_unblock.md
+commands/reference/worklog_show.md
+commands/reference/worklog_sweep.md
+commands/routing_audit.md
+commands/rule_consistency.md
+commands/self_evaluate.md
+commands/session_audit.md
+commands/session_end.md
+commands/session_refresh.md
+commands/sync_baseline.md
+commands/test_agents.md
 guards/author.coding.md
 guards/author.md
 guards/common.md
 guards/gate.md
 guards/review.md
+guards/single_flight.json
 guards/survey.coding.md
 guards/survey.md
-```
-
-### hooks/ (45)
-
-```
+hooks/README.md
+hooks/_command_text.py
+hooks/_compaction_rail.py
+hooks/_compaction_record.py
+hooks/_dispatch_checks.py
+hooks/_dispatch_pins.py
+hooks/_model_tier.py
+hooks/_prompt_provenance.py
+hooks/_pull_proof.py
+hooks/_regenerable_clone.py
+hooks/_session_transport.py
 hooks/activity_registry.py
 hooks/amend_delivery.py
 hooks/approving_gates.py
 hooks/baseline_classification_guard.py
 hooks/budget_posture.py
+hooks/compact_directive_ledger.py
 hooks/composed_output_guard.py
 hooks/critical_analysis_reminder.py
 hooks/denial_coach.py
@@ -342,12 +659,14 @@ hooks/design_surface_reminder.py
 hooks/dispatch_mechanism_guard.py
 hooks/dispatch_table.py
 hooks/duplicate_commit_check.py
+hooks/file_size_preblock.py
 hooks/gate_cadence_guard.py
 hooks/git_guardrails.py
 hooks/hand_pricing_advisory.py
 hooks/harness_edit_skill_reminder.py
 hooks/harness_growth_guard.py
 hooks/harness_shell_write_guard.py
+hooks/indexed_reference_guard.py
 hooks/log_instruction_loads.py
 hooks/memory_hits_logger.py
 hooks/model_ladder_gate.py
@@ -356,7 +675,9 @@ hooks/model_name_guard.py
 hooks/plan_job_map_guard.py
 hooks/plan_memory_reminder.py
 hooks/pre_bash_dispatch.py
+hooks/prompt_memory_loader.py
 hooks/provenance_label_guard.py
+hooks/provider_capacity_guard.py
 hooks/rail_probe_guard.py
 hooks/readonly_lens_write_guard.py
 hooks/readonly_marker_arm.py
@@ -368,46 +689,49 @@ hooks/self_eval_archive_guard.py
 hooks/session_model_rails.py
 hooks/shell_census.py
 hooks/sidecar_dispatch_context.py
+hooks/sidecar_recompact_reprompt.py
 hooks/sidecar_watch_rearm.py
 hooks/skill_load_marker.py
+hooks/subagent_compaction_rail.py
 hooks/task_brief_facts.py
+hooks/tool_routing_cumulative_reset.py
 hooks/tool_routing_nudge.py
+hooks/tool_routing_prompt_synthesis.py
 hooks/triage_commit_check.py
+hooks/video_read_hint.py
 hooks/wide_test_guard.py
 hooks/workflow_provider_guard.py
-```
-
-### reference/ (8)
-
-```
 reference/codex_session_runbook.md
+reference/evidence_contract.md
 reference/external_models.json
 reference/known_failure_modes_entries.md
+reference/memory_domains.base.md
 reference/model_ladder_evidence.md
 reference/opencode_run_preamble.md
 reference/reproduce_review_dedup.cjs
 reference/sidecar_dispatch.md
 reference/sidecar_runs.md
-```
-
-### schemas/ (1)
-
-```
 schemas/review_findings.json
-```
-
-### scripts/ (20)
-
-```
 scripts/_read_recorder/node_recorder.js
 scripts/_read_recorder/sitecustomize.py
+scripts/_slot_bootstrap/bash_slots.sh
+scripts/_slot_bootstrap/node_slots.js
+scripts/_slot_bootstrap/sitecustomize.py
+scripts/anthropic_capacity_probe.py
 scripts/anthropic_console_secondary_sidecar.sh
 scripts/anthropic_console_sidecar.sh
 scripts/anthropic_secondary_sidecar.sh
 scripts/anthropic_sidecar.sh
 scripts/autolearn.sh
+scripts/check_learnings.sh
+scripts/codex_effort_probe.py
 scripts/codex_proxy_sidecar.sh
+scripts/codex_quota_probe.py
+scripts/console_credit_audit.py
+scripts/console_credit_probe.py
+scripts/deepseek_balance_probe.py
 scripts/deepseek_sidecar.sh
+scripts/go_quota_probe.py
 scripts/harness_tests.py
 scripts/lib/below_normal_shell.sh
 scripts/lib/ccp_probe.py
@@ -418,26 +742,56 @@ scripts/lib/text_only_shim.py
 scripts/opencode_refresh_models.py
 scripts/opencode_sidecar.sh
 scripts/rail_battery/probes.json
+scripts/validate_commands.py
 scripts/worklog_relevance_sidecar.sh
-```
-
-### skills/ (1)
-
-```
+skills/_brainstorm_shared/drive_close.md
+skills/_brainstorm_shared/drive_execution.md
+skills/_brainstorm_shared/drive_spine.md
+skills/_brainstorm_shared/execution_depth.md
+skills/_brainstorm_shared/rigor_stages.md
+skills/architecture_philosophy/reference/deletion_test.md
+skills/debugging/reference/symptom_router.md
+skills/godot_architecture/SKILL.md
+skills/instruction_quality/reference/claims_and_wording.md
+skills/instruction_quality/reference/hooks.md
+skills/instruction_quality/reference/orchestration.md
+skills/instruction_quality/reference/skills_and_commands.md
+skills/orchestration/reference/budget_posture.md
+skills/orchestration/reference/checkpointing.md
+skills/orchestration/reference/dispatch_rows.md
+skills/orchestration/reference/drive_dispatch.md
+skills/orchestration/reference/effort.md
+skills/orchestration/reference/integration.md
+skills/orchestration/reference/later_rounds.md
+skills/orchestration/reference/model_evidence.md
+skills/orchestration/reference/result_retrieval.md
+skills/orchestration/reference/review_width.md
+skills/orchestration/reference/rigor.md
+skills/orchestration/reference/slice_pins.md
+skills/orchestration/reference/spend_lean.md
+skills/orchestration/reference/workflow_authoring.md
+skills/orchestration/reference/worktrees.md
+skills/orchestration/reference/writer_returns.md
+skills/project_subsystems/adaptation.coding.defaults.json
 skills/project_subsystems/adaptation.coding.json
-```
-
-### tests/ (408)
-
-```
+skills/project_subsystems/adaptation.godot.defaults.json
+skills/project_subsystems/adaptation.pure.defaults.json
+skills/testing/reference/logic_tdd.md
+skills/testing/reference/running.md
+tests/_case_pool.py
 tests/_citer_boundary_cases.py
 tests/_display_words.py
+tests/_engine_masks.js
 tests/_git_bash.js
 tests/_harness_repo_case.py
 tests/_ledger_rows.py
+tests/_lock_rows.py
 tests/_mcp_plant.py
+tests/_om_session_fixture.py
+tests/_registry_ids.js
 tests/_runner_fixture.py
 tests/_settings_probe.py
+tests/_settings_routing.py
 tests/_sidecar_launch.py
 tests/_transport_fixture.py
 tests/_walk_files.py
@@ -447,11 +801,35 @@ tests/agent_fixtures/smoke/sa_robustness_performance.md
 tests/codify_prompt_fixture/5a10d094_owner_rows.jsonl
 tests/dispatch_chains_transport_test.js
 tests/dispatch_spill_root_test.js
+tests/dispatch_verifier_note_test.js
+tests/engine_close_check_label_test.js
+tests/engine_close_check_remaining_test.js
+tests/engine_close_check_test.js
 tests/fixtures/analyze_eval_archive/console.txt
 tests/fixtures/analyze_eval_archive/stats.json
 tests/fixtures/compact_bloat/rows.jsonl
+tests/fixtures/compaction_state/rows.jsonl
+tests/fixtures/daemon_dry_run/dry_run.golden.txt
 tests/fixtures/dispatch_kind_init_events.json
 tests/fixtures/dispatch_m6_jobs.json
+tests/fixtures/dispatch_table/clean_launch_row.json
+tests/fixtures/dispatch_table/fanout_detach_output.txt
+tests/fixtures/dispatch_table/handoff_then_sidecar_pending.json
+tests/fixtures/evidence/review/journal.jsonl
+tests/fixtures/evidence/review/missing.txt
+tests/fixtures/evidence/review/tracked.txt
+tests/fixtures/evidence/review/tree/.claude/commands/agents/orchestrator_action_protocol.md
+tests/fixtures/evidence/review/tree/.claude/commands/agents/plan_check_agents.md
+tests/fixtures/evidence/review/tree/.claude/commands/commit_push.md
+tests/fixtures/evidence/review/tree/.claude/commands/plan_check.md
+tests/fixtures/evidence/review/tree/.claude/hooks/_commit_scope.py
+tests/fixtures/evidence/review/tree/.claude/hooks/git_guardrails.py
+tests/fixtures/evidence/review/tree/.claude/plans/egr-a-in-run-verification.md
+tests/fixtures/evidence/review/tree/.claude/plans/egr-b-premise-gate.md
+tests/fixtures/evidence/review/tree/.claude/skills/_brainstorm_shared/drive_spine.md
+tests/fixtures/evidence/review/tree/.claude/tools/sidecar_fanout.py
+tests/fixtures/evidence/review/tree/.claude/tools/task_record.py
+tests/fixtures/evidence/review/tree/.claude/workflows/explore_fanout.js
 tests/fixtures/gate_trend/gate_run_20261026-162451-95356.out
 tests/fixtures/gate_trend/gate_run_20261101-232503-25176.out
 tests/fixtures/gate_trend/gate_run_20261102-040801-45292.out
@@ -459,10 +837,36 @@ tests/fixtures/gate_trend/gate_run_20261111-070510-38248.out
 tests/fixtures/gate_trend/gate_run_20261111-084808-37220.out
 tests/fixtures/gate_trend/gate_run_20261111-102846-1416.out
 tests/fixtures/go_usage/glm_go_result.json
+tests/fixtures/main_check/baseline_linux_failed.log
+tests/fixtures/main_check/close_record_green.json
+tests/fixtures/main_check/close_record_timeout.json
 tests/fixtures/model_ladder_gate_bash_result.json
 tests/fixtures/om_failed_retry/subagents/workflows/wf_3193d0a9-1e4/journal.jsonl
 tests/fixtures/om_failed_retry/workflows/wf_3193d0a9-1e4.json
+tests/fixtures/om_session_pending/exec/codify-exec-floor.record.json
+tests/fixtures/om_session_pending/exec/codify-exec-floor.record.json.exit
+tests/fixtures/om_session_pending/exec/codify-exec-watch.record.json
+tests/fixtures/om_session_pending/exec/codify-exec-watch.record.json.exit
+tests/fixtures/om_session_pending/exec/fanout-f93acb84-24fd-4333-b641-992660dbf2f6.inventory.json
+tests/fixtures/om_session_pending/exec_out/exec-gatefix.record.json
+tests/fixtures/om_session_pending/exec_out/exec-gatefix.record.json.pid
+tests/fixtures/om_session_pending/exec_out/fanout-2109d988-73f6-4f6d-87a5-781ad8d7e51a.inventory.json
+tests/fixtures/om_session_pending/run2/codify-4.record.json
+tests/fixtures/om_session_pending/run2/codify-4.record.json.exit
+tests/fixtures/om_session_pending/run2/codify-5.record.json
+tests/fixtures/om_session_pending/run2/codify-5.record.json.exit
+tests/fixtures/om_session_pending/run2/fanout-36677287-f53f-47c7-879d-096d169f55ce.inventory.json
+tests/fixtures/om_session_pending/transcript.jsonl
+tests/fixtures/orchestration_archive_summary/console.txt
+tests/fixtures/owner_discard_answer_row.json
 tests/fixtures/plan_check_doctrine_consistency_replay.spill.md
+tests/fixtures/pricing/wfspend/61a50469-e2df-4f40-a2dc-abaa08dc2480.jsonl
+tests/fixtures/pricing/wfspend/record.json
+tests/fixtures/pricing/wfspend/subagents/workflows/wf_7bb35523-cf4/agent-a062d08947bc597a4.jsonl
+tests/fixtures/pricing/wfspend/subagents/workflows/wf_7bb35523-cf4/agent-a062d08947bc597a4.meta.json
+tests/fixtures/pricing/wfspend/subagents/workflows/wf_7bb35523-cf4/agent-aa654b8b7a22d05e3.jsonl
+tests/fixtures/pricing/wfspend/subagents/workflows/wf_7bb35523-cf4/agent-aa654b8b7a22d05e3.meta.json
+tests/fixtures/restate_scan/i6_1/.claude/reference/sidecar_dispatch.md.txt
 tests/fixtures/review_gap_only_seat_return.json
 tests/fixtures/sidecar_journal/failed_launch/failed.record.json
 tests/fixtures/sidecar_journal/failed_launch/failed.record.json.exit
@@ -472,6 +876,7 @@ tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json
 tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.exit
 tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.out
 tests/fixtures/sidecar_journal/foreground_launch/journaled.record.json.pid
+tests/fixtures/sidecar_watch_rearm/workflow_launch.jsonl
 tests/fixtures/stop_audit/review_fold_native/SOURCE.txt
 tests/fixtures/stop_audit/review_fold_native/in_run_report.json
 tests/fixtures/stop_audit/review_fold_native/result.json
@@ -483,11 +888,18 @@ tests/fixtures/stop_audit/worklog_relevance/SOURCE.txt
 tests/fixtures/stop_audit/worklog_relevance/in_run_report.json
 tests/fixtures/stop_audit/worklog_relevance/journal.jsonl
 tests/fixtures/stop_audit/worklog_relevance/result.json
+tests/fixtures/transcript_worktree_add_row.json
 tests/fixtures/v1_check_golden.json
+tests/fixtures/wide_test_guard/lane_author_payload.json
+tests/fixtures/workflow_replay/session/subagents/workflows/wf_7c3b636b-5e2/journal.jsonl
+tests/fixtures/workflow_replay/session/workflows/wf_7c3b636b-5e2.json
 tests/fold_routing_vectors.json
 tests/lean_type_fallback_test.js
+tests/lib/measure_common.ps1
 tests/linux_preview_green.fixture.log
 tests/linux_preview_red.fixture.log
+tests/measure_semantic_search_idle.ps1
+tests/measure_semantic_search_shared.ps1
 tests/read_coverage_corpus.json
 tests/review_fanout_lossless_test.js
 tests/review_fanout_mandate_map_schema_test.js
@@ -502,6 +914,7 @@ tests/test_aggregate_routing_audit.py
 tests/test_ai_worker_metrics.py
 tests/test_amend_delivery.py
 tests/test_analyze_eval_archive.py
+tests/test_anthropic_capacity_probe.py
 tests/test_anthropic_console_credentials.sh
 tests/test_anthropic_console_secondary_sidecar.py
 tests/test_anthropic_console_sidecar.py
@@ -527,15 +940,23 @@ tests/test_budget_posture_cadence.py
 tests/test_budget_posture_dispatch_cache.py
 tests/test_budget_posture_rating_debt.py
 tests/test_budget_posture_transport.py
+tests/test_case_pool.py
 tests/test_ccp_probe_continuation.py
 tests/test_ccp_probe_identity.py
+tests/test_check_learnings.py
 tests/test_citer_coverage.py
+tests/test_citers.py
 tests/test_claude_core_standalone.py
 tests/test_claudemd_citations.py
 tests/test_cli_envelope.py
+tests/test_close_predicates.py
 tests/test_codex_child_timeout.py
+tests/test_codex_effort_probe.py
 tests/test_codex_proxy_sidecar.py
+tests/test_codex_quota_probe.py
 tests/test_codify_prompt.py
+tests/test_compact_directive_ledger.py
+tests/test_compaction_intent.py
 tests/test_compaction_state.py
 tests/test_composed_output_guard.py
 tests/test_conformance_j1.py
@@ -544,13 +965,29 @@ tests/test_conformance_j3.py
 tests/test_conformance_j4.py
 tests/test_conformance_j6.py
 tests/test_conformance_j7.py
+tests/test_conformance_j8.py
+tests/test_console_credit_audit.py
+tests/test_console_credit_probe.py
 tests/test_critical_analysis_reminder.py
+tests/test_dangerous_shell_guard_absent_target.py
+tests/test_dangerous_shell_guard_cache_cleanup.py
+tests/test_dangerous_shell_guard_owned_temp_cleanup.py
+tests/test_dangerous_shell_guard_rm_scope.py
+tests/test_dangerous_shell_guard_session_dir.py
+tests/test_deepseek_balance_probe.py
 tests/test_deepseek_sidecar.py
 tests/test_delegate_prepare.py
 tests/test_denial_coach.py
 tests/test_design_surface_reminder.py
+tests/test_digest_identity_and_full_output.py
+tests/test_dispatch_checks.py
+tests/test_dispatch_checks_pick_owner.py
 tests/test_dispatch_lifecycle_replay.py
 tests/test_dispatch_mechanism_guard.py
+tests/test_dispatch_pins.py
+tests/test_dispatch_result.py
+tests/test_dispatch_result_completion.py
+tests/test_dispatch_result_report.py
 tests/test_dispatch_size.py
 tests/test_dispatch_table.py
 tests/test_dispatch_table_part2.py
@@ -559,6 +996,7 @@ tests/test_dispatch_table_verification.py
 tests/test_dispatch_take.py
 tests/test_doc_diff_check.py
 tests/test_doc_warning_check.py
+tests/test_drive_phase_links.py
 tests/test_duplicate_commit_check.py
 tests/test_duplicate_commit_check_project.py
 tests/test_escape_log.py
@@ -570,7 +1008,9 @@ tests/test_exhausted_marker.py
 tests/test_explore_result.py
 tests/test_extract_numbers.py
 tests/test_extract_subagent_tools.py
+tests/test_fanout_jobs_object_form.py
 tests/test_fanout_needs.py
+tests/test_file_size_preblock.py
 tests/test_finding_bar.py
 tests/test_finding_ids.py
 tests/test_fold_check.py
@@ -588,16 +1028,22 @@ tests/test_git_guardrails_advice.py
 tests/test_git_guardrails_amend.py
 tests/test_git_guardrails_checkout_own_worktree.py
 tests/test_git_guardrails_harness_commit.py
+tests/test_git_guardrails_md_density.py
 tests/test_git_guardrails_owner_branch_delete.py
 tests/test_git_guardrails_owner_discard.py
+tests/test_git_guardrails_reattach_cap.py
 tests/test_git_guardrails_revert_lane.py
 tests/test_git_guardrails_scratch_branch_delete.py
 tests/test_go_plan_cap_display.py
+tests/test_go_quota_probe.py
+tests/test_go_roster_20260926.py
+tests/test_guard_denials_contract.py
 tests/test_guard_text.py
 tests/test_hand_pricing_advisory.py
 tests/test_harness_edit_skill_reminder.py
 tests/test_harness_edit_skill_reminder_doctrine.py
 tests/test_harness_growth_guard.py
+tests/test_harness_push_land.py
 tests/test_harness_shell_write_guard.py
 tests/test_harness_tests_adaptation.py
 tests/test_harness_tests_admission.py
@@ -630,26 +1076,39 @@ tests/test_harness_tests_selection_reach.py
 tests/test_harness_tests_temp_sweep.py
 tests/test_harness_tests_write_exhaust.py
 tests/test_hook_state_compaction_keep.py
+tests/test_hook_state_consumers.py
+tests/test_indexed_reference_guard.py
+tests/test_instruction_quality_lens_seats.py
+tests/test_instruction_quality_split.py
 tests/test_kernel_pool.py
+tests/test_kfm.py
+tests/test_kfm_materialize.py
+tests/test_kill_guard.py
 tests/test_ladder_ingest.py
 tests/test_ladder_ingest_sources.py
 tests/test_ladder_prose_check.py
+tests/test_launch_memory.py
 tests/test_layer_closure.py
 tests/test_layer_closure_citations.py
 tests/test_layer_closure_registration.py
+tests/test_lens.py
 tests/test_lens_briefs.py
 tests/test_lens_briefs_job_map.py
 tests/test_lens_briefs_later_round.py
 tests/test_lens_briefs_prepare.py
+tests/test_lens_catalog_contract.py
+tests/test_lens_seat_effort.py
 tests/test_lf_normalize.py
 tests/test_load_census.py
 tests/test_lock_merge.py
 tests/test_log_instruction_loads.py
 tests/test_lookup_shape_cites.py
 tests/test_mechanism_census.py
+tests/test_memory_hits_logger.py
 tests/test_merge_commit_scope.py
 tests/test_model_context_windows.py
 tests/test_model_ladder_gate.py
+tests/test_model_name_guard.py
 tests/test_model_pricing.py
 tests/test_model_registry.py
 tests/test_model_registry_capacity.py
@@ -658,6 +1117,10 @@ tests/test_model_registry_ladder_slice.py
 tests/test_model_registry_plans.py
 tests/test_model_registry_rails.py
 tests/test_model_registry_workflow_agents.py
+tests/test_model_tier.py
+tests/test_model_tier_readout.py
+tests/test_native_caller_contracts.py
+tests/test_nested_fanout_guard.py
 tests/test_oc_proxy_probe.py
 tests/test_ollama_contention_probe.py
 tests/test_opencode_proxy_start.sh
@@ -666,9 +1129,26 @@ tests/test_opencode_refresh_models.py
 tests/test_opencode_sidecar_check.sh
 tests/test_opencode_sidecar_launch_id.sh
 tests/test_opencode_sidecar_shipped.py
+tests/test_orchestration_metrics.py
+tests/test_orchestration_metrics_all_time.py
+tests/test_orchestration_metrics_candidates.py
+tests/test_orchestration_metrics_effort_fit.py
+tests/test_orchestration_metrics_failed_retry.py
+tests/test_orchestration_metrics_manifest.py
+tests/test_orchestration_metrics_panel_yield.py
+tests/test_orchestration_metrics_pending.py
+tests/test_orchestration_metrics_pricier_pins.py
+tests/test_orchestration_metrics_replace_retry.py
+tests/test_orchestration_metrics_resource_lifetime.py
+tests/test_orchestration_metrics_rollup.py
+tests/test_orchestration_metrics_served_effort.py
+tests/test_orchestration_metrics_session_id.py
+tests/test_orchestration_metrics_session_sidecar.py
 tests/test_pattern_enforcer_own_worktree.py
 tests/test_plan_job_map_guard.py
+tests/test_plan_memory_reminder.py
 tests/test_plan_memory_reminder_adaptation.py
+tests/test_plan_usage_calc.py
 tests/test_post_check.py
 tests/test_post_check_bar.py
 tests/test_post_check_engine_adapters.py
@@ -681,21 +1161,38 @@ tests/test_post_check_record_blobs.py
 tests/test_post_check_reuse.py
 tests/test_post_check_seat_attribution.py
 tests/test_post_check_subject_root.py
+tests/test_post_edit_dispatch.py
+tests/test_post_read_dispatch.py
 tests/test_pre_bash_dispatch.py
 tests/test_pre_bash_dispatch_part2.py
 tests/test_pre_bash_dispatch_part3.py
 tests/test_pre_bash_dispatch_part4.py
 tests/test_pre_bash_dispatch_reaper_deny.py
+tests/test_pre_edit_dispatch.py
+tests/test_pre_read_dispatch.py
+tests/test_prompt_dispatch_composition.py
+tests/test_prompt_dispatch_contract.py
+tests/test_prompt_memory_loader.py
+tests/test_prompt_memory_loader_adaptation.py
+tests/test_prompt_provenance.py
 tests/test_prose_adaptation_seams.py
 tests/test_provenance_label_guard.py
 tests/test_provider_bands_cache.py
 tests/test_provider_bands_pick.py
 tests/test_provider_capacity.py
+tests/test_provider_capacity_guard.py
 tests/test_python_null_stdin.py
 tests/test_quota_bands.py
+tests/test_quota_dashboard.py
+tests/test_quota_fit.py
 tests/test_rail_probe_guard.py
 tests/test_readonly_lens_write_guard.py
 tests/test_readonly_marker_arm.py
+tests/test_reap.py
+tests/test_reap_native_env.py
+tests/test_regenerable_clone.py
+tests/test_regenerable_clone_part2.py
+tests/test_regenerable_clone_part3.py
 tests/test_restate_scan_contract.py
 tests/test_retire_trigger_advisory.py
 tests/test_review_calibration.py
@@ -709,28 +1206,37 @@ tests/test_review_result_defer.py
 tests/test_review_result_submodule_blobs.py
 tests/test_review_rounds_replay.py
 tests/test_review_schema_strict.py
+tests/test_rigor_doctrine.py
 tests/test_routing_audit_subagent_exempt.py
 tests/test_routing_classifier.py
 tests/test_routing_edit_anchor.py
+tests/test_routing_scenarios.py
 tests/test_rule_number_guard.py
 tests/test_rule_paths_match_stamp.py
 tests/test_rule_retirement.py
 tests/test_run_call_router.py
+tests/test_run_cost.py
 tests/test_scaled_advisory_facts.py
 tests/test_scan_fixtures.py
 tests/test_score_routing_battery.py
+tests/test_seat_outcome_parity.py
 tests/test_self_eval_archive_guard.py
 tests/test_self_eval_archive_store.py
+tests/test_self_improvement_due.py
 tests/test_sentence_diff.py
 tests/test_session_audit_inputs.py
 tests/test_session_audit_inputs_contract.py
 tests/test_session_audit_premises.py
+tests/test_session_close_evidence.py
 tests/test_session_digest.py
 tests/test_session_digest_agent_work.py
 tests/test_session_digest_bounds.py
 tests/test_session_digest_question_answers.py
 tests/test_session_digest_workflow_results.py
+tests/test_session_end_check.py
 tests/test_session_model_rails_rails.py
+tests/test_session_timeline.py
+tests/test_session_transport.py
 tests/test_settings_composed.py
 tests/test_settings_probe.py
 tests/test_shell_census.py
@@ -780,12 +1286,15 @@ tests/test_sidecar_price_window.sh
 tests/test_sidecar_producer_identity.py
 tests/test_sidecar_quota_fit.sh
 tests/test_sidecar_rate_limit_record.sh
+tests/test_sidecar_recompact_reprompt.py
+tests/test_sidecar_recompact_reprompt_project.py
 tests/test_sidecar_record_config_fields.sh
 tests/test_sidecar_record_rescues.sh
 tests/test_sidecar_repay.sh
 tests/test_sidecar_replace_retry.py
 tests/test_sidecar_result_ends_child.sh
 tests/test_sidecar_resume_check.py
+tests/test_sidecar_review_cli.py
 tests/test_sidecar_scrub_passthrough.sh
 tests/test_sidecar_snapshot_sweep.sh
 tests/test_sidecar_stall_watchdog.sh
@@ -795,21 +1304,40 @@ tests/test_sidecar_tools_limit.sh
 tests/test_sidecar_turn1_plan_root.sh
 tests/test_sidecar_usage_limit.sh
 tests/test_sidecar_watch_rearm.py
+tests/test_sidecar_watch_rearm_chain.py
 tests/test_skill_load_marker_ladder.py
+tests/test_spend_ledger.py
+tests/test_spend_mode.py
 tests/test_stream_events.py
+tests/test_subagent_compaction_rail.py
+tests/test_subagent_fallback.ps1
 tests/test_survey_guard_profile_parity.py
+tests/test_task_brief_facts.py
+tests/test_task_record.py
 tests/test_text_only_shim.py
 tests/test_tier_table.py
 tests/test_tool_profiles.py
 tests/test_tool_profiles_init_events.py
+tests/test_tool_profiles_live_citers.py
+tests/test_tool_routing_cumulative_reset.py
 tests/test_tool_routing_nudge_dedupe.py
 tests/test_tool_routing_nudge_vault_write.py
 tests/test_tool_routing_post_grep.py
+tests/test_tool_routing_prompt_synthesis.py
+tests/test_transcript_summary_context.py
+tests/test_tree_cpu.py
 tests/test_triage.py
 tests/test_triage_admits.py
 tests/test_triage_commit_check.py
 tests/test_triage_commit_check_project.py
+tests/test_unbounded_scan_guard.py
+tests/test_unbounded_scan_guard_live.py
+tests/test_usage_samples.py
+tests/test_validate_commands.py
+tests/test_verify_claims.py
+tests/test_verify_findings.py
 tests/test_verify_transport_status_reason.py
+tests/test_video_read_hint.py
 tests/test_wake_digest_amend.py
 tests/test_wake_digest_watcher_shell.py
 tests/test_watch_records_fanout_end.py
@@ -817,6 +1345,7 @@ tests/test_watch_records_pane.py
 tests/test_watch_records_wait.py
 tests/test_watch_records_workflow.py
 tests/test_wide_test_guard.py
+tests/test_work_key.py
 tests/test_worker_rate_difficulty.py
 tests/test_worker_rate_epoch.py
 tests/test_worker_rate_mutations.py
@@ -834,15 +1363,16 @@ tests/test_workflow_provider_guard_repo_root.py
 tests/test_workflow_provider_guard_returns.py
 tests/test_workflow_provider_guard_roles.py
 tests/test_workflow_provider_guard_vocabulary.py
+tests/test_workflow_tool_profiles.py
 tests/test_worklog_relevance_sidecar.py
 tests/test_worklog_relevance_sidecar_shipped.py
 tests/test_worklog_user_tasks_conformance_j9.py
+tests/workflow_amend_line_test.js
+tests/workflow_relay_line_test.js
 tests/workflow_replay_contract_test.js
-```
-
-### tools/ (65)
-
-```
+tests/workflow_script_lf_guard_test.sh
+tools/_job_brief.py
+tools/_supervised_launch.py
 tools/agent_progress.py
 tools/aggregate_routing_audit.py
 tools/ai_worker_metrics.py
@@ -855,7 +1385,11 @@ tools/baseline_publish.py
 tools/baseline_sync.py
 tools/battery_children.py
 tools/citer_coverage.py
+tools/citers.py
+tools/close_predicates.py
+tools/codify_prompt.py
 tools/delegate_prepare.py
+tools/dispatch_result.py
 tools/dispatch_size.py
 tools/dispatch_take.py
 tools/escape_log.py
@@ -864,6 +1398,7 @@ tools/eval_findings.py
 tools/eval_history.py
 tools/eval_render.py
 tools/exhausted_marker.py
+tools/explore_result.py
 tools/extract_numbers.py
 tools/extract_subagent_tools.py
 tools/finding_bar.py
@@ -872,56 +1407,71 @@ tools/free_pool.py
 tools/gate_growth.py
 tools/gate_trend.py
 tools/guard_text.py
+tools/kernel_pool.py
+tools/kfm.py
 tools/ladder_ingest.py
 tools/ladder_prose_check.py
 tools/launch_memory.py
 tools/layer_closure.py
+tools/lens.py
 tools/lens_briefs.py
+tools/lf_normalize.py
+tools/load_census.coding.json
 tools/load_census.py
 tools/lock_merge.py
 tools/mechanism_census.py
 tools/memory_hits.py
 tools/model_registry.py
+tools/model_tier_readout.py
 tools/ollama_contention_probe.md
 tools/ollama_contention_probe.py
+tools/orchestration_metrics.py
+tools/plan_usage_calc.py
 tools/post_check.py
 tools/provider_bands.py
 tools/provider_capacity.py
 tools/quota_bands.py
+tools/quota_dashboard.py
+tools/quota_fit.py
+tools/report_shell.py
 tools/restate_scan.py
 tools/review_calibration.py
 tools/review_ledger.py
 tools/review_result.py
 tools/rule_retirement.py
+tools/run_cost.py
 tools/score_routing_battery.py
 tools/self_eval_archive_store.py
+tools/self_improvement_due.py
+tools/sentence_diff.py
+tools/session_audit_inputs.py
+tools/session_end_check.py
+tools/session_timeline.py
 tools/sidecar_argv.py
 tools/sidecar_completion.py
 tools/sidecar_fanout.py
 tools/sidecar_launch.py
 tools/sidecar_resume_check.py
+tools/spend_ledger.py
+tools/spend_mode.py
 tools/stream_events.py
+tools/task_record.py
 tools/tool_profiles.py
+tools/tree_cpu.py
 tools/triage.py
+tools/usage_samples.py
+tools/verify_claims.py
 tools/verify_transport_status.py
 tools/wake_digest.py
 tools/watch_records.py
+tools/work_key.py
 tools/worker_rate.py
 tools/workflow_replay.mjs
+workflows/agentic_cloud.js
+workflows/agenttype_input_cost_probe.js
+workflows/dispatch_chains.js
+workflows/harness_bloat_probe.js
+workflows/review_fanout.js
+workflows/sdf_cloud.js
+workflows/test_agents_fixtures.js
 ```
-
-## TB3 rows (test files dropped by TB3)
-
-Written by job TB3 (test conversion, doctrine-contract tests). Rule applied: a test file is dropped when its subject is already gone from `v2` or when it only polices prose. A test whose subject is a file still present on `v2` and classed delete is left for B16, which deletes it with its subject; those are listed in the TB3 return, not here. B16 appends its own rows below this table and writes the header count.
-
-| File dropped (`template/.claude/tests/`) | Subject at base | Why dropped | Need or replacement |
-|---|---|---|---|
-| `test_instruction_quality_split.py` | the split layout of `instruction_quality` (`reference/` files, the harness-edit hook that named them) | the layout and its hook are gone (A9 moved the skill; V11 deletes `harness_edit_skill_reminder.py`); the asserts police the old file split | the skill's size is the re-attach cap in `skill_bodies`, checked by S7's budget test (`P:410`) |
-| `test_rigor_doctrine.py` | `skills/orchestration/reference/rigor.md` and `rigor_stages.md` (deleted by A2) | the bar owner and stage table it cites are gone; its remaining cases police retired tier and verdict words (prose) and drive `harness_tests.py`'s proof corpus (V9) | the rigor bar is one line in the core doctrine (A1); no test polices its wording |
-| `test_seat_outcome_parity.py` | `workflows/review_fanout.js` (V8, absent at base) and `tools/review_ledger.py`'s `_sidecar_seats` | one side of the parity it proves is deleted; the seat outcome rule lives in `/review`'s seat route now (Q6) | `/review` diff mode is covered by the seat launcher's own proofs (B1) |
-| `test_check_learnings.py` | `check_learnings.sh`, the Stop hook's transcript scan (absent at base; no reference anywhere outside tests) | the autolearn scan is deleted with V11's `autolearn*`; the script is gone | none; the Stop hook no longer exists |
-| `test_scaled_advisory_facts.py` case `test_plan_domain_set_dedupes_across_files_and_omits_loaded_skills` | `hooks/plan_memory_reminder.py` (V11 deletes it) | the hook it proves is deleted; its domain-set rule has no live subject | none; the memory domains are read by the skill that remains |
-| `test_scaled_advisory_facts.py` case `test_number_fact_once_but_new_number_fires` | `hooks/rule_number_guard.py` (V11 deletes it) | the guard it proves is deleted | none; no rule-number guard exists in v2 |
-| `test_tool_profiles.py` citer sweep block (planted repository, `citers.py`) | `tools/citers.py` (V8 deletes it; it imports `sentence_diff`, deleted) | the subject tool is deleted, so its planted-repository case has nothing to run | none; the live-tree sweep goes with `citers.py` in B16 |
-
-Manifest rows for these four files (`baseline.manifest.json`, `tools/layer_entries.json`) are repo-root v1 publish machinery; B16 removes them with the cutover delete list (Q11).
