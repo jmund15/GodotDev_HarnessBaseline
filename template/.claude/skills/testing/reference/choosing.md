@@ -1,114 +1,47 @@
-# Choosing what to test, and judging a suite
+# Choosing what to test, and curating a suite
 
-Read before writing a suite, and when reviewing or curating one; named from `SKILL.md` §Recipe index. The entrypoint owns the domain table, the gate-coverage coupling and the regression gate.
+Read before writing a suite and when reviewing or curating one.
 
-## Gameplay Domain flow
+## Building block or composed instance
 
-```
-1. IMPLEMENT  → Write Node/_Process logic
-2. INSTRUMENT → Add JmoLogger calls to state changes
-3. INTEGRATE  → Write ISceneRunner test:
-               - SimulateActionPressed/SimulateKeyPress
-               - await AwaitInputProcessed() ← CRITICAL!
-               - Assert via GetProperty<T>() or FindChild()
-4. VERIFY     → Confirm JmoLogger messages in logs
-5. HAND-OFF   → Manual playtest for "feel" only
-```
+Ask first: is the subject a reusable building block, or one composed instance of blocks?
 
-## Automate vs manual
+- **Building blocks** (components, services, strategies, data types with behaviour) get unit, integration and end-to-end coverage. Coverage here protects every instance built from them.
+- **Composed instances** (one entity, one page, one configured record) get one parameterized wiring suite over every instance, discovered rather than listed, plus a few representative end-to-end tests. No suite per instance.
+- **Data-integrity checks are per schema, never per instance.** A project-wide convention is checked once, over the discovered set.
+- *Litmus:* if this test failed, would the defect be in the block or in one instance's wiring? Block: test the block. Wiring: the wiring suite owns it.
 
-**Automate (ISceneRunner):** input → outcome (press jump → Y increases); state transitions (health=0 → death state); signal/event wiring; scene structure integrity — address nodes by type / `%UniqueName` / exported NodePath, never direct-child-by-name (`.claude/rules/test_authoring.md`).
+## Levels
 
-**Manual playtest only:** "does this feel responsive?"; visual polish and juice.
+A new or complex system needs all three: **unit** (one component), **integration** (components together), **end-to-end** (the full path a user takes). Passing unit tests do not show the system works; a system that crosses domains needs the end-to-end test most.
 
-**Before deferring a "fingerprint" / playtest list to the user, screen each item** — such lists routinely mix subjective items with automatable ones:
-- Button/signal wiring → load the real `.tscn` + `EmitSignal(BaseButton.SignalName.Pressed)` + assert outcome (NOT the `#if TOOLS` direct-call seam — that bypasses `_Ready` wiring).
-- Overlay/resource leak on close → act, then assert `GodotObject.IsInstanceValid(node) == false`.
-- Focus/selection → `control.HasFocus()` after the entry hook.
-- Boot / autoload init / `.tscn`-loads-without-error → Godot MCP `run_project {projectPath: <linked worktree>}` + `get_debug_output` smoke (`rules/godot_files.md` §MCP tools) (catches `.tscn` parse failures and `ValidateRequiredExports` throws `dotnet build` never sees).
+**The primary observable behaviour.** Each new system a user can observe has at least one integration or end-to-end test asserting what a user would notice if it broke: a spawned instance appears, a saved record shows on reload. One per system, not per behaviour. Unit tests at a boundary miss lifecycle failures (initialization order, event wiring, timing); this test is the last line against them. Unit depth is a different axis and never waives it.
 
-Only genuinely-subjective items remain deferrable: visual aesthetics, timing/juice, multi-resolution fill.
+Prefer asserting the observable outcome over an internal count or flag.
 
-## Test Subject Selection (ask FIRST, before the domain split)
+## Tests that protect nothing
 
-**Is this test about a reusable building block, or one composed instance?**
+- **Documentation-only.** Every assertion must consume a value production code produced. An assertion built only from local literals is documentation, however real the setup around it.
+- **Constant mirror.** Asserting a field equals its default breaks on every intended change and catches no bug. Replace it with a test of the default's consequence; never keep both.
+- **Compiler- or storage-only.** Each shape below protects nothing, except in its carve-out, where it becomes a rewrite onto the consumer, not a delete:
 
-- **Building blocks** (components, systems, strategies, Resources with behavior) get the full three-level treatment below — coverage here protects every entity composed from them.
-- **Composed entities/scenes** (a specific enemy, a specific spell scene) get (a) one **parameterized roster wiring-contract suite** over all instances (`[TestCase]` rows over a discovered set — exemplar `Tests/Integration/Enemies/NewUnitDataTests.cs`), and (b) a few **representative** full-composition E2Es — NOT one per entity. No per-entity logic suites; no per-instance resource pins.
-- **Data-integrity pins are per-SCHEMA, never per-instance.** A project-wide convention (iso facing, sprite scale anchor) is pinned once per schema over a discovered set.
-- *Litmus:* if this test fails, is the defect in the block or in one instance's wiring? Block → test the block. Wiring → the roster suite already owns it.
-
-## Test Coverage Strategy
-
-New/complex systems need all three levels:
-
-| Level | Scope | Example |
-|-------|-------|---------|
-| **Unit** | Single component | `ResponseMatcher.FindMatch()` returns correct reaction |
-| **Integration** | Components together | `ResponseComponent` processes collision and fires handler |
-| **E2E** | Full path | Spell collision → reaction triggers → outcome visible |
-
-Unit tests passing ≠ system works. Cross-domain systems especially need E2E coverage.
-
-## Primary Observable Behavior (POB) Rule
-
-Every new system with player-observable behavior MUST include at least one E2E/integration test asserting the primary observable outcome — what a player would notice if the system broke. The rule requires the outcome to be tested at all, and the count is per system, not per behavior; the roster suite owns the rest.
-
-| System | POB Test Assertion |
-|--------|--------------------|
-| Critter AI | "at least one critter position changes over 2s" |
-| Spell casting | "spell instance spawns when cast input simulated" |
-| Status effect | "movement speed stat reduced while effect active" |
-| Drop system | "item spawns when trigger fires" |
-
-Unit tests at integration boundaries miss the engine-lifecycle failure class (`_Ready` order, nav-map timing, signal wiring, physics-frame delivery); the POB test is the last line of defense against it.
-
-POB is non-waivable, and unit-test coverage is not an argument against it — unit depth is a different axis.
-
-## Test Level Philosophy
-
-Prefer behavioral tests over implementation checks for game mechanics:
-- ❌ `AssertThat(blueprint.ActiveTraits.Count == 0).IsTrue()` — tests check logic
-- ✅ `AssertSpellCount(runner, 0)` — tests observable outcome
-
-## Anti-pattern: Documentation-only tests
-
-*Litmus: does every assertion consume a value produced by production code?* An assertion whose operands all derive from locally-constructed literals is documentation-only regardless of syntax, even inside a suite with real setup.
-```csharp
-// BAD - this gives false confidence
-[TestCase]
-public void Test_Feature_Documentation() {
-    AssertThat(true).IsTrue();  // NOT A REAL TEST!
-}
-```
-
-## Anti-pattern: Constant-mirroring tests
-
-Asserting a field equals its default breaks on intentional value changes and can never catch a real bug. Test the behavioral consequence instead ("with default config, attraction scoring is disabled" tests the scoring path, not the field). **Refusal stance:** remove and replace, never augment. A code comment may document the value but does not justify keeping the mirror test beside a behavioral one.
-
-## Anti-pattern: Compiler-guaranteed and storage-only tests
-
-Four shapes carrying zero regression safety. Each carve-out is load-bearing; a sweep matching on shape alone deletes real coverage.
-
-| Shape | Carve-out — do NOT delete when |
+| Shape | Keep (rewrite) when |
 |---|---|
-| `IsInstanceOf<T>` / `is T` / `typeof(I).IsAssignableFrom(typeof(X))` | the type is an *interface* with no consumer resolving it — nothing else enforces the declaration |
-| Enum ordinal (`(int)E.V == N`) | the enum is serialized **by value** — `.tres`/`.tscn` store raw ints, so ordinals are a data contract and renumbering silently remaps shipped content |
-| Constructor-stores-field | the constructor validates, null-coalesces, or transforms |
-| Bool property set/get/toggle | the setter has side effects, **or the value is read and branched on by production code** (a gating flag in a guard clause) |
+| A type or interface check | the interface has no consumer that would fail without it |
+| An enum's numeric value | the enum is stored by value, so renumbering remaps saved data |
+| A constructor stores a field | the constructor validates, defaults or transforms |
+| A property set and get | the setter has side effects, or production code branches on the value |
 
-**Deletion gate:** a carve-out case is a *rewrite*, not a delete — replace the property-mechanics test with a behavioral test on the consumer. Before deleting any test as redundant, verify the successor exists (`git grep` the symbol); an assumed successor that isn't there turns a coverage regression into a closed finding.
+Before deleting a test as redundant, find its successor (`git grep -n -F <symbol>`). An assumed successor that does not exist turns a cleanup into lost coverage.
 
-## Anti-pattern: Rationalizing strict TDD away on integration regressions
+## Generative domains
 
-When the change IS the prevention of a memorialized integration regression class (hot-loop, restart-loop, process-ordering race, BB-flag-soup, perception-staleness), an integration test exercising the symptom is mandatory however the diff splits across `.cs`/`.tscn` and however trivial the C# looks. Hot-loop and ordering bugs live at the SEAM between layers (BT+BTState, BehaviorTree+RestartPolicy switch, HSM+child-state lifecycle, Pool+Spawn callback) — test the seam, not the leaves. Logic Domain tests CAN exercise seams when the participants are framework primitives instantiable in code. Litmus: *"if this change re-introduced the bug it claims to fix, would my suite catch it?"* Answer "manual playtest" ⇒ write the seam test first. Template: `Tests/Logic/AI/RestartPolicyCases.cs`. **Refusal stance:** reclassify the *bug*, not the *file* — the modified file's domain is irrelevant. Accepting "Logic Domain file → unit test sufficient" as the axis — **STOP**.
+For distributional behaviour (procedural generation, spawning, loot, scheduling under random input), prefer one measurement test over many example pins: N seeds through the real entry point, asserting rates or bounds set from the first observed run with headroom, and a failure message that names the dominant cause.
 
-## Measurement Harnesses (generative domains)
+## Curation
 
-For generative/distributional domains (procgen, spawning, loot, crafting outcomes), prefer ONE corpus-style measurement harness over accumulating example pins: N seeds × M representative profiles through the real entry point, asserting success-rate / distribution / ceiling thresholds **pinned from the first observed run with headroom**, with a typed-cause histogram composed into the failure message so a regression names its dominant cause. Asserts the property gameplay depends on and doubles as tuning telemetry. Template: a corpus test under `Tests/Logic/<GenerativeDomain>/`.
+Keep every building-block behaviour test. A change that touches a suite retires that suite's redundant, documentation-only and per-instance duplicate cases in the same change. Delete a test when its feature is gone, a block-level test covers it, or it checks implementation instead of behaviour. Every test is maintenance surface and run time.
 
-## Retention & Curation Policy
+## Before handing a manual check list to the owner
 
-Keep all *building-block behavior* tests; manage execution time with filtering. Curation is an obligation: **a change touching a suite retires that suite's redundant, documentation-only, or duplicate-double coverage in the same change.**
-
-**Delete when:** feature removed; redundant with block-level coverage; checks implementation details, not behavior; documentation-only (litmus above); the suite is a per-entity/per-instance duplicate of a roster suite (§Test Subject Selection). Suite growth is not free — every test is maintenance surface and refactor drag.
+Screen each item; such lists mix taste with automatable behaviour. Wiring (a button fires its handler), leaks on close, focus after opening, and "the app boots without errors" are automatable: write the test or the smoke run. Only taste stays manual: look, feel, timing, fit across screen sizes.
