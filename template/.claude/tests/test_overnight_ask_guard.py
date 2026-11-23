@@ -66,14 +66,11 @@ class OvernightTests(unittest.TestCase):
 
     EVIDENCE = 'Evidence: {"file": "settled.txt", "quote": "the check settled it"}'
 
-    def close_doc(self, sid="one", q_line=None, next_session="- Next session: anthropic · Opus",
-                  evidence=EVIDENCE):
+    def close_doc(self, sid="one", q_line=None, evidence=EVIDENCE):
         path = self.root / "Overnight" / f"2026-09-20-{sid}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         (self.root / "settled.txt").write_text("the check settled it\n", encoding="utf-8")
         rows = ["## Outcome", "", "- done — proof"]
-        if q_line and next_session:
-            rows.append(next_session)
         rows += ["", "## Decisions for you", ""]
         if q_line:
             rows.append(q_line)
@@ -200,7 +197,7 @@ class OvernightTests(unittest.TestCase):
         folder.mkdir(parents=True, exist_ok=True)
         self.plant_overnight_dir(folder)
         (self.root / "settled.txt").write_text("the check settled it\n", encoding="utf-8")
-        body = ["## Outcome", "", "- done — proof", "- Next session: anthropic · Opus", "", "## Decisions for you", ""]
+        body = ["## Outcome", "", "- done — proof", "", "## Decisions for you", ""]
         body += list(rows) + ["", "## Left undone", "", "- None.", ""]
         path = folder / f"2026-09-20-{sid}.md"
         path.write_text("\n".join(body), encoding="utf-8")
@@ -562,21 +559,8 @@ class OvernightTests(unittest.TestCase):
         self.assertEqual([1, 2], sorted(r["number"] for r in out["open"]))
         self.assertEqual([3], [r["number"] for r in out["resolved"]])
 
-    def test_a_doc_with_a_q_row_needs_a_next_session_line(self):
-        row = self.new_row()
-        missing = self.validate(row, next_session=None)
-        self.assertEqual(2, missing.returncode)
-        self.assertIn("Next session", missing.stderr)
-        for bad in ("- Next session: anthropic", "- Next session: · Opus", "- Next session anthropic · Opus"):
-            with self.subTest(line=bad):
-                self.assertEqual(2, self.validate(row, next_session=bad).returncode)
-        for good in ("- Next session: anthropic · Opus", "Next session: codex · gpt-5 high"):
-            with self.subTest(line=good):
-                result = self.validate(row, next_session=good)
-                self.assertEqual(0, result.returncode, result.stderr)
-
-    def test_a_doc_without_a_q_row_needs_no_next_session_line(self):
-        result = self.validate(None)
+    def test_a_doc_with_a_q_row_needs_no_next_session_line(self):
+        result = self.validate(self.new_row())
         self.assertEqual(0, result.returncode, result.stderr)
 
     def test_open_questions_routes_old_and_new_grammar_to_open_and_a_broken_row_to_malformed(self):
