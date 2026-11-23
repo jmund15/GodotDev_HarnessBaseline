@@ -61,13 +61,11 @@ DEFAULTS: dict = {
     "symbol_stopwords": [],
     # hooks/session_context_loader.py, hooks/semantic_search_scope_guard.py: absolute document roots read outside the repo.
     "doc_roots": [],
-    # scripts/sync_plan_config.py: the bench liveness patterns and labels; absent means no project extras.
-    "bench_liveness": {},
     # tools/drift_scan.py (MaddManager): {sources, consumers, min_length, ignore}; empty means not configured.
     "drift_scan": {},
     # tools/usage_report.py: the weekly quota reset ({weekday, hour}, machine-local).
     "usage_reset": {"weekday": "sunday", "hour": 13},
-    # hooks/git_guardrails.py, commands/commit_push.md: the branch prefix a land runner integrates; empty means none.
+    # commands/commit_push.md: the branch prefix a land runner integrates; empty means none.
     "land_prefix": "",
     # commands/commit_push.md step 6: the command that waits on a land and reports it; empty means none.
     "land_watch": "",
