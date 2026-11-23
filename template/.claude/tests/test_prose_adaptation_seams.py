@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-runnable proof for the 8 `adaptation.json` prose seams: each seam file names `adaptation.json` and
+"""Re-runnable proof for the 7 `adaptation.json` prose seams: each seam file names `adaptation.json` and
 its own key, so the reader loads project values at run time. A shared seam file also holds no string value
 of the real `adaptation.json[key]` (a hardcoded project value would drift from the file); a `forked` or
 `local` file belongs to this project and may name its own values.
@@ -18,16 +18,15 @@ from _lock_rows import project_owned  # noqa: E402
 
 ADAPTATION = os.path.join(CLAUDE_DIR, "skills", "project_subsystems", "adaptation.json")
 
-# file (relative to CLAUDE_DIR) -> (the adaptation.json key it names, the layer that ships the file).
+# file (relative to CLAUDE_DIR) -> the adaptation.json key it names.
 SEAMS = {
-    "commands/clean_pull.md": ("paired_repos", "pure"),
-    "commands/clean_push.md": ("paired_repos", "pure"),
-    "commands/commit_push.md": ("paired_repos", "pure"),
-    "commands/create_pr.md": ("paired_repos", "pure"),
-    "commands/doc_start_here_update.md": ("content_domains", "pure"),
-    "commands/agents/pr_test_checklist_conventions.md": ("content_scopes", "godot"),
-    "skills/architecture_philosophy/structure_rules.md": ("structure_exceptions", "coding"),
-    "commands/agents/pr_classification.md": ("pr_domains", "coding"),
+    "commands/clean_pull.md": "paired_repos",
+    "commands/commit_push.md": "paired_repos",
+    "commands/create_pr.md": "paired_repos",
+    "commands/doc_start_here_update.md": "content_domains",
+    "commands/agents/pr_test_checklist_conventions.md": "content_scopes",
+    "skills/architecture_philosophy/structure_rules.md": "structure_exceptions",
+    "commands/agents/pr_classification.md": "pr_domains",
 }
 
 
@@ -58,13 +57,10 @@ def main():
     with open(ADAPTATION, encoding="utf-8") as fh:
         adaptation = json.load(fh)
     cases = []
-    for rel, (key, layer) in SEAMS.items():
-        if layer != "pure" and not os.path.exists(os.path.join(CLAUDE_DIR, "CLAUDE.%s.md" % layer)):
-            print("skip %s: the %s layer is not adopted here" % (rel, layer))
-            continue
+    for rel, key in SEAMS.items():
         path = os.path.join(CLAUDE_DIR, *rel.split("/"))
         if not os.path.exists(path):
-            cases.append(("%s: exists in an adopted %s layer" % (rel, layer), False))
+            cases.append(("%s: exists" % rel, False))
             continue
         text = open(path, encoding="utf-8").read()
         values = [] if project_owned(".claude/" + rel) else strings_of(adaptation.get(key))
