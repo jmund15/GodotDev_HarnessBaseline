@@ -11,8 +11,9 @@ Prints one line with the 5-hour and 7-day used percent and reset time. Exit code
     2   no such seat (seat.sh also warns and launches on it)
 
 The read follows the seat's adapter in seats.json. scripts/seat_claude.sh reads the login's OAuth usage
-endpoint; scripts/seat_agy.sh runs `agy -p /usage`, whose rows carry the Antigravity buckets. A seat is one
-seats.json row; a CLI with a usage read is one READS entry and one parser.
+endpoint; scripts/seat_agy.sh runs `agy -p /usage`, whose rows carry the Antigravity buckets. scripts/seat_local.sh
+has no usage window: its GPU slot is backend_hold's lock, which queues the launch. A seat is one seats.json row; a CLI
+with a usage read is one READS entry and one parser.
 """
 import http.client
 import json
@@ -110,7 +111,7 @@ def read_agy(row):
     return parse_agy(run.stdout)
 
 
-READS = {"scripts/seat_claude.sh": read_anthropic, "scripts/seat_agy.sh": read_agy}
+READS = {"scripts/seat_claude.sh": read_anthropic, "scripts/seat_agy.sh": read_agy, "scripts/seat_local.sh": lambda row: {}}
 
 
 def seat_row(name):
@@ -122,7 +123,7 @@ def seat_row(name):
 def describe(name, windows):
     parts = [f"{LABEL[key]} {windows[key]['used']:.1f}% used, resets {windows[key]['resets'] or 'unknown'}"
              for key in FLOOR if key in windows]
-    return f"{name}: " + "; ".join(parts)
+    return f"{name}: " + ("; ".join(parts) or "no usage window")
 
 
 def last_weekly_reset():
