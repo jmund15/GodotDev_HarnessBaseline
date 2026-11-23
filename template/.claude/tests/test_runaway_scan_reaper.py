@@ -10,7 +10,7 @@ parent survives; an orphaned non-search process (Git sleep) survives; default th
 small orphan; a second call inside the throttle window takes no snapshot; an unreadable process
 table is silent. Hook registrations are each repo's own settings.json.
 
-    python3 .claude/tests/test_runaway_scan_reaper.py
+    python -m pytest .claude/tests/test_runaway_scan_reaper.py -q
 """
 import ctypes
 import io
@@ -18,8 +18,9 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
+
+import pytest
 
 import _platform_skip
 
@@ -41,13 +42,7 @@ k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
 k32.CloseHandle.argtypes = [wintypes.HANDLE]
 SYNCHRONIZE, PROCESS_TERMINATE, QUERY_LIMITED = 0x00100000, 0x0001, 0x1000
 
-failures = []
-
-
-def check(label, ok, detail=""):
-    print("%-4s %s" % ("ok" if ok else "FAIL", label))
-    if not ok:
-        failures.append(label + (" :: " + str(detail)[:400] if detail else ""))
+ZERO = {"HARNESS_REAPER_MIN_PRIVATE_MB": "0", "HARNESS_REAPER_MIN_CPU_SEC": "0"}
 
 
 def git_bash():
@@ -110,7 +105,7 @@ with open(out, "w") as fh:
 
 def plant_orphan(planted, usr_bin, tmp):
     """A Git grep blocked reading a pipe that a planted Git sleep holds open; their parent exits."""
-    out = os.path.join(tmp, "plant_%d.json" % time.time_ns())
+    out = os.path.join(str(tmp), "plant_%d.json" % time.time_ns())
     m = subprocess.run([sys.executable, "-c", MIDDLE, usr_bin, out], stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
     if m.returncode != 0:
@@ -123,6 +118,7 @@ def plant_orphan(planted, usr_bin, tmp):
 
 
 def reaper(env_extra, payload=None, cwd=REPO):
+    """Spawned: the hook's stdin entry point is the subject. Returns (process, advisory text)."""
     env = dict(os.environ, CLAUDE_PROJECT_DIR=REPO, PYTHONIOENCODING="utf-8", **env_extra)
     payload = payload or {"session_id": "rsr00001", "hook_event_name": "PostToolUse",
                           "tool_name": "Read", "tool_input": {}}
@@ -137,149 +133,155 @@ def reaper(env_extra, payload=None, cwd=REPO):
     return p, ctx
 
 
-def main():
+@pytest.fixture(scope="module")
+def usr_bin():
     bash = git_bash()
-    check("Git Bash resolves outside System32/WSL (%s)" % bash, bool(bash))
-    if not bash:
-        return 1
-    usr_bin = git_usr_bin(bash)
-    check("Git grep.exe and sleep.exe exist under %s" % usr_bin,
-          os.path.isfile(os.path.join(usr_bin, "grep.exe")) and os.path.isfile(os.path.join(usr_bin, "sleep.exe")))
+    assert bash, "Git Bash resolves outside System32/WSL"
+    return git_usr_bin(bash)
 
-    tmp = tempfile.mkdtemp(prefix="rsr_")
+
+@pytest.fixture
+def planted():
+    p = Planted()
+    yield p
+    p.cleanup()
+
+
+@pytest.fixture(scope="module")
+def scenario(tmp_path_factory, usr_bin):
+    """One orphaned grep and sleep, a live grep under a live parent, and the reaper run once over them."""
+    tmp = tmp_path_factory.mktemp("rsr")
     planted = Planted()
-    live = None
+    live = subprocess.Popen([os.path.join(usr_bin, "grep.exe"), "never-matches-live"],
+                            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    planted.pin(live.pid)
+    orphan = plant_orphan(planted, usr_bin, tmp)
+    time.sleep(0.5)
+    before = planted.alive(orphan["grep"]) and planted.alive(orphan["sleep"])
+    only = ",".join(str(x) for x in (orphan["grep"], orphan["sleep"], live.pid))
+    p, ctx = reaper(dict(ZERO, HARNESS_REAPER_CACHE_DIR=os.path.join(str(tmp), "cache1"), HARNESS_REAPER_ONLY_PIDS=only))
+    result = {"before": before, "orphan": orphan, "returncode": p.returncode, "stderr": p.stderr, "ctx": ctx,
+              "reaped": planted.wait_dead(orphan["grep"]), "live_alive": planted.alive(live.pid),
+              "sleep_alive": planted.alive(orphan["sleep"])}
+    yield result
+    planted.cleanup()
     try:
-        # --- reap an orphan; controls: live-parent grep and orphaned sleep survive ----------------
-        o1 = plant_orphan(planted, usr_bin, tmp)
-        live = subprocess.Popen([os.path.join(usr_bin, "grep.exe"), "never-matches-live"],
-                                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        planted.pin(live.pid)
-        time.sleep(0.5)
-        check("planted orphan grep %d and sleep %d are running, parent %d gone" % (o1["grep"], o1["sleep"], o1["middle"]),
-              planted.alive(o1["grep"]) and planted.alive(o1["sleep"]))
-
-        cache1 = os.path.join(tmp, "cache1")
-        only = ",".join(str(x) for x in (o1["grep"], o1["sleep"], live.pid))
-        zero = {"HARNESS_REAPER_CACHE_DIR": cache1, "HARNESS_REAPER_MIN_PRIVATE_MB": "0", "HARNESS_REAPER_MIN_CPU_SEC": "0",
-                "HARNESS_REAPER_ONLY_PIDS": only}
-        p, ctx = reaper(zero)
-        check("reaper exits 0 with no traceback", p.returncode == 0 and "Traceback" not in p.stderr, p.stderr)
-        check("orphaned grep %d is reaped at zero thresholds" % o1["grep"], planted.wait_dead(o1["grep"]), ctx)
-        check("advisory names the reaped pid, command tail, memory and CPU time",
-              ("pid %d" % o1["grep"]) in ctx and "never-matches-planted" in ctx and "MB" in ctx and "CPU" in ctx
-              and len(ctx.strip().splitlines()) == 1, ctx)
-        check("grep %d with a live parent survives" % live.pid, planted.alive(live.pid))
-        check("orphaned non-search sleep %d survives" % o1["sleep"], planted.alive(o1["sleep"]))
-
-        # --- throttle: a second call inside the window takes no snapshot ------------------------
-        o2 = plant_orphan(planted, usr_bin, tmp)
-        time.sleep(0.3)
-        zero2 = dict(zero, HARNESS_REAPER_ONLY_PIDS=str(o2["grep"]))
-        p, ctx = reaper(zero2)
-        check("second call inside the throttle window is silent and reaps nothing",
-              p.returncode == 0 and ctx == "" and not p.stdout.strip() and planted.alive(o2["grep"]), p.stdout + p.stderr)
-
-        # --- default thresholds spare a small orphan (fresh window) ------------------------------
-        p, ctx = reaper({"HARNESS_REAPER_CACHE_DIR": os.path.join(tmp, "cache2"), "HARNESS_REAPER_ONLY_PIDS": str(o2["grep"])})
-        check("default thresholds (1024 MB / 600 s) spare a small orphan, silently",
-              p.returncode == 0 and not p.stdout.strip() and planted.alive(o2["grep"]), p.stdout + p.stderr)
-
-        # --- positive control for the throttle case: a fresh window does reap it -----------------
-        p, ctx = reaper(dict(zero2, HARNESS_REAPER_CACHE_DIR=os.path.join(tmp, "cache3")))
-        check("the same orphan is reaped once the window is fresh", planted.wait_dead(o2["grep"]), ctx)
-
-        # --- unreadable process table is silent ---------------------------------------------------
-        sys.path.insert(0, HOOKS)
-        try:
-            import runaway_scan_reaper as rsr
-            os.environ.update({"HARNESS_REAPER_CACHE_DIR": os.path.join(tmp, "cache4"),
-                               "HARNESS_REAPER_MIN_PRIVATE_MB": "0", "HARNESS_REAPER_MIN_CPU_SEC": "0",
-                               "HARNESS_REAPER_ONLY_PIDS": "-1"})
-
-            def broken():
-                raise OSError("process table unreadable")
-            rsr.snapshot = broken
-            saved_in, saved_out = sys.stdin, sys.stdout
-            sys.stdin, sys.stdout = io.StringIO('{"hook_event_name":"PostToolUse"}'), io.StringIO()
-            try:
-                code = rsr.main()
-                emitted = sys.stdout.getvalue()
-            finally:
-                sys.stdin, sys.stdout = saved_in, saved_out
-            check("an unreadable process table is silent and exits 0", code == 0 and emitted == "", emitted)
-
-            # --- cost evidence ------------------------------------------------------------------
-            best = 1e9
-            for _ in range(200):
-                t0 = time.perf_counter()
-                throttled = rsr.throttled(os.path.join(tmp, "cache1"), rsr.throttle_sec(), time.time())
-                best = min(best, time.perf_counter() - t0)
-            check("throttled gate reports throttled on a fresh stamp", throttled is True)
-            importlib_reload = __import__("importlib").reload
-            rsr = importlib_reload(rsr)
-            snap_best = 1e9
-            for _ in range(5):
-                t0 = time.perf_counter()
-                rows = rsr.snapshot()
-                snap_best = min(snap_best, time.perf_counter() - t0)
-            check("one real snapshot returns the process table (%d rows)" % len(rows), len(rows) > 10)
-            # The budget is a multiple of a bare interpreter spawn timed in the same loop, so machine
-            # load scales both sides. The throttled path is start-up plus the json/re imports
-            # (about 2.5x a bare spawn); a snapshot on that path adds about 1.8x more.
-            spawn_best = bare_best = 1e9
-            for _ in range(7):
-                t0 = time.perf_counter()
-                subprocess.run([sys.executable, "-c", "pass"], capture_output=True, timeout=60)
-                bare_best = min(bare_best, time.perf_counter() - t0)
-                t0 = time.perf_counter()
-                reaper({"HARNESS_REAPER_CACHE_DIR": os.path.join(tmp, "cache1"), "HARNESS_REAPER_ONLY_PIDS": "-1"})
-                spawn_best = min(spawn_best, time.perf_counter() - t0)
-            print("cost: throttled gate in-process %.3f ms | throttled hook process end-to-end %.1f ms | "
-                  "bare interpreter spawn %.1f ms | one snapshot %.1f ms (best of runs)"
-                  % (best * 1000, spawn_best * 1000, bare_best * 1000, snap_best * 1000))
-            check("throttled hook process costs under 3.5x a bare interpreter spawn",
-                  spawn_best < 3.5 * bare_best, "%.1f ms vs %.1f ms" % (spawn_best * 1000, bare_best * 1000))
-        except ImportError as exc:
-            check("runaway_scan_reaper imports", False, exc)
-        finally:
-            for k in ("HARNESS_REAPER_CACHE_DIR", "HARNESS_REAPER_MIN_PRIVATE_MB", "HARNESS_REAPER_MIN_CPU_SEC", "HARNESS_REAPER_ONLY_PIDS"):
-                os.environ.pop(k, None)
-
-        # --- cache root without CLAUDE_PROJECT_DIR: this checkout, never cwd -------------------------
-        cenv = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "HARNESS_REAPER_CACHE_DIR")}
-        p = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); "
-                            "import runaway_scan_reaper as r; print(r.cache_dir())", HOOKS],
-                           capture_output=True, text=True, env=cenv, cwd=tmp, timeout=60)
-        check("without CLAUDE_PROJECT_DIR the cache dir is this checkout's .claude/.cache, not cwd",
-              os.path.normcase(os.path.abspath(p.stdout.strip()))
-              == os.path.normcase(os.path.join(REPO, ".claude", ".cache")), p.stdout + p.stderr)
-
-    except Exception as exc:  # a planting or harness failure is a FAIL, never a pass
-        check("proof ran to completion", False, repr(exc))
-    finally:
-        if live is not None:
-            try:
-                live.stdin.close()
-            except Exception:
-                pass
-        planted.cleanup()
-        if live is not None:
-            try:
-                live.wait(timeout=5)
-            except Exception:
-                pass
-
-    print("\n%d failure(s)" % len(failures) if failures else "\nall ok")
-    for f in failures:
-        print("  " + f)
-    return 1 if failures else 0
+        live.stdin.close()
+        live.wait(timeout=5)
+    except Exception:
+        pass
 
 
+def test_git_bash_resolves_outside_system32_and_wsl():
+    assert git_bash()
 
-def test_proof():
-    assert main() in (None, 0)
+
+def test_git_grep_and_sleep_exist_under_the_usr_bin(usr_bin):
+    assert os.path.isfile(os.path.join(usr_bin, "grep.exe")) and os.path.isfile(os.path.join(usr_bin, "sleep.exe"))
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_the_planted_orphan_grep_and_sleep_are_running_before_the_reaper_runs(scenario):
+    assert scenario["before"]
+
+
+def test_the_reaper_exits_zero_with_no_traceback(scenario):
+    assert scenario["returncode"] == 0 and "Traceback" not in scenario["stderr"], scenario["stderr"]
+
+
+def test_an_orphaned_grep_is_reaped_at_zero_thresholds(scenario):
+    assert scenario["reaped"], scenario["ctx"]
+
+
+def test_the_advisory_names_the_reaped_pid_command_tail_memory_and_cpu_time(scenario):
+    ctx, grep = scenario["ctx"], scenario["orphan"]["grep"]
+    assert ("pid %d" % grep) in ctx and "never-matches-planted" in ctx and "MB" in ctx and "CPU" in ctx \
+        and len(ctx.strip().splitlines()) == 1, ctx
+
+
+def test_a_grep_with_a_live_parent_survives(scenario):
+    assert scenario["live_alive"]
+
+
+def test_an_orphaned_non_search_sleep_survives(scenario):
+    assert scenario["sleep_alive"]
+
+
+def test_a_second_call_inside_the_throttle_window_is_silent_and_reaps_nothing(usr_bin, planted, tmp_path):
+    cache = os.path.join(str(tmp_path), "cache")
+    reaper(dict(ZERO, HARNESS_REAPER_CACHE_DIR=cache, HARNESS_REAPER_ONLY_PIDS="-1"))   # stamps the window
+    orphan = plant_orphan(planted, usr_bin, tmp_path)
+    time.sleep(0.3)
+    p, ctx = reaper(dict(ZERO, HARNESS_REAPER_CACHE_DIR=cache, HARNESS_REAPER_ONLY_PIDS=str(orphan["grep"])))
+    assert p.returncode == 0 and ctx == "" and not p.stdout.strip() and planted.alive(orphan["grep"]), p.stdout + p.stderr
+
+
+def test_default_thresholds_spare_a_small_orphan_and_zero_thresholds_reap_the_same_one(usr_bin, planted, tmp_path):
+    orphan = plant_orphan(planted, usr_bin, tmp_path)
+    time.sleep(0.3)
+    p, _ = reaper({"HARNESS_REAPER_CACHE_DIR": os.path.join(str(tmp_path), "defaults"),
+                   "HARNESS_REAPER_ONLY_PIDS": str(orphan["grep"])})
+    assert p.returncode == 0 and not p.stdout.strip() and planted.alive(orphan["grep"]), p.stdout + p.stderr
+    # Control: the same orphan is reaped once the thresholds are zero, so the spare above was the threshold.
+    _, ctx = reaper(dict(ZERO, HARNESS_REAPER_CACHE_DIR=os.path.join(str(tmp_path), "zero"),
+                         HARNESS_REAPER_ONLY_PIDS=str(orphan["grep"])))
+    assert planted.wait_dead(orphan["grep"]), ctx
+
+
+def test_an_unreadable_process_table_is_silent_and_exits_zero(monkeypatch, capsys, tmp_path):
+    monkeypatch.syspath_prepend(HOOKS)
+    import runaway_scan_reaper as rsr
+    monkeypatch.setenv("HARNESS_REAPER_CACHE_DIR", os.path.join(str(tmp_path), "cache"))
+    monkeypatch.setenv("HARNESS_REAPER_MIN_PRIVATE_MB", "0")
+    monkeypatch.setenv("HARNESS_REAPER_MIN_CPU_SEC", "0")
+    monkeypatch.setenv("HARNESS_REAPER_ONLY_PIDS", "-1")
+
+    def broken():
+        raise OSError("process table unreadable")
+    monkeypatch.setattr(rsr, "snapshot", broken)
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"hook_event_name":"PostToolUse"}'))
+    code = rsr.main()
+    emitted = capsys.readouterr().out
+    assert code == 0 and emitted == "", emitted
+
+
+@pytest.fixture
+def reaper_module(monkeypatch):
+    monkeypatch.syspath_prepend(HOOKS)
+    import runaway_scan_reaper as rsr
+    return rsr
+
+
+def test_the_throttled_gate_reports_throttled_on_a_fresh_stamp(reaper_module, tmp_path):
+    cache = os.path.join(str(tmp_path), "cache")
+    reaper({**ZERO, "HARNESS_REAPER_CACHE_DIR": cache, "HARNESS_REAPER_ONLY_PIDS": "-1"})
+    assert reaper_module.throttled(cache, reaper_module.throttle_sec(), time.time()) is True
+
+
+def test_one_real_snapshot_returns_the_process_table(reaper_module):
+    rows = reaper_module.snapshot()
+    assert len(rows) > 10, len(rows)
+
+
+def test_a_throttled_hook_process_costs_under_3_5x_a_bare_interpreter_spawn(tmp_path):
+    """The budget is a multiple of a bare interpreter spawn timed in the same loop, so machine load scales
+    both sides. The throttled path is start-up plus the json/re imports (about 2.5x a bare spawn)."""
+    cache = os.path.join(str(tmp_path), "cache")
+    reaper({**ZERO, "HARNESS_REAPER_CACHE_DIR": cache, "HARNESS_REAPER_ONLY_PIDS": "-1"})
+    spawn_best = bare_best = 1e9
+    for _ in range(7):
+        t0 = time.perf_counter()
+        subprocess.run([sys.executable, "-c", "pass"], capture_output=True, timeout=60)
+        bare_best = min(bare_best, time.perf_counter() - t0)
+        t0 = time.perf_counter()
+        reaper({"HARNESS_REAPER_CACHE_DIR": cache, "HARNESS_REAPER_ONLY_PIDS": "-1"})
+        spawn_best = min(spawn_best, time.perf_counter() - t0)
+    assert spawn_best < 3.5 * bare_best, "%.1f ms vs %.1f ms" % (spawn_best * 1000, bare_best * 1000)
+
+
+def test_without_claude_project_dir_the_cache_dir_is_this_checkouts_claude_cache_not_cwd(tmp_path):
+    cenv = {k: v for k, v in os.environ.items() if k not in ("CLAUDE_PROJECT_DIR", "HARNESS_REAPER_CACHE_DIR")}
+    p = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); "
+                        "import runaway_scan_reaper as r; print(r.cache_dir())", HOOKS],
+                       capture_output=True, text=True, env=cenv, cwd=str(tmp_path), timeout=60)
+    assert (os.path.normcase(os.path.abspath(p.stdout.strip()))
+            == os.path.normcase(os.path.join(REPO, ".claude", ".cache"))), p.stdout + p.stderr

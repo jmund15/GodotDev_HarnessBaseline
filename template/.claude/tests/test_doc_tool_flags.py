@@ -10,8 +10,9 @@ newline or its closing backtick. A tool file absent on disk is reported as its o
     python -m pytest .claude/tests/test_doc_tool_flags.py -q
 """
 import re
-import sys
 from pathlib import Path
+
+import pytest
 
 CLAUDE = Path(__file__).resolve().parents[1]
 DOC_TREES = ("commands", "skills", "reference")
@@ -80,47 +81,40 @@ def doc_errors(claude):
     return errors
 
 
-def main():
-    cases = []
-    real = doc_errors(CLAUDE)
-    cases.append(("every doc example names only flags its tool parses", real == [], real))
+@pytest.fixture
+def sources():
+    return Sources(CLAUDE)
 
-    sources = Sources(CLAUDE)
+
+def test_every_doc_example_names_only_flags_its_tool_parses():
+    real = doc_errors(CLAUDE)
+    assert real == [], real
+
+
+def test_a_planted_doc_flag_the_tool_lacks_is_reported(sources):
     planted = "Run `python3 .claude/tools/quote_check.py --nosuchflag-zq <x> --also-bad` now."
-    cases.append(("RED: a planted doc flag the tool lacks is reported",
-                  flag_errors("p.md", planted, sources) == ["p.md: tools/quote_check.py has no --also-bad",
-                                                            "p.md: tools/quote_check.py has no --nosuchflag-zq"], ""))
-    cases.append(("RED: a tool absent on disk is its own failure",
-                  flag_errors("p.md", "`python3 .claude/tools/zq_absent_tool.py --x`", sources)
-                  == ["p.md: tools/zq_absent_tool.py is absent"], ""))
-    cases.append(("a flag after a pipe, `;`, `&&` or the closing backtick is ignored",
-                  flag_errors("p.md", "`python3 .claude/tools/quote_check.py --help | grep --zq1`; python3 .claude/tools/quote_check.py -x ; echo --zq2\n"
-                              "python3 .claude/tools/quote_check.py && cmd --zq3 and `x` --zq4", sources) == [], ""))
-    cases.append(("a placeholder is dropped", flag_errors("p.md", "`python3 .claude/tools/quote_check.py <--zq5> <a --zq6>`", sources) == [], ""))
+    assert flag_errors("p.md", planted, sources) == [
+        "p.md: tools/quote_check.py has no --also-bad", "p.md: tools/quote_check.py has no --nosuchflag-zq"]
+
+
+def test_a_tool_absent_on_disk_is_its_own_failure(sources):
+    assert flag_errors("p.md", "`python3 .claude/tools/zq_absent_tool.py --x`", sources) == [
+        "p.md: tools/zq_absent_tool.py is absent"]
+
+
+def test_a_flag_after_a_pipe_semicolon_or_and_or_backtick_is_ignored(sources):
+    text = ("`python3 .claude/tools/quote_check.py --help | grep --zq1`; python3 .claude/tools/quote_check.py -x ; echo --zq2\n"
+            "python3 .claude/tools/quote_check.py && cmd --zq3 and `x` --zq4")
+    assert flag_errors("p.md", text, sources) == []
+
+
+def test_a_placeholder_is_dropped(sources):
+    assert flag_errors("p.md", "`python3 .claude/tools/quote_check.py <--zq5> <a --zq6>`", sources) == []
+
+
+def test_a_tool_source_reach_includes_a_module_it_imports(sources):
     imported = next((t for t in sorted((CLAUDE / "tools").glob("*.py"))
                      if any((CLAUDE / f / (n + ".py")).is_file() for f in ("tools", "hooks")
                             for n in IMPORT.findall(t.read_text(encoding="utf-8", errors="replace")))), None)
-    cases.append(("a tool's source reach includes a module it imports", imported is not None
-                  and len(sources.reach(imported.stem)) > len(imported.read_text(encoding="utf-8", errors="replace")), ""))
-
-    failures = [(label, detail) for label, ok, detail in cases if not ok]
-    for label, ok, detail in cases:
-        print("%-4s %s" % ("ok" if ok else "FAIL", label))
-        if not ok:
-            for line in detail:
-                print("       " + line)
-    print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    return 1 if failures else 0
-
-
-def test_proof():
-    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
-    try:
-        code = main()
-    except SystemExit as exc:
-        code = exc.code
-    assert code in (None, 0), code
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    assert imported is not None, "no tool imports another tool or hook"
+    assert len(sources.reach(imported.stem)) > len(imported.read_text(encoding="utf-8", errors="replace"))

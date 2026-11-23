@@ -8,13 +8,14 @@ wrong-typed `git_submodules` (not a list) -> the default (empty tuple) plus one 
 Each case imports the hook fresh in a subprocess (module-level state is computed at import
 time) against a scratch `.claude` tree (`_adaptation_fixture`).
 
-    python3 .claude/tests/test_prompt_git_state_delta_adaptation.py
+    python -m pytest .claude/tests/test_prompt_git_state_delta_adaptation.py -q
 """
 import json
 import os
 import subprocess
 import sys
-import tempfile
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _adaptation_fixture as fx  # noqa: E402
@@ -23,23 +24,26 @@ HOOK_NAME = "prompt_git_state_delta.py"
 REAL_HOOK = os.path.join(fx.REAL_HOOKS, HOOK_NAME)
 
 
-def _init_repo_with_submodule(root, sub_name):
-    """A throwaway git repo with one commit and a plain directory standing in for a
-    submodule path (drift detection only reads `git submodule status`, so an actual
-    `.gitmodules` isn't needed to prove the field is read from adaptation.json and wired
-    into WATCHED_SUBMODULES -- the no-crash and field-presence assertions don't require a
-    real submodule to be initialized)."""
+def init_repo(root):
+    """A throwaway git repo with one commit and a plain directory standing in for a submodule path.
+
+    Drift detection only reads `git submodule status`, so a real `.gitmodules` is not needed to prove the field
+    is read from adaptation.json and wired into WATCHED_SUBMODULES: the no-crash and field-presence assertions
+    do not require an initialized submodule.
+    """
+    root = str(root)
     subprocess.run(["git", "init", "-q", root], check=True)
     subprocess.run(["git", "-C", root, "config", "user.email", "a@example.com"], check=True)
     subprocess.run(["git", "-C", root, "config", "user.name", "a"], check=True)
-    (os_path := os.path.join(root, "f.txt"))
-    with open(os_path, "w") as fh:
+    with open(os.path.join(root, "f.txt"), "w") as fh:
         fh.write("x")
     subprocess.run(["git", "-C", root, "add", "-A"], check=True)
     subprocess.run(["git", "-C", root, "commit", "-q", "-m", "init"], check=True)
+    return root
 
 
 def run_hook(hook_path, repo_root, session_id="probe001", env_extra=None):
+    """Spawned: the hook's stdin entry point is the subject."""
     payload = {"session_id": session_id}
     env = dict(os.environ, **(env_extra or {}))
     r = subprocess.run([sys.executable, hook_path], input=json.dumps(payload),
@@ -47,77 +51,65 @@ def run_hook(hook_path, repo_root, session_id="probe001", env_extra=None):
     return r.stdout, r.stderr, r.returncode
 
 
-def main():
-    cases = []
-    failures = []
-    scratches = []
-    repos = []
-    try:
-        # --- absent: adaptation.json missing -> no crash, no submodule field ------------
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=None)
-        scratches.append(tmp)
-        repo = tempfile.mkdtemp(prefix="gsd_repo_")
-        repos.append(repo)
-        _init_repo_with_submodule(repo, "Jmodot")
-        _out, err, rc = run_hook(os.path.join(tmp, "hooks", HOOK_NAME), repo)
-        cases.append(("absent adaptation.json: hook exits 0", rc == 0))
-        cases.append(("absent adaptation.json: no stderr", err == ""))
+@pytest.fixture
+def adapted():
+    """Make a scratch `.claude` tree seeded with an adaptation.json (or none); returns the copied hook's path."""
+    made = []
 
-        # --- present: a valid git_submodules entry is read without crashing --------------
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed={"git_submodules": ["Jmodot"]})
-        scratches.append(tmp)
-        repo = tempfile.mkdtemp(prefix="gsd_repo_")
-        repos.append(repo)
-        _init_repo_with_submodule(repo, "Jmodot")
-        _out, err, rc = run_hook(os.path.join(tmp, "hooks", HOOK_NAME), repo)
-        cases.append(("present adaptation.json: hook exits 0 with a watched submodule", rc == 0))
-        cases.append(("present adaptation.json: no stderr on a valid entry", err == ""))
+    def make(seed):
+        tree = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=seed)
+        made.append(tree)
+        return os.path.join(tree, "hooks", HOOK_NAME)
 
-        # --- wrong-typed: git_submodules is not a list -> default + one stderr line ------
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed={"git_submodules": "Jmodot"})
-        scratches.append(tmp)
-        repo = tempfile.mkdtemp(prefix="gsd_repo_")
-        repos.append(repo)
-        _init_repo_with_submodule(repo, "Jmodot")
-        _out, err, rc = run_hook(os.path.join(tmp, "hooks", HOOK_NAME), repo)
-        cases.append(("wrong-typed git_submodules: hook still exits 0 (never blocks)", rc == 0))
-        cases.append(("wrong-typed git_submodules: one stderr line names the key",
-                      err.count("\n") <= 1 and "git_submodules" in err))
-
-        # --- cache override: HARNESS_GIT_STATE_CACHE_DIR keeps the cache out of the repo ----
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=None)
-        scratches.append(tmp)
-        repo = tempfile.mkdtemp(prefix="gsd_repo_")
-        repos.append(repo)
-        _init_repo_with_submodule(repo, "Jmodot")
-        cache_dir = tempfile.mkdtemp(prefix="gsd_cache_")
-        repos.append(cache_dir)
-        run_hook(os.path.join(tmp, "hooks", HOOK_NAME), repo, env_extra={"HARNESS_GIT_STATE_CACHE_DIR": cache_dir})
-        cases.append(("cache override: the cache file lands in the override dir",
-                      any(n.startswith("git-state-") for n in os.listdir(cache_dir))))
-        cases.append(("cache override: the repo's own .claude/.cache is not written",
-                      not os.path.exists(os.path.join(repo, ".claude", ".cache"))))
-    finally:
-        for tmp in scratches:
-            fx.rm(tmp)
-        for repo in repos:
-            fx.rm(repo)
-
-    for label, ok in cases:
-        print("%-4s %s" % ("ok" if ok else "FAIL", label))
-        if not ok:
-            failures.append(label)
-
-    print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    for f in failures:
-        print("  FAIL " + f)
-    return 1 if failures else 0
+    yield make
+    for tree in made:
+        fx.rm(tree)
 
 
+@pytest.fixture
+def repo(tmp_path):
+    return init_repo(tmp_path / "repo")
 
-def test_proof():
-    assert main() in (None, 0)
+
+def test_an_absent_adaptation_json_exits_zero(adapted, repo):
+    _out, _err, rc = run_hook(adapted(None), repo)
+    assert rc == 0
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_an_absent_adaptation_json_writes_no_stderr(adapted, repo):
+    _out, err, _rc = run_hook(adapted(None), repo)
+    assert err == ""
+
+
+def test_a_valid_git_submodules_entry_is_read_without_crashing(adapted, repo):
+    _out, _err, rc = run_hook(adapted({"git_submodules": ["Jmodot"]}), repo)
+    assert rc == 0
+
+
+def test_a_valid_git_submodules_entry_writes_no_stderr(adapted, repo):
+    _out, err, _rc = run_hook(adapted({"git_submodules": ["Jmodot"]}), repo)
+    assert err == ""
+
+
+def test_a_wrong_typed_git_submodules_still_exits_zero_never_blocking(adapted, repo):
+    _out, _err, rc = run_hook(adapted({"git_submodules": "Jmodot"}), repo)
+    assert rc == 0
+
+
+def test_a_wrong_typed_git_submodules_writes_at_most_one_stderr_line_naming_the_key(adapted, repo):
+    _out, err, _rc = run_hook(adapted({"git_submodules": "Jmodot"}), repo)
+    assert err.count("\n") <= 1 and "git_submodules" in err
+
+
+def test_the_cache_override_puts_the_cache_file_in_the_override_dir(adapted, repo, tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    run_hook(adapted(None), repo, env_extra={"HARNESS_GIT_STATE_CACHE_DIR": str(cache_dir)})
+    assert any(n.startswith("git-state-") for n in os.listdir(cache_dir))
+
+
+def test_the_cache_override_keeps_the_repos_own_cache_unwritten(adapted, repo, tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    run_hook(adapted(None), repo, env_extra={"HARNESS_GIT_STATE_CACHE_DIR": str(cache_dir)})
+    assert not os.path.exists(os.path.join(repo, ".claude", ".cache"))

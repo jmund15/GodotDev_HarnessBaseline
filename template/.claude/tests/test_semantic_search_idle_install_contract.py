@@ -13,9 +13,6 @@ import contextlib
 import importlib.util
 import io
 import json
-import shutil
-import sys
-import tempfile
 from pathlib import Path
 
 TOOL = Path(__file__).resolve().parents[1] / "tools" / "semantic_search_idle_install.py"
@@ -76,62 +73,31 @@ def run(module, argv):
     return code, out.getvalue()
 
 
-def case_not_installed_home_refuses(directory):
+def test_a_home_with_no_install_state_refuses(tmp_path):
     module = load_tool()
     stub_spawns(module)
-    args, _ = planted_home(module, directory)
+    args, _ = planted_home(module, tmp_path)
     code, text = run(module, ["--check", *args])
     assert code == 1, "a home with no install state must exit 1"
     assert "idle unload is not installed" in text, text
 
 
-def case_installed_home_passes_check(directory):
+def test_a_fresh_install_passes_its_own_check(tmp_path):
     module = load_tool()
     stub_spawns(module)
-    args, _ = planted_home(module, directory)
+    args, _ = planted_home(module, tmp_path)
     code, text = run(module, ["--install", *args])
     assert code == 0, text
     code, text = run(module, ["--check", *args])
     assert code == 0, "a fresh install must pass its own check: " + text
 
 
-def case_shim_edited_after_install_refuses(directory):
+def test_a_shim_edited_after_install_refuses(tmp_path):
     module = load_tool()
     stub_spawns(module)
-    args, state_dir = planted_home(module, directory)
+    args, state_dir = planted_home(module, tmp_path)
     assert run(module, ["--install", *args])[0] == 0
     (state_dir / module.SHIM_NAME).write_text("// edited after install\n", encoding="utf-8")
     code, text = run(module, ["--check", *args])
     assert code == 1, "an edited shim must exit 1"
     assert "installed shim content changed" in text, text
-
-
-def main():
-    cases = [case_not_installed_home_refuses, case_installed_home_passes_check,
-             case_shim_edited_after_install_refuses]
-    failures = []
-    for case in cases:
-        directory = tempfile.mkdtemp(prefix="semantic-search-idle-proof-")
-        try:
-            case(directory)
-            print("ok " + case.__name__)
-        except Exception as exc:
-            failures.append(case.__name__)
-            print("FAIL %s: %s" % (case.__name__, exc))
-        finally:
-            shutil.rmtree(directory, ignore_errors=True)
-    print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    return 1 if failures else 0
-
-
-def test_proof():
-    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
-    try:
-        code = main()
-    except SystemExit as exc:
-        code = exc.code
-    assert code in (None, 0), code
-
-
-if __name__ == "__main__":
-    sys.exit(main())

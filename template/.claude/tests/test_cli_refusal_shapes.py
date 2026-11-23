@@ -4,7 +4,7 @@ One wire format, owned by `tools/cli_usage.py`: a refusal exits non-zero and std
 `accepts:` line and an `example:` line. The printed example must parse under the tool's own parser,
 checked parser-only — some tools' examples write a ledger.
 
-    python3 .claude/tests/test_cli_refusal_shapes.py
+    python -m pytest .claude/tests/test_cli_refusal_shapes.py -q
 """
 import importlib.util
 import os
@@ -12,10 +12,15 @@ import re
 import shlex
 import subprocess
 import sys
-import tempfile
+
+import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "..", "tools")
+
+# (tool, a malformed argv). index_commit: a missing --name refuses, and its example is a real stage call.
+# reap: a malformed call refuses with its shape; its observed-fact refusals are rows in floor/test_floor_reap.py.
+REFUSALS = [("index_commit", ["stage"]), ("reap", ["--no-such-flag"])]
 
 
 def call(name, *args):
@@ -32,13 +37,11 @@ def load(name):
     return module
 
 
-def parser_for(name, interleaved=False):
+def parser_for(name):
     """The tool's real parser, or the exception that kept it out of reach."""
     try:
-        parser = load(name).build_parser()
-        return lambda argv: (parser.parse_intermixed_args(argv) if interleaved
-                             else parser.parse_args(argv))
-    except BaseException as exc:  # an unreachable parser is this case's fact
+        return load(name).build_parser().parse_args
+    except BaseException as exc:  # an unreachable parser is the case's fact
         return exc
 
 
@@ -57,49 +60,17 @@ def example_argv(example):
     return tokens
 
 
-def refusal_cases(cases, label, proc, parse):
+@pytest.mark.parametrize("tool, args", REFUSALS, ids=[t for t, _ in REFUSALS])
+def test_a_bad_call_exits_nonzero_and_states_accepts_and_example(tool, args):
+    proc = call(tool + ".py", *args)
     accepts, example = shape_of(proc.stderr)
-    cases.append((f"{label}: a bad call exits non-zero and states accepts: and example:",
-                  proc.returncode != 0 and bool(accepts) and bool(example),
-                  (proc.stdout + proc.stderr)[-500:]))
-    parsed, failure = None, ""
-    if isinstance(parse, BaseException):
-        failure = "parser unreachable: %r" % (parse,)
-    elif not example:
-        failure = "no example line"
-    else:
-        try:
-            parsed = parse(example_argv(example))
-        except BaseException as exc:  # a parse failure IS the case's fact
-            failure = "example did not parse: %r" % (exc,)
-    cases.append((f"{label}: the printed example parses under the real parser",
-                  parsed is not None and not failure, failure))
+    assert proc.returncode != 0 and accepts and example, (proc.stdout + proc.stderr)[-500:]
 
 
-def main():
-    cases = []
-    tmp = tempfile.mkdtemp(prefix="cli_refusal_")
-
-    # index_commit: a missing --name refuses, and its example is a real stage call.
-    refusal_cases(cases, "index_commit", call("index_commit.py", "stage"),
-                  parser_for("index_commit"))
-
-    # reap: a malformed call refuses with its shape; its observed-fact refusals are rows in floor/test_floor_reap.py.
-    refusal_cases(cases, "reap", call("reap.py", "--no-such-flag"), parser_for("reap"))
-
-    failures = [label for label, ok, _ in cases if not ok]
-    for label, ok, detail in cases:
-        print("%-4s %s" % ("ok" if ok else "FAIL", label))
-        if not ok and detail:
-            print("      " + str(detail).replace("\n", "\n      "))
-    print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    return 1 if failures else 0
-
-
-
-def test_proof():
-    assert main() in (None, 0)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+@pytest.mark.parametrize("tool, args", REFUSALS, ids=[t for t, _ in REFUSALS])
+def test_the_printed_example_parses_under_the_real_parser(tool, args):
+    _, example = shape_of(call(tool + ".py", *args).stderr)
+    assert example, "no example line"
+    parse = parser_for(tool)
+    assert not isinstance(parse, BaseException), "parser unreachable: %r" % (parse,)
+    parse(example_argv(example))

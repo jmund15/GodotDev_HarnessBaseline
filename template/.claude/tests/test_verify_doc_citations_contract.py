@@ -6,10 +6,8 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 TOOL = Path(__file__).resolve().parents[1] / "tools" / "verify_doc_citations.py"
@@ -31,52 +29,21 @@ def planted_repo(directory, doc_text):
     return repo, doc
 
 
-def case_real_fileline_is_found(directory):
-    repo, doc = planted_repo(directory, "The helper lives at `.claude/tools/planted_helper.py:1`.\n")
+def test_a_real_file_line_is_found(tmp_path):
+    repo, doc = planted_repo(tmp_path, "The helper lives at `.claude/tools/planted_helper.py:1`.\n")
     done = run(str(doc), "--repo", str(repo), "--json")
     assert done.returncode == 0, done.stdout + done.stderr
     assert json.loads(done.stdout)["counts"] == {"found": 1, "missing": 0, "unparseable": 0}, done.stdout
 
 
-def case_fileline_past_eof_is_missing_and_exits_nonzero(directory):
-    repo, doc = planted_repo(directory, "The helper lives at `.claude/tools/planted_helper.py:999`.\n")
+def test_a_file_line_past_eof_is_missing_and_exits_one(tmp_path):
+    repo, doc = planted_repo(tmp_path, "The helper lives at `.claude/tools/planted_helper.py:999`.\n")
     done = run(str(doc), "--repo", str(repo), "--json")
     assert done.returncode == 1, "a citation past EOF must exit 1"
     assert json.loads(done.stdout)["counts"]["missing"] == 1, done.stdout
 
 
-def case_unknown_kind_exits_two(directory):
-    repo, doc = planted_repo(directory, "Nothing cited.\n")
+def test_an_unknown_kind_exits_two(tmp_path):
+    repo, doc = planted_repo(tmp_path, "Nothing cited.\n")
     done = run(str(doc), "--repo", str(repo), "--kinds", "no-such-kind")
     assert done.returncode == 2, done.stdout + done.stderr
-
-
-def main():
-    cases = [case_real_fileline_is_found, case_fileline_past_eof_is_missing_and_exits_nonzero,
-             case_unknown_kind_exits_two]
-    failures = []
-    for case in cases:
-        directory = tempfile.mkdtemp(prefix="verify-doc-citations-proof-")
-        try:
-            case(directory)
-            print("ok " + case.__name__)
-        except Exception as exc:
-            failures.append(case.__name__)
-            print("FAIL %s: %s" % (case.__name__, exc))
-        finally:
-            shutil.rmtree(directory, ignore_errors=True)
-    print("%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    return 1 if failures else 0
-
-
-def test_proof():
-    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
-    try:
-        code = main()
-    except SystemExit as exc:
-        code = exc.code
-    assert code in (None, 0), code
-
-
-if __name__ == "__main__":
-    sys.exit(main())
