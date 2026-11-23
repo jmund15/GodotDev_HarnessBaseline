@@ -37,7 +37,7 @@ Base for every row: `v2` at `6f21a0d`. Class and reason per group; the S4 class 
 | File dropped (`template/.claude/tests/`) | Subject at base | Why dropped | Need or replacement |
 |---|---|---|---|
 | `test_scan_fixtures.py` | `baseline_identity.scan_tree` and `_scan_fixtures.py` | the whole-tree scan case's subject is V10; the secret-shape case moved | `test_user_scope.py::test_secret_fixtures_match_their_lint_shapes` |
-| `test_run_call_router.py` | `run_call_router.py` driven through `pre_bash_dispatch.dispatch` | the dispatcher is deleted; `run_call_router.py` has no caller on `v2` until its rewrite (plan V9) | none yet: the 59 cases need a rewrite against the file's own entry |
+| `test_run_call_router.py` | `run_call_router.py` driven through `pre_bash_dispatch.dispatch` | the dispatcher is deleted; `run_call_router.py` has no caller on `v2` until its rewrite (plan V9) | S5d: `run_call_router.py` is a `_floor.HELPER_NAMES` helper; its 59 checks are `floor/test_floor_run_router.py`'s 47 rows |
 | `test_bash_backslash_fidelity.py` | `hooks/bash_backslash_fidelity.py` through settings composition | it composed `settings.json` from the deleted layers | `tests/floor/test_floor_entry.py` backslash-repair case only; the class rows are not carried (S5c) |
 | `test_python_null_stdin.py`, `test_settings_composed.py`, `test_prose_adaptation_seams.py`, `test_claude_core_standalone.py` | the template's composed `settings.json`, `adaptation.json` and `CLAUDE.md` | those files are each repo's own (T7) | run in each repo by S9 if wanted |
 | `test_compaction_state.py`, `test_hook_state_compaction_keep.py` | `_hook_state.skill_in_context` | the skill-in-context marker and its only reader are deleted | none |

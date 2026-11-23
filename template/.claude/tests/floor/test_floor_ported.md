@@ -33,13 +33,14 @@ holding a v1 case's several asserts).
 | `test_kill_guard.py` | 73 | 73 | `test_floor_kill.py` (154) |
 | `test_reap.py`, `test_reap_native_env.py` | 190 checks + 3 | same | `test_floor_reap.py` (73), with the small stop tool (S5d, below) |
 | `test_bash_backslash_fidelity.py` (backslash class) | 69 checks | — | `test_floor_backslash.py` (40), every row through `_floor.decide` (S5d) |
+| `test_run_call_router.py` (deleted by B16 with its dispatcher) | 59 checks | — | `test_floor_run_router.py` (47), every row through `_floor.decide` (S5d) |
 
 `test_floor_entry.py` (32) holds T1's entry cases: one spawned stub call per decision kind, a broken import of each
 `_floor.FLOOR_MEMBERS` row (the row set and the case set must be equal) and of the shared lexer, an unparseable
 `_floor.py`, a raising `decide_text`, an unreadable payload, a fresh `import _floor` that loads none of
 `_hook_state`, `cli_usage`, `index_commit` and `reap`, a decision whose git reads outrun `_floor.BUDGET_S`, the
 dispatcher's precedence and helper-skip rules, and the kept Bash helpers (`HELPER_NAMES`: the length cut, the
-recursive-grep deny on Bash, PowerShell and Monitor, the backslash repair) judged through the one entry.
+recursive-grep deny on Bash, PowerShell and Monitor, the run router, the backslash repair) judged through the one entry.
 
 S4's rows (plan S5 input) are in `test_floor_delete.py` `test_s4_*`: a plugin download under
 `~/.claude/plugins/cache/` holding no repository is a new allow (approved in the plan, OF-guards); the cache root,
@@ -106,6 +107,11 @@ and the native environment read run live in `test_floor_reap.py`'s two Windows r
   `--client-version` exits 2 (`test_bash_fidelity_probe.py`); the helper's own stdin entry on a malformed payload
   and the dispatcher forwarding the rewrite (the one entry: `test_floor_entry.py`); the hook file exists (every row
   imports it); the runaway-scan reaper's `settings.json` matcher (not this helper's; registration lands at cutover).
+- `test_run_call_router.py` checks whose subject moved: the import fault surfacing as a `run_call_router fault:`
+  context line (T1: `_floor` skips a failing helper silently; the absent-router row keeps the rest of the floor
+  deciding), and the `git show` mention's `MSYS_NO_PATHCONV` prefix (V17's colon repair, cut above; the row now
+  expects the command untouched). The `# gate: final` suffix the v1 proof added for the deleted gate-cadence guard
+  is gone with it.
 - A v1 fixture that is gone: the recovered `rm_denials.json` replay (gitignored scratch, absent in both repos).
 
 ## The small stop tool (S5d)
