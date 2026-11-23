@@ -125,7 +125,14 @@ def write_transcript(tmp_path):
         {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "the seam is mine"}]}},
         {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "a tool said so"}]}},
     ]
-    path = tmp_path / "session.jsonl"
+    return write_jsonl(tmp_path, SESSION_NAME, lines)
+
+
+SESSION_NAME = "0b6f1c1e-2d3a-4b5c-8d7e-9f0a1b2c3d4e.jsonl"
+
+
+def write_jsonl(tmp_path, name, lines):
+    path = tmp_path / name
     path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
     return path
 
@@ -142,6 +149,57 @@ def test_words_that_are_not_the_owners_do_not_hold(tmp_path, checkout, capsys, q
     item = {"file": str(write_transcript(tmp_path)), "quote": quote}
     code, out = check(capsys, findings(tmp_path, [item]), checkout)
     assert code == 1 and "words not in any owner turn" in out
+
+
+def test_a_meta_row_is_not_the_owner(tmp_path, checkout, capsys):
+    meta = {"type": "user", "isMeta": True, "message": {"role": "user", "content": "injected skill words"}}
+    item = {"file": str(write_jsonl(tmp_path, SESSION_NAME, [meta])), "quote": "injected skill words"}
+    code, out = check(capsys, findings(tmp_path, [item]), checkout)
+    assert code == 1 and "words not in any owner turn" in out
+
+
+def test_an_ask_user_question_answer_is_the_owner(tmp_path, checkout, capsys):
+    ask = {"type": "user", "toolUseResult": {"questions": [{"question": "Which seam?"}], "answers": {"Which seam?": "the thin one"}},
+           "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "answered"}]}}
+    item = {"file": str(write_jsonl(tmp_path, SESSION_NAME, [ask])), "quote": "the thin one"}
+    code, out = check(capsys, findings(tmp_path, [item]), checkout)
+    assert code == 0, out
+
+
+def test_a_fixture_jsonl_is_quoted_as_a_file(tmp_path, checkout, capsys):
+    record = {"type": "assistant", "message": {"role": "assistant", "content": "fixture words"}}
+    (checkout / "fixtures").mkdir(exist_ok=True)
+    write_jsonl(checkout / "fixtures", "journal.jsonl", [record])
+    item = {"file": "fixtures/journal.jsonl", "quote": "fixture words"}
+    code, out = check(capsys, findings(tmp_path, [item]), checkout)
+    assert code == 0, out
+
+
+def test_a_line_range_on_a_transcript_still_routes_to_the_owner_check(tmp_path, checkout, capsys):
+    transcript = write_transcript(tmp_path)
+    item = {"file": "%s:3" % transcript, "quote": 'we keep "the seam" thin'}
+    code, out = check(capsys, findings(tmp_path, [item]), checkout)
+    assert code == 0, out
+
+
+def test_git_branch_with_a_name_is_refused_but_a_list_runs(tmp_path, checkout, capsys):
+    code, out = check(capsys, findings(tmp_path, [{"command": "git branch newbranch", "output": "x"}]), checkout)
+    assert code == 1 and "refused" in out
+    refs = subprocess.run(["git", "-C", str(checkout), "branch", "--list", "newbranch"], capture_output=True, text=True)
+    assert refs.stdout.strip() == "", "the refused command must not have created the branch"
+    code, out = check(capsys, findings(tmp_path, [{"command": "git branch --list", "output": ""}]), checkout)
+    assert "refused" not in out
+
+
+def test_an_illustrative_json_fence_is_skipped_with_a_warning(tmp_path, checkout, capsys):
+    path = tmp_path / "findings.md"
+    block = "```json" + chr(10) + "%s" + chr(10) + "```" + chr(10)
+    path.write_text("## One" + chr(10) * 2 + block % '{"example": 1}' + chr(10)
+                    + block % '[{"file": "notes.md", "quote": "brown fox"}]', encoding="utf-8")
+    code = quote_check.main([str(path), "--root", str(checkout)])
+    captured = capsys.readouterr()
+    assert code == 0 and "1 items" in captured.out
+    assert "skipped" in captured.err
 
 
 def test_an_empty_quote_is_flagged(tmp_path, checkout, capsys):
