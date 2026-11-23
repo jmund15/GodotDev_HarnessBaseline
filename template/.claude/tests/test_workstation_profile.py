@@ -17,9 +17,9 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
-import textwrap
 from pathlib import Path
+
+import pytest
 
 HERE = Path(__file__).resolve().parent
 CLAUDE = HERE.parent
@@ -27,45 +27,10 @@ TOOLS = CLAUDE / "tools"
 sys.path.insert(0, str(TOOLS))
 import workstation_profile as ws  # noqa: E402
 
-FAILURES = []
 LAYER_MODULE = "workstation_profile_" + "godot"  # the sibling the core's seam reads; spelled in parts so this pure proof cites no file of a higher layer
 
 
-# ---------------------------------------------------------------- the case harness
-
-def case(label, fn):
-    """Run one case; an exception is a FAIL naming its type, never a crash of the whole proof."""
-    try:
-        ok, detail = fn()
-    except Exception as exc:  # noqa: BLE001 - a proof reports, it does not stop
-        ok, detail = False, "%s: %s" % (type(exc).__name__, exc)
-    print("%-4s %s" % ("ok" if ok else "FAIL", label))
-    if not ok:
-        FAILURES.append("%s%s" % (label, (" -- " + str(detail)[:200]) if detail else ""))
-
-
-def eq(got, want):
-    return got == want, "got %r, want %r" % (got, want)
-
-
-@contextlib.contextmanager
-def patched_env(values):
-    """Set the named variables; a None value removes the variable for the block."""
-    saved = {k: os.environ.get(k) for k in values}
-    for key, value in values.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
-    try:
-        yield
-    finally:
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
+# ---------------------------------------------------------------- harness
 
 @contextlib.contextmanager
 def patched(obj, name, value):
@@ -102,6 +67,14 @@ def cli(argv):
     return code, out.getvalue()
 
 
+@pytest.fixture(autouse=True)
+def profile_path(tmp_path, monkeypatch):
+    """Every case records into its own profile file, never the owner's ~/.claude."""
+    path = tmp_path / "profile.json"
+    monkeypatch.setenv(ws.PROFILE_ENV, str(path))
+    return path
+
+
 # ---------------------------------------------------------------- fixtures
 
 DECLARED = (".mcp.json", ".claude/reference/project_stack.md", "pins.json",
@@ -109,6 +82,9 @@ DECLARED = (".mcp.json", ".claude/reference/project_stack.md", "pins.json",
 PROJECT_STACK = "# Project Stack Pins\n\n- Runtime: **1.0**\n"
 MCP_JSON = '{"mcpServers": {"x": {}}}\n'
 PINS_JSON = '{"pin": "1.0"}\n'
+ENGINE_ROOT_FILES = {"project.godot": "; planted\n",
+                     "nuget.config": '<configuration><packageSources><add key="l" value="feed_dir"/>'
+                                     "</packageSources></configuration>"}
 
 
 def stamp_doc(paths=DECLARED, body="stamp-inputs:", front=True):
@@ -146,7 +122,196 @@ def plant_root(base, doc=None, inputs=DECLARED, references=()):
     return root
 
 
-def git_fixture(base):
+@pytest.fixture
+def root(tmp_path):
+    return plant_root(tmp_path / "repo")
+
+
+@pytest.fixture
+def stamped(root):
+    """A planted root with a recorded, current setup stamp."""
+    ok, detail = ws.stamp(root, preflight_failures=[])
+    assert ok, detail
+    return root
+
+
+def write(path, text):
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+# ---------------------------------------------------------------- GPU tier and probe
+
+@pytest.mark.parametrize("mib, want", [
+    (16376, "full"), (16384, "full"), (15360, "full"), (15359, "small"),
+    (8188, "small"), (8192, "small"), (7680, "small"), (7679, "none"),
+    (4096, "none"), (0, "none"), (None, "none"),
+], ids=lambda v: str(v))
+def test_a_gpu_memory_reading_maps_to_its_tier(mib, want):
+    assert ws.gpu_tier(mib) == want
+
+
+def test_read_gpu_parses_the_live_nvidia_smi_csv_row():
+    assert probe("NVIDIA GeForce RTX 4070 Ti SUPER, 16376 MiB\n", ws.read_gpu) == ("NVIDIA GeForce RTX 4070 Ti SUPER", 16376)
+
+
+def test_read_gpu_returns_no_gpu_on_a_failed_probe():
+    assert probe("", ws.read_gpu, returncode=9) == (None, None)
+
+
+def test_read_gpu_survives_a_missing_nvidia_smi():
+    assert probe(None, ws.read_gpu) == (None, None)
+
+
+def test_the_default_profile_path_is_the_user_profile_under_claude(monkeypatch):
+    monkeypatch.delenv(ws.PROFILE_ENV, raising=False)
+    assert ws.profile_path() == os.path.expanduser("~/.claude/workstation_profile.json")
+
+
+# ---------------------------------------------------------------- declarations
+
+def test_stamp_inputs_reads_the_declared_list_in_order(root):
+    assert ws.stamp_inputs(root) == list(DECLARED)
+
+
+def test_a_blank_line_inside_the_declaration_does_not_truncate_the_list(tmp_path):
+    spaced = plant_root(tmp_path / "repo_spaced",
+                        doc=stamp_doc(DECLARED).replace('  - "pins.json"', '\n  - "pins.json"'))
+    assert ws.stamp_inputs(spaced) == list(DECLARED)
+
+
+def test_a_different_declaration_is_what_the_tool_reads_not_a_hard_coded_copy(tmp_path):
+    other = plant_root(tmp_path / "repo_other", doc=stamp_doc(("MADE-UP.md",)), inputs=("MADE-UP.md",))
+    write(other / "MADE-UP.md", "x\n")
+    assert ws.stamp_inputs(other) == ["MADE-UP.md"]
+
+
+@pytest.mark.parametrize("doc", [
+    stamp_doc(body=None),
+    "---\nstamp-inputs:\n---\nbody\n",
+    stamp_doc(front=False),
+    stamp_doc(body="stamp-inputs: .mcp.json"),
+], ids=["missing-declaration", "no-entries", "missing-frontmatter", "inline-scalar"])
+def test_a_declaration_that_is_absent_or_malformed_declares_no_inputs(tmp_path, doc):
+    assert ws.stamp_inputs(plant_root(tmp_path / "bad", doc=doc)) is None
+
+
+# ---------------------------------------------------------------- reference declarations
+
+def test_a_reference_declaration_joins_the_commands_after_it(tmp_path):
+    root = plant_root(tmp_path / "with_ref", references=[reference_doc("workstation_setup_extra.md", ["extra.json"])])
+    assert ws.stamp_inputs(root) == list(DECLARED) + ["extra.json"]
+
+
+def test_an_input_declared_twice_is_listed_once_at_its_first_place(tmp_path):
+    repeated = reference_doc("workstation_setup_extra.md", [".mcp.json", "extra.json"])
+    assert ws.stamp_inputs(plant_root(tmp_path / "dup", references=[repeated])) == list(DECLARED) + ["extra.json"]
+
+
+def test_a_reference_with_no_declaration_adds_nothing(tmp_path):
+    silent = reference_doc("workstation_setup_silent.md", None)
+    assert ws.stamp_inputs(plant_root(tmp_path / "silent", references=[silent])) == list(DECLARED)
+
+
+def test_a_file_outside_the_workstation_setup_naming_is_not_read(tmp_path):
+    stranger = reference_doc("unrelated_notes.md", ["stranger.json"])
+    assert ws.stamp_inputs(plant_root(tmp_path / "stranger", references=[stranger])) == list(DECLARED)
+
+
+@pytest.mark.parametrize("bad", [
+    reference_doc("workstation_setup_bad.md", []),
+    reference_doc("workstation_setup_bad.md", [], body="stamp-inputs: x.json"),
+], ids=["empty", "inline-scalar"])
+def test_an_empty_or_inline_reference_declaration_reads_as_no_inputs_at_all(tmp_path, bad):
+    assert ws.stamp_inputs(plant_root(tmp_path / "badref", references=[bad])) is None
+
+
+@pytest.fixture
+def stamped_with_reference(tmp_path):
+    root = plant_root(tmp_path / "ref_stamp", references=[reference_doc("workstation_setup_extra.md", ["extra.json"])])
+    write(root / "extra.json", "{}\n")
+    ws.stamp(root, preflight_failures=[])
+    return root
+
+
+def test_a_stamped_root_with_a_reference_input_reads_ok(stamped_with_reference):
+    assert ws.setup_status(stamped_with_reference) == "OK"
+
+
+def test_an_edited_reference_input_reads_stale_and_names_it(stamped_with_reference):
+    write(stamped_with_reference / "extra.json", '{"changed": true}\n')
+    status = ws.setup_status(stamped_with_reference)
+    assert status.startswith("STALE") and "extra.json" in status
+
+
+# ---------------------------------------------------------------- stamping
+
+def test_the_cli_default_root_is_the_repository_and_its_declaration_resolves():
+    assert ws.stamp_inputs(ws._repo_root()) is not None
+
+
+def test_stamp_refuses_with_no_readable_declaration(tmp_path):
+    assert ws.stamp(plant_root(tmp_path / "nodecl", doc=stamp_doc(body=None)), preflight_failures=[])[0] is False
+
+
+def test_stamp_refuses_on_a_failed_preflight_and_records_nothing(root):
+    refused = ws.stamp(root, preflight_failures=["toolchain is missing"])
+    assert not refused[0] and "refusing" in refused[1] and ws.setup_status(root) != "OK", refused
+
+
+def test_a_stamped_root_reports_ok(stamped):
+    assert ws.setup_status(stamped) == "OK"
+
+
+def test_an_edited_input_reads_stale_and_names_it(stamped):
+    write(stamped / ".mcp.json", '{"mcpServers": {}}\n')
+    status = ws.setup_status(stamped)
+    assert status.startswith("STALE") and ".mcp.json" in status
+
+
+def test_a_missing_declared_input_reads_stale_and_names_it(stamped):
+    (stamped / "pins.json").unlink()
+    status = ws.setup_status(stamped)
+    assert status.startswith("STALE") and "pins.json" in status, status
+
+
+def test_stamping_again_clears_the_stale_report(stamped):
+    write(stamped / ".mcp.json", '{"mcpServers": {}}\n')
+    ok, detail = ws.stamp(stamped, preflight_failures=[])
+    assert ok and ws.setup_status(stamped) == "OK", detail
+
+
+def test_a_broken_declaration_reads_unaudited_even_with_a_recorded_entry(stamped):
+    write(stamped / ".claude" / "commands" / "workstation_setup.md", stamp_doc(body="stamp-inputs: .mcp.json"))
+    assert ws.setup_status(stamped).startswith("UNAUDITED"), ws.setup_status(stamped)
+
+
+def test_restoring_the_declaration_restores_ok(stamped):
+    command = stamped / ".claude" / "commands" / "workstation_setup.md"
+    write(command, stamp_doc(body="stamp-inputs: .mcp.json"))
+    write(command, stamp_doc())
+    assert ws.setup_status(stamped) == "OK"
+
+
+def test_an_unstamped_root_reads_unaudited(root):
+    status = ws.setup_status(root)
+    assert status.startswith("UNAUDITED"), status
+
+
+def test_a_checkout_without_workstation_setup_has_no_setup_status(tmp_path):
+    assert ws.setup_status(tmp_path / "no_such_checkout") is None
+
+
+def test_a_corrupt_profile_is_not_a_crash_it_reads_unaudited_tier_none_and_an_empty_read(stamped, profile_path):
+    write(profile_path, "{not json at all")
+    assert ws.setup_status(stamped).startswith("UNAUDITED")
+    assert ws.local_tier() is None and ws.read_profile() == {}
+
+
+# ---------------------------------------------------------------- git keying
+
+@pytest.fixture
+def git_pair(tmp_path):
     """A real main checkout plus a linked worktree of it. Returns (main, worktree)."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_AUTHOR_NAME": "proof",
@@ -160,19 +325,29 @@ def git_fixture(base):
             raise RuntimeError("git %s failed: %s" % (args[0], result.stderr.strip()))
         return result.stdout
 
-    main_co = Path(base) / "main"
-    main_co.mkdir(parents=True)
+    main_co = tmp_path / "main"
+    main_co.mkdir()
     git(main_co, "init", "-q")
     git(main_co, "commit", "-q", "--allow-empty", "-m", "init")
-    worktree = Path(base) / "wt"
+    worktree = tmp_path / "wt"
     git(main_co, "worktree", "add", "-q", "--detach", str(worktree))
     return main_co, worktree
 
 
-def write(path, text):
-    path.write_text(text, encoding="utf-8")
-    return path
+def test_a_linked_worktree_keys_to_its_main_checkout(git_pair):
+    main_co, worktree = git_pair
+    assert ws.profile_key(main_co) == ws.profile_key(worktree)
 
+
+def test_a_worktree_of_the_stamped_checkout_reads_ok(git_pair):
+    main_co, worktree = git_pair
+    plant_root(main_co)
+    plant_root(worktree)
+    ws.stamp(main_co, preflight_failures=[])
+    assert ws.setup_status(worktree) == "OK"
+
+
+# ---------------------------------------------------------------- the layer seam
 
 def load_core_alone(base, sibling_source=None):
     """`workstation_profile.py` copied into a `tools/` of its own and loaded from there. With
@@ -183,309 +358,152 @@ def load_core_alone(base, sibling_source=None):
     shutil.copy(TOOLS / "workstation_profile.py", directory / "workstation_profile.py")
     if sibling_source is not None:
         (directory / (LAYER_MODULE + ".py")).write_text(sibling_source, encoding="utf-8")
-    spec = importlib.util.spec_from_file_location("wp_alone_%d" % len(list(Path(base).iterdir())),
-                                                  directory / "workstation_profile.py")
+    spec = importlib.util.spec_from_file_location("wp_alone_%s" % Path(base).name, directory / "workstation_profile.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-# ---------------------------------------------------------------- cases
-
-def tier_cases(tmp, state):
-    for mib, want in ((16376, "full"), (16384, "full"), (15360, "full"), (15359, "small"),
-                      (8188, "small"), (8192, "small"), (7680, "small"), (7679, "none"),
-                      (4096, "none"), (0, "none"), (None, "none")):
-        case("%r MiB -> %s" % (mib, want), lambda mib=mib, want=want: eq(ws.gpu_tier(mib), want))
-
-    case("read_gpu parses the live nvidia-smi CSV row",
-         lambda: eq(probe("NVIDIA GeForce RTX 4070 Ti SUPER, 16376 MiB\n", ws.read_gpu),
-                    ("NVIDIA GeForce RTX 4070 Ti SUPER", 16376)))
-    case("read_gpu returns no GPU on a failed probe",
-         lambda: eq(probe("", ws.read_gpu, returncode=9), (None, None)))
-    case("read_gpu survives a missing nvidia-smi",
-         lambda: eq(probe(None, ws.read_gpu), (None, None)))
-
-    def default_path():
-        saved = os.environ.pop(ws.PROFILE_ENV, None)
-        try:
-            return eq(ws.profile_path(), os.path.expanduser("~/.claude/workstation_profile.json"))
-        finally:
-            if saved is not None:
-                os.environ[ws.PROFILE_ENV] = saved
-
-    case("the default profile path is ~/.claude/workstation_profile.json", default_path)
-
-
-def declaration_cases(tmp, state):
-    root = plant_root(tmp / "repo")
-    state["root"] = root
-    case("stamp_inputs reads the declared list in order",
-         lambda: eq(ws.stamp_inputs(root), list(DECLARED)))
-
-    spaced = plant_root(tmp / "repo_spaced",
-                        doc=stamp_doc(DECLARED).replace('  - "pins.json"', '\n  - "pins.json"'))
-    case("a blank line inside the declaration does not truncate the list",
-         lambda: eq(ws.stamp_inputs(spaced), list(DECLARED)))
-
-    other = plant_root(tmp / "repo_other", doc=stamp_doc(("MADE-UP.md",)), inputs=("MADE-UP.md",))
-    write(other / "MADE-UP.md", "x\n")
-    case("a different declaration is what the tool reads, not a hard-coded copy",
-         lambda: eq(ws.stamp_inputs(other), ["MADE-UP.md"]))
-
-    variants = {
-        "a missing declaration": stamp_doc(body=None),
-        "a declaration with no entries": "---\nstamp-inputs:\n---\nbody\n",
-        "a missing frontmatter block": stamp_doc(front=False),
-        "an inline scalar declaration": stamp_doc(body="stamp-inputs: .mcp.json"),
-    }
-    for i, (label, doc) in enumerate(variants.items()):
-        bad = plant_root(tmp / ("bad%d" % i), doc=doc)
-        case("%s declares no inputs" % label, lambda bad=bad: eq(ws.stamp_inputs(bad), None))
-
-
-def reference_cases(tmp, state):
-    extra = reference_doc("workstation_setup_extra.md", ["extra.json"])
-    root = plant_root(tmp / "with_ref", references=[extra])
-    case("a reference's declaration joins the command's, after it",
-         lambda: eq(ws.stamp_inputs(root), list(DECLARED) + ["extra.json"]))
-
-    repeated = reference_doc("workstation_setup_extra.md", [".mcp.json", "extra.json"])
-    case("an input declared twice is listed once, at its first place",
-         lambda: eq(ws.stamp_inputs(plant_root(tmp / "dup", references=[repeated])),
-                    list(DECLARED) + ["extra.json"]))
-
-    silent = reference_doc("workstation_setup_silent.md", None)
-    case("a reference with no declaration adds nothing",
-         lambda: eq(ws.stamp_inputs(plant_root(tmp / "silent", references=[silent])), list(DECLARED)))
-
-    stranger = reference_doc("unrelated_notes.md", ["stranger.json"])
-    case("a file outside the workstation_setup_ naming is not read",
-         lambda: eq(ws.stamp_inputs(plant_root(tmp / "stranger", references=[stranger])), list(DECLARED)))
-
-    for label, bad in (("an empty", reference_doc("workstation_setup_bad.md", [])),
-                       ("an inline scalar", reference_doc("workstation_setup_bad.md", [],
-                                                          body="stamp-inputs: x.json"))):
-        case("%s reference declaration reads as no inputs at all" % label,
-             lambda bad=bad, label=label: eq(
-                 ws.stamp_inputs(plant_root(tmp / ("badref_" + label.split()[-1]), references=[bad])), None))
-
-    write(root / "extra.json", "{}\n")
-    ws.stamp(root, preflight_failures=[])
-    case("a stamped root with a reference input reads OK", lambda: eq(ws.setup_status(root), "OK"))
-    write(root / "extra.json", '{"changed": true}\n')
-    case("an edited reference input reads STALE and names it",
-         lambda: (ws.setup_status(root).startswith("STALE"), "extra.json" in ws.setup_status(root)))
-
-
-def stamp_cases(tmp, state):
-    root = state["root"]
-    case("the CLI's default root is the repository: its stamp-inputs declaration resolves",
-         lambda: (ws.stamp_inputs(ws._repo_root()) is not None, ws._repo_root()))
-    case("stamp refuses with no readable declaration",
-         lambda: eq(ws.stamp(plant_root(tmp / "nodecl", doc=stamp_doc(body=None)),
-                             preflight_failures=[])[0], False))
-
-    refused = ws.stamp(root, preflight_failures=["toolchain is missing"])
-    case("stamp refuses on a failed preflight and records nothing",
-         lambda: (not refused[0] and "refusing" in refused[1]
-                  and ws.setup_status(root) != "OK", refused))
-
-    case("a stamped root reports OK",
-         lambda: (lambda r: (r[0] and ws.setup_status(root) == "OK", r))(
-             ws.stamp(root, preflight_failures=[])))
-
-    write(root / ".mcp.json", '{"mcpServers": {}}\n')
-    case("an edited input reads STALE and names it",
-         lambda: (ws.setup_status(root).startswith("STALE"), ".mcp.json" in ws.setup_status(root)))
-
-    (root / "pins.json").unlink()
-    case("a missing declared input reads STALE and names it",
-         lambda: (ws.setup_status(root).startswith("STALE"),
-                  all(name in ws.setup_status(root) for name in (".mcp.json", "pins.json"))))
-
-    write(root / "pins.json", PINS_JSON)
-    case("stamp again clears the stale report",
-         lambda: (lambda r: (r[0] and ws.setup_status(root) == "OK", r))(
-             ws.stamp(root, preflight_failures=[])))
-
-    write(root / ".claude" / "commands" / "workstation_setup.md", stamp_doc(body="stamp-inputs: .mcp.json"))
-    case("a broken declaration reads UNAUDITED even with a recorded entry",
-         lambda: (ws.setup_status(root).startswith("UNAUDITED"), ws.setup_status(root)))
-    write(root / ".claude" / "commands" / "workstation_setup.md", stamp_doc())
-    case("restoring the declaration restores OK", lambda: eq(ws.setup_status(root), "OK"))
-
-    unstamped = plant_root(tmp / "unstamped")
-    case("an unstamped root reads UNAUDITED",
-         lambda: (ws.setup_status(unstamped).startswith("UNAUDITED"), ws.setup_status(unstamped)))
-    case("a checkout without /workstation_setup has no setup status",
-         lambda: eq(ws.setup_status(tmp / "no_such_checkout"), None))
-
-    write(state["profile"], "{not json at all")
-    case("a corrupt profile is not a crash: UNAUDITED, tier None, empty read",
-         lambda: (ws.setup_status(root).startswith("UNAUDITED")
-                  and ws.local_tier() is None and ws.read_profile() == {},
-                  (ws.setup_status(root), ws.local_tier())))
-    state["profile"].unlink()
-
-
-def worktree_cases(tmp, state):
-    try:
-        main_co, worktree = git_fixture(tmp / "gitbase")
-    except Exception as exc:  # noqa: BLE001 - a git fixture that cannot build is reported
-        case("a linked worktree keys to its main checkout", lambda: (False, repr(exc)))
-        return
-    keys = (ws.profile_key(main_co), ws.profile_key(worktree))
-    case("a linked worktree keys to its main checkout", lambda: eq(keys[0], keys[1]))
-    plant_root(main_co)
-    plant_root(worktree)
-    ws.stamp(main_co, preflight_failures=[])
-    case("a worktree of the stamped checkout reads OK",
-         lambda: eq(ws.setup_status(worktree), "OK"))
-
-
-ENGINE_ROOT_FILES = {"project.godot": "; planted\n",
-                     "nuget.config": '<configuration><packageSources><add key="l" value="feed_dir"/>'
-                                     "</packageSources></configuration>"}
-
-
-def seam_cases(tmp, state):
-    """`preflight` is the core's seam: it runs only the checks a sibling layer module supplies."""
-    engine_tree = plant_root(tmp / "engine_tree")
+@pytest.fixture
+def engine_tree(tmp_path):
+    tree = plant_root(tmp_path / "engine_tree")
     for name, text in ENGINE_ROOT_FILES.items():
-        write(engine_tree / name, text)
-    bare_env = {"GODOT_BIN": None}
+        write(tree / name, text)
+    return tree
 
-    core = load_core_alone(tmp / "core_only")
-    with patched_env(bare_env):
-        case("a core with no layer module runs no engine, .NET or feed check on an engine tree",
-             lambda: eq(core.preflight(engine_tree), []))
-    case("the core carries no engine project probe", lambda: eq(hasattr(core, "godot_project"), False))
-    case("the core carries no local-feed reader", lambda: eq(hasattr(core, "local_nuget_feeds"), False))
-    case("the core carries no command probe for a toolchain", lambda: eq(hasattr(core, "_cmd_exists"), False))
 
-    layered = load_core_alone(tmp / "core_plus_layer", "def preflight(root):\n    return ['planted layer failure']\n")
-    case("a layer module beside the core supplies the preflight failures",
-         lambda: eq(layered.preflight(engine_tree), ["planted layer failure"]))
+def test_a_core_with_no_layer_module_runs_no_engine_dotnet_or_feed_check_on_an_engine_tree(tmp_path, engine_tree, monkeypatch):
+    monkeypatch.delenv("GODOT_BIN", raising=False)
+    core = load_core_alone(tmp_path / "core_only")
+    assert core.preflight(engine_tree) == []
 
-    broken = load_core_alone(tmp / "core_plus_broken", "def preflight(root:\n")
+
+@pytest.mark.parametrize("name", ["godot_project", "local_nuget_feeds", "_cmd_exists"])
+def test_the_core_carries_no_engine_or_toolchain_probe(tmp_path, name):
+    assert not hasattr(load_core_alone(tmp_path / "core_probe"), name)
+
+
+def test_a_layer_module_beside_the_core_supplies_the_preflight_failures(tmp_path, engine_tree):
+    layered = load_core_alone(tmp_path / "core_plus_layer", "def preflight(root):\n    return ['planted layer failure']\n")
+    assert layered.preflight(engine_tree) == ["planted layer failure"]
+
+
+def test_a_layer_module_that_cannot_load_refuses_the_stamp_rather_than_passing_it(tmp_path, engine_tree):
+    broken = load_core_alone(tmp_path / "core_plus_broken", "def preflight(root:\n")
     failures = broken.preflight(engine_tree)
-    case("a layer module that cannot load refuses the stamp rather than passing it",
-         lambda: (len(failures) == 1 and LAYER_MODULE in failures[0]
-                  and "load" in failures[0], failures))
+    assert len(failures) == 1 and LAYER_MODULE in failures[0] and "load" in failures[0], failures
 
-    headless = load_core_alone(tmp / "core_plus_headless", "VALUE = 1\n")
+
+def test_a_layer_module_with_no_preflight_refuses_the_stamp_rather_than_passing_it(tmp_path, engine_tree):
+    headless = load_core_alone(tmp_path / "core_plus_headless", "VALUE = 1\n")
     failures = headless.preflight(engine_tree)
-    case("a layer module with no preflight refuses the stamp rather than passing it",
-         lambda: (len(failures) == 1 and LAYER_MODULE in failures[0], failures))
+    assert len(failures) == 1 and LAYER_MODULE in failures[0], failures
 
 
-def ai_worker_cases(tmp, state):
-    cfg = tmp / "cfg"
+# ---------------------------------------------------------------- ai-worker registration walk
+
+@pytest.fixture
+def config_dir(tmp_path, monkeypatch):
+    cfg = tmp_path / "cfg"
     (cfg / "plugins").mkdir(parents=True)
-
-    def walk():
-        with patched_env({"CLAUDE_CONFIG_DIR": str(cfg), "SC_WORKDIR": str(tmp / "nowhere")}):
-            return ws.ai_worker()
-
-    write(cfg / ".claude.json", json.dumps({"mcpServers": {"other": {}}}))
-    case("ai_worker is absent without a registration", lambda: eq(walk(), "absent"))
-
-    write(cfg / ".claude.json", json.dumps({"mcpServers": {"ai-worker": {"command": "python"}}}))
-    case("ai_worker is present with a user-scope registration", lambda: eq(walk(), "present"))
-
-    write(cfg / ".claude.json", json.dumps(
-        {"projects": {str(tmp / "nowhere"): {"mcpServers": {"ai-worker": {"command": "python"}}}}}))
-    case("ai_worker is present from the project scope the walk reads", lambda: eq(walk(), "present"))
-
-    write(cfg / ".claude.json", "{not json")
-    case("an unreadable registration file reads absent, never present",
-         lambda: eq(walk(), "absent"))
-
-    def unloadable():
-        with patched(ws, "_registered_servers", _raise):
-            return eq(ws.ai_worker(), None)
-
-    case("a config walk that cannot run is None, not absent", unloadable)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    monkeypatch.setenv("SC_WORKDIR", str(tmp_path / "nowhere"))
+    return cfg
 
 
-def _raise(*_args, **_kwargs):
-    raise RuntimeError("registration read unavailable")
+def test_ai_worker_is_absent_without_a_registration(config_dir):
+    write(config_dir / ".claude.json", json.dumps({"mcpServers": {"other": {}}}))
+    assert ws.ai_worker() == "absent"
 
 
-def record_cases(tmp, state):
+def test_ai_worker_is_present_with_a_user_scope_registration(config_dir):
+    write(config_dir / ".claude.json", json.dumps({"mcpServers": {"ai-worker": {"command": "python"}}}))
+    assert ws.ai_worker() == "present"
+
+
+def test_ai_worker_is_present_from_the_project_scope_the_walk_reads(config_dir, tmp_path):
+    write(config_dir / ".claude.json", json.dumps(
+        {"projects": {str(tmp_path / "nowhere"): {"mcpServers": {"ai-worker": {"command": "python"}}}}}))
+    assert ws.ai_worker() == "present"
+
+
+def test_an_unreadable_registration_file_reads_absent_never_present(config_dir):
+    write(config_dir / ".claude.json", "{not json")
+    assert ws.ai_worker() == "absent"
+
+
+def test_a_config_walk_that_cannot_run_is_none_not_absent(config_dir, monkeypatch):
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("registration read unavailable")
+    monkeypatch.setattr(ws, "_registered_servers", _raise)
+    assert ws.ai_worker() is None
+
+
+# ---------------------------------------------------------------- record
+
+GPU_ROW = "NVIDIA GeForce RTX 4070 Ti SUPER, 16376 MiB\n"
+
+
+def test_record_probes_the_machine_and_writes_the_tier():
+    probe(GPU_ROW, ws.record)
+    profile = ws.read_profile()
+    assert (profile.get("local_tier") == "full" and profile.get("gpu") == {
+        "name": "NVIDIA GeForce RTX 4070 Ti SUPER", "vram_mib": 16376} and ws.local_tier() == "full"), profile
+
+
+def test_record_keeps_the_ai_worker_observation_the_caller_names():
+    ws.record(ai_worker_value="absent")
+    assert ws.read_profile().get("ai_worker") == "absent", ws.read_profile()
+
+
+def test_a_machine_with_no_gpu_records_tier_none():
+    probe(None, ws.record)
+    assert ws.local_tier() == "none", ws.read_profile()
+
+
+def test_record_leaves_the_setup_stamp_alone(stamped):
     before = ws.read_profile().get("setup")
-    case("record probes the machine and writes the tier",
-         lambda: (lambda _: (ws.read_profile().get("local_tier") == "full"
-                             and ws.read_profile().get("gpu") == {
-                                 "name": "NVIDIA GeForce RTX 4070 Ti SUPER", "vram_mib": 16376}
-                             and ws.local_tier() == "full", ws.read_profile()))(
-             probe("NVIDIA GeForce RTX 4070 Ti SUPER, 16376 MiB\n", ws.record)))
-    case("record keeps the ai-worker observation the caller names",
-         lambda: (lambda _: (ws.read_profile().get("ai_worker") == "absent", ws.read_profile()))(
-             ws.record(ai_worker_value="absent")))
-    case("a machine with no GPU records tier none",
-         lambda: (lambda _: (ws.local_tier() == "none", ws.read_profile()))(
-             probe(None, ws.record)))
-    case("record leaves the setup stamp alone",
-         lambda: (before and ws.read_profile().get("setup") == before,
-                  (before, ws.read_profile().get("setup"))))
+    probe(None, ws.record)
+    assert before and ws.read_profile().get("setup") == before, (before, ws.read_profile().get("setup"))
 
 
-def cli_cases(tmp, state):
-    root = state["root"]
-    case("the CLI record exits 0 and writes a tier",
-         lambda: eq((cli(["record", "--ai-worker", "absent"])[0], ws.local_tier() in ws.TIERS),
-                    (0, True)))
-    with patched(ws, "preflight", lambda _root: []):
-        code, out = cli(["stamp", "--root", str(root), "--degraded", "WSL"])
-        case("the CLI stamp exits 0", lambda: eq(code, 0))
-        code, out = cli(["status", "--root", str(root)])
-        case("the CLI status prints the recorded status",
-             lambda: eq((code, out.strip()), (0, "OK")))
-        case("the CLI stamp records the degraded rows it is given",
-             lambda: eq(ws.read_profile()["setup"][ws.profile_key(root)].get("degraded"), ["WSL"]))
-        code, out = cli(["stamp", "--root", str(root)])
-        case("a later stamp keeps the record readable",
-             lambda: eq((code, ws.setup_status(root)), (0, "OK")))
-    with patched(ws, "preflight", lambda _root: ["toolchain is missing"]):
-        code, out = cli(["stamp", "--root", str(root)])
-        case("the CLI stamp refuses with a non-zero exit and says why",
-             lambda: (code != 0 and "toolchain is missing" in out, (code, out)))
+# ---------------------------------------------------------------- CLI
+
+def test_the_cli_record_exits_zero_and_writes_a_tier():
+    """The probe is planted: no real nvidia-smi is read."""
+    code, _ = probe(None, lambda: cli(["record", "--ai-worker", "absent"]))
+    assert code == 0 and ws.local_tier() in ws.TIERS
 
 
-def main():
-    tmp = Path(tempfile.mkdtemp(prefix="wsp_"))
-    state = {"profile": tmp / "profile.json"}
-    os.environ[ws.PROFILE_ENV] = str(state["profile"])
-
-    try:
-        tier_cases(tmp, state)
-        declaration_cases(tmp, state)
-        reference_cases(tmp, state)
-        stamp_cases(tmp, state)
-        worktree_cases(tmp, state)
-        seam_cases(tmp, state)
-        ai_worker_cases(tmp, state)
-        record_cases(tmp, state)
-        cli_cases(tmp, state)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-    if FAILURES:
-        print("\nFAILED:\n  " + "\n  ".join(FAILURES))
-        sys.exit(1)
-    print("all ok")
+@pytest.fixture
+def cli_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(ws, "preflight", lambda _root: [])
+    return plant_root(tmp_path / "cli")
 
 
-def test_proof():
-    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
-    try:
-        code = main()
-    except SystemExit as exc:
-        code = exc.code
-    assert code in (None, 0), code
+def test_the_cli_stamp_exits_zero(cli_root):
+    code, _ = cli(["stamp", "--root", str(cli_root), "--degraded", "WSL"])
+    assert code == 0
 
 
-if __name__ == "__main__":
-    main()
+def test_the_cli_status_prints_the_recorded_status(cli_root):
+    cli(["stamp", "--root", str(cli_root), "--degraded", "WSL"])
+    code, out = cli(["status", "--root", str(cli_root)])
+    assert (code, out.strip()) == (0, "OK")
+
+
+def test_the_cli_stamp_records_the_degraded_rows_it_is_given(cli_root):
+    cli(["stamp", "--root", str(cli_root), "--degraded", "WSL"])
+    assert ws.read_profile()["setup"][ws.profile_key(cli_root)].get("degraded") == ["WSL"]
+
+
+def test_a_later_stamp_keeps_the_record_readable(cli_root):
+    cli(["stamp", "--root", str(cli_root), "--degraded", "WSL"])
+    code, _ = cli(["stamp", "--root", str(cli_root)])
+    assert (code, ws.setup_status(cli_root)) == (0, "OK")
+
+
+def test_the_cli_stamp_refuses_with_a_nonzero_exit_and_says_why(tmp_path, monkeypatch):
+    monkeypatch.setattr(ws, "preflight", lambda _root: ["toolchain is missing"])
+    code, out = cli(["stamp", "--root", str(plant_root(tmp_path / "refused"))])
+    assert code != 0 and "toolchain is missing" in out, (code, out)

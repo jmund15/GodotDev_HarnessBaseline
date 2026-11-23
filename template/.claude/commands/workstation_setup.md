@@ -243,7 +243,7 @@ no toolchain reference in this repo`, skip Phase 8, and skip Phase 9 step 3.
 
 ## Phase 9 — Smoke gate
 
-1. `python3 .claude/tests/test_workstation_profile.py` ends with `all ok`: Python, git and a writable
+1. `python -m pytest .claude/tests/test_workstation_profile.py -q` ends with `passed` and no `failed`: Python, git and a writable
    temp dir work together on this machine.
 2. The project's build command (the Build line of `.claude/reference/project_stack.md`) succeeds, and
    one small test subset through the project's test command reports real pass counts, not zero-match.
