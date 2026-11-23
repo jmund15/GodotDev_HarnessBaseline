@@ -4,7 +4,7 @@ Assembled by A11 from the per-job fragments in `v2/carried_dropped/`, which stay
 
 Deduplication: a receiving job's row that answers an A1 hand-off (A2's C43, C61 and C77; A3's C74 and C80; A4's always-loaded rows for K5 and K6) is folded into the A1 row after an arrow, and a row two fragments hold identically is kept once (0 dropped). Each A1 row marked moved to a shared file carries an **A11 check**: whether the named home holds the rule on `v2` at `d9597cb`. Rows moved to S8 or S9 (project-local files) cannot be checked on `v2` and carry none.
 
-Totals: 1034 rows; carried 567, dropped 335, replaced 55, moved 52, local 13, other 12.
+Totals: 1041 rows; carried 567, dropped 338, replaced 58, moved 52, local 14, other 12.
 
 ## Gaps the A11 check found
 
@@ -1097,6 +1097,18 @@ Totals: 1034 rows; carried 567, dropped 335, replaced 55, moved 52, local 13, ot
 | Kept commands: sweep rows that removed a rule or phase | Tier and ladder pins (`/ingest_conversation`, its verify reference, `/test_skill`, `/doc_full`) | replaced | `orchestration`'s model table. |
 | Kept commands: sweep rows that removed a rule or phase | `doc_before_writing` CLAUDE.md offline fallback | replaced | Author directly with `Write`/`Edit` to the spec; the core has no fallback section. |
 
+## A11
+
+| Source | v1 rule or phase | Mark | Where, or why |
+|---|---|---|---|
+| Files A11 removed from the shared tree | `commands/roadmap_next.md`, the whole command | local | MaddManager keeps its own copy (S8). The plan's capabilities table keeps MM `/roadmap_next` MaddManager-local, since PushinPotions has no copy |
+| Files A11 removed from the shared tree | `skills/godot_architecture/SKILL.md`, the whole skill (Godot node, resource and Jmodot patterns) | dropped | No repo loads it: PushinPotions' lock records it declined (`status: local`, `absent: true`), and MaddManager has no Godot code. PushinPotions' Godot patterns live in its own `architecture_philosophy` fork and `rules/` (A9 hand-off H5) |
+| `/sync_baseline` phases | Scope: the layers a project subscribes to | dropped | T7 has no layers; every project pulls the whole shared set |
+| `/sync_baseline` phases | Arguments: the run modes over the lock | replaced | `pull <ref>`, `status`, `push [--dry-run]` |
+| `/sync_baseline` phases | Context: the lock, its rows and their sync kinds (auto, seed, offer) | replaced | `.claude/harness.manifest.json` holds the pulled commit and each file's sha256. Seed and offer kinds go: project-owned files are never synced |
+| `/sync_baseline` phases | Classification rules: the judgment core sorting each differing file (upstream change, local fork, both) | dropped | A repo never forks a shared file, so no row needs judgment: `pull` refuses a hand-edited file and `push` upstreams it |
+| `/sync_baseline` phases | Your task: apply the automatic rows, ask the judgment rows, write the lock | replaced | `pull` writes every file or none; `status` lists edits |
+
 ## B13
 
 | Source | v1 rule or phase | Mark | Where, or why |
@@ -1105,14 +1117,3 @@ Totals: 1034 rows; carried 567, dropped 335, replaced 55, moved 52, local 13, ot
 |  | R2 · `hooks/README.md`: the layered-hook description (which sub-hooks join the dispatchers) | dropped | The sub-hooks belong to the layers T7 removes. Dispatcher membership is data in `adaptation.json` (B6, Q13). |
 |  | R3 · `hooks/README.md`: "event hooks are registered in `settings.json` `hooks`" | carried | The registration still happens in `settings.json`, written at each repo's cutover (AS-a). Its list is `/v2/hook_registrations.md` (B14). |
 
-## A11: `/sync_baseline` phases
-
-A10 recorded `/sync_baseline` as one replaced command. Its v1 phases, each against `tools/harness_sync.py` (B4):
-
-| Source | v1 rule or phase | Mark | Where, or why |
-|---|---|---|---|
-| `commands/sync_baseline.md` | Scope: the layers a project subscribes to | dropped | T7 has no layers; every project pulls the whole shared set |
-| `commands/sync_baseline.md` | Arguments: the run modes over the lock | replaced | `pull <ref>`, `status`, `push [--dry-run]` |
-| `commands/sync_baseline.md` | Context: the lock, its rows and their sync kinds (auto, seed, offer) | replaced | `.claude/harness.manifest.json` holds the pulled commit and each file's sha256. Seed and offer kinds go: project-owned files are never synced |
-| `commands/sync_baseline.md` | Classification rules: the judgment core sorting each differing file (upstream change, local fork, both) | dropped | A repo never forks a shared file, so no row needs judgment: `pull` refuses a hand-edited file and `push` upstreams it |
-| `commands/sync_baseline.md` | Your task: apply the automatic rows, ask the judgment rows, write the lock | replaced | `pull` writes every file or none; `status` lists edits |
