@@ -1,6 +1,7 @@
 """The shared core's two standing-context bounds (T2). A push over either fails here.
 
-Always-loaded: `template/.claude/CLAUDE.md` plus every file it `@`-imports, at most 15 KB.
+Always-loaded: `template/.claude/CLAUDE.core.md` (the shared core every project's `CLAUDE.md` imports) plus every
+file it `@`-imports, at most 15 KB.
 Model-visible frontmatter: the `description` of each skill and command that does not set
 `disable-model-invocation: true`, at most 6 KB. Both are the owner's sanity bounds for today's
 scope, not the aim; a bound its content justifies rises with the owner's say.
@@ -22,7 +23,7 @@ DESCRIPTION = re.compile(r"^description:[ \t]*(?:>-?|\|-?)?[ \t]*(.*(?:\n[ \t]+.
 
 
 def always_loaded_bytes(root):
-    seen, todo = {}, [root / "CLAUDE.md"]
+    seen, todo = {}, [root / "CLAUDE.core.md"]
     while todo:
         path = todo.pop()
         if path in seen:
@@ -61,14 +62,13 @@ def test_shared_core_is_inside_both_bounds():
 
 
 def test_a_16_kb_core_fails_naming_the_remedy(tmp_path):
-    (tmp_path / "CLAUDE.md").write_text("@CLAUDE.core.md\n", encoding="utf-8")
     (tmp_path / "CLAUDE.core.md").write_text("x" * 16 * 1024, encoding="utf-8")
     problems = over_budget(tmp_path)
     assert len(problems) == 1 and "/claudemd_compact" in problems[0] and "at its cause" in problems[0]
 
 
 def test_hidden_commands_do_not_count(tmp_path):
-    (tmp_path / "CLAUDE.md").write_text("", encoding="utf-8")
+    (tmp_path / "CLAUDE.core.md").write_text("", encoding="utf-8")
     (tmp_path / "commands").mkdir()
     (tmp_path / "commands" / "a.md").write_text("---\ndescription: shown\n---\n", encoding="utf-8")
     (tmp_path / "commands" / "b.md").write_text(
