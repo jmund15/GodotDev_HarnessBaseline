@@ -259,8 +259,8 @@ def test_a_branch_that_heads_an_open_pr_keeps_its_checkout(world):
 
 
 _LISTING = "worktree {wt}\n\n"
-_DEFAULTS = {"worktree": _LISTING, "status": "", "rev-list": "", "submodule": " abc Sub (heads/main)\n",
-             "sub_status": "", "sub_pushed": "", "rev-parse": "abc\n", "branch": "", "symbolic-ref": "",
+_DEFAULTS = {"worktree": _LISTING, "status": "", "rev-list": "", "ls-files": "160000 abc 0\tSub\0",
+             "sub_ls": "", "sub_status": "", "sub_pushed": "", "rev-parse": "abc\n", "branch": "", "symbolic-ref": "",
              "config": "submodule.Sub.path Sub\n"}
 
 
@@ -272,8 +272,9 @@ _DEFAULTS = {"worktree": _LISTING, "status": "", "rev-list": "", "submodule": " 
     ({"status": " M a.txt\n"}, "worktree has local files or changes:  M a.txt"),
     ({"rev-list": None}, "cannot verify HEAD reachability"),
     ({"rev-list": "abc\n"}, "HEAD abc is on no remote branch (push it to a remote, then retry)"),
-    ({"submodule": None}, "cannot read submodule status"),
-    ({"submodule": " bad\n"}, "cannot parse submodule status"),
+    ({"ls-files": None}, "cannot read submodule status"),
+    ({"ls-files": "160000 abc 0\tOther\0"}, "cannot read submodule status"),
+    ({"sub_ls": None}, "cannot read submodule status"),
     ({"config": None}, "cannot read submodule status"),
     ({"sub_status": None}, "submodule Sub: cannot read status"),
     ({"sub_pushed": None}, "submodule Sub: cannot verify HEAD reachability"),
@@ -290,7 +291,7 @@ def test_each_failed_read_or_condition_is_its_own_reason(world, overrides, reaso
     def planted(args, repo, stdin=None, env=None, timeout=None):
         key = args[0]
         if Path(repo) == path / "Sub":
-            key = {"status": "sub_status", "rev-list": "sub_pushed"}.get(key, key)
+            key = {"status": "sub_status", "rev-list": "sub_pushed", "ls-files": "sub_ls"}.get(key, key)
         if key == "config" and "--list" in args:
             return "submodule.sub.path=Sub\n"
         value = overrides.get(key, _DEFAULTS.get(key, ""))
@@ -395,6 +396,60 @@ def test_an_ignored_file_in_a_nested_submodule_keeps_the_worktree(tmp_path):
         assert qualifies(), sub
         (sub / "empty").mkdir()
         assert qualifies(), sub
+
+
+# --- Every submodule state: uninitialized, detached, dirty, unpushed, nested, unmapped --------------------------------
+@pytest.fixture(scope="module")
+def nested_root(tmp_path_factory):
+    """A project whose `child` submodule holds a `grand` submodule; `proof/main` stands for its pushed remote."""
+    base = tmp_path_factory.mktemp("states")
+
+    def init(name):
+        return seeded(base, name, {"f.txt": "f\n"})
+    grand, child, root = init("grand-source"), init("child-source"), init("project")
+    git(child, *SUB, "submodule", "add", "-q", str(grand), "grand")
+    git(child, "commit", "-qam", "grandchild")
+    git(root, *SUB, "submodule", "add", "-q", str(child), "child")
+    git(root, "commit", "-qam", "child")
+    git(root, "update-ref", "refs/remotes/proof/main", "HEAD")
+    return root
+
+
+def _local_commit(repo):
+    write(repo, "local.txt", "l\n")
+    git(repo, "add", "local.txt")
+    git(repo, "commit", "-qm", "local only")
+
+
+def _stray_gitlink(repo):
+    git(repo, "update-index", "--add", "--cacheinfo", "160000,%s,Stray" % head(repo))
+
+
+@pytest.mark.parametrize("name,init,mutate,reason", [
+    ("uninitialized", None, None, None),
+    ("detached_clean", "child", None, None),
+    ("nested_clean", "--recursive", None, None),
+    ("untracked_in_child", "child", lambda t: write(t, "child/n.txt"), "submodule child has local files or changes"),
+    ("edited_in_child", "child", lambda t: write(t, "child/f.txt", "e\n"), "submodule child has local files or changes"),
+    ("untracked_in_grand", "--recursive", lambda t: write(t, "child/grand/n.txt"),
+     "submodule child/grand has local files or changes"),
+    ("unpushed_in_child", "child", lambda t: _local_commit(t / "child"), "submodule child: HEAD"),
+    ("unpushed_in_grand", "--recursive", lambda t: _local_commit(t / "child/grand"), "submodule child/grand: HEAD"),
+    ("unmapped_gitlink", "child", lambda t: _stray_gitlink(t), "cannot read submodule status"),
+    ("unmapped_gitlink_in_child", "--recursive", lambda t: _stray_gitlink(t / "child"), "cannot read submodule status"),
+])
+def test_each_submodule_state_decides_the_worktree(nested_root, name, init, mutate, reason):
+    target = nested_root / ".claude/worktrees" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    git(nested_root, "worktree", "add", "-q", "--detach", str(target), "HEAD")
+    if init:
+        git(target, *SUB, "submodule", "update", "--init", "-q", *(["--recursive"] if init == "--recursive" else [init]))
+    if mutate:
+        mutate(target)
+    reasons = []
+    got = rule.is_retired_worktree(str(target), str(nested_root), str(nested_root), reasons)
+    assert got == (reason is None), reasons
+    assert reason is None or reason in " | ".join(reasons), reasons
 
 
 # --- Through the floor: linked worktrees ---------------------------------------------------------------------------
