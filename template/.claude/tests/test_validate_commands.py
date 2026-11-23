@@ -64,6 +64,8 @@ def shipped_tree_checks(vc):
     try:
         out = "\n".join(vc.check_checklist_counts())
         check("the shipped checklist counts match the checklist files", out.startswith("[PASS]"), out)
+        out = "\n".join(vc.check_file_references())
+        check("the shipped command tree's links pass", out.startswith("[PASS]"), out)
     finally:
         vc.COMMANDS_DIR, vc.CHECKLISTS_DIR = saved
 
