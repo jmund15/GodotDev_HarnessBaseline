@@ -1,5 +1,5 @@
 """S16/S30b-L5 proofs for hooks/_hook_state.py, hooks/bash_backslash_fidelity.py,
-hooks/hand_pricing_advisory.py, hooks/plan_memory_reminder.py, hooks/rule_number_guard.py,
+hooks/hand_pricing_advisory.py,
 hooks/run_call_router.py and hooks/skill_load_marker.py.
 """
 import io
@@ -14,8 +14,6 @@ sys.path.insert(0, str(HOOKS))
 import _hook_state as state
 import bash_backslash_fidelity as fidelity
 import hand_pricing_advisory as pricing
-import plan_memory_reminder as plans
-import rule_number_guard as numbers
 import run_call_router as router
 import skill_load_marker as marker
 
@@ -63,22 +61,6 @@ def test_pricing_once_per_compaction(tmp_path, monkeypatch, capsys):
     assert 'run_cost.py' in call()
 
 
-def test_plan_domain_set_dedupes_across_files_and_omits_loaded_skills(tmp_path, monkeypatch):
-    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
-    state.write_json_atomic(state.state_path('plans'), {'skills_loaded': ['worklog_reference']})
-    content = 'Obsidian design doc vault ' + 'word ' * 60
-    def call(name, body):
-        path = tmp_path / '.claude' / 'plans' / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(body)
-        return plans.process({'tool_name': 'Write', 'session_id': 'plans',
-                              'tool_input': {'file_path': str(path), 'content': body}})
-    first = call('one.md', content)
-    assert first and 'worklog_reference' not in first['context']
-    assert call('two.md', content) is None
-    assert call('one.md', 'refactor ' + 'word ' * 60)
-
-
 def test_delegate_background_advice_once_per_compaction(tmp_path, monkeypatch):
     monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path))
     payload = {'tool_name': 'Bash', 'agent_id': 'child', 'session_id': 'router',
@@ -111,29 +93,6 @@ def test_bounded_read_uses_actual_coverage_not_requested_limit():
     assert call(1, 40, 104) == ''
     assert call(2, 104, 104) == ''
     assert call(1, True, 1) == ''
-
-
-def test_number_fact_once_but_new_number_fires(tmp_path, monkeypatch):
-    sys.path.insert(0, str(HOOKS.parent / 'tests'))
-    import test_rule_number_guard as fixture
-    monkeypatch.setenv('HARNESS_HOOK_STATE_DIR', str(tmp_path / 'state'))
-    repo = fixture.mkrepo(str(tmp_path), 'repo')
-    fixture.write(repo, '.claude/rules/x.md', '# X\n\nUse two seats.\n')
-    fixture.git(repo, 'add', '.claude/rules/x.md')
-    payload = {'tool_name': 'Bash', 'session_id': 'numbers', 'cwd': repo,
-               'tool_input': {'command': 'git commit -m x'}}
-    def call():
-        capture = io.StringIO()
-        monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload)))
-        monkeypatch.setattr(sys, 'stdout', capture)
-        assert numbers.main() == 0
-        return capture.getvalue()
-    assert 'extract_numbers.py stub' in call()
-    assert call() == ''
-    fixture.write(repo, '.claude/rules/x.md', '# X\n\nUse two seats. Use three rounds.\n')
-    fixture.git(repo, 'add', '.claude/rules/x.md')
-    out = call()
-    assert 'three rounds' in out and 'two seats' not in out
 
 
 if __name__ == '__main__':

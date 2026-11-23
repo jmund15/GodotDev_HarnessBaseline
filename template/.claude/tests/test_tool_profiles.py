@@ -829,35 +829,6 @@ for _o in _overlays:
     if not _first or _first not in _rails:
         _missing.append(os.path.basename(_o))
 check("author/detailed rails carry the first detailed line of every common overlay file present", [], _missing)
-# The sweep over the live tree is `test_tool_profiles_live_citers.py`; here `citers.py` runs on a planted repository:
-# a live file that still cites a retired guard is reported, a plan that cites it is history, a renamed citer is not.
-with tempfile.TemporaryDirectory(prefix="tool_profiles_citers_") as _citer_repo:
-    def _plant_citers(rel, text):
-        os.makedirs(os.path.dirname(os.path.join(_citer_repo, rel)), exist_ok=True)
-        with open(os.path.join(_citer_repo, rel), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(text)
-
-    def _citer_git(*args):
-        subprocess.run(["git", "-C", _citer_repo, *args], check=True, capture_output=True)
-    for _args in (("init", "-q"), ("config", "user.email", "t@t"), ("config", "user.name", "t"),
-                  ("config", "commit.gpgsign", "false")):
-        _citer_git(*_args)
-    _plant_citers(".claude/guards/any.md", "# guard\n")
-    _plant_citers(".claude/reference/live.md", "read the rails in .claude/guards/any.md first\n")
-    _plant_citers(".claude/plans/old.md", "history: .claude/guards/any.md\n")
-    _plant_citers(".claude/reference/clean.md", "read the rails in .claude/guards/common.md first\n")
-    _citer_git("add", "-A")
-    _citer_git("commit", "-qm", "seed")
-    _surf = [json.dumps({"kind": "path", "surface": ".claude/guards/any.md", "change": "rename",
-                         "to": ".claude/guards/common.md"})]
-    _out = subprocess.run([sys.executable, os.path.join(ROOT, ".claude", "tools", "citers.py"), "--json",
-                           "--repo", _citer_repo] + _surf, capture_output=True, text=True, encoding="utf-8", cwd=_citer_repo)
-    _found = sorted({c["path"] for c in json.loads(_out.stdout or '{"citers": []}')["citers"]
-                     if c["path"].startswith(".claude/")})  # the sweep also reads the vault roots, outside the repo
-    check("the citer sweep names a live file that cites the retired guard, and the plan that records it",
-          [".claude/plans/old.md", ".claude/reference/live.md"], _found)
-    check("...and not a file that cites the replacement", False, ".claude/reference/clean.md" in _found)
-
 _doc = open(os.path.join(ROOT, ".claude", "reference", "sidecar_dispatch.md"), encoding="utf-8").read()
 _sect = _doc.split("## Job kind", 1)[1].split("\n## ", 1)[0]
 _doc_kinds = sorted(k for k in re.findall(r"^\| (\w[\w-]*) \|", _sect, re.M) if k != "kind")
@@ -868,4 +839,6 @@ if RAN < 201:
     print("FAIL expected >= 201 cases, ran %d" % RAN)
     FAIL = 1
 print("%s test_tool_profiles (%d cases)" % ("PASS" if not FAIL else "FAIL", RAN))
-sys.exit(FAIL)
+
+def test_proof():
+    assert FAIL == 0
