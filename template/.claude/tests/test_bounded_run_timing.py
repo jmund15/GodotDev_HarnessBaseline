@@ -36,7 +36,10 @@ class BoundedRunTimingTests(unittest.TestCase):
     def test_a_git_bash_grandchild_does_not_outlive_the_deadline(self):
         # A check run through Git Bash: its grandchild escapes the Job Object unless the tree is taskkill'd first.
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-        import sidecar_launch
+        import reap
+        bash = reap.git_bash()
+        if bash is None:
+            self.skipTest("no Git Bash beside this machine's ps")
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             marker = Path(tmp) / "grandchild.marker"
             grand = Path(tmp) / "grand.py"
@@ -47,7 +50,7 @@ class BoundedRunTimingTests(unittest.TestCase):
                                "subprocess.Popen([sys.executable, %r])\n"
                                "time.sleep(30)\n" % grand.as_posix(), encoding="utf-8")
             result = _bounded_run.run_bounded(
-                [sidecar_launch.git_bash(), "-c", 'python3 "%s"' % spawner.as_posix()], timeout=2)
+                [bash, "-c", 'python3 "%s"' % spawner.as_posix()], timeout=2)
             time.sleep(5)
             self.assertIsNone(result.returncode)
             self.assertFalse(marker.exists(), "a Git Bash grandchild wrote after the deadline")
