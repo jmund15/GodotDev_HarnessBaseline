@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Guard irreversible stops.
+"""Guard irreversible stops (class floor, T1): `_floor.py` runs `check(payload)` for Bash, PowerShell and
+TaskStop calls; a fault denies the call.
 
 Bash/PowerShell kills resolve each PID before acting and refuse harness-critical processes. A kill addressed
 by name or pattern (`pkill`, `killall`, `taskkill /IM` or /FI, `Stop-Process -Name` or -Id, `Get-Process <n> | Stop-Process`,
@@ -38,7 +39,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _background_tasks  # noqa: E402
 import _msys  # noqa: E402
-import foreground_wait_guard  # noqa: E402
+import _shell_lex  # noqa: E402
 from _win_path import native_path  # noqa: E402
 
 # Killing any of these takes down work that cannot be resumed from where it stopped: a billed
@@ -75,9 +76,9 @@ KILL_WORD = r"(?:^|[\s;&|(`])kill\s"
 # A quoted argument a shell-code reader runs is code; `_code_text` matches it unquoted. `body` is the program a
 # `-c` reader takes (`bash -lc '…'`, `pwsh -Command "…"`, `su root -c "…"`, `flock f -c`, `script -c`), `direct`
 # the first quoted argument of a reader that runs its arguments as a command (`eval "…"`, `watch -n 5 "…"`). The `-c`
-# readers are `foreground_wait_guard._SHELL_WORDS`, so `shell_code` and this match agree on which heads are readers.
+# readers are `_shell_lex._SHELL_WORDS`, so `shell_code` and this match agree on which heads are readers.
 SHELL_PROGRAM_RE = re.compile(
-    r"""(?:^|(?<=[\s;&|(`]))(?:\S*[/\\])?(?:""" + "|".join(sorted(foreground_wait_guard._SHELL_WORDS)) + r""")(?:\.exe)?"""
+    r"""(?:^|(?<=[\s;&|(`]))(?:\S*[/\\])?(?:""" + "|".join(sorted(_shell_lex._SHELL_WORDS)) + r""")(?:\.exe)?"""
     r"""(?:\s+[^\s"';&|]+)*?\s+-[a-z]*c[a-z]*\s+(?P<body>"(?:\\.|[^"\\])*"|'[^']*')"""
     r"""|(?:^|(?<=[\s;&|(`]))(?:eval|watch)(?:\s+[^\s"';&|]+)*?\s+(?P<direct>"(?:\\.|[^"\\])*"|'[^']*')""",
     re.I | re.S)
@@ -162,9 +163,7 @@ def _local_path(token, cwd):
 
 
 def _launcher_calls(command):
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
-    import sidecar_argv
-    return sidecar_argv.launcher_invocations(command)
+    return _shell_lex.launcher_invocations(command)
 
 
 def _fanout_calls(command):
@@ -746,7 +745,7 @@ def _code_text(cmd):
     code = cmd
     if "<<" in cmd or re.search(r"\s-[cep]\s", cmd):
         try:
-            code = foreground_wait_guard.shell_code(cmd)
+            code = _shell_lex.shell_code(cmd)
         except Exception:
             code = cmd
 
@@ -820,11 +819,25 @@ def window_close_verdict(cmd, cwd=None):
             "Ask the owner to close them.")
 
 
-def _emit_deny(reason):
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse",
-        "permissionDecision": "deny",
-        "permissionDecisionReason": reason}}))
+def _output(decision, reason):
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision,
+                                   "permissionDecisionReason": reason}}
+
+
+def check(payload):
+    """The floor's verdict on one PreToolUse payload: None (allow), a deny, or an `ask` for running paid work."""
+    tool = payload.get("tool_name")
+    if tool == "TaskStop":
+        decision = taskstop_decision(payload.get("transcript_path"), payload.get("tool_input"))
+        return _output(*decision) if decision else None
+    if tool not in ("Bash", "PowerShell"):
+        return None
+    cmd = (payload.get("tool_input") or {}).get("command") or ""
+    inline = dict(os.environ)
+    for m in re.finditer(r"HARNESS_ALLOW_KILL=(\S+)", cmd):
+        inline["HARNESS_ALLOW_KILL"] = inline.get("HARNESS_ALLOW_KILL", "") + " " + m.group(1)
+    why = window_close_verdict(cmd, payload.get("cwd")) or verdict(cmd, inline)
+    return _output("deny", why) if why else None
 
 
 def main():
@@ -832,28 +845,11 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         payload = None
-    if not isinstance(payload, dict):
-        _emit_deny("BLOCKED stop/kill (CLAUDE.core.md §Shell Discipline) — the hook could not read its input or transcript. "
-                   "Re-issue the same call; if it repeats, report it.")
-        return 0
-    tool = payload.get("tool_name")
-    if tool == "TaskStop":
-        decision = taskstop_decision(payload.get("transcript_path"), payload.get("tool_input"))
-        if decision:
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": decision[0],
-                "permissionDecisionReason": decision[1]}}))
-        return 0
-    elif tool in ("Bash", "PowerShell"):
-        cmd = (payload.get("tool_input") or {}).get("command") or ""
-        inline = dict(os.environ)
-        for m in re.finditer(r"HARNESS_ALLOW_KILL=(\S+)", cmd):
-            inline["HARNESS_ALLOW_KILL"] = inline.get("HARNESS_ALLOW_KILL", "") + " " + m.group(1)
-        why = window_close_verdict(cmd, payload.get("cwd")) or verdict(cmd, inline)
-    else:
-        return 0
-    if why:
-        _emit_deny(why)
+    out = (check(payload) if isinstance(payload, dict) else _output(
+        "deny", "BLOCKED stop/kill (CLAUDE.core.md §Shell Discipline) — the hook could not read its input or "
+        "transcript. Re-issue the same call; if it repeats, report it."))
+    if out:
+        print(json.dumps(out))
     return 0
 
 
