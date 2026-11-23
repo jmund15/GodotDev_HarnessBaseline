@@ -1,23 +1,31 @@
-# Brief checks before launch
+# Brief shapes
 
-Read before building a brief (`orchestration` §0 Governing skills and Pre-Dispatch Checklist point here).
+Every brief takes one of two shapes, chosen by the work. A job whose result is a judgment (exploring, designing, planning, debugging, reviewing) gets an **open** brief. A job that carries out a settled spec gets an **execute** brief. The launcher or engine adds the delegate rails (`guards/rails.md`) to every brief, so a brief never copies them.
 
-## Governing skills
+## Open brief
 
-Before building a brief, load each skill whose workflow the job uses in this session's current context; repeat after compaction unless the client reattached the whole skill and that copy still matches the skill's `SKILL.md` on disk. Keep its source paths in the brief. A skill whose files the job only reviews or reads as data governs nothing.
+It holds:
 
-## Brief checks
+- **The owner's words**, verbatim, each with its source: the owner-decisions block of the state file (`.claude/work/<slug>.md`) or the session transcript `.jsonl`.
+- **Raw source paths** under `inputs:`: the files, logs and measurements as they stand, never a summary, an excerpt or a list you filtered first.
+- **Owner-tagged constraints**: their picks, locked parts and hard limits, each with the owner's words.
+- **The deliverable path** under `targets:`.
 
-- The brief marks each premise observed, with its evidence (a path, or a command and its output), or suspected. A suspected cause goes to the delegate as a question to settle, never as the brief's premise.
-- A brief for a task states its record's requirements and exclusions (`task_record.py show <id>`) as the acceptance test, above the work's inputs.
-- A brief for an investigation or fix lane embeds the project debugging skill's Recurrence Law rules 1–3 as text, because its delegate may run on a client that loads no skills; a lane returning a fix without its discriminating evidence is rejected at review.
-- An executor's done-condition runs its dispatcher's checks of the returned work (its edited units' proof files, `dispatch_result.py check`, its live checks), so a defect is fixed inside the dispatch on the cheaper model. Its runs cover the units its change touches: for tests, the slice rows `adaptation.json` `gate_cadence` names; for renders or captures, the states it changed. No brief hands it a run over the whole product, as its proof or as its done-condition: the gate, a whole spec file, a second test project, a render or capture of every state, or any other run sized by the product rather than the change. The dispatcher runs each of those once at its merge or close (`rules/harness_tooling.md`, `change_control` §Gate cadence).
-- A brief whose result feeds an owner question asks for each fact and each pick's basis in a `claims` fence (`reference/evidence_contract.md`), so the run verifies them before the ask, per `CLAUDE.core.md` §Preferences *Asking the owner*. Decision rows with free-text facts return unchecked.
-- A job whose result is a design or a judgment, not the execution of one (architecting, planning, design, debugging, judging another job's work), gets the goal, the owners' words verbatim, the evidence paths and measurements, and what is fixed: their picks, locked parts, hard limits. Its brief states no cause, fix or design of the briefer's: the owners' words show what is wrong and what they want, and the job finds the cause and the best answer, which can differ from what the words name. Several seats on one such question each get the whole question and its verdict: a lens names where a seat starts, never its boundary, and no brief splits the question into per-seat sub-questions or prescribes method steps. Only a settled design (an owner's pick, a golden file, a hand-labeled sample) justifies a brief that settles every behavior, and that brief is tight-spec work pinned per `orchestration` §5, never to an architect row.
-- The brief sets no limit its delegate stops at: no minutes, turn count or "stop after". A duration worry is the orchestrator's check-in, read from the job's progress (`reference/sidecar_runs.md` §Detached runs); a run that hits a cap discards every turn it paid for. Nor does it order the delegate to wait until a long job ends: a delegate waits on its own runs and hands a lone wait past about 30 minutes back to the parent (`guards/common.md`).
-- Text a delegate acts on orders a Read of a scratch file, never an existence check: Glob and Grep hide gitignored paths.
-- The brief's paths resolve: `python3 .claude/tools/verify_doc_citations.py --kinds path --only missing <brief>` lists the misses, and each is fixed or confirmed as a non-path (a branch name) or a path the job creates.
+It holds no conclusion of yours: no cause, fix, design or ranking. A brief that hands over the briefer's conclusion gets it confirmed back, which is the dispatch-leading defect both repos recorded. The owner's words show what is wrong and what they want; the job finds the cause and the best answer, which can differ from what the words name. Point at a principle's home instead of restating it, because a restatement drops the example's terms. Several seats on one question each get the whole question: a lens names where a seat starts, never its boundary.
 
-## Return checklist
+## Execute brief
 
-A job over enumerable items returns one checklist line per item, done with evidence or not done with its blocker; an unchecked item is not done. Read the checklist first, then spot-check its evidence; it never replaces a diff review or verification gate. `couldNotSatisfy` names real blockers, and a delegate reports a rail/brief conflict instead of resolving it silently.
+It holds:
+
+- **The settled spec**: the owner's pick, the plan slice or the golden file, stating every behaviour the job must build.
+- **The target files** under `targets:`, the deliverable included. A read-only job's only target is its deliverable.
+- **The unit's own fast test**, as the done-condition. A run sized by the product (the gate, a whole suite, a render of every state) is never in an execute brief. The parent starts it in the background once at merge or close and acts on its one wake, because a delegate waiting on it spends turns on nothing.
+
+## Both shapes
+
+- `inputs:` and `targets:` are each a header line followed by `- <path>` lines. Every path the job must read goes under `inputs:`. The launch check refuses a brief whose input, deliverable directory or brief path does not resolve against the launching checkout, and a read-only job whose `targets:` names more than its deliverable.
+- Mark each premise observed, with its evidence (a path, or a command and its output), or suspected. A suspected cause goes to the job as a question to settle, never as a premise.
+- When the work belongs to an initiative, quote its state file's owner decisions above the inputs as the acceptance test.
+- A brief whose result feeds an owner question asks for each fact as a `{file, quote}` or `{command, output}` item, so `tools/quote_check.py` confirms it before the ask.
+- A debugging brief for a recurrence carries the Recurrence Law's three points (`skills/debugging/SKILL.md`).
+- Set no limit the job stops at (minutes, turns, "stop after"), because a run cut at a cap discards every turn it paid for. A duration worry is the parent's check-in on the job's progress. Order no wait on a long job: the rails' wait checks govern it.
