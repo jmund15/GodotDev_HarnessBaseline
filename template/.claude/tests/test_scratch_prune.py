@@ -161,6 +161,15 @@ class ScratchPruneTests(unittest.TestCase):
         self.entry('fresh', days=1)
         self.assertEqual('KEEP-RECENT', self.rows(self.inventory())['fresh']['bucket'])
 
+    def test_a_folder_adaptation_names_in_scratch_keep_is_keep_tool(self):
+        self.write(self.repo / '.claude/skills/project_subsystems/adaptation.json',
+                   '{"project_name": "Proj", "scratch_keep": ["boot"]}\n')
+        self.entry('boot')
+        self.entry('other')
+        rows = self.rows(self.inventory())
+        self.assertEqual('KEEP-TOOL', rows['boot']['bucket'])
+        self.assertEqual('CANDIDATE', rows['other']['bucket'])
+
     def test_one_recent_file_deep_inside_keeps_the_entry(self):
         root = self.entry('mostlyold', {'a/b/old.txt': 'x', 'a/c/new.txt': 'y'})
         age(root / 'a/c/new.txt', 1)

@@ -4,7 +4,7 @@
       One JSON row per top-level entry: name, kind, bytes, files, newestMtime, referencedBy,
       referrers ({code, prose}), git (worktree/repo/null), gitWork, gitShells, proseFiles (.md,
       largest first, max 20), bucket, unverified.
-      Buckets, first match wins: KEEP-WORKTREE, KEEP-GIT, KEEP-REFERENCED, KEEP-RECENT, CANDIDATE.
+      Buckets, first match wins: KEEP-WORKTREE, KEEP-GIT, KEEP-REFERENCED, KEEP-TOOL (a folder adaptation.json `scratch_keep` names), KEEP-RECENT, CANDIDATE.
       KEEP-GIT: the entry holds a real repository (a `.git` directory with a HEAD, or a live
       linked worktree) with work git has nowhere else: commits no ref of the checkout reaches,
       on no remote of that repository, or modified tracked files (line-ending changes ignored).
@@ -61,8 +61,7 @@ import vault_sync  # noqa: E402  (owns the key shapes an archive masks)
 import adaptation  # noqa: E402  (project_name names the vault project folder)
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_VAULT = vault_read.DEFAULT_VAULT
-BUCKETS = ('KEEP-WORKTREE', 'KEEP-GIT', 'KEEP-REFERENCED', 'KEEP-RECENT', 'CANDIDATE')
+BUCKETS = ('KEEP-WORKTREE', 'KEEP-GIT', 'KEEP-REFERENCED', 'KEEP-TOOL', 'KEEP-RECENT', 'CANDIDATE')
 VERDICTS = ('DELETE', 'ARCHIVE', 'KEEP')
 PROSE_CAP = 20
 BULK_BYTES = 100 * 1024 * 1024
@@ -74,8 +73,6 @@ TRAILING_PUNCT = '.,;:*|!?'
 # every other suffix (.md, .txt, .jsonl, .log, vault notes) is prose or a record of it.
 CODE_SUFFIXES = frozenset(('.py', '.ps1', '.psm1', '.sh', '.bash', '.cmd', '.bat', '.cs', '.gd',
                            '.gdshader', '.js', '.mjs', '.ts', '.json', '.yml', '.yaml', '.toml'))
-# Top-level scratch folders a tool keeps across sessions; the harness_prune close predicate never counts them.
-TOOL_OWNED_SCRATCH = ('session_end', 'boot', 'kfm', 'eval_out', 'linux_preview')
 
 
 def _entry_for(segment, names):
@@ -277,7 +274,7 @@ def repo_work(repo_dir, main):
     return work
 
 
-def _row(path, scratch, worktrees, references, keep_days, now, verified, main):
+def _row(path, scratch, worktrees, references, keep_days, now, verified, main, keep=()):
     info = walk_entry(path, scratch)
     resolved = path.resolve()
     git, git_work = None, []
@@ -297,6 +294,8 @@ def _row(path, scratch, worktrees, references, keep_days, now, verified, main):
         bucket = 'KEEP-GIT'
     elif referrers['code']:
         bucket = 'KEEP-REFERENCED'
+    elif path.name in keep:
+        bucket = 'KEEP-TOOL'
     elif info['newest'] > now - keep_days * 86400:
         bucket = 'KEEP-RECENT'
     else:
@@ -316,8 +315,9 @@ def _references(repo, vault, names):
     return refs, counts
 
 
-def build_inventory(repo=REPO, scratch=None, vault=DEFAULT_VAULT, keep_days=14, now=None):
+def build_inventory(repo=REPO, scratch=None, vault=None, keep_days=14, now=None):
     repo = Path(repo)
+    vault = vault or vault_read.default_vault(repo / '.claude')
     scratch = Path(scratch) if scratch else repo / '.claude' / 'scratch'
     now = time.time() if now is None else now
     entries = sorted(scratch.iterdir(), key=lambda p: p.name)
@@ -326,7 +326,8 @@ def build_inventory(repo=REPO, scratch=None, vault=DEFAULT_VAULT, keep_days=14, 
     worktrees = registered_worktrees(repo)
     verified = vault_verified(counts)
     main = MainCommits(repo)
-    rows = [_row(p, scratch, worktrees, refs, keep_days, now, verified, main) for p in entries]
+    keep = set(adaptation.get(repo / '.claude', 'scratch_keep'))
+    rows = [_row(p, scratch, worktrees, refs, keep_days, now, verified, main, keep) for p in entries]
     buckets = {b: {'count': 0, 'bytes': 0} for b in BUCKETS}
     for row in rows:
         buckets[row['bucket']]['count'] += 1
@@ -577,14 +578,14 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='cmd', required=True)
     inv = sub.add_parser('inventory')
     inv.add_argument('--keep-days', type=int, default=14)
-    inv.add_argument('--vault', default=str(DEFAULT_VAULT))
+    inv.add_argument('--vault', default=None)
     inv.add_argument('--out')
     inv.add_argument('--repo', default=str(REPO))
     inv.add_argument('--scratch')
     app = sub.add_parser('apply')
     app.add_argument('--inventory', required=True)
     app.add_argument('--verdicts', required=True)
-    app.add_argument('--vault', default=str(DEFAULT_VAULT))
+    app.add_argument('--vault', default=None)
     trm = sub.add_parser('trim')
     trm.add_argument('--keep-days', type=int, default=14)
     trm.add_argument('--bulk-bytes', type=int, default=BULK_BYTES)
@@ -616,7 +617,7 @@ def _run(args):
             print('inventory: ' + args.out)
         print_summary(result)
         return 0 if reconciles(result) else 1
-    return apply(_load_json(args.inventory), _load_json(args.verdicts), Path(args.vault))
+    return apply(_load_json(args.inventory), _load_json(args.verdicts), Path(args.vault or vault_read.default_vault(REPO / '.claude')))
 
 
 if __name__ == '__main__':

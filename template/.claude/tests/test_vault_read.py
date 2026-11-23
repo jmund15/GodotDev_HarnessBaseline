@@ -49,8 +49,17 @@ def main():
               counts["unattempted"] == 1 and counts["unreadPaths"] == [str(docs / "sub" / "b.md")]
               and all(Path(p).name != "b.md" for p, _ in texts) and not vault_read.verified(counts), counts)
 
-    check("the default vault root derives from the home directory, never a literal user path",
-          vault_read.DEFAULT_VAULT == Path.home() / "OneDrive" / "Documents" / "ObsidianVault", vault_read.DEFAULT_VAULT)
+    with tempfile.TemporaryDirectory() as tmp:
+        claude = Path(tmp)
+        check("the default vault is the home fallback when adaptation.json sets no vault_root",
+              vault_read.default_vault(claude) == vault_read.FALLBACK_VAULT, vault_read.default_vault(claude))
+        (claude / "skills" / "project_subsystems").mkdir(parents=True)
+        (claude / "skills" / "project_subsystems" / "adaptation.json").write_text('{"vault_root": "/v/root"}', encoding="utf-8")
+        check("the default vault is adaptation.json's vault_root when set",
+              vault_read.default_vault(claude) == Path("/v/root"), vault_read.default_vault(claude))
+
+    check("the fallback vault root derives from the home directory, never a literal user path",
+          vault_read.FALLBACK_VAULT == Path.home() / "OneDrive" / "Documents" / "ObsidianVault", vault_read.FALLBACK_VAULT)
 
     if FAILURES:
         print(f"\n{len(FAILURES)} failure(s)")

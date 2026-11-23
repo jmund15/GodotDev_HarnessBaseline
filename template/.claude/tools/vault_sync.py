@@ -81,7 +81,6 @@ except ImportError:
     # the file concurrently, so the bare rename keeps its pre-helper behavior.
     replace_path = os.replace
 
-DEFAULT_ROOT = vault_read.DEFAULT_VAULT / 'DevProjects'
 DELETION_CAP = 10
 PATH_REFUSALS = frozenset({'secret', 'forbidden'})
 BRANCH = 'vault'
@@ -638,15 +637,16 @@ def _mask(args) -> int:
 
 
 def main(argv=None) -> int:
+    default_root = vault_read.default_vault() / 'DevProjects'
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest='cmd', required=True)
     mask = sub.add_parser('mask')
-    mask.add_argument('--root', default=str(DEFAULT_ROOT))
+    mask.add_argument('--root', default=str(default_root))
     mask.add_argument('paths', nargs='+')
     mask.set_defaults(func=_mask)
     scan = sub.add_parser('scan')
     scan.add_argument('--tree', action='store_true', required=True)
-    scan.add_argument('--root', default=str(DEFAULT_ROOT))
+    scan.add_argument('--root', default=str(default_root))
     scan.set_defaults(func=_scan)
     commit = sub.add_parser('precommit')
     commit.add_argument('--allow-deletions', type=int, default=None)
@@ -656,11 +656,11 @@ def main(argv=None) -> int:
     task_cmd.add_argument('--dry-run', action='store_true')
     task_cmd.set_defaults(func=_install_task)
     mirror_cmd = sub.add_parser('mirror')
-    mirror_cmd.add_argument('--target', default=str(DEFAULT_ROOT))
+    mirror_cmd.add_argument('--target', default=str(default_root))
     mirror_cmd.set_defaults(func=_mirror_cmd)
     for name, func in (('init', _init), ('sync', _sync_cmd)):
         cmd = sub.add_parser(name)
-        cmd.add_argument('--worktree', default=str(DEFAULT_ROOT))
+        cmd.add_argument('--worktree', default=str(default_root))
         cmd.add_argument('--git-dir', default=str(default_git_dir() or ''))
         if name == 'init':
             cmd.add_argument('--remote')
