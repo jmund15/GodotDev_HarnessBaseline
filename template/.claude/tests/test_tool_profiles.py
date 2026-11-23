@@ -765,7 +765,8 @@ else:
 # this proof is not its own finding.
 _KIND_LIST = "scout" + "|lens|reviewer|author"
 _COPY_RE = re.compile(r"[a-z][a-z-]*(?:\|[a-z][a-z-]*)+")
-_grep = subprocess.run(["git", "-C", ROOT, "grep", "-n", _KIND_LIST, "--", ".claude/"],
+# A parked `.patch` is a diff someone may apply, never a list a reader takes kinds from.
+_grep = subprocess.run(["git", "-C", ROOT, "grep", "-n", _KIND_LIST, "--", ".claude/", ":!*.patch"],
                        capture_output=True, text=True)
 check("the kind-list sweep finds the written-out copies", True, bool(_grep.stdout.strip()))
 _stale = []

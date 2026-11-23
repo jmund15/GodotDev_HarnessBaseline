@@ -361,7 +361,7 @@ def main(part=1):
         assert not missing, 'missing part %s' % ', '.join(map(str, missing))
     cases = [OwnDiscard(name) for name in unittest.TestLoader().getTestCaseNames(OwnDiscard)]
     cases += [unittest.FunctionTestCase(fn) for fn in (test_parser_import_fault_denies_nested_discard, test_shared_must_allow_cases)]
-    suite = unittest.TestSuite(cases[part - 1::PARTS])
+    suite = unittest.TestSuite(cases[part - 1::PARTS] if present else cases)
     return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
 
 
