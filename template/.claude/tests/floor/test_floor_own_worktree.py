@@ -384,6 +384,16 @@ def test_shell_launcher_discards_cannot_borrow_ownership(own):
         assert own.code(launcher + " " + shlex.quote(peer)) == 2, launcher
 
 
+def test_substitution_and_shell_heredoc_discards_cannot_borrow_ownership(own):
+    """F38: a discard in a `$(...)`, backtick or process substitution, or in a heredoc a shell reads, runs in a child
+    shell like a `bash -c` body and borrows no worktree ownership."""
+    own.dirty(own.wt)
+    body = 'git -C "%s" restore .gitignore' % own.wt.as_posix()
+    for command in ('echo "$(%s)"' % body, "echo `%s`" % body, "cat <(%s)" % body, "bash <<'EOF'\n%s\nEOF" % body):
+        assert own.code(command) == 2, command
+    assert own.code(body) == 0
+
+
 @pytest.mark.parametrize("body", ["git reset --hard", "git clean -fd", "git push --force", "git branch -D peer",
                                   "git stash clear", "git stash drop", "git reflog expire --all", "git gc --prune=now",
                                   "git filter-branch", "git filter-repo"])

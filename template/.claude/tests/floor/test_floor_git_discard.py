@@ -222,6 +222,28 @@ ROWS = [
     ("saved", "git restore -W f.txt", "deny", "--worktree"),
     ("saved", "git restore --worktree f.txt", "deny", "--worktree"),
     ("saved", "git restore -s HEAD f.txt", "deny", "--source=<ref>"),
+    # FL1: each discard judged from git's own option parse (bundles, split flags, long prefixes, `+refspec`,
+    # operands without `--`), and a discard a shell-fed heredoc runs.
+    ("repo", "git reset --har", "deny", None),
+    ("repo", "git reset --ha", "deny", None),
+    ("repo", "git clean --forc", "deny", None),
+    ("repo", "git clean --fo -d", "deny", None),
+    ("repo", "git clean -f -e -n", "deny", None),
+    ("repo", "git clean -fen", "deny", None),
+    ("repo", "git clean -f --exclude -n", "deny", None),
+    ("repo", "git push --forc origin main", "deny", None),
+    ("repo", "git push --force-with origin main", "deny", None),
+    ("repo", "git push origin +main", "deny", None),
+    ("repo", "git push origin +HEAD:main", "deny", None),
+    ("repo", "git checkout f.txt", "deny", None),
+    ("repo", "git checkout HEAD f.txt", "deny", None),
+    ("repo", "git checkout -f", "deny", None),
+    ("repo", "git checkout --force", "deny", None),
+    ("repo", "git restore --staged --work f.txt", "deny", None),
+    ("repo", "git gc --prun=now", "deny", None),
+    ("repo", "bash <<'EOF'\ngit reset --hard\nEOF", "deny", None),
+    ("repo", "git checkout clean.txt", "allow", None),
+    ("repo", "git clean -fn", "allow", None),
 ]
 
 
@@ -277,6 +299,17 @@ def sq_fixture_branch(tmp_path_factory):
     ("git branch -D sq uniq", "deny"),
     ("git branch -D nosuch", "deny"),
     ("git branch -D -r origin/main", "deny"),
+    # FL1: a force delete in every spelling git accepts.
+    *[("git branch %s" % flags, "deny") for flags in (
+        "-df uniq", "-fd uniq", "-d -f uniq", "-f -d uniq", "-qD uniq", "-Dq uniq", "--delete -f uniq",
+        "-d --force uniq", "--force --delete uniq", "--del --force uniq", "--delete --forc uniq", "uniq -d -f",
+        "-d uniq --force", "-d -f -- uniq")],
+    ("git -C . branch -df uniq", "deny"),
+    ("git --no-pager branch -d -f uniq", "deny"),
+    ("git -c core.x=1 branch -df uniq", "deny"),
+    ("git --config-env core.x=HOME branch -D uniq", "deny"),
+    ("bash <<'EOF'\ngit branch -D uniq\nEOF", "deny"),
+    ("git branch -df sq", "allow"),
 ])
 def test_branch_delete_on_main(sq, command, kind):
     assert bash(command, sq).kind == kind
