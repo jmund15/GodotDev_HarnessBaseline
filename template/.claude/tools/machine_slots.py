@@ -10,7 +10,7 @@ first served: a releaser that re-takes at once cannot starve a waiting proof). W
 Windows broker: flock and Windows delete-sharing are not one lock protocol.
 HARNESS_SLOT_DIR isolates planted pools; HARNESS_MACHINE_ROOT preserves the real
 pool across proof HOME/temp changes. HARNESS_SLOT_BUDGET loans one held lane to a
-serial child. parallel_budget borrows only free extra lanes, never waits for them.
+serial child.
 `run` exports HARNESS_LANE_CORES, the held lanes' share of the machine's cores.
 """
 import argparse
@@ -335,34 +335,6 @@ def guard(exclusive=False, count=1, *, notice=False):
         yield held
     finally:
         release_all(held)
-
-
-@contextmanager
-def parallel_budget(wanted):
-    """Base lane plus free extras; children are serial owners of their assigned lane."""
-    base = [] if inherited() else take(notice=True)
-    if base is None:
-        raise SlotStoreError('machine admission unavailable')
-    extras = []
-    old = os.environ.get('HARNESS_SLOT_BUDGET')
-    root = machine_root()
-    try:
-        width = 1
-        for _ in range(max(1, wanted) - 1):
-            held = take(folder=root, deadline=time.time(), inherit=False)
-            if not held:
-                break
-            extras.extend(held)
-            width += 1
-        os.environ['HARNESS_SLOT_BUDGET'] = '1'
-        yield width
-    finally:
-        if old is None:
-            os.environ.pop('HARNESS_SLOT_BUDGET', None)
-        else:
-            os.environ['HARNESS_SLOT_BUDGET'] = old
-        release_all(extras)
-        release_all(base)
 
 
 def main():

@@ -706,8 +706,3 @@ class OvernightTests(unittest.TestCase):
         result = self.call(payload=["not an object"])
         self.assertEqual(0, result.returncode)
         self.assertEqual("", result.stdout)
-
-
-if __name__ == "__main__":
-    from _case_pool import run_cases, unittest_cases
-    sys.exit(run_cases(unittest_cases(OvernightTests)))
