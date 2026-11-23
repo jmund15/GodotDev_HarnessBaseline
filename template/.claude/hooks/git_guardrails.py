@@ -107,11 +107,17 @@ def _runner():
 # Which paths a merge commit authors, shared with `baseline_classification_guard.py`. Guarded like
 # the two above: a missing helper must deny commit-like invocations, never crash the other git guards.
 try:
-    from _commit_scope import authored_paths, publishes_index, writes_index, merge_dropped_lines  # noqa: E402
+    from _commit_scope import authored_paths, publishes_index, writes_index  # noqa: E402
     _SCOPE_IMPORT_ERROR = None
 except Exception as _exc:
-    authored_paths = publishes_index = writes_index = merge_dropped_lines = None
+    authored_paths = publishes_index = writes_index = None
     _SCOPE_IMPORT_ERROR = "%s: %s" % (type(_exc).__name__, _exc)
+# The merge-drop advisory's helpers left the shared helpers with v2 (V1 Lost); without them it stays silent.
+try:
+    from _commit_scope import merge_dropped_lines  # noqa: E402
+    from _git_commit import merge_refs, merge_strategy  # noqa: E402
+except ImportError:
+    merge_dropped_lines = merge_refs = merge_strategy = None
 # The pull proof record: a pulled path whose proof is pending or red commits with a note. Guarded like the helpers above.
 try:
     import _pull_proof  # noqa: E402
@@ -123,7 +129,7 @@ from _git_commit import (  # noqa: E402
     git_environ,
     git_invocation, git_invocations, executable_text, run_git,
     staged_paths, incoming_paths, bypass_declared, parse_commit_args, full_pathspec, resolve_index, commit_source,
-    _pathspec_file, merge_refs, merge_strategy,
+    _pathspec_file,
     unexpanded_hint, resolve_cd, expand_literal, ref_resolves, refs_created, ref_names_created,
 )
 
@@ -1050,7 +1056,7 @@ def _merge_result(sub, rest, cwd, git_env):
         if (run_git(["ls-files", "-u"], cwd, git_env) or "").strip():
             return None
         return "HEAD", "MERGE_HEAD", ""
-    if sub != "merge" or any(a in ("--no-commit", "--squash", "--abort", "--quit", "--continue") for a in rest):
+    if sub != "merge" or merge_refs is None or any(a in ("--no-commit", "--squash", "--abort", "--quit", "--continue") for a in rest):
         return None
     refs = merge_refs(rest)
     strategy, options = merge_strategy(rest)

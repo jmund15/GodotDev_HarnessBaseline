@@ -152,3 +152,30 @@ def executable_word(words, segment):
     """The first word after syntactic assignment prefixes, never an assignment's quoted value."""
     return next((i for i, word in enumerate(words)
                  if not _ASSIGNMENT.match(segment[word.start:word.end])), len(words))
+
+
+_PYTHON = re.compile(r"^(?:python[\d.]*|py)$")
+_PREFIXES = frozenset(("nohup", "setsid", "exec"))
+
+
+def _base(word):
+    return word.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def runs_script(command, script, *, flag=None):
+    """True when a segment of `command` executes `script` (a basename), directly or as python's script, with `flag`
+    among its words when given. A mention (a path argument, quoted data, a heredoc body) is not a run."""
+    for _left, _right, segment in executable_spans(command):
+        parsed = command_words(segment)
+        if not parsed:
+            continue
+        words = [word.value for word in parsed[0][executable_word(parsed[0], segment):]]
+        while words and words[0] in _PREFIXES:
+            words = words[1:]
+        if not words or (flag and flag not in words):
+            continue
+        program = _base(words[0]).lower().removesuffix(".exe")
+        target = words[1] if _PYTHON.match(program) and len(words) > 1 else words[0]
+        if _base(target) == script:
+            return True
+    return False

@@ -31,6 +31,7 @@ from collections import Counter
 from fnmatch import fnmatchcase
 from pathlib import Path
 
+import _git_run
 from _git_commit import (resolve_cd, segments, git_invocation, cd_target,
                          executable_text, literal_assignments, expand_literal)
 from _transcript_calls import Call, Result, session_events
@@ -53,15 +54,10 @@ def _git(args: list[str], cwd: Path, stdin: str | None = None) -> str | None:
     - `GIT_CEILING_DIRECTORIES` stops git from climbing into an enclosing repository when the
       target's `.git` disappears mid-check; git would otherwise lock and judge the project repo.
     """
-    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(cwd.parent)}
-    try:
-        proc = subprocess.run(["git", "--no-optional-locks", *args], cwd=str(cwd), input=stdin,
-                              capture_output=True, text=True, timeout=_GIT_TIMEOUT_S, env=env)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    return proc.stdout
+    env = {"GIT_CEILING_DIRECTORIES": str(cwd.parent)}
+    return _git_run.soft_text(args, cwd=str(cwd), env=env, optional_locks=False,
+                              input=stdin.encode() if isinstance(stdin, str) else stdin,
+                              timeout=_GIT_TIMEOUT_S)
 
 
 def _same_path(a: Path, b: Path) -> bool:
@@ -408,8 +404,12 @@ def _save_step(repo: Path, project_root: Path | None) -> str:
     """The deny's next step for a repository `_saved_copy_holds` judges: a tar alone never saves a commit no remote
     holds, so the step names the bundle for its commits and the tar for its files."""
     scratch = (project_root / ".claude" / "scratch").as_posix() if project_root else ".claude/scratch"
+    listing = _git(["worktree", "list", "--porcelain"], repo) or ""
+    more = (" Every linked worktree must lie inside the delete: bundle after its last commit (`--all` "
+            "carries each worktree's HEAD), and tar the whole folder so it holds every worktree's files."
+            if sum(1 for line in listing.splitlines() if line.startswith("worktree ")) > 1 else "")
     return (' (save its commits: `git -C "%s" bundle create "%s/%s.bundle" --all`; and its uncommitted files as '
-            '"%s/%s.tar"; then retry)' % (repo.as_posix(), scratch, repo.name, scratch, repo.name))
+            '"%s/%s.tar"; then retry.%s)' % (repo.as_posix(), scratch, repo.name, scratch, repo.name, more))
 
 
 def _saved_copies(project_root: Path, stem: str, target: Path) -> list[Path]:
@@ -505,20 +505,24 @@ def _bundle_covers(target: Path, bundle: Path, commits: list[str]) -> bool:
         return False
     listing = _git(["bundle", "list-heads", str(bundle)], target)
     heads = [line.split()[0] for line in (listing or "").splitlines() if line.split()]
-    return all(any(_git(["merge-base", "--is-ancestor", commit, head], target) is not None for head in heads)
-               for commit in commits)
+    if not heads:
+        return not commits
+    left = _git(["rev-list", "--stdin"], target, stdin="\n".join([*commits, "--not", *heads]) + "\n")
+    return left is not None and not left.strip()  # one call: a repository with no remote lists every commit
 
 
 def _saved_copy_holds(target: Path, project_root: Path, deleting: Path | None = None) -> bool:
     """True when deleting `target` loses nothing: its git state survives the delete (every ref on a remote
-    or in a bundle named for it, and for a `.git` file a repository lying outside `deleting`), and every
-    file `_losses` reports is held by a saved copy under the project's `.claude/scratch` — a tar with the
+    or in a bundle named for it, and for a `.git` file a repository lying outside `deleting`; a repository's
+    linked worktrees must all lie inside `deleting`, each HEAD held like a ref and each worktree's losses
+    counted), and every file `_losses` reports is held by a saved copy under the project's `.claude/scratch` — a tar with the
     same files, or a patch covering exactly the target's changes that reverses cleanly from its tree. A
     clean tree has no file loss, so its refs decide it and no file copy is needed."""
     deleting = deleting or target
     copies = _saved_copies(project_root, target.name, target)
     bundles = [copy for copy in copies if copy.name.lower().endswith(".bundle")]
     copy_is_worktree = not (target / ".git").is_dir()
+    linked: list[Path] = []
     if copy_is_worktree:
         for flag in ("--git-dir", "--git-common-dir"):
             found = (_git(["rev-parse", "--path-format=absolute", flag], target) or "").strip()
@@ -529,34 +533,43 @@ def _saved_copy_holds(target: Path, project_root: Path, deleting: Path | None = 
         off_remote = (_git(["rev-list", "HEAD", "--not", "--remotes"], target) or "").strip()
         required = off_remote.split()
     else:
-        worktrees = _git(["worktree", "list", "--porcelain"], target)
-        if worktrees is None or sum(1 for line in worktrees.splitlines()
-                                    if line.startswith("worktree ")) != 1:
-            return False  # a linked worktree's content is not in this tree's status
+        listing = _git(["worktree", "list", "--porcelain"], target)
+        if listing is None:
+            return False
+        linked = [Path(line[9:]) for line in listing.splitlines() if line.startswith("worktree ")][1:]
+        if any(not any(_same_path(parent, deleting) for parent in (spot, *spot.parents)) for spot in linked):
+            return False  # a linked worktree outside the delete keeps its own state
         required = (_git(["rev-list", "--branches", "--tags", "--not", "--remotes"], target) or "").split()
+        for spot in linked:
+            required += (_git(["rev-list", "HEAD", "--not", "--remotes"], spot) or "").split()
         stash = (_git(["rev-parse", "--verify", "-q", "refs/stash"], target) or "").strip()
         if stash:
             required.append(stash)
     if required and not any(_bundle_covers(target, bundle, required) for bundle in bundles):
         return False  # a commit no remote holds dies with the target; only a bundle saves it
-    status = _git(["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], target)
-    if status is None:
-        return False
     wanted: dict[str, str] = {}
-    for line in _losses(status, target, patterns=_project_patterns(project_root)):
-        entry = line[3:].split(" (")[0]
-        if len(entry) > 1 and entry[0] == entry[-1] == '"' and "\\" not in entry:
-            entry = entry[1:-1]
-        path = target / entry.rstrip("/")
-        files = [path] if path.is_file() else (sorted(p for p in path.rglob("*") if p.is_file())
-                                               if path.is_dir() else [])
-        if not files:
+    patterns = _project_patterns(project_root)
+    inside = tuple(spot.as_posix().lower() + "/" for spot in linked)
+    for tree in [target, *linked]:
+        status = _git(["status", "--porcelain", "--untracked-files=all", "--ignored=matching"], tree)
+        if status is None:
             return False
-        for file in files:
-            digest = None if file.is_symlink() else _sha256(file)
-            if digest is None:
+        for line in _losses(status, tree, patterns=patterns):
+            entry = line[3:].split(" (")[0]
+            if len(entry) > 1 and entry[0] == entry[-1] == '"' and "\\" not in entry:
+                entry = entry[1:-1]
+            path = tree / entry.rstrip("/")
+            files = [path] if path.is_file() else (sorted(p for p in path.rglob("*") if p.is_file())
+                                                   if path.is_dir() else [])
+            if not files:
                 return False
-            wanted[file.relative_to(target).as_posix()] = digest
+            for file in files:
+                if tree is target and file.as_posix().lower().startswith(inside):
+                    continue  # a linked worktree's files are judged by its own status
+                digest = None if file.is_symlink() else _sha256(file)
+                if digest is None:
+                    return False
+                wanted[Path(os.path.relpath(file, target)).as_posix()] = digest
     if not wanted:
         return not copy_is_worktree  # a clean checkout of another repository's worktree has no loss here
     for copy in copies:
@@ -824,12 +837,11 @@ def _job_scratch(entry: str, root: Path | None = None, project_root: Path | None
         return None
     leaf_is_file = root is not None and (root / entry).is_file()
     for index, name in enumerate(parts[start:], start):
-        if index == start == len(parts) - 1 and parts[start - 1] == "scratch" \
-                and (root is None or leaf_is_file):
-            return 'is a loose file in the scratch folder, not a job output folder'
         reason = named(name, folder=not (leaf_is_file and index == len(parts) - 1))
         if reason:
             return reason
+        if index == start == len(parts) - 1 and parts[start - 1] == "scratch"                 and (root is None or leaf_is_file):
+            return 'is a loose file in the scratch folder, not a job output folder'
     if root is None:
         return None
     top = root / entry
@@ -858,11 +870,11 @@ def _job_scratch(entry: str, root: Path | None = None, project_root: Path | None
                     + _save_step(Path(here), project_root)
             direct_scratch = rel.split("/")[-2:] == [".claude", "scratch"]
             for name, folder in [(d, True) for d in dirs] + [(f, False) for f in files]:
-                if direct_scratch and not folder:
-                    return rel + '/' + name + ' is a loose file in the scratch folder, not a job output folder'
                 reason = named(name, folder)
                 if reason:
                     return rel + '/' + name + ' ' + reason
+                if direct_scratch and not folder:
+                    return rel + '/' + name + ' is a loose file in the scratch folder, not a job output folder'
             for name in dirs:
                 if (Path(here) / name).is_symlink():
                     return rel + '/' + name + ' is a link, so its contents cannot be judged'
@@ -1228,16 +1240,13 @@ def _unheld_files(git_dir: Path, work_tree: Path, root: Path, absent_index: Path
     checkout (a submodule) is judged against `root`'s `.git/modules/<path>` store. Unless `ignored_ok`
     (this session created the worktree), an ignored file that is no regenerable cache is a loss too
     (`_regenerable_ignored`, Godot `.import`; an ignored directory holding no file lists nothing)."""
-    env = {**os.environ, "GIT_DIR": str(git_dir), "GIT_WORK_TREE": str(work_tree),
+    env = {"GIT_DIR": str(git_dir), "GIT_WORK_TREE": str(work_tree),
            "GIT_INDEX_FILE": str(absent_index), "GIT_CEILING_DIRECTORIES": str(work_tree.parent)}
 
     def run(args, stdin=None):
-        try:
-            proc = subprocess.run(["git", "--no-optional-locks", *args], cwd=str(work_tree), input=stdin,
-                                  capture_output=True, text=True, timeout=_ORPHAN_HASH_TIMEOUT_S, env=env)
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return proc.stdout if proc.returncode == 0 else None
+        return _git_run.soft_text(args, cwd=str(work_tree), env=env, optional_locks=False,
+                                  input=stdin.encode() if isinstance(stdin, str) else stdin,
+                                  timeout=_ORPHAN_HASH_TIMEOUT_S)
 
     found: list[str] = []
     subs = []

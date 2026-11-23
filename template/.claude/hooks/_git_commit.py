@@ -15,9 +15,7 @@ holes; this module is the single home, so a fix lands in every guard at once.
     memoized()                          context: run_git answers a repeated read-only query once
     in_project(cwd, project_root, env)  -> bool  the commit targets this project's repo (worktrees included)
     incoming_paths(sub, rest, cwd, env) -> same shape, for merge / cherry-pick / revert
-    merge_refs(rest), merge_strategy(rest) -> the refs, and (strategy, [options]), a `git merge` names
     resolve_index(git_env, cwd)         -> (git_env, None) | (None, reason the index is unreadable)
-    git_environ(git_env)                -> os.environ with a command's GIT_* variables applied
     bypass_declared(inline_env, VAR)    -> True when VAR=1 in the hook's env OR inline on the command
 
 A commit publishes the index its GIT_* variables name (`GIT_INDEX_FILE=<f> git commit`, or an
@@ -32,15 +30,20 @@ import os
 import re
 import sys
 import shlex
-import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
-    from sidecar_argv import literal_launcher_body, executable_index
-except Exception:  # each guard that needs the parser imports it itself and denies on its failure
-    literal_launcher_body = executable_index = None
+    from _shell_lex import literal_launcher_body, executable_index, command_substitutions
+except Exception as _exc:  # each guard that needs the parser imports it itself and denies on its failure
+    literal_launcher_body = executable_index = command_substitutions = None
+    LEXER_ERROR = '%s: %s' % (type(_exc).__name__, _exc)
+else:
+    LEXER_ERROR = None
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _git_run import git_environ, soft_text  # noqa: E402,F401  git_environ: v1 importers until cutover
 
 try:
     from _command_text import executable_text, executable_spans, command_words, executable_word, strip_heredocs
@@ -53,7 +56,7 @@ __all__ = [
     "segments", "join_continuations", "git_invocation", "base_rev", "git_invocations", "cd_target", "commit_invocations",
     "parse_commit_args", "run_git", "staged_paths", "incoming_paths", "bypass_declared",
     "commit_source", "commit_message",
-    "export_assignments", "command_git_env", "resolve_index", "git_environ",
+    "export_assignments", "command_git_env", "resolve_index",
     "resolve_cd", "literal_assignments", "expand_literal",
     "common_dir", "in_project", "memoized",
 ]
@@ -224,9 +227,14 @@ def resolve_cd(cwd, moved):
 
 
 def literal_assignments(command, cwd=None):
-    """Once-assigned literal variables, including known path expansions and `$(pwd)`.
-    Unknown substitutions and names assigned or mutated more than once stay unresolved."""
-    found, known = {}, {}
+    """Once-assigned literal variables, including known path expansions and `$(pwd)`, plus every variable of this
+    hook's environment the command never names bare: the guarded shell inherits that same environment, so `$TEMP`
+    means the same path to both. Unknown substitutions and names assigned or mutated more than once stay unresolved."""
+    found = {}
+    known = {name: value for name, value in os.environ.items()
+             if re.fullmatch(r'[A-Za-z_]\w*', name) and '$' not in value
+             and not re.search(r'(?<![A-Za-z0-9_$])(?<!\$\{)' + re.escape(name) + r'(?![A-Za-z0-9_])', command)}
+    inherited = dict(known)
     if cwd is not None:
         known['PWD'] = cwd
     for segment in segments(command):
@@ -255,7 +263,7 @@ def literal_assignments(command, cwd=None):
                 value = os.path.expanduser(value)
                 found.setdefault(m.group(1), []).append(value)
                 known[m.group(1)] = value
-    result = {}
+    result = inherited
     for name, values in found.items():
         bare = re.findall(r"(?<![A-Za-z0-9_$])(?<!\$\{)" + name + r"(?![A-Za-z0-9_])", command)
         if len(values) == 1 and len(bare) == 1:
@@ -350,20 +358,17 @@ def _launcher_context(segment, cwd, exported, assignments):
         elif token in ('-i', '--ignore-environment'):
             inherited = {key: None for key in set(inherited) | set(os.environ) if key.startswith('GIT_')}
         prefix += 1
-    return body, cwd, inherited
+    return body, cwd, inherited, parsed, tokens
 
 
-def _body_source(segment, body):
+def _body_source(segment, body, parsed, tokens):
     """Safe literal body word and decoded-character boundaries in its segment."""
-    parsed = command_words(segment)
-    if parsed is None or executable_index is None:
+    if parsed is None:
         return None
     words = parsed[0]
-    tokens, index = executable_index([word.value for word in words])
-    literal = literal_launcher_body(tokens, index)
-    if (literal is None or literal.end != literal.start + 1 or len(tokens) != len(words)):
+    if body.end != body.start + 1 or len(tokens) != len(words):
         return None
-    word = words[literal.start]
+    word = words[body.start]
     raw = segment[word.start:word.end]
     if word.value != body.body:
         return None
@@ -399,6 +404,67 @@ def _subcommand_end(segment, args):
     return tokens[index].end() if 0 <= index < len(tokens) else None
 
 
+_OPAQUE_WRAPPERS = {  # commands that run their operand with state this parser cannot prove
+    'sudo': frozenset({'-u', '-g', '-h', '-p', '-C', '--user', '--group', '--host', '--prompt', '--chdir'}),
+    'xargs': frozenset({'-I', '-i', '-L', '-l', '-n', '-P', '-a', '-d', '-E', '-e', '--replace', '--max-lines',
+                        '--max-args', '--max-procs', '--arg-file', '--delimiter', '--eof'}),
+}
+
+
+def _wrapped_git(segment):
+    """A git call behind `env`, `sudo` or `xargs`, or nothing. The wrapper owns the cwd and environment it
+    passes, and xargs appends arguments, so the call's repository cannot be proved: its cwd is None."""
+    if executable_index is None:
+        return None
+    tokens, index = executable_index(_tokens(segment))
+    if index >= len(tokens):
+        return None
+    head = os.path.basename(tokens[index].replace('\\', '/')).lower()
+    if head in _OPAQUE_WRAPPERS:
+        values = _OPAQUE_WRAPPERS[head]
+        index += 1
+        while index < len(tokens) and tokens[index].startswith('-'):
+            option = tokens[index]
+            index += 2 if option in values else 1
+            if option == '--':
+                break
+        tokens, index = executable_index(tokens[index:])
+    elif not (head in ('git', 'git.exe')
+              and any(os.path.basename(t.replace('\\', '/')).lower() == 'env' for t in tokens[:index])):
+        return None
+    if index >= len(tokens) or os.path.basename(tokens[index].replace('\\', '/')).lower() not in ('git', 'git.exe'):
+        return None
+    parsed = git_invocation(shlex.join(tokens[index:]))
+    if parsed is None or not parsed[0]:
+        return None
+    return CommitInvocation(parsed[0][0], parsed[0][1:], None, {}, {}, {})
+
+
+def _wrapped_launcher_calls(segment):
+    """Opaque git calls inside a shell launcher run behind `sudo` or `xargs`: the wrapper owns the cwd and
+    environment, so every call the body runs is opaque even when the body's own `-C` is literal."""
+    if executable_index is None:
+        return []
+    tokens, index = executable_index(_tokens(segment))
+    if index >= len(tokens):
+        return []
+    values = _OPAQUE_WRAPPERS.get(os.path.basename(tokens[index].replace('\\', '/')).lower())
+    if values is None:
+        return []
+    index += 1
+    while index < len(tokens) and tokens[index].startswith('-'):
+        option = tokens[index]
+        index += 2 if option in values else 1
+        if option == '--':
+            break
+    tokens, index = executable_index(tokens[index:])
+    body = literal_launcher_body(tokens, index)
+    if body is None:
+        return []
+    return [CommitInvocation(call.sub, call.rest, None, {}, {}, {})
+            for call in _git_invocations(body.body, '.', {}, {})[0]]
+
+
 def _git_invocations(command, cwd, exported, inherited, source_offsets=None, body_path=()):
     found = []
     text = join_continuations(strip_heredocs(command or '', preserve_offsets=True))
@@ -411,6 +477,9 @@ def _git_invocations(command, cwd, exported, inherited, source_offsets=None, bod
         start = text.index(segment, cursor)
         cursor = start + len(segment)
         assigned_once['PWD'] = cwd
+        if command_substitutions is not None:
+            for body in command_substitutions(segment)[1]:
+                found.extend(_git_invocations(body, cwd, dict(exported), assigned_once)[0])
         moved = cd_target(segment)
         if moved is not None:
             cwd = resolve_cd(cwd, expand_literal(moved, assigned_once) or moved)
@@ -422,10 +491,10 @@ def _git_invocations(command, cwd, exported, inherited, source_offsets=None, bod
             continue
         launched = _launcher_context(segment, cwd, exported, assigned_once)
         if launched is not None:
-            body, target, child_env = launched
+            body, target, child_env, parsed_words, launcher_tokens = launched
             child_known = ({key: value for key, value in child_env.items() if value is not None}
                            if body.scoped else assigned_once)
-            source = _body_source(segment, body) if source_offsets is not None else None
+            source = _body_source(segment, body, parsed_words, launcher_tokens) if source_offsets is not None else None
             child_offsets, child_path = None, None
             if source is not None:
                 word, quote, offsets = source
@@ -441,15 +510,25 @@ def _git_invocations(command, cwd, exported, inherited, source_offsets=None, bod
             continue
         parsed = git_invocation(segment)
         if parsed is None:
+            opaque = _wrapped_git(segment)
+            if opaque is not None:
+                found.append(opaque)
+            else:
+                found.extend(_wrapped_launcher_calls(segment))
             continue
         args, chdir, inline_env = parsed
         if not args:
             continue
-        target = resolve_cd(cwd, expand_literal(chdir, assigned_once) or chdir) if chdir else cwd
+        if chdir:
+            moved = expand_literal(chdir, assigned_once)
+            target = resolve_cd(cwd, moved) if moved is not None else None
+        else:
+            target = cwd
         git_env = command_git_env(exported, inline_env, assigned_once)
-        for var in ('GIT_DIR', 'GIT_WORK_TREE'):
-            if git_env.get(var) and '$' not in git_env[var]:
-                git_env[var] = resolve_cd(target, git_env[var])
+        if target is not None:
+            for var in ('GIT_DIR', 'GIT_WORK_TREE'):
+                if git_env.get(var) and '$' not in git_env[var]:
+                    git_env[var] = resolve_cd(target, git_env[var])
         end = _subcommand_end(segment, args) if source_offsets is not None else None
         offset = source_offsets[start + end] if end is not None else None
         found.append(CommitInvocation(args[0], args[1:], target, inline_env, git_env, dict(assigned_once),
@@ -458,7 +537,9 @@ def _git_invocations(command, cwd, exported, inherited, source_offsets=None, bod
 
 
 def git_invocations(command, cwd):
-    """Every literal git call in execution order with cwd/env and outermost rewrite coordinates.
+    """Every git call the shell runs, in execution order. A call whose repository cannot be proved — an
+    unexpandable `-C` value, or a call behind env/sudo/xargs — carries cwd=None and no GIT_* environment;
+    its caller judges it conservatively and borrows no repository, ownership or preservation evidence for it.
     subcommand_end is just after its token; body_path lists enclosing word spans/quotes, outer first.
     Both are None for unsafe source forms; rewrite metadata does not participate in equality."""
     return _git_invocations(command, cwd or '.', {}, {})[0]
@@ -507,20 +588,6 @@ def parse_commit_args(rest):
     return include_dirty, amend, pathspec
 
 
-def git_environ(git_env):
-    """os.environ with `git_env` applied (a None value unsets), or None when `git_env` is empty, so the
-    subprocess inherits the hook's environment unchanged."""
-    if not git_env:
-        return None
-    env = dict(os.environ)
-    for key, value in git_env.items():
-        if value is None:
-            env.pop(key, None)
-        else:
-            env[key] = value
-    return env
-
-
 # Subcommands that only read the repository, so one answer serves a whole dispatch.
 _READ_ONLY = frozenset(("rev-parse", "diff", "ls-files", "ls-tree", "show", "cat-file", "merge-base",
                         "log", "for-each-ref", "symbolic-ref"))
@@ -553,24 +620,13 @@ def run_git(args, cwd, env=None):
     invocation's `git_env`."""
     key = None
     if _memo is not None and _subcommand(args) in _READ_ONLY:
-        key = (tuple(args), os.path.normcase(os.path.abspath(cwd or ".")), tuple(sorted((env or {}).items())))
+        key = (tuple(args), os.path.normcase(os.path.realpath(cwd or ".")), tuple(sorted((env or {}).items())))
         if key in _memo:
             return _memo[key]
-    out = _run_git(args, cwd, env)
+    out = soft_text(args, cwd=cwd, env=env)
     if key is not None:
         _memo[key] = out
     return out
-
-
-def _run_git(args, cwd, env):
-    try:
-        result = subprocess.run(["git"] + args, cwd=cwd, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=30, env=git_environ(env))
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout
 
 
 def _lines(out):
@@ -843,7 +899,7 @@ def fold_tracked_adds(command, cwd, *, _exported=None, _inherited=None):
         launched = _launcher_context(segment, target, before_env, known)
         if launched is None:
             continue
-        body, target, child_env = launched
+        body, target, child_env = launched[:3]
         if any(re.search(r'[$`]', re.sub(r"'[^']*'", '', segment[word.start:word.end]))
                for word in words[body.start:body.end]):
             continue
@@ -957,47 +1013,6 @@ def _first_ref(rest):
         elif not a.startswith("-"):
             return a
     return None
-
-
-def merge_refs(rest):
-    """The refs a `git merge` invocation merges, in order (`--into-name` and option values skipped)."""
-    refs, skip = [], False
-    for a in rest:
-        if skip:
-            skip = False
-        elif a in _VALUE_OPTIONS:
-            skip = True
-        elif a == "--":
-            continue
-        elif not a.startswith("-"):
-            refs.append(a)
-    return refs
-
-
-def merge_strategy(rest):
-    """(strategy or None, [strategy options]) a `git merge` invocation names: `-s X`, `-sX`,
-    `--strategy=X`, `-X o`, `-Xo`, `--strategy-option=o`; the last strategy wins, as in git."""
-    strategy, options, want = None, [], None
-    for a in rest:
-        if want:
-            if want == "s":
-                strategy = a
-            else:
-                options.append(a)
-            want = None
-        elif a in ("-s", "--strategy"):
-            want = "s"
-        elif a in ("-X", "--strategy-option"):
-            want = "X"
-        elif a.startswith("--strategy="):
-            strategy = a.split("=", 1)[1]
-        elif a.startswith("--strategy-option="):
-            options.append(a.split("=", 1)[1])
-        elif a.startswith("-s") and len(a) > 2 and not a.startswith("--"):
-            strategy = a[2:]
-        elif a.startswith("-X") and len(a) > 2:
-            options.append(a[2:])
-    return strategy, options
 
 
 def incoming_paths(sub, rest, cwd, env=None):

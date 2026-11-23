@@ -47,7 +47,7 @@ def plant_transcript(rows):
     """A projects root holding this session's transcript; rows=None plants no transcript at all."""
     root = Path(tempfile.mkdtemp(prefix="reap_projects_", dir=SCRATCH))
     if rows is not None:
-        proj = root / "C--x-{{PROJECT_NAME}}"
+        proj = root / "C--x-PushinPotions"
         proj.mkdir()
         with open(proj / (SID + ".jsonl"), "w", encoding="utf-8", newline="\n") as fh:
             for r in rows:
@@ -170,9 +170,9 @@ def leftovers_stops_nothing():
                          "leftproof-launch-0001")
     td = Path(tempfile.mkdtemp(prefix="reap_leftovers_", dir=SCRATCH))
     projects = td / "projects"
-    (projects / "C--x-{{PROJECT_NAME}}").mkdir(parents=True)
+    (projects / "C--x-PushinPotions").mkdir(parents=True)
     for name in (dead, sid):
-        (projects / "C--x-{{PROJECT_NAME}}" / (name + ".jsonl")).write_text("{}\n", encoding="utf-8")
+        (projects / "C--x-PushinPotions" / (name + ".jsonl")).write_text("{}\n", encoding="utf-8")
     script = td / "proof_sidecar.sh"
     # Absolute path: a launcher spawned outside Git Bash (the land runner's pwsh) has no /usr/bin on PATH.
     script.write_text("/usr/bin/sleep 40\n", encoding="utf-8", newline="\n")
@@ -659,14 +659,14 @@ def main():
     if sys.platform == "win32":
         import subprocess as _sp
         child = _sp.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
-                          env={**os.environ, "HARNESS_REAP_PROBE": "native-ok"})
+                          env={**os.environ, "PP_REAP_PROBE": "native-ok"})
         try:
             time.sleep(0.5)
             block = REAL_ENVIRON_OF(child.pid)
         finally:
             child.kill()
             child.wait()
-        ck("a native process's own environment block is read", b"HARNESS_REAP_PROBE=native-ok" in block,
+        ck("a native process's own environment block is read", b"PP_REAP_PROBE=native-ok" in block,
            f"read {len(block)} bytes")
 
     # 15. a detached sidecar child: its launcher scrubs CLAUDE_* from the child's environment and the
@@ -1291,7 +1291,7 @@ def main():
     dead_table = table([wrapper, watcher, dead_mcp, live_host])
     rc, killed, out = run(["501", "--reason", "orphan", "--dry-run"], dead_table,
                           environ=lambda pid: dead_env.get(pid, b""), sessions=sess,
-                          extra_transcripts={"C--x-{{PROJECT_NAME}}": [D]})
+                          extra_transcripts={"C--x-PushinPotions": [D]})
     ck("a dead session's leftover under a live wrapper is proven orphan (dry-run)",
        rc == 0 and killed == [] and "DRY 501" in out, out[-500:])
 
@@ -1308,7 +1308,7 @@ def main():
     peer_wrapper = row(511, 9999, "bash.exe", PANE)
     rc, killed, out = run(["511", "--reason", "orphan", "--dry-run"], table([peer_wrapper, live_host]),
                           environ=lambda pid: peer_env.get(pid, b""), sessions=sess,
-                          extra_transcripts={"C--x-{{PROJECT_NAME}}": [L]})
+                          extra_transcripts={"C--x-PushinPotions": [L]})
     ck("a live session's pane watcher is never stopped", rc == 2 and killed == [] and "DRY" not in out, out[-400:])
 
     # the classification behind `leftovers`: the dead session's leftover is `dead`; the live
@@ -1317,8 +1317,8 @@ def main():
     with tempfile.TemporaryDirectory() as td:
         wipe = []
         reap.PROJECTS_ROOT = plant_transcript([owner_row("carry on")])
-        (reap.PROJECTS_ROOT / "C--x-{{PROJECT_NAME}}").mkdir(exist_ok=True)
-        (reap.PROJECTS_ROOT / "C--x-{{PROJECT_NAME}}" / (D + ".jsonl")).write_text("{}\n", encoding="utf-8")
+        (reap.PROJECTS_ROOT / "C--x-PushinPotions").mkdir(exist_ok=True)
+        (reap.PROJECTS_ROOT / "C--x-PushinPotions" / (D + ".jsonl")).write_text("{}\n", encoding="utf-8")
         (reap.PROJECTS_ROOT / "C--y-OtherProject").mkdir(exist_ok=True)
         (reap.PROJECTS_ROOT / "C--y-OtherProject" / (O + ".jsonl")).write_text("{}\n", encoding="utf-8")
         registry = plant_registry(sess)
@@ -1329,9 +1329,9 @@ def main():
         reap.process_exited = lambda pid, start: False
         reap.taskkill = lambda pid, tree=True: (wipe.append(pid) or True)
         reap.LEDGER = Path(td) / "ledger.jsonl"
-        with reap.invocation(SID, "C--x-{{PROJECT_NAME}}"):
+        with reap.invocation(SID, "C--x-PushinPotions"):
             findings = reap.leftover_findings(dead_table | table([peer_wrapper, other_wrapper]),
-                                              sid=SID, project_key="C--x-{{PROJECT_NAME}}")
+                                              sid=SID, project_key="C--x-PushinPotions")
         statuses = {f["pid"]: f["status"] for f in findings}
         ck("the classification marks the dead session's leftover dead and stops nothing",
            statuses.get(501) == "dead" and wipe == [] and not reap.LEDGER.exists(),
@@ -1345,18 +1345,18 @@ def main():
     #      the explicit-pid check, the dead-leftover proof and the classification all call it dead.
     mixed_env = {512: env18(session=L, parent=D)}
     mixed_table = table([row(512, SESSION_PID, "bash.exe", PANE), live_host])
-    with reap.invocation(SID, "C--x-{{PROJECT_NAME}}"):
+    with reap.invocation(SID, "C--x-PushinPotions"):
         reap.environ_of = lambda pid: mixed_env.get(pid, b"")
         reap.launch_environ = reap.environ_of
         reap.msys_environ = lambda pid: b""
         reap.session_registry_dirs = lambda: [plant_registry(sess)]
         reap.PROJECTS_ROOT = plant_transcript([owner_row("carry on")])
-        (reap.PROJECTS_ROOT / "C--x-{{PROJECT_NAME}}").mkdir(exist_ok=True)
-        (reap.PROJECTS_ROOT / "C--x-{{PROJECT_NAME}}" / (D + ".jsonl")).write_text("{}\n", encoding="utf-8")
+        (reap.PROJECTS_ROOT / "C--x-PushinPotions").mkdir(exist_ok=True)
+        (reap.PROJECTS_ROOT / "C--x-PushinPotions" / (D + ".jsonl")).write_text("{}\n", encoding="utf-8")
         explicit = reap.leftover_check(mixed_table, 512, SID)[0]
-        listed = reap.dead_leftover_proof(mixed_table, 512, SID, "C--x-{{PROJECT_NAME}}")
+        listed = reap.dead_leftover_proof(mixed_table, 512, SID, "C--x-PushinPotions")
         classed = {f["pid"]: f["status"] for f in
-                   reap.leftover_findings(mixed_table, sid=SID, project_key="C--x-{{PROJECT_NAME}}")}.get(512)
+                   reap.leftover_findings(mixed_table, sid=SID, project_key="C--x-PushinPotions")}.get(512)
     ck("one owner: a process tagged with a dead parent and a live shell is a dead session's leftover on every path",
        bool(explicit) and bool(listed) and classed == "dead",
        f"explicit={explicit!r} listed={listed!r} classed={classed!r}")

@@ -663,6 +663,7 @@ def project_remote():
 
 def retired_worktree_cases():
     """A linked worktree under a fixture project's `.claude/worktrees/`, with a submodule."""
+    global fails, total
     proj_remote = project_remote()
     proj = os.path.join(FIX, "proj")
     git("clone", "-q", proj_remote, proj)
@@ -1264,6 +1265,54 @@ def retired_worktree_cases():
                           capture_output=True, text=True).stdout
     write(os.path.join(saved, "link_saved_copied_wt.patch"), diff)
     expect_wt("a nested linked worktree held by a patch named for it", link_wt, True, proj)
+
+    def repo_with_worktrees(wt_name, repo_name):
+        lane, repo = nested_repo(wt_name, repo_name, commit=True, untracked=False)
+        inner = []
+        for n in ("w1", "w2"):
+            inner.append(os.path.join(repo, ".claude", "worktrees", n))
+            git("worktree", "add", "-q", "--detach", inner[-1], cwd=repo)
+        return lane, repo, inner
+
+    def save_all(repo, stem):
+        git("bundle", "create", "-q", os.path.join(saved, stem + ".bundle"), "--all", cwd=repo)
+        save_tar(repo, stem)
+
+    lane, repo, inner = repo_with_worktrees("lw_ok", "lwok")
+    expect_wt("a repo with linked worktrees and no saved copy", lane, False, proj)
+    write(os.path.join(inner[0], "loose.txt"), "loose work\n")
+    write(os.path.join(repo, "side.txt"), "side work\n")
+    save_all(repo, "lw_ok_lwok")
+    expect_wt("linked worktrees inside the delete, bundle and tar holding every file", lane, True, proj)
+    expect_retire_check("saved repo with inside worktrees retires", [lane], 0, [lane + ": retired"], proj)
+    write(os.path.join(inner[1], "late.txt"), "late work\n")
+    expect_wt("a linked worktree file the tar lacks", lane, False, proj)
+
+    lane, repo, inner = repo_with_worktrees("lw_head", "lwhead")
+    write(os.path.join(inner[0], "h.txt"), "h\n")
+    git("add", "h.txt", cwd=inner[0])
+    git("commit", "-q", "-m", "worktree only", cwd=inner[0])
+    git("bundle", "create", "-q", os.path.join(saved, "lw_head_lwhead.bundle"), "--all", cwd=repo)
+    write(os.path.join(inner[0], "h2.txt"), "h2\n")
+    git("add", "h2.txt", cwd=inner[0])
+    git("commit", "-q", "-m", "after the bundle", cwd=inner[0])
+    save_tar(repo, "lw_head_lwhead")
+    expect_wt("a linked worktree HEAD no remote and no bundle holds", lane, False, proj)
+
+    lane, repo, inner = repo_with_worktrees("lw_out", "lwout")
+    outside_wt = os.path.join(FIX, "lwo")
+    git("worktree", "add", "-q", "--detach", outside_wt, cwd=repo)
+    save_all(repo, "lw_out_lwout")
+    expect_wt("a linked worktree outside the delete", lane, False, proj)
+
+    lane, repo, inner = repo_with_worktrees("lw_step", "lwstep")
+    step = rc._save_step(rc.Path(repo), None)
+    total += 1
+    if "linked worktree" not in step:
+        fails += 1
+        print("  FAIL save step for a repo with linked worktrees does not name their files:", step)
+    else:
+        print("  ok   save step names the linked worktrees' files")
 
 
 def scratch_clone_cases(outside):
