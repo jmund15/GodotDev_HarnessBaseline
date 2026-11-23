@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Hook: UserPromptSubmit and PostToolUse — kill orphaned runaway search processes.
 
-Coverage: one PostToolUse registration matching every tool, one UserPromptSubmit registration, and `check(payload)` in-process
-inside the floor entry (Bash, PowerShell, Monitor), where the throttle absorbs the second run. No dispatcher runs it.
+Coverage: one PostToolUse registration matching every tool (Bash, PowerShell and Monitor included) and one
+UserPromptSubmit registration. No dispatcher or floor helper runs it.
 
 `unbounded_scan_guard.py` denies recursive grep before it runs, but only for commands that pass
 through this project's hooks in the shapes it parses. This reaper contains what slips through.
@@ -308,7 +308,7 @@ def _kill_verified(pid, ppid, first):
 def check(payload=None):
     """Advisory lines for this call's reaps; [] when throttled, off Windows, or on any error.
 
-    The in-process entry for the floor entry (`_floor.HELPER_NAMES`); `main` prints it. Throttled like main() and never raises.
+    `main` prints it. Throttled like main() and never raises.
     """
     try:
         if os.name != "nt":
