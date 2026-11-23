@@ -367,7 +367,8 @@ def _run():
 
     # --- memoized: one dispatch reads one repo state, so a repeated read-only query runs once ---------
     spawned = []
-    real_run = gc.subprocess.run
+    import _git_run
+    real_run = _git_run.subprocess.run
 
     def counting_run(argv, *a, **k):
         spawned.append(list(argv))
@@ -375,11 +376,11 @@ def _run():
 
     def spawns(fn):
         spawned[:] = []
-        gc.subprocess.run = counting_run
+        _git_run.subprocess.run = counting_run
         try:
             fn()
         finally:
-            gc.subprocess.run = real_run
+            _git_run.subprocess.run = real_run
         return len(spawned)
 
     memoized = getattr(gc, "memoized", None)
@@ -478,6 +479,11 @@ def main():
             shutil.rmtree(wt, ignore_errors=True)
         for repo in _REPOS_TO_CLEAN:
             shutil.rmtree(repo, ignore_errors=True)
+
+
+
+def test_proof():
+    assert main() in (None, 0)
 
 
 if __name__ == "__main__":

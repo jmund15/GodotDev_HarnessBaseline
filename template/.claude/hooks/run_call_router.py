@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Rewrite a test, build or gate run before pre_bash_dispatch's guards judge it.
+"""Rewrite a test, build or gate run before the loss floor judges it.
 
-The rewrite reaches the call as pre_bash_dispatch's updatedInput, with an additionalContext line naming it:
+The rewrite reaches the call as the floor entry's updatedInput, with an additionalContext line naming it:
 - A linked worktree's run_test_suite, verify, regression_gate or run_integration_batched invocation runs
   main's copy of the script with `-Repo <worktree>`: main's code, the target's data.
 - run_in_background is set for a delegate's run (those scripts, engine_run, `dotnet build|test`) and for
@@ -131,7 +131,7 @@ def _route_runner(tokens, index, cwd, delegate):
 
 def _background_advice(payload):
     if foreground_wait_guard.never_woken(payload):
-        return ('[run] Started in the background. Wait per .claude/guards/common.md: '
+        return ('[run] Started in the background. Wait per .claude/guards/rails.md: '
                 '`until <done-test>; do sleep 30; done` in calls of at most 270000 ms.')
     return '[run] Its exit wakes you. See CLAUDE.core.md §Shell Discipline.'
 

@@ -5,7 +5,6 @@ file for them, so the dispatcher loads each by name: an absent file yields None 
 dispatcher skips it. A present file's import failure raises unless the caller supplies
 `on_error(name, exception)` to return its action-scoped fault stub. Each import has its
 own boundary, so one broken member cannot prevent its siblings from loading.
-`tools/layer_closure.py` reads the names passed here as optional dependencies.
 
     tres_guard, lint_guard = _optional_hooks.load("tres_guard", "lint_guard")
     members = _optional_hooks.chain("pre_edit", CHAIN, "advisory")   # shared CHAIN plus the project's members

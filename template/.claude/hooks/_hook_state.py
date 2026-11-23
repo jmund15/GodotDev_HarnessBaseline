@@ -7,12 +7,8 @@ fills after. Hooks fire on the same tool call, so two can sit inside that window
 once and their writes interleave: the file ended up holding one complete JSON document
 followed by a fragment of another.
 
-What that cost: `json.load` raised, `harness_edit_skill_reminder.py` read no state,
-concluded `instruction_quality` had never been loaded, and DENIED every harness edit for
-the rest of the session. Its remedy ("invoke the Skill and retry") could not work,
-because `skill_load_marker.py` hits the same parse error inside `except Exception: pass`
-and so never rewrites the marker. A corrupted byte range locked the session out of
-harness editing permanently, while telling the reader to do the one thing that cannot help.
+What that cost: `json.load` raised, a hook that read the file saw no state, and its gate stayed shut for
+the rest of the session while its remedy could not work, because the writer hit the same parse error.
 
 Three properties close that:
 
@@ -35,8 +31,6 @@ Fail posture: every function is best-effort and total. A read never raises — i
 that cannot be written must degrade to a missing nudge, never to a crashed hook.
 """
 
-import fnmatch
-import hashlib
 import importlib.util
 import io
 import json
@@ -44,17 +38,8 @@ import os
 import re
 import tempfile
 import time
-from datetime import datetime
-from pathlib import Path
 
 __all__ = [
-    "HARNESS_DIRS",
-    "CODE_EXT",
-    "settings_files",
-    "is_settings_file",
-    "is_harness_code",
-    "in_harness_dirs",
-    "SETUP_SURFACE_FILES",
     "read_json_salvage",
     "write_json_atomic",
     "update_json_locked",
@@ -64,84 +49,13 @@ __all__ = [
     "fire_once_since_compaction",
     "spent_mark",
     "unspend",
-    "mark_ladder_slice",
-    "ladder_slice_tiers",
-    "stage_ladder_receipt",
-    "consume_ladder_receipt",
-    "fail_ladder_receipt",
-    "ladder_receipt_failure",
-    "normalize_stdout",
-    "stdout_sha256",
     "clear_compaction_keys",
     "is_subagent_payload",
     "log_path",
-    "SKILL_REATTACH_CHARS",
-    "reattach_over_cap",
     "replace_path",
     "append_jsonl_rotating",
 ]
 
-# The harness code set: what `scripts/harness_tests.py` hashes into the stamp and what
-# `hooks/git_guardrails.py`'s skill advisory counts as code. One home so the two never disagree.
-HARNESS_DIRS = (
-    ".claude/hooks",
-    ".claude/tools",
-    ".claude/scripts",
-    ".claude/workflows",
-    ".claude/tests",
-    ".claude/settings.json",
-)
-
-# Which harness paths are code (a script or a settings file): the proof runner's binding and the fold
-# checker's untested-code rule read this one predicate. A settings file is `settings.json` or any
-# `settings.<name>.json` (base, project, a layer overlay) except the user's gitignored `settings.local.json`.
-CODE_EXT = (".py", ".ps1", ".sh", ".js", ".mjs", ".cjs")
-_SETTINGS_RE = re.compile(r"\.claude/settings(?:\.(?!local\.json$)[\w-]+)?\.json")
-
-
-def is_settings_file(rel):
-    return _SETTINGS_RE.fullmatch(rel.replace(os.sep, "/")) is not None
-
-
-def settings_files():
-    """The shipped `settings*.json` files under `.claude`, listed when called, never at import: the proof
-    runner keys a pass on every directory a proof lists, so an import-time listing put each ignored local
-    file into the key of every proof that imports this module, and a session's pass never matched the
-    close checkout's. Only a caller that needs the overlay names pays for the listing."""
-    claude_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    try:
-        names = sorted(os.listdir(claude_dir))
-    except OSError:
-        return ()
-    return tuple(".claude/" + n for n in names if is_settings_file(".claude/" + n))
-
-
-def is_harness_code(rel):
-    rel = rel.replace(os.sep, "/")
-    return is_settings_file(rel) or rel.lower().endswith(CODE_EXT)
-
-
-def in_harness_dirs(rel):
-    """True when `rel` is a `HARNESS_DIRS` entry or sits under one; an entry may be a glob, as git reads it."""
-    rel = rel.replace(os.sep, "/")
-    return any(fnmatch.fnmatchcase(rel, d) or rel.startswith(d + "/") for d in HARNESS_DIRS)
-
-
-# Files outside HARNESS_DIRS whose change must still run their bound proofs (pins, and a cloud script
-# that copies them). The list is project data, `reference/setup_surfaces.txt`, so this shared module
-# names no project file; absent file -> no surfaces. Read by `scripts/harness_tests.py` (staging and
-# the stamped tree) and `hooks/git_guardrails.py` (the stamp requirement).
-def _setup_surfaces():
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "reference", "setup_surfaces.txt")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return tuple(line.strip() for line in fh if line.strip() and not line.startswith("#"))
-    except OSError:
-        return ()
-
-
-SETUP_SURFACE_FILES = _setup_surfaces()
 
 # One state file per session, shared by every hook. HARNESS_HOOK_STATE_DIR redirects it so a
 # test never writes the real one.
@@ -149,36 +63,9 @@ _DEFAULT_STATE_DIR = os.path.expanduser("~/.claude/.routing_state")
 
 _ONCE_KEY = "fired_once"
 _COMPACTION_KEY = "fired_since_compaction"
-# The client cuts a re-attached skill body at this many characters.
-SKILL_REATTACH_CHARS = 20_000
 
 
-def reattach_over_cap(root) -> list[dict]:
-    """Invocable skill and command bodies under the `.claude` directory `root` longer than SKILL_REATTACH_CHARS
-    characters, longest first. The client cuts a re-attached body at that length, counted in characters with
-    newlines kept. `tools/load_census.py` reports these rows and `git_guardrails.py` reports the touched ones at
-    commit; the definition lives here because both ship to projects that may hold an older census."""
-    root = Path(root)
-    rows = []
-    paths = (list(root.glob("commands/*.md")) + list(root.glob("commands/checklists/*.md"))
-             + list(root.glob("skills/*/SKILL.md")))
-    for p in sorted(paths):
-        try:
-            with open(p, encoding="utf-8", newline="") as fh:
-                chars = len(fh.read())
-        except (OSError, UnicodeError):
-            continue
-        if chars > SKILL_REATTACH_CHARS:
-            rows.append({"path": ".claude/" + str(p.relative_to(root)).replace("\\", "/"), "chars": chars})
-    return sorted(rows, key=lambda r: -r["chars"])
 _COMPACTED_AT_KEY = "compacted_at"
-LADDER_SLICE_KEY = "ladder_slice_tiers"
-LADDER_RECEIPT_KEY = "ladder_receipt"
-LADDER_RECEIPT_CAP = 8
-LADDER_RECEIPT_FAILURE_KEY = "ladder_receipt_failure"
-BRIEF_TABLE_KEY = "brief_table_fits"
-_COMPACTION_CLEAR_KEYS = (_COMPACTION_KEY, "nudge_targets_seen", "model_ladder_ready", LADDER_SLICE_KEY,
-                          LADDER_RECEIPT_KEY, LADDER_RECEIPT_FAILURE_KEY, BRIEF_TABLE_KEY)
 _LOCK_WAIT_SECONDS = 2.0
 
 
@@ -291,280 +178,6 @@ def fire_once_machine(key):
 
     written, first = update_json_locked(path, claim)
     return bool(first) if written else True
-
-
-def _agent_suffix(agent_id):
-    """A subagent shares its parent's session_id; its payload `agent_id` keeps its context markers its own."""
-    agent_id = str(agent_id or "").strip()
-    return "@" + agent_id if agent_id else ""
-
-
-def mark_skill_in_context(session_id, name, agent_id=""):
-    """Record that skill `name` is in this context window (the subagent's when `agent_id` is given); a
-    compaction clears it."""
-    fire_once_since_compaction(session_id, "skill_in_context:" + name + _agent_suffix(agent_id))
-
-
-TRUNCATION_NOTICE = "truncated for compaction"
-_NOTICE_TAIL_CHARS = 300
-_BASE_LINE = re.compile(r"\ABase directory for this skill:[^\n]*\n+")
-_FRONTMATTER = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.S)
-# The client appends a skill's invocation arguments after the body; they are the caller's text, not SKILL.md.
-_ARGUMENTS = re.compile(r"\n\n+ARGUMENTS: .*", re.S)
-_REATTACH_SCANNER = []
-
-
-def skill_body(text):
-    """The skill body both a `SKILL.md` on disk and the client's attached copy carry: frontmatter and the
-    `Base directory for this skill:` line removed, a trailing `ARGUMENTS:` block removed, blank edges trimmed."""
-    text = _BASE_LINE.sub("", str(text or ""), count=1)
-    text = _FRONTMATTER.sub("", text, count=1)
-    return _ARGUMENTS.sub("", text).strip()
-
-
-def skill_body_digest(text):
-    return hashlib.sha256(skill_body(text).encode("utf-8")).hexdigest()
-
-
-def skill_file_digest(name, root):
-    """`skill_body_digest` of skill `name`'s `SKILL.md` under `root`, else under the user skills dir; None when
-    neither file exists (a bundled or plugin skill no disk change can stale)."""
-    name = str(name or "")
-    if not name or name in (".", "..") or "/" in name or "\\" in name:
-        return None
-    config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
-    roots = [(os.path.join(str(root), ".claude", "skills") if root else None),
-             os.path.join(config, "skills"), os.path.expanduser("~/.claude/skills")]
-    seen = set()
-    for base in roots:
-        if not base or os.path.normcase(base) in seen:
-            continue
-        seen.add(os.path.normcase(base))
-        try:
-            with open(os.path.join(base, name, "SKILL.md"), encoding="utf-8") as fh:
-                return skill_body_digest(fh.read())
-        except OSError:
-            continue
-    return None
-
-
-def _reattach_feed(state, _index, line):
-    """Fold one transcript line: each compact boundary clears the attachment; an `invoked_skills` attachment
-    records the skills the client re-attached whole after the latest boundary."""
-    if "compact_boundary" not in line and "invoked_skills" not in line:
-        return
-    try:
-        entry = json.loads(line)
-    except ValueError:
-        return
-    if not isinstance(entry, dict) or entry.get("isSidechain"):
-        return
-    if entry.get("subtype") == "compact_boundary":
-        state.update(count=state["count"] + 1, times=[entry.get("timestamp")], attached=False, whole={})
-        return
-    attachment = entry.get("attachment") or {}
-    if entry.get("type") == "attachment" and attachment.get("type") == "invoked_skills":
-        whole = {}
-        for skill in attachment.get("skills") or []:
-            name = str(skill.get("name") or "").split(":")[-1]
-            content = skill.get("content")
-            if name and isinstance(content, str) and TRUNCATION_NOTICE not in content.rstrip()[-_NOTICE_TAIL_CHARS:]:
-                whole[name] = skill_body_digest(content)
-        state.update(attached=True, whole=whole)
-
-
-def reattached_whole(transcript_path, after_epoch=None):
-    """`{skill: body digest}` for each copy the client re-attached whole after the latest written boundary, or
-    None when no attachment for a boundary stamped after `after_epoch` (the PreCompact clear) is on disk yet.
-    The digest is of `skill_body`, so a caller credits only a copy whose body still matches the file on disk."""
-    import _transcript_scan  # lazy: that module imports this one
-    if not _REATTACH_SCANNER:
-        _REATTACH_SCANNER.append(_transcript_scan.Scanner(
-            "reattached_skills", lambda: {"count": 0, "times": [], "attached": False, "whole": {}},
-            _reattach_feed, sources=(os.path.abspath(__file__),)))
-    state = _transcript_scan.scan(transcript_path, _REATTACH_SCANNER[0])
-    if not state["count"] or not state["attached"]:
-        return None
-    stamp = _epoch(state["times"][-1])
-    if after_epoch is not None and (stamp is None or stamp < after_epoch):
-        return None
-    return dict(state["whole"])
-
-
-def _epoch(stamp):
-    try:
-        return datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
-
-
-def skill_in_context(session_id, name, agent_id="", transcript_path=None, root=None):
-    """True when skill `name` was loaded since the session started or last compacted, in the subagent's own
-    context when `agent_id` is given. With the main thread's `transcript_path`, a skill the client re-attached
-    whole after the latest compaction counts too, but only while that copy's body still matches the skill's
-    `SKILL.md` under `root` (`skill_file_digest`); the attachment is a session-start snapshot,
-    so a whole copy can be stale. The first such read marks every current skill of that attachment. A skill with
-    no `SKILL.md` on disk (bundled or plugin) cannot go stale, so it counts. `root` defaults to
-    `CLAUDE_PROJECT_DIR` (a Git Bash `/c/...` spelling is converted for Windows Python) else the cwd; a root
-    that is no readable directory is an unknown, so no copy counts. An attachment not yet on disk, or an
-    unreadable transcript, counts as not re-attached."""
-    key = "skill_in_context:" + name + _agent_suffix(agent_id)
-    state = read_json_salvage(state_path(session_id))
-    fired = state.get(_COMPACTION_KEY)
-    if isinstance(fired, dict) and fired.get(key):
-        return True
-    if agent_id or not transcript_path:
-        return False
-    try:
-        import _win_path
-        whole = reattached_whole(transcript_path, state.get(_COMPACTED_AT_KEY))
-    except Exception:
-        return False
-    if not whole:
-        return False
-    root = _win_path.native_path(root or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    if not os.path.isdir(root):
-        return False
-    current = [skill for skill, digest in whole.items()
-               if skill_file_digest(skill, root) in (None, digest)]
-    for skill in current:
-        mark_skill_in_context(session_id, skill)
-    return name in current
-
-
-def mark_ladder_slice(session_id, tiers, clear_receipt_failure=False):
-    """Record that `model_registry.py for-role` printed these tiers into this context window; a compaction
-    clears them. Accumulates across runs. `clear_receipt_failure` drops the last failed-delivery note in the
-    same write, so a credit never leaves its session accusing a delivery that succeeded. True when the record
-    was written."""
-    def update(state):
-        have = state.get(LADDER_SLICE_KEY)
-        state[LADDER_SLICE_KEY] = sorted({*(have if isinstance(have, list) else []), *tiers})
-        if clear_receipt_failure:
-            state.pop(LADDER_RECEIPT_FAILURE_KEY, None)
-        return True
-
-    written, _ = update_json_locked(state_path(session_id), update)
-    return bool(written)
-
-
-def ladder_slice_tiers(session_id):
-    """The tiers whose ladder slice is in this context window, else []. Reads only."""
-    have = read_json_salvage(state_path(session_id)).get(LADDER_SLICE_KEY)
-    return sorted(t for t in have if isinstance(t, str)) if isinstance(have, list) else []
-
-
-def normalize_stdout(text):
-    """Stdout as both the producer and the delivered payload spell it: CRLF and lone CR become LF, and trailing
-    whitespace goes, since the client trims a Bash result's final newline before delivering it."""
-    return str(text or "").replace("\r\n", "\n").replace("\r", "\n").rstrip()
-
-
-def stdout_sha256(text):
-    """The digest a `for-role` run stages and the Bash PostToolUse entry compares against delivery."""
-    return hashlib.sha256(normalize_stdout(text).encode("utf-8")).hexdigest()
-
-
-def stage_ladder_receipt(session_id, sha256, tiers, text=""):
-    """Stage the text a `for-role` run is about to deliver, with the tiers it credits. The delivery hook
-    (`model_ladder_gate.mark_loaded`) credits them when the run's own stdout appears whole inside the delivered
-    output, so one command joined with `&&` cannot void a run that reached context; the text is what containment
-    compares. Receipts are keyed by sha256: a later run stages beside an earlier one, and the earlier run's
-    delivery still credits it. The newest LADDER_RECEIPT_CAP are kept. True when staged."""
-    if not session_id or not sha256:
-        return False
-
-    def update(state):
-        receipts = _ladder_receipts(state)
-        receipts[sha256] = {"sha256": sha256, "text": normalize_stdout(text),
-                            "tiers": sorted({t for t in tiers if isinstance(t, str)}),
-                            "at": time.time()}
-        for stale in _newest_first(receipts)[LADDER_RECEIPT_CAP:]:
-            receipts.pop(stale)
-        state[LADDER_RECEIPT_KEY] = receipts
-        return True
-
-    written, _ = update_json_locked(state_path(session_id), update)
-    return bool(written)
-
-
-def consume_ladder_receipt(session_id, delivered=""):
-    """Pop the staged receipt that `delivered` carries: the newest whose run text appears whole in it, else the
-    newest staged one, so a delivery that carries none still records why it failed. None when none is staged.
-    A delivery attempt consumes its receipt whether it credits or not: a second payload cannot retry the first
-    one's stage."""
-    delivered_text = normalize_stdout(delivered)
-
-    def update(state):
-        receipts = _ladder_receipts(state)
-        ordered = _newest_first(receipts)
-        match = next((key for key in ordered
-                      if normalize_stdout(receipts[key].get("text")) and
-                      normalize_stdout(receipts[key].get("text")) in delivered_text),
-                     ordered[0] if ordered else None)
-        if match is None:
-            state.pop(LADDER_RECEIPT_KEY, None)
-            return None
-        receipt = receipts.pop(match)
-        if receipts:
-            state[LADDER_RECEIPT_KEY] = receipts
-        else:
-            state.pop(LADDER_RECEIPT_KEY, None)
-        return receipt
-
-    written, receipt = update_json_locked(state_path(session_id), update)
-    return receipt if written and isinstance(receipt, dict) else None
-
-
-def _ladder_receipts(state):
-    """The staged receipts keyed by sha256. A receipt written before the keyed form was one dict that carried
-    its own sha256."""
-    raw = state.get(LADDER_RECEIPT_KEY)
-    if not isinstance(raw, dict):
-        return {}
-    if isinstance(raw.get("sha256"), str):
-        return {raw["sha256"]: raw}
-    return {key: value for key, value in raw.items() if isinstance(value, dict)}
-
-
-def _newest_first(receipts):
-    return sorted(receipts, key=lambda key: receipts[key].get("at") or 0, reverse=True)
-
-
-def fail_ladder_receipt(session_id, reason):
-    """Record why a staged `for-role` delivery earned no credit, for the next deny to name. Cleared by a
-    credited delivery and by a compaction. True when recorded."""
-    def update(state):
-        state[LADDER_RECEIPT_FAILURE_KEY] = {"reason": str(reason), "at": time.time()}
-        return True
-
-    written, _ = update_json_locked(state_path(session_id), update)
-    return bool(written)
-
-
-def ladder_receipt_failure(session_id):
-    """The recorded reason the last `for-role` delivery earned no credit, else None. Reads only."""
-    entry = read_json_salvage(state_path(session_id)).get(LADDER_RECEIPT_FAILURE_KEY)
-    return entry.get("reason") if isinstance(entry, dict) else None
-
-
-def brief_table_seen(session_id, tier, fits):
-    """The fit snapshot `{row id: fit verdict}` stored for `tier` when its full table printed in this context
-    window, or None when none is stored: the caller then prints the full table, and `fits` is stored with it.
-    A compaction clears the record, so the table prints again. One locked read-and-set, fail-open to None."""
-    def update(state):
-        tables = state.get(BRIEF_TABLE_KEY)
-        if not isinstance(tables, dict):
-            tables = {}
-        earlier = tables.get(tier)
-        if not isinstance(earlier, dict):
-            tables[tier] = fits
-            state[BRIEF_TABLE_KEY] = tables
-            return None
-        return earlier
-
-    written, earlier = update_json_locked(state_path(session_id), update)
-    return earlier if written else None
 
 
 def fire_once_since_compaction(session_id, key):
@@ -695,10 +308,8 @@ def clear_compaction_keys(session_id):
 
     def update(state):
         fired = state.get(_COMPACTION_KEY)
-        changed = any(key in state for key in _COMPACTION_CLEAR_KEYS if key != _COMPACTION_KEY)
-        changed = changed or (isinstance(fired, dict) and bool(fired))
-        for key in _COMPACTION_CLEAR_KEYS:
-            state.pop(key, None)
+        changed = isinstance(fired, dict) and bool(fired)
+        state.pop(_COMPACTION_KEY, None)
         state[_COMPACTED_AT_KEY] = time.time()
         return changed
 

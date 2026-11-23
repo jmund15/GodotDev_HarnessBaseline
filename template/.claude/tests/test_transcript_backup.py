@@ -6,7 +6,7 @@ no agent field at all (measured 2026-09-28: subagent aa11f55a's compaction logge
 transcript_path, cwd, prompt_id, hook_event_name and trigger), so an `auto` trigger beside a subagent
 transcript written after the parent's (`_hook_state.is_subagent_payload` owns the full test) is the subagent signal; `agent_id`
 is still honored when present. Session 8d42ad95 wrote five parent-transcript backups for compactions the parent
-never ran, and each one popped the parent's `model_ladder_ready`. Session f3a34186 lost the opposite way: its
+never ran, and each one popped the parent's compaction-scoped keys. Session f3a34186 lost the opposite way: its
 500k auto-compact window put the parent's compaction at 46% of the status-line window, under the old 50% gauge
 floor, so the parent's five auto compactions wrote no backup. Each case runs the real hook as a process against
 a planted state dir, project dir and subagent transcript; an exit outside {0} or a traceback is a CRASH, never
@@ -47,8 +47,7 @@ def run(tmp, payload, state_dir, env_extra=None):
 def plant_state(state_dir):
     path = _hook_state.state_path(SID)
     Path(state_dir).mkdir(parents=True, exist_ok=True)
-    state = {"model_ladder_ready": True, "nudge_targets_seen": ["a"],
-             "fired_since_compaction": {"k": True}, "fired_once": {"o": True}}
+    state = {"fired_since_compaction": {"k": True}, "fired_once": {"o": True}}
     Path(state_dir, os.path.basename(path)).write_text(json.dumps(state), encoding="utf-8")
 
 
@@ -126,7 +125,6 @@ def main():
         out, crashed, state, files, log_exists, manifest = scenario({}, base)
         cases.append(("parent: no crash", not crashed))
         cases.append(("parent: writes a raw backup", any(f.endswith(".jsonl") for f in files)))
-        cases.append(("parent: clears model_ladder_ready", "model_ladder_ready" not in state))
         cases.append(("parent: re-arms fire_once_since_compaction", "fired_since_compaction" not in state))
         cases.append(("parent: keeps the once-per-session gate", state.get("fired_once") == {"o": True}))
         cases.append(("parent: logs the event", log_exists))
@@ -140,22 +138,20 @@ def main():
         out, crashed, state, files, log_exists, manifest = scenario({"agent_id": "a1b2c3d4e5f6"}, base)
         cases.append(("subagent: no crash", not crashed))
         cases.append(("subagent: writes no backup", files == []))
-        cases.append(("subagent: leaves model_ladder_ready set", state.get("model_ladder_ready") is True))
         cases.append(("subagent: leaves compaction-scoped keys alone",
-                      state.get("fired_since_compaction") == {"k": True}
-                      and state.get("nudge_targets_seen") == ["a"]))
+                      state.get("fired_since_compaction") == {"k": True}))
         cases.append(("subagent: writes no parent log or manifest", not log_exists and not manifest))
         cases.append(("subagent: emits no parent reminder", "POST-CONTINUATION" not in out))
 
         def parent_ran(files, state):
-            return any(f.endswith(".jsonl") for f in files) and "model_ladder_ready" not in state
+            return any(f.endswith(".jsonl") for f in files) and "fired_since_compaction" not in state
 
         # A Workflow agent at its window compacts while the parent sits at 150k.
         sub = dict(used=150_000, subagent=469_000)
         out, crashed, state, files, log_exists, manifest = scenario({}, base, **sub)
         cases.append(("auto beside a live subagent over the parent: no crash", not crashed))
         cases.append(("auto beside a live subagent over the parent: no backup, ladder kept",
-                      files == [] and state.get("model_ladder_ready") is True))
+                      files == [] and state.get("fired_since_compaction") == {"k": True}))
         cases.append(("auto beside a live subagent over the parent: no parent log or reminder",
                       not log_exists and not manifest and "POST-CONTINUATION" not in out))
         # Session f3a34186 23:08: the parent idled after its own compaction (last call 434k, boundary
@@ -163,12 +159,12 @@ def main():
         out, crashed, state, files, _, _ = scenario({}, base, used=434_000, post=41_000, tail_chars=360_000,
                                                     subagent=469_000)
         cases.append(("a parent idle after its own compaction reads from the boundary: the subagent's compaction",
-                      not crashed and files == [] and state.get("model_ladder_ready") is True))
+                      not crashed and files == [] and state.get("fired_since_compaction") == {"k": True}))
         # Session f3a34186 01:02: a Workflow agent on a smaller window compacted at 238k while the parent, at
         # 383k, had written nothing for 130 s.
         out, crashed, state, files, _, _ = scenario({}, base, used=383_000, subagent=230_000, parent_age=130)
         cases.append(("a smaller live subagent beside a parent quiet for 130 s: the subagent's compaction",
-                      not crashed and files == [] and state.get("model_ladder_ready") is True))
+                      not crashed and files == [] and state.get("fired_since_compaction") == {"k": True}))
         for label, extra, kwargs in (
                 ("auto, the parent wrote after a larger live subagent", {},
                  dict(used=150_000, subagent=469_000, subagent_age=5)),
@@ -186,14 +182,14 @@ def main():
                 ("auto, unreadable transcript", {"transcript_path": "Z:/nowhere/none.jsonl"}, sub)):
             out, crashed, state, files, _, _ = scenario(extra, base, **kwargs)
             ran = parent_ran(files, state) if "transcript_path" not in extra else (
-                "model_ladder_ready" not in state)
+                "fired_since_compaction" not in state)
             cases.append((f"{label} counts as the parent", not crashed and ran))
 
         for label, empty in (("empty", ""), ("whitespace", "  "), ("null", None)):
             out, crashed, state, files, _, _ = scenario({"agent_id": empty}, base)
             cases.append((f"{label} agent_id counts as a parent",
                           not crashed and any(f.endswith(".jsonl") for f in files)
-                          and "model_ladder_ready" not in state))
+                          and "fired_since_compaction" not in state))
 
     table_dir = tempfile.mkdtemp()
     transcript = Path(table_dir, f"{SID}.jsonl")
@@ -224,6 +220,11 @@ def main():
         print(("PASS  " if ok else "FAIL  ") + name)
     print(f"\n{len(cases) - len(failed)}/{len(cases)} passed")
     return 1 if failed else 0
+
+
+
+def test_proof():
+    assert main() in (None, 0)
 
 
 if __name__ == "__main__":

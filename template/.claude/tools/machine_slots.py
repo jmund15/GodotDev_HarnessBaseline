@@ -365,13 +365,6 @@ def parallel_budget(wanted):
         release_all(base)
 
 
-def proof_environment(env):
-    """Admission for direct Python/Node proofs launched by a remote-work fan-out."""
-    env = dict(env)
-    env.setdefault('HARNESS_MACHINE_ROOT', machine_root())
-    return env
-
-
 def main():
     from cli_usage import usage
     parser = argparse.ArgumentParser(description=usage(__doc__), formatter_class=argparse.RawDescriptionHelpFormatter)

@@ -16,8 +16,7 @@ Every invocation that commits the index (`--continue` included) is judged, not o
                                             the record `tools/index_commit.py stage` writes beside a private
                                             index, and the HEAD it was staged over (None when unreadable)
 
-`hooks/git_guardrails.py` and `hooks/baseline_classification_guard.py` both read this, so the two
-guards cannot disagree about what a merge authored.
+`hooks/dangerous_shell_guard.py` reads this for what a merge authored.
 """
 import json
 import os

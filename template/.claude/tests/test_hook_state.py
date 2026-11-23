@@ -267,21 +267,6 @@ def audit(s, record):
     check("salvage reads what atomic write produced",
           read_json_salvage(rt) == {"skills_loaded": ["testing"], "n": 4})
 
-    # --- the harness code set: one predicate, which the proof runner imports -------
-    is_code = getattr(_hook_state, "is_harness_code", None)
-    check("is_harness_code takes scripts and settings files, not docs, whatever the suffix case",
-          is_code is not None and is_code(".claude/tools/a.py") and is_code(".claude/tools/B.PY")
-          and is_code(".claude/settings.base.json") and not is_code(".claude/commands/a.md"))
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
-    import harness_tests  # noqa: E402
-    check("the proof runner's _is_code is _hook_state.is_harness_code",
-          is_code is not None and harness_tests._is_code is is_code)
-    check("a .cjs launcher under tools/ is harness code (the real input: godot_mcp_launch.cjs)",
-          is_code is not None and is_code(".claude/tools/godot_mcp_launch.cjs")
-          and is_code(".claude/tools/Godot_MCP_Launch.CJS") and is_code(".claude/tools/planted.cjs"))
-    check("non-code suffixes stay non-code: a .json fixture under tests, a plans .md",
-          is_code is not None and not is_code(".claude/tests/fixture.json") and not is_code(".claude/plans/x.md"))
-
     # --- fire_once failure posture: default fires; on_failure=None lets a deny-capable caller pass ---
     _real_update = _hook_state.update_json_locked
     _hook_state.update_json_locked = lambda path, updater: (False, None)
@@ -588,11 +573,11 @@ def audit(s, record):
         "        seen.append(os.path.normcase(os.path.abspath(os.fsdecode(args[0]))))\n"
         "sys.addaudithook(hook)\n"
         "sys.path.insert(0, %r)\n"
-        "import _hook_state, composed_output_guard\n"
+        "import _hook_state\n"
         "print(repr(seen))\n" % os.path.abspath(_hooks)
     )
     _run = subprocess.run([sys.executable, "-c", _probe], capture_output=True, text=True)
-    check("importing _hook_state and composed_output_guard lists no `.claude` directory",
+    check("importing _hook_state lists no `.claude` directory",
           _run.returncode == 0 and _claude not in eval(_run.stdout or "[None]"), (_run.stdout + _run.stderr)[-300:])
 
     # Concurrent JSONL appends: Windows' CRT emulates O_APPEND with a seek then a write, so two hooks appending
@@ -620,19 +605,6 @@ def audit(s, record):
                 _torn += 1
     check("eight concurrent appenders leave every row whole", _rows == 960 and _torn == 0,
           "rows %d of 960, torn %d" % (_rows, _torn))
-
-    # The append takes the file's lock itself, which is not re-entrant: a caller holding that lock around it waits
-    # out the lock timeout and drops its rows. Drive the real caller that once did.
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
-    import review_ledger  # noqa: E402
-    from pathlib import Path  # noqa: E402
-
-    _ledger = Path(tempfile.mkdtemp()) / "review_ledger.jsonl"
-    _started = time.time()
-    _landed = review_ledger._append_rows(_ledger, [{"id": "r1"}])
-    check("the review ledger's append lands its row without waiting out a lock",
-          _landed is True and time.time() - _started < 1.0 and _ledger.read_text(encoding="utf-8").count("\n") == 1,
-          "returned %r after %.1fs" % (_landed, time.time() - _started))
 
     print("\n%d/%d checks pass" % (ran - len(failures), ran))
     for f in failures:

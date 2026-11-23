@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-runnable proof for hooks/bash_length_guard.py, driven through the real dispatcher.
+"""Re-runnable proof for hooks/bash_length_guard.py, driven through the real floor entry.
 
 Deny arm: a Bash command longer than the tool's 8191-character cut, heredoc or not, quoted or not; the deny
 names the write-to-file route and its rule's home.
@@ -16,7 +16,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS_DIR = os.path.normpath(os.path.join(HERE, "..", "hooks"))
 REPO = os.path.normpath(os.path.join(HERE, "..", ".."))
-DISPATCH = os.path.join(HOOKS_DIR, "pre_bash_dispatch.py")
+DISPATCH = os.path.join(HOOKS_DIR, "pre_bash.py")
 LIMIT = 8191
 
 BT = "`"
@@ -97,6 +97,11 @@ def main():
         print("FAIL " + line)
     print("%d/%d cases passed" % (len(CASES) + 2 - len(failures), len(CASES) + 2))
     return 1 if failures else 0
+
+
+
+def test_proof():
+    assert main() in (None, 0)
 
 
 if __name__ == "__main__":

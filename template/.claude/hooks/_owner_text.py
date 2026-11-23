@@ -6,35 +6,31 @@ object, and None for anything else. The row is a superset: it drops nothing a co
 policy (which rows count) stays with the consumer. The owner-message record must stay complete.
 
 Projection table (shape x consumer). `test_owner_text.py` parses this table and runs one fixture
-through all four consumers, so a projection change that is not written here fails the proof.
+through all three consumers, so a projection change that is not written here fails the proof.
 
-| shape | harness_growth_guard | digest | provider_guard | owner_turns |
-|---|---|---|---|---|
-| prompt | turn | text | text | text |
-| queued_prompt (mid-turn) | no turn | text | text | text |
-| meta | no turn | drop | drop | drop |
-| meta ARGUMENTS | no turn | label goal | drop | drop |
-| sidechain | no turn | drop | drop | drop |
-| injection-prefixed | turn | drop | text | text |
-| envelope-only | no turn | drop | drop | drop |
-| agent-message | no turn | drop | drop | drop |
-| cross-session message | no turn | drop | drop | drop |
-| command with args | turn | name args | drop | args |
-| empty-args command | no turn | name args | drop | drop |
-| answer via toolUseResult | no turn | answer | drop | label |
-| answer via tool_result text | no turn | answer | drop | drop |
-| tool_result with text blocks | no turn | text | drop | drop |
-| compact summary | no turn | drop | drop | drop |
+| shape | digest | quote | owner_turns |
+|---|---|---|---|
+| prompt | text | text | text |
+| queued_prompt (mid-turn) | text | text | text |
+| meta | drop | drop | drop |
+| meta ARGUMENTS | label goal | drop | drop |
+| sidechain | drop | drop | drop |
+| injection-prefixed | drop | text | text |
+| envelope-only | drop | drop | drop |
+| agent-message | drop | drop | drop |
+| cross-session message | drop | drop | drop |
+| command with args | name args | drop | args |
+| empty-args command | name args | drop | drop |
+| answer via toolUseResult | answer | drop | label |
+| answer via tool_result text | answer | drop | drop |
+| tool_result with text blocks | text | drop | drop |
+| compact summary | drop | drop | drop |
 
 Cells:
-- harness_growth_guard (`_starts_turn`): `turn` means the row can start a turn, keyed on `uuid`, so two
-  identical prompt texts are two turns.
-- provider_guard (`owner_quote_text`): `text` is the row text a `hooks/workflow_provider_guard.py`
-  `owner:` quote is verified against -- the owner speaking. `drop` is every other row: harness
+- quote (`owner_quote_text`): `text` is the row text an owner-words quote is verified against -- the owner speaking. `drop` is every other row: harness
   plumbing (meta, command, envelope, injection *into* the transcript), a peer's cross-session or
-  agent message, and tool results. A quote found only in a dropped row does not lift a deny, so a
-  peer quoting the owner's words cannot name the transport.
-- owner_turns (`owner_turn_text`): the record that binds a recorded owner quote to its turn's uuid. `text` is the provider_guard projection; `label` is an
+  agent message, and tool results. A quote found only in a dropped row is not the owner speaking.
+- owner_turns (`owner_turn_text`): the record that binds a recorded owner quote to its turn's uuid. `text` is the quote projection; `label` is an
   answer's picked labels, one per line (`owner_answer_text`); `args` is the arguments the owner typed
   after a slash command (`owner_command_text`). The `ARGUMENTS:` meta companion of a typed command
   repeats the same words and a model's `Skill` call leaves its own meta row, so both stay `drop`.
@@ -46,8 +42,7 @@ Cells:
   earlier AskUserQuestion call. The bounded builder (`full_evidence=False`) also drops empty-args
   commands, rows under 10 characters and any row opening with a tag.
 
-D6 changed these cells: harness_growth_guard's sidechain, envelope-only, agent-message and
-empty-args command rows (turn -> no turn) and injection-prefixed rows (no turn -> turn); the digest's
+D6 changed these cells: the digest's
 agent-message rows (text -> drop). D6 also changed two digest renderings on purpose: a command row
 that opens with `<command-message>` before `<command-name>`, and a command row with leading
 whitespace, now render as `name args` instead of raw tag text (so the bounded builder keeps a
