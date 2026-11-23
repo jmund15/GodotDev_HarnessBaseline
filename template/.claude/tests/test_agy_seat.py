@@ -13,7 +13,10 @@ import copy
 import importlib.util
 import json
 import os
+import subprocess
 import sys
+
+import pytest
 import tempfile
 import textwrap
 import time
@@ -318,7 +321,8 @@ def stub_run(seat, fixture, linger):
         fh.write(STUB)
     stream = os.path.join(TMP, fixture + ".out")
     start = time.time()
-    rc, stopped = seat.run(stream, [sys.executable, script, os.path.join(FIX, fixture), str(linger)])
+    rc, stopped = seat.run(stream, [sys.executable, script, os.path.join(FIX, fixture), str(linger)],
+                           stdin=subprocess.DEVNULL)
     return rc, stopped, time.time() - start, stream
 
 
@@ -363,15 +367,26 @@ def the_cli_prints_settings_and_the_envelope():
     return ok, (s.stdout + s.stderr + p.stdout + p.stderr)[-400:]
 
 
-failed = []
-for name, fn in CASES:
+def _run(fn):
     try:
         got = fn()
-        ok, detail = got if isinstance(got, tuple) else (bool(got), "")
+        return got if isinstance(got, tuple) else (bool(got), "")
     except Exception as exc:  # a crash is a failure, never a pass
-        ok, detail = False, "%s: %s" % (type(exc).__name__, exc)
-    print(("PASS " if ok else "FAIL ") + name + ("" if ok else "   [%s]" % str(detail)[:400]))
-    if not ok:
-        failed.append(name)
-print("%d/%d passed" % (len(CASES) - len(failed), len(CASES)))
-sys.exit(1 if failed else 0)
+        return False, "%s: %s" % (type(exc).__name__, exc)
+
+
+@pytest.mark.parametrize("name,fn", CASES, ids=[name for name, _ in CASES])
+def test_case(name, fn):
+    ok, detail = _run(fn)
+    assert ok, str(detail)[:400]
+
+
+if __name__ == "__main__":
+    failed = []
+    for name, fn in CASES:
+        ok, detail = _run(fn)
+        print(("PASS " if ok else "FAIL ") + name + ("" if ok else "   [%s]" % str(detail)[:400]))
+        if not ok:
+            failed.append(name)
+    print("%d/%d passed" % (len(CASES) - len(failed), len(CASES)))
+    sys.exit(1 if failed else 0)
