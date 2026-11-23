@@ -1325,7 +1325,7 @@ def base_verdict(cwd, git_env):
         return None
     reason = ("HEAD is %s but the index was read from base %s" % (loss.head[:9], loss.base[:9])
               if loss.base and loss.head is not None else "its stage record %s cannot be read" % loss.record)
-    return ("BLOCKED commit (CLAUDE.md §Core Principles: preserve peer work) — %s, so publishing this "
+    return ("BLOCKED commit (CLAUDE.core.md §Core Principles: preserve peer work) — %s, so publishing this "
             "private index would undo every commit since its base. Rerun `python3 "
             ".claude/tools/index_commit.py stage` (index_commit) with the same paths, then commit the "
             "new index." % reason)
@@ -1373,7 +1373,7 @@ def _revert_message(stale):
     if not stale:
         return None
     shown = "\n  ".join(stale[:10]) + ("\n  ... %d more" % (len(stale) - 10) if len(stale) > 10 else "")
-    return ("BLOCKED commit (CLAUDE.md §Core Principles: preserve peer work) — it would revert a peer's commit "
+    return ("BLOCKED commit (CLAUDE.core.md §Core Principles: preserve peer work) — it would revert a peer's commit "
             "to %d file(s):\n  %s\n"
             "The index was built from an older HEAD. Rebuild it from the current HEAD, or commit "
             "your files with a pathspec (`git commit -F <msg> -- <paths>`)." % (len(stale), shown))
@@ -1394,10 +1394,16 @@ def commit_msg_check(message_path, environ=None, cwd=None):
     git_env = {k: v for k, v in environ.items() if k.startswith("GIT_")}
     if index:
         git_env["GIT_INDEX_FILE"] = os.path.abspath(os.path.join(cwd, index))
-    git_dir = run_git(["rev-parse", "--git-dir"], cwd, git_env)
-    if git_dir and os.path.exists(os.path.join(cwd, git_dir.strip(), "MERGE_HEAD")):
+    if _merge_in_progress(cwd, git_env):
         return None
     return commit_verdict([], cwd, git_env, own_trailer=message_trailer(message_path), hooked=True)
+
+
+def _merge_in_progress(cwd, git_env):
+    """True when the repository has a `MERGE_HEAD`: the commit that closes the merge, which the commit-msg entry
+    does not re-check."""
+    git_dir = run_git(["rev-parse", "--git-dir"], cwd, git_env)
+    return bool(git_dir) and os.path.exists(os.path.join(cwd, git_dir.strip(), "MERGE_HEAD"))
 
 
 def _skips_hooks(rest):
@@ -1409,9 +1415,12 @@ def _skips_hooks(rest):
 def _unhooked_publish(args, cwd, git_env, command):
     """True when the commit-time entry cannot re-check what this publication commits (D-IW, owner 2026-11-23): the
     call skips the hooks, the command overrides git config, the repository's `core.hooksPath` is not
-    `.claude/githooks` with its `commit-msg` present, or the publication amends (the hook re-runs the stage-record
-    and peer-revert checks, not the amend check, which read HEAD before this command moved it)."""
+    `.claude/githooks` with its `commit-msg` present, the publication amends (the hook re-runs the stage-record
+    and peer-revert checks, not the amend check, which read HEAD before this command moved it), or it closes a merge
+    (`merge --continue`, or a commit while `MERGE_HEAD` exists: `commit_msg_check` returns early for a merge)."""
     if _skips_hooks(args[1:]) or (args[0] == "commit" and parse_commit_args(args[1:])[1]):
+        return True
+    if args[0] == "merge" or (args[0] == "commit" and _merge_in_progress(cwd, git_env)):
         return True
     if re.search(r"hookspath|GIT_CONFIG_(?:PARAMETERS|COUNT)", command, re.I):
         return True

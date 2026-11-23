@@ -107,10 +107,28 @@ def hooked(tmp_path_factory):
     return repo
 
 
-@pytest.mark.parametrize("command", [c for c in W_DENY if "merge --continue" not in c] + [
-    "git add a.txt && git merge --continue"])
+@pytest.mark.parametrize("command", [c for c in W_DENY if "merge --continue" not in c])
 def test_an_index_write_before_a_hooked_commit_allows(hooked, command):
     assert bash(command, hooked, session_id="s1").kind == "allow"
+
+
+@pytest.fixture
+def merging(tmp_path):
+    """`hooked`'s shape with a merge in progress: `commit-msg` is installed, but its check returns early while
+    `MERGE_HEAD` exists, so it re-checks nothing for the commit that closes the merge."""
+    repo = make_repo(tmp_path)
+    write(repo, "a.txt", "a\n")
+    write(repo, ".claude/githooks/commit-msg", "#!/bin/sh\nexit 0\n")
+    g(repo, "config", "core.hooksPath", ".claude/githooks")
+    write(repo, ".git/MERGE_HEAD", g(repo, "rev-parse", "HEAD"))
+    return repo
+
+
+@pytest.mark.parametrize("command", ["git add a.txt && git merge --continue", "git add a.txt && git commit -q -m x"])
+def test_an_index_write_before_the_commit_that_closes_a_merge_denies_even_when_hooked(merging, command):
+    """D-IW's reason is "narrowed to what git's commit-msg hook cannot re-check", and the hook skips a merge."""
+    got = bash(command, merging, session_id="s1")
+    assert got.denied and all(n in got.reason for n in NEXT_STEP), got.reason
 
 
 @pytest.mark.parametrize("command", [
