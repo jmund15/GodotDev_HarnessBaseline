@@ -267,6 +267,15 @@ def a_read_outside_the_root_is_out_of_profile():
 
 
 @case
+def a_path_is_judged_in_the_form_it_was_written_on_any_host():
+    posix = "/home/u/proj"
+    inside = parse(load(), with_tool("view_file", posix + "/README.md"), roots=(posix,))
+    nested = parse(load(), with_tool("view_file", posix + "/.claude/worktrees/o/n.md"), roots=(posix,))
+    mixed = parse(load(), with_tool("view_file", posix + "/README.md"), roots=(ROOT,))
+    return (not inside["is_error"] and nested["is_error"] and mixed["is_error"]),         f"{inside['outsideProfile']} {nested['outsideProfile']} {mixed['outsideProfile']}"
+
+
+@case
 def a_read_in_a_sibling_worktree_is_out_of_profile():
     path = MAIN + r"\.claude\worktrees\other\notes.md"
     inside = parse(load(), with_tool("view_file", MAIN + r"\README.md"), roots=(MAIN,))

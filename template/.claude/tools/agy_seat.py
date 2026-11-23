@@ -17,7 +17,9 @@ spawns the installed binary unchanged and reads only its stdout; nothing here to
 """
 import argparse
 import json
+import ntpath
 import os
+import posixpath
 import subprocess
 import sys
 import time
@@ -177,17 +179,30 @@ def run(stream_path, argv, stdin=None, servers=READ_ONLY_SERVERS):
     return (STOPPED_RC if stopped else rc), stopped
 
 
-def _norm(path):
-    return os.path.normcase(os.path.realpath(path))
+def _flavor(path):
+    """The path module a transcript path was written in: Windows form (drive letter, UNC or a backslash) is judged
+    with ntpath, anything else with posixpath, whatever host this runs on (agy writes the form of its own OS)."""
+    return ntpath if (len(path) > 1 and path[1] == ":") or "\\" in path else posixpath
+
+
+def _norm(path, flavor):
+    """Normalised `path` in `flavor`; symlinks resolve only when the form is the host's own."""
+    if flavor is os.path:
+        return os.path.normcase(os.path.realpath(path))
+    return flavor.normcase(flavor.normpath(path))
 
 
 def _inside(path, roots):
-    """True when `path` lies under a root and not inside a nested worktree under it."""
-    target = _norm(path)
+    """True when `path` lies under a root and not inside a nested worktree under it. A root and a path in different
+    forms are never inside one another."""
+    flavor = _flavor(path)
+    target = _norm(path, flavor)
     for root in roots:
-        base = _norm(root)
-        if target == base or target.startswith(base.rstrip(os.sep) + os.sep):
-            nested = os.path.join(base, ".claude", "worktrees") + os.sep
+        if _flavor(root) is not flavor:
+            continue
+        base = _norm(root, flavor)
+        if target == base or target.startswith(base.rstrip(flavor.sep) + flavor.sep):
+            nested = flavor.join(base, ".claude", "worktrees") + flavor.sep
             if not target.startswith(nested):
                 return True
     return False
@@ -196,7 +211,8 @@ def _inside(path, roots):
 def _own_spill(path, conversation):
     """True when `path` lies in this run's own `brain/<conversation>/.system_generated` dir, where agy spills a
     large tool output and reads it back. Another conversation's spill stays outside."""
-    parts = [p.lower() for p in os.path.normpath(path).split(os.sep)]
+    flavor = _flavor(path)
+    parts = [p.lower() for p in flavor.normpath(path).split(flavor.sep)]
     conv = (conversation or "").lower()
     return bool(conv) and any(parts[i:i + 3] == ["brain", conv, ".system_generated"] for i in range(len(parts) - 2))
 
