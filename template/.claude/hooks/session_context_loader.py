@@ -29,7 +29,7 @@ import subprocess
 import tempfile
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -307,9 +307,9 @@ def handle_hoarders(rows, floor: int = HANDLE_HOARD_FLOOR) -> str:
 
 
 def sidecar_health(root: Path) -> dict[str, str]:
-    """One line per seat in `seats.json` that is not ready: its adapter script or its login config dir is missing.
-    Static, so a session start runs no CLI; the seat launcher refuses the same gaps at launch. {} when the table
-    names no seat or every seat is ready."""
+    """One line per seat in `seats.json` whose adapter script is missing. `launch_check.seat_rows` already drops a
+    seat whose login dir is absent here. Static, so a session start runs no CLI; the seat launcher refuses the same
+    gaps at launch. {} when the table names no seat or every seat is ready."""
     claude = root / ".claude"
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
@@ -321,8 +321,6 @@ def sidecar_health(root: Path) -> dict[str, str]:
     for name, row in rows.items():
         if not (claude / row["adapter"]).is_file():
             problems["seat-" + name] = f"UNAVAILABLE ({row['adapter']} not present)"
-        elif row.get("configDir") and not os.path.isdir(os.path.expanduser(row["configDir"])):
-            problems["seat-" + name] = f"UNAVAILABLE (login dir {row['configDir']} not present)"
     return problems
 
 
@@ -344,6 +342,19 @@ def skill_listing_banner(root: Path, input_data: dict) -> str:
         return f"skill-listing: UNKNOWN ({type(error).__name__}: {error})"
 
 
+
+
+def session_lines(root: Path, session_id) -> list[str]:
+    """The session id `/close` and `/commit_push` cite, and the state file `.claude/scratch/active_state_<id>` points
+    at (written by `compact_directive_anchor`); no pointer, no state-file line."""
+    if not isinstance(session_id, str) or not re.fullmatch(r"[\w-]+", session_id):
+        return []
+    lines = [f"Session id: {session_id}"]
+    try:
+        rel = (root / ".claude" / "scratch" / ("active_state_" + session_id)).read_text(encoding="utf-8").strip()
+    except OSError:
+        return lines
+    return lines + [f"State file: {rel}"] if rel else lines
 
 
 def locations_line(root: Path) -> str:
@@ -376,16 +387,15 @@ def locations_line_from(roots: list[str]) -> str:
 
 
 _HARNESS_FIX_SUBJECT = re.compile(r"^fix(\([^)]*\))?!?:")
-_HARNESS_ZONE = timezone(timedelta(hours=-6))
 
 
 def harness_fact_line(root: Path, now: datetime | None = None) -> str:
     """One fact line: harness-only fix commits and the harness-only share of `origin/main` over the last 7
-    committer days, beside the Sep-Oct baseline. A harness-only commit is a non-merge, nonempty commit whose every
+    committer days. A harness-only commit is a non-merge, nonempty commit whose every
     changed path starts `.claude/`. It prints no threshold and no recommendation. The line is cached for the
     calendar day under `.claude/.cache/`; an unreadable `origin/main` prints nothing and caches nothing."""
     try:
-        today = (now or datetime.now(_HARNESS_ZONE)).astimezone(_HARNESS_ZONE).date()
+        today = (now or datetime.now()).astimezone().date()
         cache = root / ".claude" / ".cache" / "harness_fact.json"
         try:
             held = json.loads(cache.read_text(encoding="utf-8"))
@@ -393,7 +403,7 @@ def harness_fact_line(root: Path, now: datetime | None = None) -> str:
             held = {}
         if isinstance(held, dict) and held.get("day") == today.isoformat() and isinstance(held.get("line"), str):
             return held["line"]
-        since = (today - timedelta(days=6)).isoformat() + "T00:00:00-06:00"
+        since = (today - timedelta(days=6)).isoformat() + "T00:00:00" + datetime.now().astimezone().strftime("%z")
         proc = run_bounded(["git", "--no-optional-locks", "log", "origin/main", "--no-merges",
                             "--since-as-filter=" + since, "--format=@@%s", "--name-only", "--no-renames"],
                            15, cwd=str(root))
@@ -410,8 +420,7 @@ def harness_fact_line(root: Path, now: datetime | None = None) -> str:
         only = [subject for subject, files in commits if all(p.startswith(".claude/") for p in files)]
         fixes = sum(1 for subject in only if _HARNESS_FIX_SUBJECT.match(subject))
         share = round(100 * len(only) / len(commits)) if commits else 0
-        line = (f"harness: {fixes} harness-only fix commits in the last 7 committer days, {share}% harness-only "
-                "(Sep–Oct baseline 237/wk, 78%)")
+        line = (f"harness: {fixes} harness-only fix commits in the last 7 committer days, {share}% harness-only")
         cache.parent.mkdir(parents=True, exist_ok=True)
         cache.write_text(json.dumps({"day": today.isoformat(), "line": line}), encoding="utf-8")
         return line
@@ -701,6 +710,7 @@ def main():
 
     # --- Build output ---
     output_lines = ["<session-context>"]
+    output_lines.extend(session_lines(root, input_data.get("session_id")))
 
     # A sidecar child executes a brief; the owner's worktree, env and git lines are noise to it.
     owner_view = not _sidecar_delegate()
@@ -715,14 +725,8 @@ def main():
     env_parts = []
     any_fixed = False
     for step, status in (setup_results.items() if owner_view else ()):
-        # A healthy sidecar's probe detail (endpoint, key, credential path) informs no routing choice;
-        # its model and any fact after the detail (a pricing window) do.
-        healthy_sidecar = re.match(r"(\S+): OK \([^)]*\)\s*(.*)$", status) if step.startswith("sidecar-") else None
         if status.startswith("OK"):
             continue
-        elif healthy_sidecar:
-            if healthy_sidecar[2]:
-                env_parts.append(f"{step}: {healthy_sidecar[1]} OK {healthy_sidecar[2]}")
         else:
             env_parts.append(f"{step}: {status}")
             if "FIXED" in status:
@@ -769,25 +773,6 @@ def main():
         output_lines.extend(_bulk(lines))
 
     output_lines.append("</session-context>")
-
-    # Worklog titles mirror — NOT injected. The mirror grows unbounded with the backlog and is
-    # paid by EVERY session, while the question it answers ("does an open item overlap what I am
-    # about to do?") is asked better once, at scope-definition time, by a delegate that reads the
-    # file itself: .claude/workflows/worklog_relevance.js.
-    # Flip to True to restore verbatim injection. A size-tiered domain+count digest was built and
-    # dropped the same day — it was unread middle ground, so it is not kept here as dead code.
-    WORKLOG_INLINE = False
-    worklog_titles_path = root / ".claude" / "worklog-titles.md"
-    if WORKLOG_INLINE and worklog_titles_path.exists():
-        try:
-            worklog_content = worklog_titles_path.read_text(encoding="utf-8").strip()
-            if worklog_content:
-                output_lines.append("")
-                output_lines.append("<worklog-titles>")
-                output_lines.append(worklog_content)
-                output_lines.append("</worklog-titles>")
-        except Exception:
-            pass
 
     for lines in _step_results("nudge_lines", setup_results, cloud):
         output_lines.extend(_bulk(lines))
@@ -838,15 +823,5 @@ def main():
     sys.exit(0)
 
 
-def runsettings_cli(argv: list[str]) -> int:
-    """`--setup-runsettings <checkout>`: the godot step module's status; exit 1 when it generates nothing."""
-    for hook in _step_hooks("runsettings_cli"):
-        return hook(argv)
-    print("SKIPPED (the godot layer is not installed; nothing generates .runsettings)")
-    return 1
-
-
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--setup-runsettings":
-        sys.exit(runsettings_cli(sys.argv[2:]))
     main()
