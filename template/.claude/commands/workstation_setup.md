@@ -156,6 +156,11 @@ its old value; start a new one after a change.
    Ollama's own settings still decide what it holds resident. Report a value other than `1` for
    `OLLAMA_NUM_PARALLEL` (requests per loaded model) or `OLLAMA_MAX_LOADED_MODELS` (default 3× the GPU
    count).
+5a. **llama-server backend.** Each `backends.llama_server` entry in `models.yaml` names an `exe` and
+   a `gguf`; on a `full` box both must exist, and the exe must be a llama.cpp build that loads that
+   gguf (a build too old for the model's architecture fails at load with a missing-tensor error).
+   ai-worker starts the server on demand, so nothing is launched here. A missing exe or gguf on a
+   `full` box is BLOCKED-ON-USER with its path.
 6. **`OLLAMA_KV_CACHE_TYPE` must be `q4_0`** — BLOCKED-ON-USER otherwise. The pinned `qwen-local`
    build degenerates under `q8_0`; higher precision is not safer here (evidence: the `qwen-local`
    block in `models.yaml`). The value takes effect only after an Ollama restart, so confirm it
