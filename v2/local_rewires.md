@@ -14,13 +14,38 @@ Q6 O1: these ride in S9's cutover commit, so one revert undoes them. The shared 
 | `gate_cadence`: keep only `slice`, `merge`, `close` | its `main` row (and any `wide` or `reach*` row) has no reader; `gate_cadence_errors` rejects an unknown key |
 | Delete the unread keys | `bench_liveness`, `content_nouns`, `drive_commands`, `gate_guards`, `high_risk_patterns`, `instruction_scope`, `lens_prefixes`, `lens_preloads`, `memory_domains`, `proof_bindings`, `proof_corpus`, `proof_excluded`, `proof_heavy`, `proof_serial`, `proof_timeouts`, `review_mandates`, `review_scope`, `rigor_defaults`, `sidecar_hook_rows`, `usage_bench_markers` (the reader finds no entry in `adaptation.DEFAULTS`; an unknown key is harmless, so this is tidying, not a fix) |
 | Keep, though no shared file reads them | `teardown_helpers`, `test_quarantine_filter`, `content_scopes`, `sensitivity_tags` (read by PushinPotions-local hooks and scripts, and the `tag` command) |
-| Add the v2 keys it lacks | `hook_members`, `project_name`, `vault_root`, `worklog_domains`, `review.checklists`, `pr_ready.checks`, `overnight_dir`, `dispatch`, `index_prebuild`; their values are the `forked_reconcile.md` rows that name them |
+| Add the v2 keys it lacks | `hook_members`, `project_name`, `vault_root`, `worklog_domains`, `review.checklists`, `pr_ready.checks`, `pr_pipeline` (below), `overnight_dir`, `dispatch`, `index_prebuild`; their values are the `forked_reconcile.md` rows that name them |
 
 ```
 python3 -c "import json,sys; sys.path.insert(0,'tests/floor'); sys.path.insert(0,'hooks'); import conftest; print(json.dumps(conftest.PROJECT_PRE_BASH, indent=2))"
 ```
 
 Run it from `template/.claude/` of the shared repo (the conftest imports `pytest`). The key list under "Delete the unread keys" is `sorted(set(adaptation.json) - set(tools/adaptation.DEFAULTS))`.
+
+### `pr_pipeline` and the local `/pr_pipeline`
+
+The owner ruled one shared batch loop with each project's steps in `adaptation.json`. `commands/pr_pipeline.md` (local, 18.5 KB) is deleted at cutover and the shared `/pr_pipeline` replaces it, so PushinPotions' steps live in this block. Paste it into `adaptation.json`:
+
+```json
+"pr_pipeline": {
+  "discover": ["python3 .claude/tools/pr_vault_archive.py sweep", "/pr_pairing"],
+  "sync": ["/pr_sync {pr}"],
+  "gate": ["pwsh -NoProfile -File {worktree}/.claude/scripts/regression_gate.ps1"],
+  "checklist": ["/pr_test_checklist #{pr}"]
+}
+```
+
+| Entry | From the old `pr_pipeline.md` |
+|---|---|
+| `pr_vault_archive.py sweep` | §1a "Archive what left the open set" |
+| `/pr_pairing` | §1a's Jmodot pairing: `gh pr list --repo jmund15/Jmodot`, `git ls-tree <head> Jmodot`, the standalone-Jmodot-PR rows, and the `order: <A> before <B>` lines (a paired Jmodot PR merges first). S9 writes it as a new PushinPotions-local command from those paragraphs; it does not exist today |
+| `/pr_sync {pr}` | §3b "Long-lived branch sync", and `pr_sync.md` Step 8's gate |
+| `regression_gate.ps1` | §3a and `pr_sync.md` Step 8. Shared §5 runs one gate at a time, which is inside `Get-RuntimeSlotCount`'s limit, so `RuntimeSlots.ps1` has no entry. Old runs passed `-Detach`; the cutover session runs one PR through the foreground form first and, if the Bash timeout cuts it, switches to `-Detach` with `/regression_gate`'s watch |
+| `/pr_test_checklist #{pr}` | §3a; the command lints its own document (`playtest_checklist_lint.py ... --emit-manifest`, `accounted N/N`), so the lint has no entry of its own |
+
+What stays out of the block: the Jmodot gitlink merge order, the vault board (`Claude/TODO/PR Pipeline.md`) and `PR Reviews/<N>.md` rows, the owner waiver (`--no-review`), the `review_fanout.js` lens plumbing, and `dotnet build` of §2. The shared loop reviews through `/review_pr` and `/review`, so the lens plumbing is gone. The board and `PR Reviews` rows are not pipeline steps; PushinPotions' merge archive keeps its own. A project step the first run misses is an entry added here, not prose in the shared command.
+
+After the pull, delete `.claude/commands/pr_pipeline.md` and `.claude/commands/reference/pr_pipeline_conflicts_brief.md` and `pr_pipeline_reports.md` (the shared command carries its own report). `forked_reconcile.md` row 11 states the open `pp_merge_pr` question.
 
 ### `settings.json`
 
@@ -76,11 +101,15 @@ Derivation: the set of 13 is computed, not read from one pull. Compare each blob
 
 ## MaddManager
 
-- **`/review_prs` (batch PR review): pending Q2.** The shared tree no longer carries it (A10 deleted it as MaddManager's); `commands/review.md:14` still points at it and is left alone. The owner picks one:
-  1. keep it MaddManager-local, without the Godot steps (MaddManager keeps its own copy; no shared change);
-  2. a project-neutral shared `/pr_pipeline` that replaces it (a new shared command; the batch loop moves into the shared tree);
-  3. drop batch review (MaddManager deletes its copy; `review.md:14` is repointed).
-  Until the pick, `commands/review_prs.md` is in the MaddManager local list in `delete_list.md`, so the first-pull recipe does not remove it.
+- **`/review_prs` (batch PR review): replaced by the shared `/pr_pipeline`.** Delete `.claude/commands/review_prs.md` and add this key to `adaptation.json`; MaddManager's gate is its `verify:merge` script (`package.json`), and it has no pairing, sync or checklist step of its own:
+
+  ```json
+  "pr_pipeline": {
+    "gate": ["npm --prefix {worktree} run verify:merge"]
+  }
+  ```
+
+  Dropped with `review_prs.md`: its `dotnet build` and `gdunit4` steps (no Godot code in the repo), the 15-agent batching math (the shared loop reviews one PR per `/review_pr`), and the opportunistic rebase between merges (the shared §3 re-syncs after each merge, through `/merge_pr`'s Step 1). Its `drift_scan`, staging and `ui_lock` rules are `gate_cadence` and `ui_lock` matters, not pipeline steps.
 - `commands/roadmap_next.md` stays MaddManager-local (A11).
 - `adaptation.json`: add `pre_bash` with only the protected rows whose commands MaddManager runs (`git grep` each pattern of `PROJECT_PRE_BASH`; the .NET gate rows are PushinPotions' by T7), `scratch_keep`, and drop `usage_reset` and the dead `gate_cadence` rows as above. Its `convex_prod_target_guard` stays a MaddManager-local hook entry.
 - `settings.json`: the same rules as PushinPotions, minus the Godot and C# entries. It has no `.runsettings` caller.

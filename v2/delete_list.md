@@ -118,7 +118,7 @@ commands/review_prs.md
 commands/roadmap_next.md
 ```
 
-`commands/review_prs.md` is pending Q2; `commands/review.md:14` still points at it and is left alone.
+`commands/review_prs.md` is deleted in MaddManager's cutover commit, and the shared `/pr_pipeline` replaces it: `local_rewires.md` §MaddManager gives the `adaptation.json` `pr_pipeline` block that carries its steps. `commands/review.md` already names `/pr_pipeline`. The first-pull recipe does not remove it, so S9 runs `git rm .claude/commands/review_prs.md` itself.
 
 ### Local: each repo, outside auto-memory (10)
 ```
