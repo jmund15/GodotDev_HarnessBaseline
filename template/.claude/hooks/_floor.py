@@ -54,7 +54,9 @@ FLOOR_MEMBERS = (
     ("dangerous_shell_guard", _shell_call, "destructive-command check"),
     ("kill_guard", _stop_call, "stop/kill check"),
 )
-HELPER_NAMES = ()
+# The kept small Bash helpers (V16, §4 Q12), each `check(payload)`: the length cut and the recursive-grep deny, then
+# the backslash repair last, since it rewrites the command every deny above must judge first.
+HELPER_NAMES = ("bash_length_guard", "unbounded_scan_guard", "bash_backslash_fidelity")
 
 
 def _fault(exc):

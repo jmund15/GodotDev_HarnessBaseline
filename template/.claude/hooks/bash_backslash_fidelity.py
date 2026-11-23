@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-r"""pre_bash_dispatch sub-hook: repair Bash client-shell fidelity.
-
-An executing git/gh segment with a ref:path operand whose text before the colon holds a slash
-(`origin/main:f`) gains `MSYS_NO_PATHCONV=1` before that invocation, unless already present. Git Bash
-(measured 2026-11-15) turns only such an operand into a path list (`origin\main;f`); `HEAD:f`, `main:f`
-and `:f` arrive intact and are left alone, because each rewrite costs a turn under auto mode, whose
-classifier gives no verdict on a call a hook changed. Windows drive paths, URLs and quoted mentions are
-excluded. This repair does not depend on the client-version record and says nothing: the rewrite is
-already applied, so a note would change no action.
+r"""Floor helper (`_floor.HELPER_NAMES`): repair the Bash tool's backslash collapse (the backslash class, OF-V17).
 
 Measured on Claude Code 2.1.270, Git Bash, win32 (2026-09-14 and 2026-09-15), inside single quotes,
 double quotes and quoted heredocs alike:
@@ -46,8 +38,8 @@ Scope: the `command` field of Bash only. Monitor's backslash behavior is unmeasu
 check, re-entered on the first Monitor command containing `\\`), and a `claude -p` child showed no
 PreToolUse event on a Workflow call, so repair inside such a child is unverified.
 
-Channel: hookSpecificOutput.updatedInput, permissionDecision: deny, or additionalContext.
-Registered last in pre_bash_dispatch.HOOKS, so an earlier deny wins before this runs.
+Channel: hookSpecificOutput.updatedInput, permissionDecision: deny, or additionalContext, through `check(payload)`.
+Last in `_floor.HELPER_NAMES` (and in v1's pre_bash_dispatch.HOOKS), so every deny wins before this rewrites.
 Proofs: tests/test_bash_backslash_fidelity.py, tests/test_bash_fidelity_probe.py.
 """
 import json
@@ -245,12 +237,11 @@ def _backslash_output(payload):
 
 
 def evaluate(payload):
-    """Repair colon operands before applying the client-specific backslash repair."""
-    from _git_commit import segments, executable_text, join_continuations, _tokens
+    """The hookSpecificOutput dict for one payload, or None: a probe run in any form but the whole command denies,
+    before any rewrite."""
     if not isinstance(payload, dict) or payload.get('tool_name') != 'Bash':
         return None
-    tool_input = payload.get('tool_input') or {}
-    command = tool_input.get('command')
+    command = (payload.get('tool_input') or {}).get('command')
     if not isinstance(command, str):
         return None
     if not is_probe_invocation(command) and executes_probe(command):
@@ -258,35 +249,12 @@ def evaluate(payload):
                 'permissionDecisionReason': '[bash-fidelity] The probe must be the whole command '
                 '(tools/bash_fidelity_probe.py usage); otherwise the hook can corrupt its measurement. '
                 'Run exactly: ' + PROBE_COMMAND}
-    replacements, cursor = [], 0
-    text = executable_text(command)
-    joined = join_continuations(command)
-    for segment in segments(text):
-        at = joined.find(segment, cursor)
-        if at < 0:
-            continue
-        cursor = at + len(segment)
-        words = _tokens(segment)
-        inline = []
-        while words and '=' in words[0] and not words[0].startswith('-'):
-            inline.append(words.pop(0))
-        if not words or words[0].replace('\\', '/').rsplit('/', 1)[-1] not in ('git', 'git.exe', 'gh', 'gh.exe'):
-            continue
-        if any(not word.startswith('-') and '=' not in word
-               and re.match(r'^(?![A-Za-z]:[/\\])[^:\s]*/[^:\s]*:(?!//)[^\s]+$', word) for word in words[1:]):
-            if 'MSYS_NO_PATHCONV=1' not in inline and (text == command or joined.count(segment) == 1):
-                replacements.append(at)
-    prefixed = bool(replacements)
-    if prefixed:
-        for start in sorted(replacements, reverse=True):
-            command = command[:start] + 'MSYS_NO_PATHCONV=1 ' + command[start:]
-        payload = dict(payload, tool_input=dict(tool_input, command=command))
-    out = _backslash_output(payload)
-    if not prefixed:
-        return out
-    out = out or {'hookEventName': 'PreToolUse'}
-    out.setdefault('updatedInput', dict(tool_input, command=command))
-    return out
+    return _backslash_output(payload)
+
+
+def check(payload):
+    out = evaluate(payload)
+    return {"hookSpecificOutput": out} if out else None
 
 
 def main():
@@ -295,9 +263,9 @@ def main():
     except Exception:
         return 0
     try:
-        out = evaluate(payload)
+        out = check(payload)
         if out:
-            sys.stdout.write(json.dumps({"hookSpecificOutput": out}))
+            sys.stdout.write(json.dumps(out))
     except Exception:
         pass
     return 0

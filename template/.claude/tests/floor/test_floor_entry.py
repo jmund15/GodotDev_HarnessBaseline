@@ -203,3 +203,31 @@ def test_a_payload_the_floor_cannot_read_denies(payload):
 def test_monitor_and_other_tools_pass_the_destructive_checks_as_in_v1(plant):
     assert bash("git reset --hard", plant, tool="Monitor").kind == "allow"
     assert decide({"tool_name": "Read", "tool_input": {"file_path": "x"}}).kind == "allow"
+
+
+# --- The kept Bash helpers (B10, §4 Q12) through the one entry --------------------------------------------------
+@pytest.mark.parametrize("tool,command,kind", [
+    ("Bash", "grep -rn needle .", "deny"),
+    ("Bash", "find . -name '*.py' | xargs grep needle", "deny"),
+    ("PowerShell", "Get-ChildItem -Recurse | Select-String needle", "deny"),
+    ("Monitor", "grep -rn needle .claude/", "deny"),
+    ("Bash", "git grep -n needle -- .claude", "allow"),
+    ("Bash", "echo 'grep -rn needle .'", "allow"),
+    ("Bash", "echo " + "x" * 8200, "deny"),
+    ("Bash", "echo " + "x" * 8000, "allow"),
+], ids=["grep-r", "find-xargs-grep", "pwsh-recurse", "monitor-grep-r", "git-grep", "quoted-mention", "past-cut",
+        "under-cut"])
+def test_the_helpers_judge_through_the_entry(tmp_path, tool, command, kind):
+    assert bash(command, tmp_path, tool=tool).kind == kind
+
+
+def test_the_backslash_repair_rewrites_through_the_entry(tmp_path, monkeypatch):
+    record, transcript = tmp_path / "record.json", tmp_path / "t.jsonl"
+    record.write_text(json.dumps({"9.9.9|%s" % sys.platform: {"collapses": True, "collapses_before_quote": False,
+                                                               "observed": "2026-09-15"}}), encoding="utf-8")
+    transcript.write_text(json.dumps({"type": "user", "version": "9.9.9", "message": {"content": "x"}}) + "\n",
+                          encoding="utf-8")
+    monkeypatch.setenv("HARNESS_BASH_FIDELITY_RECORD", str(record))
+    pair = "\\" * 2
+    got = bash("printf 'a" + pair + "b'", tmp_path, transcript_path=transcript)
+    assert got.kind == "rewrite" and got.updated["command"] == "printf 'a" + pair * 2 + "b'"
