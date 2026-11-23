@@ -687,6 +687,42 @@ def _open_pr_reason(target: Path, root: Path) -> str | None:
     return None
 
 
+def _declared_submodules(repo: Path) -> list[str] | None:
+    """The submodule paths `repo`'s `.gitmodules` declares (none without the file), or None when git cannot read it."""
+    if not (repo / ".gitmodules").is_file():
+        return []
+    listed = _git(["config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"], repo)
+    if listed is None and _git(["config", "-f", ".gitmodules", "--list"], repo) != "":
+        return None
+    return [line.split(" ", 1)[1].strip().strip("/") for line in (listed or "").splitlines() if " " in line]
+
+
+def _populated_submodules(repo: Path, declared: list[str] | None = None, prefix: str = "") -> list[str] | None:
+    """Every populated submodule under `repo`, each followed by its own, as paths from the top (the rows `git submodule
+    status --recursive` gave, read from the index instead: that command runs through git's shell wrapper, ten times the
+    cost of `ls-files`). A gitlink `.gitmodules` does not map makes that command die, so it is None here too, as is any
+    unreadable index. An uninitialized submodule, or one whose `.git` names a missing admin directory, holds no rows."""
+    listed = _git(["ls-files", "--stage", "-z"], repo)
+    if listed is None:
+        return None
+    links = list(dict.fromkeys(row.split("\t", 1)[1] for row in listed.split("\0") if row.startswith("160000 ")))
+    if not links:
+        return []
+    declared = _declared_submodules(repo) if declared is None else declared
+    if declared is None or any(path not in declared for path in links):
+        return None
+    rows: list[str] = []
+    for path in links:
+        sub = repo / path
+        if not (sub / ".git").exists() or _orphan_admin(sub):
+            continue
+        inner = _populated_submodules(sub, prefix=prefix + path + "/")
+        if inner is None:
+            return None
+        rows += [prefix + path] + inner
+    return rows
+
+
 def is_retired_worktree(token: str, cwd: str, project_root: str, reasons: list[str] | None = None) -> bool:
     """True only when `token` names a checkout of `project_root` whose deletion loses nothing (the module rule): a
     standalone clone under scratch (`clone_reasons`), an orphan (`_orphan_verdict`), or a registered, unlocked linked
@@ -718,13 +754,10 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, reasons: list[s
     if pr_reason:
         reasons.append(pr_reason)
         return False
-    declared = []
-    if (target / ".gitmodules").is_file():
-        listed = _git(["config", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"], target)
-        if listed is None and _git(["config", "-f", ".gitmodules", "--list"], target) != "":
-            reasons.append("cannot read submodule status")
-            return False
-        declared = [line.split(" ", 1)[1].strip().strip("/") for line in (listed or "").splitlines() if " " in line]
+    declared = _declared_submodules(target)
+    if declared is None:
+        reasons.append("cannot read submodule status")
+        return False
     broken = [name for name in declared if (target / name / ".git").is_file() and _orphan_admin(target / name)]
     status = _git(["status", "--porcelain", "--untracked-files=all", "--ignored=matching",
                    "--ignore-submodules=" + ("all" if broken else "none")], target)
@@ -742,17 +775,10 @@ def is_retired_worktree(token: str, cwd: str, project_root: str, reasons: list[s
     if broken or not declared:
         rows = [name for name in declared if name not in broken]
     else:
-        submodules = _git(["submodule", "status", "--recursive"], target)
-        if submodules is None:
+        rows = _populated_submodules(target, declared)
+        if rows is None:
             reasons.append("cannot read submodule status")
             return False
-        rows = []
-        for line in submodules.splitlines():
-            fields = line[1:].split()
-            if len(fields) < 2:
-                reasons.append("cannot parse submodule status")
-                return False
-            rows.append(fields[1])
     for name in rows:
         sub = target / name
         if not (sub / ".git").exists():
