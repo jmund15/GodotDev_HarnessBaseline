@@ -29,9 +29,8 @@ def plant(tmp_path, native=True, rails=True):
         (claude / "guards" / "rails.md").write_text("RAILS-MARK", encoding="utf-8")
     profiles = {"kinds": {
         "author": {"agentType": "delegate-author", "builtins": ["Read", "Edit"], "mcpServers": ["ai-worker"],
-                   "tier": "executor", "guard": "author", "disclosure": "full", "routes": ["engine"], "writes": True},
-        "reviewer": {"agentType": "delegate-review", "builtins": ["Read"], "mcpServers": [], "routes": ["engine"]},
-        "scout": {"agentType": "delegate-survey", "builtins": ["Read"], "mcpServers": [], "routes": ["launcher"]},
+                   "writes": True},
+        "reviewer": {"agentType": "delegate-review", "builtins": ["Read"], "mcpServers": []},
     }}
     (claude / "guards" / "tool_profiles.json").write_text(json.dumps(profiles), encoding="utf-8")
     return claude
@@ -54,7 +53,7 @@ def test_missing_rails_file_fails_closed(tmp_path):
         wt.inject({"jobs": []}, cwd=None, claude_dir=plant(tmp_path, rails=False))
 
 
-def test_profile_rows_go_only_to_engine_routed_kinds_and_keep_three_fields(tmp_path):
+def test_profile_rows_go_only_to_kinds_with_a_row_and_keep_three_fields(tmp_path):
     args = {"jobs": [{"label": "a", "kind": "author"}, {"label": "s", "kind": "scout"}]}
     profiles = wt.inject(args, cwd=None, claude_dir=plant(tmp_path))["__toolProfiles"]
     assert profiles == {"a": {"kind": "author", "agentType": "delegate-author", "builtins": ["Read", "Edit"],
@@ -65,7 +64,7 @@ def test_the_calls_own_kind_is_injected_as_the_single_kind_profile(tmp_path):
     claude = plant(tmp_path)
     assert wt.inject({"kind": "author"}, cwd=None, claude_dir=claude)["__kindProfile"] == {
         "kind": "author", "agentType": "delegate-author", "builtins": ["Read", "Edit"], "mcpServers": ["ai-worker"]}
-    for args in ({}, {"kind": "scout"}, {"kind": "nope"}):  # none, a kind off the engine route, an unknown kind
+    for args in ({}, {"kind": "scout"}, {"kind": "nope"}):  # none, a kind without a row, an unknown kind
         assert "__kindProfile" not in wt.inject(args, cwd=None, claude_dir=claude)
 
 
@@ -73,7 +72,17 @@ def test_no_capacity_tier_or_effort_key_is_injected(tmp_path):
     args = {"jobs": [{"label": "a", "kind": "author", "tier": "architect"}]}
     out = wt.inject(args, cwd=None, claude_dir=plant(tmp_path))
     assert set(out) - set(args) <= ALLOWED_KEYS
-    assert all("tier" not in row and "guard" not in row for row in out["__toolProfiles"].values())
+    assert all("tier" not in row for row in out["__toolProfiles"].values())
+
+
+def test_every_field_of_the_shipped_profile_table_is_one_a_reader_reads():
+    """An unread field looks like enforcement and enforces nothing: `kind_row` reads `writes`, `_profile` the other three."""
+    claude = Path(__file__).resolve().parents[1]
+    table = json.loads((claude / "guards" / "tool_profiles.json").read_text(encoding="utf-8"))
+    readable = {"agentType", "builtins", "mcpServers", "writes"}
+    assert not [(k, set(row) - readable) for k, row in table["kinds"].items() if set(row) - readable]
+    assert set(table) == {"version", "kinds", "variants"} and "arm" not in table["kinds"]
+    assert not [k for k in table["kinds"] if k.startswith("bench")]
 
 
 def test_a_directory_git_cannot_answer_for_gives_no_repo_root(tmp_path):

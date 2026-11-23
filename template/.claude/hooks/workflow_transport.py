@@ -9,7 +9,7 @@ filesystem, so each key reaches the engine only through this injection:
                   `guards/tool_profiles.json`.
   __kindProfile   the same row for the call's own `args.kind`, which a single-kind engine (doc audit, worklog
                   relevance, idea fanout, test_skill_pressure) runs every child as. Omitted when the call names no
-                  kind or the kind has no engine row.
+                  kind or the kind has no row.
   __railsText     `guards/rails.md`, whole: one file for every model (rails Q7).
   __repoRoot      the checkout root (git toplevel of the session cwd). Omitted when git cannot answer.
 
@@ -24,7 +24,6 @@ from pathlib import Path
 
 CLAUDE_DIR = Path(__file__).resolve().parents[1]
 PROFILE_KEYS = ("agentType", "builtins", "mcpServers")  # the only row fields a kept engine reads
-ENGINE_ROUTE = "engine"
 
 
 class TransportError(Exception):
@@ -63,9 +62,9 @@ def _kinds(claude_dir):
 
 
 def _profile(kinds, kind):
-    """The profile of one kind, or None when no row serves the engine route."""
+    """The profile of one kind, or None when no row names it."""
     row = kinds.get(kind) if isinstance(kind, str) else None
-    if not row or ENGINE_ROUTE not in (row.get("routes") or []):
+    if not row:
         return None
     profile = {"kind": kind}
     profile.update({key: row.get(key) for key in PROFILE_KEYS})
@@ -79,7 +78,7 @@ def kind_row(kind, claude_dir=CLAUDE_DIR):
 
 
 def tool_profiles(args, claude_dir=CLAUDE_DIR):
-    """One profile per job whose `kind` row serves the engine route, keyed by the job's label (or a lens's key)."""
+    """One profile per job whose `kind` has a row, keyed by the job's label (or a lens's key)."""
     kinds = _kinds(claude_dir)
     out = {}
     for job in jobs_of(args):

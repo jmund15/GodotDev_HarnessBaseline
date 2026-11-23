@@ -23,7 +23,7 @@ const load = (script, transform = source => source) => {
   return (...args) => run(WorkflowDate, workflowMath, ...args)
 }
 
-// The kind rows hooks/workflow_provider_guard.py resolves from guards/tool_profiles.json into args.__toolProfiles
+// The kind rows hooks/workflow_transport.py resolves from guards/tool_profiles.json into args.__toolProfiles
 // (by job label or lens key) and args.__kindProfile (the call-level `args.kind` of a single-kind engine).
 const ROW = { add: [], remove: [], overrideMode: 'shape-default', enforcement: 'inherited', effectiveMcp: 'unknown/inherited',
   mcpServers: ['semantic-search', 'ai-worker'] }

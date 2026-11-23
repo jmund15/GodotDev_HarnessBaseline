@@ -4,7 +4,7 @@ projection matches the shape x consumer table in the module docstring.
 
 Consumers: the
 session digest's owner-prompt record (session_digest.owner_prompts, built on
-_transcript_summary.TranscriptSummaryBuilder), the provider guard's `owner:` quote
+_transcript_summary.TranscriptSummaryBuilder), the `owner:` quote
 (`owner_quote_text`/`owner_quote_rows`) and the `owner_turns` record. The
 table is parsed from `_owner_text.__doc__`, so a projection change that is not written into the table
 fails here.
@@ -48,7 +48,7 @@ STOP_QUESTION = "Stop the probe-task run?"
 ANSWER_TEXT = 'User has answered your questions: "Stop the probe-task run?"="Yes, stop it".'
 QUESTION_TEXT = 'The user answered: "Which edits?"="Do all recommendations"'
 # The words a peer repeats back in a cross-session message: a quote found only there is not the
-# owner naming a transport, and the provider guard must not lift on it.
+# owner naming a transport, and the owner-quote check must not lift on it.
 OWNER_WORDS = "route this session to the sidecar for the rest of the day"
 
 
@@ -250,7 +250,7 @@ def main():
         cases.append(("owner_turns %s: %s" % (t_cell, name), held == [] if want is None else held == [want]))
 
 
-    # The provider guard's projection over a real transcript file: what an `owner:` quote can find.
+    # The owner-quote projection over a real transcript file: what an `owner:` quote can find.
     if quotes is None:
         cases.append(("owner_quote_rows reads the planted transcript", False))
     else:
@@ -333,7 +333,7 @@ def main():
                   [uuid for uuid, _ in args_turns] == [command["uuid"]]))
     cases.append(("...and its `ARGUMENTS:` companion row adds no second turn", companion["uuid"] not in live_ids))
     cases.append(("an empty-args command (`/compact`) is no owner turn", LIVE["empty_args_command"]["uuid"] not in live_ids))
-    cases.append(("the provider guard's quote projection still drops command arguments",
+    cases.append(("the owner-quote projection still drops command arguments",
                   not any(COMMAND_WORDS in text for text in live_quotes)))
 
     holds = getattr(ot, "holds_token", None)

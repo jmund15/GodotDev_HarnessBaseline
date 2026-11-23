@@ -46,22 +46,9 @@ def main():
     check("a Workflow call from a sidecar child is denied", rc == 0 and denied(out), out + err)
 
     MAIN = "/proof/root/projects/session/session.jsonl"
-    rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="bench-score")
-    check("a Workflow call from a sidecar whose kind row lists Workflow (bench-score) passes silently",
-          rc == 0 and out == "", out + err)
-
-    rc, out, err = run({"tool_name": "Agent", "transcript_path": MAIN}, sidecar=True, kind="bench-score")
-    check("an Agent call from a bench-score sidecar, whose row lists only Workflow, is denied", rc == 0 and denied(out), out + err)
-
-    rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="judge")
-    check("a Workflow call from a judge sidecar, whose row lists no Workflow, is denied", rc == 0 and denied(out), out + err)
-
-    rc, out, err = run({"tool_name": "Workflow", "transcript_path": MAIN}, sidecar=True, kind="no-such-kind")
-    check("a Workflow call from a sidecar of an unknown kind is denied", rc == 0 and denied(out), out + err)
-
-    rc, out, err = run({"tool_name": "Workflow", "transcript_path": "/proof/root/projects/session/subagents/agent-1.jsonl"},
-                       kind="bench-score")
-    check("a delegate transcript is denied whatever kind its environment names", rc == 0 and denied(out), out + err)
+    for tool in ("Workflow", "Agent"):
+        rc, out, err = run({"tool_name": tool, "transcript_path": MAIN}, sidecar=True, kind="anything")
+        check("a %s call from a sidecar is denied whatever kind its environment names" % tool, rc == 0 and denied(out), out + err)
 
     rc, out, err = run({"tool_name": "Agent", "transcript_path": "/proof/root/projects/session/session.jsonl"})
     check("an Agent call from the main session passes silently", rc == 0 and out == "", out + err)
