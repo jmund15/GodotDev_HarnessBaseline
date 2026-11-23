@@ -1,80 +1,62 @@
 ---
-description: Delegate scoped ad hoc jobs with explicit model/effort pins
-argument-hint: <task> | --jobs <path>
-allowed-tools: Bash(python3 .claude/tools/lens_briefs.py:*), Bash(python3 .claude/tools/sidecar_fanout.py:*), Bash(python3 .claude/tools/dispatch_size.py:*), Bash(python3 .claude/tools/orchestration_metrics.py:*), Bash(python3 .claude/tools/dispatch_result.py:*), Workflow
+description: Send scoped jobs to native Workflow agents or external seats, each with its model and effort pinned
+argument-hint: <task> | <jobs.json>
 ---
 
 # Delegate
 
-Use this for ordinary ad hoc jobs. Commands with their own coverage contract, such as the coding layer's exploration and plan-review commands, keep it and use the same engines.
+The one dispatch command. A native job runs as a `dispatch.js` Workflow agent on the session's own login; a seat job runs on another login or model family through `seat.sh`. `orchestration` picks the route (§0), the width (§2), the model and effort (§5); this page carries them out.
 
 ## Arguments
 
-- `<task>` creates one `single` job; put the brief in a scratch file.
-- `--jobs <path>` reads `{route, jobs|chains, contextPath?, spillDir?}`. Routes: `single|parallel|chain|review`.
-- For missing/ambiguous arguments, unreadable files or malformed input, the parent returns `HOLD` with the exact problem before dispatch.
+- `<task>`: one job. Write its brief first.
+- `<jobs.json>`: a native jobs file (step 3).
+- No argument: print these two lines and stop. A brief, input or output directory that does not resolve is named, and nothing launches.
 
-A job requires `label`, `promptPath`, `role`, `model` + `effort` (or `rows`: `{alias: effort}` listing every row that meets the job's bar, not both), `transport`, `currency`, `kind`; a `review` route job also requires `mustRead` for its subject files, the `{"path", "lines"}` entries that `python3 .claude/tools/lens_briefs.py must-read <list file>` prints. `kind` is one of `scout|lens|reviewer|author|judge|gate` (`guards/tool_profiles.json` `kinds`) and alone sets the job's tools, disclosure and agent type (`reference/sidecar_dispatch.md` §Job kind). The read-only kinds (scout, lens, reviewer, judge) carry read-only git; a job that runs any other command adds `"tools": "+Bash"`, and a job whose deliverable is a file it writes is an `author`. A read-only job returns its report as its final message, which the launcher saves as `<spillDir>/<label>.md`. The fan-out refuses `shape`, `disclosure` and `agentType`. Optional: `tools` (a signed delta such as `+Bash`), `contextFiles`, `schemaFile`, `window` (`"full"`: compact at the model's own window, not the login's; cost and when to use it in `model_ladder_evidence.md` §Compaction). `route` selects the engine. A sidecar-only field (`SIDECAR_ONLY_FIELDS` in `tools/sidecar_fanout.py`, or a `workdir` naming a checkout other than the repo root) keeps a job a sidecar even on the session's plan; the fan-out prints the reason. `schemaFile` (a JSON object) runs native as the job's `schema`, `contextFiles` as `contextPaths`, and a `workdir` at the repo root counts as none.
+## 1. Write each brief
 
-## Converged single job
+Each brief is open or execute, with its `inputs:` and `targets:` lists (`skills/orchestration/reference/brief_checks.md`), in `.claude/scratch/<run>/<label>.brief.md`. The engine or launcher adds `guards/rails.md`; never copy it into a brief.
 
-One job with a check costs the parent four requests (`usage_report.py turns` counts them):
+## 2. Read capacity before a fan-out
 
-1. Write the brief to scratch: its prose, pointers to the spec it executes, and one fenced `task` block holding one JSON object: `check` (required, non-empty: shell commands, or the literal `claims`; a writing job adds `python3 .claude/tools/dispatch_result.py check <spillDir>/<label>.md --block choices=unit,why`) and `writeSet` (omit for a read-only job). A writing job's brief names `<spillDir>/<label>.md` as its report file (`orchestration` reference `writer_returns.md`); a read-only job's does not.
-2. Write `{"jobs": [<job>], "spillDir": "<scratch dir>"}` to a file; the job carries the fields §Arguments requires plus its `tier`. Run `python3 .claude/tools/dispatch_size.py <file>` first: its line gives the reading each job carries and whether it fits the row's window, which the Pre-Dispatch Checklist weighs before launch, and its preflight lists every unmet launch precondition (`orchestration` Pre-Dispatch Checklist); a clean preflight is the launch's go. Then run `python3 .claude/tools/sidecar_fanout.py <file> --detach`; it places the job by `orchestration` §5b. A job it places on the session's plan prints a `NATIVE` line: issue the printed `Workflow` call, which carries only `args.jobsFile`. While a sidecar job remains and none of your watchers is armed, issue the arm in the same message with `run_in_background` and `timeout` 7200000: `python3 .claude/tools/watch_records.py --session --wake --await-launch` (`reference/sidecar_dispatch.md` step 6); the calls share one request.
-3. On the completion wake, run `python3 .claude/tools/dispatch_result.py consume <run dir or fan-out out dir> --label <label>`. It prints the digest, each `CHECK <n>` verdict with its tail, the changed paths, the diff and the manifest path. `HELD` means the brief was written after the run started, so nothing ran. Exit codes and refusals are in its docstring.
+Run `python3 .claude/tools/capacity.py <seat>` for each seat the fan-out uses, and `python3 .claude/tools/capacity.py session` for native jobs on the session's own login. Each prints the login's 5-hour and 7-day used percent and reset time. Place each job by `orchestration` §5b and put the windows in the pre-launch line (§0). With no seat in `.claude/seats.json`, the session line is the only read.
 
-A check runs a command the project's `gate_cadence.slice` rows name, to `--check-timeout`; a wide runner is refused at launch. A floor-guarded check is refused, and the parent runs that check in its own Bash call. A known follow-on's steps go in the same brief, each with its check in order, never the shared-checkout commit or the push.
+## 3. Launch
 
-Then the parent reviews the diff, chooses what lands, commits by pathspec and rates it (`/orchestration_metrics` §Incremental rating) in the same Bash call.
+**Native.** Write the jobs file and issue one `Workflow` call to `.claude/workflows/dispatch.js` with args `{"jobsFile": "<path>"}`:
 
-## Prepare and take back, one call each
-
-`python3 .claude/tools/lens_briefs.py prepare --spec <spec.json> --out <run dir>` with `"mode": "delegate"` writes the jobs file from §Arguments' fields (`brief` names the brief file; `worktree`, `true` or a name, gives a job its own worktree `.claude/worktrees/<name>`), makes the worktrees, runs the `dispatch_size.py` preflight on the file and prints the launch and return calls. A bad spec refuses before any worktree exists. `tools/delegate_prepare.py` owns the spec.
-
-A returned job that worked in its own worktree takes `python3 .claude/tools/dispatch_result.py take <fan-out out dir> --label <label>` (the watcher's wake line prints it). It prints facts only; which commits land, the rating and the retirement stay the parent's. `tools/dispatch_take.py` owns what it prints.
-
-## 1. Normalize and preflight
-
-Check needed model fields through `model_registry.py resolve <model>`, and locate rows with `for-role <tier>`, which picks no model and no effort. Take the effort from the role ladder's cell. Preserve explicit owner overrides as overrides, not capability promotions; availability and permission boundaries still bind.
-
-Namespace labels `<runKey>-<label>` and reject duplicates. State model, effort, profile and currency before dispatch. Keep unknown effective settings null.
-
-The parent performs this preparation. The engines consume the prepared jobs. Return one state:
-- `PROCEED`: scope, inputs, route, eligibility, pins and currency are established.
-- `HOLD`: a required fact or owner decision is missing.
-- `ABORT`: the route, authorization or availability forbids the job, or the task belongs to a command with its own coverage contract: design grounding, plan drafting or plan review. Lookup shape follows `CLAUDE.core.md` §9.
-
-Do not silently change a pin, role, provider or currency to get past a failure.
-
-## 2. Keep the declared run
-
-**Jobs follow `orchestration` §0; a review lens is one mandate, and its seats follow §2.** Related checks may share a scoped lens when coverage stays explicit.
-
-Same-task comparisons follow `orchestration` reference `model_evidence.md`.
-
-Write the declared manifest seed before dispatch on a multi-job route; `consume` derives the seed for the converged single job. For native review, the evidence label is `review:<key>`; other routes retain their namespaced label. The seed count is the required result count.
-
-## 3. Dispatch through existing owners
-
-Use paths and short scalars in Workflow args. Every job has explicit rows (`model` + `effort`, or `rows`) and `kind`, and a `tier` (its `role`). The guard's tier behavior is in `orchestration` §5.
-
-One jobs file, `{jobs:[...],contextPath,spillDir}` or `{chains:[{name,jobs:[...]}],contextPath,spillDir}`, each job carrying the fields §Arguments requires plus its `tier`. `sidecar_fanout.py` runs the file (per-job `schemaFile` and `wakeWith` allowed; `reference/sidecar_dispatch.md` step 6 says when to group) and picks each job's paying plan; chains run as lanes in parallel, each lane's jobs in sequence. A job placed on the session's own plan runs as a native `Workflow` agent through `dispatch.js` (`dispatch_chains.js` for a whole lane); a job on any other plan stays a sidecar. `review_fanout.js` is the one engine the fan-out lacks: it takes `agents:[{key,promptPath,model,effort,kind,mustRead}]` in place of `jobs` and `contextPrefixPath` in place of `contextPath` (it never reads `contextPath`).
-
-Run `python3 .claude/tools/dispatch_size.py <file>` on the jobs file, or on the Workflow args saved as JSON, before launching it. Native engines are under `.claude/workflows/`; the fan-out CLI, which hands the session-plan jobs to the printed Workflow call and launches the rest, is `python3 .claude/tools/sidecar_fanout.py <jobs.json> --out-dir <record-dir> --detach`. `kind` supplies the sidecar `-G`; never pass `route` as `-G` or derive one from the other. Split transports without changing job identity. Workflow/Agent do not cross endpoints; a bare Agent call cannot supply an exact effort pin.
-
-Keep full evidence in a run-specific `.claude/scratch/` artifact (`orchestration` §4) and recover before repaying (`orchestration` §8). Waiting on completion events follows `CLAUDE.core.md` §Shell Discipline. Select a profile that can produce the promised artifact.
-
-## 4. Consume and finalize
-
-The converged single job above is consumed by `dispatch_result.py consume`, which performs steps 1 and 3 (artifact and coverage check, manifest join); the parent still rates (step 2). The steps below serve every other route.
-
-1. Verify each artifact and required source/finding coverage (`orchestration` §8). Consume findings and claims per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5. Recheck relevant inputs that changed during a read-only job.
-2. Rate the consumed labels before the manifest: `--rate` or `--rate-batch` as `/orchestration_metrics` §Incremental rating directs.
-3. Build the existing manifest without appending the metrics archive:
-
-```bash
-python3 .claude/tools/orchestration_metrics.py --manifest-seed <seed.json> --manifest-out <manifest.json> --session <session-dir> --sidecar-record-dir <record-dir> --manifest-verdicts .claude/orchestration_verdicts.json
+```json
+{"spillDir": ".claude/scratch/<run>/",
+ "jobs": [{"label": "<label>", "promptPath": "<brief.md>", "model": "<model>", "effort": "<effort>", "kind": "<kind>"}]}
 ```
 
-Verify one evidence join per declared label, requested/effective fields kept separate, distinct `workflow`/`sidecar` sources, status `completed` and all required outputs accounted for. Report result, verification, artifact and unmet scope briefly; do not equate tool quota with provider cost.
+`kind` names the job's tool profile in `guards/tool_profiles.json`: a job whose deliverable is a file it writes is an `author`; a read-only job is a `scout`, `lens` or `reviewer`. For dependent hops with no judgment between them, replace `jobs` with `"chains": [{"name": "<lane>", "jobs": [...]}]`: lanes run in parallel and each lane runs its jobs in order. Args carry paths and short scalars only, because a large multi-line argument fails the permission check.
+
+**Seat.** One Bash call with `run_in_background`. One seat: `bash .claude/scripts/seat.sh <seat> <brief.md> <out.md>`. A fan-out puts every seat in the same call, which exits when the last seat does and fails if any seat failed, so the session wakes once:
+
+```bash
+pids=""
+bash .claude/scripts/seat.sh <seat> <a.brief.md> <a.out.md> & pids="$pids $!"
+bash .claude/scripts/seat.sh <seat> <b.brief.md> <b.out.md> & pids="$pids $!"
+fail=0; for p in $pids; do wait $p || fail=1; done; exit $fail
+```
+
+A writing seat starts from inside its own linked worktree (`orchestration` §7). A set that mixes routes issues the `Workflow` call and the seat call in one message.
+
+### How the routes differ
+
+| Behaviour | Native | Seat | Why |
+|---|---|---|---|
+| Unresolved inputs; a read-only job naming another target | refused per job at the Workflow entry (`tools/launch_check.py`) | refused before spawn, same module | one check, two callers |
+| Project hooks `dispatch.pre_launch` / `dispatch.post_return` (`adaptation.json`) | before each job at the entry; after each job in the engine | before spawn; after the CLI exits 0, in the job's workdir | same |
+| Own worktree, `max_concurrent`, login at its exhaust floor | not checked | refused before spawn | they govern a CLI process and its login; the engine queues past its own concurrency cap, and the session's login is judged in step 2 |
+| Workdir in another checkout | never | the only route | the project's launch hooks must run on it |
+| Floor | the session's hooks run in every agent | a writing Claude seat runs the project's settings; a read-only seat returns on stdout and cannot write | the CLI decides what runs inside it |
+| Rails and wait checks | `guards/rails.md` injected by the engine; the session's `hooks/foreground_wait_guard.py` | `guards/rails.md` and the same guard, armed by the launcher | same text and checks, each route's channel |
+| Wake | the Workflow returns once for its set | the background call exits with its last seat | same |
+
+## 4. Take back
+
+- **Native:** the Workflow's return is a preview. Read each `<spillDir>/<label>.md`, and the complete set with `/session_digest --workflow-dir <transcriptDir>`.
+- **Seat:** read `<out.md>`. A non-zero exit carries the CLI's stderr verbatim: read it before any relaunch. A writing seat committed on its worktree's branch.
+- Then `orchestration` §8: check claims with `quote_check.py`, read every diff, decide what lands, and commit by pathspec. Stop a running seat only through `python3 .claude/tools/reap.py`.
