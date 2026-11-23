@@ -8,6 +8,10 @@ worktree, a full seat, a login at its capacity floor) stay in `seat.sh`; they me
         resolve under --root, or a `writes: no` job's brief names a `targets:` entry other than <out.md>.
     launch_check.py seat <seat>
         Prints the seat's `seats.json` row as shell assignments for seat.sh to eval. Exit 2 for an unknown seat.
+    launch_check.py stage <slot> <brief.md> <out.md> <here> <workdir> <main-checkout|"">
+        Writes <slot>/prompt.md (guards/rails.md once, then the brief: the one prompt every adapter reads) and
+        <slot>/settings.json (the floor entry; a non-empty main checkout adds the workdir fence, with the output
+        directory as its spill dir). Both go through json/str, so a backslash path stays valid.
     launch_check.py pre_launch <seat> <brief.md> <out.md> <label>
     launch_check.py post_return <seat> <brief.md> <out.md> <label>
         Run the project's launch hook (adaptation key `dispatch.pre_launch` / `dispatch.post_return`) in the
@@ -28,6 +32,7 @@ POST_KEY = "dispatch.post_return"
 SEATS = "seats.json"
 # Python resolves a bare `bash` to System32ash.exe (WSL) on Windows, which cannot read Git Bash paths.
 BASH = shutil.which("bash") or "bash"
+FLOOR_MATCHER = "Bash|PowerShell|Monitor|TaskStop"  # hooks/pre_bash.py's registered tools
 LIST_HEADERS = ("inputs:", "targets:")
 
 
@@ -90,6 +95,22 @@ def seat_assignments(seat, claude_dir=CLAUDE_DIR):
     return "\n".join("%s=%s" % (key, shlex.quote(value)) for key, value in values.items())
 
 
+def stage(slot, brief, out, here, workdir, main_checkout):
+    """The seat's effective prompt and settings, written under `slot`. `here` is the checkout's .claude dir."""
+    slot = Path(slot)
+    rails = (Path(here) / "guards" / "rails.md").read_text(encoding="utf-8")
+    body = Path(brief).read_text(encoding="utf-8", errors="replace")
+    (slot / "prompt.md").write_text(rails.rstrip("\n") + "\n\n" + body, encoding="utf-8", newline="\n")
+    # The floor rides into every seat, whatever its workdir; it carries the wait checks, since the seat gets no
+    # completion wake of its own. A writing seat adds the fence that keeps its writes out of the main checkout.
+    groups = [{"matcher": FLOOR_MATCHER, "hooks": [{"type": "command", "command": "python3 " + shlex.quote("%s/hooks/pre_bash.py" % here)}]}]
+    if main_checkout:
+        fence = " ".join(["python3", shlex.quote("%s/hooks/sidecar_workdir_guard.py" % here)]
+                         + [shlex.quote(str(a)) for a in (workdir, main_checkout, os.path.dirname(out), brief)])
+        groups.append({"matcher": "Write|Edit|NotebookEdit|Bash", "hooks": [{"type": "command", "command": fence}]})
+    (slot / "settings.json").write_text(json.dumps({"hooks": {"PreToolUse": groups}}), encoding="utf-8", newline="\n")
+
+
 def _adaptation_get(key):
     sys.path.insert(0, str(CLAUDE_DIR / "tools"))
     import adaptation  # noqa: E402  (tools/adaptation.py: the one reader of adaptation.json)
@@ -110,7 +131,7 @@ def run_hook(key, args, cwd, lookup=_adaptation_get):
 def main(argv=None, lookup=_adaptation_get):
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        print("usage: launch_check.py check|seat|pre_launch|post_return ...", file=sys.stderr)
+        print("usage: launch_check.py check|seat|stage|pre_launch|post_return ...", file=sys.stderr)
         return 2
     verb, rest = args[0], args[1:]
     if verb == "check" and len(rest) == 8:
@@ -127,6 +148,9 @@ def main(argv=None, lookup=_adaptation_get):
             return 2
         print(text)
         return 0
+    if verb == "stage" and len(rest) == 6:
+        stage(*rest)
+        return 0
     if verb in ("pre_launch", "post_return") and len(rest) == 4:
         key = PRE_KEY if verb == "pre_launch" else POST_KEY
         rc, err = run_hook(key, rest, os.getcwd(), lookup=lookup)
@@ -134,7 +158,7 @@ def main(argv=None, lookup=_adaptation_get):
             sys.stderr.write(err)
             return 2
         return 0
-    print("usage: launch_check.py check|seat|pre_launch|post_return ...", file=sys.stderr)
+    print("usage: launch_check.py check|seat|stage|pre_launch|post_return ...", file=sys.stderr)
     return 2
 
 

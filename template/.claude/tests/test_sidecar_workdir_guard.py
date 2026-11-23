@@ -9,7 +9,7 @@ Each case calls the guard's main() in process (`_hook_call.call`) on a PreToolUs
   bash    a Bash command whose redirection, tee, cp/mv/install, sed -i/perl -i, git -C index write or python path
           literal lands in the main checkout is denied; reads, workdir/spill/temp writes, quoted mentions and
           unresolvable targets are allowed
-  brief   the brief's `task` writeSet widens what a job may write; the brief itself is never writable
+  brief   the brief's `targets:` list widens what a job may write; the brief itself is never writable
 
 The seat launcher's registration of this guard is not proved here: it belongs to the launcher's proof.
 
@@ -185,28 +185,27 @@ def test_guard_decisions():
 
         deck = main_root / ".claude" / "scratch" / "deck"
         brief = outside / "brief.md"
-        brief.write_text("# t\n\n```task\n%s\n```\n" % json.dumps(
-            {"check": ["true"], "writeSet": [W + "/**", deck.as_posix() + "/**", M + "/notes/one.txt"]}),
-            encoding="utf-8")
+        brief.write_text("# t\n\ninputs:\n- a.md\ntargets:\n- %s\n- %s\n- %s\n" % (
+            W + "/**", deck.as_posix() + "/**", M + "/notes/one.txt"), encoding="utf-8")
         bare = outside / "bare.md"
-        bare.write_text("# no task block\n", encoding="utf-8")
+        bare.write_text("# no targets list\n", encoding="utf-8")
 
         def declared(name, want, tool, path, prompt=brief):
             rc, err = run(work, main_root, spill, tool, path, prompt=prompt)
             ck(name, rc == want, (rc, err))
 
-        declared("allow a Write under a declared writeSet glob", 0, "Write", deck / "pieces.jsonl")
-        declared("allow an Edit of a declared writeSet file", 0, "Edit", main_root / "notes" / "one.txt")
-        declared("deny a main file the writeSet does not name", 2, "Write", main_root / "notes" / "two.txt")
+        declared("allow a Write under a declared targets glob", 0, "Write", deck / "pieces.jsonl")
+        declared("allow an Edit of a declared targets file", 0, "Edit", main_root / "notes" / "one.txt")
+        declared("deny a main file the targets do not name", 2, "Write", main_root / "notes" / "two.txt")
         declared("deny a prefix-sibling of a declared dir", 2, "Write", main_root / ".claude" / "scratch" / "deck2" / "a")
-        declared("deny with a brief that declares no writeSet", 2, "Write", deck / "pieces.jsonl", prompt=bare)
+        declared("deny with a brief that declares no targets", 2, "Write", deck / "pieces.jsonl", prompt=bare)
         declared("deny with an unreadable brief", 2, "Write", deck / "pieces.jsonl", prompt=outside / "gone.md")
         rc, err = run_bash(*a, "cp a.jsonl %s/pieces.jsonl" % deck.as_posix(), prompt=brief)
-        ck("allow a Bash cp into a declared writeSet dir", rc == 0, (rc, err))
+        ck("allow a Bash cp into a declared targets dir", rc == 0, (rc, err))
         rc, err = run_bash(*a, "cp a.jsonl %s/b.jsonl" % M, prompt=brief)
         ck("deny a Bash cp to an undeclared main path with a brief", rc == 2, (rc, err))
 
-        # The child cannot widen its own writeSet: the brief the guard re-reads is never a path it may write,
+        # The child cannot widen its own allowance: the brief the guard re-reads is never a path it may write,
         # wherever the dispatcher put it (the spill dir, the workdir, outside the checkout, a declared dir).
         in_spill = spill / "job_prompt.md"
         in_work = work / "brief.md"

@@ -3,15 +3,15 @@
 
 Usage: sidecar_workdir_guard.py <workdir> <main-checkout> [<spill-dir>] [<brief>]
 Denies Write, Edit and NotebookEdit whose resolved path is inside the main checkout and outside the child's
-workdir and the brief's declared writeSet, and a Bash command with a clear write there: any form `_shell_writes` extracts (a redirect, tee, a
+workdir and the brief's `targets:`, and a Bash command with a clear write there: any form `_shell_writes` extracts (a redirect, tee, a
 cp/mv/install destination, dd of=, a sed -i or perl -i file, an interpreter's inline write), a mutating
 `git -C <main>`, or a python call that deletes a main-checkout path, literal or bound to a name (`_shell_writes`
 `deleted_targets`: os remove, unlink, rmdir, removedirs, a rename's or replace's source; shutil move's source and
 rmtree; Path unlink, rmdir, a rename's or replace's source).
 The spill dir (where the launcher's -R/-P files and the job's `<label>.md` report live), each path the
-brief's `task` block writeSet names (a glob allows the directory before its first wildcard segment), and any
-path outside the main checkout stay allowed. A brief that is absent, unreadable or declares no writeSet adds nothing. The brief itself is never writable,
-wherever it sits (spill dir, workdir, a declared dir, outside the checkout): the guard re-reads its writeSet on
+brief's `targets:` list names (a glob allows the directory before its first wildcard segment), and any
+path outside the main checkout stay allowed. A brief that is absent, unreadable or declares no targets adds nothing. The brief itself is never writable,
+wherever it sits (spill dir, workdir, a declared dir, outside the checkout): the guard re-reads its `targets:` on
 every call, so a child that could edit it would widen its own allowance. A job whose workdir is the main checkout is unaffected.
 A payload it cannot parse is denied. A Bash target it cannot resolve statically (variable, substitution, glob) is allowed.
 Armed by the seat launcher for writing seats. Channel: exit 2 + stderr.
@@ -34,7 +34,7 @@ GIT_WRITES = {"add", "rm", "mv", "commit", "reset", "checkout", "restore", "stas
 _UNRESOLVED = re.compile(r"[$`*?\[\]{}()~]")
 
 
-BRIEF_DENY = ("Denied: %s is this job's brief, whose writeSet this guard enforces; a job never edits it. "
+BRIEF_DENY = ("Denied: %s is this job's brief, whose `targets:` this guard enforces; a job never edits it. "
               "Write your output under the job's workdir or spill dir.\n")
 
 
@@ -64,19 +64,19 @@ def _git_target(words):
 
 
 def declared_roots(brief, work):
-    """The path prefixes the brief's `task` block writeSet names; () when it names none or cannot be read."""
+    """The path prefixes the brief's `targets:` list names; () when it names none or cannot be read."""
     if not brief:
         return ()
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
     try:
-        from brief_block import task_block
+        from launch_check import parse_brief
         with open(brief, encoding="utf-8") as fh:
-            task = task_block(fh.read()) or {}
+            targets = parse_brief(fh.read())["targets"]
     except (OSError, ValueError, ImportError):
         return ()
     roots = []
-    for entry in task.get("writeSet") or []:
-        if not isinstance(entry, str) or not entry.strip():
+    for entry in targets:
+        if not entry:
             continue
         segs = parts(entry, work)
         cut = next((i for i, seg in enumerate(segs) if re.search(r"[*?\[]", seg)), len(segs))

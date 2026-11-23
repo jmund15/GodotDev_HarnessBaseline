@@ -17,11 +17,12 @@ CLAUDE = Path(__file__).resolve().parents[1]
 BASH = shutil.which("bash")  # Git Bash: a bare `bash` from Python is WSL on Windows
 FILES = ("scripts/seat.sh", "scripts/seat_claude.sh", "scripts/seat_agy.sh", "tools/launch_check.py",
          "tools/agy_seat.py", "tools/agy_workspace.py", "tools/adaptation.py", "scripts/lib/json_schema_lite.py",
-         "hooks/_hook_state.py", "seats.json")
+         "hooks/_hook_state.py", "guards/rails.md", "seats.json")
 STUB_CLAUDE = """#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$STUB_DIR/argv.txt"
 cat > "$STUB_DIR/stdin.txt"
 printf '%s' "${CLAUDE_CONFIG_DIR:-}" > "$STUB_DIR/config.txt"
+printf '%s' "${CLAUDE_CODE_SIDECAR:-}" > "$STUB_DIR/sidecar.txt"
 while [ "$#" -gt 0 ]; do
   if [ "$1" = --settings ]; then cp "$2" "$STUB_DIR/settings.txt"; fi
   shift
@@ -32,6 +33,7 @@ echo "STUB ANSWER"
 FLOOR_CAPACITY = "import sys\nprint('5-hour window at the exhaust floor')\nsys.exit(3)\n"
 STUB_AGY_BAT = "@echo off\r\necho agy stub refused 1>&2\r\nexit /b 1\r\n"
 BRIEF = "inputs:\n- a.md\n"
+AGY_BRIEF = "inputs:\n- a.md\ntargets:\n- out.md\n"
 
 
 def _git(cwd, *args):
@@ -46,6 +48,7 @@ def _checkout(tmp_path):
         target = repo / ".claude" / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(CLAUDE / rel, target)
+    (repo / ".claude" / "CLAUDE.core.md").write_text("core", encoding="utf-8")  # agy_workspace writes for a checkout of the project
     (repo / "a.md").write_text("input\n", encoding="utf-8")
     _git(repo, "init", "-q")
     _git(repo, "add", "-A")
@@ -164,9 +167,12 @@ def test_writing_seat_runs_claude_with_its_login_settings_and_the_brief_on_stdin
     assert argv[0] == "-p" and "claude-sonnet-5-5" in argv and "acceptEdits" in argv
     assert "--disallowedTools" not in argv
     settings = (tmp_path / "settings.txt").read_text(encoding="utf-8")
-    assert "foreground_wait_guard.py" in settings and "sidecar_workdir_guard.py" in settings
+    assert "pre_bash.py" in settings and "sidecar_workdir_guard.py" in settings
+    assert (tmp_path / "sidecar.txt").read_text(encoding="utf-8") == "1"
     assert Path((tmp_path / "config.txt").read_text(encoding="utf-8")) == Path(env["HOME"]) / ".claude-secondary"
-    assert (tmp_path / "stdin.txt").read_text(encoding="utf-8") == BRIEF
+    rails = (CLAUDE / "guards" / "rails.md").read_text(encoding="utf-8")
+    stdin = (tmp_path / "stdin.txt").read_text(encoding="utf-8")
+    assert stdin.startswith(rails.rstrip()) and stdin.endswith(BRIEF) and stdin.count(rails.splitlines()[0]) == 1
 
 
 def test_forced_cli_error_comes_back_verbatim_and_writes_no_answer(tmp_path):
@@ -197,3 +203,26 @@ def test_failing_post_return_fails_the_run_and_keeps_the_answer(tmp_path):
     done = _seat(repo, worktree, _env(tmp_path), "claude-secondary", _brief(worktree), "out.md")
     assert done.returncode == 2 and "answer-rejected" in done.stderr
     assert (worktree / "out.md").read_text(encoding="utf-8").strip() == "STUB ANSWER"
+
+
+def test_agy_seat_writes_the_floor_bridge_before_launch(tmp_path):
+    repo = _checkout(tmp_path)
+    env = _env(tmp_path)
+    agy = tmp_path / "bin" / "agy.bat"
+    agy.write_bytes(STUB_AGY_BAT.encode("ascii"))
+    env["AGY_BIN"] = str(agy)
+    _seat(repo, repo, env, "antigravity", _brief(repo, AGY_BRIEF), "out.md")
+    bridge = json.loads((repo / ".agents" / "hooks.json").read_text(encoding="utf-8"))
+    assert "agy_hook_bridge.py" in json.dumps(bridge)
+
+
+def test_a_writing_agy_row_is_refused_for_want_of_a_fence(tmp_path):
+    repo = _checkout(tmp_path)
+    seats = repo / ".claude" / "seats.json"
+    data = json.loads(seats.read_text(encoding="utf-8"))
+    data["seats"]["antigravity"]["writes"] = "yes"
+    seats.write_text(json.dumps(data), encoding="utf-8")
+    worktree = _linked_worktree(repo, tmp_path)
+    done = _seat(repo, worktree, _env(tmp_path), "antigravity", _brief(worktree), "out.md")
+    assert done.returncode != 0 and "fence" in done.stderr
+    assert not (worktree / "out.md").exists()

@@ -2,6 +2,7 @@
 
     python -m pytest .claude/tests/test_launch_check.py -q
 """
+import json
 import os
 import shlex
 import subprocess
@@ -113,3 +114,51 @@ def test_spawned_check_refuses_a_read_only_job_naming_a_peer_target(tmp_path):
                            "--root", str(tmp_path), "--writes", "no"], capture_output=True, text=True,
                           stdin=subprocess.DEVNULL)
     assert done.returncode == 2 and "launch refused" in done.stderr
+
+
+BACKSLASH_DIR = 'C:' + chr(92) + 'Users' + chr(92) + 'jo' + chr(92) + 'wt'
+
+
+def _stage(tmp_path, brief_abs, writes=True, workdir=None):
+    here = tmp_path / "here"
+    (here / "guards").mkdir(parents=True, exist_ok=True)
+    (here / "guards" / "rails.md").write_text("RAILS TEXT\n", encoding="utf-8")
+    slot = tmp_path / "slot"
+    slot.mkdir(exist_ok=True)
+    lc.stage(slot, brief_abs, str(tmp_path / "spill" / "out.md"), str(here), workdir or str(tmp_path / "wt"),
+             str(tmp_path / "main") if writes else "")
+    return slot
+
+
+def test_stage_prompt_is_the_rails_once_then_the_brief(tmp_path):
+    brief = tmp_path / "brief.md"
+    brief.write_text("inputs:\n- a.md\n", encoding="utf-8")
+    prompt = (_stage(tmp_path, str(brief)) / "prompt.md").read_text(encoding="utf-8")
+    assert prompt.startswith("RAILS TEXT\n") and prompt.count("RAILS TEXT") == 1
+    assert prompt.endswith("inputs:\n- a.md\n")
+
+
+def test_stage_settings_register_the_floor_in_place_of_the_bare_wait_guard_and_fence_the_spill_dir(tmp_path):
+    brief = tmp_path / "brief.md"
+    brief.write_text("x\n", encoding="utf-8")
+    groups = json.loads((_stage(tmp_path, str(brief)) / "settings.json").read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+    commands = [h["command"] for g in groups for h in g["hooks"]]
+    assert any("pre_bash.py" in c for c in commands) and not any("foreground_wait_guard" in c for c in commands)
+    fence = [c for c in commands if "sidecar_workdir_guard.py" in c]
+    assert len(fence) == 1 and "spill" in fence[0]
+
+
+def test_stage_settings_with_a_backslash_path_parse(tmp_path):
+    brief = tmp_path / "brief.md"
+    brief.write_text("x" + chr(10), encoding="utf-8")
+    slot = _stage(tmp_path, str(brief), workdir=BACKSLASH_DIR)
+    commands = [h["command"] for g in json.loads((slot / "settings.json").read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+                for h in g["hooks"]]
+    assert any(BACKSLASH_DIR in c for c in commands)
+
+
+def test_stage_read_only_seat_gets_no_fence(tmp_path):
+    brief = tmp_path / "brief.md"
+    brief.write_text("x\n", encoding="utf-8")
+    slot = _stage(tmp_path, str(brief), writes=False)
+    assert "sidecar_workdir_guard" not in (slot / "settings.json").read_text(encoding="utf-8")
