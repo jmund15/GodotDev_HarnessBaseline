@@ -38,15 +38,13 @@ HEAD_LINES = 50
 # Opens the record a Workflow harness puts before the computed task when the session's user request triggered the run:
 # the session's own words, never the job's brief, so it is not the job's prompt record.
 RELAY_HEAD = "[Workflow harness — user request]"
-# The client's cap on hook text it injects (additionalContext, stdout); past it the client shows a 2,000-character
-# preview and a saved-file path instead (code.claude.com/docs/en/hooks; observed on a 12,030-character amendment).
-HOOK_TEXT_CAP = 10_000
 # Opens a blocked stop's reason. `tools/dispatch_result.py` `answered_after_report` reads it: the reply after it is the
 # job's full report, re-issued as the reason asks, not a trailing answer.
 STOP_HEAD = "[amendment] Your parent amended your brief after your last tool call"
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _hook_parts import HOOK_TEXT_CAP  # noqa: E402
 from _win_path import native_path  # noqa: E402
 
 

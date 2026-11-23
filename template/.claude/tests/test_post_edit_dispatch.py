@@ -1,324 +1,72 @@
-#!/usr/bin/env python3
-"""Re-runnable proof for hooks/post_edit_dispatch.py — the PostToolUse Write|Edit chain.
-
-Seven separate settings.json commands became one dispatcher. Every sub-hook's advisory has
-to survive, and they now merge into ONE additionalContext payload instead of seven
-competing ones. Each case feeds a real PostToolUse payload by subprocess and asserts on the
-emitted channel.
-
-PostToolUse is advisory-only. Retired block/deny results cannot erase another
-advisory. These and the fault-isolation cases run against a synthetic chain.
-
-State is redirected with HARNESS_HOOK_STATE_DIR/HOME/USERPROFILE — this never touches
-~/.claude/.routing_state/.
-
-    python3 .claude/tests/test_post_edit_dispatch.py
-"""
-import builtins
-import importlib.util
+"""Proof for hooks/post_edit_dispatch.py, the PostToolUse Write|Edit chain: advisories merge into one
+additionalContext, and a fault, a hang or an oversize text never erases another member's output."""
 import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
+from pathlib import Path
 
-import _settings_probe
+HOOKS = Path(__file__).resolve().parents[1] / "hooks"
+sys.path.insert(0, str(HOOKS))
+import post_edit_dispatch as dispatcher  # noqa: E402
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-CLAUDE = os.path.abspath(os.path.join(HERE, ".."))
-ROOT = os.path.abspath(os.path.join(CLAUDE, ".."))
-HOOKS = os.path.join(CLAUDE, "hooks")
-DISPATCH = os.path.join(HOOKS, "post_edit_dispatch.py")
-sys.path.insert(0, HOOKS)
-import _optional_hooks  # noqa: E402
-
-# check_logger_tag_prefix ships with a higher layer; a consumer without it runs only the dispatcher's own cases.
-LOGGER_TAGS = _optional_hooks.present("check_logger_tag_prefix")
-SETTINGS = _settings_probe.settings_path(CLAUDE)
-
-SUBHOOKS = ("check_logger_tag_prefix", "plan_memory_reminder",
-            "design_surface_reminder", "harness_growth_guard",
-            "self_eval_archive_guard", "retire_trigger_advisory")
-
-GAME_PLAN = """# Spell AI status behavior
-
-Implement the game behavior with deterministic coverage and retain the authored data
-contract. The spell applies a status effect through the AI blackboard while the critter
-is active. Tests cover activation, transition, expiry, and visible gameplay outcome.
-The work remains within the named game systems and does not alter harness routing.
-Review the existing abstractions before implementation and keep the status effect
-loosely coupled to spell delivery.
-
-## Critical files
-
-`Spells/Effects/ArcStatusEffect.cs`, `NPCs/AI/CritterBlackboard.cs`,
-`Tests/Logic/Spells/ArcStatusEffectTests.cs`.
-The spell, AI behavior, and status effect are all production game scope; the change refactors them.
-"""
-
-# load_steps says 9; the file carries 1 ext_resource + 0 sub_resource, so 2 is correct.
-# The same file also lacks script_class= in its header, which is tres_format_guard's case.
-BAD_TRES = """[gd_resource type="Resource" load_steps=9 format=3]
-
-[ext_resource type="Script" path="res://Scripts/Probe.cs" id="1_probe"]
-
-[resource]
-script = ExtResource("1_probe")
-value = 1
-"""
+PAYLOAD = {"tool_name": "Write", "session_id": "po1", "tool_input": {"file_path": "C:/repo/a.txt", "content": "x"}}
+NOISY = ("noisy", lambda p: {"context": "advisory-from-noisy"})
 
 
-def run(payload, env, script=None):
-    r = subprocess.run([sys.executable, script or DISPATCH], input=json.dumps(payload),
-                       capture_output=True, text=True, timeout=120, env=env,
-                       encoding="utf-8", errors="replace")
-    return r.returncode, (r.stdout or "").strip(), (r.stderr or "")
+def boom(_payload):
+    raise RuntimeError("planted fault")
 
 
-def run_raw(text, env):
-    r = subprocess.run([sys.executable, DISPATCH], input=text, capture_output=True,
-                       text=True, timeout=120, env=env, encoding="utf-8", errors="replace")
-    return r.returncode, (r.stdout or "").strip(), (r.stderr or "")
+def context(out):
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
 
 
-def context(stdout):
-    if not stdout or stdout == "{}":
-        return ""
-    specific = (json.loads(stdout).get("hookSpecificOutput") or {})
-    assert specific.get("hookEventName") == "PostToolUse", specific
-    return specific.get("additionalContext") or ""
+def test_advisories_merge_into_one_payload_in_chain_order():
+    rc, out, _ = dispatcher.dispatch(PAYLOAD, chain=(("a", lambda p: {"context": "one"}),
+                                                     ("b", lambda p: {"context": "two"})))
+    assert rc == 0 and context(out) == "one\n\ntwo"
 
 
-def written(path, content, session="post0001", cwd=None, tool="Write"):
-    payload = {"hook_event_name": "PostToolUse", "tool_name": tool, "session_id": session,
-               "tool_input": {"file_path": path, "content": content},
-               "tool_response": {"filePath": path}}
-    if cwd:
-        payload["cwd"] = cwd
-    return payload
+def test_retired_block_and_deny_results_cannot_erase_an_advisory():
+    for verdict in ({"block": "x"}, {"deny": "x"}):
+        rc, out, _ = dispatcher.dispatch(PAYLOAD, chain=(NOISY, ("late", lambda p, v=verdict: v)))
+        assert rc == 0 and "advisory-from-noisy" in context(out)
 
 
-def plant(path, text):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(text)
-    return path
+def test_runtime_fault_names_the_member_and_keeps_prior_and_later_output():
+    rc, out, err = dispatcher.dispatch(PAYLOAD, chain=(NOISY, ("bad", boom),
+                                                       ("late", lambda p: {"context": "later"})))
+    assert rc == 0 and "advisory-from-noisy" in context(out) and "later" in context(out) and "bad" in err
 
 
-def load_dispatch_module(blocked_import=None):
-    spec = importlib.util.spec_from_file_location("post_edit_dispatch_probe", DISPATCH)
-    module = importlib.util.module_from_spec(spec)
-    original_import = builtins.__import__
-
-    def guarded_import(name, *args, **kwargs):
-        if name == blocked_import:
-            raise ImportError("planted import fault")
-        return original_import(name, *args, **kwargs)
-
-    try:
-        builtins.__import__ = guarded_import
-        spec.loader.exec_module(module)
-    except ImportError:
-        return None
-    finally:
-        builtins.__import__ = original_import
-    return module
+def test_import_fault_names_the_member_and_keeps_later_output():
+    rc, out, err = dispatcher.dispatch(PAYLOAD, chain=(("no_such_member", None), NOISY))
+    assert rc == 0 and "advisory-from-noisy" in context(out) and "no_such_member" in err
 
 
-def registration_cases():
-    with open(SETTINGS, encoding="utf-8") as fh:
-        settings = json.load(fh)
-    commands = []
-    for group in settings["hooks"]["PostToolUse"]:
-        if group.get("matcher") != "Write|Edit":
-            continue
-        commands.extend(h.get("command", "") for h in group.get("hooks", []))
-    yield ("settings.json registers post_edit_dispatch.py for Write|Edit",
-           any("post_edit_dispatch.py" in c for c in commands))
-    yield ("no consolidated sub-hook keeps its own Write|Edit registration",
-           not any(name + ".py" in c for c in commands for name in SUBHOOKS))
-    yield ("the Write|Edit PostToolUse surface is exactly one command", len(commands) == 1)
+def test_a_hung_member_times_out_without_losing_prior_output(monkeypatch):
+    monkeypatch.setattr(dispatcher, "SUBHOOK_TIMEOUT", 0.2)
+    rc, out, err = dispatcher.dispatch(PAYLOAD, chain=(NOISY, ("slow", lambda p: time.sleep(2))))
+    assert rc == 0 and "advisory-from-noisy" in context(out) and "slow" in err and "timeout" in err
 
 
-def main():
-    tmp = tempfile.mkdtemp(prefix="post_edit_dispatch_")
-    home = os.path.join(tmp, "home")
-    state_dir = os.path.join(home, ".claude", ".routing_state")
-    os.makedirs(state_dir, exist_ok=True)
-    env = dict(os.environ, HOME=home, USERPROFILE=home, HARNESS_HOOK_STATE_DIR=state_dir,
-               CLAUDE_PROJECT_DIR=ROOT, PYTHONIOENCODING="utf-8")
-    cases = list(registration_cases())
-
-    # --- clean edit -------------------------------------------------------
-    clean_cs = plant(os.path.join(tmp, "repo", "Scripts", "Clean.cs"),
-                     "public class Clean { public int Value = 1; }\n")
-    rc, out, err = run(written(clean_cs, "public int Value = 1;"), env)
-    cases.append(("a clean edit emits nothing and exits 0", rc == 0 and out in ("", "{}")))
-
-    # --- check_logger_tag_prefix ------------------------------------------
-    if LOGGER_TAGS:
-        logger_payload = written(clean_cs, 'JmoLogger.Info(this, "plain message");', tool="Edit")
-        logger_payload["tool_input"] = {"file_path": clean_cs, "old_string": "var x = 1;",
-                                        "new_string": 'JmoLogger.Info(this, "plain message");'}
-        rc, out, err = run(logger_payload, env)
-        cases.append(("check_logger_tag_prefix still warns about an untagged call",
-                      rc == 0 and "[logger_tag_prefix]" in context(out)))
-
-    # --- plan_memory_reminder ---------------------------------------------
-    plan_path = os.path.join(tmp, "repo", ".claude", "plans", "b2-game-fixture.md")
-    rc, out, err = run(written(plan_path, GAME_PLAN, session="postplan"), env)
-    cases.append(("plan_memory_reminder still fires on a game-scope plan",
-                  rc == 0 and "Plan text names domains:" in context(out) and "Before implementing" not in context(out)))
-
-    # --- design_surface_reminder ------------------------------------------
-    rc, out, err = run(written(clean_cs, "[Export] public bool Enabled = false;",
-                               session="postdsgn"), env)
-    cases.append(("design_surface_reminder still fires on an [Export] bool",
-                  rc == 0 and "design_litmus" in context(out)))
-
-    # Resource normalization now belongs to PreToolUse.
-    tres = plant(os.path.join(tmp, "repo", "Data", "probe.tres"), BAD_TRES)
-    rc, out, err = run(written(tres, BAD_TRES, session="posttres"), env)
-    cases.append(("resource edits get no post-edit formatting advisory", rc == 0 and not context(out)))
-    module = load_dispatch_module()
-    cases.append(("only PreToolUse owns resource formatting",
-                  'tres_format_guard' not in dict(module.CHAIN)))
-
-    # --- harness_growth_guard ---------------------------------------------
-    repo = os.path.join(tmp, "growth")
-    big_md = plant(os.path.join(repo, ".claude", "commands", "big.md"), "- " + "large " * 500)
-    growth_payload = written(big_md, "- " + "large " * 500, session="postgrow", cwd=repo)
-    growth_payload["tool_response"]["type"] = "create"
-    rc, out, err = run(growth_payload, env)
-    cases.append(("a large harness markdown edit gets no growth report",
-                  rc == 0 and "[harness-growth]" not in context(out)))
-    cases.append(("harness_growth_guard is not in the post-edit chain",
-                  "harness_growth_guard" not in dict(load_dispatch_module().CHAIN)))
-
-    # --- self_eval_archive_guard ------------------------------------------
-    archive = plant(os.path.join(tmp, "repo", "self_evaluate_archive.json"), "not json")
-    rc, out, err = run(written(archive, "not json", session="postarch"), env)
-    cases.append(("self_eval_archive_guard still reports an invalid archive",
-                  rc == 0 and "[self-eval-archive-guard]" in context(out)))
-
-    # --- retire_trigger_advisory --------------------------------------------
-    no_trigger_md = ("---\nname: no-trigger\ndescription: fixture\n---\n\nBody.\n")
-    memory_repo = os.path.join(tmp, "repo")
-    plant(os.path.join(memory_repo, ".claude", "auto-memory", "archive", "probe.md"), no_trigger_md)
-    memory_path = os.path.join(memory_repo, ".claude", "auto-memory", "archive", "probe.md")
-    payload_memory = {"hook_event_name": "PostToolUse", "tool_name": "Write", "session_id": "postmem",
-                      "cwd": memory_repo,
-                      "tool_input": {"file_path": memory_path, "content": no_trigger_md},
-                      "tool_response": {"type": "create", "filePath": memory_path}}
-    rc, out, err = run(payload_memory, env)
-    cases.append(("retire_trigger_advisory stays silent on a new memory file with no trigger",
-                  rc == 0 and "[retire-trigger-advisory]" not in context(out)))
-    malformed_md = ("---\nname: malformed\ndescription: fixture\nretire_when:\n---\n\nBody.\n")
-    payload_malformed = dict(payload_memory, session_id="postmemm",
-                             tool_input={"file_path": memory_path, "content": malformed_md})
-    rc, out, err = run(payload_malformed, env)
-    cases.append(("retire_trigger_advisory fires through the dispatcher on malformed retire_when",
-                  rc == 0 and "[retire-trigger-advisory]" in context(out)))
-    update_memory = dict(payload_memory, session_id="postmemu",
-                         tool_response={"type": "update", "filePath": memory_path})
-    rc, out, err = run(update_memory, env)
-    cases.append(("retire_trigger_advisory stays silent on an update Write",
-                  rc == 0 and "[retire-trigger-advisory]" not in context(out)))
-
-    # --- malformed payload ------------------------------------------------
-    rc, out, err = run_raw("not json at all", env)
-    cases.append(("a malformed payload exits 0 with no output", rc == 0 and out in ("", "{}")))
-
-    # --- dispatcher contract, synthetic chain ------------------------------
-    cases.append(("E8: one sub-hook import fault cannot prevent the dispatcher from loading",
-                  load_dispatch_module("harness_growth_guard") is not None))
-    module = load_dispatch_module()
-    noisy = ("noisy", lambda payload: {"context": "advisory-from-noisy"})
-    blocker = ("blocker", lambda payload: {"block": "BLOCKED: planted"})
-    boom_calls = []
-
-    def boom(payload):
-        boom_calls.append(1)
-        raise RuntimeError("planted sub-hook fault")
-
-    payload = written(clean_cs, "var x = 1;")
-
-    for retired in (blocker, ("denier", lambda payload: {"deny": "planted deny"})):
-        for chain in ((retired, noisy), (noisy, retired)):
-            rc, out, err = module.dispatch(payload, chain=chain)
-            cases.append((f"retired {retired[0]} preserves advisories in either position",
-                          rc == 0 and context(out) == "advisory-from-noisy"
-                          and "permissionDecision" not in out and not err))
-
-    for name in ("duplicate_test_double_guard", "floorcell_mutation_seam_guard",
-                 "test_suite_gate_coverage_guard", "trail_mutation_seam_guard"):
-        hook_path = os.path.join(HOOKS, name + ".py")
-        if not os.path.isfile(hook_path):
-            continue  # a project that does not carry this guard has no branch to retire
-        with open(hook_path, encoding="utf-8") as fh:
-            source = fh.read()
-        cases.append((f"{name} retains standalone checks, not a hook branch",
-                      "def standalone(" in source and "def hook(" not in source
-                      and "--hook" not in source))
-
-    rc, out, err = module.dispatch(payload, chain=(("plan_memory_reminder", boom), noisy))
-    cases.append(("E8: a runtime fault preserves later output and names its hook",
-                  rc == 0 and bool(boom_calls) and "advisory-from-noisy" in context(out)
-                  and "plan_memory_reminder" in err))
-
-    rc, out, err = module.dispatch(payload, chain=(noisy, ("plan_memory_reminder", boom)))
-    cases.append(("E8: a runtime fault preserves prior output and names its hook",
-                  rc == 0 and "advisory-from-noisy" in context(out)
-                  and "plan_memory_reminder" in err))
-
-    original_import_module = module.importlib.import_module
-
-    def fail_import(name):
-        if name == "harness_growth_guard":
-            raise ImportError("planted import fault")
-        return original_import_module(name)
-
-    module.importlib.import_module = fail_import
-    try:
-        rc, out, err = module.dispatch(
-            payload,
-            chain=(("harness_growth_guard", "advisory"), noisy),
-        )
-    finally:
-        module.importlib.import_module = original_import_module
-    cases.append(("E8: an import fault preserves later output and names its hook",
-                  rc == 0 and "advisory-from-noisy" in context(out)
-                  and "harness_growth_guard" in err))
-
-    def slow(payload):
-        time.sleep(2.0)
-        return {"context": "too-late"}
-
-    module.SUBHOOK_TIMEOUT = 0.05
-    started = time.monotonic()
-    rc, out, err = module.dispatch(payload, chain=(noisy, ("slow_advisory", slow)))
-    elapsed = time.monotonic() - started
-    # The subhook sleeps 2 s; returning inside 1 s is the decision (the timeout, not the sleep, ended
-    # it). A tighter bound tested the host's scheduler, not the timeout.
-    cases.append(("E8: a hung late check times out without losing prior warnings",
-                  elapsed < 1.0 and "advisory-from-noisy" in context(out)
-                  and "slow_advisory" in err and "timeout" in err))
-
-    huge = ("huge_advisory", lambda payload: {"context": "x" * 1_000_000})
-    rc, out, err = module.dispatch(payload, chain=(noisy, huge))
-    cases.append(("E8: an oversized late context is bounded without losing prior warnings",
-                  "advisory-from-noisy" in context(out) and len(out) < 100_000
-                  and "huge_advisory" in err and "truncated" in err))
-
-    failures = [label for label, ok in cases if not ok]
-    for label, ok in cases:
-        print("%-4s %s" % ("ok" if ok else "FAIL", label))
-    print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    for label in failures:
-        print("  FAIL " + label)
-    return 1 if failures else 0
+def test_an_oversize_context_is_bounded_and_prior_output_survives():
+    big = "y" * (dispatcher.MAX_CONTEXT_CHARS + 500)
+    rc, out, err = dispatcher.dispatch(PAYLOAD, chain=(NOISY, ("big", lambda p: {"context": big})))
+    text = context(out)
+    assert "advisory-from-noisy" in text and len(text) < len(big) and "truncated" in err
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_shared_chain_is_the_reaper_alone():
+    assert [n for n, _ in dispatcher.CHAIN] == ["runaway_scan_reaper"]
+
+
+def test_entry_point_exits_clean_on_a_write_and_a_malformed_payload(tmp_path):
+    env = dict(os.environ, HARNESS_HOOK_STATE_DIR=str(tmp_path), HARNESS_REAPER_CACHE_DIR=str(tmp_path),
+               PYTHONIOENCODING="utf-8")
+    entry = str(HOOKS / "post_edit_dispatch.py")
+    for text in (json.dumps(PAYLOAD), "not json"):
+        done = subprocess.run([sys.executable, entry], input=text, capture_output=True, text=True, env=env, timeout=120)
+        assert done.returncode == 0 and done.stdout.strip() in ("", "{}")

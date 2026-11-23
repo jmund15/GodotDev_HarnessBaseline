@@ -94,7 +94,8 @@ DEFAULTS: dict = {
     "dispatch": {"pre_launch": "", "post_return": ""},
     # commands/pr_ready.md (`get pr_ready.checks`): the project check files a PR runs.
     "pr_ready": {"checks": []},
-    # hooks/<event>_dispatch.py (one shared dispatcher per event): the member modules each event runs.
+    # hooks/_optional_hooks.py chain(): {pre_edit, post_edit, pre_read, post_read, prompt: [module]}, the project-local
+    # members each dispatcher runs after its own CHAIN of shared members.
     "hook_members": {},
 }
 

@@ -316,8 +316,8 @@ def _kill_verified(pid, ppid, first):
 def check(payload=None):
     """Advisory lines for this call's reaps; [] when throttled, off Windows, or on any error.
 
-    The in-process entry for pre_bash_dispatch, post_read_dispatch and post_edit_dispatch, which
-    append the lines to their own additionalContext. Throttled like main() and never raises.
+    The in-process entry for pre_bash_dispatch; `process` wraps it for post_read_dispatch and
+    post_edit_dispatch, which append the lines to their own additionalContext. Throttled like main() and never raises.
     """
     try:
         if os.name != "nt":
@@ -329,6 +329,12 @@ def check(payload=None):
         return reap()
     except Exception:
         return []
+
+
+def process(payload):
+    """Dispatcher member contract: `check`'s lines as one `{"context": text}`, or None when it reaped nothing."""
+    lines = check(payload)
+    return {"context": "\n".join(lines)} if lines else None
 
 
 def main():

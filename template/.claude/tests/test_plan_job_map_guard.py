@@ -134,12 +134,7 @@ def main():
     check("3c the next production write after that advisory: silent",
           run_hook(pre("Write", SRC, S))[0], ALLOW)
 
-    # 3d. the registered matcher is Write|Edit: Edit advises through the dispatcher; the tools the
-    # matcher never delivers (MultiEdit, NotebookEdit) are outside the hook's contract and stay silent.
-    E = "edit_sid_0009"
-    via("post_edit_dispatch.py", post("Write", plan_a, E))
-    code, out = via("pre_edit_dispatch.py", pre("Edit", SRC, E))
-    check("3d Edit on a production path advised via the dispatcher", code == 0 and ADVISORY_PREFIX in out, True, out)
+    # 3d. MultiEdit and NotebookEdit are outside the hook's contract and stay silent.
     for label, tool, target, key, sid in [
         ("3d NotebookEdit is outside the hook's contract", "NotebookEdit", p("nb", "a.ipynb"), "notebook_path",
          "nb_sid_0008"),
@@ -263,17 +258,6 @@ def main():
     # 13. malformed stdin and a non-object payload do not crash.
     check("13 non-JSON stdin does not crash", run_hook(None, raw="not json at all")[0] in (ALLOW, LOST), True)
     check("13 non-object payload does not crash", run_hook(None, raw="[1, 2]")[0] in (ALLOW, LOST), True)
-
-    # 14. wiring: the edit dispatchers run the guard as a member (process()), with no settings entry of its own.
-    W = "dispatch_sid_0008"
-    plan_w = write(p(".claude", "plans", "plan-dispatch.md"), "# Plan\n\n## Slices\n\nS1, S2\n")
-
-    via("post_edit_dispatch.py", post("Write", plan_w, W))
-    code, out = via("pre_edit_dispatch.py", pre("Write", SRC, W))
-    check("14 pre_edit_dispatch carries the member's advisory", code == 0 and ADVISORY_PREFIX in out, True, out)
-    check("14 advisory via the dispatcher names the plan", posix(plan_w) in out, True, out)
-    code, out = via("pre_edit_dispatch.py", pre("Write", SRC, W))
-    check("14 second write via the dispatcher: no advisory", ADVISORY_PREFIX in out, False, out)
 
     shutil.rmtree(TMP, ignore_errors=True)
 

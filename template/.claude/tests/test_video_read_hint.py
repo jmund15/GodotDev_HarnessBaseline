@@ -108,14 +108,6 @@ class Registration(unittest.TestCase):
                 own = [h["command"] for group in hooks for h in group["hooks"] if "video_read_hint.py" in h.get("command", "")]
                 self.assertEqual(own, [])
 
-    def test_the_read_dispatcher_emits_it(self):
-        dispatch = CLAUDE / "hooks" / "pre_read_dispatch.py"
-        res = subprocess.run([sys.executable, str(dispatch)], input=json.dumps(read("C:/clips/run.mp4")),
-                             capture_output=True, text=True, encoding="utf-8", timeout=60)
-        self.assertIn(res.returncode, (0, 2), res.stderr)
-        self.assertNotIn("Traceback", res.stderr)
-        self.assertIn("video_frames", advisory(json.loads(res.stdout or "{}")) or "")
-
 
 if __name__ == "__main__":
     unittest.main()
