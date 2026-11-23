@@ -164,8 +164,8 @@ const RAILS_HEADER = '=== DELEGATE RAILS (standing rules for how you work; your 
 const railsRef = () => ['', RAILS_HEADER, RAILS_TEXT].join('\n')
 // ENGINE-BLOCK-END railsRef
 
-// TOOL PROFILES — what each child of this run launches with. Every job runs as its kind row's generated
-// agent type, whose `tools` frontmatter is the whole inventory, so an entry is `agent-type`.
+// TOOL PROFILES — what each child of this run launches with. Every job runs as its kind row's agent type (agents/<name>.md),
+// whose `tools` frontmatter is the whole inventory, so an entry is `agent-type`.
 const RECORDED = Object.fromEntries(jobs.map(j => [j.label, Object.assign({}, profileOf(j),
   { enforcement: 'agent-type', effectiveMcp: (profileOf(j).mcpServers || []).join(', ') })]))
 log('TOOL-PROFILES ' + JSON.stringify(RECORDED))
@@ -272,7 +272,6 @@ phase(chainsIn.length > 0 ? 'Chains' : 'Dispatch')
 const notRun = []
 const results = await parallel(lanes.map(c => async () => {
   const laneOut = []
-  const postOut = []
   for (let i = 0; i < c.jobs.length; i++) {
     const j = c.jobs[i]
     const ctx = [A.contextPath].concat(Array.isArray(j.contextPaths) ? j.contextPaths : []).filter(p => typeof p === 'string' && p)
@@ -306,20 +305,10 @@ const results = await parallel(lanes.map(c => async () => {
       log('lane ' + c.name + ': stopped at ' + (i + 1) + '/' + c.jobs.length + ' (no result from ' + j.label + ')')
       break
     }
-    // Post-return (Q13 O1): the project's `dispatch.post_return` hook runs in the job's cwd through one agent that
-    // runs launch_check.py. The entry injects `__postReturn` only when the project sets the hook. A native job has
-    // no out file, so its brief path stands for it.
-    if (A.__postReturn) {
-      const cmd = 'python3 .claude/tools/launch_check.py post_return native ' + j.promptPath + ' ' + j.promptPath + ' ' + j.label
-      const post = await agent('Run this command exactly with the Bash tool and return its exit code and any stderr, verbatim. Do nothing else: ' + cmd,
-        { label: j.label + ' post-return', phase: 'Dispatch', model: PIN(j.model), effort: EFF(j.effort), agentType: profileOf(j).agentType })
-      postOut.push([j.label + ':post_return', post])
-      if (post == null) log('lane ' + c.name + ': post-return agent for ' + j.label + ' returned nothing')
-    }
     log('lane ' + c.name + ': ' + (i + 1) + '/' + c.jobs.length + ' done (' + j.label + ')')
   }
   for (const rest of c.jobs.slice(laneOut.length)) notRun.push(rest.label)
-  return laneOut.concat(postOut)
+  return laneOut
 }))
 
 const out = Object.fromEntries(results.flat().filter(Boolean))

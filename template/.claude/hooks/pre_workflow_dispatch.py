@@ -15,16 +15,21 @@ Steps, each reading the call the step before left (a rewritten call reaches ever
                                file it cannot read denies the call, since no engine can run without its pins. (Workflow)
   6. workflow_script_lf_guard  rewrites a harness script's CRLF to LF before the permission handler reads it. (Workflow)
 
+PostToolUse(Workflow), the same file: `tools/launch_check.py`'s `dispatch.post_return` hook runs once per job on
+route `native` with the job's deliverable (`<spillDir>/<label>.md`), the arguments `seat.sh` passes. A refusal comes
+back as `decision: block` naming that job. Nothing runs when the project sets no hook.
+
 Merge: deny reasons, every one in step order, each once; one reason is emitted verbatim, several are numbered.
 updatedInput is the call after the last rewrite. A step that raises denies the call and names the step, so a fault
 never lets an unchecked Workflow through.
 
-Wired in: settings.json hooks.PreToolUse, matcher "Workflow|Agent".
+Wired in: settings.json hooks.PreToolUse, matcher "Workflow|Agent"; hooks.PostToolUse, matcher "Workflow".
 """
 
 import importlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -37,6 +42,7 @@ import launch_check  # noqa: E402
 import workflow_transport  # noqa: E402
 
 JOBS_FILE_ROOT = ".claude/scratch"
+ROUTE = "native"  # the route name both project hooks receive; `seat.sh` passes the seat name in its place
 OWNER_LIFTS = ("currency", "currencyReason")
 ARGS_FILE_NEXT = ("write the run's args to a file in the run dir, "
                   "then pass only `{argsFile: \"<run dir>/args.json\"}`")
@@ -149,6 +155,25 @@ def expand_jobs_file(payload, root):
     return [], _with_args(tool_input, expanded, as_text)
 
 
+def _deliverable(job, args, root):
+    """The file a job's deliverable lands in: `<spillDir>/<label>.md`, the engine's own spill path. A call with no
+    usable spillDir returns inline, so the scratch root stands in and a read-only job may name no target at all."""
+    label = job.get("label") or job.get("key") or "(unlabeled)"
+    spill = args.get("spillDir")
+    spill = spill.replace("\\", "/").rstrip("/") if isinstance(spill, str) else ""
+    if not spill.startswith(JOBS_FILE_ROOT) or ".." in spill.split("/"):
+        spill = JOBS_FILE_ROOT
+    out = "%s/%s.md" % (spill, re.sub(r"[^A-Za-z0-9._-]", "_", str(label)))
+    (Path(root) / out).parent.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def _writes(job):
+    """"yes" when the job's kind row writes (`writes` in guards/tool_profiles.json); an unknown kind is read-only."""
+    row = workflow_transport.kind_row(job.get("kind"), CLAUDE_DIR)
+    return "yes" if row.get("writes") else "no"
+
+
 def launch_checks(payload, root):
     """Each job's launch checks, then its project pre-launch hook: the same module `seat.sh` calls for a seat."""
     args, _as_text = _args_of(payload.get("tool_input") or {})
@@ -160,16 +185,31 @@ def launch_checks(payload, root):
         label = job.get("label") or job.get("key") or "(unlabeled)"
         if not isinstance(brief, str) or not brief:
             continue
-        # A native job has no out file: the brief stands in, so a read-only job naming any target is refused.
-        writes = "yes" if job.get("kind") == "author" else "no"
-        causes = launch_check.check(brief, brief, str(root), writes)
+        out = _deliverable(job, args, root)
+        causes = launch_check.check(brief, out, str(root), _writes(job))
         if causes:
             reasons.append("%s: %s" % (label, causes[0]))
             continue
-        rc, err = launch_check.run_hook(launch_check.PRE_KEY, ["workflow", brief, brief, label], str(root))
+        rc, err = launch_check.run_hook(launch_check.PRE_KEY, [ROUTE, brief, out, label], str(root))
         if rc:
             reasons.append("%s: dispatch.pre_launch refused: %s" % (label, err.strip() or "exit %s" % rc))
     return reasons, None
+
+
+def post_return(payload, root):
+    """PostToolUse(Workflow): the project's `dispatch.post_return` hook, once per job, free and deterministic.
+    A refusal is that job's failure; the reason reaches the session through `decision: block`."""
+    args, _as_text = _args_of(payload.get("tool_input") or {})
+    reasons = []
+    for job in _jobs_of(args or {}):
+        brief = job.get("promptPath")
+        label = job.get("label") or job.get("key") or "(unlabeled)"
+        if not isinstance(brief, str) or not brief:
+            continue
+        rc, err = launch_check.run_hook(launch_check.POST_KEY, [ROUTE, brief, _deliverable(job, args, root), label], str(root))
+        if rc:
+            reasons.append("%s: dispatch.post_return refused: %s" % (label, err.strip() or "exit %s" % rc))
+    return reasons
 
 
 def transport(payload, root):
@@ -235,6 +275,8 @@ def dispatch(raw_payload):
     """Run the steps and return (exit_code, stdout_text, stderr_text) for the dispatcher process."""
     payload = json.loads(raw_payload)
     root = _session_root(payload)
+    if payload.get("hook_event_name") == "PostToolUse":
+        return 0, _post_emit(post_return(payload, root)) if payload.get("tool_name") == "Workflow" else "", ""
     reasons, _none = _step(subagent_gate, payload, root)
     if reasons:
         return 0, _emit(reasons, None), ""
@@ -260,6 +302,10 @@ def _emit(reasons, rewritten):
     elif rewritten is not None:
         result["updatedInput"] = rewritten
     return json.dumps({"hookSpecificOutput": result}) if len(result) > 1 else ""
+
+
+def _post_emit(reasons):
+    return json.dumps({"decision": "block", "reason": _joined(reasons)}) if reasons else ""
 
 
 def main():

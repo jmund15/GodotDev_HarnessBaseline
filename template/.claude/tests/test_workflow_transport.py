@@ -15,7 +15,7 @@ HOOKS = Path(__file__).resolve().parents[1] / "hooks"
 sys.path.insert(0, str(HOOKS))
 import workflow_transport as wt  # noqa: E402
 
-ALLOWED_KEYS = {"__transport", "__toolProfiles", "__kindProfile", "__railsText", "__repoRoot", "__postReturn"}
+ALLOWED_KEYS = {"__transport", "__toolProfiles", "__kindProfile", "__railsText", "__repoRoot"}
 
 
 def plant(tmp_path, native=True, rails=True):
@@ -29,7 +29,8 @@ def plant(tmp_path, native=True, rails=True):
         (claude / "guards" / "rails.md").write_text("RAILS-MARK", encoding="utf-8")
     profiles = {"kinds": {
         "author": {"agentType": "delegate-author", "builtins": ["Read", "Edit"], "mcpServers": ["ai-worker"],
-                   "tier": "executor", "guard": "author", "disclosure": "full", "routes": ["engine"]},
+                   "tier": "executor", "guard": "author", "disclosure": "full", "routes": ["engine"], "writes": True},
+        "reviewer": {"agentType": "delegate-review", "builtins": ["Read"], "mcpServers": [], "routes": ["engine"]},
         "scout": {"agentType": "delegate-survey", "builtins": ["Read"], "mcpServers": [], "routes": ["launcher"]},
     }}
     (claude / "guards" / "tool_profiles.json").write_text(json.dumps(profiles), encoding="utf-8")
@@ -40,7 +41,7 @@ def test_injects_the_native_vocabulary_and_the_one_rails_text(tmp_path):
     out = wt.inject({"jobs": []}, cwd=None, claude_dir=plant(tmp_path))
     assert out["__transport"] == {"name": "native", "ids": ["opus", "sonnet"], "efforts": ["low", "high"]}
     assert out["__railsText"] == "RAILS-MARK"
-    assert "__repoRoot" not in out and "__postReturn" not in out
+    assert "__repoRoot" not in out
 
 
 def test_missing_native_block_fails_closed(tmp_path):
@@ -75,12 +76,27 @@ def test_no_capacity_tier_or_effort_key_is_injected(tmp_path):
     assert all("tier" not in row and "guard" not in row for row in out["__toolProfiles"].values())
 
 
-def test_post_return_is_injected_only_when_the_project_sets_the_hook(tmp_path, monkeypatch):
-    claude = plant(tmp_path)
-    assert "__postReturn" not in wt.inject({"jobs": []}, cwd=None, claude_dir=claude)
-    monkeypatch.setattr(wt, "post_return_set", lambda claude_dir=None: True)
-    assert wt.inject({"jobs": []}, cwd=None, claude_dir=claude)["__postReturn"] is True
-
-
 def test_a_directory_git_cannot_answer_for_gives_no_repo_root(tmp_path):
     assert wt.repo_root(str(tmp_path / "absent")) is None
+
+
+def test_every_agent_type_a_profile_names_is_a_shipped_agent_file_with_its_tools():
+    """The engines launch each child as `agentType`; a name with no `agents/<name>.md` fails every job at launch."""
+    claude = Path(__file__).resolve().parents[1]
+    table = json.loads((claude / "guards" / "tool_profiles.json").read_text(encoding="utf-8"))
+    rows = list(table["kinds"].values()) + table.get("variants", [])
+    named = {}
+    for row in rows:
+        if row.get("agentType"):
+            base = next((r for r in table["kinds"].values() if r.get("agentType") and "kind" in row
+                         and r is table["kinds"][row["kind"]]), row)
+            named[row["agentType"]] = list(base.get("builtins") or []) + list(row.get("add") or [])
+    assert named, "no agent type is named"
+    for name, builtins in named.items():
+        text = (claude / "agents" / (name + ".md")).read_text(encoding="utf-8")
+        front = text.split("---")[1]
+        assert ("name: %s" % name) in front.splitlines()
+        tools = next(l for l in front.splitlines() if l.startswith("tools:"))[len("tools:"):]
+        listed = [t.strip() for t in tools.split(",")]
+        assert set(builtins) <= set(listed), (name, builtins, listed)
+        assert not ({"Edit", "Write"} & set(listed)) or {"Edit", "Write"} <= set(builtins), name
