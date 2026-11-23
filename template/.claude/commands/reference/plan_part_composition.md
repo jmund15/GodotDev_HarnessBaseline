@@ -8,7 +8,7 @@ Read §Workflow Composition at the Phase 5 hand-off, and §Anti-patterns before 
 
 ## Workflow Composition
 
-`/plan_part` is a **front-loader**, not a replacement for the drafting workflow. The stage order it hands off into is the drive spine's `## Stages` ([`drive_spine.md`](../../skills/_brainstorm_shared/drive_spine.md)). The briefing surfaces, and the caller proceeds into drafting.
+`/plan_part` is a **front-loader**, not a replacement for the drafting workflow. The steps it hands off into are [`/plan`](../plan.md)'s Plan and Review steps. The briefing surfaces, and the caller proceeds into drafting.
 
 Phase 3 verification and `/explore` discovery are distinct evidence tasks; neither substitutes for the other.
 
