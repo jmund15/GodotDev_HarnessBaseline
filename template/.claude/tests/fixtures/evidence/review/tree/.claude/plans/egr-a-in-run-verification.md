@@ -12,7 +12,7 @@ Strongest alternative: keep `postCheck` as a fallback command beside `verificati
 - `.claude/tools/verify_claims.py`, `.claude/tools/fold_check.py` (verdict vocabulary NOT-APPLICABLE becomes UNCHECKED; peer-dirty, K16), `.claude/tools/review_result.py`, `.claude/tools/post_check.py`, `.claude/tools/session_digest.py`, `.claude/tools/sidecar_fanout.py`
 - `.claude/hooks/dispatch_table.py`, `.claude/hooks/workflow_provider_guard.py` (injects `__returns` beside `__coverage` and `__toolProfiles`, `:1054-1058`)
 - `.claude/workflows/explore_fanout.js`, `.claude/workflows/explore_fanout.schema.json` (sidecar twin, parity per `explore_fanout.js:213-214`), `.claude/workflows/review_fanout.js`, `.claude/workflows/doc_architecture_audit.js`, `.claude/workflows/dispatch.js`, `.claude/workflows/dispatch_chains.js`, `.claude/scripts/schema_parity.js`
-- `.claude/guards/tool_profiles.json` (new `verify` shape row, `agentType: lane-verify`, tier from the row per `_dispatch_checks.py:28,65`), `.claude/agents/lane-verify.md` (generated)
+- `.claude/guards/tool_profiles.json` (new `verify` shape row, `agentType: delegate-verify`, tier from the row per `_dispatch_checks.py:28,65`), `.claude/agents/delegate-verify.md` (generated)
 - `.claude/schemas/evidence.json` (new), `.claude/schemas/review_findings.json`, `.claude/reference/evidence_contract.md` (new)
 - `.claude/baseline.lock.json` (rows for each new file; the commit guard requires them, `CLAUDE.core.md` §10; peer-dirty at plan time, K16)
 - `.claude/scripts/fetch_source.sh` (comments), `.claude/reference/source_trust.md:37,52`

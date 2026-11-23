@@ -25,7 +25,7 @@
    "phaseTitle": "Dispatch",
    "model": "claude-sonnet-5-5[1m]",
    "state": "error",
-   "error": "agent({agentType}): agent type 'lane-author' not found. ",
+   "error": "agent({agentType}): agent type 'delegate-author' not found. ",
    "queuedAt": 1792512983571,
    "promptPreview": "",
    "lastProgressAt": 1792512983571

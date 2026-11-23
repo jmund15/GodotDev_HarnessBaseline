@@ -21,18 +21,18 @@ for (const name of ENGINES) {
   const run = async (agentImpl) => {
     const calls = [], logs = []
     const agent = (p, o) => { calls.push(o.agentType); return agentImpl(calls.length) }
-    const fn = new AsyncFunction('agent', 'log', block + '\nreturn verifierAgent("p", { label: "L", agentType: "lane-verify" })')
+    const fn = new AsyncFunction('agent', 'log', block + '\nreturn verifierAgent("p", { label: "L", agentType: "delegate-verify" })')
     let ret, err
     try { ret = await fn(agent, (s) => logs.push(s)) } catch (e) { err = e }
     return { calls, logs, ret, err }
   }
-  let r = await run(async (n) => { if (n === 1) throw new Error("agent type 'lane-verify' not found"); return 'ok' })
-  ck(name + ': not-found retries once as general-purpose', JSON.stringify(r.calls) === '["lane-verify","general-purpose"]' && r.ret === 'ok', JSON.stringify(r))
-  ck(name + ': the fallback is logged', r.logs.some(l => /^FALLBACK L lane-verify/.test(l)), JSON.stringify(r.logs))
+  let r = await run(async (n) => { if (n === 1) throw new Error("agent type 'delegate-verify' not found"); return 'ok' })
+  ck(name + ': not-found retries once as general-purpose', JSON.stringify(r.calls) === '["delegate-verify","general-purpose"]' && r.ret === 'ok', JSON.stringify(r))
+  ck(name + ': the fallback is logged', r.logs.some(l => /^FALLBACK L delegate-verify/.test(l)), JSON.stringify(r.logs))
   r = await run(async () => { throw new Error('quota exceeded') })
   ck(name + ': any other error is rethrown without a retry', r.calls.length === 1 && r.err && /quota/.test(r.err.message), JSON.stringify(r.calls))
   r = await run(async () => 'fine')
-  ck(name + ': a loaded type spawns once', JSON.stringify(r.calls) === '["lane-verify"]')
+  ck(name + ': a loaded type spawns once', JSON.stringify(r.calls) === '["delegate-verify"]')
 }
 console.log('\n' + pass + ' pass, ' + fail + ' fail')
 process.exit(fail ? 1 : 0)

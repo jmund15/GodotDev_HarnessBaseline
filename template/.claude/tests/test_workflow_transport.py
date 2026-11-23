@@ -28,9 +28,9 @@ def plant(tmp_path, native=True, rails=True):
     if rails:
         (claude / "guards" / "rails.md").write_text("RAILS-MARK", encoding="utf-8")
     profiles = {"kinds": {
-        "author": {"agentType": "lane-author", "builtins": ["Read", "Edit"], "mcpServers": ["ai-worker"],
+        "author": {"agentType": "delegate-author", "builtins": ["Read", "Edit"], "mcpServers": ["ai-worker"],
                    "tier": "executor", "guard": "author", "disclosure": "full", "routes": ["engine"]},
-        "scout": {"agentType": "lane-survey", "builtins": ["Read"], "mcpServers": [], "routes": ["launcher"]},
+        "scout": {"agentType": "delegate-survey", "builtins": ["Read"], "mcpServers": [], "routes": ["launcher"]},
     }}
     (claude / "guards" / "tool_profiles.json").write_text(json.dumps(profiles), encoding="utf-8")
     return claude
@@ -56,7 +56,7 @@ def test_missing_rails_file_fails_closed(tmp_path):
 def test_profile_rows_go_only_to_engine_routed_kinds_and_keep_three_fields(tmp_path):
     args = {"jobs": [{"label": "a", "kind": "author"}, {"label": "s", "kind": "scout"}]}
     profiles = wt.inject(args, cwd=None, claude_dir=plant(tmp_path))["__toolProfiles"]
-    assert profiles == {"a": {"kind": "author", "agentType": "lane-author", "builtins": ["Read", "Edit"],
+    assert profiles == {"a": {"kind": "author", "agentType": "delegate-author", "builtins": ["Read", "Edit"],
                               "mcpServers": ["ai-worker"]}}
 
 

@@ -598,12 +598,12 @@ _PUBLIC = ["scout", "lens", "reviewer", "author", "judge", "gate"]
 check("PUBLIC_KINDS derive from the table's non-internal rows", _PUBLIC,
       sorted(tp.public_kinds(_TB), key=_PUBLIC.index))
 for _k, _b, _d, _a, _t in (
-        ("scout", ["Read", "Glob", "Grep"], "bare", "lane-survey", "fanout"),
-        ("lens", ["Read", "Glob", "Grep"], "pointer", "lane-survey", "fanout"),
-        ("reviewer", ["Read", "Glob", "Grep"], "full", "lane-review", "executor"),
-        ("author", ["Read", "Glob", "Grep", "Edit", "Write", "Bash"], "full", "lane-author", "executor"),
-        ("judge", ["Read", "Glob", "Grep"], "full", "lane-review", "executor"),
-        ("gate", ["Read", "Grep", "Bash"], "full", "lane-gate", "fanout")):
+        ("scout", ["Read", "Glob", "Grep"], "bare", "delegate-survey", "fanout"),
+        ("lens", ["Read", "Glob", "Grep"], "pointer", "delegate-survey", "fanout"),
+        ("reviewer", ["Read", "Glob", "Grep"], "full", "delegate-review", "executor"),
+        ("author", ["Read", "Glob", "Grep", "Edit", "Write", "Bash"], "full", "delegate-author", "executor"),
+        ("judge", ["Read", "Glob", "Grep"], "full", "delegate-review", "executor"),
+        ("gate", ["Read", "Grep", "Bash"], "full", "delegate-gate", "fanout")):
     _p = tp.resolve_kind(_k, route="fanout", candidates=CANDIDATES)[0]
     check("resolve_kind %s: builtins, disclosure, agentType, tier" % _k, (_b, _d, _a, _t),
           (_p["builtins"], _p["disclosure"], _p["agentType"], _p["tier"]))
@@ -686,17 +686,17 @@ raises("a kind with no routes is refused", "routes",
        lambda: _bad_kinds(lambda k: k["scout"].update(routes=[])))
 
 # ---- native_agent_type: a native job runs only as a generated agent type -----------------------
-_NT = {"variants": [{"kind": "reviewer", "add": ["Bash"], "remove": [], "agentType": "lane-review-bash"}]}
-check("a reviewer with no delta runs as its kind row's agent type", "lane-review",
-      tp.native_agent_type({"kind": "reviewer", "agentType": "lane-review", "add": [], "remove": []}, _NT))
-check("an author with no delta runs as lane-author", "lane-author",
-      tp.native_agent_type({"kind": "author", "agentType": "lane-author"}, _NT))
-check("a delta a variants entry names runs as that entry", "lane-review-bash",
-      tp.native_agent_type({"kind": "reviewer", "agentType": "lane-review", "add": ["Bash"], "remove": []}, _NT))
+_NT = {"variants": [{"kind": "reviewer", "add": ["Bash"], "remove": [], "agentType": "delegate-review-bash"}]}
+check("a reviewer with no delta runs as its kind row's agent type", "delegate-review",
+      tp.native_agent_type({"kind": "reviewer", "agentType": "delegate-review", "add": [], "remove": []}, _NT))
+check("an author with no delta runs as delegate-author", "delegate-author",
+      tp.native_agent_type({"kind": "author", "agentType": "delegate-author"}, _NT))
+check("a delta a variants entry names runs as that entry", "delegate-review-bash",
+      tp.native_agent_type({"kind": "reviewer", "agentType": "delegate-review", "add": ["Bash"], "remove": []}, _NT))
 raises("a delta with no covering agent file is refused", "no covering agent file",
-       lambda: tp.native_agent_type({"kind": "reviewer", "agentType": "lane-review", "add": ["Write"], "remove": []}, _NT))
+       lambda: tp.native_agent_type({"kind": "reviewer", "agentType": "delegate-review", "add": ["Write"], "remove": []}, _NT))
 raises("the same delta on another kind is refused", "no covering agent file",
-       lambda: tp.native_agent_type({"kind": "lens", "agentType": "lane-survey", "add": ["Bash"], "remove": []}, _NT))
+       lambda: tp.native_agent_type({"kind": "lens", "agentType": "delegate-survey", "add": ["Bash"], "remove": []}, _NT))
 raises("a kind row with no agentType cannot run natively", "names no agentType",
        lambda: tp.native_agent_type({"kind": "judge", "add": [], "remove": []}, _NT))
 
@@ -721,31 +721,31 @@ def _bad_variants(variants):
 check("the table has no `shapes` key: the kind rows own the defaults", False, "shapes" in TABLE)
 check("the table has no job_kind_shape reader left", False, hasattr(tp, "job_kind_shape"))
 check("the live table ships the reviewer+Bash variant",
-      [{"kind": "reviewer", "add": ["Bash"], "agentType": "lane-review-sh"}],
+      [{"kind": "reviewer", "add": ["Bash"], "agentType": "delegate-review-sh"}],
       [{k: v for k, v in row.items() if k != "remove"} for row in TABLE.get("variants", [])])
-check("a reviewer+Bash delta resolves to lane-review-sh", "lane-review-sh", _native("reviewer", ["Bash"]))
+check("a reviewer+Bash delta resolves to delegate-review-sh", "delegate-review-sh", _native("reviewer", ["Bash"]))
 raises("a reviewer+Write delta is refused", "author", lambda: _native("reviewer", ["Write"]))
 raises("a scout+Bash delta has no covering agent file", "no covering agent file", lambda: _native("scout", ["Bash"]))
-for _kind, _agent in (("scout", "lane-survey"), ("lens", "lane-survey"), ("reviewer", "lane-review"),
-                      ("author", "lane-author"), ("judge", "lane-review")):
+for _kind, _agent in (("scout", "delegate-survey"), ("lens", "delegate-survey"), ("reviewer", "delegate-review"),
+                      ("author", "delegate-author"), ("judge", "delegate-review")):
     check("a planted native %s job resolves to %s" % (_kind, _agent), _agent, _native(_kind))
 _rendered = tp.render_agents(TABLE, CANDIDATES)
 check("render_agents writes the variant file with Bash after the reviewer's built-ins", True,
-      "tools: Read, Glob, Grep, Bash, " in _rendered.get("lane-review-sh.md", ""))
-check("render_agents writes one file per agent type", ["lane-author.md", "lane-gate.md", "lane-review-sh.md", "lane-review.md", "lane-survey.md", "lane-verify.md"],
+      "tools: Read, Glob, Grep, Bash, " in _rendered.get("delegate-review-sh.md", ""))
+check("render_agents writes one file per agent type", ["delegate-author.md", "delegate-gate.md", "delegate-review-sh.md", "delegate-review.md", "delegate-survey.md", "delegate-verify.md"],
       sorted(_rendered))
 _NO_GIT = [c for c in CANDIDATES if c[0] != "git"]
 _rendered_no_git = tp.render_agents(TABLE, _NO_GIT)
 check("a repo that registers no repo-scoped server still renders every agent type", sorted(_rendered),
       sorted(_rendered_no_git))
 check("its agents leave the unregistered repo-scoped server out and keep the rest", (False, True),
-      ("mcp__git" in _rendered_no_git["lane-review.md"], "mcp__ai-worker" in _rendered_no_git["lane-review.md"]))
+      ("mcp__git" in _rendered_no_git["delegate-review.md"], "mcp__ai-worker" in _rendered_no_git["delegate-review.md"]))
 raises("render_agents still refuses a missing server that is not repo-scoped", "not registered",
        lambda: tp.render_agents(TABLE, [c for c in CANDIDATES if c[0] != "ai-worker"]))
 raises("a variant adding Write to a non-author kind is refused at load", "author",
-       lambda: _bad_variants([{"kind": "reviewer", "add": ["Write"], "agentType": "lane-review-w"}]))
+       lambda: _bad_variants([{"kind": "reviewer", "add": ["Write"], "agentType": "delegate-review-w"}]))
 raises("a variant reusing a kind's agentType is refused at load", "agentType",
-       lambda: _bad_variants([{"kind": "reviewer", "add": ["Bash"], "agentType": "lane-review"}]))
+       lambda: _bad_variants([{"kind": "reviewer", "add": ["Bash"], "agentType": "delegate-review"}]))
 
 # The committed agent files are the table's rendering: a kind added without `agents --write` drifts.
 # A consumer whose servers were not registered at init rendered none (`baseline_sync.render_lane_agents`).

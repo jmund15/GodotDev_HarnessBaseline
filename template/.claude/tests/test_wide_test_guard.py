@@ -9,7 +9,7 @@ send real PreToolUse payloads through `hooks/pre_bash_dispatch.py` and read the 
 The payload envelope is `fixtures/wide_test_guard/lane_author_payload.json`, cut from one live lane job's
 Bash PreToolUse payload (tool_use `toolu_01DKTDs1wXERCNZFiLU9BGdQ`, client 2.1.327, `sdk-cli`, `permissionMode: auto`), trimmed and with
 session id and paths renamed. `agent_id` and `agent_type` are the job record's live `toolProfile.agentType`
-(`lane-author`); each case overrides the fields it tests.
+(`delegate-author`); each case overrides the fields it tests.
 
     python3 .claude/tests/test_wide_test_guard.py
 """
@@ -85,7 +85,7 @@ with open(os.path.join(HERE, "fixtures", "wide_test_guard", "lane_author_payload
     LIVE_ENVELOPE = json.load(_fh)
 
 
-def payload(command, agent_id="a1", agent_type="lane-author", tool="Bash", cwd=None):
+def payload(command, agent_id="a1", agent_type="delegate-author", tool="Bash", cwd=None):
     data = dict(LIVE_ENVELOPE, tool_name=tool, cwd=cwd or guard.ROOT,
                 tool_input={"command": command})
     for key, value in (("agent_id", agent_id), ("agent_type", agent_type)):
@@ -136,7 +136,7 @@ def case_unreadable_table():
     saved = tool_profiles.TABLE_PATH
     try:
         tool_profiles.TABLE_PATH = write("tool_profiles.json", "{ not json")
-        denied = verdict(CLOSE, agent_type="lane-gate")
+        denied = verdict(CLOSE, agent_type="delegate-gate")
         check("an unreadable table refuses a native gate job", bool(denied), str(denied))
         check("the refusal names the table", bool(denied) and "tool_profiles.json" in denied, str(denied))
         check("an unreadable table still admits the root session",
@@ -148,13 +148,13 @@ def case_unreadable_table():
 def case_delegate_verdicts():
     clear_env()
     denied = verdict(CLOSE)
-    check("a lane-author job's close run is refused", bool(denied), str(denied))
+    check("a delegate-author job's close run is refused", bool(denied), str(denied))
     check("the deny names the runner", bool(denied) and "harness_tests.py" in denied, str(denied))
     check("the deny names the job's checks line",
           bool(denied) and "the edited unit's proof file" in denied, str(denied))
     check("the deny names the next step", bool(denied) and "gate" in denied and "dispatch" in denied, str(denied))
     check("a root session's close run is admitted", verdict(CLOSE, agent_id=None, agent_type=None) is None)
-    check("a lane-gate job's close run is admitted", verdict(CLOSE, agent_type="lane-gate") is None)
+    check("a delegate-gate job's close run is admitted", verdict(CLOSE, agent_type="delegate-gate") is None)
     check("a general-purpose subagent is refused", bool(verdict(CLOSE, agent_type="general-purpose")))
     check("an empty agent type is refused", bool(verdict(CLOSE, agent_type="")))
     check("a tool name outside Bash|PowerShell is admitted",
@@ -263,13 +263,13 @@ def case_must_allow():
     clear_env()
     try:
         for label, data, _cwd, expected in cases:
-            data = dict(data, agent_id="mallow", agent_type="lane-author")
+            data = dict(data, agent_id="mallow", agent_type="delegate-author")
             check(label, (guard.hook(data) is None) == (expected == "allow"), str(guard.hook(data)))
     finally:
         cleanup()
 
 
-def through(command, env_extra, agent_type="lane-author"):
+def through(command, env_extra, agent_type="delegate-author"):
     data = payload(command, cwd=TMP, agent_type=agent_type)
     data["session_id"] = "wide-guard-proof"
     env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_CODE_SIDECAR")}
@@ -286,10 +286,10 @@ def case_dispatcher_wiring():
     text = r.stdout + r.stderr
     check("the dispatcher's exit is a decision or a deny", r.returncode in (0, 2), str(r.returncode))
     check("the dispatcher carries no traceback", "Traceback" not in text, text[-500:])
-    check("the dispatcher denies a lane-author job's close run", "Wide test run refused" in text, text[-800:])
-    r = through(CLOSE, {}, agent_type="lane-gate")
+    check("the dispatcher denies a delegate-author job's close run", "Wide test run refused" in text, text[-800:])
+    r = through(CLOSE, {}, agent_type="delegate-gate")
     text = r.stdout + r.stderr
-    check("the dispatcher admits a lane-gate job", "Wide test run refused" not in text, text[-800:])
+    check("the dispatcher admits a delegate-gate job", "Wide test run refused" not in text, text[-800:])
     r = through("git status --short", {})
     text = r.stdout + r.stderr
     check("the dispatcher admits an ordinary command", "Wide test run refused" not in text, text[-800:])

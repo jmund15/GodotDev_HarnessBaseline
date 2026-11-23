@@ -12,8 +12,8 @@ const HOST_TRANSPORT = { name: 'host', ids: ['opus', 'sonnet', 'haiku', 'fable']
 const ROW = { add: [], remove: [], overrideMode: 'shape-default', enforcement: 'inherited', effectiveMcp: 'unknown/inherited',
   mcpServers: ['semantic-search', 'ai-worker'] }
 const KINDS = {
-  reviewer: { ...ROW, kind: 'reviewer', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-review', tier: 'executor', guard: 'review' },
-  author: { ...ROW, kind: 'author', builtins: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], agentType: 'lane-author', tier: 'executor', guard: 'author' },
+  reviewer: { ...ROW, kind: 'reviewer', builtins: ['Read', 'Glob', 'Grep'], agentType: 'delegate-review', tier: 'executor', guard: 'review' },
+  author: { ...ROW, kind: 'author', builtins: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], agentType: 'delegate-author', tier: 'executor', guard: 'author' },
 }
 const profilesOf = (args) => Object.fromEntries(((args && args.chains) || []).flatMap(c => c.jobs || [])
   .filter(j => j && KINDS[j.kind]).map(j => [j.label, KINDS[j.kind]]))
@@ -60,7 +60,7 @@ async function run(args, agentResults = null) {
     chains: [{ name: 'lane', jobs: [{ label: 'a', promptPath: 'a.md', model: 'opus', effort: 'low', kind: 'reviewer' }] }],
   })
   check('an injected transport with no declared efforts accepts its ids', !host.result.error, JSON.stringify(host.result))
-  check('the kind row sets the agent type passed to agent()', host.calls[0] && host.calls[0].agentType === 'lane-review', JSON.stringify(host.calls))
+  check('the kind row sets the agent type passed to agent()', host.calls[0] && host.calls[0].agentType === 'delegate-review', JSON.stringify(host.calls))
   check('PINS logs the pin with no tier field (T4 drops tiers)', host.logs.some(l => String(l).startsWith('PINS ') && !String(l).includes('tier:')), JSON.stringify(host.logs))
 
   const codex = await run({

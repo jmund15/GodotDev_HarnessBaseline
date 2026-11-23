@@ -45,8 +45,8 @@ async function run(args, agentImpl) {
   const j = (r) => JSON.stringify(r.result).slice(0, 300)
 
   let r = await run(argsFor(() => {}))
-  check('m4 replay: a lens job runs as lane-survey, the type its kind row sets',
-    r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-survey', j(r))
+  check('m4 replay: a lens job runs as delegate-survey, the type its kind row sets',
+    r.calls.length === 1 && r.calls[0].opts.agentType === 'delegate-survey', j(r))
   check('m4 replay: a lens holds no write tool and no shell, so its prompt carries no read-only line to keep',
     !r.calls[0].prompt.includes(READONLY))
   check('m4 replay: the recorded profile is agent-type, kind lens',
@@ -63,22 +63,22 @@ async function run(args, agentImpl) {
   }
 
   r = await run(argsFor(a => { withKind('reviewer')(a) }))
-  check('a reviewer job runs as lane-review', r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-review', j(r))
+  check('a reviewer job runs as delegate-review', r.calls.length === 1 && r.calls[0].opts.agentType === 'delegate-review', j(r))
 
   r = await run(argsFor(a => { withKind('reviewer')(a); withBash(a) }))
   check('a no-write kind whose profile holds Bash is told not to write through the shell',
     r.calls.length === 1 && r.calls[0].prompt.includes(READONLY), j(r))
 
   r = await run(argsFor(a => { withKind('author')(a) }))
-  check('an author job runs as lane-author and is not read-only',
-    r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-author' && !r.calls[0].prompt.includes(READONLY), j(r))
+  check('an author job runs as delegate-author and is not read-only',
+    r.calls.length === 1 && r.calls[0].opts.agentType === 'delegate-author' && !r.calls[0].prompt.includes(READONLY), j(r))
   check('an author job gets the choices contract',
     r.calls[0].prompt.includes('=== CHOICES'), r.calls[0].prompt.slice(-300))
 
   r = await run(argsFor(() => {}),
-    async (n, opts) => { if (opts.agentType === 'lane-survey') throw new Error("agent type 'lane-survey' not found"); return 'ok' })
+    async (n, opts) => { if (opts.agentType === 'delegate-survey') throw new Error("agent type 'delegate-survey' not found"); return 'ok' })
   check('a job whose agent type is not loaded is never retried as another type',
-    r.calls.length === 1 && r.calls[0].opts.agentType === 'lane-survey', r.calls.map(c => c.opts.agentType).join(','))
+    r.calls.length === 1 && r.calls[0].opts.agentType === 'delegate-survey', r.calls.map(c => c.opts.agentType).join(','))
   check('that job comes back with its rejection named',
     r.result && r.result['m4-FA'] && String(r.result['m4-FA'].error).includes('not found'), j(r))
 

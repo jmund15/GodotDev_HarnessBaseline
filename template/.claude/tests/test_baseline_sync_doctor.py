@@ -108,7 +108,7 @@ def _fixed_consumer(path: Path) -> Path:
              json.dumps({"autoMemoryDirectory": memory}).encode())
     _lock(root, {"{{VAULT_ROOT}}": str(vault).replace("\\", "/"), "{{PROJECT_NAME}}": "Demo"},
           {SEED_REL: _seed_row(),
-           ".claude/agents/lane-verify.md": {"status": "local", "layer": None}})
+           ".claude/agents/delegate-verify.md": {"status": "local", "layer": None}})
     sync = [sys.executable, str(T.ENGINE.parent / "tool_profiles.py"), "agents", "--write",
             "--table", str(root / ".claude" / "guards" / "tool_profiles.json"),
             "--agents-dir", str(root / ".claude" / "agents")]
@@ -242,7 +242,7 @@ def test_init_renders_lane_agents_with_local_rows() -> None:
         init = T._run(root, "init", "--baseline-dir", str(baseline), "--repo", str(remote).replace("\\", "/"),
                       "--sub", "{{PROJECT_NAME}}=Demo", "--layers", "pure")
         assert init.returncode == 0, T._out(init)
-        assert _lane_names(root) == ["lane-survey.md", "lane-verify.md"], _lane_names(root)
+        assert _lane_names(root) == ["delegate-survey.md", "delegate-verify.md"], _lane_names(root)
         files = T._load_lock(root)["files"]
         for name in _lane_names(root):
             row = files[".claude/agents/" + name]
@@ -258,10 +258,10 @@ def test_pull_that_changes_an_agent_input_renders_and_a_noop_pull_writes_nothing
         })
         pull = T._run_baseline(root, baseline, "pull")
         assert pull.returncode == 0, T._out(pull)
-        assert _lane_names(root) == ["lane-survey.md", "lane-verify.md"], _lane_names(root)
+        assert _lane_names(root) == ["delegate-survey.md", "delegate-verify.md"], _lane_names(root)
         files = T._load_lock(root)["files"]
-        assert files[".claude/agents/lane-survey.md"]["status"] == "local"
-        assert files[".claude/agents/lane-verify.md"]["status"] == "local"
+        assert files[".claude/agents/delegate-survey.md"]["status"] == "local"
+        assert files[".claude/agents/delegate-verify.md"]["status"] == "local"
         lock_before = (root / ".claude" / "baseline.lock.json").read_bytes()
         agents_before = {n: (root / ".claude" / "agents" / n).read_bytes() for n in _lane_names(root)}
         again = T._run_baseline(root, baseline, "pull")
@@ -281,7 +281,7 @@ def test_doctor_accepts_a_rendered_lane_agent_with_no_lock_row() -> None:
                       "--sub", "{{PROJECT_NAME}}=Demo", "--layers", "pure")
         assert init.returncode == 0, T._out(init)
         lock = T._load_lock(root)
-        del lock["files"][".claude/agents/lane-verify.md"]
+        del lock["files"][".claude/agents/delegate-verify.md"]
         T._write_json(root / ".claude" / "baseline.lock.json", lock)
         _code, rows = _doctor(root)
         assert rows["lane-agents"]["status"] == "ok", rows["lane-agents"]

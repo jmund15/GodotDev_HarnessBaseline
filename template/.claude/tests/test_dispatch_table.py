@@ -328,12 +328,12 @@ def test_a_one_group_launch_is_one_line_naming_model_effort_and_task_only():
     e = Env()
     msg = e.run(workflow_payload({"scriptPath": ".claude/workflows/dispatch.js",
                                   "args": {"jobs": [{"label": "ul-m11", "model": "sonnet", "effort": "high",
-                                                     "agentType": "lane-author", "shape": "author"},
+                                                     "agentType": "delegate-author", "shape": "author"},
                                                     {"label": "ul-c8", "model": "sonnet", "effort": "high",
-                                                     "agentType": "lane-author", "shape": "author"}]}}),
+                                                     "agentType": "delegate-author", "shape": "author"}]}}),
                 "--launch")
     assert msg == "▶ 2 agents · sonnet-5-5 high: ul-m11, ul-c8", msg
-    assert "tools " not in msg and "lane-author" not in msg and "dispatch" not in msg, msg
+    assert "tools " not in msg and "delegate-author" not in msg and "dispatch" not in msg, msg
 
 
 def test_a_two_group_launch_adds_one_line_per_extra_group():

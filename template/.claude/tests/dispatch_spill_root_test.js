@@ -23,9 +23,9 @@ const check = (label, ok, detail) => {
 const ROW = { add: [], remove: [], overrideMode: 'shape-default', enforcement: 'inherited', effectiveMcp: 'unknown/inherited',
   mcpServers: ['semantic-search', 'ai-worker'] }
 const KINDS = {
-  lens: { ...ROW, kind: 'lens', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-survey', tier: 'fanout', guard: 'survey' },
-  reviewer: { ...ROW, kind: 'reviewer', builtins: ['Read', 'Glob', 'Grep'], agentType: 'lane-review', tier: 'executor', guard: 'review' },
-  author: { ...ROW, kind: 'author', builtins: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], agentType: 'lane-author', tier: 'executor', guard: 'author' },
+  lens: { ...ROW, kind: 'lens', builtins: ['Read', 'Glob', 'Grep'], agentType: 'delegate-survey', tier: 'fanout', guard: 'survey' },
+  reviewer: { ...ROW, kind: 'reviewer', builtins: ['Read', 'Glob', 'Grep'], agentType: 'delegate-review', tier: 'executor', guard: 'review' },
+  author: { ...ROW, kind: 'author', builtins: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], agentType: 'delegate-author', tier: 'executor', guard: 'author' },
 }
 const profilesOf = (args) => {
   const all = [...(args.jobs || []), ...(args.chains || []).flatMap(c => c.jobs)]
@@ -147,8 +147,8 @@ const argsFor = (script, spillDir, jobs) => script === 'jobs'
     check(script + ' refuses agentType naming kind',
       !typed.result.crash && /agentType/.test(String(typed.result.error)) && typed.calls.length === 0, JSON.stringify(typed.result))
     const ran = await run(script, argsFor(script, undefined, [job('rv', 'reviewer'), job('au', 'author')]))
-    check(script + ' runs a reviewer as lane-review and an author as lane-author',
-      !ran.result.crash && ran.calls.length === 2 && ran.calls[0].agentType === 'lane-review' && ran.calls[1].agentType === 'lane-author',
+    check(script + ' runs a reviewer as delegate-review and an author as delegate-author',
+      !ran.result.crash && ran.calls.length === 2 && ran.calls[0].agentType === 'delegate-review' && ran.calls[1].agentType === 'delegate-author',
       JSON.stringify(ran.calls))
   }
 

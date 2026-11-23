@@ -1,7 +1,7 @@
 """A spawn that failed without an agentId and was retried under the same label is one dispatch.
 
 The session is cut from the captured run wf_3193d0a9-1e4 (workflow record and journal, text fields emptied):
-its `workflowProgress` lists an errored first attempt ("agent type 'lane-author' not found", no agentId)
+its `workflowProgress` lists an errored first attempt ("agent type 'delegate-author' not found", no agentId)
 and the retry that ran, both under label m3-S. `--rate`, `--pending`, the report rows and `--manifest-seed`
 must each see one row; a label whose only attempt failed stays one failed dispatch.
 

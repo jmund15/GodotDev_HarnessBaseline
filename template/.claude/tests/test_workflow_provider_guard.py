@@ -807,8 +807,8 @@ def implied_tier_cases():
 
     for engine in SINGLE_KIND:
         row = wpg.call_kind_profile(engine_call(engine, kind="reviewer"))
-        out.append(("%s with kind reviewer gets __kindProfile lane-review injected" % engine,
-                    (row or {}).get("agentType") == "lane-review", repr(row)[:200]))
+        out.append(("%s with kind reviewer gets __kindProfile delegate-review injected" % engine,
+                    (row or {}).get("agentType") == "delegate-review", repr(row)[:200]))
         case("%s with no kind is denied before spend" % engine,
              run_channel(engine_call(engine)), "deny", ("kind",))
     for engine in MEASUREMENT:
@@ -889,7 +889,7 @@ def implied_tier_cases():
         upd = wpg.transport_injection(shaped("reviewer", "h-exec"), "host", SYN) or {}
         injected = upd.get("args", {}).get("__toolProfiles")
         out.append(("dispatch.js call gets the kind row per label and no __shapeTiers",
-                    bool(injected) and injected["j0"]["agentType"] == "lane-review"
+                    bool(injected) and injected["j0"]["agentType"] == "delegate-review"
                     and "__shapeTiers" not in upd.get("args", {}), repr(injected)[:300]))
         run = run_engine("dispatch", dict(upd.get("args") or {}, __transport=dict(
             TRANSPORT, ids=TRANSPORT["ids"] + ["h-exec"])))
@@ -1567,7 +1567,7 @@ def test_kind_sets_agent_type_without_rewrite():
     args = out["updatedInput"]["args"]
     assert [j.get("agentType") for j in args["jobs"]] == [None, None], raw
     profiles = args["__toolProfiles"]
-    assert (profiles["rev"]["agentType"], profiles["wri"]["agentType"]) == ("lane-review", "lane-author"), raw
+    assert (profiles["rev"]["agentType"], profiles["wri"]["agentType"]) == ("delegate-review", "delegate-author"), raw
     assert "__coverage" not in args and "__skillIndex" not in args and "__toolProfileDefaults" not in args, raw
 
 
@@ -1578,9 +1578,9 @@ def main():
                + five_hour_cases() + engine_cases())
     try:
         test_kind_sets_agent_type_without_rewrite()
-        results.append(('a reviewer job runs as lane-review and an author job as lane-author, with no rewrite', True, ''))
+        results.append(('a reviewer job runs as delegate-review and an author job as delegate-author, with no rewrite', True, ''))
     except Exception as exc:
-        results.append(('a reviewer job runs as lane-review and an author job as lane-author, with no rewrite', False, repr(exc)))
+        results.append(('a reviewer job runs as delegate-review and an author job as delegate-author, with no rewrite', False, repr(exc)))
     for name, ok, detail in results:
         print(("ok   " if ok else "FAIL ") + name + ("" if ok else "   [%s]" % detail))
         if not ok:
