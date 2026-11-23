@@ -6,6 +6,7 @@ claude dir are planted (tmp_path, monkeypatch), so no case reads the live seats 
 that raises denies the call: a fault never lets an unchecked dispatch through.
 """
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -97,3 +98,26 @@ def test_a_raising_step_denies_naming_the_step(tmp_path, planted, monkeypatch):
     job = {"label": "a", "promptPath": brief(tmp_path), "model": "opus", "effort": "low", "kind": "author"}
     decision = call(tmp_path, {"script": "dispatch.js", "args": {"jobs": [job]}})
     assert decision["permissionDecision"] == "deny" and "transport failed (RuntimeError: boom)" in decision["permissionDecisionReason"]
+
+
+def native_payload(tmp_path):
+    job = {"label": "a", "promptPath": brief(tmp_path), "model": "opus", "effort": "low", "kind": "author"}
+    return {"tool_name": "Workflow", "cwd": str(tmp_path), "tool_input": {"script": "dispatch.js", "args": {"jobs": [job]}}}
+
+
+def test_a_native_payload_passes_on_the_shipped_seats_file(tmp_path, monkeypatch):
+    """No planted claude dir: the live seats.json must carry the native block, or every native Workflow denies."""
+    monkeypatch.setattr(pwd.launch_check, "run_hook", lambda key, args, cwd, lookup=None: (0, ""))
+    code, out, _err = pwd.dispatch(json.dumps(native_payload(tmp_path)))
+    hso = json.loads(out)["hookSpecificOutput"]
+    assert code == 0 and "permissionDecision" not in hso, hso.get("permissionDecisionReason")
+    assert hso["updatedInput"]["args"]["__transport"]["ids"] == ["fable", "opus", "sonnet", "haiku"]
+
+
+def test_the_spawned_entry_passes_a_native_payload(tmp_path):
+    done = subprocess.run([sys.executable, str(HOOKS / "pre_workflow_dispatch.py")],
+                          input=json.dumps(native_payload(tmp_path)), capture_output=True, text=True,
+                          cwd=str(tmp_path), timeout=60)
+    assert done.returncode == 0, done.stderr
+    hso = json.loads(done.stdout)["hookSpecificOutput"]
+    assert "permissionDecision" not in hso, hso.get("permissionDecisionReason")
