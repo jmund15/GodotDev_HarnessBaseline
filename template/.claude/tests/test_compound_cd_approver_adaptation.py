@@ -9,21 +9,25 @@ matching NEVER_SAFE (e.g. "rm") is rejected and never joins the allowlist; an en
 scratch `.claude` tree (`_adaptation_fixture`), so behavior is proven end-to-end, not by
 importing internals.
 
-    python3 .claude/tests/test_compound_cd_approver_adaptation.py
+    python -m pytest .claude/tests/test_compound_cd_approver_adaptation.py -q
 """
 import json
 import os
 import subprocess
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _adaptation_fixture as fx  # noqa: E402
 
 HOOK_NAME = "compound_cd_approver.py"
 REAL_HOOK = os.path.join(fx.REAL_HOOKS, HOOK_NAME)
+DOTNET = "cd /repo && dotnet build"
 
 
 def run_hook(hook_path, command):
+    """Spawned: the hook's stdin entry point is the subject."""
     payload = {"tool_name": "Bash", "tool_input": {"command": command}}
     r = subprocess.run([sys.executable, hook_path], input=json.dumps(payload),
                        capture_output=True, text=True, timeout=30)
@@ -37,93 +41,96 @@ def is_allowed(stdout):
         return False
 
 
-def main():
-    cases = []
-    failures = []
-    scratches = []
-    try:
-        # --- absent: adaptation.json missing -> "dotnet" is NOT auto-approved ------------
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=None)
-        scratches.append(tmp)
-        out, _err, _rc = run_hook(os.path.join(tmp, "hooks", HOOK_NAME), "cd /repo && dotnet build")
-        cases.append(("absent adaptation.json: an unlisted command is not auto-approved",
-                      not is_allowed(out)))
+@pytest.fixture
+def adapted():
+    """Make a scratch `.claude` tree seeded with an adaptation.json (or none); returns the copied hook's path."""
+    made = []
 
-        # --- present: a valid read_only_commands entry joins the allowlist ---------------
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed={"read_only_commands": ["dotnet"]})
-        scratches.append(tmp)
-        out, err, _rc = run_hook(os.path.join(tmp, "hooks", HOOK_NAME), "cd /repo && dotnet build")
-        cases.append(("present adaptation.json: a valid entry is auto-approved", is_allowed(out)))
-        cases.append(("present adaptation.json: no stderr on a valid entry", err == ""))
-        out, _err, _rc = run_hook(os.path.join(tmp, "hooks", HOOK_NAME), "cd /repo && git status")
-        cases.append(("a built-in command still auto-approves alongside a project entry",
-                      is_allowed(out)))
+    def make(seed):
+        tree = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed=seed)
+        made.append(tree)
+        return os.path.join(tree, "hooks", HOOK_NAME)
 
-        # --- wrong-typed: read_only_commands is not a list -> default + one stderr line ---
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed={"read_only_commands": "dotnet"})
-        scratches.append(tmp)
-        out, err, _rc = run_hook(os.path.join(tmp, "hooks", HOOK_NAME), "cd /repo && dotnet build")
-        cases.append(("wrong-typed read_only_commands: entry never joins the allowlist",
-                      not is_allowed(out)))
-        cases.append(("wrong-typed read_only_commands: one stderr line names the key",
-                      err.count("\n") == 0 and "read_only_commands" in err))
-
-        # --- validation: NEVER_SAFE rejects a destructive command -------------------------
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed={"read_only_commands": ["rm"]})
-        scratches.append(tmp)
-        out, err, _rc = run_hook(os.path.join(tmp, "hooks", HOOK_NAME), "cd /repo && rm -rf x")
-        cases.append(("NEVER_SAFE: 'rm' is never added to the allowlist", not is_allowed(out)))
-        cases.append(("NEVER_SAFE: the rejection names the entry on stderr", "rm" in err))
-
-        # --- validation: shape regex rejects an entry with disallowed characters ----------
-        tmp = fx.make_scratch(HOOK_NAME, REAL_HOOK, seed={"read_only_commands": ["Dotnet Build"]})
-        scratches.append(tmp)
-        out, err, _rc = run_hook(os.path.join(tmp, "hooks", HOOK_NAME), "cd /repo && dotnet build")
-        cases.append(("shape regex: an entry with a space/uppercase is rejected",
-                      not is_allowed(out) and "read_only_commands" in err))
-        # --- carriers: an allow covers the whole command, so none may ride it -------------
-        for label, command in (
-            ("`$(…)` falls through", "cd . && git log $(python3 evil.py)"),
-            ("backticks fall through", "cd . && git log `python3 evil.py`"),
-            ("a write redirection falls through", "cd . && echo x > .claude/settings.json"),
-            ("a lone `&` falls through", "cd . && ls & rm -rf x"),
-            ("a newline falls through", "cd . && ls\nrm -rf x"),
-            ("`git commit` falls through", "cd . && git commit -am x"),
-            ("`git push` falls through", "cd . && git push --force origin main"),
-            ("`git -c` falls through", "cd . && git -c alias.x=!sh x"),
-            ("`git diff --output` falls through", "cd . && git diff --output=.claude/settings.json"),
-            ("`find -delete` falls through", "cd . && find . -delete"),
-            ("`find -exec` falls through", "cd . && find . -exec rm {} +"),
-            ("`sort -o` falls through", "cd . && sort -o .claude/settings.json x"),
-        ):
-            out, _err, _rc = run_hook(REAL_HOOK, command)
-            cases.append((label, not is_allowed(out)))
-        for label, command in (
-            ("read-only git still auto-approves", "cd /repo && git log --oneline -5"),
-            ("a read-only pipe still auto-approves", "cd /repo && git status --short | head -5"),
-            ("quoted grep still auto-approves", "cd /repo && grep -n 'a b' x.py"),
-        ):
-            out, _err, _rc = run_hook(REAL_HOOK, command)
-            cases.append((label, is_allowed(out)))
-    finally:
-        for tmp in scratches:
-            fx.rm(tmp)
-
-    for label, ok in cases:
-        print("%-4s %s" % ("ok" if ok else "FAIL", label))
-        if not ok:
-            failures.append(label)
-
-    print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    for f in failures:
-        print("  FAIL " + f)
-    return 1 if failures else 0
+    yield make
+    for tree in made:
+        fx.rm(tree)
 
 
+def test_an_absent_adaptation_json_does_not_auto_approve_an_unlisted_command(adapted):
+    out, _err, _rc = run_hook(adapted(None), DOTNET)
+    assert not is_allowed(out)
 
-def test_proof():
-    assert main() in (None, 0)
+
+def test_a_valid_read_only_entry_is_auto_approved(adapted):
+    out, _err, _rc = run_hook(adapted({"read_only_commands": ["dotnet"]}), DOTNET)
+    assert is_allowed(out)
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_a_valid_read_only_entry_writes_no_stderr(adapted):
+    _out, err, _rc = run_hook(adapted({"read_only_commands": ["dotnet"]}), DOTNET)
+    assert err == ""
+
+
+def test_a_builtin_command_still_auto_approves_alongside_a_project_entry(adapted):
+    out, _err, _rc = run_hook(adapted({"read_only_commands": ["dotnet"]}), "cd /repo && git status")
+    assert is_allowed(out)
+
+
+def test_a_wrong_typed_read_only_commands_never_joins_the_allowlist(adapted):
+    out, _err, _rc = run_hook(adapted({"read_only_commands": "dotnet"}), DOTNET)
+    assert not is_allowed(out)
+
+
+def test_a_wrong_typed_read_only_commands_writes_one_stderr_line_naming_the_key(adapted):
+    _out, err, _rc = run_hook(adapted({"read_only_commands": "dotnet"}), DOTNET)
+    assert err.count("\n") == 0 and "read_only_commands" in err
+
+
+def test_never_safe_rm_is_never_added_to_the_allowlist(adapted):
+    out, _err, _rc = run_hook(adapted({"read_only_commands": ["rm"]}), "cd /repo && rm -rf x")
+    assert not is_allowed(out)
+
+
+def test_the_never_safe_rejection_names_the_entry_on_stderr(adapted):
+    _out, err, _rc = run_hook(adapted({"read_only_commands": ["rm"]}), "cd /repo && rm -rf x")
+    assert "rm" in err
+
+
+def test_the_shape_regex_rejects_an_entry_with_a_space_or_uppercase(adapted):
+    out, err, _rc = run_hook(adapted({"read_only_commands": ["Dotnet Build"]}), DOTNET)
+    assert not is_allowed(out) and "read_only_commands" in err
+
+
+# An allow covers the whole command, so none of these carriers may ride it.
+CARRIERS = [
+    ("`$(...)` falls through", "cd . && git log $(python3 evil.py)"),
+    ("backticks fall through", "cd . && git log `python3 evil.py`"),
+    ("a write redirection falls through", "cd . && echo x > .claude/settings.json"),
+    ("a lone `&` falls through", "cd . && ls & rm -rf x"),
+    ("a newline falls through", "cd . && ls\nrm -rf x"),
+    ("`git commit` falls through", "cd . && git commit -am x"),
+    ("`git push` falls through", "cd . && git push --force origin main"),
+    ("`git -c` falls through", "cd . && git -c alias.x=!sh x"),
+    ("`git diff --output` falls through", "cd . && git diff --output=.claude/settings.json"),
+    ("`find -delete` falls through", "cd . && find . -delete"),
+    ("`find -exec` falls through", "cd . && find . -exec rm {} +"),
+    ("`sort -o` falls through", "cd . && sort -o .claude/settings.json x"),
+]
+
+READ_ONLY = [
+    ("read-only git still auto-approves", "cd /repo && git log --oneline -5"),
+    ("a read-only pipe still auto-approves", "cd /repo && git status --short | head -5"),
+    ("quoted grep still auto-approves", "cd /repo && grep -n 'a b' x.py"),
+]
+
+
+@pytest.mark.parametrize("command", [c for _, c in CARRIERS], ids=[label for label, _ in CARRIERS])
+def test_a_carrier_is_not_auto_approved(command):
+    out, _err, _rc = run_hook(REAL_HOOK, command)
+    assert not is_allowed(out)
+
+
+@pytest.mark.parametrize("command", [c for _, c in READ_ONLY], ids=[label for label, _ in READ_ONLY])
+def test_a_read_only_command_is_auto_approved(command):
+    out, _err, _rc = run_hook(REAL_HOOK, command)
+    assert is_allowed(out)

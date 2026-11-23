@@ -14,10 +14,10 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 from contextlib import redirect_stdout, redirect_stderr
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+import pytest
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL = os.path.join(HERE, "..", "tools", "yt_transcript.py")
 VID = "D8PikZ1KhUo"
@@ -27,9 +27,14 @@ SEGMENTS = [[{"text": "Before we get started", "start": 0.4, "duration": 2.0},
 META = "If you have a Claude sub, watch this\tTheo - t3.gg\t20261002\t1:06:36\n"
 NO_CAPTIONS = ("Could not retrieve a transcript for the video https://www.youtube.com/watch?v=%s! "
                "This is most likely caused by:\n\nSubtitles are disabled for this video\n" % VID)
+URL_FORMS = ["https://youtu.be/%s" % VID, "https://youtu.be/%s?si=abc&t=5" % VID,
+             "https://www.youtube.com/watch?v=%s&t=12s" % VID, "https://m.youtube.com/watch?v=%s" % VID,
+             "https://www.youtube.com/shorts/%s" % VID, "https://youtube.com/live/%s" % VID,
+             "https://www.youtube.com/embed/%s" % VID, VID]
 
 
-def load():
+@pytest.fixture
+def yt():
     spec = importlib.util.spec_from_file_location("yt_transcript", TOOL)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -59,97 +64,96 @@ def invoke(mod, argv, run):
     return code, out.getvalue(), err.getvalue()
 
 
-def main():
-    cases = []
-
-    def case(name, ok, detail=""):
-        cases.append((name, bool(ok), detail))
-
-    try:
-        yt = load()
-    except Exception as exc:
-        case("tools/yt_transcript.py imports", False, repr(exc))
-        return report(cases)
-
-    for url in ("https://youtu.be/%s" % VID, "https://youtu.be/%s?si=abc&t=5" % VID,
-                "https://www.youtube.com/watch?v=%s&t=12s" % VID, "https://m.youtube.com/watch?v=%s" % VID,
-                "https://www.youtube.com/shorts/%s" % VID, "https://youtube.com/live/%s" % VID,
-                "https://www.youtube.com/embed/%s" % VID, VID):
-        case("video_id reads %s" % url, yt.video_id(url) == VID, repr(yt.video_id(url)))
-    for bad in ("https://vimeo.com/123", "https://www.youtube.com/watch?v=short", "not a url", ""):
-        case("video_id refuses %r" % bad, yt.video_id(bad) is None, repr(yt.video_id(bad)))
-
-    case("timestamps under an hour read mm:ss", yt.stamp(65.2) == "01:05", yt.stamp(65.2))
-    case("timestamps past an hour read h:mm:ss", yt.stamp(3725.0) == "1:02:05", yt.stamp(3725.0))
-    case("slug is lowercase kebab of the title",
-         yt.slug("If you have a Claude sub, watch this") == "if-you-have-a-claude-sub-watch-this")
-
-    # Success: the file carries the identity header and one stamped line per caption segment.
-    out_dir = tempfile.mkdtemp(prefix="yt_ok_")
-    run = runner()
-    code, out, err = invoke(yt, ["https://youtu.be/%s" % VID, "--out", out_dir], run)
+@pytest.fixture
+def fetched(yt, tmp_path):
+    """One successful fetch into a fresh out dir: the exit code, stdout, stderr, file body and the file path."""
+    out_dir = str(tmp_path / "ok")
+    code, out, err = invoke(yt, [URL_FORMS[0], "--out", out_dir], runner())
     path = os.path.join(out_dir, "%s.md" % VID)
     body = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+    return {"code": code, "out": out, "err": err, "body": body, "path": path, "out_dir": out_dir}
+
+
+@pytest.mark.parametrize("url", URL_FORMS, ids=[u.replace("https://", "")[:40] for u in URL_FORMS])
+def test_video_id_reads_each_url_form(yt, url):
+    assert yt.video_id(url) == VID, repr(yt.video_id(url))
+
+
+@pytest.mark.parametrize("bad", ["https://vimeo.com/123", "https://www.youtube.com/watch?v=short", "not a url", ""])
+def test_video_id_refuses_a_non_video_url(yt, bad):
+    assert yt.video_id(bad) is None, repr(yt.video_id(bad))
+
+
+def test_a_timestamp_under_an_hour_reads_mm_ss(yt):
+    assert yt.stamp(65.2) == "01:05", yt.stamp(65.2)
+
+
+def test_a_timestamp_past_an_hour_reads_h_mm_ss(yt):
+    assert yt.stamp(3725.0) == "1:02:05", yt.stamp(3725.0)
+
+
+def test_the_slug_is_the_lowercase_kebab_of_the_title(yt):
+    assert yt.slug("If you have a Claude sub, watch this") == "if-you-have-a-claude-sub-watch-this"
+
+
+def test_a_fetch_exits_zero_and_writes_the_transcript_file(fetched):
+    assert fetched["code"] == 0 and fetched["body"], "code=%r err=%r" % (fetched["code"], fetched["err"])
+
+
+def test_the_header_names_title_channel_date_duration_url_and_fetch_date(fetched):
+    body = fetched["body"]
+    assert all(s in body for s in ("If you have a Claude sub, watch this", "Theo - t3.gg", "2026-10-02",
+                                   "1:06:36", "https://youtu.be/%s" % VID, "fetched:")), body[:400]
+
+
+def test_each_segment_is_one_stamped_line_with_inner_newlines_folded(fetched):
+    body = fetched["body"]
+    assert ("[00:00] Before we get started" in body and "[01:05] one question for you" in body
+            and "[1:02:05] the end" in body), body[-300:]
+
+
+def test_stdout_is_a_json_summary_with_id_slug_path_and_line_count(fetched):
     try:
-        summary = json.loads(out)
+        summary = json.loads(fetched["out"])
     except ValueError:
         summary = {}
-    case("a fetch exits 0 and writes <id>.md", code == 0 and body, "code=%r err=%r" % (code, err))
-    case("the header names title, channel, published date, duration, url and fetch date",
-         all(s in body for s in ("If you have a Claude sub, watch this", "Theo - t3.gg", "2026-10-02",
-                                 "1:06:36", "https://youtu.be/%s" % VID, "fetched:")), body[:400])
-    case("each segment is one stamped line, inner newlines folded",
-         "[00:00] Before we get started" in body and "[01:05] one question for you" in body
-         and "[1:02:05] the end" in body, body[-300:])
-    case("stdout is a JSON summary with id, slug, path and line count",
-         summary.get("id") == VID and summary.get("slug") == "if-you-have-a-claude-sub-watch-this"
-         and summary.get("lines") == 3 and os.path.samefile(summary.get("path", path), path), out)
-
-    # Reuse: a cached transcript is not fetched again unless --refresh asks.
-    run2 = runner()
-    code2, out2, _ = invoke(yt, [VID, "--out", out_dir], run2)
-    case("a cached transcript is reused without a fetch", code2 == 0 and run2.calls == []
-         and json.loads(out2).get("cached") is True, repr(run2.calls))
-    run3 = runner()
-    code3, _, _ = invoke(yt, [VID, "--out", out_dir, "--refresh"], run3)
-    case("--refresh fetches again", code3 == 0 and len(run3.calls) == 2, repr(run3.calls))
-
-    # Metadata failure is not fatal: the transcript still lands, slugged by id.
-    md_dir = tempfile.mkdtemp(prefix="yt_nometa_")
-    code4, out4, _ = invoke(yt, [VID, "--out", md_dir], runner(meta_out="", meta_rc=1))
-    case("unreadable metadata still writes the transcript, slug falls back to the id",
-         code4 == 0 and json.loads(out4).get("slug") == VID.lower()
-         and "title: unknown" in open(os.path.join(md_dir, "%s.md" % VID), encoding="utf-8").read(), out4)
-
-    # Failure exits: each writes nothing and says why on stderr.
-    nc_dir = tempfile.mkdtemp(prefix="yt_nocap_")
-    code5, _, err5 = invoke(yt, [VID, "--out", nc_dir], runner(transcript_out=NO_CAPTIONS))
-    case("no transcript exits 3 with the library's reason and writes no file",
-         code5 == 3 and "Subtitles are disabled" in err5 and os.listdir(nc_dir) == [], err5)
-    code6, _, err6 = invoke(yt, ["https://vimeo.com/1", "--out", nc_dir], runner())
-    case("a non-YouTube argument exits 2", code6 == 2 and "YouTube" in err6, err6)
-    code7, _, err7 = invoke(yt, [VID, "--out", nc_dir], runner(missing=True))
-    case("a missing uvx exits 4 naming uvx", code7 == 4 and "uvx" in err7 and os.listdir(nc_dir) == [], err7)
-
-    return report(cases)
+    assert (summary.get("id") == VID and summary.get("slug") == "if-you-have-a-claude-sub-watch-this"
+            and summary.get("lines") == 3 and os.path.samefile(summary.get("path", fetched["path"]), fetched["path"])), fetched["out"]
 
 
-def report(cases):
-    failed = [n for n, ok, _d in cases if not ok]
-    for name, ok, detail in cases:
-        print(("ok   " if ok else "FAIL ") + name + ("" if ok else "   [%s]" % str(detail)[:500]))
-    print("\n%d/%d passed" % (len(cases) - len(failed), len(cases)))
-    return 1 if failed else 0
+def test_a_cached_transcript_is_reused_without_a_fetch(yt, fetched):
+    run = runner()
+    code, out, _ = invoke(yt, [VID, "--out", fetched["out_dir"]], run)
+    assert code == 0 and run.calls == [] and json.loads(out).get("cached") is True, repr(run.calls)
 
 
-def test_proof():
-    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
-    try:
-        code = main()
-    except SystemExit as exc:
-        code = exc.code
-    assert code in (None, 0), code
+def test_refresh_fetches_again(yt, fetched):
+    run = runner()
+    code, _, _ = invoke(yt, [VID, "--out", fetched["out_dir"], "--refresh"], run)
+    assert code == 0 and len(run.calls) == 2, repr(run.calls)
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def test_unreadable_metadata_still_writes_the_transcript_with_the_slug_falling_back_to_the_id(yt, tmp_path):
+    md_dir = str(tmp_path / "nometa")
+    code, out, _ = invoke(yt, [VID, "--out", md_dir], runner(meta_out="", meta_rc=1))
+    assert (code == 0 and json.loads(out).get("slug") == VID.lower()
+            and "title: unknown" in open(os.path.join(md_dir, "%s.md" % VID), encoding="utf-8").read()), out
+
+
+def test_no_transcript_exits_three_with_the_library_reason_and_writes_no_file(yt, tmp_path):
+    nc_dir = tmp_path / "nocap"
+    nc_dir.mkdir()
+    code, _, err = invoke(yt, [VID, "--out", str(nc_dir)], runner(transcript_out=NO_CAPTIONS))
+    assert code == 3 and "Subtitles are disabled" in err and os.listdir(nc_dir) == [], err
+
+
+def test_a_non_youtube_argument_exits_two(yt, tmp_path):
+    code, _, err = invoke(yt, ["https://vimeo.com/1", "--out", str(tmp_path)], runner())
+    assert code == 2 and "YouTube" in err, err
+
+
+def test_a_missing_uvx_exits_four_naming_uvx_and_writes_no_file(yt, tmp_path):
+    nc_dir = tmp_path / "nouvx"
+    nc_dir.mkdir()
+    code, _, err = invoke(yt, [VID, "--out", str(nc_dir)], runner(missing=True))
+    assert code == 4 and "uvx" in err and os.listdir(nc_dir) == [], err

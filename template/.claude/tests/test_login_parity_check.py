@@ -7,23 +7,21 @@ real login, the network or a real `claude`. One case spawns a real detached chil
 one-liner, because detaching is the mechanism under proof there. A case whose hook raises, or whose
 subprocess run exits outside {0}, is a CRASH, never a pass.
 
-    python3 .claude/tests/test_login_parity_check.py
+    python -m pytest .claude/tests/test_login_parity_check.py -q
 """
-import atexit
-import contextlib
 import importlib.util
 import io
 import json
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
+from contextlib import redirect_stdout
 from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+import pytest
+
 HERE = Path(__file__).resolve().parent
 HOOK = HERE.parent / "hooks" / "login_parity_check.py"
 
@@ -31,10 +29,11 @@ DRIFT = ("anthropic-secondary: semantic-search@dreb 2.28.0 -> 2.69.0 (update)\n"
          "anthropic: semantic-search@dreb idle shim needs repair: idle unload is not installed\n")
 
 
-def new_root():
-    root = Path(tempfile.mkdtemp(prefix="login_parity_check_"))
-    atexit.register(shutil.rmtree, root, ignore_errors=True)
-    return root
+@pytest.fixture(autouse=True)
+def clean_session_env(monkeypatch):
+    """The proof may itself run inside a sidecar child or a cloud VM; every case sets its own session env."""
+    monkeypatch.delenv("CLAUDE_CODE_SIDECAR", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_REMOTE", raising=False)
 
 
 def load():
@@ -52,36 +51,26 @@ def plant(root, out, code):
     return [sys.executable, str(script)]
 
 
-def run_hook(root, check_argv, env=None):
+def run_hook(root, check_argv, monkeypatch, env=None):
     """(stdout, spawns, crash) for one in-process SessionStart run."""
     module = load()
     module.CHECK_ARGV = check_argv
     module.LOGS = root / "logs"
     spawns = []
     module.spawn = lambda argv, log: spawns.append((list(argv), Path(log)))
-    saved = {k: os.environ.get(k) for k in ("CLAUDE_CODE_SIDECAR",)}
-    os.environ.pop("CLAUDE_CODE_SIDECAR", None)   # the proof may itself run inside a sidecar child
     for key, value in (env or {}).items():
-        os.environ[key] = value
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"hook_event_name": "SessionStart", "source": "startup"})))
     out = io.StringIO()
-    stdin = sys.stdin
-    sys.stdin = io.StringIO(json.dumps({"hook_event_name": "SessionStart", "source": "startup"}))
     crash = None
     try:
-        with contextlib.redirect_stdout(out):
+        with redirect_stdout(out):
             module.main()
     except SystemExit as exc:
         if exc.code not in (0, None):
             crash = "exit %r" % exc.code
-    except Exception as exc:  # noqa: BLE001  a raising hook is a CRASH, reported by the case
+    except Exception as exc:  # a raising hook is a CRASH, reported by the case
         crash = "%s: %s" % (type(exc).__name__, exc)
-    finally:
-        sys.stdin = stdin
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
     return out.getvalue(), spawns, crash
 
 
@@ -89,192 +78,164 @@ def decide_or_crash(module):
     """decide()'s line, or "CRASH <error>" when it raises."""
     try:
         return module.decide()
-    except Exception as exc:  # noqa: BLE001  a raising hook is a CRASH, reported by the case
+    except Exception as exc:  # a raising hook is a CRASH, reported by the case
         return "CRASH %s: %s" % (type(exc).__name__, exc)
 
 
-def main():
-    cases = []
+def test_drift_the_hook_does_not_crash(tmp_path, monkeypatch):
+    _, _, crash = run_hook(tmp_path, plant(tmp_path, DRIFT, 1), monkeypatch)
+    assert crash is None, crash
 
-    def case(name, ok, detail=""):
-        cases.append((name, bool(ok), detail))
 
-    if not HOOK.is_file():
-        case("hooks/login_parity_check.py exists", False, str(HOOK))
-        return report(cases)
-
-    root = new_root()
-    out, spawns, crash = run_hook(root, plant(root, DRIFT, 1))
+def test_drift_injects_one_line_naming_the_update_the_log_path_and_the_restart(tmp_path, monkeypatch):
+    out, spawns, _ = run_hook(tmp_path, plant(tmp_path, DRIFT, 1), monkeypatch)
     lines = [ln for ln in out.splitlines() if ln.strip()]
-    case("drift: the hook does not crash", crash is None, crash)
-    case("drift: one injected line naming what updates, the log path and the restart instruction",
-         len(lines) == 1 and "semantic-search@dreb 2.28.0 -> 2.69.0" in lines[0] and "idle shim" in lines[0]
-         and spawns and str(spawns[0][1]) in lines[0]
-         and "restart sessions on this login after it ends" in lines[0], repr(out))
-    case("drift: the sync starts once, detached, without --check, logging under the logs dir",
-         len(spawns) == 1 and spawns[0][0][-1].endswith("sync_plan_config.py") and "--check" not in spawns[0][0]
-         and spawns[0][1].parent == root / "logs", repr(spawns))
+    assert (len(lines) == 1 and "semantic-search@dreb 2.28.0 -> 2.69.0" in lines[0] and "idle shim" in lines[0]
+            and spawns and str(spawns[0][1]) in lines[0]
+            and "restart sessions on this login after it ends" in lines[0]), repr(out)
 
-    out2, spawns2, crash = run_hook(root, plant(root, DRIFT, 1))
-    case("a second session while that sync is recent starts no second sync and names the first one's log",
-         crash is None and not spawns2 and spawns and str(spawns[0][1]) in out2, repr((out2, spawns2, crash)))
 
-    root = new_root()
-    (root / "logs").mkdir()
+def test_drift_starts_the_sync_once_detached_without_check_logging_under_the_logs_dir(tmp_path, monkeypatch):
+    _, spawns, _ = run_hook(tmp_path, plant(tmp_path, DRIFT, 1), monkeypatch)
+    assert (len(spawns) == 1 and spawns[0][0][-1].endswith("sync_plan_config.py") and "--check" not in spawns[0][0]
+            and spawns[0][1].parent == tmp_path / "logs"), repr(spawns)
+
+
+def test_a_second_session_while_that_sync_is_recent_starts_none_and_names_the_first_log(tmp_path, monkeypatch):
+    _, spawns, _ = run_hook(tmp_path, plant(tmp_path, DRIFT, 1), monkeypatch)
+    out2, spawns2, crash = run_hook(tmp_path, plant(tmp_path, DRIFT, 1), monkeypatch)
+    assert crash is None and not spawns2 and spawns and str(spawns[0][1]) in out2, repr((out2, spawns2, crash))
+
+
+def test_two_sessions_that_both_find_a_stale_marker_start_one_sync(tmp_path, monkeypatch):
     module = load()
-    module.CHECK_ARGV = plant(root, DRIFT, 1)
-    module.LOGS = root / "logs"
+    module.CHECK_ARGV = plant(tmp_path, DRIFT, 1)
+    module.LOGS = tmp_path / "logs"
+    (tmp_path / "logs").mkdir()
     claimed = []
     module.spawn = lambda argv, log: claimed.append(Path(log))
-    (root / "logs" / module.MARKER).write_text(json.dumps({"at": 0, "log": "stale.log"}), encoding="utf-8")
-    saved_sidecar = os.environ.pop("CLAUDE_CODE_SIDECAR", None)
+    (tmp_path / "logs" / module.MARKER).write_text(json.dumps({"at": 0, "log": "stale.log"}), encoding="utf-8")
     lines = []
     racers = [threading.Thread(target=lambda: lines.append(module.decide())) for _ in range(2)]
     for racer in racers:
         racer.start()
     for racer in racers:
         racer.join(timeout=120)
-    if saved_sidecar is not None:
-        os.environ["CLAUDE_CODE_SIDECAR"] = saved_sidecar
-    case("two sessions that both find a stale marker start one sync: the other names that sync's log",
-         len(lines) == 2 and len(claimed) == 1 and sum(str(claimed[0]) in (ln or "") for ln in lines) == 2,
-         repr((lines, claimed)))
+    assert len(lines) == 2 and len(claimed) == 1 and sum(str(claimed[0]) in (ln or "") for ln in lines) == 2, \
+        repr((lines, claimed))
 
-    root = new_root()
-    out, spawns, crash = run_hook(root, plant(root, "", 0))
-    case("no drift: nothing injected, nothing started", crash is None and out.strip() == "" and not spawns,
-         repr((out, spawns, crash)))
 
-    root = new_root()
-    out, spawns, crash = run_hook(root, plant(root, "", 2))
+def test_no_drift_injects_nothing_and_starts_nothing(tmp_path, monkeypatch):
+    out, spawns, crash = run_hook(tmp_path, plant(tmp_path, "", 0), monkeypatch)
+    assert crash is None and out.strip() == "" and not spawns, repr((out, spawns, crash))
+
+
+def test_a_failed_check_injects_one_line_naming_the_exit_and_the_command_and_starts_nothing(tmp_path, monkeypatch):
+    out, spawns, crash = run_hook(tmp_path, plant(tmp_path, "", 2), monkeypatch)
     lines = [ln for ln in out.splitlines() if ln.strip()]
-    case("a failed check: one line naming the exit and the command to run; nothing started",
-         crash is None and not spawns and len(lines) == 1 and "exit 2" in lines[0]
-         and "sync_plan_config.py --check" in lines[0], repr((out, spawns, crash)))
+    assert (crash is None and not spawns and len(lines) == 1 and "exit 2" in lines[0]
+            and "sync_plan_config.py --check" in lines[0]), repr((out, spawns, crash))
 
-    root = new_root()
-    out, spawns, crash = run_hook(root, plant(root, DRIFT, 1), env={"CLAUDE_CODE_SIDECAR": "1"})
-    case("a sidecar child runs no check and starts nothing",
-         crash is None and out.strip() == "" and not spawns and not (root / "check_ran").exists(),
-         repr((out, spawns, crash)))
 
-    root = new_root()
-    out, spawns, crash = run_hook(root, plant(root, DRIFT, 1), env={"CLAUDE_CODE_REMOTE": "true"})
-    os.environ.pop("CLAUDE_CODE_REMOTE", None)
-    case("a cloud VM runs no check and starts nothing (its logins are the account's, not this machine's)",
-         crash is None and out.strip() == "" and not spawns and not (root / "check_ran").exists(),
-         repr((out, spawns, crash)))
+def test_a_sidecar_child_runs_no_check_and_starts_nothing(tmp_path, monkeypatch):
+    out, spawns, crash = run_hook(tmp_path, plant(tmp_path, DRIFT, 1), monkeypatch, env={"CLAUDE_CODE_SIDECAR": "1"})
+    assert crash is None and out.strip() == "" and not spawns and not (tmp_path / "check_ran").exists(), \
+        repr((out, spawns, crash))
 
-    root = new_root()
-    out, spawns, crash = run_hook(root, plant(root, DRIFT, 1), env={"CLAUDE_CODE_REMOTE": "1"})
-    os.environ.pop("CLAUDE_CODE_REMOTE", None)
-    case("a cloud VM with CLAUDE_CODE_REMOTE=1 runs no check (same cloud test as the other hooks)",
-         crash is None and out.strip() == "" and not spawns and not (root / "check_ran").exists(),
-         repr((out, spawns, crash)))
 
-    root = new_root()
+def test_a_cloud_vm_runs_no_check_and_starts_nothing(tmp_path, monkeypatch):
+    """Its logins are the account's, not this machine's."""
+    out, spawns, crash = run_hook(tmp_path, plant(tmp_path, DRIFT, 1), monkeypatch, env={"CLAUDE_CODE_REMOTE": "true"})
+    assert crash is None and out.strip() == "" and not spawns and not (tmp_path / "check_ran").exists(), \
+        repr((out, spawns, crash))
+
+
+def test_a_cloud_vm_with_claude_code_remote_one_runs_no_check(tmp_path, monkeypatch):
+    """The same cloud test as the other hooks."""
+    out, spawns, crash = run_hook(tmp_path, plant(tmp_path, DRIFT, 1), monkeypatch, env={"CLAUDE_CODE_REMOTE": "1"})
+    assert crash is None and out.strip() == "" and not spawns and not (tmp_path / "check_ran").exists(), \
+        repr((out, spawns, crash))
+
+
+def test_a_failed_spawn_names_the_failure_and_releases_its_claim_so_the_next_session_starts_the_sync(tmp_path, monkeypatch):
     module = load()
-    module.CHECK_ARGV = plant(root, DRIFT, 1)
-    module.LOGS = root / "logs"
+    module.CHECK_ARGV = plant(tmp_path, DRIFT, 1)
+    module.LOGS = tmp_path / "logs"
 
     def refuse(argv, log):
         raise OSError(2, "planted spawn failure")
     module.spawn = refuse
-    saved_sidecar = os.environ.pop("CLAUDE_CODE_SIDECAR", None)
     failed_line = decide_or_crash(module)
     retried = []
     module.spawn = lambda argv, log: retried.append(Path(log))
     retry_line = module.decide()
-    case("a failed spawn names the failure and releases its claim: the next session starts the sync",
-         "could not start" in (failed_line or "") and "planted spawn failure" in failed_line
-         and "sync_plan_config.py" in failed_line and len(retried) == 1 and str(retried[0]) in (retry_line or ""),
-         repr((failed_line, retry_line, retried)))
+    assert ("could not start" in (failed_line or "") and "planted spawn failure" in failed_line
+            and "sync_plan_config.py" in failed_line and len(retried) == 1 and str(retried[0]) in (retry_line or "")), \
+        repr((failed_line, retry_line, retried))
 
-    root = new_root()
+
+def test_a_failed_spawn_never_releases_a_newer_sessions_claim(tmp_path):
     module = load()
-    module.CHECK_ARGV = plant(root, DRIFT, 1)
-    module.LOGS = root / "logs"
+    module.CHECK_ARGV = plant(tmp_path, DRIFT, 1)
+    module.LOGS = tmp_path / "logs"
 
     def superseded(argv, log):
-        (root / "logs" / module.MARKER).write_text(json.dumps({"at": time.time(), "log": "successor.log"}),
-                                                   encoding="utf-8")
+        (tmp_path / "logs" / module.MARKER).write_text(json.dumps({"at": time.time(), "log": "successor.log"}),
+                                                       encoding="utf-8")
         raise OSError(2, "planted spawn failure")
     module.spawn = superseded
     decide_or_crash(module)
-    if saved_sidecar is not None:
-        os.environ["CLAUDE_CODE_SIDECAR"] = saved_sidecar
-    held = json.loads((root / "logs" / module.MARKER).read_text(encoding="utf-8"))
-    case("a failed spawn never releases a newer session's claim", held.get("log") == "successor.log", repr(held))
+    held = json.loads((tmp_path / "logs" / module.MARKER).read_text(encoding="utf-8"))
+    assert held.get("log") == "successor.log", repr(held)
 
-    root = new_root()
+
+def test_a_hung_check_ends_at_its_deadline_with_the_processes_it_started_and_no_grandchild_left(tmp_path):
+    """Spawned: the check's own process tree is the subject. The grandchild would write its mark 6 s in."""
     module = load()
-    marker = root / "grandchild_outlived"
-    grandchild = root / "grandchild.py"
+    marker = tmp_path / "grandchild_outlived"
+    grandchild = tmp_path / "grandchild.py"
     grandchild.write_text("import pathlib, time\ntime.sleep(6)\npathlib.Path(%s).write_text('x')\n"
                           % json.dumps(str(marker)), encoding="utf-8", newline="\n")
-    hung = root / "hung_check.py"
+    hung = tmp_path / "hung_check.py"
     hung.write_text("import subprocess, sys, time\nsubprocess.Popen([sys.executable, %s])\ntime.sleep(30)\n"
                     % json.dumps(str(grandchild)), encoding="utf-8", newline="\n")
     module.CHECK_ARGV = [sys.executable, str(hung)]
     module.CHECK_TIMEOUT = 1
-    module.LOGS = root / "logs"
+    module.LOGS = tmp_path / "logs"
     spawned = []
     module.spawn = lambda argv, log: spawned.append(list(argv))
-    saved_sidecar = os.environ.pop("CLAUDE_CODE_SIDECAR", None)
     start = time.time()
     line = module.decide()
     elapsed = time.time() - start
-    if saved_sidecar is not None:
-        os.environ["CLAUDE_CODE_SIDECAR"] = saved_sidecar
     time.sleep(max(0.0, 2.8 - (time.time() - start)))   # past the moment a surviving grandchild would write
-    case("a hung check ends at its deadline with the processes it started: the timeout line, no grandchild left",
-         "ran past 1 s" in (line or "") and elapsed < 2.5 and not marker.exists() and not spawned,
-         repr((line, round(elapsed, 1), marker.exists(), spawned)))
+    assert ("ran past 1 s" in (line or "") and elapsed < 2.5 and not marker.exists() and not spawned), \
+        repr((line, round(elapsed, 1), marker.exists(), spawned))
 
-    root = new_root()
+
+def test_a_seats_json_with_no_external_login_runs_no_check_and_injects_no_line(tmp_path):
     module = load()
-    module.CHECK_ARGV = plant(root, DRIFT, 1)
-    module.LOGS = root / "logs"
+    module.CHECK_ARGV = plant(tmp_path, DRIFT, 1)
+    module.LOGS = tmp_path / "logs"
     module.spawn = lambda argv, log: None
-    saved_sidecar = os.environ.pop("CLAUDE_CODE_SIDECAR", None)   # a sidecar child decides nothing; test the owner's path
     module._seat_rows = lambda: {"only-local": {"adapter": "scripts/seat_agy.sh", "writes": "no",
                                                 "max_concurrent": 1, "configDir": "", "model": "m"}}
     line = decide_or_crash(module)
-    case("a seats.json with no external login runs no check and injects no line",
-         line is None and not (root / "check_ran").exists(), repr((line, (root / "check_ran").exists())))
+    assert line is None and not (tmp_path / "check_ran").exists(), repr((line, (tmp_path / "check_ran").exists()))
 
-    if saved_sidecar is not None:
-        os.environ["CLAUDE_CODE_SIDECAR"] = saved_sidecar
 
+def test_the_hook_imports_and_exits_zero_as_session_start_runs_it():
+    """Spawned: the hook's own entry point is the subject. A sidecar child, so nothing is checked."""
     proc = subprocess.run([sys.executable, str(HOOK)], input="{}", capture_output=True, text=True,
                           env={**os.environ, "CLAUDE_CODE_SIDECAR": "1"}, timeout=60)
-    case("the hook imports and exits 0 as SessionStart runs it (a sidecar child, so nothing is checked)",
-         proc.returncode == 0 and proc.stdout.strip() == "", repr((proc.returncode, proc.stdout, proc.stderr)))
+    assert proc.returncode == 0 and proc.stdout.strip() == "", repr((proc.returncode, proc.stdout, proc.stderr))
 
-    root = new_root()
+
+def test_the_real_spawner_starts_a_child_that_writes_its_output_to_the_log(tmp_path):
+    """Spawned: detaching is the mechanism under proof, so a real child runs."""
     module = load()
-    log = root / "spawned.log"
+    log = tmp_path / "spawned.log"
     module.spawn([sys.executable, "-c", "print('detached child ran')"], log)
     deadline = time.time() + 20
     while time.time() < deadline and "detached child ran" not in (log.read_text(encoding="utf-8") if log.exists() else ""):
         time.sleep(0.2)
-    case("the real spawner starts a child that writes its output to the log",
-         log.exists() and "detached child ran" in log.read_text(encoding="utf-8"), str(log))
-    return report(cases)
-
-
-def report(cases):
-    failed = [n for n, ok, _d in cases if not ok]
-    for name, ok, detail in cases:
-        print(("ok   " if ok else "FAIL ") + name + ("" if ok else "   [%s]" % str(detail)[:500]))
-    print("\n%d/%d passed" % (len(cases) - len(failed), len(cases)))
-    return 1 if failed else 0
-
-
-
-def test_proof():
-    assert main() in (None, 0)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    assert log.exists() and "detached child ran" in log.read_text(encoding="utf-8"), str(log)

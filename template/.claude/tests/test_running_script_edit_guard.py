@@ -6,13 +6,15 @@ line merely NAMED the script (a peer's grep, a `bash -c` wrapper string), and wa
 whose process had exited between the table snapshot and the warning. Planted table + planted
 liveness probe; the last two cases run the real hook end to end.
 
-    python3 .claude/tests/test_running_script_edit_guard.py
+    python -m pytest .claude/tests/test_running_script_edit_guard.py -q
 """
 import importlib.util
 import json
 import os
 import subprocess
 import sys
+
+import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOK = os.path.join(HERE, "..", "hooks", "running_script_edit_guard.py")
@@ -35,73 +37,104 @@ TABLE = "\n".join([
 ])
 
 
-def main():
-    cases = []
-    inv = lambda cmd: g._is_invocation(cmd, "opencode_sidecar.sh")  # noqa: E731
-    cases.append(("bash <script> args IS an invocation", inv(f"bash {S} -m muse")))
-    cases.append(("a quoted absolute bash.exe path still counts", inv(f'"C:\\Program Files\\Git\\usr\\bin\\bash.exe" {S} -m muse')))
-    cases.append(("timeout N bash <script> passes through to the shell", inv(f"timeout 600 bash {S}")))
-    cases.append(("the script run directly as the program counts", inv(f"C:/repo/{S} -m opus")))
-    cases.append(("a bash -c wrapper STRING is not an invocation", not inv(f'bash -c "source snap; bash {S} --check"')))
-    cases.append(("pwsh -Command mentioning the path is not an invocation", not inv(f'pwsh -Command "cat {S}"')))
-    cases.append(("grep on the script is a noun, not an invocation", not inv(f"grep -n foo {S}")))
-    cases.append(("git log -- <script> is a noun", not inv(f"git log -- {S}")))
-    cases.append(("an argument to a non-shell program is a mention", not inv(f"python3 tool.py --launcher {S}")))
-    cases.append(("a different script name never matches", not inv("bash .claude/scripts/deepseek_sidecar.sh -m flash")))
+def is_invocation(cmd):
+    return g._is_invocation(cmd, "opencode_sidecar.sh")
 
-    # Planted table + planted probe: 104 exited after the snapshot; this process's own row is an ancestor.
+
+@pytest.mark.parametrize("cmd", [
+    f"bash {S} -m muse",
+    f'"C:\\Program Files\\Git\\usr\\bin\\bash.exe" {S} -m muse',
+    f"timeout 600 bash {S}",
+    f"C:/repo/{S} -m opus",
+], ids=["bash-script", "quoted-bash-exe", "timeout-passthrough", "script-as-program"])
+def test_a_shell_running_the_script_is_an_invocation(cmd):
+    assert is_invocation(cmd)
+
+
+@pytest.mark.parametrize("cmd", [
+    f'bash -c "source snap; bash {S} --check"',
+    f'pwsh -Command "cat {S}"',
+    f"grep -n foo {S}",
+    f"git log -- {S}",
+    f"python3 tool.py --launcher {S}",
+    "bash .claude/scripts/deepseek_sidecar.sh -m flash",
+], ids=["bash-c-wrapper", "pwsh-mention", "grep-noun", "git-noun", "non-shell-argument", "other-script-name"])
+def test_a_mention_of_the_script_is_not_an_invocation(cmd):
+    assert not is_invocation(cmd)
+
+
+def test_only_the_true_still_alive_invocations_survive():
+    """Planted table + planted probe: 104 exited after the snapshot; this process's own row is an ancestor."""
     hits = g.find_live_instances("opencode_sidecar.sh", scan=lambda: TABLE,
                                  alive=lambda pids: set(pids) - {"104"})
     pids = sorted(h.split(" ", 1)[0] for h in hits)
-    cases.append(("only the true, still-alive invocations survive (100, 105, 106)", pids == ["100", "105", "106"], pids))
-    cases.append(("the wrapper, the grep, the tool argument and the git mention are dropped",
-                  not any(p in pids for p in ("101", "102", "103", "107"))))
-    cases.append(("a row that died between scan and warning is dropped", "104" not in pids))
-    cases.append(("the hook's own ancestor chain is excluded", ME not in pids))
+    assert pids == ["100", "105", "106"], pids
+
+
+def test_the_wrapper_the_grep_the_tool_argument_and_the_git_mention_are_dropped():
+    hits = g.find_live_instances("opencode_sidecar.sh", scan=lambda: TABLE, alive=lambda pids: set(pids))
+    pids = [h.split(" ", 1)[0] for h in hits]
+    assert not any(p in pids for p in ("101", "102", "103", "107"))
+
+
+def test_a_row_that_died_between_scan_and_warning_is_dropped():
+    hits = g.find_live_instances("opencode_sidecar.sh", scan=lambda: TABLE,
+                                 alive=lambda pids: set(pids) - {"104"})
+    assert "104" not in [h.split(" ", 1)[0] for h in hits]
+
+
+def test_the_hooks_own_ancestor_chain_is_excluded():
+    hits = g.find_live_instances("opencode_sidecar.sh", scan=lambda: TABLE, alive=lambda pids: set(pids))
+    assert ME not in [h.split(" ", 1)[0] for h in hits]
+
+
+def test_no_candidates_means_the_liveness_probe_is_never_spawned():
     probe_calls = []
     g.find_live_instances("opencode_sidecar.sh", scan=lambda: "102|1|grep x " + S,
                           alive=lambda pids: probe_calls.append(pids) or set(pids))
-    cases.append(("no candidates -> the liveness probe is never spawned", probe_calls == []))
-    cases.append(("a scan failure stays silent", g.find_live_instances("x.sh", scan=lambda: (_ for _ in ()).throw(OSError("boom"))) == []))
+    assert probe_calls == []
 
-    # A file that does not exist yet has no running instance, so the process-table query (about a second on
-    # Windows) is never paid for it; an existing script is still scanned.
-    import tempfile
+
+def test_a_scan_failure_stays_silent():
+    def boom():
+        raise OSError("boom")
+    assert g.find_live_instances("x.sh", scan=boom) == []
+
+
+def test_a_script_that_does_not_exist_yet_is_never_scanned_for(tmp_path):
+    """No running instance can exist for a file not yet written, so the process-table query (about a second
+    on Windows) is never paid for it."""
     scans = []
-    scan = lambda: scans.append(1) or TABLE  # noqa: E731
-    with tempfile.TemporaryDirectory() as tmp:
-        os.makedirs(os.path.join(tmp, ".claude", "scripts"))
-        absent = os.path.join(tmp, ".claude", "scripts", "opencode_sidecar.sh")
-        g.process({"tool_name": "Write", "tool_input": {"file_path": absent}}, scan=scan, alive=lambda p: set(p))
-        cases.append(("a script that does not exist yet is never scanned for", scans == [], scans))
-        with open(absent, "w", encoding="utf-8") as fh:
-            fh.write("#!/bin/bash\n")
-        out = g.process({"tool_name": "Edit", "tool_input": {"file_path": absent}}, scan=scan, alive=lambda p: set(p))
-        cases.append(("an existing script is scanned and its live instances reported", scans == [1] and bool(out), scans))
-
-    # End to end through stdin: a non-guarded path exits 0 with no output; a guarded path whose
-    # script nothing runs also stays silent. Any other exit code is a CRASH, never a pass.
-    def run(payload):
-        r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
-                           text=True, timeout=60, encoding="utf-8")
-        return r.returncode, (r.stdout or "").strip()
-
-    rc, out = run({"tool_name": "Edit", "tool_input": {"file_path": "C:/repo/Source/Foo.cs"}})
-    cases.append(("e2e: a non-script edit exits 0 silently", rc == 0 and out == "", (rc, out[:80])))
-    rc, out = run({"tool_name": "Write", "tool_input": {"file_path": "C:/repo/.claude/scripts/zz_nobody_runs_this_9f3.sh"}})
-    cases.append(("e2e: a guarded script nothing runs exits 0 silently", rc == 0 and out == "", (rc, out[:80])))
-
-    failures = [c for c in cases if not c[1]]
-    for c in cases:
-        print("%-4s %s%s" % ("ok" if c[1] else "FAIL", c[0], "" if c[1] or len(c) < 3 else "  got=%r" % (c[2],)))
-    print("\n%d/%d cases pass" % (len(cases) - len(failures), len(cases)))
-    return 1 if failures else 0
+    absent = os.path.join(str(tmp_path), ".claude", "scripts", "opencode_sidecar.sh")
+    os.makedirs(os.path.dirname(absent))
+    g.process({"tool_name": "Write", "tool_input": {"file_path": absent}},
+              scan=lambda: scans.append(1) or TABLE, alive=lambda p: set(p))
+    assert scans == [], scans
 
 
+def test_an_existing_script_is_scanned_and_its_live_instances_reported(tmp_path):
+    scans = []
+    existing = os.path.join(str(tmp_path), ".claude", "scripts", "opencode_sidecar.sh")
+    os.makedirs(os.path.dirname(existing))
+    with open(existing, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/bash\n")
+    out = g.process({"tool_name": "Edit", "tool_input": {"file_path": existing}},
+                    scan=lambda: scans.append(1) or TABLE, alive=lambda p: set(p))
+    assert scans == [1] and bool(out), scans
 
-def test_proof():
-    assert main() in (None, 0)
+
+def run_hook(payload):
+    """Spawned: the hook's stdin entry point is the subject (exit code and output channel)."""
+    r = subprocess.run([sys.executable, HOOK], input=json.dumps(payload), capture_output=True,
+                       text=True, timeout=60, encoding="utf-8")
+    return r.returncode, (r.stdout or "").strip()
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def test_e2e_a_non_script_edit_exits_zero_silently():
+    rc, out = run_hook({"tool_name": "Edit", "tool_input": {"file_path": "C:/repo/Source/Foo.cs"}})
+    assert rc == 0 and out == "", (rc, out[:80])
+
+
+def test_e2e_a_guarded_script_nothing_runs_exits_zero_silently():
+    rc, out = run_hook({"tool_name": "Write", "tool_input": {"file_path": "C:/repo/.claude/scripts/zz_nobody_runs_this_9f3.sh"}})
+    assert rc == 0 and out == "", (rc, out[:80])
