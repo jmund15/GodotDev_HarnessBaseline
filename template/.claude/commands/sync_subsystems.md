@@ -4,20 +4,20 @@ description: Refresh the subsystem registry after folder-shape or substantial su
 
 # /sync_subsystems
 
-Source of truth for the upcoming `architecture_brainstorm` subsystem-breadth scope-litmus. Invoked from `/session_end` Phase 4 (conditional) or manually after subsystem-shape work.
+Source of truth for the upcoming `architecture_brainstorm` subsystem-breadth scope-litmus. Run by `/close` when the session changed folder shape, or manually after subsystem-shape work.
 
 ## Step 0: Signal gate
 
-Run `python3 .claude/tools/close_predicates.py --only sync_subsystems` and read its `basis`:
+List the session's changed paths: `git diff --name-only` over its commits, plus `git status --porcelain`. Run the command when either signal holds:
 
-- `shape` — a changed path whose first component is NOT already in the `subsystems:` YAML of `project_subsystems/SKILL.md` AND not in the reserved-name list.
-- `density` — subsystems with at least `DENSITY_THRESHOLD` changed files under their `paths:` (likely warrants a refresh of that subsystem's one-line summary or "depends on" wording).
+- **shape** — a changed path's first component is in neither the `subsystems:` YAML of `.claude/skills/project_subsystems/SKILL.md` nor its `reserved_paths:` list.
+- **density** — the changes under one subsystem's `paths:` are broad enough that its one-line summary or "depends on" wording may be stale.
 
-A `null` value (digest or registry absent) runs the command. If **neither** signal is present, print `[sync_subsystems] No subsystem-shape or density signal this session. Skipping.` and exit.
+A missing registry runs the command. If **neither** signal is present, print `[sync_subsystems] No subsystem-shape or density signal this session. Skipping.` and exit.
 
 ## Step 1: Enumerate
 
-Walk top-level directories under the project root. Exclude reserved names listed in `project_subsystems/SKILL.md`: `.claude/`, `addons/`, `Jmodot/`, `Docs/`, `logs/`, `TestResults/`, `Temp/`, `gdunit4_testadapter_v5/`, `script_templates/`.
+Walk top-level directories under the project root. Exclude the names in the `reserved_paths:` list of the registry.
 
 ## Step 2: Parse registry
 
@@ -41,7 +41,7 @@ Decide each candidate from its evidence (paths, git history, the files' contents
 
 ## Step 5: Apply
 
-Edit `project_subsystems/SKILL.md`:
+Edit `.claude/skills/project_subsystems/SKILL.md`:
 - YAML block updated for adds/removes/renames.
 - For new subsystems: also append a *Subsystem Details* section entry (don't leave human-readable section out of sync with YAML).
 - For refresh: edit the per-subsystem details paragraph.
