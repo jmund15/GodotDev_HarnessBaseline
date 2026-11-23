@@ -3,7 +3,7 @@ this file and calls `decide_text`; any fault in this file denies there.
 
 Order: a tracked `git add -- <paths> && git commit` folds to a pathspec commit first (`_git_commit.fold_tracked_adds`),
 so every check judges the command that will run. Then each FLOOR module's `check(payload)` runs, in order, on the
-payload as rewritten so far. The decision is the strongest member verdict: a deny, else the first `ask`, else an
+payload as rewritten so far, then each project member `adaptation.json` `hook_members.pre_bash` lists (below). The decision is the strongest member verdict: a deny, else the first `ask`, else an
 `allow` (a helper's, which counts only when nothing asked or denied), else none; every rewrite (`updatedInput`) and
 context line the members produced rides on an ask or an allow. A deny carries neither: a denied call runs nothing.
 
@@ -12,6 +12,12 @@ matcher selects (the action it judges, never the noun) and names the import erro
 its call; a decision whose git reads ran out of `BUDGET_S` denies, since a hook the client kills on its timeout is a
 non-blocking error (the call would run unjudged). A HELPERS module (the kept small Bash helpers, V16) that fails to
 import or raises is skipped.
+
+Project members (`hook_members.pre_bash`, installed modules only, each `check(payload)` like a FLOOR module) run after
+FLOOR and before HELPERS, so the cd approver's allow still follows every deny. A project registers a member as a
+guard, so it gets the FLOOR posture, not the helpers': one that fails to import or raises denies the shell calls
+(Bash, PowerShell) it would have judged, since skipping it would run those calls unjudged. Monitor and TaskStop calls
+pass it by, so a broken project guard never blocks the stop that repairs it.
 """
 import contextlib
 import importlib
@@ -85,6 +91,7 @@ try:
 except Exception:
     _git_commit = None
 import _git_run
+import _optional_hooks
 
 
 def _deny(reason):
@@ -123,6 +130,12 @@ def _decide(payload):
     payload = _fold(payload, contexts)
     members = [(name, matches, action, module, error, True) for name, matches, action, module, error in FLOOR]
     members += [(getattr(module, "__name__", "helper"), None, None, module, None, False) for module in HELPERS]
+    project = []
+    if _shell_call(payload):
+        for name in _optional_hooks.members("pre_bash", ()):
+            module, error = _load(name)
+            project.append((name, _shell_call, "project check", module, error, True))
+    members[len(FLOOR):len(FLOOR)] = project
     for name, matches, action, module, error, floor in members:
         if module is None:
             try:
