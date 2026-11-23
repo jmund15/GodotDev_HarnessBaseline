@@ -90,8 +90,10 @@ DEFAULTS: dict = {
     "overnight_dir": "",
     # commands/review.md (`get review.checklists`): the project checklists diff-mode review reads.
     "review": {"checklists": []},
-    # scripts/seat.sh: command lines run before a seat spawns and after its CLI returns; empty runs nothing.
-    "seat": {"pre_launch": "", "post_return": ""},
+    # tools/launch_check.py (both dispatch routes): command lines run before a job spawns and after it returns; empty runs nothing.
+    "dispatch": {"pre_launch": "", "post_return": ""},
+    # commands/pr_ready.md (`get pr_ready.checks`): the project check files a PR runs.
+    "pr_ready": {"checks": []},
     # hooks/<event>_dispatch.py (one shared dispatcher per event): the member modules each event runs.
     "hook_members": {},
 }
@@ -102,7 +104,8 @@ _TYPES: dict = {key: type(value) for key, value in DEFAULTS.items()}
 # Sub-keys of the table keys: a wrong-typed sub-key keeps its default, the others load.
 _SUB_TYPES: dict = {
     "review": {"checklists": list},
-    "seat": {"pre_launch": str, "post_return": str},
+    "dispatch": {"pre_launch": str, "post_return": str},
+    "pr_ready": {"checks": list},
 }
 
 _MISSING = object()
