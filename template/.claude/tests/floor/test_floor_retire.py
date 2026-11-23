@@ -15,6 +15,7 @@ allows as lost: each now asks the owner once. Their deny cases are kept below in
 import atexit
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -25,6 +26,7 @@ from unittest.mock import patch
 import pytest
 
 import _delete_rule as rule
+import _git_commit
 import _own_worktree
 from case import bash
 from conftest import git, write
@@ -40,8 +42,61 @@ def rmtree(path):
     shutil.rmtree(path, onerror=on_error)
 
 
+def decided(judge, *args):
+    """`judge(*args)` as the floor calls it: one git read memo per decision (`_floor.decide`), so a read the rule makes
+    twice runs once. Each call is its own decision, so a row that changes the repository between calls sees it."""
+    with _git_commit.memoized():
+        return judge(*args)
+
+
 def head(repo):
     return git(repo, "rev-parse", "HEAD").strip()
+
+
+def _admin_dir(worktree):
+    """The admin directory a linked worktree's `.git` file names."""
+    named = Path(worktree, ".git").read_text(encoding="utf-8").split("gitdir:", 1)[1].strip()
+    return Path(named if os.path.isabs(named) else Path(worktree, named)).resolve()
+
+
+_TEMPLATES = {}
+
+
+def worktree_with_submodules(repo, path, *update):
+    """`git worktree add --detach <path>` in `repo`, then the submodules initialized as `git submodule update --init
+    <update>` would leave them. That command costs about a second through git's shell wrapper, the largest single
+    cost in this file, so the first call per (repo, parent folder, arguments) really runs it in a sibling template
+    worktree and every later call copies the template's submodule checkouts and admin store, rewriting the one
+    path component that names the worktree (`.git` files and `core.worktree` hold relative paths through it).
+    `test_a_copied_submodule_worktree_reads_like_a_real_one` holds the copy to the real result. A project whose
+    submodule pointer moves after the template exists needs a new project."""
+    path = Path(path)
+    key = (str(repo), str(path.parent), update)
+    template = _TEMPLATES.get(key)
+    if template is None:
+        template = _TEMPLATES[key] = path.parent / ("sm_template_%d" % len(_TEMPLATES))
+        git(repo, "worktree", "add", "-q", "--detach", str(template))
+        git(template, *SUB, "submodule", "update", "-q", "--init", *update)
+    git(repo, "worktree", "add", "-q", "--detach", str(path))
+    copied = []
+    for sub in re.findall(r"^\s*path = (.+?)\s*$", Path(template, ".gitmodules").read_text(encoding="utf-8"), re.M):
+        if Path(template, sub, ".git").exists():
+            shutil.copytree(Path(template, sub), Path(path, sub), symlinks=True, dirs_exist_ok=True)
+            copied.append(Path(path, sub))
+    store = _admin_dir(template) / "modules"
+    if store.is_dir():
+        shutil.copytree(store, _admin_dir(path) / "modules", symlinks=True)
+        copied.append(_admin_dir(path) / "modules")
+    old, new = ("/%s/" % template.name).encode(), ("/%s/" % path.name).encode()
+    for top in copied:
+        for folder, _dirs, files in os.walk(top):
+            for name in files:
+                if name == ".git" or (name == "config" and top.name == "modules"):
+                    with open(Path(folder, name), "r+b") as fh:  # r+b: Windows refuses `wb` on a hidden `.git` file
+                        data = fh.read()
+                        fh.seek(0)
+                        fh.write(data.replace(old, new))
+                        fh.truncate()
 
 
 def seeded(root, name, files, branch="main"):
@@ -99,9 +154,11 @@ class Project:
 
     def wt(self, name, submodule=False, branch=None):
         path = self.home / name
-        git(self.root, "worktree", "add", "-q", *(["-b", branch] if branch else ["--detach"]), str(path))
         if submodule:
-            git(path, *SUB, "submodule", "update", "-q", "--init")
+            assert not branch
+            worktree_with_submodules(self.root, path)
+        else:
+            git(self.root, "worktree", "add", "-q", *(["-b", branch] if branch else ["--detach"]), str(path))
         return path
 
     def job(self, name, *edits):
@@ -116,9 +173,10 @@ class Project:
     def orphan(self, name, submodule=False, edit=None, where=None):
         """A worktree whose admin directory git pruned; `where` puts it beside the project."""
         path = Path(where, name) if where else self.home / name
-        git(self.root, "worktree", "add", "-q", "--detach", str(path))
         if submodule:
-            git(path, *SUB, "submodule", "update", "-q", "--init")
+            worktree_with_submodules(self.root, path)
+        else:
+            git(self.root, "worktree", "add", "-q", "--detach", str(path))
         if edit:
             edit(path)
         admin = (path / ".git").read_text(encoding="utf-8").split("gitdir:", 1)[1].strip()
@@ -132,7 +190,7 @@ class Project:
 
     def retired(self, token, cwd=None):
         reasons = []
-        got = rule.is_retired_worktree(str(token), str(cwd or self.root), str(self.root), reasons)
+        got = decided(rule.is_retired_worktree, str(token), str(cwd or self.root), str(self.root), reasons)
         assert got == (not reasons), (got, reasons)
         return got, reasons
 
@@ -239,7 +297,7 @@ def test_an_unregistered_empty_directory_loses_nothing(world):
 
 def test_a_clean_worktree_of_another_project_is_not_this_ones(world):
     clean = world.wt("clean3")
-    assert not rule.is_retired_worktree(str(clean), str(world.base / "proj_seed"), str(world.base / "proj_seed"))
+    assert not decided(rule.is_retired_worktree, str(clean), str(world.base / "proj_seed"), str(world.base / "proj_seed"))
 
 
 @pytest.mark.parametrize("prs,want", [([(7, "feat/seven")], False), ([(8, "feat/eight")], True), (None, False)])
@@ -341,6 +399,25 @@ def test_a_submodule_head_pushed_from_the_main_checkout_counts(tmp_path):
     assert world.retired(stale)[0]
 
 
+def test_a_copied_submodule_worktree_reads_like_a_real_one(tmp_path):
+    """`worktree_with_submodules` copies a template where git would clone: git, and the rule over git, read the copy
+    as they read the template, which `git submodule update --init` made, and a commit in the copy stays in the copy."""
+    world = Project(tmp_path)
+    copied = world.wt("copied_sub", submodule=True)
+    real = _TEMPLATES[(str(world.root), str(world.home), ())]
+    for tree in (real, copied):
+        assert git(tree / "Sub", "rev-parse", "--show-toplevel").strip() == (tree / "Sub").as_posix()
+        assert head(tree / "Sub") == git(tree, "ls-files", "--stage", "Sub").split()[1]
+        assert git(tree, "status", "--porcelain", "--ignore-submodules=none") == ""
+        assert world.retired(tree)[0]
+    write(copied / "Sub", "s.txt", "changed\n")
+    assert git(copied, "status", "--porcelain", "--ignore-submodules=none").strip() == "M Sub"
+    git(copied / "Sub", "commit", "-qam", "only in the copy")
+    assert head(copied / "Sub") != head(real / "Sub")
+    assert any("submodule Sub: HEAD" in r for r in world.retired(copied)[1])
+    assert git(real, "status", "--porcelain", "--ignore-submodules=none") == ""
+
+
 def test_a_submodule_whose_admin_directory_is_gone_denies(world):
     """v1 judged its files only for a worktree this session created; the rule now denies it outright."""
     path = world.wt("b_held", submodule=True)
@@ -398,35 +475,6 @@ def test_a_lane_landed_by_rebase_retires_and_a_local_commit_does_not(tmp_path):
     assert not world.retired(ahead)[0]
 
 
-# --- Nested submodules (v1 test_conformance_j8.py v23) ----------------------------------------------------------
-def test_an_ignored_file_in_a_nested_submodule_keeps_the_worktree(tmp_path):
-    def init(name):
-        return seeded(tmp_path, name, {".gitignore": "*.local\n.cache/\nempty/\n"})
-    grand, child, root = init("grand-source"), init("child-source"), init("project")
-    git(child, *SUB, "submodule", "add", "-q", str(grand), "grand")
-    git(child, "commit", "-qam", "grandchild")
-    git(root, *SUB, "submodule", "add", "-q", str(child), "child")
-    git(root, "commit", "-qam", "child")
-    git(root, "update-ref", "refs/remotes/proof/main", "HEAD")
-    target = root / ".claude/worktrees/retired"
-    target.parent.mkdir(parents=True)
-    git(root, "worktree", "add", "-q", "--detach", str(target), "HEAD")
-    git(target, *SUB, "submodule", "update", "--init", "--recursive", "-q")
-
-    def qualifies():
-        return rule.is_retired_worktree(str(target), str(root), str(root))
-    assert qualifies()
-    for sub in (target / "child", target / "child/grand"):
-        unique = sub / "secret.local"
-        unique.write_text("irreplaceable fixture evidence", encoding="utf-8")
-        assert not qualifies(), sub
-        unique.unlink()
-        write(sub, ".cache/generated", "cache")
-        assert qualifies(), sub
-        (sub / "empty").mkdir()
-        assert qualifies(), sub
-
-
 # --- Every submodule state: uninitialized, detached, dirty, unpushed, nested, unmapped --------------------------------
 @pytest.fixture(scope="module")
 def nested_root(tmp_path_factory):
@@ -434,7 +482,7 @@ def nested_root(tmp_path_factory):
     base = tmp_path_factory.mktemp("states")
 
     def init(name):
-        return seeded(base, name, {"f.txt": "f\n"})
+        return seeded(base, name, {"f.txt": "f\n", ".gitignore": "*.local\n.cache/\nempty/\n"})
     grand, child, root = init("grand-source"), init("child-source"), init("project")
     git(child, *SUB, "submodule", "add", "-q", str(grand), "grand")
     git(child, "commit", "-qam", "grandchild")
@@ -454,6 +502,26 @@ def _stray_gitlink(repo):
     git(repo, "update-index", "--add", "--cacheinfo", "160000,%s,Stray" % head(repo))
 
 
+def test_an_ignored_file_in_a_nested_submodule_keeps_the_worktree(nested_root):
+    """v1 test_conformance_j8.py v23: a unique ignored file loses work, an ignored cache or empty folder does not."""
+    target = nested_root / ".claude/worktrees/retired"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    worktree_with_submodules(nested_root, target, "--recursive")
+
+    def qualifies():
+        return decided(rule.is_retired_worktree, str(target), str(nested_root), str(nested_root))
+    assert qualifies()
+    for sub in (target / "child", target / "child/grand"):
+        unique = sub / "secret.local"
+        unique.write_text("irreplaceable fixture evidence", encoding="utf-8")
+        assert not qualifies(), sub
+        unique.unlink()
+        write(sub, ".cache/generated", "cache")
+        assert qualifies(), sub
+        (sub / "empty").mkdir()
+        assert qualifies(), sub
+
+
 @pytest.mark.parametrize("name,init,mutate,reason", [
     ("uninitialized", None, None, None),
     ("detached_clean", "child", None, None),
@@ -470,13 +538,14 @@ def _stray_gitlink(repo):
 def test_each_submodule_state_decides_the_worktree(nested_root, name, init, mutate, reason):
     target = nested_root / ".claude/worktrees" / name
     target.parent.mkdir(parents=True, exist_ok=True)
-    git(nested_root, "worktree", "add", "-q", "--detach", str(target), "HEAD")
     if init:
-        git(target, *SUB, "submodule", "update", "--init", "-q", *(["--recursive"] if init == "--recursive" else [init]))
+        worktree_with_submodules(nested_root, target, init)
+    else:
+        git(nested_root, "worktree", "add", "-q", "--detach", str(target), "HEAD")
     if mutate:
         mutate(target)
     reasons = []
-    got = rule.is_retired_worktree(str(target), str(nested_root), str(nested_root), reasons)
+    got = decided(rule.is_retired_worktree, str(target), str(nested_root), str(nested_root), reasons)
     assert got == (reason is None), reasons
     assert reason is None or reason in " | ".join(reasons), reasons
 
@@ -727,10 +796,10 @@ def test_a_clone_under_a_jobs_scratch_is_judged_by_the_clone_rule(landed, inner_
     git(landed.root, "worktree", "add", "-q", "--detach", str(link_clone))
     root = str(landed.root)
     why = []
-    assert rule.is_regenerable_clone(str(ok_clone), root, root)
-    assert not rule.is_regenerable_clone(str(bad_clone), root, root, why) and "no remote branch" in why[0]
+    assert decided(rule.is_regenerable_clone, str(ok_clone), root, root)
+    assert not decided(rule.is_regenerable_clone, str(bad_clone), root, root, why) and "no remote branch" in why[0]
     why = []
-    assert not rule.is_regenerable_clone(str(link_clone), root, root, why) and "not a standalone clone" in why[0]
+    assert not decided(rule.is_regenerable_clone, str(link_clone), root, root, why) and "not a standalone clone" in why[0]
     assert landed.retired(nested_ok)[0]
     assert not landed.retired(nested_bad)[0]
     assert not landed.retired(nested_link)[0]
@@ -794,7 +863,7 @@ def test_landed_job_worktrees_through_the_floor(at_landed, inner_remote, tmp_pat
 def test_an_orphan_goes_only_when_git_holds_its_content(world, name, edit, want):
     path = world.orphan(name, edit=edit)
     reasons = []
-    assert rule.lossless_orphan_worktree(str(path), str(world.root), str(world.root), reasons) is want
+    assert decided(rule.lossless_orphan_worktree, str(path), str(world.root), str(world.root), reasons) is want
     assert world.retired(path)[0] is want
     if name == "o_json":
         assert len(reasons) == 1 and "x.json" in reasons[0] and "not a regenerable cache" in reasons[0]
@@ -822,11 +891,11 @@ def test_a_gitless_leftover_is_judged_by_the_same_held_content_test(world):
 def test_an_orphan_deny_names_every_file_up_to_the_cap(world):
     three = world.orphan("many_o3", edit=lambda p: [write(p, n, "x\n") for n in ("a_notes.md", "b_notes.md", "c_notes.md")])
     got = []
-    rule.lossless_orphan_worktree(str(three), str(world.root), str(world.root), got)
+    decided(rule.lossless_orphan_worktree, str(three), str(world.root), str(world.root), got)
     assert len(got) == 1 and all(n in got[0] for n in ("a_notes.md", "b_notes.md", "c_notes.md"))
     many = world.orphan("many_cap", edit=lambda p: [write(p, "f%02d.md" % i, "x%d\n" % i) for i in range(11)])
     got = []
-    rule.lossless_orphan_worktree(str(many), str(world.root), str(world.root), got)
+    decided(rule.lossless_orphan_worktree, str(many), str(world.root), str(world.root), got)
     assert got and "f00.md" in got[0] and "(and 3 more)" in got[0] and "f10.md" not in got[0]
 
 
@@ -976,7 +1045,7 @@ def clones(world):
 ])
 def test_a_scratch_clone_goes_only_when_clean_and_pushed(world, clones, name, want, reason):
     why = []
-    assert rule.is_regenerable_clone(str(clones[name]), str(world.root), str(world.root), why) is want
+    assert decided(rule.is_regenerable_clone, str(clones[name]), str(world.root), str(world.root), why) is want
     if reason:
         assert len(why) == 1 and reason in why[0], why
 
@@ -984,9 +1053,9 @@ def test_a_scratch_clone_goes_only_when_clean_and_pushed(world, clones, name, wa
 def test_a_clean_clone_in_every_token_form(world, clones):
     root = str(world.root)
     rel = os.path.relpath(clones["clean"], world.root).replace("\\", "/")
-    assert rule.is_regenerable_clone(rel, root, root)
+    assert decided(rule.is_regenerable_clone, rel, root, root)
     if os.name == "nt":
-        assert rule.is_regenerable_clone(msys(clones["clean"]), root, root)
+        assert decided(rule.is_regenerable_clone, msys(clones["clean"]), root, root)
 
 
 @pytest.mark.parametrize("token", [".claude/scratch", "{scratch}", "{outside}", "{clean}/../clean",
@@ -996,7 +1065,7 @@ def test_a_token_the_clone_rule_cannot_judge_keeps_the_delete(world, clones, tmp
     if "{outside}" in token:
         git(tmp_path, "clone", "-q", str(clones["remote"]), str(outside))
     token = token.format(scratch=world.scratch, outside=outside, clean=clones["clean"], fix=clones["fix"])
-    assert not rule.is_regenerable_clone(token, str(world.root), str(world.root))
+    assert not decided(rule.is_regenerable_clone, token, str(world.root), str(world.root))
 
 
 def test_scratch_clones_through_the_floor(at, clones):
