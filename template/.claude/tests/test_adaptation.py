@@ -273,3 +273,47 @@ def test_a_good_row_beside_a_bad_one_keeps_only_the_good_row(tmp_path, capsys):
     claude = _claude_dir(tmp_path, {"pre_bash": {"protected": [good, {"pattern": "["}]}})
     assert adaptation.get(claude, "pre_bash.protected") == [good]
     assert "pre_bash.protected[1]" in capsys.readouterr().err
+
+
+PIPELINE_POINTS = ("discover", "sync", "pre_review", "gate", "checklist", "post_merge")
+
+
+def test_pr_pipeline_defaults_to_empty_hook_points_and_reads_back(tmp_path, capsys):
+    empty = {point: [] for point in PIPELINE_POINTS}
+    assert adaptation.get(_claude_dir(tmp_path, None, name="a"), "pr_pipeline") == empty
+    rows = {"gate": ["python3 tools/gate.py --full"], "post_merge": ["/update_roadmap"]}
+    claude = _claude_dir(tmp_path, {"pr_pipeline": rows}, name="b")
+    assert adaptation.get(claude, "pr_pipeline.gate") == rows["gate"]
+    assert adaptation.get(claude, "pr_pipeline.post_merge") == rows["post_merge"]
+    assert adaptation.get(claude, "pr_pipeline.sync") == []
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("bad", [
+    {"gate": "make gate"},
+    {"gate": [5]},
+    {"gate": [" "]},
+    {"gates": ["make gate"]},
+], ids=["not-a-list", "not-a-string", "blank-entry", "unknown-hook-point"])
+def test_a_malformed_pr_pipeline_point_keeps_its_default_and_names_itself(tmp_path, capsys, bad):
+    claude = _claude_dir(tmp_path, {"pr_pipeline": bad})
+    assert adaptation.get(claude, "pr_pipeline") == {point: [] for point in PIPELINE_POINTS}
+    err = capsys.readouterr().err
+    assert "pr_pipeline" in err and len(err.strip().splitlines()) == 1
+
+
+def test_a_good_pr_pipeline_point_beside_a_bad_one_keeps_the_good_one(tmp_path, capsys):
+    claude = _claude_dir(tmp_path, {"pr_pipeline": {"gate": ["make gate"], "sync": [7]}})
+    assert adaptation.get(claude, "pr_pipeline.gate") == ["make gate"]
+    assert adaptation.get(claude, "pr_pipeline.sync") == []
+    assert "pr_pipeline.sync" in capsys.readouterr().err
+
+
+def test_cli_get_prints_one_pr_pipeline_entry_per_line(tmp_path):
+    claude = Path(_claude_dir(tmp_path, {"pr_pipeline": {"gate": ["a b", "/c"]}}))
+    tool = claude / "tools"
+    tool.mkdir()
+    (tool / "adaptation.py").write_bytes(TOOL.read_bytes())
+    done = subprocess.run([sys.executable, str(tool / "adaptation.py"), "get", "pr_pipeline.gate"],
+                          capture_output=True, text=True, cwd=str(claude.parent))
+    assert done.returncode == 0 and done.stdout.splitlines() == ["a b", "/c"]
