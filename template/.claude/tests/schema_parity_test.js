@@ -49,26 +49,14 @@ const engineNames = fs.readdirSync(WORKFLOWS)
   console.log('ok   (a) real set passes and the OK line counts ' + engineNames.length + ' engines')
 }
 
-// (b) a planted engine with no verifier blocks is not a schema pair: the engine suites own its behavior.
+// (b) a planted engine with no schema blocks is not a schema pair: the engine suites own its behavior.
 {
   const r = sandboxRun(claude => {
     fs.writeFileSync(path.join(claude, 'workflows', 'rogue_engine.js'),
-      '// a planted engine with no verifier blocks\nasync function run() { return closeCheck("claims", {}) }\n')
+      '// a planted engine with no schema blocks\nasync function run() { return 1 }\n')
   })
   assert.equal(r.status, 0, 'planted engine exit: ' + r.status + ' stderr=' + r.stderr.slice(0, 400))
   console.log('ok   (b) an engine without the blocks is not a schema divergence')
-}
-
-// (c) a CLOSE-CHECK block edit (a comment) is not schema drift.
-{
-  const r = sandboxRun(claude => {
-    const file = path.join(claude, 'workflows', 'worklog_relevance.js')
-    const src = fs.readFileSync(file, 'utf8')
-    assert.ok(src.includes('// CLOSE-CHECK-BEGIN\n'), 'fixture anchor in worklog_relevance.js')
-    fs.writeFileSync(file, src.replace('// CLOSE-CHECK-BEGIN\n', '// CLOSE-CHECK-BEGIN\n// reworded\n'))
-  })
-  assert.equal(r.status, 0, 'edited block exit: ' + r.status + ' stderr=' + r.stderr.slice(0, 400))
-  console.log('ok   (c) an edited CLOSE-CHECK block is not a schema divergence')
 }
 
 // (d) a structural change to one engine's evidence schema is DIVERGED, naming the engine.

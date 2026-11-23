@@ -77,65 +77,6 @@ const EVIDENCE_SCHEMA = {
 const EVIDENCE_RULES = "The evidence contract's machine twin (tools/quote_check.py owns the semantics and is its one executable implementation). A claim's `evidence` is a list of items, each exactly one of two kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it."
 // EVIDENCE-SSOT-END
 
-// CLOSE-CHECK-BEGIN
-// ENGINE-BLOCK-BEGIN repoRootOf
-function repoRootOf(a) {
-  const root = a && typeof a.__repoRoot === 'string' ? a.__repoRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '') : ''
-  return /^([A-Za-z]:)?\//.test(root) ? root : ''
-}
-// ENGINE-BLOCK-END repoRootOf
-// ENGINE-BLOCK-BEGIN rootedPath
-function rootedPath(a, p) {
-  const root = repoRootOf(a)
-  return root && typeof p === 'string' && !/^([A-Za-z]:)?[\\/]/.test(p) ? root + '/' + p.replace(/^\.\//, '') : p
-}
-// ENGINE-BLOCK-END rootedPath
-// ENGINE-BLOCK-BEGIN cdRootPrefix
-function cdRootPrefix(a) {
-  const root = repoRootOf(a)
-  return root ? "cd '" + root.replace(/'/g, "'\"'\"'") + "' && " : ''
-}
-// ENGINE-BLOCK-END cdRootPrefix
-// ENGINE-BLOCK-BEGIN VERDICTS
-const VERDICTS = ['VERIFIED', 'UNVERIFIED', 'UNCHECKED']
-// ENGINE-BLOCK-END VERDICTS
-// ENGINE-BLOCK-BEGIN applyVerdicts
-const applyVerdicts = (items, verdicts, keyOf) => items.map(item => {
-  const supplied = verdicts[keyOf(item)]
-  const verdict = VERDICTS.includes(supplied) ? supplied : 'UNCHECKED'
-  return Object.assign({}, item, { verdict, confidence: verdict === 'VERIFIED' ? 'verified' : 'unverified' })
-})
-// ENGINE-BLOCK-END applyVerdicts
-// ENGINE-BLOCK-BEGIN boundedVerification
-const boundedVerification = verification => ({
-  status: verification.status, counts: verification.counts, report: verification.report,
-  ...(verification.note ? { note: verification.note } : {}),
-  nonVerified: Object.keys(verification.verdicts).filter(key => verification.verdicts[key] !== 'VERIFIED'),
-})
-// ENGINE-BLOCK-END boundedVerification
-// A session that predates the generated verifier type rejects it; the verifier retries once as general-purpose.
-// ENGINE-BLOCK-BEGIN verifierAgent
-const verifierAgent = (prompt, opts) => agent(prompt, opts).catch(e => {
-  const msg = String((e && e.message) || e)
-  if (!msg.includes("agent type '") || !msg.includes('not found')) throw e
-  log('FALLBACK ' + opts.label + ' ' + opts.agentType + '→general-purpose')
-  return agent(prompt, Object.assign({}, opts, { agentType: 'general-purpose' }))
-})
-// ENGINE-BLOCK-END verifierAgent
-// ENGINE-BLOCK-BEGIN closeCheck
-// The engine verifies no claim: the caller runs `tools/quote_check.py <result.json> --root <checkout>` over the
-// engine's returned result (T4). Every item stays UNCHECKED, so callers read the same shape and no verifier agent runs.
-const closeCheck = async (mode, { items, keyOf }) => {
-  const keys = items.map(keyOf)
-  if (keys.some(key => typeof key !== 'string' || !key.trim() || /(?:undefined|null)#|#(?:undefined|null)$/.test(key))
-    || new Set(keys).size !== keys.length) throw new Error('closeCheck: duplicate or missing source key')
-  const verification = { status: 'unavailable', counts: { VERIFIED: 0, UNVERIFIED: 0, UNCHECKED: items.length },
-    verdicts: Object.fromEntries(items.map(item => [keyOf(item), 'UNCHECKED'])), report: null,
-    note: 'the engine checks no claim: run tools/quote_check.py <result.json> --root <checkout> over this result' }
-  return { items: applyVerdicts(items, verification.verdicts, keyOf), verification }
-}
-// ENGINE-BLOCK-END closeCheck
-// CLOSE-CHECK-END
 
 // args.__transport = {name, ids, efforts?}, injected by hooks/workflow_transport.py. `efforts` is absent when
 // the transport declares no effort vocabulary. No engine supplies a default pin.
@@ -173,7 +114,7 @@ const FINDING_SCHEMA_TEXT = [
   '  "options": null | ["Option A (Recommended) — reason", "Option B — reason"], "scope": ["affected paths or system names"],',
   '  "file": "<path of the doc the finding is about>:<line> or null", "evidence": [{"file": "<absolute path>", "quote": "<VERBATIM text>"}] }',
   'Evidence: ' + EVIDENCE_RULES,
-  '`file` and `evidence` are REQUIRED for a finding about a file\'s content (a missing section, a stale table row, a broken link text): the quote is copied character for character from the doc you read, never your summary, because a checker re-reads the file for it and drops an unmatched finding to unverified. A finding about a file\'s absence or a folder\'s shape sets file to null and supplies canonical command evidence; without a supported command, evidence is an empty array and the finding stays UNCHECKED.',
+  '`file` and `evidence` are REQUIRED for a finding about a file\'s content (a missing section, a stale table row, a broken link text): the quote is copied character for character from the doc you read, never your summary, because the caller re-reads the file for it (tools/quote_check.py) and a quote that is not there is a miss. A finding about a file\'s absence or a folder\'s shape sets file to null and supplies canonical command evidence; without a supported command, evidence is an empty array.',
   'Severity: critical=broken nav/links/missing-blocking-docs; warning=template/format/unidirectional drift; info=hub/naming/orphan/migration.',
   'Action: FIX=mechanical fix with known handler (options null); ASK=needs user judgment (handler null, ranked options recommended-first).',
   'No hallucinated findings — only report issues verified by reading actual files; if uncertain, skip. If no issue for a check, omit it.',
@@ -304,7 +245,7 @@ for (const f of all) {
   const existing = byKey.get(key)
   if (!existing || (SEV[f.severity] || 0) > (SEV[existing.severity] || 0)) { byKey.set(key, f) }
 }
-let deduped = [...byKey.values(), ...noSystem]
+const deduped = [...byKey.values(), ...noSystem]
 deduped.sort((a, b) => (SEV[b.severity] || 0) - (SEV[a.severity] || 0))
 
 // 3a-bis: scrub in-band agent self-correction artifacts from path-shaped scope fields (e.g. an agent
@@ -358,11 +299,6 @@ for (const [system, e] of bySystem) {
   if (e.agents.size >= 2) { crossAgentPatterns.push({ system, agents: Array.from(e.agents), checks: e.checks }) }
 }
 
-const closed = await closeCheck('claims', { items: deduped, keyOf: f => f.lens + '#' + f.index, out: '.claude/scratch/doc_architecture_audit_claims.json',
-  seats: ['da-structural', 'da-crossref', 'da-domain'].map(label => ({ label, model: A.model, effort: A.effort, tier: A.tier })) })
-deduped = closed.items
-const verification = closed.verification
-
 const counts = {
   critical: deduped.filter(f => f.severity === 'critical').length,
   warning: deduped.filter(f => f.severity === 'warning').length,
@@ -385,4 +321,4 @@ else { healthRating = 'HEALTHY' }
 log('audit: ' + deduped.length + ' findings (' + counts.critical + 'C/' + counts.warning + 'W[' + structuralWarnings + ' structural/' + x1Warnings + ' link]/' + counts.info + 'I), ' + crossAgentPatterns.length + ' cross-agent patterns → ' + healthRating + (lensesCompleted < 3 ? ' — PARTIAL: only ' + lensesCompleted + '/3 lenses (' + failedLenses.join(',') + ' failed)' : ''))
 
 
-return { findings: deduped, crossAgentPatterns, counts, healthRating, ratingBasis: { x1Warnings, structuralWarnings }, linkGraph, lensStatus, lensesCompleted, failedLenses, verification }
+return { findings: deduped, crossAgentPatterns, counts, healthRating, ratingBasis: { x1Warnings, structuralWarnings }, linkGraph, lensStatus, lensesCompleted, failedLenses }

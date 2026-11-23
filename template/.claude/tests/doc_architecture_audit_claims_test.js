@@ -38,9 +38,9 @@ const finding = (over = {}) => ({
 
 ;(async () => {
   const r = await run({}, (_prompt, opts) => ({ findings: opts.label === 'da-structural' ? [finding(), finding({ system: 'Spells', file: null, evidence: null })] : [] }))
-  check('a missing verifier profile returns unavailable, never a hand-run post-check', r.result.verification.status === 'unavailable'
-    && r.result.findings.every(f => f.verdict === 'UNCHECKED' && f.confidence === 'unverified') && !('postCheck' in r.result),
-    JSON.stringify(r.result.verification))
+  check('the result carries no verification block: the caller runs quote_check.py over it',
+    !('verification' in r.result) && !('postCheck' in r.result) && r.result.findings.every(f => !('verdict' in f)),
+    JSON.stringify(Object.keys(r.result)))
   check('findings keep their file and evidence through consolidation',
     r.result.findings.some(f => f.file === 'D:/vault/Combat/Quick Reference.md:12' && f.evidence === '> [!info] System Overview'),
     JSON.stringify(r.result.findings))
