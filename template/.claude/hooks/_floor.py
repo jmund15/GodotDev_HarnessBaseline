@@ -3,7 +3,9 @@ this file and calls `decide_text`; any fault in this file denies there.
 
 Order: a tracked `git add -- <paths> && git commit` folds to a pathspec commit first (`_git_commit.fold_tracked_adds`),
 so every check judges the command that will run. Then each FLOOR module's `check(payload)` runs, in order, on the
-payload as rewritten so far; the first deny wins, then an `ask`, then a rewrite (`updatedInput`), else allow.
+payload as rewritten so far. The decision is the strongest member verdict: a deny, else the first `ask`, else an
+`allow` (a helper's, which counts only when nothing asked or denied), else none; every rewrite (`updatedInput`) and
+context line the members produced rides on an ask or an allow. A deny carries neither: a denied call runs nothing.
 
 Fails closed: a payload that is not a JSON object denies; a FLOOR module that fails to import denies every call its
 matcher selects (the action it judges, never the noun) and names the import error; a FLOOR check that raises denies
@@ -33,6 +35,7 @@ OUT_OF_TIME = ("BLOCKED call (CLAUDE.core.md §Shell Discipline) — the loss fl
                "repeats, find what stalls git in that checkout.")
 # What a broken kill_guard would have judged: a stop, a window close, or a scratch script it reads for one.
 _STOP_WORDS = re.compile(r"kill|stop-process|spps|wmic|terminate|closemainwindow|wm_close|sc_close|0xf060"
+                         r"|win32_process|remove-(?:cim|wmi)(?:instance|object)"
                          r"|(?:post|send)message|\.claude[/\\]scratch[/\\]", re.I)
 
 
@@ -55,9 +58,11 @@ FLOOR_MEMBERS = (
     ("kill_guard", _stop_call, "stop/kill check"),
 )
 # The kept small Bash helpers (V16, §4 Q12), each `check(payload)`: the length cut and the recursive-grep deny, the run
-# router (main's script for a linked worktree, a delegate's run in the background; V9), then the backslash repair
-# last, since it rewrites the command every deny above must judge first.
-HELPER_NAMES = ("bash_length_guard", "unbounded_scan_guard", "run_call_router", "bash_backslash_fidelity")
+# router (main's script for a linked worktree, a delegate's run in the background; V9), the wait clamp for a caller no
+# wake reaches (it reads the router's `run_in_background`), the backslash repair, and last the cd approver's `allow`,
+# so it approves the command as it will run, after every deny above and every rewrite.
+HELPER_NAMES = ("bash_length_guard", "unbounded_scan_guard", "run_call_router", "foreground_wait_guard",
+                "bash_backslash_fidelity", "compound_cd_approver")
 
 
 def _fault(exc):
@@ -113,7 +118,7 @@ def decide(payload):
 
 
 def _decide(payload):
-    contexts, asked = [], None
+    contexts, asked, allowed = [], None, None
     original = payload.get("tool_input")
     payload = _fold(payload, contexts)
     members = [(name, matches, action, module, error, True) for name, matches, action, module, error in FLOOR]
@@ -136,17 +141,22 @@ def _decide(payload):
             return _deny("BLOCKED %s — %s raised %s, so the call was not judged. Repair hooks/%s.py, then "
                          "re-issue the same call." % (action, name, _fault(exc), name))
         hso = (out or {}).get("hookSpecificOutput") or {}
-        if hso.get("permissionDecision") == "deny":
+        decision = hso.get("permissionDecision")
+        if decision == "deny":
             return out
-        if hso.get("permissionDecision") == "ask" and asked is None:
-            asked = out
+        if decision == "ask" and asked is None:
+            asked = hso
+        if decision == "allow" and allowed is None:
+            allowed = hso
         if isinstance(hso.get("updatedInput"), dict):
             payload = dict(payload, tool_input=hso["updatedInput"])
         if hso.get("additionalContext"):
             contexts.append(hso["additionalContext"])
-    if asked is not None:
-        return asked
+    verdict = asked or allowed or {}
     hso = {"hookEventName": "PreToolUse"}
+    for key in ("permissionDecision", "permissionDecisionReason"):
+        if verdict.get(key):
+            hso[key] = verdict[key]
     if payload.get("tool_input") != original:
         hso["updatedInput"] = payload["tool_input"]
     if contexts:

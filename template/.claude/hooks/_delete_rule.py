@@ -74,15 +74,34 @@ def regenerable_segments(parts) -> bool:
             or any(pair in _REGENERABLE_PAIRS for pair in zip(lowered, lowered[1:])))
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _adaptation(project_root) -> dict:
+    """The project's `adaptation.json` as a dict; an absent, unreadable or non-object file is `{}`."""
+    path = Path(project_root) / ".claude" / "skills" / "project_subsystems" / "adaptation.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def project_data(*keys):
+    """The floor's one reader of project values: the entry under `keys` in this checkout's `adaptation.json`, or
+    None. A stdlib read on purpose: the floor does not import `tools/adaptation.py`, so a fault there cannot deny
+    every call. The caller validates the shape and keeps what is well formed, so a broken file only narrows."""
+    value = _adaptation(PROJECT_ROOT)
+    for key in keys:
+        value = value.get(key) if isinstance(value, dict) else None
+    return value
+
+
 def project_patterns(project_root: Path) -> tuple[str, ...]:
     """The project's `adaptation.json` `regenerable_ignored` patterns. A non-list, an unreadable file and an entry
     that is empty, absolute, climbs with `..` or opens with a wildcard contribute nothing, so a broken list only
     narrows what may go."""
-    path = project_root / ".claude" / "skills" / "project_subsystems" / "adaptation.json"
-    try:
-        listed = json.loads(path.read_text(encoding="utf-8")).get("regenerable_ignored")
-    except (OSError, ValueError, AttributeError):
-        return ()
+    listed = _adaptation(project_root).get("regenerable_ignored")
     return tuple(p for p in (listed if isinstance(listed, list) else [])
                  if isinstance(p, str) and p and not p.startswith(("/", "*", "\\")) and ".." not in p.split("/")
                  and ":" not in p)

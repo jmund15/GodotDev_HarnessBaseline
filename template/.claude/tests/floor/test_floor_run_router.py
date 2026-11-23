@@ -24,7 +24,7 @@ NAMES = ("run_test_suite", "verify", GATE, "run_integration_batched")
 
 
 @pytest.fixture
-def plant(tmp_path, monkeypatch):
+def plant(tmp_path, monkeypatch, project_values):
     """Planted checkouts (a linked worktree of this checkout, another repo's worktree, a submodule) and a fresh hook
     state dir; the caller is the interactive session unless a row says otherwise."""
     def checkout(name, gitdir):
@@ -102,6 +102,12 @@ def test_a_powershell_call_operator_invocation_is_redirected_with_its_quotes(pla
     wt = plant["wt"]
     out = call("& '%s/.claude/scripts/%s.ps1' -StaticOnly" % (wt, GATE), tool="PowerShell")
     assert rewritten(out) == "& '%s/.claude/scripts/%s.ps1' -Repo %s -StaticOnly" % (MAIN, GATE, wt)
+
+
+def test_a_project_without_router_entrypoints_gets_no_redirect(plant, project_values):
+    project_values({"protected": [], "router_entrypoints": []})
+    out = call("pwsh -NoProfile -File %s/.claude/scripts/verify.ps1 -Scope AI" % plant["wt"])
+    assert untouched(out, "pwsh -NoProfile -File %s/.claude/scripts/verify.ps1 -Scope AI" % plant["wt"])
 
 
 def test_a_call_already_carrying_repo_gets_mains_path_and_no_second_repo(plant):
@@ -222,7 +228,7 @@ def test_an_absent_router_leaves_the_rest_of_the_floor_deciding(plant, monkeypat
 
 def test_the_router_is_a_registered_helper_ahead_of_the_backslash_repair():
     names = list(_floor.HELPER_NAMES)
-    assert names.index("run_call_router") < names.index("bash_backslash_fidelity") == len(names) - 1
+    assert names.index("run_call_router") < names.index("bash_backslash_fidelity")
 
 
 def test_the_router_has_no_dead_main_or_dynamic_import():

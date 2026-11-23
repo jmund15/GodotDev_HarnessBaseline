@@ -2,10 +2,10 @@
 """Floor helper (`_floor.HELPER_NAMES`): rewrite a test, build or gate run, through `check(payload)`.
 
 The rewrite reaches the call as the floor entry's updatedInput, with an additionalContext line naming it:
-- A linked worktree's run_test_suite, verify, regression_gate or run_integration_batched invocation runs
-  main's copy of the script with `-Repo <worktree>`: main's code, the target's data.
+- A linked worktree's run of a script the project lists in `adaptation.json` `pre_bash.router_entrypoints` runs
+  main's copy with `-Repo <worktree>`: main's code, the target's data.
 - run_in_background is set for a delegate's run (those scripts, engine_run, `dotnet build|test`) and for
-  any regression_gate run without -Detach. A delegate is a subagent (payload agent_id) or a `claude -p`
+  any gate run (an entrypoint named `*_gate`) without -Detach. A delegate is a subagent (payload agent_id) or a `claude -p`
   child (CLAUDE_CODE_ENTRYPOINT=sdk-cli). A run with a quick read-only flag, such as
   -SelfTest, is not backgrounded.
 Mentions are not actions: quoted text, comments and heredoc bodies that name a script are left alone.
@@ -17,17 +17,20 @@ import os
 import re
 from pathlib import Path
 
+import _delete_rule
 import _git_commit
+import _shell_lex
 
 MAIN = Path(__file__).resolve().parents[2]
-ENTRYPOINTS = frozenset(('run_test_suite', 'verify', 'regression_gate', 'run_integration_batched'))
-RUNNERS = ENTRYPOINTS | {'engine_run'}
-_TOKEN = re.compile(r"'[^']*'|\"[^\"]*\"|[^\s;|&]+")
-_SEPARATORS = re.compile(r'&&|\|\||[;|\n]')
+# `engine_run` is backgrounded for a delegate but never redirected: it takes its own `--path`.
+BACKGROUND_ONLY = frozenset(('engine_run',))
 
 
-def _value(token):
-    return token.strip("'\"")
+def _entrypoints():
+    """The project's `adaptation.json` `pre_bash.router_entrypoints`: script stems whose worktree copy is redirected
+    to main's. The shared code names none (T7); a malformed row is skipped."""
+    listed = _delete_rule.project_data('pre_bash', 'router_entrypoints')
+    return frozenset(n.strip().lower() for n in listed if isinstance(n, str) and n.strip())         if isinstance(listed, list) else frozenset()
 
 
 def _quote(value, original=''):
@@ -53,78 +56,49 @@ def _linked_target(script):
     return root.as_posix()
 
 
-def _spans(command):
-    # Quoted separators and heredoc data cannot turn a mention into an invocation.
-    masked = list(command)
-    for m in re.finditer(r"'[^']*'|\"[^\"]*\"", command):
-        masked[m.start():m.end()] = ' ' * (m.end() - m.start())
-    for m in re.finditer(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?^\s*\2\s*$", command, re.M | re.S):
-        body = command.find('\n', m.start())
-        masked[body:m.end()] = ' ' * (m.end() - body)
-    text = ''.join(masked)
-    start = 0
-    for m in _SEPARATORS.finditer(text):
-        yield start, m.start()
-        start = m.end()
-    yield start, len(command)
+def _command_name(word):
+    return word.text.replace('\\', '/').rsplit('/', 1)[-1].lower().removesuffix('.exe')
 
 
-def _skip_assignments(tokens, i):
-    while i < len(tokens) and re.match(r'^\w+=', tokens[i].group()):
-        i += 1
-    return i
-
-
-def _command_index(tokens):
-    """Index of a segment's command word, past `VAR=value` assignments and an env/command prefix; None if absent."""
-    i = _skip_assignments(tokens, 0)
-    if i < len(tokens) and _value(tokens[i].group()) in ('env', 'command'):
-        i = _skip_assignments(tokens, i + 1)
-    return i if i < len(tokens) else None
-
-
-def _command_name(token):
-    return _value(token.group()).replace('\\', '/').rsplit('/', 1)[-1].lower().removesuffix('.exe')
-
-
-def _option_value_index(tokens, start, names):
-    for j in range(start, len(tokens) - 1):
-        if tokens[j].group().lower() in names:
+def _option_value_index(words, start, names):
+    for j in range(start, len(words) - 1):
+        if words[j].value.lower() in names:
             return j + 1
     return None
 
 
-def _route_wrapped(payload, original, cwd, token, lo, edits, contexts):
+def _route_wrapped(payload, original, cwd, word, edits, contexts):
     """Route a `pwsh -Command` body as its own PowerShell call; return whether it runs in the background."""
     # -Command's body has its own action shape, not merely a named script.
-    raw = token.group()
-    inner = _value(raw)
-    changed, advice = route(dict(payload, cwd=cwd, tool_name='PowerShell', tool_input=dict(original, command=inner)))
+    changed, advice = route(dict(payload, cwd=cwd, tool_name='PowerShell',
+                                 tool_input=dict(original, command=word.value)))
     if not changed:
         return False
-    if changed.get('command', inner) != inner:
-        edits.append((lo + token.start(), lo + token.end(), _quote(changed['command'], raw)))
+    if changed.get('command', word.value) != word.value:
+        edits.append((word.start, word.end, _quote(changed['command'], word.raw)))
     contexts.extend(advice)
     return bool(changed.get('run_in_background'))
 
 
-def _route_runner(tokens, index, cwd, delegate):
-    """For a script invocation at tokens[index]: (runs in the background, (main's script text, worktree) or None)."""
-    path = _value(tokens[index].group()).replace('\\', '/')
+def _route_runner(words, index, cwd, delegate):
+    """For a script invocation at words[index]: (runs in the background, (main's script text, worktree) or None)."""
+    path = words[index].text.replace('\\', '/')
     if not path.lower().endswith('.ps1'):
         return False, None
     name = Path(path).stem.lower()
-    if name not in RUNNERS or '/.claude/scripts/' not in '/' + path.lower():
+    entrypoints = _entrypoints()
+    if name not in entrypoints | BACKGROUND_ONLY or '/.claude/scripts/' not in '/' + path.lower():
         return False, None
-    flags = {_value(t.group()).lower().split(':')[0] for t in tokens[index + 1:]}
+    flags = {w.value.lower().split(':')[0] for w in words[index + 1:]}
     quick = bool(flags & {'-selftest', '-watch', '-dryrun', '-reapreport', '-bootstrapfromtrx'})
-    background = not quick and (delegate or (name == 'regression_gate' and '-detach' not in flags))
-    if name not in ENTRYPOINTS:
+    # A gate (an entrypoint named `*_gate`) outlives a turn, so the orchestrator's run is backgrounded too unless it detaches.
+    background = not quick and (delegate or (name.endswith('_gate') and '-detach' not in flags))
+    if name not in entrypoints:
         return background, None
     target = _linked_target(_git_commit.resolve_cd(cwd, path))
     if not target:
         return background, None
-    replacement = _quote((MAIN / '.claude' / 'scripts' / (name + '.ps1')).as_posix(), tokens[index].group())
+    replacement = _quote((MAIN / '.claude' / 'scripts' / (name + '.ps1')).as_posix(), words[index].raw)
     if '-repo' not in flags:
         replacement += ' -Repo ' + _quote(target)
     return background, (replacement, target)
@@ -154,44 +128,47 @@ def route(payload):
     command = str(original.get('command') or '')
     cwd = str(payload.get('cwd') or MAIN)
     edits, contexts = [], []
+    # A subagent or `claude -p` child is a delegate whether or not a completion wake reaches it: its foreground run
+    # blocks its own turn, so it is backgrounded either way. `never_woken` only picks the advice text.
     delegate = bool(payload.get('agent_id')) or os.environ.get('CLAUDE_CODE_ENTRYPOINT') == 'sdk-cli'
     run = False
-    for lo, hi in _spans(command):
-        segment = command[lo:hi]
-        tokens = list(_TOKEN.finditer(segment))
-        if not tokens or segment.lstrip().startswith('#'):
+    for segment in _shell_lex.lex(command):
+        words = segment.words
+        i = _shell_lex.command_index([w.value for w in words])
+        # PowerShell's call operator `& 'script.ps1'` leaves the script as the segment's command word.
+        before = command[:words[0].start].rstrip() if words else ''
+        was_called = before.endswith('&') and not before.endswith('&&')
+        if i >= len(words):
             continue
-        i = _command_index(tokens)
-        if i is None:
-            continue
-        head = _command_name(tokens[i])
-        if head in ('cd', 'set-location') and i + 1 < len(tokens):
-            cwd = _git_commit.resolve_cd(cwd, _value(tokens[i + 1].group()))
+        head = _command_name(words[i])
+        if head in ('cd', 'set-location') and i + 1 < len(words):
+            cwd = _git_commit.resolve_cd(cwd, words[i + 1].text)
             continue
         if head == 'dotnet':
-            if i + 1 < len(tokens) and _value(tokens[i + 1].group()).lower() in ('build', 'test'):
+            if i + 1 < len(words) and words[i + 1].value.lower() in ('build', 'test'):
                 run |= delegate
             continue
         index = None
         if head in ('pwsh', 'powershell'):
-            index = _option_value_index(tokens, i + 1, ('-file', '-f'))
+            index = _option_value_index(words, i + 1, ('-file', '-f'))
             if index is None:
-                body = _option_value_index(tokens, i + 1, ('-command', '-c'))
+                body = _option_value_index(words, i + 1, ('-command', '-c'))
                 if body is not None:
-                    run |= _route_wrapped(payload, original, cwd, tokens[body], lo, edits, contexts)
+                    run |= _route_wrapped(payload, original, cwd, words[body], edits, contexts)
                 continue
-        elif segment.lstrip().startswith(('& ', '. ')):
-            # & is shell plumbing excluded by _TOKEN; dot is a token.
-            index = i + 1 if head == '.' else i
-        if index is None:
+        elif was_called:
+            index = i
+        elif head == '.':
+            index = i + 1
+        if index is None or index >= len(words):
             continue
-        background, rewrite = _route_runner(tokens, index, cwd, delegate)
+        background, rewrite = _route_runner(words, index, cwd, delegate)
         run |= background
         if rewrite:
             replacement, target = rewrite
-            edits.append((lo + tokens[index].start(), lo + tokens[index].end(), replacement))
+            edits.append((words[index].start, words[index].end, replacement))
             if _fire_once(payload, 'run_call_router:redirect'):
-                contexts.append('[run] Ran main\'s copy with -Repo ' + target + '; branch data stays in the target checkout.')
+                contexts.append("[run] Ran main's copy with -Repo " + target + "; branch data stays in the target checkout.")
     for start, end, replacement in sorted(edits, reverse=True):
         command = command[:start] + replacement + command[end:]
     updated = dict(original, command=command)

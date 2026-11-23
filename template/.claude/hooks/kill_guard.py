@@ -41,34 +41,49 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _background_tasks  # noqa: E402
+import _delete_rule  # noqa: E402
 import _git_run  # noqa: E402
 import _msys  # noqa: E402
 import _shell_lex  # noqa: E402
 from _win_path import native_path  # noqa: E402
 
-# Killing any of these takes down work that cannot be resumed from where it stopped: a gate/suite run, a billed
-# benchmark cell, or a peer's whole session.
+# Killing any of these takes down work that cannot be resumed from where it stopped: a peer's whole session, or a
+# paid seat dispatch. A project adds its own (a gate run, a benchmark grid, a proxy) as `adaptation.json`
+# `pre_bash.protected` rows ({pattern, why}), read by `_protected()`; the shared code names none of them.
 PROTECTED = (
-    (r"regression_gate|gate_chain|verify\.ps1", "a gate/verification run"),
-    (r"vstest|dotnet\s+test", "a test run"),
     # NOT \bclaude\b — that matches `.claude/` (present in nearly every harness command) and
     # `claude-gpt`. Match the EXECUTABLE: `claude.exe`, or `claude` standing as the command word.
     (r"(?:^|[\s/\\\"])claude\.exe|(?:^|[\s/\\\"])claude(?:\s|$)",
      "a Claude Code session — possibly a peer's"),
-    (r"claude-code-proxy", "a transport proxy other sessions may be routing through"),
-    # Bound to the command word: a grid named as an argument (`grep run_grid.sh notes.md`) is data.
-    (r"(?:^|[;&|(\n]\s*)(?:(?:nohup|exec|setsid)\s+)?(?:(?:bash|sh|pwsh|powershell)\s+(?:-\S+\s+)*)?[\"']?"
-     r"(?:\S*[/\\])?run_grid(?:\.snapshot[\w.-]*)?\.sh",
-     "a benchmark grid — its in-flight cell is a billed arm"),
+    # v2's paid launchers: the seat scripts (`seat.sh`, `seat_<engine>.sh`) and the `agy` binary as the command word.
+    (r"(?:^|[\s/\\\"])seat(?:_\w+)?\.sh(?:\s|$)|(?:^|[\s/\\\"])agy(?:\.exe)?(?:\s|$)",
+     "a seat dispatch — its in-flight run is a billed arm"),
 )
+PROJECT_ROOT_KEYS = ("pre_bash", "protected")
+
+
+def _protected():
+    """`PROTECTED` plus the project's well-formed `pre_bash.protected` rows; a malformed row only narrows."""
+    rows = list(PROTECTED)
+    listed = _delete_rule.project_data(*PROJECT_ROOT_KEYS)
+    for row in listed if isinstance(listed, list) else []:
+        if isinstance(row, dict) and isinstance(row.get("pattern"), str) and isinstance(row.get("why"), str):
+            try:
+                re.compile(row["pattern"])
+            except re.error:
+                continue
+            rows.append((row["pattern"], row["why"]))
+    return tuple(rows)
+
+
 # Local scripts a shell command runs; `window_close_verdict` reads the ones under `.claude/scratch/`.
 # Glob characters are excluded: `find -name "*.py"` names a pattern, not a script to read.
 SCRIPT_REF_RE = re.compile(r"[^\s\"'|;&<>()=*?\[\]]+\.(?:sh|py|ps1|js|cmd|bat)(?![\w.])", re.I)
-# The process-table read runs inside the hook's 20 s settings budget (HOOK_BUDGET_S below).
+# The process-table read runs inside HOOK_BUDGET_S below.
 TABLE_TIMEOUT_S = 10
 MAX_SCRIPT_BYTES = 512 * 1024
-# settings.json gives this hook 20 s. Every PID lookup runs inside one budget under it; a lookup the
-# budget cannot afford resolves nothing, so the kill fails closed instead of the hook timing out open.
+# Every PID lookup runs inside one budget, well under the floor's `_floor.BUDGET_S`; a lookup the budget cannot
+# afford resolves nothing, so the kill fails closed instead of the hook timing out open.
 HOOK_BUDGET_S = 15.0
 SUBPROCESS_TIMEOUT_S = 5
 NOT_LAUNCHED = ("BLOCKED TaskStop (CLAUDE.core.md §Shell Discipline) — no launch of task %s by this session's main thread is in the transcript "
@@ -638,9 +653,9 @@ def _unnamed(operand):
     return not re.match(r"\s*(?:pgrep|pidof)\b", body)
 
 
-def _protected_reason(row):
+def _protected_reason(row, protected):
     line = row.get("cmd") or row.get("name") or ""
-    for pat, why in PROTECTED:
+    for pat, why in protected:
         if re.search(pat, line, re.I):
             return why
     return None
@@ -654,13 +669,14 @@ def _name_kill_problems(cmd):
     if not live:
         return problems
     table = _process_table()
+    protected = _protected()
     if not table:
         return problems + ["  cannot read the process table, so `%s` cannot be resolved to the processes "
                            "it would stop." % live[0][0]]
     for label, pred in live:
         shown = 0
         for pid, row in sorted(table.items()):
-            why = _protected_reason(row) if pred(row) else None
+            why = _protected_reason(row, protected) if pred(row) else None
             if why and shown < MAX_MATCH_LINES:
                 shown += 1
                 problems.append("  `%s` matches PID %s, %s\n      %s"
@@ -672,6 +688,7 @@ def _pid_problems(cmd, env):
     allowed = {p.strip() for p in (env.get("HARNESS_ALLOW_KILL") or "").replace(",", " ").split() if p}
     problems = []
     deadline = _now() + _git_run.remaining(HOOK_BUDGET_S)
+    protected = _protected()
     for pid, is_kill in pid_forms(cmd):
         if pid in allowed:
             continue
@@ -684,7 +701,7 @@ def _pid_problems(cmd, env):
             problems.append("  PID %s: no such process — it already exited, or the number is "
                             "stale. Re-read the list before killing." % pid)
             continue
-        for pat, why in PROTECTED:
+        for pat, why in protected:
             if re.search(pat, line, re.I):
                 problems.append("  PID %s is %s\n      %s" % (pid, why, line[:160]))
                 break

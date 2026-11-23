@@ -26,7 +26,7 @@ REAL_COMMANDLINE = kg.commandline
 
 
 @pytest.fixture(autouse=True)
-def planted(tmp_path, monkeypatch):
+def planted(tmp_path, monkeypatch, project_values):
     monkeypatch.setattr(kg, "commandline", lambda pid, msys_first=False, deadline=None: FAKE.get(pid))
     empty = tmp_path / "empty_table.json"
     empty.write_text("{}", encoding="utf-8")
@@ -137,6 +137,8 @@ NAMED_ROWS = (
     (103, "node.exe", "node C:/srv/app/server.js"),
     (104, "python.exe", "python3 -m http.server 8000"),
     (105, "grep.exe", "grep -rl foo ."),
+    (106, "bash.exe", "bash C:/repo/.claude/scripts/seat.sh claude-secondary brief.md out.md"),
+    (107, "agy.exe", "C:/Tools/agy.exe --prompt brief.md"),
 )
 
 
@@ -182,6 +184,9 @@ NAME_KILLS_DENIED = {
     "FL1: killall --regexp": "killall --regexp claud",
     "FL1: killall --regex (a unique prefix)": "killall --regex claud",
     "FL1: a pkill behind timeout": "timeout 5 pkill claude",
+    "a seat launcher by its bash image": "taskkill /IM bash.exe /F",
+    "a seat launcher by pattern": "pkill -f seat.sh",
+    "the agy seat by image": "taskkill /IM agy.exe /F",
 }
 NAME_KILLS_ALLOWED = {
     "pkill -f of an unprotected pattern": "pkill -f http.server",
@@ -493,3 +498,39 @@ def test_the_owner_word_machinery_is_gone():
             "taskstop_authorized", "_owner_inputs", "_consent_text", "_answer_pairs", "quiet_shell_blocker",
             "own_quiet_shell")
     assert not [name for name in gone if hasattr(kg, name)]
+
+
+# --- project values come from adaptation.json (D19, T7) ----------------------------------------------------------
+def test_a_gate_run_is_protected_only_where_the_project_lists_it(named, project_values):
+    assert "BLOCKED kill" in reason("pkill -f regression_gate_poll")
+    project_values({"protected": [], "router_entrypoints": []})
+    assert bash("pkill -f regression_gate_poll").kind == "allow"
+
+
+def test_a_malformed_protected_row_is_skipped_and_the_rest_still_deny(named, project_values):
+    project_values({"protected": [{"pattern": "(", "why": "bad regex"}, "not a row",
+                                  {"pattern": "gate_chain", "why": "a gate run"}]})
+    assert "BLOCKED kill" in reason("pkill -f gate_chain")
+
+
+# --- the floor's stop words cover every form kill_guard denies (F37) ---------------------------------------------
+def _denied_forms():
+    forms = [f for _, f, _ in PID_DENIED] + list(NAME_KILLS_DENIED.values())
+    return forms + ["Get-CimInstance Win32_Process | Remove-CimInstance", "Get-WmiObject Win32_Process | Remove-WmiObject",
+                    "Get-CimInstance -ClassName win32_process -Filter \"name='x'\" | Remove-CimInstance"]
+
+
+@pytest.mark.parametrize("command", _denied_forms())
+def test_every_denied_stop_form_is_selected_by_the_floors_stop_words(command):
+    """Loss case: a kill_guard that fails to import fails open on a stop form the floor's matcher does not select."""
+    import _floor
+    assert _floor._stop_call({"tool_name": "PowerShell", "tool_input": {"command": command}}), command
+
+
+@pytest.mark.parametrize("command", ["Get-CimInstance Win32_Process | Remove-CimInstance",
+                                     "Get-WmiObject Win32_Process | Remove-WmiObject"])
+def test_with_kill_guard_unimportable_a_cim_or_wmi_removal_denies(command, monkeypatch):
+    import _floor
+    monkeypatch.setattr(_floor, "FLOOR", tuple(m[:3] + (None, "ImportError: planted") if m[0] == "kill_guard" else m
+                                               for m in _floor.FLOOR))
+    assert bash(command, tool="PowerShell").denied

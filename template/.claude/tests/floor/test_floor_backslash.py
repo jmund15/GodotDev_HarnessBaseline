@@ -226,10 +226,10 @@ def test_outside_the_repairs_scope_nothing_is_emitted(plant, tool, command):
     assert hso(command, transcript, tool=tool) == {}
 
 
-def test_the_repair_runs_last_so_every_deny_wins_first(plant):
+def test_the_repair_runs_after_every_deny_so_every_deny_wins_first(plant):
     transcript, write_record = plant
     write_record(standard())
-    assert _floor.HELPER_NAMES[-1] == "bash_backslash_fidelity"
+    assert _floor.HELPER_NAMES[-2:] == ("bash_backslash_fidelity", "compound_cd_approver")  # the approver only allows
     # From the filesystem root: the checkout may sit under the system temp dir, which the delete rule exempts.
     out = hso("rm -rf build" + PAIR + "out", transcript, cwd=os.path.abspath(os.sep))
     assert out.get("permissionDecision") == "deny" and "updatedInput" not in out

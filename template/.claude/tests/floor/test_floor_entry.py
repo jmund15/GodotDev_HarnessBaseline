@@ -231,3 +231,94 @@ def test_the_backslash_repair_rewrites_through_the_entry(tmp_path, monkeypatch):
     pair = "\\" * 2
     got = bash("printf 'a" + pair + "b'", tmp_path, transcript_path=transcript)
     assert got.kind == "rewrite" and got.updated["command"] == "printf 'a" + pair * 2 + "b'"
+
+
+# --- The decision merge: deny > ask > allow, every rewrite and context carried (F34) ----------------------------------
+class _Helper:
+    """A stub helper module: `check` returns the planted hookSpecificOutput (None allows)."""
+
+    def __init__(self, **hso):
+        self.hso = hso
+
+    def check(self, payload):
+        return {"hookSpecificOutput": dict(self.hso, hookEventName="PreToolUse")} if self.hso else None
+
+
+def _merge(monkeypatch, *helpers, command="ls"):
+    monkeypatch.setattr(_floor, "HELPERS", tuple(helpers))
+    out = _floor.decide({"tool_name": "Bash", "tool_input": {"command": command, "timeout": 5}, "cwd": "."})
+    return (out or {}).get("hookSpecificOutput") or {}
+
+
+REWRITE = _Helper(updatedInput={"command": "ls -l", "timeout": 5}, additionalContext="rewritten")
+ASK = _Helper(permissionDecision="ask", permissionDecisionReason="check with the owner")
+ALLOW = _Helper(permissionDecision="allow", permissionDecisionReason="read-only")
+DENY = _Helper(permissionDecision="deny", permissionDecisionReason="no")
+
+
+def test_an_ask_after_a_rewrite_keeps_the_rewrite_and_its_context(monkeypatch):
+    hso = _merge(monkeypatch, REWRITE, ASK)
+    assert hso["permissionDecision"] == "ask" and hso["updatedInput"]["command"] == "ls -l"
+    assert "rewritten" in hso["additionalContext"]
+
+
+def test_an_ask_before_a_rewrite_keeps_the_rewrite_and_its_context(monkeypatch):
+    hso = _merge(monkeypatch, ASK, REWRITE)
+    assert hso["permissionDecision"] == "ask" and hso["updatedInput"]["command"] == "ls -l"
+    assert "rewritten" in hso["additionalContext"]
+
+
+def test_an_allow_counts_only_when_nothing_asked_or_denied(monkeypatch):
+    assert _merge(monkeypatch, ALLOW)["permissionDecision"] == "allow"
+    assert _merge(monkeypatch, ALLOW, ASK)["permissionDecision"] == "ask"
+    assert _merge(monkeypatch, ASK, ALLOW)["permissionDecision"] == "ask"
+    assert _merge(monkeypatch, ALLOW, DENY)["permissionDecision"] == "deny"
+
+
+def test_an_allow_carries_the_rewrite_that_ran_with_it(monkeypatch):
+    hso = _merge(monkeypatch, REWRITE, ALLOW)
+    assert hso["permissionDecision"] == "allow" and hso["updatedInput"]["command"] == "ls -l"
+
+
+def test_a_deny_wins_over_an_earlier_ask_and_rewrite(monkeypatch):
+    assert _merge(monkeypatch, REWRITE, ASK, DENY)["permissionDecision"] == "deny"
+
+
+# --- The wired helpers: the cd approver and the wait guard (F14, F15) -------------------------------------------------
+def test_the_helpers_are_registered_in_run_order():
+    assert _floor.HELPER_NAMES[-4:] == ("run_call_router", "foreground_wait_guard", "bash_backslash_fidelity",
+                                         "compound_cd_approver")
+    assert [h.__name__ for h in _floor.HELPERS] == list(_floor.HELPER_NAMES)
+
+
+def test_a_cd_compound_of_reads_is_allowed_through_the_floor(tmp_path):
+    out = _floor.decide({"tool_name": "Bash", "tool_input": {"command": "cd %s && git status --short" % tmp_path.as_posix()},
+                         "cwd": str(tmp_path)})
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_a_deny_in_the_same_call_beats_the_cd_approvers_allow(tmp_path):
+    command = "cd %s && git status && echo %s" % (tmp_path.as_posix(), "x" * 8200)
+    assert bash(command, tmp_path).denied
+
+
+def test_a_cd_compound_is_allowed_through_the_spawned_entry(tree, tmp_path):
+    verdict, reason = spawn(tree, shell("cd %s && git log --oneline -3" % tmp_path.as_posix(), tmp_path))
+    assert verdict == "allow" and "Auto-approved" in reason
+
+
+def test_a_native_delegates_long_foreground_wait_is_clamped_through_the_floor(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "sdk-cli")
+    payload = {"tool_name": "Bash", "tool_input": {"command": "make build", "timeout": 600000}, "cwd": str(tmp_path),
+               "session_id": "floorh01", "agent_id": "agent-wf"}
+    updated = decide(payload).updated
+    assert updated["timeout"] == 270000 and updated["command"].endswith('echo "EXIT $?"')
+
+
+def test_an_interactive_sessions_long_wait_passes_the_floor_untouched(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_HOOK_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+    payload = {"tool_name": "Bash", "tool_input": {"command": "make build", "timeout": 600000}, "cwd": str(tmp_path),
+               "session_id": "floorh02"}
+    assert decide(payload).kind == "allow"

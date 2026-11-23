@@ -105,3 +105,35 @@ def plant(tmp_path, monkeypatch, _planted_template):
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
     monkeypatch.chdir(project)
     return project
+
+
+# PushinPotions' own `adaptation.json` `pre_bash` values: what the floor's kill rows and run router read as project data
+# (T7), planted here so a row proves a project's value is denied or routed without the shared code naming it.
+PROJECT_PRE_BASH = {
+    "protected": [
+        {"pattern": r"regression_gate|gate_chain|verify\.ps1", "why": "a gate/verification run"},
+        {"pattern": r"vstest|dotnet\s+test", "why": "a test run"},
+        {"pattern": r"claude-code-proxy", "why": "a transport proxy other sessions may be routing through"},
+        {"pattern": r"(?:^|[;&|(\n]\s*)(?:(?:nohup|exec|setsid)\s+)?(?:(?:bash|sh|pwsh|powershell)\s+(?:-\S+\s+)*)?[\"']?"
+                    r"(?:\S*[/\])?run_grid(?:\.snapshot[\w.-]*)?\.sh",
+         "why": "a benchmark grid — its in-flight cell is a billed arm"},
+    ],
+    "router_entrypoints": ["run_test_suite", "verify", "regression_gate", "run_integration_batched"],
+}
+
+
+@pytest.fixture
+def project_values(tmp_path, monkeypatch):
+    """Plant `adaptation.json` `pre_bash` as the floor's reader finds it; returns a setter for another table."""
+    import json
+    import _delete_rule
+    root = tmp_path / "adapted_project"
+
+    def plant_values(pre_bash):
+        target = root / ".claude" / "skills" / "project_subsystems" / "adaptation.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"pre_bash": pre_bash}), encoding="utf-8")
+        monkeypatch.setattr(_delete_rule, "PROJECT_ROOT", root)
+
+    plant_values(PROJECT_PRE_BASH)
+    return plant_values
