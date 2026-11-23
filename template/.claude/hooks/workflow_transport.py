@@ -22,6 +22,7 @@ and effort, and the launch checks are `tools/launch_check.py`'s (both routes cal
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 CLAUDE_DIR = Path(__file__).resolve().parents[1]
@@ -42,7 +43,12 @@ def _json(path):
 
 def native_vocabulary(claude_dir=CLAUDE_DIR):
     """`{name, ids, efforts?}` from the `native` block of seats.json. Fails closed: the engines refuse a missing one."""
-    native = _json(Path(claude_dir) / "seats.json").get("native")
+    sys.path.insert(0, str(CLAUDE_DIR / "tools"))
+    import launch_check  # noqa: E402  (tools/launch_check.py: the one reader of seats.json)
+    try:
+        native = launch_check.table(claude_dir).get("native")
+    except (OSError, ValueError) as exc:
+        raise TransportError("seats.json could not be read (%s: %s)" % (type(exc).__name__, exc))
     if not isinstance(native, dict) or not native.get("ids"):
         raise TransportError("seats.json has no `native` block with `ids`; the Workflow engines have no legal pins")
     vocabulary = {"name": "native", "ids": list(native["ids"])}

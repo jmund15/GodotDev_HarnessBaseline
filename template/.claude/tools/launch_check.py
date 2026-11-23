@@ -7,7 +7,7 @@ worktree, a full seat, a login at its capacity floor) stay in `seat.sh`; they me
         Refuses (exit 2, one stderr line) when the brief, the output directory or an `inputs:` entry does not
         resolve under --root, or a `writes: no` job's brief names a `targets:` entry other than <out.md>.
     launch_check.py seat <seat>
-        Prints the seat's `seats.json` row as shell assignments for seat.sh to eval. Exit 2 for an unknown seat.
+        Prints the seat's `seats.json` row as shell assignments for seat.sh to eval. Exit 2 for an unknown seat or one whose login is absent here.
     launch_check.py stage <slot> <brief.md> <out.md> <here> <workdir> <main-checkout|"">
         Writes <slot>/prompt.md (guards/rails.md once, then the brief: the one prompt every adapter reads) and
         <slot>/settings.json (the floor entry; a non-empty main checkout adds the workdir fence, with the output
@@ -75,21 +75,51 @@ def check(brief, out, root, writes):
     return []
 
 
+def table(claude_dir=CLAUDE_DIR):
+    """The whole `seats.json` (`seats`, `models`, `native`): the one parse site. A missing file is an empty table."""
+    try:
+        return json.loads((Path(claude_dir) / SEATS).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+
+
+def _login(row):
+    return os.path.expanduser(row.get("configDir") or "")
+
+
 def seat_rows(claude_dir=CLAUDE_DIR):
-    return json.loads((Path(claude_dir) / SEATS).read_text(encoding="utf-8"))["seats"]
+    """The seats usable on this machine: no login of their own, or a login dir that exists. Every reader of the
+    table calls this, so a seat whose login is absent is invisible to the hooks and tools alike."""
+    seats = table(claude_dir).get("seats") or {}
+    return {name: row for name, row in seats.items() if not _login(row) or os.path.isdir(_login(row))}
+
+
+def login_dirs(claude_dir=CLAUDE_DIR):
+    """Every login dir, absolute, each once: the default, `CLAUDE_CONFIG_DIR`, then each usable seat's `configDir`."""
+    found = ["~/.claude", os.environ.get("CLAUDE_CONFIG_DIR") or ""]
+    found += [row["configDir"] for row in seat_rows(claude_dir).values() if row.get("configDir")]
+    out = []
+    for path in found:
+        full = os.path.abspath(os.path.expanduser(path)) if path else ""
+        if full and full not in out:
+            out.append(full)
+    return out
 
 
 def seat_assignments(seat, claude_dir=CLAUDE_DIR):
-    """Shell assignments for one seat, or None when the seat is not in seats.json."""
-    row = seat_rows(claude_dir).get(seat)
+    """Shell assignments for one seat. None when the seat is not in the table; a ValueError (one line) when its
+    login is not on this machine."""
+    row = (table(claude_dir).get("seats") or {}).get(seat)
     if row is None:
         return None
-    config = row.get("configDir") or ""
+    if _login(row) and not os.path.isdir(_login(row)):
+        raise ValueError("seat '%s' has no login on this machine: log in once with `claude` under CLAUDE_CONFIG_DIR=%s"
+                         % (seat, _login(row)))
     values = {
         "SEAT_ADAPTER": row["adapter"],
         "SEAT_WRITES": row["writes"],
         "SEAT_MAX": str(row["max_concurrent"]),
-        "SEAT_CONFIG_DIR": os.path.expanduser(config) if config else "",
+        "SEAT_CONFIG_DIR": _login(row),
         "SEAT_MODEL": row["model"],
     }
     return "\n".join("%s=%s" % (key, shlex.quote(value)) for key, value in values.items())
@@ -142,7 +172,11 @@ def main(argv=None, lookup=_adaptation_get):
             return 2
         return 0
     if verb == "seat" and len(rest) == 1:
-        text = seat_assignments(rest[0])
+        try:
+            text = seat_assignments(rest[0], CLAUDE_DIR)
+        except ValueError as refusal:
+            print("launch refused: %s" % refusal, file=sys.stderr)
+            return 2
         if text is None:
             print("launch refused: unknown seat '%s' (seats.json)" % rest[0], file=sys.stderr)
             return 2

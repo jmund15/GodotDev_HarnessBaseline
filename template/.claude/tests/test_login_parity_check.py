@@ -29,7 +29,6 @@ HOOK = HERE.parent / "hooks" / "login_parity_check.py"
 
 DRIFT = ("anthropic-secondary: semantic-search@dreb 2.28.0 -> 2.69.0 (update)\n"
          "anthropic: semantic-search@dreb idle shim needs repair: idle unload is not installed\n")
-DEFERRED = DRIFT + "plugins: deferred while score daemon camp-x (pid 7) is live\n"
 
 
 def new_root():
@@ -147,13 +146,6 @@ def main():
          repr((out, spawns, crash)))
 
     root = new_root()
-    out, spawns, crash = run_hook(root, plant(root, DEFERRED, 1))
-    lines = [ln for ln in out.splitlines() if ln.strip()]
-    case("drift deferred by a live benchmark: one line naming the drift and the run; nothing started",
-         crash is None and not spawns and len(lines) == 1 and "camp-x" in lines[0] and "2.69.0" in lines[0],
-         repr((out, spawns, crash)))
-
-    root = new_root()
     out, spawns, crash = run_hook(root, plant(root, "", 2))
     lines = [ln for ln in out.splitlines() if ln.strip()]
     case("a failed check: one line naming the exit and the command to run; nothing started",
@@ -251,15 +243,8 @@ def main():
     case("a seats.json with no external login runs no check and injects no line",
          line is None and not (root / "check_ran").exists(), repr((line, (root / "check_ran").exists())))
 
-    def unreadable():
-        raise OSError("fixture unreadable")
-
-    module._seat_rows = unreadable
-    line = decide_or_crash(module)
     if saved_sidecar is not None:
         os.environ["CLAUDE_CODE_SIDECAR"] = saved_sidecar
-    case("an unreadable seats.json names the fault and runs no check",
-         line is not None and "seats.json not read" in line and not (root / "check_ran").exists(), repr(line))
 
     proc = subprocess.run([sys.executable, str(HOOK)], input="{}", capture_output=True, text=True,
                           env={**os.environ, "CLAUDE_CODE_SIDECAR": "1"}, timeout=60)

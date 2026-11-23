@@ -115,21 +115,9 @@ def test_a_missing_root_is_a_named_gap(tmp_path):
     assert scan["gaps"] == [missing] and scan["files"] == 0 and scan["calls"] == []
 
 
-def test_login_dirs_are_default_env_and_seat_configs_each_once(tmp_path, monkeypatch):
-    seats = {"claude-secondary": {"configDir": str(tmp_path / "secondary")},
-             "antigravity": {"configDir": ""},
-             "dup": {"configDir": tu.DEFAULT_LOGIN}}
-    monkeypatch.setattr(tu.launch_check, "seat_rows", lambda: seats)
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "env"))
-    dirs = tu.login_dirs()
-    assert dirs == [os.path.abspath(os.path.expanduser(tu.DEFAULT_LOGIN)),
-                    str(tmp_path / "env"), str(tmp_path / "secondary")]
-    assert tu.projects_dirs() == [os.path.join(d, "projects") for d in dirs]
-
-
-def test_login_dirs_reads_the_real_seats_file_without_an_env_override(monkeypatch):
-    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    assert os.path.abspath(os.path.expanduser(tu.DEFAULT_LOGIN)) in tu.login_dirs()
+def test_projects_dirs_are_each_login_dirs_projects(monkeypatch):
+    monkeypatch.setattr(tu.launch_check, "login_dirs", lambda: ["/a", "/b"])
+    assert tu.projects_dirs() == [os.path.join("/a", "projects"), os.path.join("/b", "projects")]
 
 
 if __name__ == "__main__":

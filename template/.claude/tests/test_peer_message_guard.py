@@ -222,14 +222,14 @@ class PeerMessageGuardTests(unittest.TestCase):
         out, _ = self.run_fixture(unlisted, "peer-fixture")
         self.assertEqual({}, out, "a login no seats.json row names is not read")
 
-    def test_a_missing_seats_json_is_named_and_the_own_login_is_still_checked(self):
+    def test_a_missing_seats_json_is_silent_and_the_own_login_is_still_checked(self):
         own = self.home / ".claude" / "sessions"
         doc = {"pid": 4, "sessionId": "eeee0000-0000-0000-0000-000000000000", "name": "peer-own",
                "status": "idle", "kind": "interactive"}
         (own / "4.json").write_text(json.dumps(doc), encoding="utf-8")
         hook = self.fixture_checkout("missing", None)
         out, err = self.run_fixture(hook, "peer-own")
-        self.assertIn("seats.json not read", err)
+        self.assertEqual("", err)
         self.assertEqual("deny", out.get("hookSpecificOutput", {}).get("permissionDecision"))
 
     def test_other_tools_and_bad_input_pass(self):

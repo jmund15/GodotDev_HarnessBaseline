@@ -74,10 +74,11 @@ def test_main_unreadable_and_unknown_seat_exit_codes(monkeypatch, capsys):
     assert capacity.main(["capacity.py"]) == capacity.UNKNOWN_SEAT
 
 
-def test_session_and_seat_rows_come_from_the_adapter_table():
+def test_session_and_seat_rows_come_from_the_adapter_table(monkeypatch):
     assert capacity.seat_row("session") == {"adapter": "scripts/seat_claude.sh", "configDir": "~/.claude"}
     assert capacity.seat_row("antigravity")["adapter"] == "scripts/seat_agy.sh"
-    assert capacity.seat_row("claude-secondary")["configDir"] == "~/.claude-secondary"
+    monkeypatch.setattr(capacity.launch_check, "seat_rows", lambda claude: {"x": {"configDir": "~/.x"}})
+    assert capacity.seat_row("x")["configDir"] == "~/.x" and capacity.seat_row("gone") is None
 
 
 def test_spawned_agy_read_at_floor_exits_3(tmp_path):

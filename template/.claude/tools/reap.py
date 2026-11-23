@@ -52,7 +52,7 @@ sys.path.insert(0, str(REPO / ".claude" / "hooks"))
 import _msys  # noqa: E402
 import _hook_state  # noqa: E402
 sys.path.insert(0, str(REPO / ".claude" / "tools"))
-from transcript_usage import login_dirs  # noqa: E402  the one login list (seats.json configDirs)
+from launch_check import login_dirs  # noqa: E402  the one login list
 import cli_usage  # noqa: E402
 
 LEDGER = REPO / ".claude" / "logs" / "reap_ledger.jsonl"
@@ -456,7 +456,7 @@ def never_reason(row, table):
 
 
 def session_registry_dirs():
-    """Every declared login's `sessions` dir that exists (`transcript_usage.login_dirs`)."""
+    """Every declared login's `sessions` dir that exists (`launch_check.login_dirs`)."""
     return [Path(p) / "sessions" for p in login_dirs() if (Path(p) / "sessions").is_dir()]
 
 

@@ -9,7 +9,7 @@ cost, then totals by model and by transport.
 
 Prices are seats.json `models.<id>.price`, USD per 1M tokens: fresh input at cacheMissPer1M, cache reads at
 cacheHitPer1M, output at outputPer1M. seats.json has no cache-write rate, so cache-write tokens are counted
-and left out of the cost. A model with no seats.json row is unpriced: its tokens count, its cost does not.
+and left out of the cost. A model with no seats.json row is unpriced: its tokens count, its cost does not. Native session models have no row: unpriced by design.
 """
 import argparse
 import json
@@ -17,6 +17,7 @@ import os
 import sys
 import time
 
+import launch_check
 import transcript_usage
 
 CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,8 +26,8 @@ PARTS = ("inp", "cr", "cw", "out")
 
 
 def load_prices(claude_dir=CLAUDE_DIR):
-    with open(os.path.join(claude_dir, "seats.json"), encoding="utf-8") as fh:
-        return {model: row["price"] for model, row in json.load(fh)["models"].items()}
+    models = launch_check.table(claude_dir).get("models") or {}
+    return {model: row["price"] for model, row in models.items()}
 
 
 def cost_of(call, price):

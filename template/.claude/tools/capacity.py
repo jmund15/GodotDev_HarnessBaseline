@@ -25,6 +25,7 @@ from pathlib import Path
 CLAUDE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CLAUDE / "tools"))
 from agy_seat import agy_bin  # noqa: E402
+import launch_check  # noqa: E402
 
 OK, FLOOR_HIT, UNKNOWN_SEAT, UNREADABLE = 0, 3, 2, 4
 # Used percent at which a window refuses a launch: the dispatch floor v1's anthropic_capacity_probe.py enforced.
@@ -114,7 +115,7 @@ READS = {"scripts/seat_claude.sh": read_anthropic, "scripts/seat_agy.sh": read_a
 def seat_row(name):
     if name == "session":
         return {"adapter": "scripts/seat_claude.sh", "configDir": "~/.claude"}
-    return json.loads((CLAUDE / "seats.json").read_text(encoding="utf-8"))["seats"].get(name)
+    return launch_check.seat_rows(CLAUDE).get(name)
 
 
 def describe(name, windows):

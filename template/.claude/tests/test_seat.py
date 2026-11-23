@@ -64,7 +64,7 @@ def _stub(path, text):
 def _env(tmp_path, extra=None):
     home = tmp_path / "home"
     bin_dir = tmp_path / "bin"
-    home.mkdir(exist_ok=True)
+    (home / ".claude-secondary").mkdir(parents=True, exist_ok=True)  # the seat row names this login
     bin_dir.mkdir(exist_ok=True)
     _stub(bin_dir / "claude", STUB_CLAUDE)
     env = dict(os.environ, HOME=str(home), USERPROFILE=str(home), STUB_DIR=str(tmp_path),

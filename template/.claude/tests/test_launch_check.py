@@ -64,6 +64,7 @@ def test_writing_seat_may_name_targets(tmp_path):
 def test_seat_row_expands_config_dir_and_unknown_seat_is_none(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    (tmp_path / "cfg").mkdir()
     (tmp_path / "seats.json").write_text(
         '{"seats": {"s": {"adapter": "scripts/a.sh", "writes": "no", "max_concurrent": 2,'
         ' "configDir": "~/cfg", "model": "m"}}}', encoding="utf-8")
@@ -74,7 +75,49 @@ def test_seat_row_expands_config_dir_and_unknown_seat_is_none(tmp_path, monkeypa
     assert lc.seat_assignments("nope", claude_dir=tmp_path) is None
 
 
-def test_shipped_seat_table_names_both_seats():
+def _table(tmp_path, monkeypatch, seats):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    row = {"adapter": "scripts/a.sh", "writes": "no", "max_concurrent": 1, "model": "m"}
+    (tmp_path / "seats.json").write_text(
+        json.dumps({"seats": {name: dict(row, configDir=cfg) for name, cfg in seats.items()}}), encoding="utf-8")
+
+
+def test_seat_rows_keep_only_seats_whose_login_exists_here(tmp_path, monkeypatch):
+    (tmp_path / "present").mkdir()
+    _table(tmp_path, monkeypatch, {"here": "~/present", "gone": "~/absent", "bare": ""})
+    assert sorted(lc.seat_rows(tmp_path)) == ["bare", "here"]
+
+
+def test_a_missing_seat_table_is_no_seats_and_no_message(tmp_path, capsys):
+    assert lc.seat_rows(tmp_path) == {}
+    assert capsys.readouterr().err == ""
+
+
+def test_a_seat_whose_login_is_absent_is_refused_in_one_line_naming_the_login(tmp_path, monkeypatch, capsys):
+    _table(tmp_path, monkeypatch, {"gone": "~/absent"})
+    monkeypatch.setattr(lc, "CLAUDE_DIR", tmp_path)
+    assert lc.main(["seat", "gone"]) == 2
+    err = capsys.readouterr().err
+    assert len(err.splitlines()) == 1 and "no login" in err and "absent" in err
+
+
+def test_login_dirs_are_default_env_and_present_seat_logins_each_once(tmp_path, monkeypatch):
+    (tmp_path / "present").mkdir()
+    _table(tmp_path, monkeypatch, {"here": "~/present", "gone": "~/absent"})
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "present"))
+    expected = [os.path.abspath(os.path.expanduser("~/.claude")), os.path.abspath(str(tmp_path / "present"))]
+    assert lc.login_dirs(tmp_path) == expected
+
+
+def test_native_block_and_models_come_from_the_same_table(tmp_path, monkeypatch):
+    (tmp_path / "seats.json").write_text('{"seats": {}, "models": {"m": {"price": {}}}, "native": {"ids": ["a"]}}',
+                                         encoding="utf-8")
+    assert lc.table(tmp_path)["native"] == {"ids": ["a"]} and "m" in lc.table(tmp_path)["models"]
+
+
+def test_shipped_seat_table_names_both_seats(tmp_path, monkeypatch):
+    monkeypatch.setattr(os.path, "isdir", lambda path: True)
     rows = lc.seat_rows(TOOLS.parent)
     assert rows["antigravity"]["writes"] == "no" and rows["claude-secondary"]["writes"] == "yes"
 
