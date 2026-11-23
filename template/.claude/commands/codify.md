@@ -48,7 +48,7 @@ git log --format=@%s --name-only | awk 'NR==FNR{t[$0]=1;next} /^@/{s=tolower($0)
 | A guard already denies it and names a usable next step | No change |
 | Absent | Write the rule in the surface that loads at the decision |
 
-A new hook is only for a loss case: lost work, a broken floor, a machine-wide failure. Any other repeat is text in the owner or a change in the tool that makes the choice. A fix that adds a file or a check names what it removes, or the loss case it answers.
+`reference/mechanism_litmus.md` owns the bar for a new mechanism (a hook needs a loss case, L1) and its Exit clause. Any other repeat is text in the owner or a change in the tool that makes the choice. Where a new piece goes: `rules/harness_tooling.md` §Where a new piece goes.
 
 Surfaces, by when they reach the agent:
 
@@ -64,7 +64,7 @@ Surfaces, by when they reach the agent:
 
 1. Write the verdict, not the incident: the rule, its trigger and the one clause that makes it non-obvious. The evidence goes in the commit message. Apply `instruction_quality` §3b's fit test.
 2. Delete, in the same change, the text the fix makes redundant, stale or wrong.
-3. Prove it: the case that failed passes after (a test, a rerun, or for a text fix the new sentence read against the old for the same decision). A hook proves a deny on a planted violation and an allow on its nearest clean call.
+3. Prove it: the case that failed passes after (a test, a rerun, or for a text fix the new sentence read against the old for the same decision). A hook's proof is `rules/harness_tooling.md` §How a test is shaped.
 4. Commit once, naming the decision.
 
 **Done:** the commit exists and the proof's command and result are in the report.

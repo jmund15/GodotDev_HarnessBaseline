@@ -24,7 +24,7 @@ A commit message that claims a proof names a tracked test file changed or run in
 
 ## How a test is shaped
 
-- **Decide in process.** A decision case calls the unit directly: a hook's `main()` or decision function with a real payload (`tests/_hook_call.py`), a tool's function. Each hook or CLI entry point keeps one spawned case proving it imports, runs from its registered command and exits as its contract says. Spawn more only when the process is the subject (a launcher, a detach shape, a signal, a lock between processes). A suite past its time bound is diagnosed by cause (too many cases, redundant ones, over-computational ones) and fixed there, never trimmed to a number.
+- **Decide in process.** A decision case calls the unit directly: a hook's `main()` or decision function with a real payload (`tests/_hook_call.py`), a tool's function. A hook proves a deny on a planted violation and an allow on its nearest clean call. Each hook or CLI entry point keeps one spawned case proving it imports, runs from its registered command and exits as its contract says: clean call, planted violation, clean call, read through its real output. Spawn more only when the process is the subject (a launcher, a detach shape, a signal, a lock between processes). A suite past its time bound is diagnosed by cause (too many cases, redundant ones, over-computational ones) and fixed there, never trimmed to a number.
 - **RED first on a verdict change.** Write the case, watch it fail, then change the unit. A case that has only ever passed is untested. A message or comment edit needs no new case.
 - **Negative cases.** A guard's test carries the read-only mention, the adjacent tool and the retired flag, and a floor guard carries must-allow cases for the justified operations it sits in front of (a merge in a fresh worktree, `merge --continue`, a commit with gitignored inputs absent), built with `tests/_must_allow_cases.py`.
 - **A crash is not an allow.** An exit code outside the unit's contract, or a traceback, fails the case: a hook that cannot import passes a test that only asks "was it denied?".
@@ -32,6 +32,17 @@ A commit message that claims a proof names a tracked test file changed or run in
 - **Assert the decision, never the wording.** Assert exit code, allow or deny, the output channel, the item picked, what was written and where; from a message, at most the one token a reader acts on (a path, a command, an id). A valid edit that changes no decision and turns a case red is a defect in the case.
 - **Plant every ambient input.** Tests run in parallel, so a case writes only under `tmp_path` and plants what it reads (home, git config, a `CLAUDE_*` variable, a tool on `PATH`) with `monkeypatch`. A case that needs a git repository builds it in a fixture and copies it per case, so no ref or stash crosses cases.
 - **Observe the real input before landing.** A change to a guard, gate or parser runs once on the real input it will meet (a guard over recent real commands with each deny read for a false block, a parser over a real file), and the commit message records the observation. A test that reads live repo state asserts an invariant, never a count the harness's growth changes.
+
+## Where a new piece goes
+
+| Adding | It goes in | Proved by |
+|---|---|---|
+| A hook | A member of `_chain.EVENTS[event]` (`hooks/_chain.py`), or a floor member of `hooks/_floor.py`. Never a dispatcher with its own loop | `tests/test_chain.py` |
+| Shell-text reading | `hooks/_shell_lex.py` (`lex`, `walk`, `options`); never `shlex.split` or a split on an operator | `tests/test_one_shell_lexer.py` |
+| A floor case | One row in the module's `tests/floor/test_floor_*.py`, built with `tests/floor/case.py` | that file |
+| Any other test | Plain pytest with the shared helpers (`tests/_hook_call.py`, `tests/_must_allow_cases.py`); no `TestCase`, no `expect()` | `tests/test_one_test_style.py` |
+| A new mechanism (test, check, hook, tool, stage) | Passes `reference/mechanism_litmus.md` first | its Exit clause |
+| A rule, command or skill | Written by `skills/instruction_quality/SKILL.md` | `tests/test_context_budget.py` |
 
 ## Authoring rules with a recorded failure behind them
 

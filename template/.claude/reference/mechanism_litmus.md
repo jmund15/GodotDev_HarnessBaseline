@@ -2,14 +2,14 @@
 
 A mechanism is any test, check, hook, tool, rule or stage that runs without a reader deciding each time. This file applies to adding one and to keeping one, in any project: Godot tests, web tests and harness tests included. Add or keep a mechanism only when all four hold.
 
-- **L1. Real.** The failure it targets has happened (a red, an incident, a deny that saved work), or it is a floor: an irreversible loss of peer work, owner authority, data, or a destructive operation's target. A spec test's RED-first run is a red that happened.
+- **L1. Real.** The failure it targets is a loss case: a floor loss (an irreversible loss of peer work, owner authority, data, or a destructive operation's target), or a failure that recurred after its cause was corrected. A hook needs one. A test or check may instead rest on a red that happened; a spec test's RED-first run is one.
 - **L2. Not removable.** Correcting or deleting the cause (`CLAUDE.core.md` §Core Principles, *One rule, one owner*) does not end the failure.
 - **L3. Would escape.** Nothing cheaper already catches it. A silent failure escapes (a stale cached pass, a guard that fails open, a skipped step); a loud one (a crash, a red, a visible error) is caught by use. Cost counts the mechanism's code and test lines beside its run time and the context it loads.
 - **L4. Decidable.** It decides from facts. A deny meets `instruction_quality` §3's bar (wrong in every case its predicate matches); a check that does not block needs near-zero false alarms. A check that needs judgment is a line of text at the decision point, never a guard. A test a valid edit can turn red fails L4 until it is cut to its decision (`rules/harness_tooling.md` §How a test is shaped); it is deleted only when that decision fails L1 or L2.
 
 **Placement.** Block before only a floor loss (L1). Where the project has a main check, run every other check after the land, off every session's wait. What makes a floor is the loss it guards, not a judgment that other work is easy to revert: no check is skipped or thinned for being reversible.
 
-**Exit.** A commit that adds a mechanism names what it removes, or its L1 failure, and the observation that retires it, in its message.
+**Exit.** A commit that adds a mechanism names what it removes, or its L1 failure, and the observation that retires it, in its message. This is the one statement of the clause; other files cite it.
 
 ## Two clauses
 
