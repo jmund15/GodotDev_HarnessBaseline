@@ -101,7 +101,7 @@ def channel(cmd, project=PROJECT, transcript=None, env=None):
                "hook_event_name": "PreToolUse", "cwd": project}
     if transcript:
         payload["transcript_path"] = transcript
-    proc = subprocess.run([sys.executable, os.path.join(CLAUDE, "hooks", "pre_bash_dispatch.py")],
+    proc = subprocess.run([sys.executable, os.path.join(CLAUDE, "hooks", "pre_bash.py")],
                           input=json.dumps(payload), capture_output=True, text=True, timeout=60,
                           env={**os.environ, "CLAUDE_PROJECT_DIR": project, **(env or {})})
     if proc.returncode not in (0, 2) or "Traceback" in proc.stderr:

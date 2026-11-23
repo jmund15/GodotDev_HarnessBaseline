@@ -33,6 +33,8 @@ import shlex
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
+# tools/: the v1 importers of sidecar_argv find it through this path until cutover deletes them.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from _shell_lex import literal_launcher_body, executable_index, command_substitutions
