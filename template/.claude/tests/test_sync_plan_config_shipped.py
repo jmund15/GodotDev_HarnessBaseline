@@ -25,7 +25,7 @@ def sync(tmp_path, monkeypatch):
     seats = tmp_path / "seats.json"
     seats.write_text(json.dumps({"seats": {"login-seat": {"configDir": dest.as_posix()},
                                            "no-login-seat": {"configDir": ""}}}), encoding="utf-8")
-    monkeypatch.setattr(mod, "SEATS", seats)
+    monkeypatch.setattr(mod, "CLAUDE_DIR", tmp_path)
     monkeypatch.setattr(mod, "DEFAULT_LOGIN", source)
     mod.dest = dest
     return mod
@@ -51,7 +51,15 @@ def test_refusals(sync, capsys):
     assert sync.main(["--bogus"]) == 2
 
 
-def test_absent_login_dir_is_blocked_on_user(sync, capsys):
+def test_absent_login_dir_is_skipped_in_silence(sync, capsys):
     sync.dest.rmdir()
-    assert sync.main(["--check", "--files-only"]) == 3
-    assert "BLOCKED-ON-USER: login-seat" in capsys.readouterr().out
+    assert sync.main(["--check", "--files-only"]) == 0
+    assert capsys.readouterr() == ("", "")
+
+
+def test_the_plugin_stage_runs_on_the_default_login_with_no_seat_login(sync, monkeypatch):
+    sync.dest.rmdir()
+    seen = []
+    monkeypatch.setattr(sync, "plugins_stage", lambda logins, check: seen.append([name for name, _ in logins]) or (0, 0))
+    assert sync.main(["--check"]) == 0
+    assert seen == [["default"]]

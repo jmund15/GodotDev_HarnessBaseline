@@ -11,7 +11,7 @@ is `proxied`; every other session is `anthropic`. A proxied child can echo a `cl
 so the names decide across all of a session's calls, never its first one.
 
 Login dirs. A login's transcripts live under `<login dir>/projects`. The login dirs are the default
-`~/.claude`, `CLAUDE_CONFIG_DIR` when set, and each seat's `configDir` in `seats.json`, each once.
+`~/.claude`, `CLAUDE_CONFIG_DIR` when set, and each usable seat's `configDir` (`launch_check.login_dirs`).
 
     transcript_usage.py <transcript.jsonl>     print the per-call usage rows as JSON lines
 """
@@ -25,7 +25,6 @@ import launch_check  # the one seats.json reader (tools/launch_check.py)
 ANTHROPIC = "anthropic"
 PROXIED = "proxied"
 SYNTHETIC_MODEL = "<synthetic>"
-DEFAULT_LOGIN = "~/.claude"
 
 
 def _number(value):
@@ -133,22 +132,8 @@ def transcript_files(root, since=None):
             yield full
 
 
-def login_dirs():
-    """Every login directory, expanded, each once: the default, `CLAUDE_CONFIG_DIR`, then each seat's `configDir`."""
-    found = [DEFAULT_LOGIN]
-    if os.environ.get("CLAUDE_CONFIG_DIR"):
-        found.append(os.environ["CLAUDE_CONFIG_DIR"])
-    found += [row["configDir"] for row in launch_check.seat_rows().values() if row.get("configDir")]
-    out = []
-    for path in found:
-        full = os.path.abspath(os.path.expanduser(path))
-        if full not in out:
-            out.append(full)
-    return out
-
-
 def projects_dirs():
-    return [os.path.join(login, "projects") for login in login_dirs()]
+    return [os.path.join(login, "projects") for login in launch_check.login_dirs()]
 
 
 def scan(roots, since=None):

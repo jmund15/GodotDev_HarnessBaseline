@@ -2,7 +2,7 @@
 """Keep every seat's login dir in step with the default login's, so a delegate behaves the same
 on either account: the same config files, and the same plugins at the same version.
 
-A seat with a `configDir` in `seats.json` is a destination; the default login `~/.claude` is the
+A seat with an existing `configDir` in `seats.json` is a destination; the default login `~/.claude` is the
 source. Per destination:
   ai_worker_model_guide.md              copied whole when the source has it
   CLAUDE.md                             removed when byte-identical to the source's (RETIRED_COPIES)
@@ -43,14 +43,14 @@ Usage:
       --check   list what a sync would change and exit 1 on any drift; it changes no config file, no
                 plugin and no marketplace clone, and makes no network call. An elapsed refresh window
                 is drift: the sync refreshes the clones and starts the next window
-      --seat    only that seat (default: every seat with a `configDir` other than the default login's).
-                A seat whose `configDir` does not exist is skipped, files and plugins, with one
-                BLOCKED-ON-USER line printed last; the run continues.
+      --seat    only that seat (default: every seat with a `configDir` that exists here and is not the
+                default login's; a seat whose login dir is absent is not in the table `launch_check.seat_rows`
+                returns, so it is skipped silently). The plugins stage runs on the default login with no seat.
       --files-only  skip the plugins stage. A sidecar launch passes it: a plugin update replaces the
                 cache dir under sibling sessions on that login, and concurrent launches would race
                 it; the SessionStart hook (hooks/login_parity_check.py) owns plugin repair
 Exit: 0 in step (or synced, or plugin work deferred), 1 drift under --check, 2 bad usage or an
-unreadable file, 3 a plugin step failed, or a step or seat is BLOCKED-ON-USER (each named on its own line),
+unreadable file, 3 a plugin step failed, or a step is BLOCKED-ON-USER (each named on its own line),
 unless a failure already sets exit 2. Exit 3 holds in --check too.
 """
 import copy
@@ -70,6 +70,7 @@ sys.path.insert(0, str(TOOLS))
 sys.path.insert(0, str(TOOLS.parent / "hooks"))
 from _bounded_run import run_bounded  # noqa: E402
 from _hook_state import replace_path  # noqa: E402
+import launch_check  # noqa: E402
 import plugin_registry  # noqa: E402
 import semantic_search_idle_install as idle_shim  # noqa: E402
 
@@ -83,7 +84,6 @@ PER_ACCOUNT_KEYS = ("autoMemoryDirectory", "mcpServers", "effortLevel")
 STATE = "sync_plan_config.state.json"
 REFRESH_SECONDS = 24 * 60 * 60
 EXIT_PLUGINS = 3
-SEATS = CLAUDE_DIR / "seats.json"
 DEFAULT_LOGIN = Path(os.path.expanduser("~/.claude"))
 
 
@@ -98,9 +98,9 @@ def _same_login(a, b):
 def pairs(only=None):
     """[(seat, source dir, destination dir)] for each `seats.json` seat whose login dir is not the default's."""
     try:
-        seats = json.loads(SEATS.read_text(encoding="utf-8"))["seats"]
-    except (OSError, ValueError, KeyError) as exc:
-        raise SyncError("%s is unreadable: %s" % (SEATS, exc))
+        seats = launch_check.seat_rows(CLAUDE_DIR)
+    except (OSError, ValueError) as exc:
+        raise SyncError("seats.json is unreadable: %s" % exc)
     if only and only not in seats:
         raise SyncError("no seat %r in seats.json" % only)
     return [(name, DEFAULT_LOGIN, Path(os.path.expanduser(row["configDir"]))) for name, row in sorted(seats.items())
@@ -462,30 +462,23 @@ def main(argv):
         return 2
     try:
         drift = failed = 0
-        blocked = []
         pending = pairs(only)
         for seat, source_dir, dest_dir in pending:
-            if not dest_dir.is_dir():
-                blocked.append("BLOCKED-ON-USER: %s configDir %s does not exist; log in to it once with "
-                               "`claude` under that CLAUDE_CONFIG_DIR" % (seat, dest_dir))
-                continue
             for name, text, what in changes(source_dir, dest_dir):
                 drift += 1
                 done = "removed" if text is None else "synced"
                 print("%s: %s %s" % (seat, name, what) if check else "%s: %s %s (%s)" % (seat, done, name, what))
                 if not check:
                     write(dest_dir, name, text)
-        if pending and not files_only:
-            logins = [("default", DEFAULT_LOGIN)] + [(seat, dest) for seat, _src, dest in pending if dest.is_dir()]
+        if not files_only:
+            logins = [("default", DEFAULT_LOGIN)] + [(seat, dest) for seat, _src, dest in pending]
             more, bad = plugins_stage(logins, check)
             drift += more
             failed += bad
-        for line in blocked:
-            print(line)
     except (SyncError, OSError, subprocess.SubprocessError) as exc:
         print("sync_plan_config: %s" % exc, file=sys.stderr)
         return 2
-    if failed or blocked:
+    if failed:
         return EXIT_PLUGINS
     return 1 if check and drift else 0
 

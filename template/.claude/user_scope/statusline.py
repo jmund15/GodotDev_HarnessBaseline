@@ -117,40 +117,6 @@ def prune_stale(keep_days=7):
         pass
 
 
-def snapshot_rate_limits(raw):
-    """Normalize the payload's rate_limits block for the state file.
-
-    Present only for Pro/Max subscribers, or behind a gateway that sets a spend
-    limit, and only after the first API response; each window may be
-    independently absent. Returns None when nothing usable arrived, so the
-    caller can keep last-known-good instead of overwriting a real capture with
-    nulls.
-
-    spend_limit is captured but not rendered
-    by window name, so a window absent here can never reach the gate.
-    """
-    if not isinstance(raw, dict):
-        return None
-    out = {}
-    for win in ("five_hour", "seven_day", "spend_limit"):
-        w = raw.get(win)
-        if not isinstance(w, dict):
-            continue
-        entry = {}
-        used = w.get("used_percentage")
-        resets = w.get("resets_at")
-        if isinstance(used, (int, float)):
-            entry["used_percentage"] = used
-        if isinstance(resets, (int, float)):
-            entry["resets_at"] = resets
-        if entry:
-            out[win] = entry
-    if not out:
-        return None
-    out["captured_at"] = time.time()
-    return out
-
-
 def session_link(session_id, transcript_path):
     """The session id, hyperlinked to this session's own directory.
 
@@ -238,15 +204,12 @@ def prompt_cache_view(raw):
     }
 
 
-def accumulate(session_id, created, read, fresh, ctx_pct=None, rate_limits=None):
+def accumulate(session_id, created, read, fresh):
     """Fold this turn into the session's rebuild tally.
 
     The status line re-runs on events, so the same current_usage can arrive
     several times. Keying on the (write, read, input) triple makes repeat
     invocations idempotent — only a genuinely new API call moves the counters.
-
-    ctx_pct rides along so agents can Read the session's context gauge from
-    this state file (the model cannot self-measure context usage).
     """
     path = state_path(session_id)
     fingerprint = f"{created}:{read}:{fresh}"
@@ -260,27 +223,7 @@ def accumulate(session_id, created, read, fresh, ctx_pct=None, rate_limits=None)
     if first_write:
         prune_stale()
 
-    def rl_changed():
-        if rate_limits is None:
-            return False
-        old = state.get("rate_limits") or {}
-        strip = lambda d: {k: v for k, v in d.items() if k != "captured_at"}
-        return strip(old) != strip(rate_limits)
-
     if state.get("last") == fingerprint:
-        dirty = False
-        if ctx_pct is not None and state.get("context_pct") != ctx_pct:
-            state["context_pct"] = ctx_pct
-            dirty = True
-        if rl_changed():
-            state["rate_limits"] = rate_limits
-            dirty = True
-        if dirty:
-            try:
-                with open(path, "w", encoding="utf-8") as fh:
-                    json.dump(state, fh)
-            except Exception:
-                pass
         return (
             state.get("rebuilt_tokens", 0),
             state.get("rebuilds", 0),
@@ -313,11 +256,6 @@ def accumulate(session_id, created, read, fresh, ctx_pct=None, rate_limits=None)
     total_read += read
     total_created += created
 
-    # Last-known-good: a turn without rate_limits keeps the previous capture
-    # rather than overwriting it with nothing — at weekly granularity a stale
-    # capture beats an empty one, and the consumer states its age.
-    rl_keep = rate_limits if rate_limits is not None else state.get("rate_limits")
-
     try:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(
@@ -328,8 +266,6 @@ def accumulate(session_id, created, read, fresh, ctx_pct=None, rate_limits=None)
                     "cold_tokens": cold,
                     "total_read": total_read,
                     "total_created": total_created,
-                    "context_pct": ctx_pct if ctx_pct is not None else state.get("context_pct"),
-                    "rate_limits": rl_keep,
                 },
                 fh,
             )
@@ -360,8 +296,7 @@ def external_model_tag(model_block, cwd):
     This file is USER-GLOBAL and runs in every project, while the registry is
     per-project, so it is located by walking up from the payload's cwd.
 
-    NEVER raises: this process also writes cc-cachestat-<session>.json, the sole
-    input the cache-state reads use.
+    NEVER raises: a status line that crashes shows nothing.
     """
     try:
         display = str((model_block or {}).get("display_name") or "")
@@ -503,8 +438,6 @@ def main():
             created,
             read,
             fresh,
-            pct if isinstance(pct, (int, float)) else None,
-            snapshot_rate_limits(data.get("rate_limits")),
         )
         # Session-lifetime hit ratio — the durable counterpart to the per-call
         # cache%. The per-call number snaps back to ~100% one turn after any

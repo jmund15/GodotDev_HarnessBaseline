@@ -107,11 +107,7 @@ def _verdict(returncode, stdout, stderr):
         why = ([ln.strip() for ln in (stderr or "").splitlines() if ln.strip()] or lines or ["no output"])[-1]
         return ("[login parity] the check failed (exit %d: %s); run `%s` and fix what it names."
                 % (returncode, why, CHECK_COMMAND)), None
-    deferred = [ln for ln in lines if ln.startswith("plugins: deferred")]
-    drift = [ln for ln in lines if not ln.startswith("plugins: deferred")]
-    if deferred:
-        return "[login parity] drift: %s. Nothing started: %s." % (_summary(drift), deferred[0][len("plugins: "):]), None
-    return None, drift
+    return None, lines
 
 
 def _seat_rows():
@@ -125,11 +121,7 @@ def decide():
     """The one line to inject, or None."""
     if os.environ.get("CLAUDE_CODE_SIDECAR") or is_cloud():
         return None
-    try:
-        seats = _seat_rows()
-    except Exception as exc:  # noqa: BLE001  advisory: name the fault, check nothing
-        return "[login parity] seats.json not read (%s: %s); no login was checked." % (type(exc).__name__, exc)
-    if not any(row.get("configDir") for row in seats.values()):
+    if not any(row.get("configDir") for row in _seat_rows().values()):
         return None  # no external login to keep in step: no check runs
     proc = run_bounded(CHECK_ARGV, CHECK_TIMEOUT)
     if proc.returncode is None:

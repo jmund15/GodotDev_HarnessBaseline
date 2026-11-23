@@ -1166,3 +1166,15 @@ def test_secret_fixtures_match_their_lint_shapes():
     missed = [name for name, value in secrets.items()
               if not any(pattern.search(value) for _, pattern in us.SECRET_SHAPES)]
     assert not missed, missed
+
+
+def test_the_shipped_manifest_ships_no_local_model_hook_and_the_statusline_state_keeps_only_its_tally(tmp_path, monkeypatch):
+    manifest = json.loads((REAL_SCOPE / "manifest.json").read_text(encoding="utf-8"))
+    assert [item["id"] for item in manifest["items"]] == ["statusline"]
+    spec = importlib.util.spec_from_file_location("statusline_under_test", REAL_SCOPE / "statusline.py")
+    sl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sl)
+    monkeypatch.setattr(sl.tempfile, "gettempdir", lambda: str(tmp_path))
+    sl.accumulate("sid", 10, 5, 1)
+    state = json.loads(Path(sl.state_path("sid")).read_text(encoding="utf-8"))
+    assert "rate_limits" not in state and "context_pct" not in state and state["total_created"] == 10

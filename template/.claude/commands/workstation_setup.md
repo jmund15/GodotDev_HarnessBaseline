@@ -12,7 +12,6 @@ stamp-inputs:
   - ".claude/tools/user_scope.py"
   - ".claude/user_scope/manifest.json"
   - ".claude/user_scope/statusline.py"
-  - ".claude/user_scope/hooks/ollama_healthcheck.py"
   - ".claude/user_scope/hooks/large_read_reminder.py"
 ---
 
@@ -35,7 +34,7 @@ joins the setup surface — the list is read from this frontmatter and is not du
 **Start by recording this machine:** `python3 .claude/tools/workstation_profile.py record` probes
 `nvidia-smi` itself and stores `{gpu, local_tier}` in `~/.claude/workstation_profile.json`. Those
 thresholds live in that tool alone, in MiB — the unit the card actually reports, where the marketing
-size is not; `user_scope/hooks/ollama_healthcheck.py` reads the recorded tier. Phase 3 takes its tiers from that
+size is not. Phase 3 takes its tiers from that
 tool, and no caller here passes a VRAM count.
 
 **Engine toolchain.** Phase 8 and Phase 9 step 3 come from the `workstation_setup_toolchain` reference
@@ -176,10 +175,9 @@ one NOT-ADOPTED row and skips the steps: work runs on native Workflows alone, an
 1. Run `python3 .claude/scripts/sync_plan_config.py` once. It syncs each seat's `configDir` with
    `~/.claude`: the config files, then on every login each enabled plugin at its marketplace's latest
    version with its post-install steps (for semantic-search, the Windows build and that login's idle
-   shim). Exit 0 → PROVISIONED. A missing config dir → BLOCKED-ON-USER: log in to it once with `claude`
-   under that `CLAUDE_CONFIG_DIR`. A `BLOCKED-ON-USER` line (a marketplace command awaiting
-   `--accept-command`) → that row, quoting the line. A `plugins: deferred` line →
-   DEFERRED-PEER-CONTENTION with the same command, run after the named benchmark ends. A
+   shim). Exit 0 → PROVISIONED. A seat whose config dir is absent on this machine is not in the table
+   and is skipped. A `BLOCKED-ON-USER` line (a marketplace command awaiting
+   `--accept-command`) → that row, quoting the line. A
    `plugins: ... failed` line → FAILED, quoting the line.
 2. For each seat, the CLI its adapter runs answers `--version`, and `python3 .claude/tools/capacity.py <seat>`
    prints both usage windows: a readable window proves the login is live without spending quota. An

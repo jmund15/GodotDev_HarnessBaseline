@@ -1,5 +1,5 @@
 {
-  "_comment": "The external seat table, read by scripts/seat.sh (through tools/launch_check.py seat) and by the usage and capacity tools. Seat: adapter (a script under .claude/scripts, one per CLI), writes (yes: the seat may edit files in its own linked worktree; no: it returns its answer on stdout and seat.sh writes <out.md>), max_concurrent (jobs of this seat that may run at once on this machine), configDir (the login's config dir, ~ expands; empty for none). Model: the id the seat runs and its list price per 1M tokens, which prices the record only (the seat spends a plan's quota). Add a seat: one row here and one adapter; add a seat's model: one row under models. The native block is the Workflow route's vocabulary: the model aliases the session's own plan serves (`ids`, the Workflow `model` values) and the effort values they accept (`efforts`); the Workflow entry injects it as args.__transport. Prices copied from reference/external_models.json on 2026-11-22.",
+  "_comment": "The external seat table, read by scripts/seat.sh (through tools/launch_check.py seat) and by the usage and capacity tools. Seat: adapter (a script under .claude/scripts, one per CLI), writes (yes: the seat may edit files in its own linked worktree; no: it returns its answer on stdout and seat.sh writes <out.md>), max_concurrent (jobs of this seat that may run at once on this machine), configDir (the login's config dir, ~ expands; empty for none). Model: the id the seat runs and its list price per 1M tokens, which prices the record only (the seat spends a plan's quota). Add a seat: one row here and one adapter; add a seat's model: one row under models. The native block is the Workflow route's vocabulary: the model aliases the session's own plan serves (`ids`, the Workflow `model` values) and the effort values they accept (`efforts`); the Workflow entry injects it as args.__transport. A seat whose configDir is absent on this machine is not a seat here: every reader goes through tools/launch_check.py seat_rows, and seat.sh refuses it in one line. Native Claude models carry no row, so their lines in tools/usage_report.py are unpriced by design (the session spends a plan's quota).",
   "seats": {
     "claude-secondary": {
       "adapter": "scripts/seat_claude.sh",
@@ -19,11 +19,11 @@
   "models": {
     "claude-sonnet-5-5": {
       "price": {"cacheMissPer1M": 2, "cacheHitPer1M": 0.1, "outputPer1M": 10, "currency": "USD", "asOf": "2026-10-09",
-                "source": "platform.claude.com/docs/en/about-claude/pricing (list price, copied from external_models.json antigravity/claude-sonnet-5-5)"}
+                "source": "platform.claude.com/docs/en/about-claude/pricing (list price)"}
     },
     "antigravity/gemini-4-neon": {
       "price": {"cacheMissPer1M": 3, "cacheHitPer1M": 0.15, "outputPer1M": 15, "currency": "USD", "asOf": "2026-11-21",
-                "source": "aistudio.google.com/docs/pricing (list price, copied from external_models.json antigravity/gemini-4-neon)"}
+                "source": "aistudio.google.com/docs/pricing (list price)"}
     }
   },
   "native": {

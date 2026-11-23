@@ -46,25 +46,10 @@ SUBAGENT_REASON = (
 
 
 def _logins():
-    """The session's own login (CLAUDE_CONFIG_DIR, else ~/.claude) and every `configDir` in `seats.json`, each once.
-    An unreadable or missing seats.json is named on stderr; the own login is still read, so the guard keeps its check."""
-    own = Path(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude").expanduser()
-    logins = [own]
-    claude = Path(__file__).resolve().parents[1]
-    try:
-        sys.path.insert(0, str(claude / "tools"))
-        import launch_check
-        seats = launch_check.seat_rows(claude)
-    except Exception as error:
-        print(f"peer_message_guard: seats.json not read ({type(error).__name__}: {error}); "
-              "external seat logins are not checked", file=sys.stderr)
-        return logins
-    for row in seats.values():
-        if row.get("configDir"):
-            login = Path(row["configDir"]).expanduser()
-            if login not in logins:
-                logins.append(login)
-    return logins
+    """The session's own login (CLAUDE_CONFIG_DIR, else ~/.claude) and every login a usable seat names, each once."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import launch_check
+    return [Path(login) for login in launch_check.login_dirs()]
 
 
 def _find_transcript(session_id):
