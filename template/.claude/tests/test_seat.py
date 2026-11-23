@@ -98,8 +98,12 @@ def _msys(path):
     return "/" + posix[0].lower() + posix[2:] if posix[1:3] == ":/" else posix
 
 
+AGY_EFFORT = "high"  # seats.json lists efforts for the neon model, so its seat requires -e
+
+
 def _seat(repo, workdir, env, seat, brief, out):
-    return subprocess.run([BASH, _msys(repo / ".claude" / "scripts" / "seat.sh"), seat, brief, out],
+    effort_args = ["-e", AGY_EFFORT] if seat == "antigravity" else []
+    return subprocess.run([BASH, _msys(repo / ".claude" / "scripts" / "seat.sh"), *effort_args, seat, brief, out],
                           cwd=str(workdir), env=env, capture_output=True, text=True,
                           stdin=subprocess.DEVNULL)
 

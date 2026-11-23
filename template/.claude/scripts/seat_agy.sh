@@ -30,7 +30,7 @@ allowed="$(python3 "$ag" allowed --builtins "$builtins" --servers "")" || exit 2
 cd "$workdir" || exit 1
 python3 "$here/tools/agy_workspace.py" write --root "$workdir" > /dev/null || exit 2
 agy_bin="$(python3 "$ag" bin)" || exit 2
-python3 "$ag" run --stream "$stream" --servers "" -- "$agy_bin" --output-format stream-json --model "$model" \
+python3 "$ag" run --stream "$stream" --servers "" -- "$agy_bin" --output-format stream-json --model "$model" ${SEAT_EFFORT:+--effort "$SEAT_EFFORT"} \
   --settings "$settings" --disable-slash-commands < "$brief" > /dev/null
 rc=$?
 python3 "$ag" parse --stream "$stream" --model "$model" --rc "$rc" --allowed "$allowed" --root "$workdir" > "$envelope" || exit 2

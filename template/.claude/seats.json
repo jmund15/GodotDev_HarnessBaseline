@@ -29,6 +29,7 @@
                 "source": "platform.claude.com/docs/en/about-claude/pricing (list price)"}
     },
     "antigravity/gemini-4-neon": {
+      "efforts": ["low", "medium", "high", "xhigh"],
       "price": {"cacheMissPer1M": 3, "cacheHitPer1M": 0.15, "outputPer1M": 15, "currency": "USD", "asOf": "2026-11-21",
                 "source": "aistudio.google.com/docs/pricing (list price)"}
     },
