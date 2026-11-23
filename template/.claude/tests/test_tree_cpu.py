@@ -19,26 +19,37 @@ def check(ok, label, detail=''):
     fail += not ok
 
 
-# A parent that only waits, whose grandchild burns CPU: the tree total grows; the parent's own does not.
-burn = 'import time\nend = time.monotonic() + 4\nwhile time.monotonic() < end: pass'
-middle = 'import subprocess, sys; subprocess.run([sys.executable, "-c", %r])' % burn
-parent = subprocess.Popen([sys.executable, '-c', 'import subprocess, sys; subprocess.run([sys.executable, "-c", %r])' % middle])
-try:
-    time.sleep(1.0)
-    first = tree_cpu.tree_cpu(parent.pid)
-    time.sleep(1.5)
-    second = tree_cpu.tree_cpu(parent.pid)
-    check(first is not None and second is not None and second - first >= 0.5,
-          'a grandchild burning CPU grows the tree total', (first, second))
-    out = subprocess.run([sys.executable, str(TOOL), str(parent.pid)], capture_output=True, text=True)
-    check(out.returncode == 0 and float(out.stdout) >= second, 'the CLI prints the tree total', (out.returncode, out.stdout))
-finally:
-    parent.wait(timeout=30)
+def main():
+    global fail
+    fail = 0
+    # A parent that only waits, whose grandchild burns CPU: the tree total grows; the parent's own does not.
+    burn = 'import time\nend = time.monotonic() + 4\nwhile time.monotonic() < end: pass'
+    middle = 'import subprocess, sys; subprocess.run([sys.executable, "-c", %r])' % burn
+    parent = subprocess.Popen([sys.executable, '-c', 'import subprocess, sys; subprocess.run([sys.executable, "-c", %r])' % middle])
+    try:
+        time.sleep(1.0)
+        first = tree_cpu.tree_cpu(parent.pid)
+        time.sleep(1.5)
+        second = tree_cpu.tree_cpu(parent.pid)
+        check(first is not None and second is not None and second - first >= 0.5,
+              'a grandchild burning CPU grows the tree total', (first, second))
+        out = subprocess.run([sys.executable, str(TOOL), str(parent.pid)], capture_output=True, text=True)
+        check(out.returncode == 0 and float(out.stdout) >= second, 'the CLI prints the tree total', (out.returncode, out.stdout))
+    finally:
+        parent.wait(timeout=30)
 
-gone = subprocess.run([sys.executable, str(TOOL), str(parent.pid)], capture_output=True, text=True)
-check(gone.returncode == 1 and gone.stdout == '', 'a gone root prints nothing and exits 1', (gone.returncode, gone.stdout))
-bad = subprocess.run([sys.executable, str(TOOL), 'nope'], capture_output=True, text=True)
-check(bad.returncode == 2 and bad.stdout == '', 'a malformed pid is refused with exit 2', (bad.returncode, bad.stdout))
+    gone = subprocess.run([sys.executable, str(TOOL), str(parent.pid)], capture_output=True, text=True)
+    check(gone.returncode == 1 and gone.stdout == '', 'a gone root prints nothing and exits 1', (gone.returncode, gone.stdout))
+    bad = subprocess.run([sys.executable, str(TOOL), 'nope'], capture_output=True, text=True)
+    check(bad.returncode == 2 and bad.stdout == '', 'a malformed pid is refused with exit 2', (bad.returncode, bad.stdout))
 
-print('PASS test_tree_cpu' if not fail else 'FAIL test_tree_cpu')
-sys.exit(1 if fail else 0)
+    print('PASS test_tree_cpu' if not fail else 'FAIL test_tree_cpu')
+    return 1 if fail else 0
+
+
+def test_proof():
+    assert main() == 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
