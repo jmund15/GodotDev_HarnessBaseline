@@ -19,7 +19,7 @@ Adversarial integration tests for `.claude/skills/<name>/SKILL.md`. For each rat
 2. If `$ARGUMENTS` is empty, STOP: `Usage: /test_skill <skill-name>. Single-skill mode only — no --all in v1.`
 3. If the file is missing, STOP: `Skill not found: <arg>. Available skills: <Glob result of .claude/skills/*/SKILL.md>`.
 4. **Read the full SKILL.md** into `skillContent`. Do NOT summarize or excerpt it — the workflow needs the verbatim text (push-don't-pull; a workflow script cannot read files).
-5. Read `.claude/commands/agents/orchestrator_action_protocol.md` and extract the `## Claims to Refuse` section into `claimsToRefuse` (generic baseline for skills without explicit rationalizations).
+5. Read `.claude/guards/rails.md` and extract its `## Verified versus inferred` section into `claimsToRefuse` (generic baseline for skills without explicit rationalizations).
 
 ---
 

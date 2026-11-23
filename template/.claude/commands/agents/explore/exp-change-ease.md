@@ -22,7 +22,7 @@ Before claiming a structure as friction, ask: would deleting it CONCENTRATE comp
 - An existing seam the change could ride → `bearing: "reuse-candidate"`.
 - An invariant or settled decision on the change's surface → `bearing: "constraint"`, evidence = the verbatim invariant line, and say in the claim that it is settled.
 - The topic assumes friction that is not there (the seam already exists, the duplication was already collapsed) → `bearing: "premise-contradiction"`.
-- The surface is already shaped for this change → say so with `polarity: "absent"` and a `verification` command. "Nothing blocks this" is a real and useful answer.
+- The surface is already shaped for this change → say so with `polarity: "absent"` and a `{command, output}` `evidence` item. "Nothing blocks this" is a real and useful answer.
 
 ## Reporting Filter
 - Do NOT write "easier to maintain", "cleaner code", or "better separation of concerns". Name the concrete cost the current structure imposes on THIS change, or drop the claim.

@@ -11,7 +11,7 @@ disable-model-invocation: true
 Determine the system name from the user's request. This becomes `{SystemName}` for folder/file paths.
 
 ## 2. Locate the Doc Folder
-Folder-naming rules: `agents/documentation_structure.md`. Vault tooling: `obsidian_conventions` skill.
+Folder-naming rules: `commands/agents/documentation_structure.md`. Vault tooling: `obsidian_conventions` skill.
 - Normalize the system name (PascalCase, no spaces)
 - Use `Glob` to check whether the doc folder exists
 

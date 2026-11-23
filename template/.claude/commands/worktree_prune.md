@@ -59,7 +59,7 @@ The report is done when the table prints. With no worktree under `.claude/worktr
 
 **The bucket is advice, not permission.** `wip:N` is N tracked uncommitted edits. Show the diff and get a decision first: removing a clean worktree is recoverable from its branch, but uncommitted work is gone. Never pass `--force`. Never remove a `locked` worktree.
 
-`git worktree remove` refuses any worktree carrying a submodule; `orchestration` reference `worktrees.md` owns the removal recipe for those and the delete guard's rules.
+`git worktree remove` refuses any worktree carrying a submodule: run `rm -rf .claude/worktrees/<name>` alone, then `git worktree prune`. The delete guard (`hooks/_delete_rule.py`) allows that delete only when the checkout loses no work, and its deny names every failed condition.
 
 Ask the owner one question naming each worktree to remove; `CLAUDE.core.md` §Shell Discipline owns what the delete guard then accepts. Armed `/overnight` is the exception: `commands/overnight.md` §Step 2 decides it. This command's own output is not the confirmation.
 

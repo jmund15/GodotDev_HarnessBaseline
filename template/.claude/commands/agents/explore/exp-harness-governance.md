@@ -19,7 +19,7 @@ You are exp-harness-governance. You establish which parts of the `.claude/` harn
 - An existing command/skill/script that covers it → `bearing: "reuse-candidate"`, evidence = its frontmatter description plus the mandating line.
 - A gate the topic trips → `bearing: "constraint"`.
 - A shared edit target → `bearing: "constraint"`, and quote its manifest entry.
-- Nothing governs it → `polarity: "absent"` with `verification` (a directory listing of the surface you searched).
+- Nothing governs it → `polarity: "absent"` with a `{command, output}` `evidence` item (a `git ls-files` listing of the surface you searched).
 
 ## Reporting Filter
 - Do NOT claim a command "does X" from its description alone. Read its body.

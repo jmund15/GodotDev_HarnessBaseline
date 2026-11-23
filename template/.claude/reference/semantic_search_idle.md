@@ -39,7 +39,7 @@ The vendored `tools/tree-sitter-c_sharp.wasm` is the unmodified WASM shipped by 
 
 ## Measured
 
-- **Shared backend.** One pre-built full-repo index (70 MB) searched by 7 clients: 7 per-session backends peaked at 2.41–2.81 GB and one client failed `database is locked`; the shared shim ran 1 backend at 0.56 GB with no errors (`tests/measure_semantic_search_shared.ps1`). A shim that never searches costs 0.054 GB and starts no backend.
+- **Shared backend.** One pre-built full-repo index (70 MB) searched by 7 clients: 7 per-session backends peaked at 2.41–2.81 GB and one client failed `database is locked`; the shared shim ran 1 backend at 0.56 GB with no errors (`tests/measure_semantic_search_shared.ps1`, deleted by B13 `63d8b39`; re-run it from git history if the shim's memory model changes). A shim that never searches costs 0.054 GB and starts no backend.
 - **Rebuild time.** A full repo index of about 39,500 chunks rebuilds in about 10 minutes with length-ordered batches, against about 21 in index order; vectors agree with a single-text embed equally in either order. Chunks past 512 tokens embed from their first 512 only.
 
 ## Proofs
@@ -47,6 +47,3 @@ The vendored `tools/tree-sitter-c_sharp.wasm` is the unmodified WASM shipped by 
 - `node --test .claude/tests/test_semantic_search_idle_proxy.mjs`: S1 contract, S2 idle lifecycle, S3 sharing, plus C# named declaration parsing and a real search through the injected child. It starts a real backend, so it runs in the shared CI's scheduled run rather than on every push; run it directly after a change to the shim or its hook. `SEMANTIC_SEARCH_IDLE_TEST_PROXY=<copy>` runs against a planted shim beside copies of its hook and grammar; removing its `--import` must turn the C# launch case red. A planted defect in an S3 seam must turn its case red.
 - `node --test .claude/tests/test_semantic_search_csharp_hook.mjs`: upstream and grammar drift refusal, the `--check` probe, `.searchignore` scanning, member text cut from type chunks and preamble-only gaps dropped.
 - `python -m pytest .claude/tests/test_semantic_search_idle_install.py -q`: installation/rollback, missing C# assets and drift in a hooked upstream symbol through `--check`.
-- `.claude/tests/measure_semantic_search_idle.ps1`: single-client private bytes and idle unload, against an isolated root under `.claude/scratch`.
-- `.claude/tests/measure_semantic_search_shared.ps1`: N concurrent clients per arm, `-Proxies` arms in one invocation, RAM admission, frozen-index gate. A wrong `-ExpectPeakBackends`, an unmeetable `-MinFreeGb`, a too-short reply timeout, a too-slow sampler, an error reply, a silent child, an empty `-Proxies` and a failed setup step each exit non-zero and record `ok: false`.
-- Both measure scripts share `.claude/tests/lib/measure_common.ps1` and delete only a `-Root` below `.claude/scratch`.

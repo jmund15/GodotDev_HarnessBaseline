@@ -72,13 +72,13 @@ The always-on design-litmus seeding (subclass axis · authored field · required
 Before proposing approaches, inventory existing owners in the domain, including bases with a single implementer and strategy/config slots. Apply [`architecture_philosophy`](../../architecture_philosophy/SKILL.md) *Coupling & Discovery* (*Node Retrieval & Coupling*, *Interface Usage*) as a design step — cross-link, never restate.
 
 - Extend an existing hierarchy rather than inventing a parallel abstraction (`feedback_inspect_existing_abstractions_first.md`).
-- Read the implementation **body** of anything the design consumes, not just its contract (`feedback_inventory_implementation_not_just_contract.md`).
+- Read the implementation **body** of anything the design consumes, not just its contract.
 
 Re-run an inventory subset when a staleness risk factor holds — factors and drift gotchas → §*Step 3 — inventory-currency check (gate before Step 4)*.
 
 ## Step 3 — inventory-currency check (gate before Step 4)
 
-**Inventory-currency check (gate before Step 4).** Re-run an inventory subset when, since the initial inventory, a relevant file, branch, submodule pointer or consumed contract changed, or the source cannot be shown current. Check `git status` for upstream work and `git submodule status` for pointer drift; stale inventory yields approaches modeled on deleted/renamed types or missing shipped infrastructure. Trust test-file `using` imports over directory existence when checking greenfield-vs-shipped. Drift gotchas: `archive_git_submodule_pr_merge_strategy.md`.
+**Inventory-currency check (gate before Step 4).** Re-run an inventory subset when, since the initial inventory, a relevant file, branch, submodule pointer or consumed contract changed, or the source cannot be shown current. Check `git status` for upstream work and `git submodule status` for pointer drift; stale inventory yields approaches modeled on deleted/renamed types or missing shipped infrastructure. Trust test-file `using` imports over directory existence when checking greenfield-vs-shipped.
 
 ## Step 4 — procedure
 

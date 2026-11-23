@@ -22,7 +22,7 @@ For each domain with 2+ systems, check whether its system folders are nested und
 - **Aligned:** `Documentation/{Domain}/{SystemFolder}/` — system is inside its domain parent
 - **Misaligned:** `Documentation/{SystemFolder}/` — system is a top-level folder but belongs to a domain
 
-**Never moved** (per Folder Classification in `agents/documentation_structure.md`):
+**Never moved** (per Folder Classification in `commands/agents/documentation_structure.md`):
 - Structural folders (`Claude/`, `Prototypes/`) and `Start Here.md`
 - `(Archived)` folders
 - Domain parent folders themselves (they are the move TARGETS, not sources)
@@ -73,7 +73,7 @@ Obsidian will automatically update all wikilinks.
 
 **Skip aligned domains:** If all systems in a domain are already nested under their parent folder, omit that domain from the plan.
 
-**Empty orphan detection:** If the folder listing reveals folders that are NOT in any domain's system list and NOT classified as Structural/Archived (per `agents/documentation_structure.md` — content-based classification, no exclusion list), flag them:
+**Empty orphan detection:** If the folder listing reveals folders that are NOT in any domain's system list and NOT classified as Structural/Archived (per `commands/agents/documentation_structure.md` — content-based classification, no exclusion list), flag them:
 ```
 ### Possible Orphan Folders (verify before deleting)
 - AIFramework/ — not assigned to any domain

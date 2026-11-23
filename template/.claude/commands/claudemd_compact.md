@@ -45,7 +45,7 @@ done | sort -rn
 
 Dispatch all four in a single message. **Do NOT pass `args.spillDir`** — `scout` has no `Write` tool, so a spilling scout job silently returns its deliverable inline and the bounded-return contract is lost without an error.
 
-**Brief every lens with the §Don'ts list below.** Each returns a focused report; do NOT pre-read CLAUDE.md sections yourself before delegating — that defeats the cost model. An agent's EMPTY search result is INCONCLUSIVE, not evidence of "UNIQUE" / "no conflict" — re-run that specific search yourself before accepting a no-finding verdict. Each lens's done-condition requires a fenced `claims` block holding every claim about a CLAUDE.md section or another file, one JSON object per line with `file` and a verbatim `evidence` quote; the parent consumes the claims per `commands/agents/orchestrator_action_protocol.md` Step 1.5.
+**Brief every lens with the §Don'ts list below.** Each returns a focused report; do NOT pre-read CLAUDE.md sections yourself before delegating — that defeats the cost model. An agent's EMPTY search result is INCONCLUSIVE, not evidence of "UNIQUE" / "no conflict" — re-run that specific search yourself before accepting a no-finding verdict. Each lens's done-condition requires a fenced `claims` block holding every claim about a CLAUDE.md section or another file, one JSON object per line with `file` and a verbatim `evidence` quote; the parent checks the claims per `orchestration` §8 *Check its claims*.
 
 **Agent 1 — Path-scope candidates.** For each top-level section of CLAUDE.md, classify by path-scope axis:
 - Universal (every interaction)

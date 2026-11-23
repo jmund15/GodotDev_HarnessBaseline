@@ -66,6 +66,6 @@ new records:
   and only `pattern`-or-better lines are eligible — a skim bullet that drops the tier launders a
   single-conversation datapoint into a fact, which is what the tier system exists to prevent.
 
-Apply the approved profile diff to `Meta/Collaboration-Profile.md` with direct `Edit` — an evidence ledger whose structure step 5 dictates, per the CLAUDE.core.md §9 Writing bullet; the `## Standing read` paragraph is the one prose block and is small enough that the round-trip costs more than the writing. Bump `updated`, increment `conversations`, and append one trend-log row per promotion, demotion, and sentiment move.
+Apply the approved profile diff to `Meta/Collaboration-Profile.md` with direct `Edit` — an evidence ledger whose structure step 5 dictates; the `## Standing read` paragraph is the one prose block and is small enough that the round-trip costs more than the writing. Bump `updated`, increment `conversations`, and append one trend-log row per promotion, demotion, and sentiment move.
 
 **Done when:** every approved proposal is either executed with its artifact path named, or staged with its downstream command named, the digest's disposition column has no blank cells, the profile's `conversations` count equals the number of `Meetings/*/digest.md` files whose collaboration read ran, and the digest opens with a `## High-Level Takeaways` section carrying both subsections.

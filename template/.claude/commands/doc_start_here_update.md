@@ -16,7 +16,7 @@ Documentation reads/writes use native `Read`/`Write`/`Edit`/`Grep`/`Glob` on the
 Use `Glob` on `DevProjects/<project_name>/Claude/Documentation/` (recursive) to list the folder tree (`<project_name>` is what `python3 .claude/tools/adaptation.py get project_name` prints).
 Build the **authoritative system list** by classifying each top-level folder:
 
-**Folder classification** — apply the Folder Classification rules from `agents/documentation_structure.md` to categorize each subfolder as archived, structural, domain, or system. Then:
+**Folder classification** — apply the Folder Classification rules from `commands/agents/documentation_structure.md` to categorize each subfolder as archived, structural, domain, or system. Then:
 - **System folder** — contains doc-template `.md` files (Quick Reference, Architecture, Designer Usage, etc.) directly. System path = `{SystemName}`.
 - **Domain folder** — contains subfolders that are themselves system folders (and optionally a `_Hub.md`). Each subfolder's system path = `{DomainFolder}/{SystemName}`.
 

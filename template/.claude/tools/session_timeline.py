@@ -3,8 +3,8 @@
 
 Every gap between consecutive timestamped user/assistant rows goes to exactly one bucket chosen by
 the LATER row's kind, so the buckets sum to the span. A gap over 30 minutes contributes its excess to
-`away` and is capped at 30 minutes for its own bucket. The partition is a report classification
-(`orchestration_metrics.py --rollup` reads it); nothing here enforces anything.
+`away` and is capped at 30 minutes for its own bucket. The partition is a report classification read by hand;
+nothing here enforces anything.
 
     session_timeline.py <transcript.jsonl>     print the partition as JSON
 """
@@ -26,6 +26,7 @@ TEST_RE = re.compile(
     r"harness_tests\.py|\.claude/tests/|-m unittest|regression_gate|run_tests\.ps1|run_test_suite\.ps1"
     r"|gdunit|GdUnit|\btest_\w+\.(py|ps1|sh|mjs|js)\b", re.I)
 COMMIT_RE = re.compile(r"\bgit (-C \S+ )?commit\b")
+# v1 tool names stay in TEST_RE and BOOKKEEPING_RE so a transcript from before v2 classifies the same.
 BOOKKEEPING_RE = re.compile(
     r"task_record\.py|orchestration_metrics\.py|review_ledger\.py|extract_numbers\.py|worklog"
     r"|git (-C \S+ )?(add|commit|status|diff|log|show|rev-parse|ls-files)\b"

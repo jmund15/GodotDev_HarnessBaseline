@@ -212,7 +212,7 @@ After all FIX findings are applied, report what was done:
 
 ## Phase 5: WALK ASK
 
-A doc-audit ASK is a vault-organization choice the owner walks; the family has no PLAN tier and its ASK does not take the protocol's owner-held-input test. Follow the [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md) only for Step 1.5 verification and Step 4 disposition recording:
+A doc-audit ASK is a vault-organization choice the owner walks; the family has no PLAN tier and its ASK does not take the protocol's owner-held-input test. Check each finding's claims first (`orchestration` §8 *Check its claims*) and record every disposition (`/review` §4):
 
 ### For Each ASK Finding:
 

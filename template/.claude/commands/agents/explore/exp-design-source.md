@@ -20,7 +20,7 @@ Do NOT survey the worklog backlog. The worklog relevance check (`workflows/workl
 ## What each finding becomes
 - An existing design decision → `bearing: "constraint"`, evidence = the verbatim sentence, `file` = vault path + heading anchor.
 - A recorded decision the topic statement contradicts → `bearing: "premise-contradiction"`.
-- No covering doc → `polarity: "absent"` with `verification` = the searches and directory listings that establish it. A missing design doc is a legitimate and useful finding; it tells the caller the design must be authored, not looked up.
+- No covering doc → `polarity: "absent"` with `evidence` = the `git grep` and `git ls-files` runs that establish it, each a `{command, output}` item. A missing design doc is a legitimate and useful finding; it tells the caller the design must be authored, not looked up.
 
 ## Reporting Filter
 - Do NOT summarize a design doc. Quote the sentences that bind the topic.
