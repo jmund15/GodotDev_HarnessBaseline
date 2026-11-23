@@ -24,16 +24,17 @@ import tempfile
 CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SETTINGS = next((p for p in (os.path.join(CLAUDE_DIR, name) for name in ("settings.json", "settings.base.json"))
                  if os.path.isfile(p)), os.path.join(CLAUDE_DIR, "settings.json"))
-BOUND_S = 8
+BOUND_S = 8  # a settings run that works exits at once, so this bound costs nothing unless it fails
+HANG_S = 2  # a REPL loop shows within a second; the control waits only this long to see it still running
 
 
-def run_on_null_stdin(env, tmp):
-    """(exited, returncode, stderr head) for `python -` on NUL stdin, killed after BOUND_S."""
+def run_on_null_stdin(env, tmp, bound_s=BOUND_S):
+    """(exited, returncode, stderr head) for `python -` on NUL stdin, killed after `bound_s`."""
     with open(os.path.join(tmp, "stderr.txt"), "w+b") as err:
         proc = subprocess.Popen([sys.executable, "-"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                 stderr=err, env=env)
         try:
-            code, exited = proc.wait(timeout=BOUND_S), True
+            code, exited = proc.wait(timeout=bound_s), True
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
@@ -49,7 +50,7 @@ def main():
     failures = []
     with tempfile.TemporaryDirectory() as tmp:
         if sys.platform == "win32":
-            exited, code, _ = run_on_null_stdin(base, tmp)
+            exited, code, _ = run_on_null_stdin(base, tmp, HANG_S)
             if exited:
                 failures.append("control: python - on NUL stdin exited (rc %s) without the setting, so the "
                                 "fixture never reaches the REPL loop" % code)

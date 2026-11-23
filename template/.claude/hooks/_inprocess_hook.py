@@ -24,7 +24,8 @@ def run_hook(module, argv_tail, raw_payload):
     """
     saved = (sys.stdin, sys.stdout, sys.stderr, sys.argv)
     out, err = Capture(), Capture()
-    sys.stdin = io.StringIO(raw_payload)
+    # A text stream over bytes, so a hook that reads `sys.stdin.buffer` (the floor's entries) runs the same as one that reads text.
+    sys.stdin = io.TextIOWrapper(io.BytesIO(raw_payload.encode("utf-8")), encoding="utf-8")
     sys.stdout, sys.stderr = out, err
     sys.argv = [getattr(module, "__file__", module.__name__)] + list(argv_tail)
     code = 0
