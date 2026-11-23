@@ -32,6 +32,7 @@ holding a v1 case's several asserts).
 | `test_git_commit_msg_hook.py` | 16 | 16 | `test_floor_commit_msg.py` (17, plus the S5 CLI row) |
 | `test_kill_guard.py` | 73 | 73 | `test_floor_kill.py` (154) |
 | `test_reap.py`, `test_reap_native_env.py` | 190 checks + 3 | same | `test_floor_reap.py` (73), with the small stop tool (S5d, below) |
+| `test_bash_backslash_fidelity.py` (backslash class) | 69 checks | — | `test_floor_backslash.py` (40), every row through `_floor.decide` (S5d) |
 
 `test_floor_entry.py` (32) holds T1's entry cases: one spawned stub call per decision kind, a broken import of each
 `_floor.FLOOR_MEMBERS` row (the row set and the case set must be equal) and of the shared lexer, an unparseable
@@ -101,6 +102,10 @@ and the native environment read run live in `test_floor_reap.py`'s two Windows r
   file's script-route meta rows (10), v1's per-file "imports and runs" spawn (one spawned entry case now), the
   deletion rule's `--retire-check` CLI (now `python3 .claude/hooks/_delete_rule.py <path>...`) and its timeout
   environment variable.
+- `test_bash_backslash_fidelity.py` checks covered elsewhere or outside the backslash class: the probe run without
+  `--client-version` exits 2 (`test_bash_fidelity_probe.py`); the helper's own stdin entry on a malformed payload
+  and the dispatcher forwarding the rewrite (the one entry: `test_floor_entry.py`); the hook file exists (every row
+  imports it); the runaway-scan reaper's `settings.json` matcher (not this helper's; registration lands at cutover).
 - A v1 fixture that is gone: the recovered `rm_denials.json` replay (gitignored scratch, absent in both repos).
 
 ## The small stop tool (S5d)
@@ -141,7 +146,7 @@ over-computational: the Win32-versus-CIM process count (a PowerShell spawn per r
 process covers the reader. `_bounded_run.job_env`'s `REAP_JOB_ID`, read only by `queued`, is cut with it.
 
 `kill_guard`: the protected patterns for `sidecar_fanout.py`, the `*_sidecar.sh`/`sidecar_launch.py` launchers (V7)
-and `harness_tests.py` (V9) are cut with their four rows; the rows that used the fan-out as their protected example
+and `harness_tests.py` (V9) are cut with their five rows (four kill rows and the harness proof run's TaskStop row); the rows that used the fan-out as their protected example
 now use a gate run. TaskStop's paid-work `ask` follows the paid launcher to `seat.sh` (`_shell_lex.launcher_invocations`;
 RED: `test_taskstop_of_an_own_running_launch[a seat launch]` allowed before).
 
