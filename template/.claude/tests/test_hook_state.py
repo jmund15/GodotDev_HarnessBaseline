@@ -5,14 +5,17 @@ one complete JSON document followed by a fragment of another, which bricked harn
 whole session. Its two properties are therefore load-bearing and are asserted here directly rather
 than through a consumer: atomic writes stop NEW damage, salvage stops EXISTING damage from being
 permanent. A consumer test exercises the happy path and would miss either.
-
-    python3 .claude/tests/test_hook_state.py
 """
+import ast
 import io
 import json
 import os
+import re as _re
+import shutil
+import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 
@@ -20,58 +23,57 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import _hook_state  # noqa: E402
 from _hook_state import read_json_salvage, write_json_atomic  # noqa: E402
 
-failures = []
-ran = 0
+CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def check(label, cond, detail=""):
-    global ran
-    ran += 1
-    print("%-4s %s" % ("ok" if cond else "FAIL", label))
-    if not cond:
-        failures.append("%s %s" % (label, detail))
+RENAME_REASON = _re.compile(r"#.*\bbare-rename:\s*\S")
 
 
-def main():
-    global failures
-    global ran
-    d = tempfile.mkdtemp(prefix="hookstate_")
+def _has_reason(lines, number, pattern=RENAME_REASON):
+    """True when 1-based line `number`, or a comment-only line directly above it, states the reason."""
+    if pattern.search(lines[number - 1]):
+        return True
+    above = lines[number - 2] if number >= 2 else ""
+    return above.lstrip().startswith("#") and bool(pattern.search(above))
 
+
+def test_salvage_the_exact_corruption_shape_that_caused_the_incident(tmp_path):
+    d = str(tmp_path)
     # --- salvage: the exact corruption shape that caused the incident -----------
     torn = os.path.join(d, "torn.json")
     good = {"skills_loaded": ["instruction_quality"], "memory_check_fires": 2}
     io.open(torn, "w", encoding="utf-8").write(
         json.dumps(good) + 'h__search", "target": "SEARCH:x", "ts": 1}], "skills_loaded": ["a"]}')
     got = read_json_salvage(torn)
-    check("salvages a complete document followed by debris",
-          got.get("skills_loaded") == ["instruction_quality"], repr(got)[:120])
-    check("salvage keeps every field of the recovered document",
-          got.get("memory_check_fires") == 2, repr(got)[:120])
+    assert (got.get("skills_loaded") == ["instruction_quality"]), "salvages a complete document followed by debris"
+    assert (got.get("memory_check_fires") == 2), "salvage keeps every field of the recovered document"
 
+
+def test_salvage_fail_open_never_raise(tmp_path):
+    d = str(tmp_path)
     # --- salvage: fail-open, never raise ---------------------------------------
     io.open(os.path.join(d, "empty.json"), "w").write("")
     io.open(os.path.join(d, "junk.json"), "w").write("not json at all")
     io.open(os.path.join(d, "list.json"), "w").write("[1,2,3]")
     io.open(os.path.join(d, "frag.json"), "w").write('{"a": 1, "b')
-    check("missing file -> {}", read_json_salvage(os.path.join(d, "nope.json")) == {})
-    check("empty file -> {}", read_json_salvage(os.path.join(d, "empty.json")) == {})
-    check("garbage -> {}", read_json_salvage(os.path.join(d, "junk.json")) == {})
-    check("non-dict JSON -> {}", read_json_salvage(os.path.join(d, "list.json")) == {})
-    check("leading fragment with no complete document -> {}",
-          read_json_salvage(os.path.join(d, "frag.json")) == {})
+    assert (read_json_salvage(os.path.join(d, "nope.json")) == {}), "missing file -> {}"
+    assert (read_json_salvage(os.path.join(d, "empty.json")) == {}), "empty file -> {}"
+    assert (read_json_salvage(os.path.join(d, "junk.json")) == {}), "garbage -> {}"
+    assert (read_json_salvage(os.path.join(d, "list.json")) == {}), "non-dict JSON -> {}"
+    assert (read_json_salvage(os.path.join(d, "frag.json")) == {}), "leading fragment with no complete document -> {}"
 
+
+def test_atomic_write(tmp_path):
+    d = str(tmp_path)
     # --- atomic write ----------------------------------------------------------
     tgt = os.path.join(d, "nested", "state.json")
-    check("write creates missing parent dirs", write_json_atomic(tgt, {"a": 1}) is True)
-    check("write round-trips", json.load(io.open(tgt, encoding="utf-8")) == {"a": 1})
-    check("write leaves no temp file behind",
-          not [f for f in os.listdir(os.path.dirname(tgt)) if f.startswith(".tmp_")],
-          str(os.listdir(os.path.dirname(tgt))))
+    assert (write_json_atomic(tgt, {"a": 1}) is True), "write creates missing parent dirs"
+    assert (json.load(io.open(tgt, encoding="utf-8")) == {"a": 1}), "write round-trips"
+    assert (not [f for f in os.listdir(os.path.dirname(tgt)) if f.startswith(".tmp_")]), "write leaves no temp file behind"
 
     # The replacement must be all-or-nothing: a reader sees the old doc or the new one.
     write_json_atomic(tgt, {"a": 2, "b": 3})
-    check("overwrite is complete, never partial",
-          json.load(io.open(tgt, encoding="utf-8")) == {"a": 2, "b": 3})
+    assert (json.load(io.open(tgt, encoding="utf-8")) == {"a": 2, "b": 3}), "overwrite is complete, never partial"
 
     # Windows refuses a rename onto a file another process holds open (WinError 5): the write waits the reader out.
     held = os.path.join(d, "held.json")
@@ -94,8 +96,8 @@ def main():
             raised = exc
     finally:
         os.replace = real_replace
-    check("a write onto a briefly held file waits and lands", raised is None and refusals[0] == 0
-          and read_json_salvage(held) == {"held": 1}, repr(raised))
+    assert (raised is None and refusals[0] == 0
+                  and read_json_salvage(held) == {"held": 1}), "a write onto a briefly held file waits and lands"
 
 
     # A read that meets another hook's rename into place gets PermissionError for a moment; read as {}, the state's
@@ -117,13 +119,14 @@ def main():
         got = read_json_salvage(held)
     finally:
         _hook_state.io = io
-    check("a read that meets a rename in flight waits and reads the state", got == {"held": 1} and shim.denials == 0,
-          repr(got))
+    assert (got == {"held": 1} and shim.denials == 0), "a read that meets a rename in flight waits and reads the state"
 
+
+def test_locked_read_modify_write(tmp_path):
+    d = str(tmp_path)
     # --- locked read-modify-write -----------------------------------------------
     update_json_locked = getattr(_hook_state, "update_json_locked", None)
-    check("shared state exposes one locked read-modify-write helper",
-          update_json_locked is not None)
+    assert (update_json_locked is not None), "shared state exposes one locked read-modify-write helper"
     if update_json_locked is not None:
         shared = os.path.join(d, "shared.json")
         write_json_atomic(shared, {"seed": True})
@@ -141,9 +144,8 @@ def main():
         for thread in threads:
             thread.join()
         merged = read_json_salvage(shared)
-        check("locked updates preserve fields from concurrent sibling hooks",
-              merged.get("last_prompt") == "full prompt"
-              and merged.get("reminded_domains") == ["Harness"], repr(merged))
+        assert (merged.get("last_prompt") == "full prompt"
+                          and merged.get("reminded_domains") == ["Harness"]), "locked updates preserve fields from concurrent sibling hooks"
 
     # `pretty` is the format knob for an AUTHORED file a locked write touches: without it, a declared park rewrites
     # `core/lifecycle.json` as one compact line and the reader loses the indentation the file is written in.
@@ -152,18 +154,15 @@ def main():
         fh.write(json.dumps({"rows": [{"key": "a", "reason": "café"}]}, indent=2, ensure_ascii=False) + "\n")
     update_json_locked(pretty_tgt, lambda state: state["rows"].append({"key": "b", "reason": "naïve"}), pretty=True)
     raw = io.open(pretty_tgt, "rb").read()
-    check("a locked update keeps an authored file's indented form", b"\n  " in raw and raw.endswith(b"\n"), repr(raw[:80]))
-    check("...and its non-ASCII characters", b"na\xc3\xafve" in raw, repr(raw))
-    check("...and stays LF", b"\r" not in raw, repr(raw))
+    assert (b"\n  " in raw and raw.endswith(b"\n")), "a locked update keeps an authored file's indented form"
+    assert (b"na\xc3\xafve" in raw), "...and its non-ASCII characters"
+    assert (b"\r" not in raw), "...and stays LF"
     update_json_locked(os.path.join(d, "compact.json"), lambda state: state.update({"a": 1}))
-    check("without `pretty` the default compact form stands",
-          b"\n" not in io.open(os.path.join(d, "compact.json"), "rb").read())
+    assert (b"\n" not in io.open(os.path.join(d, "compact.json"), "rb").read()), "without `pretty` the default compact form stands"
 
     # Every hook that writes a state file does it through update_json_locked (R2, 2026-09-14): an unlocked
     # read, change and write between two concurrent hooks drops the other hook's field. The scan covers every
     # hook, so a new writer fails here without joining a hand-kept list.
-    import ast  # noqa: E402
-
     STATE_PATH_NAMES = {"state_path", "_state_path", "_session_record", "STATE_DIR", "state_dir"}
 
 
@@ -221,18 +220,18 @@ def main():
         return None
 
 
-    check("aliased state writer is detected", _state_write_line(ast.parse('''
-def planted(s):
-    arbitrary = state_path(s)
-    alias = arbitrary
-    with open(alias, "w") as handle:
-        json.dump({}, handle)
-''').body[0]) is not None)
-    check("report artifact with locked state access is not a state writer", _state_write_line(ast.parse('''
-def audit(s, record):
-    update_json_locked(state_path(s), lambda state: state.update({"ok": True}))
-    write_json_atomic(record + ".verification_audit.json", {})
-''').body[0]) is None)
+    assert (_state_write_line(ast.parse(textwrap.dedent('''
+        def planted(s):
+            arbitrary = state_path(s)
+            alias = arbitrary
+            with open(alias, "w") as handle:
+                json.dump({}, handle)
+        ''')).body[0]) is not None), "aliased state writer is detected"
+    assert (_state_write_line(ast.parse(textwrap.dedent('''
+        def audit(s, record):
+            update_json_locked(state_path(s), lambda state: state.update({"ok": True}))
+            write_json_atomic(record + ".verification_audit.json", {})
+        ''')).body[0]) is None), "report artifact with locked state access is not a state writer"
 
     hooks_dir = os.path.join(os.path.dirname(__file__), "..", "hooks")
     unlocked = []
@@ -253,35 +252,44 @@ def audit(s, record):
             line = _state_write_line(fn, sources)
             if line:
                 unlocked.append("%s:%d %s" % (hook_name, line, fn.name))
-    check("no hook writes a state file outside update_json_locked", not unlocked, "; ".join(unlocked))
+    assert (not unlocked), "no hook writes a state file outside update_json_locked"
 
+
+def test_write_fail_open(tmp_path):
+    d = str(tmp_path)
     # --- write fail-open -------------------------------------------------------
-    check("unserializable payload returns False, does not raise",
-          write_json_atomic(os.path.join(d, "bad.json"), {"k": {1, 2}}) is False)
-    check("a failed write leaves no temp file",
-          not [f for f in os.listdir(d) if f.startswith(".tmp_")], str(os.listdir(d)))
+    assert (write_json_atomic(os.path.join(d, "bad.json"), {"k": {1, 2}}) is False), "unserializable payload returns False, does not raise"
+    assert (not [f for f in os.listdir(d) if f.startswith(".tmp_")]), "a failed write leaves no temp file"
 
+
+def test_round_trip_through_both(tmp_path):
+    d = str(tmp_path)
     # --- round trip through both ------------------------------------------------
     rt = os.path.join(d, "rt.json")
     write_json_atomic(rt, {"skills_loaded": ["testing"], "n": 4})
-    check("salvage reads what atomic write produced",
-          read_json_salvage(rt) == {"skills_loaded": ["testing"], "n": 4})
+    assert (read_json_salvage(rt) == {"skills_loaded": ["testing"], "n": 4}), "salvage reads what atomic write produced"
 
+
+def test_fire_once_failure_posture_default_fires_on_failure_none_lets(tmp_path):
+    d = str(tmp_path)
     # --- fire_once failure posture: default fires; on_failure=None lets a deny-capable caller pass ---
     _real_update = _hook_state.update_json_locked
     _hook_state.update_json_locked = lambda path, updater: (False, None)
     try:
-        check("fire_once on an unwritable state fires by default", _hook_state.fire_once("sess-fail0001", "k") is True)
-        check("fire_once on an unwritable state returns the caller's on_failure",
-              _hook_state.fire_once("sess-fail0001", "k", on_failure=None) is None)
+        assert (_hook_state.fire_once("sess-fail0001", "k") is True), "fire_once on an unwritable state fires by default"
+        assert (_hook_state.fire_once("sess-fail0001", "k", on_failure=None) is None), "fire_once on an unwritable state returns the caller's on_failure"
     finally:
         _hook_state.update_json_locked = _real_update
 
+
+def test_a_once_key_given_back_a_line_a_dispatcher_dropped_can_be_tol(tmp_path):
+    d = str(tmp_path)
     # --- a once-key given back: a line a dispatcher dropped can be told again ----------------------------------------
     # `fire_once` spends its key when it is asked; a dispatcher that then drops the line (a later hook denies the call)
     # gives the keys it spent back, so the retry still carries the line.
+    _real_update = _hook_state.update_json_locked
     _saved_dir = os.environ.get("HARNESS_HOOK_STATE_DIR")
-    os.environ["HARNESS_HOOK_STATE_DIR"] = tempfile.mkdtemp(prefix="hookstate_unspend_")
+    os.environ["HARNESS_HOOK_STATE_DIR"] = d
     try:
         _sid = "sess-unspend1"
         _mark0 = _hook_state.spent_mark()
@@ -289,18 +297,16 @@ def audit(s, record):
         _mark1 = _hook_state.spent_mark()
         _b = _hook_state.fire_once_since_compaction(_sid, "b")
         _again = _hook_state.fire_once(_sid, "a")
-        check("a key already spent is not journaled again", _a is True and _again is False
-              and _hook_state.spent_mark() == _mark1 + 1)
+        assert (_a is True and _again is False
+                          and _hook_state.spent_mark() == _mark1 + 1), "a key already spent is not journaled again"
         _hook_state.unspend(_mark1)
-        check("unspend gives back the keys spent since the mark, in either bucket",
-              _hook_state.fire_once_since_compaction(_sid, "b") is True)
-        check("unspend leaves a key spent before the mark spent", _hook_state.fire_once(_sid, "a") is False)
+        assert (_hook_state.fire_once_since_compaction(_sid, "b") is True), "unspend gives back the keys spent since the mark, in either bucket"
+        assert (_hook_state.fire_once(_sid, "a") is False), "unspend leaves a key spent before the mark spent"
         _hook_state.fire_once(_sid, "c")
         _stop = _hook_state.spent_mark()
         _hook_state.fire_once(_sid, "d")
         _hook_state.unspend(_mark0, _stop)
-        check("unspend with a stop gives back only the keys before it",
-              _hook_state.fire_once(_sid, "a") is True and _hook_state.fire_once(_sid, "d") is False)
+        assert (_hook_state.fire_once(_sid, "a") is True and _hook_state.fire_once(_sid, "d") is False), "unspend with a stop gives back only the keys before it"
         _hook_state.unspend(_hook_state.spent_mark())
         _hook_state.update_json_locked = lambda path, updater: (False, None)
         try:
@@ -310,13 +316,16 @@ def audit(s, record):
             _raised = True
         finally:
             _hook_state.update_json_locked = _real_update
-        check("unspend on an unwritable state never raises", not _raised)
+        assert (not _raised), "unspend on an unwritable state never raises"
     finally:
         if _saved_dir is None:
             os.environ.pop("HARNESS_HOOK_STATE_DIR", None)
         else:
             os.environ["HARNESS_HOOK_STATE_DIR"] = _saved_dir
 
+
+def test_one_owner_for_every_rename_onto_a_file_another_process_may_h(tmp_path):
+    d = str(tmp_path)
     # --- one owner for every rename onto a file another process may hold ---------------------------
     # Windows refuses a rename onto a path another process holds open (WinError 5/32). `replace_path` waits the
     # reader out. This scan covers the class: every writer under tools/, hooks/ and scripts/ that replaces a state,
@@ -324,16 +333,11 @@ def audit(s, record):
     # os.rename, shutil.move, Path.replace, PowerShell Move-Item/[IO.File]::Move, shell mv). A bare rename fails
     # here unless its own line, or a comment line directly above it, carries `bare-rename: <reason>`. The reason
     # sits at the site, so this proof names no file of another layer or project.
-    import re as _re  # noqa: E402
-    import shutil  # noqa: E402
-
-    CLAUDE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     CLASS_DIRS = ("tools", "hooks", "scripts")
     OWNER_FILES = {"hooks/_hook_state.py"}
     PY_RENAME_CALLS = {"os.replace", "os.rename", "shutil.move"}
     PS_RENAME = _re.compile(r"\[(?:System\.)?IO\.File\]::Move\(|(?:^|[;\s])Move-Item\b")
     SH_RENAME = _re.compile(r"^\s*mv\s")
-    RENAME_REASON = _re.compile(r"#.*\bbare-rename:\s*\S")
 
 
     def _py_rename_sites(source):
@@ -362,14 +366,6 @@ def audit(s, record):
                 # `str.replace` takes two or more arguments, so a one-argument call on any receiver is a Path rename.
                 sites.append((node.lineno, owner.get(node.lineno, "<module>")))
         return sites
-
-
-    def _has_reason(lines, number, pattern=RENAME_REASON):
-        """True when 1-based line `number`, or a comment-only line directly above it, states the reason."""
-        if pattern.search(lines[number - 1]):
-            return True
-        above = lines[number - 2] if number >= 2 else ""
-        return above.lstrip().startswith("#") and bool(pattern.search(above))
 
 
     def _class_rename_sites(root):
@@ -407,8 +403,7 @@ def audit(s, record):
 
 
     _bare = _class_rename_sites(CLAUDE_DIR)
-    check("a rename onto a file another process may hold goes through replace_path, or states why not",
-          not _bare, "; ".join(_bare))
+    assert (not _bare), "a rename onto a file another process may hold goes through replace_path, or states why not"
 
     # The scan on a planted tree: it reports each unexplained rename and passes each explained one.
     _plant = tempfile.mkdtemp(prefix="rename_scan_")
@@ -435,12 +430,12 @@ def audit(s, record):
         _planted = _class_rename_sites(_plant)
     finally:
         shutil.rmtree(_plant, ignore_errors=True)
-    check("the rename scan reports an unexplained site in each language and passes an explained one",
-          _planted == ["hooks/b.py:6 move()", "scripts/c.sh:2 <file>()", "scripts/d.ps1:1 <file>()",
-                       "scripts/d.ps1:3 <file>()", "tools/a.py:3 save()", "tools/e.py:2 a()", "tools/e.py:4 b()"],
-          repr(_planted))
+    assert (_planted == ["hooks/b.py:6 move()", "scripts/c.sh:2 <file>()", "scripts/d.ps1:1 <file>()",
+                               "scripts/d.ps1:3 <file>()", "tools/a.py:3 save()", "tools/e.py:2 a()", "tools/e.py:4 b()"]), "the rename scan reports an unexplained site in each language and passes an explained one"
 
 
+def test_one_writer_per_shared_jsonl_append_or_a_stated_reason(tmp_path):
+    d = str(tmp_path)
     # --- one writer per shared JSONL append, or a stated reason ------------------------------------
     # Concurrent sessions and sidecars append to the same logs. Windows emulates append mode with a seek
     # then a write, so two unlocked appenders overwrite each other's tail and tear a line. Every append
@@ -493,8 +488,7 @@ def audit(s, record):
 
 
     _bare_appends_found = _bare_appends(CLAUDE_DIR)
-    check("every tools/ append takes the file lock, or states why one writer suffices",
-          not _bare_appends_found, "; ".join(_bare_appends_found))
+    assert (not _bare_appends_found), "every tools/ append takes the file lock, or states why one writer suffices"
 
     # The scan on a planted tree: an unexplained append in each open form is reported; a marked one, a
     # binary mode and a truncating write pass.
@@ -512,10 +506,11 @@ def audit(s, record):
         _append_planted = _bare_appends(_append_plant)
     finally:
         shutil.rmtree(_append_plant, ignore_errors=True)
-    check("the append scan reports an unexplained site in each open form and passes a marked one",
-          _append_planted == ["tools/x.py:10", "tools/x.py:3"], repr(_append_planted))
+    assert (_append_planted == ["tools/x.py:10", "tools/x.py:3"]), "the append scan reports an unexplained site in each open form and passes a marked one"
 
 
+def test_three_real_writers_land_their_write_on_a_target_a_reader_hol(tmp_path):
+    d = str(tmp_path)
     # --- three real writers land their write on a target a reader holds open -----------------------
     def _held_target(path, ready, release):
         """Hold `path` open like a watcher mid-read until `release` is set."""
@@ -554,14 +549,15 @@ def audit(s, record):
     with io.open(vault, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("old\n")
     _vault_err = drive_held(vault, lambda: worklog.write_atomic(vault, "new\n"))
-    check("the worklog vault writer lands on a held target",
-          _vault_err is None and io.open(vault, encoding="utf-8").read() == "new\n", repr(_vault_err))
+    assert (_vault_err is None and io.open(vault, encoding="utf-8").read() == "new\n"), "the worklog vault writer lands on a held target"
 
+
+def test_importing_the_library_reads_no_local_settings_listing(tmp_path):
+    d = str(tmp_path)
     # --- importing the library reads no local settings listing --------------------
     # The proof runner keys a pass on every directory a proof lists. A listing of `.claude` at import time put
     # each ignored local file into the key of every proof that imports this module (or the pre-edit guard that
     # reads the overlay list), so a session's pass never matched the close checkout's.
-    import subprocess  # noqa: E402
 
     _hooks = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks")
     _claude = os.path.normcase(os.path.abspath(os.path.join(_hooks, "..")))
@@ -577,8 +573,7 @@ def audit(s, record):
         "print(repr(seen))\n" % os.path.abspath(_hooks)
     )
     _run = subprocess.run([sys.executable, "-c", _probe], capture_output=True, text=True)
-    check("importing _hook_state lists no `.claude` directory",
-          _run.returncode == 0 and _claude not in eval(_run.stdout or "[None]"), (_run.stdout + _run.stderr)[-300:])
+    assert (_run.returncode == 0 and _claude not in eval(_run.stdout or "[None]")), "importing _hook_state lists no `.claude` directory"
 
     # Concurrent JSONL appends: Windows' CRT emulates O_APPEND with a seek then a write, so two hooks appending
     # at once overwrite each other's tail and leave a torn row that makes the whole log unreadable.
@@ -603,18 +598,4 @@ def audit(s, record):
                 json.loads(_line)
             except ValueError:
                 _torn += 1
-    check("eight concurrent appenders leave every row whole", _rows == 960 and _torn == 0,
-          "rows %d of 960, torn %d" % (_rows, _torn))
-
-    print("\n%d/%d checks pass" % (ran - len(failures), ran))
-    for f in failures:
-        print("  FAIL " + f)
-    return 1 if failures else 0
-
-
-def test_proof():
-    assert main() == 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+    assert (_rows == 960 and _torn == 0), "eight concurrent appenders leave every row whole"

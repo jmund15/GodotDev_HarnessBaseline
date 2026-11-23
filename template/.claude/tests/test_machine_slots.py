@@ -370,31 +370,6 @@ class MachineSlots(unittest.TestCase):
                 patch.object(slots._file_lock, 'release'):
             self.assertEqual(slots.busy_lanes(folder, 3, [proxy]), 1, 'the probe of its own slot is not a second lane')
 
-    def test_case_pool_uses_one_lane_when_pool_full(self):
-        sys.path.insert(0, str(ROOT / '.claude/tests'))
-        import _case_pool
-        held = slots.take(True)
-        try:
-            with patch.dict(os.environ, {'HARNESS_SLOT_BUDGET': '1', 'HARNESS_MACHINE_ROOT': self.folder}):
-                with _case_pool._budget(4) as width:
-                    self.assertEqual(width, 1)
-                self.assertEqual(_case_pool._jobs(8), 8, 'requested case width stays an input, not the admitted width')
-        finally:
-            slots.release_all(held)
-
-
-    def test_manual_case_pool_callers_hold_a_budget(self):
-        # A proof that sizes its own ThreadPoolExecutor from _case_pool's width must hold the budget for it.
-        for path in sorted((ROOT / '.claude/tests').glob('test_*.py')):
-            text = path.read_text(encoding='utf-8')
-            if path.name != Path(__file__).name and '_case_jobs(' in text and 'ThreadPoolExecutor(' in text:
-                with self.subTest(path=path.name):
-                    self.assertTrue('with _case_budget(' in text, path.name + ': a requested width is not admission')
-
-
-
-
-
     def _queued_script(self, command, env, expected='1\n'):
         held = slots.take(True)
         child = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, text=True)

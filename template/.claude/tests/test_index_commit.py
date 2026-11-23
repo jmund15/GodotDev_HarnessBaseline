@@ -18,36 +18,36 @@ Cases:
   non-zero with a named error and stage nothing in the shared index;
 - a submodule path with a checkout ahead of its gitlink stages as a gitlink at the checkout's
   HEAD and deletes nothing; a submodule with no checkout is refused and names the pathspec route.
-
-    python3 .claude/tests/test_index_commit.py
 """
 import ast
+import contextlib
+import importlib.util
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
-from concurrent.futures import ThreadPoolExecutor
+import types
+from unittest import mock
 from pathlib import Path
+
+import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from _case_pool import _jobs  # noqa: E402
 REPO = HERE.parents[1]
 TOOL = REPO / ".claude" / "tools" / "index_commit.py"
 HOOKS = REPO / ".claude" / "hooks"
 
 HEAD_ROWS = {"keep_a.py", "keep_b.py"}
 
-failures = []
+TEMPLATE = []
 
 
 def check(label, ok, detail=""):
-    print("%-4s %s" % ("ok" if ok else "FAIL", label))
-    if not ok:
-        failures.append("%s: %s" % (label, detail))
+    assert ok, "%s: %s" % (label, detail)
     return ok
 
 
@@ -70,9 +70,9 @@ def git(root, args, env, check_rc=True, **kw):
     return proc
 
 
-def scene(tmp, name):
-    """A fresh repo: the tool plus its imports, HEAD_ROWS, and a peer file."""
-    root = Path(tmp) / name
+def build_template(path):
+    """A repo: the tool plus its imports, HEAD_ROWS, and a peer file."""
+    root = Path(path)
     (root / ".claude" / "tools").mkdir(parents=True)
     (root / ".claude" / "hooks").mkdir(parents=True)
     (root / ".claude" / "tests").mkdir(parents=True)
@@ -87,16 +87,54 @@ def scene(tmp, name):
     git(root, ["init", "-q", "-b", "main"], env)
     git(root, ["add", "-A"], env)
     git(root, ["commit", "-q", "-m", "seed"], env)
-    return root, env
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _template(tmp_path_factory):
+    path = tmp_path_factory.mktemp("index_commit_tpl") / "tpl"
+    build_template(path)
+    TEMPLATE[:] = [path]
+    yield
+    TEMPLATE.clear()
+
+
+def scene(tmp, name):
+    """A copy of the module's template repo, named for its case: (root, env)."""
+    root = Path(tmp) / name
+    shutil.copytree(TEMPLATE[0], root)
+    return root, git_env(root)
+
+
+def _load_tool():
+    spec = importlib.util.spec_from_file_location("index_commit_under_test", TOOL)
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(TOOL.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(TOOL.parent))
+    return module
+
+
+MODULE = _load_tool()
 
 
 def tool(root, env, args, extra_env=None):
+    """The tool's `main(args)` in process, from `root` with `env` planted; a result shaped like a process's."""
+    out, err = io.StringIO(), io.StringIO()
     run_env = dict(env)
-    if extra_env:
-        run_env.update(extra_env)
-    return subprocess.run([sys.executable, str(root / ".claude" / "tools" / "index_commit.py")] + args,
-                          cwd=str(root), env=run_env, capture_output=True, encoding="utf-8",
-                          timeout=180)
+    run_env.update(extra_env or {})
+    here = os.getcwd()
+    os.chdir(root)
+    try:
+        with mock.patch.dict(os.environ, run_env), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = MODULE.main(args) or 0
+            except SystemExit as exc:  # argparse refusals exit 2
+                code = exc.code if isinstance(exc.code, int) else 1
+    finally:
+        os.chdir(here)
+    return types.SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr=err.getvalue())
 
 
 def idx_env(env, root, name):
@@ -126,8 +164,8 @@ def commit_index(root, env, name, message):
                           timeout=120)
 
 
-def case_new_gitignored_file(tmp):
-    root, env = scene(tmp, "newfile")
+def test_new_gitignored_file(tmp_path):
+    root, env = scene(tmp_path, "newfile")
     (root / ".claude" / "tests" / "new_proof.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
     proc = tool(root, env, ["stage", "--name", "newfile", "--", ".claude/tests/new_proof.py"])
     check("new gitignored path: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
@@ -146,8 +184,8 @@ def case_new_gitignored_file(tmp):
           names(root, env, cached=True) == [], names(root, env, cached=True))
 
 
-def case_deleted_path(tmp):
-    root, env = scene(tmp, "deleted")
+def test_deleted_path(tmp_path):
+    root, env = scene(tmp_path, "deleted")
     (root / "gone.py").unlink()
     proc = tool(root, env, ["stage", "--name", "deleted", "--", "gone.py"])
     check("deleted path: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
@@ -162,8 +200,8 @@ def case_deleted_path(tmp):
 
 
 
-def case_peer_and_resync(tmp):
-    root, env = scene(tmp, "resync")
+def test_peer_and_resync(tmp_path):
+    root, env = scene(tmp_path, "resync")
     (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
     (root / "peer.py").write_text("peer staged\n", encoding="utf-8", newline="\n")
     git(root, ["add", "--", "peer.py"], env)
@@ -199,12 +237,12 @@ def case_peer_and_resync(tmp):
 
 
 
-def case_peer_staged_same_path(tmp):
+def test_peer_staged_same_path(tmp_path):
     """The peer staged its own content of a path this commit carries through --blob."""
-    root, env = scene(tmp, "samepath")
+    root, env = scene(tmp_path, "samepath")
     (root / "keep_a.py").write_text("peer version\n", encoding="utf-8", newline="\n")
     git(root, ["add", "--", "keep_a.py"], env)
-    mine = Path(tmp) / "samepath_mine.txt"
+    mine = Path(tmp_path) / "samepath_mine.txt"
     mine.write_text("my hunk only\n", encoding="utf-8", newline="\n")
     proc = tool(root, env, ["stage", "--name", "samepath", "--blob", "keep_a.py=%s" % mine])
     check("same-path scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
@@ -220,9 +258,9 @@ def case_peer_staged_same_path(tmp):
           blob_at(root, env, "keep_a.py") == "peer version\n", repr(blob_at(root, env, "keep_a.py")))
 
 
-def case_head_moved(tmp):
+def test_head_moved(tmp_path):
     """A commit lands between stage and the private-index commit, which then reverts it."""
-    root, env = scene(tmp, "moved")
+    root, env = scene(tmp_path, "moved")
     (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
     proc = tool(root, env, ["stage", "--name", "moved", "--", "keep_a.py"])
     check("moved scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
@@ -238,9 +276,9 @@ def case_head_moved(tmp):
           res.returncode != 0 and "keep_b.py" in out and "revert" in out, out)
 
 
-def case_resync_after_later_commit(tmp):
+def test_resync_after_later_commit(tmp_path):
     """The private-index commit landed, then a later commit changed the same path before resync."""
-    root, env = scene(tmp, "later")
+    root, env = scene(tmp_path, "later")
     (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
     proc = tool(root, env, ["stage", "--name", "later", "--", "keep_a.py"])
     check("later scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
@@ -279,10 +317,10 @@ sys.exit(index_commit.main(sys.argv[1:]))
 """
 
 
-def case_seeded_from_recorded_base(tmp):
+def test_seeded_from_recorded_base(tmp_path):
     """A commit landing inside `stage` must not change the tree the private index starts from: the
     index is the recorded base plus the staged paths, so the guard's base check describes it exactly."""
-    root, env = scene(tmp, "race")
+    root, env = scene(tmp_path, "race")
     (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
     run_env = dict(env)
     proc = subprocess.run([sys.executable, "-c", RACE_DRIVER], cwd=str(root), env=run_env,
@@ -301,8 +339,8 @@ def case_seeded_from_recorded_base(tmp):
 
 
 
-def case_resync_before_commit(tmp):
-    root, env = scene(tmp, "early")
+def test_resync_before_commit(tmp_path):
+    root, env = scene(tmp_path, "early")
     (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
     proc = tool(root, env, ["stage", "--name", "early", "--", "keep_a.py"])
     check("early scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
@@ -314,8 +352,8 @@ def case_resync_before_commit(tmp):
           "keep_a.py" not in names(root, env, cached=True), names(root, env, cached=True))
 
 
-def case_blob(tmp):
-    root, env = scene(tmp, "blob")
+def test_blob(tmp_path):
+    root, env = scene(tmp_path, "blob")
     (root / "keep_a.py").write_text("WORKTREE CONTENT\n", encoding="utf-8", newline="\n")
     (root / "mine.blob").write_text("BLOB CONTENT\n", encoding="utf-8", newline="\n")
     proc = tool(root, env, ["stage", "--name", "blob", "--blob", "keep_a.py=mine.blob", "--", "keep_a.py"])
@@ -332,8 +370,8 @@ def case_blob(tmp):
           "keep_a.py" in names(root, env, cached=False) and "keep_a.py" not in names(root, env, cached=True))
 
 
-def case_blob_keeps_head_mode(tmp):
-    root, env = scene(tmp, "blobmode")
+def test_blob_keeps_head_mode(tmp_path):
+    root, env = scene(tmp_path, "blobmode")
     git(root, ["update-index", "--chmod=+x", "--", "keep_a.py"], env)
     git(root, ["commit", "-q", "-m", "keep_a.py is executable"], env)
     (root / "mine.blob").write_text("BLOB CONTENT\n", encoding="utf-8", newline="\n")
@@ -345,8 +383,8 @@ def case_blob_keeps_head_mode(tmp):
     check("--blob keeps HEAD's file mode 100755", listing[:1] == ["100755"], listing)
 
 
-def case_no_commit_argv(tmp):
-    control = Path(tmp) / "planted_commit_argv.py"
+def test_no_commit_argv(tmp_path):
+    control = Path(tmp_path) / "planted_commit_argv.py"
     control.write_text('import subprocess\nsubprocess.run(["git", "commit", "-m", "x"])\n',
                        encoding="utf-8", newline="\n")
 
@@ -370,8 +408,8 @@ def case_no_commit_argv(tmp):
           "git commit -F" in source)
 
 
-def case_usage_errors(tmp):
-    root, env = scene(tmp, "usage")
+def test_usage_errors(tmp_path):
+    root, env = scene(tmp_path, "usage")
     proc = tool(root, env, ["stage", "--name", "u", "--", "nope.py"])
     check("an unknown path exits non-zero with a named error",
           proc.returncode != 0 and "unknown path" in (proc.stdout + proc.stderr),
@@ -392,8 +430,8 @@ def case_usage_errors(tmp):
           names(root, env, cached=True))
 
 
-def case_entries_keep_modes_and_peer(tmp):
-    root, env = scene(tmp, 'entries')
+def test_entries_keep_modes_and_peer(tmp_path):
+    root, env = scene(tmp_path, 'entries')
     sha = git(root, ['rev-parse', 'HEAD:keep_a.py'], env).stdout.strip()
     git(root, ['update-index', '--chmod=+x', '--', 'peer.py'], env)
     before_peer = git(root, ['ls-files', '-s', '--', 'peer.py'], env).stdout
@@ -417,8 +455,8 @@ def case_entries_keep_modes_and_peer(tmp):
     check('unselected peer chmod survives resync', git(root, ['ls-files', '-s', '--', 'peer.py'], env).stdout == before_peer)
 
 
-def case_resync_keeps_same_blob_peer_mode(tmp):
-    root, env = scene(tmp, 'peermode')
+def test_resync_keeps_same_blob_peer_mode(tmp_path):
+    root, env = scene(tmp_path, 'peermode')
     sha = git(root, ['rev-parse', 'HEAD:keep_a.py'], env).stdout.strip()
     proc = tool(root, env, ['stage', '--name', 'peermode', '--entry', 'keep_a.py=120000,' + sha])
     check('peer-mode stage succeeds', proc.returncode == 0, proc.stdout + proc.stderr)
@@ -435,8 +473,8 @@ def case_resync_keeps_same_blob_peer_mode(tmp):
     check('same-blob peer mode survives resync', git(root, ['ls-files', '-s', '--', 'keep_a.py'], env).stdout == peer_before)
 
 
-def case_resync_nochange_entry(tmp):
-    root, env = scene(tmp, 'nochange')
+def test_resync_nochange_entry(tmp_path):
+    root, env = scene(tmp_path, 'nochange')
     (root / 'peer.py').write_text('previous committed change\n', encoding='utf-8')
     git(root, ['commit', '-q', '-m', 'previous', '--', 'peer.py'], env)
     sha = git(root, ['rev-parse', 'HEAD:keep_a.py'], env).stdout.strip()
@@ -462,8 +500,8 @@ sys.exit(index_commit.main(['stage', '--name', 'failedstage', '--', '.claude/tes
 '''
 
 
-def case_failed_stage_cleans_only_private_artifacts(tmp):
-    root, env = scene(tmp, 'failedstage')
+def test_failed_stage_cleans_only_private_artifacts(tmp_path):
+    root, env = scene(tmp_path, 'failedstage')
     (root / '.claude/tests/failedstage.py').write_text('x = 1\n', encoding='utf-8')
     run_env = dict(env)
     proc = subprocess.run([sys.executable, '-c', FAILED_STAGE_DRIVER], cwd=root, env=run_env,
@@ -513,43 +551,43 @@ sys.exit(index_commit.main(['resync', '--name', 'transaction']))
 '''
 
 
-def case_resync_transaction(tmp):
-    for mode in ('peer', 'reset-failure', 'publish-failure', 'timeout'):
-        root, env = scene(tmp, 'transaction-' + mode)
-        (root / 'keep_a.py').write_text('mine\n', encoding='utf-8')
-        proc = tool(root, env, ['stage', '--name', 'transaction', '--', 'keep_a.py'])
-        check(mode + ': stage succeeds', proc.returncode == 0, proc.stdout + proc.stderr)
-        commit = commit_index(root, env, 'transaction', 'mine')
-        check(mode + ': private commit lands', commit.returncode == 0, commit.stderr)
-        index = root / '.git/index'
-        lock = root / '.git/index.lock'
-        before = index.read_bytes()
-        if mode == 'timeout':
-            lock.write_bytes(b'peer-owned lock')
-        proc = subprocess.run([sys.executable, '-c', RESYNC_DRIVER, mode], cwd=root, env=env,
-                              capture_output=True, text=True, timeout=30)
-        detail = proc.stdout + proc.stderr
-        if mode == 'peer':
-            check('peer add at old boundary fails with Git index.lock error',
-                  'PEER_RC 128' in detail and 'index.lock' in detail and 'File exists' in detail, detail)
-            check('resync succeeds without silently clearing an accepted peer add',
-                  proc.returncode == 0 and 'RESYNC OK' in detail
-                  and blob_at(root, env, 'keep_a.py') == 'mine\n', detail)
-        else:
-            check(mode + ': failure is reported without traceback',
-                  proc.returncode != 0 and 'error:' in detail and 'Traceback' not in detail
-                  and ('index.lock' if mode == 'timeout' else 'planted') in detail, detail)
-            check(mode + ': shared index remains byte-identical', index.read_bytes() == before)
-        if mode == 'timeout':
-            check('timeout leaves the peer lock untouched', lock.read_bytes() == b'peer-owned lock')
-            lock.unlink()
-        else:
-            check(mode + ': owned index.lock and transaction copies are removed',
-                  not lock.exists() and not list((root / '.git').glob('index-resync-*')))
+@pytest.mark.parametrize('mode', ['peer', 'reset-failure', 'publish-failure', 'timeout'])
+def test_resync_transaction(tmp_path, mode):
+    root, env = scene(tmp_path, 'transaction-' + mode)
+    (root / 'keep_a.py').write_text('mine\n', encoding='utf-8')
+    proc = tool(root, env, ['stage', '--name', 'transaction', '--', 'keep_a.py'])
+    check(mode + ': stage succeeds', proc.returncode == 0, proc.stdout + proc.stderr)
+    commit = commit_index(root, env, 'transaction', 'mine')
+    check(mode + ': private commit lands', commit.returncode == 0, commit.stderr)
+    index = root / '.git/index'
+    lock = root / '.git/index.lock'
+    before = index.read_bytes()
+    if mode == 'timeout':
+        lock.write_bytes(b'peer-owned lock')
+    proc = subprocess.run([sys.executable, '-c', RESYNC_DRIVER, mode], cwd=root, env=env,
+                          capture_output=True, text=True, timeout=30)
+    detail = proc.stdout + proc.stderr
+    if mode == 'peer':
+        check('peer add at old boundary fails with Git index.lock error',
+              'PEER_RC 128' in detail and 'index.lock' in detail and 'File exists' in detail, detail)
+        check('resync succeeds without silently clearing an accepted peer add',
+              proc.returncode == 0 and 'RESYNC OK' in detail
+              and blob_at(root, env, 'keep_a.py') == 'mine\n', detail)
+    else:
+        check(mode + ': failure is reported without traceback',
+              proc.returncode != 0 and 'error:' in detail and 'Traceback' not in detail
+              and ('index.lock' if mode == 'timeout' else 'planted') in detail, detail)
+        check(mode + ': shared index remains byte-identical', index.read_bytes() == before)
+    if mode == 'timeout':
+        check('timeout leaves the peer lock untouched', lock.read_bytes() == b'peer-owned lock')
+        lock.unlink()
+    else:
+        check(mode + ': owned index.lock and transaction copies are removed',
+              not lock.exists() and not list((root / '.git').glob('index-resync-*')))
 
 
-def case_submodule_gitlink(tmp):
-    root, env = scene(tmp, "gitlink")
+def test_submodule_gitlink(tmp_path):
+    root, env = scene(tmp_path, "gitlink")
     sub = root / "Paired"
     sub.mkdir()
     git(sub, ["init", "-q", "-b", "main"], env)
@@ -581,8 +619,8 @@ def case_submodule_gitlink(tmp):
     check("HEAD holds the gitlink at the new sha", landed[:3] == ["160000", "commit", ahead], landed)
 
 
-def case_submodule_without_checkout(tmp):
-    root, env = scene(tmp, "nocheckout")
+def test_submodule_without_checkout(tmp_path):
+    root, env = scene(tmp_path, "nocheckout")
     git(root, ["update-index", "--add", "--cacheinfo", "160000,%s,Paired" % ("1" * 40)], env)
     git(root, ["commit", "-q", "-m", "pin Paired with no checkout"], env)
     proc = tool(root, env, ["stage", "--name", "nocheckout", "--", "Paired"])
@@ -594,39 +632,9 @@ def case_submodule_without_checkout(tmp):
           not (root / ".git" / "index-nocheckout").exists(), "")
 
 
-def main():
-    if not TOOL.exists():
-        print("FAIL tool missing: %s" % TOOL)
-        return 1
-    cases = (case_new_gitignored_file, case_deleted_path, case_peer_and_resync,
-             case_peer_staged_same_path, case_head_moved, case_resync_after_later_commit,
-             case_seeded_from_recorded_base,
-             case_resync_before_commit, case_blob, case_blob_keeps_head_mode, case_no_commit_argv,
-             case_usage_errors, case_entries_keep_modes_and_peer, case_resync_keeps_same_blob_peer_mode,
-             case_resync_nochange_entry, case_failed_stage_cleans_only_private_artifacts, case_resync_transaction,
-             case_submodule_gitlink, case_submodule_without_checkout)
-
-    def attempt(case, tmp):
-        try:
-            case(tmp)
-        except Exception as exc:  # a case that cannot stage its fixture is a failure
-            check("%s crashed" % case.__name__, False, "%r" % (exc,))
-
-    # The cases spend their time spawning git and the tool, and each builds its own scene (a repo named for it),
-    # so they run beside each other.
-    with tempfile.TemporaryDirectory(prefix="index_commit_proof_") as tmp, ThreadPoolExecutor(max_workers=_jobs(None)) as pool:
-        for future in [pool.submit(attempt, case, tmp) for case in cases]:
-            future.result()
-    print("\n%d failure(s)" % len(failures) if failures else "\nall ok")
-    for line in failures:
-        print("  " + line)
-    return 1 if failures else 0
-
-
-
-def test_proof():
-    assert main() in (None, 0)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+def test_cli_entry_point_runs_as_a_script(tmp_path):
+    root, env = scene(tmp_path, "cli")
+    (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
+    proc = subprocess.run([sys.executable, str(root / ".claude" / "tools" / "index_commit.py"), "stage", "--name", "cli",
+                           "--", "keep_a.py"], cwd=str(root), env=env, capture_output=True, encoding="utf-8", timeout=180)
+    assert proc.returncode == 0 and "GIT_INDEX_FILE=.git/index-cli git commit" in proc.stdout, proc.stdout + proc.stderr

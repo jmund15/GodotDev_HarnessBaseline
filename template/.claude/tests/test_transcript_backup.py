@@ -12,15 +12,15 @@ floor, so the parent's five auto compactions wrote no backup. Each case runs the
 a planted state dir, project dir and subagent transcript; an exit outside {0} or a traceback is a CRASH, never
 a pass.
 
-    python3 .claude/tests/test_transcript_backup.py
 """
 import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
+
+import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(HERE, "..", "hooks")
@@ -95,14 +95,9 @@ def plant_subagent(transcript, used, age=0):
         os.utime(transcript, (stamp, stamp))
 
 
-def scenario(payload_extra, base_tmp, used=None, tail_chars=0, env_extra=None, post=None, subagent=None,
-             subagent_age=0, parent_age=0):
-    """Fresh project dir + state dir, a parent transcript per `write_transcript` last written `parent_age`
-    seconds ago and, when `subagent` is set, a subagent transcript at that many tokens; returns
-    (out, crashed, state_after, backup_names, log_exists, manifest_exists)."""
-    tmp = tempfile.mkdtemp(dir=base_tmp)
-    state_dir = Path(tmp) / "state"
-    plant_state(state_dir)
+def plant_transcripts(tmp, used=None, tail_chars=0, post=None, subagent=None, subagent_age=0, parent_age=0):
+    """A parent transcript per `write_transcript` last written `parent_age` seconds ago and, when `subagent` is set,
+    a subagent transcript at that many tokens; returns the parent's path."""
     transcript = Path(tmp) / f"{SID}.jsonl"
     write_transcript(transcript, used, tail_chars, post)
     if parent_age:
@@ -110,122 +105,103 @@ def scenario(payload_extra, base_tmp, used=None, tail_chars=0, env_extra=None, p
         os.utime(transcript, (stamp, stamp))
     if subagent is not None:
         plant_subagent(transcript, subagent, subagent_age)
+    return transcript
+
+
+def scenario(payload_extra, tmp, **plant):
+    """The hook run on a fresh state dir and the planted transcripts; returns
+    (out, crashed, state_after, backup_names, log_exists, manifest_exists)."""
+    state_dir = Path(tmp) / "state"
+    plant_state(state_dir)
+    transcript = plant_transcripts(tmp, **plant)
     payload = {"hook_event_name": "PreCompact", "trigger": "auto", "session_id": SID,
                "transcript_path": str(transcript)}
     payload.update(payload_extra)
-    out, crashed = run(tmp, payload, state_dir, env_extra)
+    out, crashed = run(tmp, payload, state_dir)
     return (out, crashed, read_state(state_dir), backups(tmp),
             (Path(tmp) / "logs" / "pre_compact.json").exists(),
             (Path(tmp) / "logs" / "session_files" / f"{SID}.json").exists())
 
 
-def main():
-    cases = []
-    with tempfile.TemporaryDirectory() as base:
-        out, crashed, state, files, log_exists, manifest = scenario({}, base)
-        cases.append(("parent: no crash", not crashed))
-        cases.append(("parent: writes a raw backup", any(f.endswith(".jsonl") for f in files)))
-        cases.append(("parent: re-arms fire_once_since_compaction", "fired_since_compaction" not in state))
-        cases.append(("parent: keeps the once-per-session gate", state.get("fired_once") == {"o": True}))
-        cases.append(("parent: logs the event", log_exists))
-        cases.append(("parent: successful backup and summary add no compaction context", not out.strip()))
-        cases.append(("parent: the summary and manifest still exist while success is silent",
-                      any(f.endswith(".summary.json") for f in files) and manifest))
-        failed_out, failed_crash, _, _, _, _ = scenario({"transcript_path": "Z:/missing-transcript.jsonl"}, base)
-        cases.append(("parent: backup failure still reports the lost backup on stdout",
-                      not failed_crash and "backup unavailable" in failed_out.lower()))
+def test_parent_compaction_backs_up_rearms_and_stays_silent(tmp_path):
+    out, crashed, state, files, log_exists, manifest = scenario({}, tmp_path)
+    assert not crashed
+    assert any(f.endswith(".jsonl") for f in files), "no raw backup"
+    assert "fired_since_compaction" not in state, "fire_once_since_compaction was not re-armed"
+    assert state.get("fired_once") == {"o": True}, "the once-per-session gate was lost"
+    assert log_exists
+    assert not out.strip(), "a successful backup adds no compaction context"
+    assert any(f.endswith(".summary.json") for f in files) and manifest
 
-        out, crashed, state, files, log_exists, manifest = scenario({"agent_id": "a1b2c3d4e5f6"}, base)
-        cases.append(("subagent: no crash", not crashed))
-        cases.append(("subagent: writes no backup", files == []))
-        cases.append(("subagent: leaves compaction-scoped keys alone",
-                      state.get("fired_since_compaction") == {"k": True}))
-        cases.append(("subagent: writes no parent log or manifest", not log_exists and not manifest))
-        cases.append(("subagent: emits no parent reminder", "POST-CONTINUATION" not in out))
 
-        def parent_ran(files, state):
-            return any(f.endswith(".jsonl") for f in files) and "fired_since_compaction" not in state
+def test_parent_backup_failure_still_reports_the_lost_backup(tmp_path):
+    out, crashed, *_ = scenario({"transcript_path": "Z:/missing-transcript.jsonl"}, tmp_path)
+    assert not crashed and "backup unavailable" in out.lower()
 
-        # A Workflow agent at its window compacts while the parent sits at 150k.
-        sub = dict(used=150_000, subagent=469_000)
-        out, crashed, state, files, log_exists, manifest = scenario({}, base, **sub)
-        cases.append(("auto beside a live subagent over the parent: no crash", not crashed))
-        cases.append(("auto beside a live subagent over the parent: no backup, ladder kept",
-                      files == [] and state.get("fired_since_compaction") == {"k": True}))
-        cases.append(("auto beside a live subagent over the parent: no parent log or reminder",
-                      not log_exists and not manifest and "POST-CONTINUATION" not in out))
-        # Session f3a34186 23:08: the parent idled after its own compaction (last call 434k, boundary
-        # postTokens 41k, then about 120k tokens of re-injected rows) while a Workflow agent at 469k compacted.
-        out, crashed, state, files, _, _ = scenario({}, base, used=434_000, post=41_000, tail_chars=360_000,
-                                                    subagent=469_000)
-        cases.append(("a parent idle after its own compaction reads from the boundary: the subagent's compaction",
-                      not crashed and files == [] and state.get("fired_since_compaction") == {"k": True}))
-        # Session f3a34186 01:02: a Workflow agent on a smaller window compacted at 238k while the parent, at
-        # 383k, had written nothing for 130 s.
-        out, crashed, state, files, _, _ = scenario({}, base, used=383_000, subagent=230_000, parent_age=130)
-        cases.append(("a smaller live subagent beside a parent quiet for 130 s: the subagent's compaction",
-                      not crashed and files == [] and state.get("fired_since_compaction") == {"k": True}))
-        for label, extra, kwargs in (
-                ("auto, the parent wrote after a larger live subagent", {},
-                 dict(used=150_000, subagent=469_000, subagent_age=5)),
-                ("auto, the parent wrote after a smaller live subagent", {},
-                 dict(used=150_000, subagent=230_000, subagent_age=10, parent_age=5)),
-                # Session f3a34186: autoCompactWindow 500k on a 1M model, the parent compacting at 467k (46%).
-                ("auto at 467k on a 1M window, no live subagent", {}, dict(used=467_000)),
-                ("auto beside a smaller live subagent", {}, dict(used=467_000, subagent=200_000)),
-                ("auto beside a subagent near the parent's size", {}, dict(used=467_000, subagent=480_000)),
-                ("auto beside a larger subagent last written a minute ago", {},
-                 dict(used=150_000, subagent=469_000, subagent_age=60)),
-                ("manual beside a larger live subagent", {"trigger": "manual"}, sub),
-                ("auto, transcript with no parent API call", {}, {}),
-                ("auto, a live subagent and a parent transcript with no call", {}, dict(subagent=469_000)),
-                ("auto, unreadable transcript", {"transcript_path": "Z:/nowhere/none.jsonl"}, sub)):
-            out, crashed, state, files, _, _ = scenario(extra, base, **kwargs)
-            ran = parent_ran(files, state) if "transcript_path" not in extra else (
-                "fired_since_compaction" not in state)
-            cases.append((f"{label} counts as the parent", not crashed and ran))
 
-        for label, empty in (("empty", ""), ("whitespace", "  "), ("null", None)):
-            out, crashed, state, files, _, _ = scenario({"agent_id": empty}, base)
-            cases.append((f"{label} agent_id counts as a parent",
-                          not crashed and any(f.endswith(".jsonl") for f in files)
-                          and "fired_since_compaction" not in state))
+def test_agent_id_subagent_writes_nothing_and_leaves_the_parents_keys(tmp_path):
+    out, crashed, state, files, log_exists, manifest = scenario({"agent_id": "a1b2c3d4e5f6"}, tmp_path)
+    assert not crashed and files == []
+    assert state.get("fired_since_compaction") == {"k": True}
+    assert not log_exists and not manifest and "POST-CONTINUATION" not in out
 
-    table_dir = tempfile.mkdtemp()
-    transcript = Path(table_dir, f"{SID}.jsonl")
-    write_transcript(transcript, used=300_000)
-    plant_subagent(transcript, 469_000)
-    quiet = Path(table_dir, "quiet.jsonl")
+
+def test_auto_beside_a_live_larger_subagent_is_the_subagents_compaction(tmp_path):
+    # A Workflow agent at its window compacts while the parent sits at 150k.
+    out, crashed, state, files, log_exists, manifest = scenario({}, tmp_path, used=150_000, subagent=469_000)
+    assert not crashed and files == [] and state.get("fired_since_compaction") == {"k": True}
+    assert not log_exists and not manifest and "POST-CONTINUATION" not in out
+
+
+# Decision rows: (label, payload extra, planted transcripts, whether the payload counts as the parent's own
+# compaction). Session f3a34186 23:08: the parent idled after its own compaction (last call 434k, boundary
+# postTokens 41k, then about 120k tokens of re-injected rows) while a Workflow agent at 469k compacted. Session
+# f3a34186 01:02: a Workflow agent on a smaller window compacted at 238k while the parent, at 383k, had written
+# nothing for 130 s. Session f3a34186: autoCompactWindow 500k on a 1M model, the parent compacting at 467k (46%).
+LIVE = dict(used=150_000, subagent=469_000)
+PAYLOAD_ROWS = [
+    ("idle parent after its own compaction reads from the boundary", {},
+     dict(used=434_000, post=41_000, tail_chars=360_000, subagent=469_000), False),
+    ("smaller live subagent beside a parent quiet for 130 s", {},
+     dict(used=383_000, subagent=230_000, parent_age=130), False),
+    ("the parent wrote after a larger live subagent", {}, dict(used=150_000, subagent=469_000, subagent_age=5), True),
+    ("the parent wrote after a smaller live subagent", {},
+     dict(used=150_000, subagent=230_000, subagent_age=10, parent_age=5), True),
+    ("467k on a 1M window, no live subagent", {}, dict(used=467_000), True),
+    ("beside a smaller live subagent", {}, dict(used=467_000, subagent=200_000), True),
+    ("beside a subagent near the parent's size", {}, dict(used=467_000, subagent=480_000), True),
+    ("beside a larger subagent last written a minute ago", {},
+     dict(used=150_000, subagent=469_000, subagent_age=60), True),
+    ("manual beside a larger live subagent", {"trigger": "manual"}, LIVE, True),
+    ("transcript with no parent API call", {}, {}, True),
+    ("a live subagent and a parent transcript with no call", {}, dict(subagent=469_000), True),
+    ("unreadable transcript", {"transcript_path": "Z:/nowhere/none.jsonl"}, LIVE, True),
+    ("empty agent_id", {"agent_id": ""}, {}, True),
+    ("whitespace agent_id", {"agent_id": "  "}, {}, True),
+    ("null agent_id", {"agent_id": None}, {}, True),
+]
+
+
+@pytest.mark.parametrize("label,extra,plant,parent", PAYLOAD_ROWS, ids=[row[0] for row in PAYLOAD_ROWS])
+def test_discriminator_rows_for_planted_sessions(tmp_path, label, extra, plant, parent):
+    transcript = plant_transcripts(tmp_path, **plant)
+    payload = {"trigger": "auto", "session_id": SID, "transcript_path": str(transcript)}
+    payload.update(extra)
+    assert _hook_state.is_subagent_payload(payload) is (not parent)
+
+
+def test_is_subagent_payload_rows(tmp_path):
+    transcript = plant_transcripts(tmp_path, used=300_000, subagent=469_000)
+    quiet = tmp_path / "quiet.jsonl"
     write_transcript(quiet, used=300_000)
     base_payload = {"session_id": SID, "transcript_path": str(transcript)}
     for label, payload, want in (
             ("auto, a live subagent at 469k beside a parent at 300k", dict(base_payload, trigger="auto"), True),
             ("manual, the same transcripts", dict(base_payload, trigger="manual"), False),
-            ("auto, no subagent transcript", {"session_id": SID, "transcript_path": str(quiet), "trigger": "auto"},
-             False),
+            ("auto, no subagent transcript", {"session_id": SID, "transcript_path": str(quiet), "trigger": "auto"}, False),
             ("auto, no transcript_path", {"session_id": SID, "trigger": "auto"}, False),
             ("no agent_id", {}, False), ("agent_id set", {"agent_id": "x"}, True),
-                                 ("empty agent_id", {"agent_id": ""}, False),
-                                 ("whitespace agent_id", {"agent_id": " "}, False),
-                                 ("null agent_id", {"agent_id": None}, False),
-                                 ("non-object payload", [], False), ("None payload", None, False)):
-        try:
-            got = _hook_state.is_subagent_payload(payload)
-        except Exception as exc:
-            got = f"CRASH {exc!r}"
-        cases.append((f"is_subagent_payload: {label} -> {want}", got is want))
-
-    failed = [name for name, ok in cases if not ok]
-    for name, ok in cases:
-        print(("PASS  " if ok else "FAIL  ") + name)
-    print(f"\n{len(cases) - len(failed)}/{len(cases)} passed")
-    return 1 if failed else 0
-
-
-
-def test_proof():
-    assert main() in (None, 0)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+            ("empty agent_id", {"agent_id": ""}, False), ("whitespace agent_id", {"agent_id": " "}, False),
+            ("null agent_id", {"agent_id": None}, False),
+            ("non-object payload", [], False), ("None payload", None, False)):
+        assert _hook_state.is_subagent_payload(payload) is want, label
