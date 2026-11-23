@@ -13,7 +13,9 @@ that table and answers two questions:
 anchored at a shell segment's executable word, so `grep`, `cat`, `git show` or a bare name in prose
 never match. Its reach is the godot guard's: shell segments, `bash -c`/`pwsh -Command` bodies, Python
 `-c` and `.py` files (literal `subprocess`/`os` process-call arguments only), and launched scripts to
-depth 2. Not seen: a command built at run time, or a script chain deeper than the scan.
+depth 2. A launched script is scanned only when no row matched its invocation: a row that matched owns
+the verdict, so a runner script's own variable filter never reads as built at run time. Not seen: a
+command built at run time, or a script chain deeper than the scan.
 
 A malformed row fails `classify` closed: the table's validation errors become the one wide result, so
 the guard refuses every command until the data is fixed. A placeholder in the invocation (`<spec>:<line>`,
@@ -149,6 +151,10 @@ def _filter_value_reason(value, names, admit):
     if RUNTIME_FILTER_RE.search(value):
         return "its text is built at run time"
     terms = [(prop, value_) for prop, op, value_ in FILTER_TERM_RE.findall(value) if op in ("~", "=")]
+    bare = value.strip().strip("'\"")
+    if not terms and bare and not re.search(r"[~=!|&()\s]", bare):
+        # A bare value is the runner's shorthand for `FullyQualifiedName~<value>`.
+        terms = [("FullyQualifiedName", bare)]
     if not terms:
         return "it has no `FullyQualifiedName` filter term"
     for prop, raw in terms:
@@ -168,12 +174,28 @@ def _filter_value_reason(value, names, admit):
     return None
 
 
-def _declared_wide_reason(declared, args, root):
-    """Why this declared-narrow invocation is wide, or None when every filter value narrows it."""
+def _checkout(cwd):
+    """The git checkout holding `cwd` (a `.git` file or folder marks it), or None."""
+    path = os.path.abspath(cwd) if cwd else None
+    while path:
+        if os.path.exists(os.path.join(path, ".git")):
+            return path
+        parent = os.path.dirname(path)
+        path = None if parent == path else parent
+    return None
+
+
+def _declared_wide_reason(declared, args, root, cwd=None):
+    """Why this declared-narrow invocation is wide, or None when every filter value narrows it. Units
+    are read from the root and from the checkout the command runs in: a RED-first test class exists
+    only in the worktree that wrote it."""
     values = _arg_values(args, declared["arg"])
     if not values:
         return "it carries no `%s` filter" % declared["arg"]
-    names = _declared_names(root, declared["glob"], declared["decl"])
+    names = set(_declared_names(root, declared["glob"], declared["decl"]))
+    checkout = _checkout(cwd)
+    if checkout and os.path.normcase(checkout) != os.path.normcase(os.path.abspath(root)):
+        names |= _declared_names(checkout, declared["glob"], declared["decl"])
     for value in values:
         reason = _filter_value_reason(value, names, declared["admit"])
         if reason:
@@ -188,28 +210,32 @@ def _wide(row, text, match, reason):
     return {"runner": text[:match.end()].strip(), "reason": reason}
 
 
-def _match(rows, text, args, root, written=None):
-    """The first wide row this invocation matches, or None. `written` is the invocation as the brief
-    wrote it, when `text` was rebuilt from shell tokens (which drop an unshellable `<...>`)."""
+NARROW = {}
+
+
+def _match(rows, text, args, root, written=None, cwd=None):
+    """The wide result of the first row this invocation matches; `NARROW` when that row judges it
+    narrow or exempt; None when no row matches. `written` is the invocation as the brief wrote it,
+    when `text` was rebuilt from shell tokens (which drop an unshellable `<...>`)."""
     for row in rows:
         match = row["runner"].match(text)
         if not match:
             continue
         if any(pattern.search(arg) for pattern in row["exempt"] for arg in args):
-            return None
+            return NARROW
         # A brief prints a narrow row's form with a placeholder standing for the value
         # (`npm run staging:e2e -- <spec>:<line> --project=<desktop|phone>`): the form to fill,
         # not an order. Only a row that declares a narrow form can be satisfied this way.
         if row["narrowed"] and PLACEHOLDER_RE.search(written if written is not None else text):
-            return None
+            return NARROW
         if row["requires"] is not None:
             if all(any(pattern.search(arg) for arg in args) for pattern in row["requires"]):
-                return None
+                return NARROW
             return _wide(row, text, match, "its arguments do not match the row's narrow `requires`")
         if row["declared"] is not None:
-            reason = _declared_wide_reason(row["declared"], args, root)
+            reason = _declared_wide_reason(row["declared"], args, root, cwd)
             if reason is None:
-                return None
+                return NARROW
             return _wide(row, text, match, reason)
         if row["narrowed"]:
             return _wide(row, text, match, "the row's `declared` narrowing could not be read")
@@ -318,8 +344,8 @@ def _file_runs(path, cwd, root, rows, depth):
             prefix = line[:match.start()]
             if not LAUNCHER_RE.search(prefix) or _in_printed_string(prefix):
                 continue
-            hit = _match(rows, line[match.start():], _words(line[match.start():]), root)
-            if hit:
+            hit = _match(rows, line[match.start():], _words(line[match.start():]), root, cwd=cwd)
+            if hit and hit is not NARROW:
                 yield hit
 
 
@@ -337,7 +363,13 @@ def _command_runs(command, cwd, root, rows, depth=0):
         if not words:
             continue
         exe, args = _base(words[0]), words[1:]
-        hit = _match(rows, " ".join(words), args, root, written=" ".join(tokens))
+        if exe == "cd" and args:
+            cwd = os.path.join(cwd or os.getcwd(), args[0].strip("'\""))
+            continue
+        hit = _match(rows, " ".join(words), args, root, written=" ".join(tokens), cwd=cwd)
+        if hit is NARROW:
+            # The row that matched the invocation owns its verdict; its script is not re-judged.
+            continue
         if hit:
             yield hit
             continue

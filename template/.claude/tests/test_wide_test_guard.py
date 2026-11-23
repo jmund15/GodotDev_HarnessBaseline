@@ -38,7 +38,7 @@ ROW_TABLE = {"slice": ["for `.claude/**` units: the edited unit's proof file, ru
 GODOT_TABLE = {
     "slice": [], "merge": [], "close": [],
     "wide": [
-        {"runner": r"(?:\S*/)?run_test_suite\.ps1\b", "exempt": [],
+        {"runner": r"(?:\S*/)?suite_runner\.ps1\b", "exempt": [],
          "narrow": {"declared": {"arg": "Filter", "glob": "Tests/**/*.cs",
                                  "decl": [r"class\s+(\w+)", r"(?:void|Task)\s+(\w+)\s*\("],
                                  "admit": [r"(?:^|\.)Tests\.Logic\.Lint\.?$"]}}},
@@ -230,7 +230,7 @@ def case_declared_narrowing():
     saved = guard.ROOT
     try:
         guard.ROOT = root
-        run = "run_test_suite.ps1 -Filter "
+        run = "suite_runner.ps1 -Filter "
         check("a declared class filter is narrow",
               verdict(run + "FullyQualifiedName~Tests.Logic.FooTests", cwd=root) is None)
         check("a bare declared test method is narrow",
@@ -253,6 +253,28 @@ def case_declared_narrowing():
               bool(verdict("unitrun test", cwd=root)))
         check("a unitrun test with a declared class filter is narrow",
               verdict("unitrun test --filter FullyQualifiedName~Tests.Logic.FooTests", cwd=root) is None)
+        # A runner script passes its own filter on as a variable; the row that judged the invocation
+        # owns the verdict, so the scan never reads the script's inner run as built at run time.
+        write("roots/godot/suite_runner.ps1", "param($Filter)\nunitrun test --filter $Filter\n")
+        check("a narrow runner-script call is not re-judged inside the script",
+              verdict(run + "FullyQualifiedName~Tests.Logic.FooTests", cwd=root) is None)
+        check("a wide runner-script call stays wide",
+              bool(verdict(run + "FullyQualifiedName~Tests.Logic", cwd=root)))
+        write("roots/godot/loop.ps1", "unitrun test\n")
+        check("an unmatched script is still scanned", bool(verdict("./loop.ps1", cwd=root)))
+        # A bare filter value is the runner's shorthand for `FullyQualifiedName~<value>`.
+        check("a bare declared class filter is narrow", verdict(run + "FooTests", cwd=root) is None)
+        check("a bare undeclared filter is wide", bool(verdict(run + "Nope", cwd=root)))
+        # A RED-first test class exists only in the checkout the command runs in (a worktree).
+        wt = os.path.join(TMP, "roots", "godot-wt").replace("\\", "/")
+        write("roots/godot-wt/.git", "gitdir: elsewhere\n")
+        write("roots/godot-wt/Tests/Logic/FreshTests.cs", "public class FreshTests {}\n")
+        check("a class declared only in the command's checkout is narrow (cwd)",
+              verdict(run + "FullyQualifiedName~FreshTests", cwd=wt) is None)
+        check("a class declared only in the command's checkout is narrow (cd)",
+              verdict('cd "%s" && %sFullyQualifiedName~FreshTests' % (wt, run), cwd=root) is None)
+        check("a class declared in no checkout stays wide",
+              bool(verdict(run + "FullyQualifiedName~StaleTests", cwd=wt)))
     finally:
         guard.ROOT = saved
 
@@ -295,6 +317,28 @@ def case_dispatcher_wiring():
     check("the dispatcher admits an ordinary command", "Wide test run refused" not in text, text[-800:])
 
 
+def case_command_mode():
+    """A runner script's own entry check (a run that hosts no Claude hooks) asks the same question
+    through `--command`: exit 2 with the reason on a refused wide run, 0 otherwise."""
+    clear_env()
+    os.environ["CLAUDE_CODE_SIDECAR"] = "1"
+    try:
+        check("a sidecar's wide run is refused", guard.main(["--command", CLOSE]) == 2)
+        check("a sidecar's narrow run is admitted", guard.main(["--command", "harness_tests.py --help"]) == 0)
+        os.environ["CLAUDE_CODE_SIDECAR_KIND"] = "gate"
+        check("a gate sidecar's wide run is admitted", guard.main(["--command", CLOSE]) == 0)
+    finally:
+        clear_env()
+    check("the root session's wide run is admitted", guard.main(["--command", CLOSE]) == 0)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE_CODE_SIDECAR")}
+    env["CLAUDE_CODE_SIDECAR"] = "1"
+    r = subprocess.run([sys.executable, os.path.join(HOOKS, "wide_test_guard.py"), "--command",
+                        "python3 .claude/scripts/harness_tests.py --close"],
+                       capture_output=True, text=True, timeout=120, env=env)
+    check("the CLI exits 2 with the reason", r.returncode == 2 and "Wide test run refused" in r.stdout,
+          "%s %s" % (r.returncode, (r.stdout + r.stderr)[-400:]))
+
+
 if __name__ == "__main__":
     saved_root = guard.ROOT
     guard.ROOT = planted_root("harness", ROW_TABLE)
@@ -302,7 +346,7 @@ if __name__ == "__main__":
         for fn in (case_classifier, case_delegate_verdicts,
                    case_sidecar, case_reach, case_gate_type_owner, case_unreadable_table,
                    case_invalid_rows, case_declared_narrowing, case_must_allow,
-                   case_dispatcher_wiring):
+                   case_dispatcher_wiring, case_command_mode):
             try:
                 fn()
             except Exception as exc:  # noqa: BLE001 - a crash is a failure, never an allow
