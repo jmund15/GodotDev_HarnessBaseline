@@ -27,11 +27,15 @@ try {
 // hooks/workflow_transport.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
 // child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
 // entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
+// ENGINE-BLOCK-BEGIN KP
 const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
+// ENGINE-BLOCK-END KP
 if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
   return { error: 'idea-fanout: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_transport.py into args.__kindProfile. Every generator and critic runs as that kind; ideation returns structured data and writes nothing.' }
 }
+// ENGINE-BLOCK-BEGIN KP_RECORD
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
+// ENGINE-BLOCK-END KP_RECORD
 const generators = Array.isArray(A.generators) ? A.generators : []
 const contextPrefix = A.contextPrefix || '' // the pushed cluster CONTEXT, prepended to every agent prompt
 const genCount = A.genCount || '15-20'      // raw candidates each generator returns
@@ -54,8 +58,12 @@ const TRANSPORT = A.__transport
 const validStringList = (value) => Array.isArray(value) && value.length > 0
   && value.every(item => typeof item === 'string' && item.trim())
 // ENGINE-BLOCK-END validStringList
-if (!TRANSPORT || typeof TRANSPORT !== 'object' || !validStringList(TRANSPORT.ids)
-  || (TRANSPORT.efforts !== undefined && !validStringList(TRANSPORT.efforts))) {
+// ENGINE-BLOCK-BEGIN transportValid
+const transportValid = TRANSPORT && typeof TRANSPORT === 'object' && !Array.isArray(TRANSPORT)
+  && validStringList(TRANSPORT.ids)
+  && (TRANSPORT.efforts === undefined || validStringList(TRANSPORT.efforts))
+// ENGINE-BLOCK-END transportValid
+if (!transportValid) {
   return { error: 'idea-fanout: args.__transport is missing or malformed. hooks/workflow_transport.py injects the endpoint\'s model vocabulary ({name, ids, efforts?}); without it this engine has no legal pins and refuses to guess.' }
 }
 // ENGINE-BLOCK-BEGIN PIN

@@ -58,18 +58,6 @@ function repoRootOf(a) {
   return /^([A-Za-z]:)?\//.test(root) ? root : ''
 }
 // ENGINE-BLOCK-END repoRootOf
-// ENGINE-BLOCK-BEGIN CLAIM_FENCE
-const CLAIM_FENCE = /```(?:claims|findings)[ \t]*\r?\n([\s\S]*?)```/g
-// ENGINE-BLOCK-END CLAIM_FENCE
-// ENGINE-BLOCK-BEGIN inlineClaims
-const inlineClaims = []
-// ENGINE-BLOCK-END inlineClaims
-// ENGINE-BLOCK-BEGIN declared
-const declared = A.__returns && Object.keys(A.__returns).length > 0
-// ENGINE-BLOCK-END declared
-// ENGINE-BLOCK-BEGIN hasFence
-const hasFence = Object.values(out).some(value => typeof value === 'string' && /```(?:claims|findings)[ \t]*\r?\n/.test(value))
-// ENGINE-BLOCK-END hasFence
 // ENGINE-BLOCK-BEGIN TRANSPORT
 const TRANSPORT = A.__transport
 // ENGINE-BLOCK-END TRANSPORT
@@ -98,3 +86,9 @@ const READ_FAILURE = '(retry a transient read error; a missing path or a denial 
 // ENGINE-BLOCK-BEGIN flags
 const flags = []
 // ENGINE-BLOCK-END flags
+// ENGINE-BLOCK-BEGIN KP
+const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
+// ENGINE-BLOCK-END KP
+// ENGINE-BLOCK-BEGIN KP_RECORD
+const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
+// ENGINE-BLOCK-END KP_RECORD

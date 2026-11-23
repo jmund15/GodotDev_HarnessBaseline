@@ -22,7 +22,7 @@ const check = (ok, label) => { console.log((ok ? 'ok   ' : 'FAIL ') + label); if
   const logs = []
   const agent = async (p, opts) => { if (opts.phase === 'Relevance') { prompt = p; schema = opts.schema }; return BLOCKED }
   const out = await engineRun.load(path.join(WF, 'worklog_relevance.js'))(engineRun.withHost(
-    { scope: 'fixture scope', kind: 'lens', model: 'fixture-model', effort: 'low', tier: 'fanout',
+    { scope: 'fixture scope', kind: 'lens', model: 'fixture-model', effort: 'low',
       checker: { model: 'fixture-model', effort: 'low' } }), agent,
     thunks => Promise.all(thunks.map(fn => fn())), () => {}, message => logs.push(message))
   const enumOf = s => s.properties.checked.properties.stoppedAt.enum
@@ -34,8 +34,8 @@ const check = (ok, label) => { console.log((ok ? 'ok   ' : 'FAIL ') + label); if
     'the pointer prompt names the blocked status and not a field the schema forbids')
   check(out && out.checked && out.checked.stoppedAt === 'blocked' && out.count === 0,
     'the workflow returns the blocked status with the result')
-  check(logs.some(l => l.startsWith('PINS ') && l.includes('"worklog:relevance":"fixture-model/low tier:fanout"')),
-    'the PINS line carries the job tier so the archived row records what model served what role')
+  check(logs.some(l => l.startsWith('PINS ') && l.includes('"worklog:relevance":"fixture-model/low"')),
+    'the PINS line records the model and effort that served the job')
   console.log('\nworklog_relevance_blocked_test: %d failed', failed)
   process.exit(failed ? 1 : 0)
 })().catch(error => { console.error('FAIL worklog relevance blocked:', error.message); process.exit(1) })

@@ -16,17 +16,21 @@ let A
 try {
   A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
 } catch (e) {
-  return { error: 'args is not valid JSON — /doc_architecture_audit must pass {context, docRoot, model, effort, tier}. ' + ((e && e.message) || '') }
+  return { error: 'args is not valid JSON — /doc_architecture_audit must pass {context, docRoot, model, effort, kind}. ' + ((e && e.message) || '') }
 }
 // KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge|gate) for every child it spawns;
 // hooks/workflow_transport.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
 // child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
 // entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
+// ENGINE-BLOCK-BEGIN KP
 const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
+// ENGINE-BLOCK-END KP
 if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
   return { error: 'doc-architecture-audit: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_transport.py into args.__kindProfile. The three audit lenses run as that kind.' }
 }
+// ENGINE-BLOCK-BEGIN KP_RECORD
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
+// ENGINE-BLOCK-END KP_RECORD
 // EVIDENCE-SSOT-BEGIN
 const EVIDENCE_SCHEMA = {
   "description": "The evidence contract's machine twin (tools/quote_check.py owns the semantics and is its one executable implementation). A claim's `evidence` is a list of items, each exactly one of two kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
@@ -83,11 +87,17 @@ const EVIDENCE_RULES = "The evidence contract's machine twin (tools/quote_check.
 // ENGINE-BLOCK-BEGIN TRANSPORT
 const TRANSPORT = A.__transport
 // ENGINE-BLOCK-END TRANSPORT
-if (!TRANSPORT || !Array.isArray(TRANSPORT.ids) || !TRANSPORT.ids.length
-  || !TRANSPORT.ids.every(id => typeof id === 'string' && id)
-  || (TRANSPORT.efforts !== undefined && (!Array.isArray(TRANSPORT.efforts) || !TRANSPORT.efforts.length
-    || !TRANSPORT.efforts.every(e => typeof e === 'string' && e)))) {
-  return { error: 'doc-architecture-audit: args.__transport is missing or malformed; the provider guard supplies the native model and effort vocabulary.' }
+// ENGINE-BLOCK-BEGIN validStringList
+const validStringList = (value) => Array.isArray(value) && value.length > 0
+  && value.every(item => typeof item === 'string' && item.trim())
+// ENGINE-BLOCK-END validStringList
+// ENGINE-BLOCK-BEGIN transportValid
+const transportValid = TRANSPORT && typeof TRANSPORT === 'object' && !Array.isArray(TRANSPORT)
+  && validStringList(TRANSPORT.ids)
+  && (TRANSPORT.efforts === undefined || validStringList(TRANSPORT.efforts))
+// ENGINE-BLOCK-END transportValid
+if (!transportValid) {
+  return { error: 'doc-architecture-audit: args.__transport is missing or malformed; the entry (hooks/pre_workflow_dispatch.py) injects the native model and effort vocabulary.' }
 }
 const EFFORT_VOCAB = TRANSPORT.efforts
 const pinVocab = 'model in [' + TRANSPORT.ids.join('|') + ']' + (EFFORT_VOCAB ? ' and effort in [' + EFFORT_VOCAB.join('|') + ']' : '')
@@ -95,9 +105,6 @@ const pinVocab = 'model in [' + TRANSPORT.ids.join('|') + ']' + (EFFORT_VOCAB ? 
 if (!TRANSPORT.ids.includes(A.model) || (EFFORT_VOCAB !== undefined && !EFFORT_VOCAB.includes(A.effort))) {
   return { error: 'doc-architecture-audit: pin model and effort on every job (orchestration §5). Unpinned or illegal: da-structural, da-crossref, da-domain. args needs a caller-selected ' + pinVocab + '.',
     badJobs: ['da-structural', 'da-crossref', 'da-domain'] }
-}
-if (!['orchestrator', 'architect', 'executor', 'fanout', 'scout'].includes(A.tier)) {
-  return { error: 'doc-architecture-audit: args needs a caller-selected tier, a named work shape (orchestrator|architect|executor|fanout|scout).' }
 }
 
 const CONTEXT = A.context || ''

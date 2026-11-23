@@ -7,27 +7,32 @@ export const meta = {
     { title: 'Adjudicate', detail: 'score each response; independently validate EVERY COMPLIES; downgrade false-COMPLIES to DRIFTS' },
   ],
 }
-// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge|gate) for every child it spawns;
-// hooks/workflow_transport.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
-// child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
-// entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
-const KIND_ARGS = (() => { try { const a = (typeof args === 'string') ? JSON.parse(args || '{}') : (args || {}); return a || {} } catch (e) { return {} } })()
-const KP = (KIND_ARGS.__kindProfile && typeof KIND_ARGS.__kindProfile === 'object') ? KIND_ARGS.__kindProfile : null
-if (typeof KIND_ARGS.kind !== 'string' || !KIND_ARGS.kind.trim() || !KP || KP.kind !== KIND_ARGS.kind || !KP.agentType) {
-  return { error: 'test-skill-pressure: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_transport.py into args.__kindProfile. Every child of the run launches as that kind.' }
-}
-const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
-// POST-CHECK exempt (benchmark/probe self-scoring): it scores its own pressure prompts' output.
-
 // Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
 // string is a caller mistake, but an uncaught SyntaxError names neither this workflow nor the
 // expected shape, so the caller cannot self-correct and retries the same way. Fail legibly instead.
+// ENGINE-BLOCK-BEGIN A
 let A
+// ENGINE-BLOCK-END A
 try {
   A = (typeof args === 'string') ? JSON.parse(args) : (args ?? {})
 } catch (e) {
   return { error: 'test-skill-pressure: args must be JSON-serializable {skillName, skillBody, ...}. Received a non-JSON string. ' + ((e && e.message) || '') }
 }
+
+// KIND PROFILE. The call names one `kind` (scout|lens|reviewer|author|judge|gate) for every child it spawns;
+// hooks/workflow_transport.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
+// child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
+// entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
+// ENGINE-BLOCK-BEGIN KP
+const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
+// ENGINE-BLOCK-END KP
+if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
+  return { error: 'test-skill-pressure: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_transport.py into args.__kindProfile. Every child of the run launches as that kind.' }
+}
+// ENGINE-BLOCK-BEGIN KP_RECORD
+const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
+// ENGINE-BLOCK-END KP_RECORD
+// POST-CHECK exempt (benchmark/probe self-scoring): it scores its own pressure prompts' output.
 
 const SKILL_NAME = A.skillName || 'unknown-skill'
 const SKILL_CONTENT = A.skillContent || ''
@@ -37,16 +42,23 @@ if (!SKILL_CONTENT) {
   return { error: 'No skillContent in args. The /test_skill command (Claude) must Read the SKILL.md and pass its full text via args.skillContent — workflow scripts cannot read files.' }
 }
 
-// Endpoint vocabulary -- hooks/workflow_transport.py injects __transport off-Anthropic: {name, ids, efforts?}.
-// On a provider session that transport's own registry ids are the legal vocabulary and a role name is DENIED
-// before this script runs. The caller pins each role, {model, effort} apiece: args.subject (the tempted subagent,
-// a model able to capitulate), args.scorer (the judgment of the response) and args.validator (the second judgment on
+// Model vocabulary comes only from args.__transport, which hooks/workflow_transport.py injects: {name, ids, efforts?}. The caller pins each role, {model, effort} apiece: args.subject (the tempted subagent,
+// a model able to capitulate), args.scorer (the judgment of the response, which also synthesizes the prompts) and args.validator (the second judgment on
 // every COMPLIES). No step falls back to a model or effort of its own.
+// ENGINE-BLOCK-BEGIN TRANSPORT
 const TRANSPORT = A.__transport
-if (!TRANSPORT || !Array.isArray(TRANSPORT.ids) || !TRANSPORT.ids.length
-  || !TRANSPORT.ids.every(id => typeof id === 'string' && id)
-  || (TRANSPORT.efforts !== undefined && (!Array.isArray(TRANSPORT.efforts) || !TRANSPORT.efforts.length))) {
-  return { error: 'test-skill-pressure: args.__transport is missing or malformed; the provider guard supplies the native model and effort vocabulary.' }
+// ENGINE-BLOCK-END TRANSPORT
+// ENGINE-BLOCK-BEGIN validStringList
+const validStringList = (value) => Array.isArray(value) && value.length > 0
+  && value.every(item => typeof item === 'string' && item.trim())
+// ENGINE-BLOCK-END validStringList
+// ENGINE-BLOCK-BEGIN transportValid
+const transportValid = TRANSPORT && typeof TRANSPORT === 'object' && !Array.isArray(TRANSPORT)
+  && validStringList(TRANSPORT.ids)
+  && (TRANSPORT.efforts === undefined || validStringList(TRANSPORT.efforts))
+// ENGINE-BLOCK-END transportValid
+if (!transportValid) {
+  return { error: 'test-skill-pressure: args.__transport is missing or malformed; the entry (hooks/pre_workflow_dispatch.py) injects the native model and effort vocabulary.' }
 }
 const pinOk = pin => !!pin && TRANSPORT.ids.includes(pin.model)
   && (TRANSPORT.efforts === undefined || TRANSPORT.efforts.includes(pin.effort))
@@ -125,7 +137,7 @@ const syn = await agent(
     SKILL_CONTENT,
     CLAIMS_TO_REFUSE ? ('\n=== GENERIC COMPLIANCE BASELINE (Claims to Refuse) ===\n' + CLAIMS_TO_REFUSE) : '',
   ].join('\n'),
-  { agentType: KP.agentType, label: 'synthesize:' + SKILL_NAME, phase: 'Synthesize', schema: ITEMS_SCHEMA }
+  { agentType: KP.agentType, label: 'synthesize:' + SKILL_NAME, phase: 'Synthesize', schema: ITEMS_SCHEMA, model: SCORER.model, effort: SCORER.effort }
 )
 
 const items = (syn && Array.isArray(syn.items)) ? syn.items.slice(0, CAP) : []
