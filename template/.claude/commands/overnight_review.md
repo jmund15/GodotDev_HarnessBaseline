@@ -8,7 +8,7 @@ description: Resolve open overnight questions
 
 ## Arguments
 
-None required. Text after the command is the owner's notes and requests: carry them out beside Steps 1–5, and ask no question an answer in them already settles.
+None required. Text after the command is the owner's notes and requests: carry them out beside Steps 1–5, and ask no question an answer in them already settles. Notes that name a Close doc or a session scope Steps 2–4 to that session's rows: every other doc's rows belong to the session that works their subject, so leave them unasked and untouched.
 
 Running this command ends an armed `/overnight` run: the guard removes the marker, as `/overnight off` does, so live questions are allowed again.
 
