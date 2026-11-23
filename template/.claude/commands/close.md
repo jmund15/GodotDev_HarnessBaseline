@@ -19,7 +19,7 @@ Resolve every open choice before step 4. Apply your recommendation to a reversib
 3. **Worklog.** Run `/worklog sweep`, each half only when its input exists: the completion half when the session worked a worklog item, the add half when it deferred or parked work it named. Vault edits stay out of the git commit.
 4. **Commit and push.** Run [`/commit_push`](commit_push.md). Invoking `/close` is push authority for the active branch, `main` included.
 5. **Search index.** Run `/reindex_search` after the last commit when a changed file is one the index covers: docs, memory, data or resource files. An unavailable plugin skips the step. An error such as a peer's index lock is reported. Neither blocks the close.
-6. **Resume line.** Print it last: `Resume: /drive <slug>` when step 1 found a state file, else `Resume: /session_digest <session id>`.
+6. **Resume line.** Print it last: `Resume: /drive <slug>` when step 1 found a state file, else `Resume: /session_digest <session id>` (the printed `Session id:`).
 
 ## Report
 
