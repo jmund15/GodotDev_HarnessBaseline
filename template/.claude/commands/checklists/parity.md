@@ -1,24 +1,24 @@
 ---
-description: Check OLD-versus-NEW behavior parity over a refactor or a retired file. Skip diffs that only add code.
+description: Check that a removed or rewritten surface keeps its behaviour
+disable-model-invocation: true
 ---
 
-# Shared Parity Checklist
-<!-- Used by: /pr_ready (the `parity` seat), /review_pr (its code-review seat), /session_audit §1.5b. One home for the `parity` mandate key. -->
+# Parity Checklist
+
+`/review` diff mode and the PR commands' review step read this file. A change that only adds code skips it.
 
 ## Mandate
 
-Mandate (`parity`): diff OLD vs NEW per changed method. Flag every dropped/weakened branch, stub, `TODO`, `// deferred`, removed validation, or silently-changed default as **critical** (`critical:true`, `minRigor` light). Quote old vs new verbatim with file:line. Return a JSON findings array (`{agent, action, category, critical, file, description, old, new, rationale}`). This is audit-shape line-precision work — read OLD AND NEW.
+Compare OLD and NEW for each changed function and each deleted file, reading both. Flag as critical every dropped or weakened branch, removed validation and silently changed default, and every stub on an added line of shipped code: a `TODO`, `FIXME`, `stub`, `placeholder` or "deferred" marker that leaves wiring unfinished. Quote old and new verbatim with `file:line`. A critical parity finding is fixed before the change lands, or the owner accepts the dropped behaviour in words.
 
 ## Retired-code procedure
 
-For each session-changed file in a directory where another file was DELETED in the session diff (`git diff <base> --diff-filter=D --name-only`), enumerate parity:
+For each changed file in a directory where the reviewed range deleted a file (`git diff <range> --diff-filter=D --name-only`):
 
-1. Read the deleted file (via `git show <base>:<path>`).
-2. List its public surface: `[Export]` fields, public methods, lifecycle hooks (`OnEnter`/`OnExit`/`OnProcessFrame`/`_Ready`/etc.), event subscriptions, side effects (Engine state, BB writes, signals emitted).
-3. For each item, verify the replacement either:
-   - **Reproduces** the behavior (point at the new line that does it), OR
-   - **Explicitly notes removal** in a comment, docstring, or PR description.
+1. Read the deleted file with `git show <base>:<path>`.
+2. List its public surface: exported fields and settings, public functions, lifecycle hooks, event subscriptions, and side effects (state it writes, events it emits).
+3. For each item, point at the new line that reproduces it, or at the comment, docstring or PR description that records its removal.
 
-Any retired surface item NOT accounted for is a critical finding. Examples:
-- Old `MenuOpenState.OnEnter` instantiated `SlowMotionController`; new `OpenMenuState.OnEnter` doesn't.
-- Old state resolved BB refs in `OnEnter`; new state did it in `OnInit` (silent semantic change).
+An item with neither is a critical finding. Examples:
+- The old menu state's enter hook started a slow-motion controller; the new menu state's enter hook does not.
+- The old state resolved its references on enter; the new one resolves them at init, a silent change of timing.
