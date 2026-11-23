@@ -8,7 +8,7 @@ Q6 O1: these ride in S9's cutover commit, so one revert undoes them. The shared 
 
 | Change | Value or source |
 |---|---|
-| Add `pre_bash` | `{protected, router_entrypoints}` as `PROJECT_PRE_BASH` in `tests/floor/conftest.py` (the bench grid, transport proxy, gate-script and `vstest\|dotnet test` rows, and the four router entrypoints). Print it with the command below and copy it whole. |
+| Add `pre_bash` | `{protected, router_entrypoints}` as `PROJECT_PRE_BASH` in `tests/floor/conftest.py` (the bench grid, transport proxy, gate-script and `vstest\|dotnet test` rows, and the router entrypoint rows, each `{name, redirect, detach_flag}`; a bare name string is malformed). Print it with the command below and copy it whole. |
 | Add `scratch_keep` | `["session_end", "boot", "kfm", "eval_out", "linux_preview"]`, the v1 `TOOL_OWNED_SCRATCH` of `tools/scratch_prune.py`. Drop a name whose writing tool is gone from PushinPotions' tree. |
 | Delete `usage_reset` | no reader remains |
 | `gate_cadence`: keep only `slice`, `merge`, `close` | its `main` row (and any `wide` or `reach*` row) has no reader; `gate_cadence_errors` rejects an unknown key |
