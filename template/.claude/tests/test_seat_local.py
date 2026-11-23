@@ -84,6 +84,9 @@ if os.environ.get("FAKE_HOLD_FAIL"):
     print("UNAVAILABLE (llama-server did not start: planted)", flush=True)
     sys.exit(3)
 print("[backend_hold] server argv: " + os.environ["FAKE_SERVER_ARGV"] % opts.get("--effort"), file=sys.stderr, flush=True)
+if os.environ.get("FAKE_HOLD_RESTART"):
+    print("[backend_hold] llama-server exited with code 1 while the command runs; restarting it", file=sys.stderr, flush=True)
+    print("[backend_hold] llama-server restarted", file=sys.stderr, flush=True)
 rc = subprocess.call(cmd)
 open(os.path.join(stub, "hold_after_child.txt"), "w").write(str(rc))
 sys.exit(rc)
@@ -144,7 +147,7 @@ def _env(tmp_path, extra=None):
     env = dict(os.environ, HOME=str(home), USERPROFILE=str(home), STUB_DIR=str(tmp_path), STUB_PYTHON=sys.executable,
                AI_WORKER_DIR=str(aiw), FAKE_SERVER_ARGV=SERVER_ARGV,
                PATH=str(bin_dir) + os.pathsep + os.environ.get("PATH", ""))
-    for name in ("STUB_FAIL", "FAKE_HOLD_FAIL", "FAKE_HOLD_CHECK", "FAKE_LITELLM_VERSION", "UV_BIN"):
+    for name in ("STUB_FAIL", "FAKE_HOLD_FAIL", "FAKE_HOLD_CHECK", "FAKE_HOLD_RESTART", "FAKE_LITELLM_VERSION", "UV_BIN"):
         env.pop(name, None)
     env.update(extra or {})
     return env
@@ -254,7 +257,7 @@ def test_the_child_runs_by_this_git_bash_through_an_absolute_path(tmp_path):
     assert cmd[0] != "bash" and Path(cmd[0]).name.lower() in ("bash", "bash.exe") and os.path.isabs(cmd[0])
     if sys.platform == "win32":
         assert re.match(r"^[A-Za-z]:/", cmd[0])
-    assert cmd[1].endswith("scripts/seat_local.sh") and cmd[2] == "--held"
+    assert cmd[1].endswith("scripts/seat_local.sh") and cmd[2] == "--held" and "--" in cmd
 
 
 def test_the_proxy_runs_in_front_of_the_server_with_the_literal_local_key(tmp_path):
@@ -304,6 +307,95 @@ def test_seat_claude_denies_what_the_local_seat_names_in_either_write_mode(tmp_p
     assert "mcp__ai-worker" in argv[argv.index("--disallowedTools") + 1].split(",")
     assert ("acceptEdits" in argv) == (writes == "yes") and "--effort" not in argv
     assert argv[argv.index("--output-format") + 1] == ("json" if writes == "yes" else "text")  # text is the default
+
+
+# --- the hold verb: any child under the hold and the proxy ----------------------------------------------------
+
+CHILD = """#!/usr/bin/env bash
+env | grep -E '^(ANTHROPIC|CLAUDE|SEAT_)' | sort > "$STUB_DIR/child_env.txt"
+printf '%s\n' "$@" > "$STUB_DIR/child_argv.txt"
+"$STUB_PYTHON" -c 'import sys, urllib.request; print(urllib.request.urlopen(sys.argv[1] + "/health/liveliness", timeout=5).status)'   "$ANTHROPIC_BASE_URL" > "$STUB_DIR/child_health.txt" 2>/dev/null
+printf 'out-one\n'
+echo "err-one" >&2
+if [ -n "${CHILD_WAIT:-}" ]; then until [ -e "$CHILD_WAIT" ]; do sleep 0.1; done; fi
+printf 'out-two'
+exit "${CHILD_RC:-0}"
+"""
+
+
+def _verb(tmp_path, env, *args, popen=False):
+    local = _msys(tmp_path / "repo" / ".claude" / "scripts" / "seat_local.sh")
+    _stub(tmp_path / "child.sh", CHILD)
+    kw = dict(cwd=str(tmp_path / "repo"), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+              stderr=subprocess.PIPE, text=True)
+    if popen:
+        return subprocess.Popen([BASH, local, "hold", *args], **kw)
+    return subprocess.run([BASH, local, "hold", *args], **kw)
+
+
+def _child_args(tmp_path):
+    return ["--", BASH, _msys(tmp_path / "child.sh"), "a b", "c"]
+
+
+def test_the_verb_runs_an_arbitrary_child_under_the_hold_with_the_documented_env(tmp_path):
+    seen = {"ANTHROPIC_API_KEY": "sk-ant-decoy", "CLAUDE_CODE_OAUTH_TOKEN": "decoy-oauth", "ANTHROPIC_MODEL": "decoy"}
+    done = _verb(tmp_path, _env(tmp_path, seen), "-e", "high", *_child_args(tmp_path))
+    assert done.returncode == 0, done.stderr
+    held = _json(tmp_path, "hold_argv.json")
+    assert held["action"] == "run" and held["opts"] == {"--backend": MODEL, "--port": "8091", "--ctx": "98304", "--effort": "high"}
+    assert (tmp_path / "hold_after_child.txt").read_text(encoding="utf-8") == "0"
+    assert _lines(tmp_path, "child_argv.txt")[:2] == ["a b", "c"]
+    env = dict(line.split("=", 1) for line in _lines(tmp_path, "child_env.txt") if line)
+    config = (tmp_path / "litellm_config.yaml").read_text(encoding="utf-8")
+    route = re.search(r"model_name: (\S+)", config).group(1)
+    assert env["SEAT_MODEL"] == route == MODEL
+    assert env["ANTHROPIC_BASE_URL"].startswith("http://127.0.0.1:") and not env["ANTHROPIC_BASE_URL"].endswith(":8091")
+    assert env["ANTHROPIC_AUTH_TOKEN"] in config and env["ANTHROPIC_API_KEY"] == ""
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "98304" and env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "24576"
+    assert env["ANTHROPIC_SMALL_FAST_MODEL"] == env["CLAUDE_CODE_SUBAGENT_MODEL"] == MODEL
+    assert env["SEAT_PROXY_VERSION"] == "1.110.0"
+    assert "ANTHROPIC_MODEL" not in env and "CLAUDE_CODE_OAUTH_TOKEN" not in env
+    # Nothing else is added: no settings, deny list or output format.
+    extra = {k for k in env if k not in ("SEAT_MODEL", "SEAT_PROXY_VERSION", "CLAUDE_CODE_SIDECAR") and not k.startswith(("ANTHROPIC_", "CLAUDE_CODE_M", "CLAUDE_CODE_S"))}
+    assert extra <= {"SEAT_NAME", "SEAT_WRITES", "SEAT_CONTEXT", "SEAT_MAX_OUTPUT", "SEAT_BASE_URL", "SEAT_EFFORT",
+                     "SEAT_EFFORTS", "SEAT_CONFIG_DIR", "SEAT_HOLD_SCRATCH"}, extra
+    assert "SEAT_SETTINGS" not in env and "SEAT_OUTPUT_FORMAT" not in env and "SEAT_DISALLOWED" not in env
+    assert (tmp_path / "child_health.txt").read_text(encoding="utf-8").strip() == "200"
+
+
+def test_the_verbs_stderr_is_backend_holds_lines_byte_for_byte_beside_the_childs(tmp_path):
+    done = _verb(tmp_path, _env(tmp_path, {"FAKE_HOLD_RESTART": "1"}), "-e", "low", *_child_args(tmp_path))
+    lines = done.stderr.splitlines()
+    assert "[backend_hold] server argv: " + SERVER_ARGV % "low" in lines
+    assert "[backend_hold] llama-server exited with code 1 while the command runs; restarting it" in lines
+    assert "[backend_hold] llama-server restarted" in lines and "err-one" in lines
+    assert done.stdout == "out-one\nout-two"
+
+
+def test_the_verb_streams_the_childs_stdout_live_and_returns_its_code(tmp_path):
+    go = tmp_path / "go"
+    proc = _verb(tmp_path, _env(tmp_path, {"CHILD_WAIT": str(go), "CHILD_RC": "7"}), "-e", "low", *_child_args(tmp_path), popen=True)
+    try:
+        assert proc.stdout.readline() == "out-one\n"  # arrives while the child still runs
+        assert proc.poll() is None
+        go.write_text("x")
+        assert proc.wait(timeout=60) == 7
+    finally:
+        proc.kill()
+
+
+@pytest.mark.parametrize("args", [(), ("--", "true"), ("-e", "low"), ("-e", "low", "--"), ("-e", "low", "true"), ("-e", "turbo", "--", "true"),
+                                  ("-e", "low", "-m", "nope", "--", "true")])
+def test_the_verb_refuses_without_an_effort_a_known_seat_or_a_child(tmp_path, args):
+    done = _verb(tmp_path, _env(tmp_path), *args)
+    assert done.returncode == 2 and done.stderr.strip()
+    assert not (tmp_path / "hold_argv.json").exists() and not (tmp_path / "litellm_config.yaml").exists()
+
+
+def test_the_verb_runs_the_preflight_first(tmp_path):
+    done = _verb(tmp_path, _env(tmp_path, {"FAKE_LITELLM_VERSION": "1.109.9"}), "-e", "low", *_child_args(tmp_path))
+    assert done.returncode == 4 and "UNAVAILABLE" in done.stdout
+    assert not (tmp_path / "hold_argv.json").exists() and not (tmp_path / "child_env.txt").exists()
 
 
 # --- the record (requirements 2 and 9) -------------------------------------------------------------------------
