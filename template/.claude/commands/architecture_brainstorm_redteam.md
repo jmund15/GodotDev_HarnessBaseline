@@ -1,155 +1,125 @@
 ---
-allowed-tools: Bash(git grep:*), Bash(git ls-files:*), Bash(python3 .claude/tools/review_ledger.py:*), Bash(python3 .claude/tools/lens.py:*), Bash(python3 .claude/tools/post_check.py:*), Glob, Grep, Read, Workflow
 description: Red-team a drafted architecture or a live Socratic design step
+argument-hint: <design.md> [<section>...] [--auto]
 ---
 
-# /architecture_brainstorm_redteam — Adversarial Design Red-Team
+# Architecture Red-Team
 
-Red-teams an architecture design for design holes, then classifies every finding as a **design-hole** (analytical — Claude/the design can address it) or a **taste-fork** (depends on the user's vision/appetite — human-only). It runs in **two modes**:
+Attacks a design for holes through `/review`'s seat route, the same one `/review` diff mode uses, with [`agents/redteam_agents.md`](agents/redteam_agents.md) as the question set. Each finding is classed design-hole, taste-fork or dead-end. Two modes:
 
-- **Mode A — standalone (default):** one adversarial pass over a *drafted* design doc (or named sections) before it hardens into roadmap Parts.
-- **Mode B — interleaved:** dispatched *by* [`/architecture_brainstorm`](../skills/architecture_brainstorm/SKILL.md) when that skill is invoked with `--red_team`, firing a phase-scoped lens subset *between* Socratic steps so taste-forks become the next question and design-holes adjust the live design.
+- **Mode A, standalone:** one pass over a drafted design doc, or the sections named, before it hardens into roadmap Parts.
+- **Mode B, interleaved:** `architecture_brainstorm --red_team` fires it at a Socratic boundary on one in-flight decision (`skills/architecture_brainstorm/reference/red_team.md` owns the hooks).
 
-Both modes **augment** the Socratic dialogue — they never replace it (`feedback_dont_compress_socratic_on_rich_prompt`).
+Both modes add to the Socratic dialogue and never replace it.
 
-## The safety crux (read first)
+**The critic is a red-team, not a proxy user.** It attacks the design and surfaces the owner's decisions; it never makes one. `skills/_brainstorm_shared/appetite_invariant.md` owns the classification. Here, a finding whose answer depends on a tunable appetite is a taste-fork the critic presents with options and never picks, above all under `--auto`, where no owner is present.
 
-**The critic is a RED-TEAM, not a PROXY-USER.** It attacks the design's rigor and *surfaces* the decisions; it never *makes* a decision that is the user's to make.
+## When
 
-**[Shared]** See [`_brainstorm_shared/appetite_invariant.md`](../skills/_brainstorm_shared/appetite_invariant.md); it is the load-bearing classification contract for the critic panel. Critic-specific application: a finding whose answer depends on a tunable appetite is a **TASTE-FORK** the critic *presents* (with options) and **NEVER picks** — in either mode, and most especially in `--auto` where no user is present.
+- **Mode A:** at the `architecture_brainstorm` Step 7 review (`skills/architecture_brainstorm/reference/doc_and_review.md`), and for a design that spans Parts before design-lock (`skills/_brainstorm_shared/design_contract.md` clause 3).
+- **Mode B:** at the Step 2, 4 and 5 hooks, only when the skill runs with `--red_team`.
 
-## When to use
+## Arguments
 
-- **Mode B — interleaved:** the per-step adversarial pass during the `architecture_brainstorm` skill's Socratic-and-approaches Steps 2 and 4 and its Part-authoring Step 5 procedure. Its taste-forks become Socratic seeds for the user; its design-holes feed back into the live design before the next question or commitment review.
-- **Mode A — standalone:** the full-doc hardening pass at the `architecture_brainstorm` skill's Doc-and-review Step 7 self-review checklist, before the design hardens into roadmap Parts. This is also the independent adversarial pass the self-review procedure invokes.
+- `/architecture_brainstorm_redteam <design.md> [<section>...]`: Mode A over the doc, or the sections named.
+- Add `--auto` for the bounded loop below (Mode A only).
+- Mode B is called by the skill's hooks with the decision, never typed.
 
-Whether the design challenge is admitted follows [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Admission table, Design challenge row.
+With no argument, print these lines and stop. A design path that does not exist is named above the usage, and nothing is dispatched.
 
-## Step 0: Gather the input (mode-dependent, Claude-side — push-don't-pull)
+## 1. The subject
 
-The critics judge **pushed** content; they do NOT discover (intermittent fan-out search returns false-empties — `gotcha_workflow_fanout_search_false_absence`). Claude assembles, via reliable reads/git:
+Make the run directory `.claude/scratch/redteam/<topic-slug>/`.
 
-- **Mode A (drafted):** the design doc text (or the specific sections under review) + the `architecture_brainstorm` skill's Socratic-and-approaches Step 3 procedure (verified existing owner families and authored slots in the touched domain — `git grep` for `abstract class` / `interface I` + the relevant `semantic-search` hits) + the domain's gotchas + the framework-boundary rule.
-- **Mode B (interleaved):** the **single in-flight decision** — `{ the Socratic question, the user's tentative pick OR the live candidate approaches from the `architecture_brainstorm` skill's Socratic-and-approaches Step 4 procedure }` + the same abstraction inventory + domain gotchas. There is no drafted doc yet; do NOT fabricate one.
+- **Mode A:** the design path, and the sections under review.
+- **Mode B:** write `<run-dir>/decision.md` holding the Socratic question and either the owner's tentative pick or the live candidate approaches. No drafted doc exists yet, so never write one.
+- **Both:** the existing owner families and authored slots that `architecture_brainstorm` Step 3 verified in the touched domain, as paths (`skills/architecture_brainstorm/reference/socratic_and_approaches.md` §Step 3 — procedure).
 
-If Step 0.5 adds `rt-systemic` or `rt-vision`, extend the push accordingly: the relevant sections of adjacent topic-folder design docs (for `rt-systemic`) and a digest of the project's vision owner, the skill or doc its CLAUDE files name for product direction (for `rt-vision`). The lenses compare pushed adjacent-design excerpts; when excerpts are missing, report a coverage gap and obtain the relevant first-party source through a scoped search with liveness counts. Verify an empty result outside the fan-out before calling the design clean.
+## 2. Seat the lenses
 
-## Step 0.5: Compose the panel — fixed floor + risk-derived bespoke lenses
+- **Core five:** `rt-boundary`, `rt-abstraction`, `rt-failuremode`, `rt-yagni-scope` and `rt-testability`. Mode A and the Step 5 hook seat all five. An earlier Mode B hook seats the lenses whose `interleave:` line names its step.
+- **Triggered:** seat `rt-systemic` when a neighbouring committed design shares a touched subsystem, and add those designs' paths to the subject. Seat `rt-vision` when the design changes what the product offers its users, and add the path of the vision owner the project's `CLAUDE.md` names.
+- **Bespoke:** for each distinct, committed design risk no seated lens covers (a concurrency bet, a migration, a rollback), add a lens whose mandate names that failure mode and its evidence. Only Steps 4, 5 and 7 and Mode A have committed shape to attack.
+- **Completeness:** the brief also asks which failure mode no seated lens hunts. The answer seeds the next pass's bespoke lenses, or the report names it as an accepted gap. It never widens the current pass.
 
-The core lenses (Step 1) are the **floor**: guaranteed-minimum coverage, never dropped from a first round within their phase eligibility. They are deliberately generic; extending the panel to fit THIS design is the orchestrator's judgment (`feedback_prescribe_verification_not_cognition` — which lenses to run is cognition; that the floor runs at the seat width `orchestration` §2 sets, with liveness and taste-classification enforced, is verification).
+Seat the lenses once per pass. `--auto` rounds reuse the first round's set.
 
-**Seat map** (`orchestration` §2 *Sizing the width*): one seat per admitted lens; when `orchestration` §2's size or room rule merges, merge in this order: first structure (`rt-boundary` + `rt-abstraction`); then scope (`rt-yagni-scope` + `rt-testability`); last those two seats with `rt-failuremode` as one seat for the core lenses. In round 1 the core five stay the floor within their phase eligibility. Conditional and bespoke lenses keep their own seats, and Mode B's phase subsets run one seat per lens. The Model paragraph below pins a seat's effort.
+## 3. Review
 
-**Conditional core lenses** — add each when `execution_depth.md` §Mandate admission admits it; `python3 .claude/tools/lens.py get --shared <keys>` returns its mandate (`rt-systemic`, `rt-vision`).
+Run `/review` §1 to §3 on the subject, with these changes:
 
-**Bespoke lenses** — start from the sensitivity tags the design touches (`execution_depth.md` §Sensitivity tags), then add risks derived from the design's profile: domains touched, memorialized-gotcha density, what the design uniquely bets on (concurrency, migration or rollback included), stated-direction evolution pressure. Add a bespoke lens for each distinct, uncovered, committed design risk; its mandate names the failure mode and available evidence. If the review no longer fits, partition the design review without losing a risk. Eligible only where the design has committed shape: Steps 4/5/7 and Mode A.
+- **The questions** are `.claude/commands/agents/redteam_agents.md` with the seated lenses named, and each bespoke mandate written out, in place of `/review`'s six.
+- **The seats.** Mode A is architecture-scale, so it takes the cross-system seat as well. Mode B takes one seat.
+- **The claim check** runs as written. A Mode B quote cites `<run-dir>/decision.md`.
 
-**Completeness critic (optional)** — ask an independent completeness mandate only: *"given this design, which failure mode does no dispatched lens hunt?"* Its answer feeds the NEXT round's bespoke slots or is reported as an accepted gap — it never expands the current round mid-flight.
+Dispatch is mandatory: a model grading its own design gives up the independence the pass exists for. When no seat can launch, report `BLOCKED: no seat launched` and stop.
 
-Keep the core and triggered lenses; combine overlapping mandates only if each still reports coverage, and split independent risks across panels when a single panel exceeds the input or integration budget.
+**Liveness.** A seat that returns no findings file, or whose `## Coverage` lacks a seated lens, leaves the pass INCOMPLETE, never APPROVE: report `panel incomplete — <n>/<seated> lenses returned; cannot certify`. Then re-dispatch the missing lenses, or halt.
 
-Compose ONCE per pass; `--auto` rounds reuse the round-1 composition, and liveness (Step 1) asserts against the composed set.
+## 4. Report
 
-## Step 1: Dispatch the critic panel
+Read every finding before deciding any. Design-holes fold into the design: the session applies each one it keeps, per `/review` §4. Taste-forks go to the owner, and dead-ends halt.
 
-**Workflow sub-agent dispatch is MANDATORY — do NOT self-critique inline.** A model grading its own design defeats the adversarial independence the panel exists to provide (mirrors `plan_check`'s MANDATORY-dispatch discipline). When Workflow is unavailable, report `BLOCKED: Workflow unavailable` before dispatch and stop: the pass records through its run id (Step 2), and a Task panel has none.
-
-The core lenses (+ any Step 0.5 additions), each judging the pushed input. The mandates live in [`agents/redteam_agents.md`](agents/redteam_agents.md): run `python3 .claude/tools/lens.py get --shared <keys>` for only the seated lenses; `--shared` prepends the classification rule every lens applies, so each lens prompt carries it. Each lens's `interleave:` header line says which boundary it can fire at; most need committed design shape, so early Socratic steps run a reduced subset. The core five are `rt-boundary`, `rt-abstraction`, `rt-failuremode`, `rt-yagni-scope` and `rt-testability`.
-
-**Phase-scoped subsets for Mode B:** a step seats the core lenses whose `interleave:` line names it, plus Step 0.5 additions once approaches have shape; Step 5 / Mode A seats all core lenses plus Step 0.5 additions.
-
-**Model — pin every lens to the architect tier at its review effort, never the session model.** The ladder's selection line and *Review seats* bullet own the floor, and the fanout rows' `±` cells mark them down on architecture; a purely mechanical bespoke lens (rubric-matching, reference enumeration) may drop to that tier.
-
-**Ledger plan.** Before each pass, write the composed seats to `<run dir>/spec.json` (`{"mode": "design-redteam", "prefix": "rt", "seats": [{"key": "<lens key>", "effort": "<review rung>"}], "pins": {"panel": "<architect row>"}, "efforts": {"panel": "<review rung>"}, "fold": {"tier": "architect", "model": "<row>", "effort": "<rung>"}, "subjectFiles": ["<design path>"], "ledger": {"stage": "design", "subject": "doc:<design path>", "files": ["<design path>"], "scopeJson": "<scope file>"}}`) and run:
-
-```bash
-python3 .claude/tools/lens_briefs.py prepare --spec <run dir>/spec.json --out <run dir>
-```
-
-Run the `next:` call `prepare` prints, the fan-out's `--review` run: it places each seat by the ladder's selection line, prints a `NATIVE` Workflow call for the seats it keeps on this session's plan (issue it) and runs the rest as sidecars, and it prints the `--review-close` call that consolidates every seat once they have all ended (`reference/sidecar_dispatch.md` owns the recipe). `"target": "native"` keeps the `review_fanout.js` call, every seat on the session's plan.
-
-`prepare` briefs only the seats the ledger returns. The scope file holds `{"files": ["<design path>"]}` so a pass with no fold still records its rows over the design. The design path is each seat's must-read entry; write a design that is not yet a file to a scratch file first and name it in `subjectFiles`. Consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) Step 1.5.
-
-**Dispatch.** `reference/sidecar_dispatch.md` owns the fan-out recipe; the `native` target's flat `args` shape is `review_fanout.js` §USAGE CONTRACT's.
-Phase-scoped subsets and Step 0.5 additions are the spec's `seats`; a bespoke lens with no registry key carries its mandate text as that seat's `brief`. A purely mechanical bespoke lens may take the fanout tier; the orchestrator tier only by an explicit per-seat pin.
-
-**Liveness is mandatory — a silent-empty round is NOT a clean round.** The review marks a lens that errors, times out or returns an invalid shape `failed` or `uncovered` in its `coverage` (`perAgent` on the `native` target) and raises a flag. Before reporting or converging, confirm every dispatched lens key reads as returned. A merged seat reports each mandate's coverage per `orchestration` §2 *Sizing the width*, and a mandate it did not reach counts as missing. Any missing lens is INCOMPLETE, never APPROVE: surface `panel incomplete — N/<dispatched> lenses returned; cannot certify` and re-dispatch the missing lenses or halt.
-
-Each lens returns findings per the schema, classified by the registry's shared rule (design-hole → `FIX`/`PLAN`, taste-fork → `ASK`). One more class:
-- **Dead-end** → a design-hole with **no addressable fix within the design's constraints** (e.g. "cannot satisfy invariant X without breaking the framework boundary"). Encoded as `critical: true, action: PLAN` and named DEAD-END in the description. A design-hole with a named fix is FIX or a non-critical PLAN; `critical: true, action: PLAN` is reserved for DEAD-END: in this command `critical` marks a dead-end and overrides the protocol's §Critical Flag, so a severe design-hole states its weight in `minRigor`. It halts (see below) — it is not a taste-fork.
-
-## Step 2: Report
-
-The post-check recorded the pass from `args.ledger`.
-
-### Mode A — the structured hand-off block
-
-**Read every finding before adjudicating any.** The three groups below organize the report; they do not license reading only the critical group. A non-critical design-hole is still a defect with one right answer, and the cheapest place to catch it is before the design locks — a panel whose findings are partially read has been paid for and mostly wasted.
-
-Present findings in three groups, then a machine-branchable verdict consumed by the `architecture_brainstorm` skill's Doc-and-review Step 7 self-review checklist:
+### Mode A
 
 ```
-─── DESIGN-HOLES (addressable — fold into the design) ───
-<FIX/PLAN findings with the design section + the correction>
+─── DESIGN-HOLES (fold into the design) ───
+<each kept design-hole: the section and the correction>
 
-─── TASTE-FORKS (human-only — Socratic seeds; the critic did NOT decide these) ───
-<ASK findings: the question + options with their wins-when conditions + why it's taste>
+─── TASTE-FORKS (the owner's; the critic did not decide them) ───
+<each: the question, the options with their wins-when conditions, why it is taste>
 
-─── DEAD-ENDS (no fix within current constraints — escalate) ───
-<critical PLAN findings; each recommends reframe or re-architecture>
+─── DEAD-ENDS (no fix within the constraints) ───
+<each: the constraint, and whether to reframe or re-architect>
 
-DESIGN-HOLES:N   TASTE-FORKS:M   DEAD-ENDS:K   (lenses returned: X/<dispatched>)
+DESIGN-HOLES:N   TASTE-FORKS:M   DEAD-ENDS:K   (lenses returned: X/<seated>)
 ```
 
-| Verdict | Condition | Consuming-skill action |
+| Verdict | Condition | The skill's next step |
 |---|---|---|
-| **APPROVE** | 0 design-holes that count at the run's rigor (`orchestration` reference `rigor.md`), 0 dead-ends, X = dispatched (liveness OK); taste-forks batched | proceed to the user-review gate with the taste-batch |
-| **REVISE** | any design-hole that counts at the run's rigor, no dead-end; below-bar design-holes are listed `below bar: noted` | fold design-holes into the doc; re-review per `orchestration` §2 *Later rounds* |
-| **HALT** | any dead-end | reframe constraints or a fresh `/architecture_brainstorm` pass; do not loop |
-| **INCOMPLETE** | X < dispatched (a lens didn't return) | cannot certify — re-dispatch missing lenses; never read as APPROVE |
+| APPROVE | no kept design-hole, no dead-end, every seated lens returned | the owner review, with the taste batch |
+| REVISE | a kept design-hole, no dead-end | fold, then re-review only when `/review` §4's round test admits it |
+| HALT | any dead-end | reframe the constraints or start a fresh `/architecture_brainstorm` pass; never loop |
+| INCOMPLETE | a seated lens did not return | re-dispatch the missing lenses; never read as APPROVE |
 
-- **Default Mode A does NOT auto-revise.** Design-holes feed back into the design (Claude folds them in, or the Socratic addresses them); taste-forks go to the user; dead-ends halt for a reframe.
+### Mode B
 
-### Mode B — the compact per-decision block
-
-No full hand-off report — emit a tight block the arch skill folds back into the live loop, then return control:
+Print this block and return to the skill:
 
 ```
-─── red-team · <the question / tentative pick / approach under review> ───
-DESIGN-HOLE (adjust current approach): <FIX/PLAN findings, or "none">
-TASTE → next Socratic question: <each ASK reframed as the question to ask the user next>
-DEAD-END: <only if a critical PLAN surfaced — HALT and surface to the user>
-(lenses returned: X/<dispatched>)
+─── red-team · <the question, tentative pick or approaches> ───
+DESIGN-HOLE (adjust the current approach): <kept design-holes, or "none">
+TASTE → next Socratic question: <each taste-fork, phrased as the question to ask the owner>
+DEAD-END: <only if one surfaced: halt and surface to the owner>
+(lenses returned: X/<seated>)
 ```
 
-Routing back into `/architecture_brainstorm`: **design-holes** adjust the current tentative pick/approach before the next question; **taste-forks** become the **next Socratic question**; a **dead-end** halts the brainstorm for a reframe.
+A design-hole adjusts the tentative pick or approach before the next question. A taste-fork becomes the next Socratic question. A dead-end halts the brainstorm for a reframe.
 
-## Optional: `--auto` mode (Mode A only — trusted topics)
+## `--auto` (Mode A, trusted topics)
 
-`/architecture_brainstorm_redteam <design> --auto` runs a bounded **generate ↔ critique ↔ revise** loop for topics you trust the agents to harden. (When reached via `/architecture_brainstorm --red_team --auto`, this loop runs as the **Step-7 Mode A pass**; the interleaved Mode B steps still run human-gated, never in `--auto`.) Per round: snapshot the design as a blob subject ([protocol Step 4 *Fold subject*](agents/orchestrator_action_protocol.md#fold-subject)): root `.`, files `<design path>`, out `<snapshot manifest>`. Then dispatch the panel with `args.spillDir` and `args.fold` set to one `subjects` entry `{root: ".", snapshot, files: [<design path>]}`; the fold addresses **design-holes only**, and the session consumes the round per `orchestrator_action_protocol.md` Step 1.5 → **every** taste-fork accumulates into a running batch as an **open placeholder the design is parameterized over** — load-bearing or not, NEVER absorbed as a resolved decision. Each round after the first judges only the units revised since the previous round (delta review, per `orchestration` §2 *Later rounds*). Converge on complete, live lens coverage with no new design-holes that count at the run's rigor; halt on a dead-end or on non-convergence (`_brainstorm_shared/drive_spine.md` §Halts).
+`--auto` folds design-holes without the owner, for topics the owner trusts the agents to harden. Under `/architecture_brainstorm --red_team --auto` it runs as the Step 7 pass. The Mode B hooks stay owner-gated.
 
-**Machine-checked valves (each closes a fabrication path the audit identified — do NOT rely on prose alone):**
-- **Liveness valve.** Before treating "0 new design-holes that count at the run's rigor" as convergence, assert the round's `perAgent` shows every lens the round seated returned. Any missing lens is the INCOMPLETE verdict above: HALT `panel incomplete — N/<seated> returned; cannot certify convergence`.
-- **Dead-end valve.** After each round, scan returned findings for `critical === true && action === 'PLAN'`. Any hit → HALT unconditionally (this IS the dead-end shape per Step 1; do not depend on noticing the word "DEAD-END" in a description string). Reframe, don't iterate.
-- **No-owner ASK valve.** **In `--auto` there is no owner present:** `ASK` findings are NEVER auto-resolved — they only accumulate into the taste-batch (`_brainstorm_shared/appetite_invariant.md`).
+Each round runs §3, and the session folds the kept design-holes into the doc. A second round runs only when the fold changed the design's principles, solution or reach (`/review` §4). After that, the remaining findings go to the owner. Every taste-fork joins a running batch as an open placeholder the design is parameterized over, never as a resolved decision.
 
-**Hard rules for `--auto`:**
-- **The `--auto` output is always a DRAFT-FOR-REVIEW, never an approved design.** Convergence is advisory, not approval.
-- **No taste-fork is ever auto-answered or silently absorbed** — `_brainstorm_shared/appetite_invariant.md` owns the rule, including the downstream-inherited default.
-- **Batch-first, never deferred:** the user answers the taste-batch FIRST, then the design is reconciled against those answers. The answered batch is the approval per `_brainstorm_shared/design_contract.md` clause 8.
+Three checks run after each round:
 
-## Anti-patterns
+- **Liveness:** every seated lens returned, or the pass is INCOMPLETE and halts.
+- **Dead-end:** any dead-end heading halts unconditionally. Reframe; do not iterate.
+- **No owner:** a taste-fork is never resolved under `--auto`. It only joins the batch.
+
+The output is a draft for review, never an approved design. The owner answers the taste batch first, and the design is reconciled to those answers. That answered batch is the approval (`skills/_brainstorm_shared/design_contract.md` clause 8).
+
+## Rationalizations to refuse
 
 | Rationalization | Reality |
 |---|---|
-| "Run the full panel between every Socratic question." | Most core lenses need committed design shape — early-Step-2 they no-op. Mode B runs the phase-scoped subset (Step 1 table). Full panel is Step 5 / Mode A. |
-| "This question looks analytical, the critic can just answer it." | If its answer depends on coupling/scope/risk/feel appetite, it's taste — present options, never pick. Erring toward taste is the safe default (`_brainstorm_shared/appetite_invariant.md`). |
-| "`--auto` converged, so the design is ready." | `--auto` output is a draft for review. Convergence ≠ approval; the user still answers the taste-batch and approves. |
-| "Zero findings came back — the design is clean." | A missing `perAgent` lens is INCOMPLETE, not APPROVE (Step 1 liveness). |
-| "This taste fork doesn't block the current design, fold it in quietly." | Any fork that sets a convention/default/naming precedent is load-bearing-for-downstream → surfaced, never absorbed. |
-| "It's a dead-end but let me keep the `--auto` loop iterating to fix it." | The dead-end valve HALTs on any `critical PLAN` (Step 1). |
-| "Push the whole design into each critic prompt to be thorough." | Push it through the shared `contextPrefix` and keep prompts to mandates (Step 1 dispatch; `gotcha_workflow_args_generation_fidelity`). |
-| "I'll just answer the panel mandates myself to save a dispatch." | Dispatch is MANDATORY. A model critiquing its own design isn't adversarial — it's the failure the panel exists to prevent. |
-| "Use this instead of the Socratic brainstorm to save time." | It AUGMENTS the Socratic dialogue (`feedback_dont_compress_socratic_on_rich_prompt`); it sharpens questions and catches design holes; it does not replace the human design conversation. |
-| "Add a bespoke 'overall quality' lens to catch whatever the core misses." | A bespoke mandate names the concrete failure mode it hunts (Step 0.5) — an unfalsifiable lens produces noise findings that cost triage. The completeness critic is the sanctioned catch-all, and it feeds the next round, not this one. |
-| "More lenses = more rigor; add every imaginable concern." | Add a lens for each distinct, uncovered, committed design risk; partition independent risks when one panel exceeds the input or integration budget. |
+| "Run all five lenses between every Socratic question." | Most lenses need committed shape. An early hook seats the lenses its step names (§2). |
+| "This question looks analytical; the critic can answer it." | An answer that depends on coupling, scope, risk or feel appetite is taste: present options, never pick. |
+| "`--auto` converged, so the design is ready." | `--auto` output is a draft. The owner still answers the taste batch and approves. |
+| "No findings came back, so the design is clean." | A missing findings file or coverage line is INCOMPLETE, not APPROVE. |
+| "This taste-fork doesn't block the design; fold it in quietly." | A fork that sets a convention, default or naming precedent binds later work: surface it. |
+| "It's a dead-end, but keep looping to fix it." | A dead-end halts (`--auto` checks). |
+| "I'll answer the lenses myself and save a dispatch." | Dispatch is mandatory. A model critiquing its own design is the failure the pass exists to prevent. |
+| "Use this instead of the Socratic brainstorm to save time." | It sharpens questions and catches holes. It does not replace the owner's design conversation. |
+| "Add a bespoke 'overall quality' lens to catch the rest." | A bespoke lens names the failure mode it hunts. The completeness question is the catch-all, and it feeds the next pass. |

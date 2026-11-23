@@ -18,11 +18,11 @@ Fans a single cluster's **Diverge** phase out across N generator agents — each
 
 ## When to use
 
-Fan-out is opt-in; default `/idea_brainstorm` stays single-agent. Whether it is admitted for a cluster follows [`execution_depth.md`](../skills/_brainstorm_shared/execution_depth.md) §Admission table. This command keeps the lens rubric below.
+Fan-out is opt-in; default `/idea_brainstorm` stays single-agent. [`/idea_brainstorm`](../skills/idea_brainstorm/SKILL.md) Step 3 *Optional `--fan_out`* says when a cluster takes it.
 
 ## Step 0: Assemble the cluster CONTEXT (Claude-side — push-don't-pull)
 
-The generators judge **pushed** content; they do NOT discover. Fanned-agent `Grep`/`Glob`/`semantic-search` returns intermittent false-empties (`gotcha_workflow_fanout_search_false_absence`), so a generator told to "search the vault for the boundary" will fabricate a clean run off an empty read. Claude assembles ONE flat `contextPrefix` string from the live brainstorm + the design doc / `decisions.md` frontier already in context:
+The generators judge **pushed** content; they do NOT discover. Fanned-agent `Grep`/`Glob`/`semantic-search` returns intermittent false-empties, so a generator told to "search the vault for the boundary" will fabricate a clean run off an empty read. Claude assembles ONE flat `contextPrefix` string from the live brainstorm + the design doc / decisions.md frontier already in context:
 
 - **Scope** — IN (what this cluster owns) / OUT (what sibling clusters own; tell generators NOT to produce it).
 - **Boundary** — the named systems the candidates must *reference, never redefine* (Resource shapes, type families, invariants). Quote them; do not make the agent re-derive them.
@@ -62,7 +62,7 @@ The lens *keys* and *axis* change per cluster; the rubric (orthogonal, spanning,
 
 **Dispatch is MANDATORY — do NOT self-generate inline.** The independence is the value: one model brainstorming four lenses sequentially in its own context cross-contaminates them (lens 2 sees lens 1's output and converges). Separate agents stay blind to each other — that's what produces the divergence.
 
-**Keep `args` FLAT** (`gotcha_workflow_args_generation_fidelity` — large/nested/escape-dense args produce malformed JSON that `JSON.parse` throws on). Push the CONTEXT ONCE via `contextPrefix` (the engine prefixes it to every lens prompt, so a second push duplicates it into each); keep each lens `instr` to its mandate only; declare per-cluster typed fields via the flat `genFields` descriptor list (the engine builds the schema from it — do NOT nest a JSON Schema object into `args`):
+**Keep `args` FLAT**: large, nested or escape-dense args produce malformed JSON that `JSON.parse` throws on. Push the CONTEXT ONCE via `contextPrefix` (the engine prefixes it to every lens prompt, so a second push duplicates it into each); keep each lens `instr` to its mandate only; declare per-cluster typed fields via the flat `genFields` descriptor list (the engine builds the schema from it — do NOT nest a JSON Schema object into `args`):
 
 ```
 Workflow({
@@ -86,15 +86,15 @@ Workflow({
 })
 ```
 
-**Model:** pin every generator and `args.critic` by the ladder's selection line: divergence is open-ended design no check scores (architect tier), and criticism is a rubric check (fanout tier). A mechanical lens may take a fanout-tier row, with its `tier` beside the `model`.
+**Model:** pin every generator and `args.critic` from `orchestration`'s model table by work shape: divergence is open-ended design no check scores (the architect row), and criticism is a rubric check (the fanout row). A mechanical lens may take a fanout row, with its `tier` beside the `model`.
 
-**Fallback (a JSON-parse failure on dispatch, or a very large CONTEXT):** write each generator's flat prompt (CONTEXT + its lens mandate inline, under the `GEN_GUARD` discipline: work from CONTEXT only, no self-filter, no condense) to a scratch file and run them as one `/delegate` dispatch, each job pinned by the ladder's selection line. Merge and critique by hand.
+**Fallback (a JSON-parse failure on dispatch, or a very large CONTEXT):** write each generator's flat prompt (CONTEXT + its lens mandate inline, under the `GEN_GUARD` discipline: work from CONTEXT only, no self-filter, no condense) to a scratch file and run them as one `/delegate` dispatch, each job pinned from `orchestration`'s model table. Merge and critique by hand.
 
 ## Step 3: Liveness, then hand back to Claude for curation
 
 **The engine returns** `{ rawCount, candidates:[...], critiques:[{key,notes,proposedAdditions}], perGenerator:[{key,count,dead}], perCritic:[{key,notes,additions,dead}] }`.
 
-**Liveness is mandatory — a silent-empty lens is NOT a clean lens.** A live divergence lens always returns ~`genCount` candidates, so a `perGenerator` entry with `count: 0` or `dead: true` means it errored / timed out / returned malformed JSON — NOT that the lens found nothing (`arch_rule_autonomous_loop_positive_liveness`). Before curating: confirm every generator's `count > 0` and `dead: false`, and every critic's `dead: false`. If any died → do NOT treat the pool as complete; re-dispatch the missing lens (or surface `fan-out incomplete — N/<dispatched> generators returned`).
+**Liveness is mandatory — a silent-empty lens is NOT a clean lens.** A live divergence lens always returns ~`genCount` candidates, so a `perGenerator` entry with `count: 0` or `dead: true` means it errored / timed out / returned malformed JSON — NOT that the lens found nothing. Before curating: confirm every generator's `count > 0` and `dead: false`, and every critic's `dead: false`. If any died → do NOT treat the pool as complete; re-dispatch the missing lens (or surface `fan-out incomplete — N/<dispatched> generators returned`).
 
 **Then curation runs in the skill's main loop, NOT here.** Hand the raw pool + critic annotations back to `/idea_brainstorm` Step 3:
 
@@ -114,6 +114,6 @@ Workflow({
 ## Cross-references
 
 - [`/idea_brainstorm`](../skills/idea_brainstorm/SKILL.md) — fires this command at Step 3 via `--fan_out`; owns Filter/Hone/Cluster/present + the per-cluster user-react loop + the Hard Gate.
-- The coding layer's architecture red-team command — the mirror precedent (command + `review_fanout.js` engine + per-step skill hooks); shares the push-don't-pull, flat-`args`, MANDATORY-dispatch, and liveness discipline.
+- [`/architecture_brainstorm_redteam`](architecture_brainstorm_redteam.md) — the design-side counterpart; shares the MANDATORY-dispatch and liveness discipline. Its critics review a design through `/review`'s seat route (the one `/review` diff mode uses); this command's critics annotate a candidate pool inside `idea_fanout.js`, so they stay on that engine.
 - `.claude/workflows/idea_fanout.js` — the engine (parameterized: `contextPrefix` + `generators` + optional `critics` / `genFields` / `genCount` / per-agent `model`).
-- **File-based memory:** `gotcha_workflow_fanout_search_false_absence` (push-don't-pull), `gotcha_workflow_args_generation_fidelity` (flat args), machine-wide single-flight tools (no per-agent test, build or language-server run), `feedback_no_unilateral_condensation` (raw seeds survive), `arch_rule_autonomous_loop_positive_liveness` (silent-empty ≠ clean).
+- Generators and critics run no test, build or language server: those tools are single-flight per machine.

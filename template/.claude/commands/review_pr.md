@@ -1,197 +1,52 @@
 ---
 disable-model-invocation: true
-allowed-tools: Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(git log:*), Bash(git diff:*), Glob, Grep, Read, Workflow
-description: Thorough code review of a single PR or unstaged changes
+description: Review one PR, or the uncommitted changes, through /review diff mode and report a merge verdict
+argument-hint: "[<PR number>]"
 ---
 
-Review a single PR (or unstaged changes) for missed errors, noncompliance, bad design, TDD compliance, and overall code quality.
+# Review PR
+
+Reviews one pull request, or the working tree's uncommitted changes, through `/review` diff mode with the code and test checklists, then adds the PR's hygiene and a merge verdict. It reports and applies nothing: the owner, or the batch command that called it, owns the PR's branch and applies the fixes.
 
 ## Arguments
-- `$ARGUMENTS` — Parsed as: `[PR_NUMBER] [ASPECT_FLAGS...]`
-  - **PR number** (optional): Integer. If provided, review that PR's diff. If omitted, review unstaged changes on current branch.
-  - **Aspect flags** (optional): One or more of `code`, `tests`, `errors`, `types`, `data`, `pool`, `transcript`, `full`. Default: `full`.
-  - Examples:
-    - `/review_pr` — Review unstaged changes, all aspects
-    - `/review_pr 5` — Review PR #5, all aspects
-    - `/review_pr 5 tests errors` — Review PR #5, only test analyzer and error hunter
-    - `/review_pr code` — Review unstaged changes, only code reviewer
-  - **Parsing rule:** First argument is a PR number if it's a positive integer. All remaining arguments are aspect flags.
 
-## Phase 1: Gather Context
+- `/review_pr <N>`: PR mode, over PR `<N>`.
+- `/review_pr`: pre-commit mode, over the uncommitted changes of the current checkout.
 
-### 1a. Determine scope
-- **PR number given** → `gh pr diff <N> --patch` for the diff, `gh pr view <N> --json headRefName,title,body,additions,deletions,changedFiles` for metadata
-- **No PR number** → `git diff` for unstaged changes on current branch (pre-commit review mode)
+An argument that is not a positive integer prints these two lines and stops. A PR `gh pr view` cannot find is named above the same usage, and nothing is dispatched.
 
-### 1b. Read all changed files at HEAD (full context, not just diff hunks)
-For each file in the diff, read the full file content. Agents need surrounding context to judge design quality.
+## 1. Fix the subject and its root
 
-**Scope cap (>20 changed files):** Follow the [Shared Scoping Rules](agents/review_agents.md#shared-scoping-rules). Ask the user before proceeding.
+- **PR mode.** Run `gh pr view <N> --json number,title,body,baseRefName,headRefOid,additions,deletions,changedFiles`. The root is the checkout whose `HEAD` is `headRefOid` in `git worktree list`. When none is, run `git fetch origin pull/<N>/head` and `git worktree add --detach .claude/worktrees/pr<N> <headRefOid>`; `/worktree_prune` removes it later. The range is `<base>..<headRefOid>`, where `<base>` is `git merge-base origin/<baseRefName> <headRefOid>`.
+- **Pre-commit mode.** The subject is `--files` with every path `git status --porcelain` lists, and the root is the current checkout. When it lists nothing, print `nothing to review` and stop.
+- **A re-review after fixes** runs only when `/review` §4's round test admits a second round. Its range starts at the head the first round reviewed.
 
-**Submodule changes:** If the diff shows a submodule pointer change (single line changing the commit hash), fetch the actual submodule diff so review agents can see what changed:
-```bash
-# Extract old and new commit hashes from the PR diff
-git -C <submodule> diff <old-commit>..<new-commit> --stat   # summary
-git -C <submodule> diff <old-commit>..<new-commit>           # full diff
-```
-Include this submodule diff in the CONTEXT block alongside the project diff. Without this, agents only see a single hash-change line and miss all submodule code changes.
+The root is passed to `/review` §3 as the claim-check root. A PR's quotes checked against another branch read as fabricated.
 
-### 1c. Classify the PR
+## 2. Review
 
-Classify using the [PR Classification](agents/pr_classification.md) tables (Domain + Type).
+Run `/review` diff mode §1 to §4 on that subject. The brief adds:
 
-### 1d. Load project context
-1. Read the [Architecture Philosophy Skill](/.claude/skills/architecture_philosophy/SKILL.md) — this is the primary compliance reference
-2. Read CLAUDE.md §Development Philosophy: Hybrid TDD — the project's test-first policy, for TDD compliance checks
-3. Search auto-memory with single-keyword searches for each domain touched:
-   - one key term per touched domain (e.g. "test" for Logic, the data format's name for Data)
-   - Refactors: search "refactor"
+- **This command's checklists:** `.claude/skills/architecture_philosophy/SKILL.md`, `.claude/commands/checklists/code_quality.md` and `.claude/commands/checklists/test_quality.md`.
+- **PR mode:** the PR's title and body, verbatim, as the author's stated intent.
 
-### 1e. Find transcript summaries (PR mode only)
-1. Get commit date range: `git log main..<branch> --format="%ai" | sort` → earliest and latest
-2. List transcript summaries: all `.summary.json` files in `logs/transcript_backups/`
-3. Match by filename timestamp (format: `YYYYMMDD_HHMMSS`) within commit date range (+-1 hour buffer)
-4. From matched summaries, extract:
-   - User messages with `"correction"` signal → list of `content_preview` strings
-   - User messages with `"instruction"` signal → original requirements
-   - `metadata.total_messages` / `metadata.total_tool_calls` → session complexity
-   - Count distinct session ID prefixes in matched filenames → compaction count
-5. If no matches found, skip silently. Note "No transcript data" in report.
+`/review` §4 decides each finding here and applies none. Each kept finding goes into the report with the change it asks for.
 
----
+## 3. PR hygiene (PR mode)
 
-## Phase 2: Launch Review Sub-Agents
+Check three items against the `gh pr view` output and the diff:
 
-Parse aspect flags from `$ARGUMENTS`. Default is `full` (all agents).
+- The title states the change.
+- The body states what changed and how it was tested.
+- A change to logic ships the tests that drive it.
 
-### 2a. Load agent templates (MANDATORY)
+## 4. Report
 
-Read the canonical agent template file and inject its contents into subagent prompts:
-```
-Read: /.claude/commands/agents/review_agents.md
-```
-This file contains all agent definitions, spawn rules, scoring rubric, and fix classification. **Do NOT use inline/hardcoded agent templates — the canonical file is the single source of truth.**
+Print `/review` §5's report, then the hygiene items, then the verdict:
 
-### 2b. Assemble shared context
+- **REVISE** when a kept finding stands unfixed or an owner fork is open. Name each one.
+- **APPROVE** otherwise.
 
-**CONTEXT block** — assemble a string containing:
-- The full diff (from `gh pr diff`)
-- Full file contents of all changed files (read in Phase 1b)
-- auto-memory gotchas for touched domains (from Phase 1d)
-- Architecture Philosophy rules summary (key rules, not full file — keep context efficient)
-- Transcript corrections (from Phase 1e, if found)
-- The Finding Schema from `orchestrator_action_protocol.md` (so agents know the output format)
+Pre-commit mode prints `/review` §5's report alone. It has no hygiene and no verdict, because nothing is being merged.
 
-**Checklist injection** — read and split the code quality checklist into targeted sections:
-- Read `/.claude/commands/checklists/code_quality.md`:
-  - Extract **Compliance (C) + Design (D) + Semantics (S)** sections → `{{CHECKLIST_CDS}}` (for code-reviewer)
-  - Extract **Robustness (R) + Performance (P)** sections → `{{CHECKLIST_RP}}` (for error-hunter)
-  - Extract **Intuitiveness (I)** section → `{{CHECKLIST_I}}` (for type-reviewer)
-- Read `/.claude/commands/checklists/test_quality.md` → `{{TEST_QUALITY_CHECKLIST}}` (for test-analyzer)
-
-**If either checklist file cannot be read, STOP and report the error — do not proceed.**
-
-### 2c. Select the roster, then dispatch via the review-fanout workflow
-
-**Roster selection** (do this in-context — it depends on the diff):
-- **ASPECT FILTER:** include only agents whose aspect tag matches the requested flags. `full` = all agents.
-- **CONDITIONAL AGENTS:** data-integrity only for `.tres`/`.tscn` changes; pool-lifecycle only for pool/ability-lifecycle changes; transcript-auditor only if transcript summaries were found.
-- **Available agents:** code-reviewer, test-analyzer, error-hunter, type-reviewer, data-integrity, pool-lifecycle, transcript-auditor.
-
-For each selected agent, build its prompt from the `review_agents.md` template, substituting `{{CONTEXT}}` (the block from 2b), `{{PR_NUM}}`, `{{BRANCH}}`, `{{CHECKLIST_CDS}}`, `{{CHECKLIST_RP}}`, `{{CHECKLIST_I}}`, `{{TEST_QUALITY_CHECKLIST}}`, `{{TRANSCRIPT_CORRECTIONS}}`.
-
-Write each seat's assembled prompt to its own file under `.claude/scratch/review_pr/` and the 2b CONTEXT block to one context file, then write the jobs file one job per seat (`reference/sidecar_dispatch.md` §review panel: `label`, `mandates: [<agent key>]`, `mustRead`, `alias` a registry row per the template's model tier, `promptFile`, `effort`, `kind: "reviewer"`, `schemaFile`, `workdir`, `contextFiles`) and dispatch them all through the fan-out, which places each seat by the ladder's selection line, runs the sidecars in parallel and consolidates per Step 1 of the action protocol:
-
-```bash
-python3 .claude/tools/sidecar_fanout.py .claude/scratch/review_pr/jobs.json --review --out .claude/scratch/review_pr/out --detach
-```
-
-A seat it keeps on this session's plan comes back as a printed `NATIVE` Workflow call (issue it) and the `--review-close` call that consolidates every seat once they have all ended. The read-only profile and the single-flight rail come from each seat's `reviewer` kind, so no agent can run the project's regression gate or another single-flight tool concurrently. `<out>/review.json` holds the result: `findings` as the grouped view, `sources`, per-seat `coverage` and `verification`. Do not re-spawn agents manually.
-
-### Phase 2 Completion
-
-The fan-out already performed **Step 1 (Merge & Deduplicate)** of the [Orchestrator Action Protocol](agents/orchestrator_action_protocol.md) — its original findings remain in `sources`, while `findings` is a sorted/grouped view; account for every source ID. Continue with the rest of the protocol yourself (these need the live-file/user access the workflow lacks):
-
-1. **Step 1.5** — consume the result per [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md); the report's `held` ids and failed checks stay visible first.
-2. **Steps 2–4** — present the unified report, add NOTE synthesis, then rule the held ids with the user.
-
----
-
-## Phase 3: Present Report
-
-Follow the **Orchestrator Action Protocol** report format. Present all findings grouped by action tier:
-
-```
-╔══════════════════════════════════════════════════════╗
-║           PR REVIEW: #<N> — <title>                   ║
-╠══════════════════════════════════════════════════════════╣
-║ Domain: <domains>  │  Verdict: <V>                    ║
-║ Files: <count> (+<add> -<del>)  │  Tests: <new count> ║
-║ Session: <compactions> compactions, <corrections> corrections ║
-╚══════════════════════════════════════════════════════════╝
-
-## FIX — Auto-applied on confirmation (<count>)
-<N>. [<agent>] <description>  [<category>] [CRITICAL]
-   → <file>:<line>
-   → OLD: `<exact code>`
-   → NEW: `<replacement code>`
-   → <rationale>
-
-## ASK — Needs your input (<count>)
-<N>. [<agent>] <description>  [<category>] [CRITICAL]
-   → <file>:<line>
-   → Question: <specific question>
-   → Options: <each option with its wins-when condition>
-   → <rationale>
-
-## PLAN — Larger changes (<count>)
-<N>. [<agent>] <description>  [<category>]
-   → Scope: <affected files/areas>
-   → Approach: <options[0]> (open: <question>)
-   → <rationale>
-
-## Notes (orchestrator-synthesized, if applicable)
-- <cross-agent patterns or observations>
-
-## Transcript Context (if available)
-- <N> corrections during implementation session
-- Key corrections: <list content_preview strings>
-- Session complexity: <messages> messages, <tool_calls> tool calls, <compactions> compactions
-
-## PR Hygiene
-- Title: <OK | NEEDS UPDATE — suggest better title>
-- Description: <OK | MISSING — draft suggested description>
-- Tests included: <YES | NO — flag if Logic Domain changes lack tests>
-
-## Verdict
-<APPROVE | APPROVE WITH NOTES | REVISE> (the protocol's scale, `agents/orchestrator_action_protocol.md` §Verdict Logic)
-- APPROVE: nothing needs action before merge. APPROVE reads only findings that count at the run's rigor (`orchestration` reference `rigor.md`); below-bar findings are listed `below bar: noted`.
-- APPROVE WITH NOTES: addressable non-critical findings remain, and none blocks merge
-- REVISE: a critical finding, an unresolved ASK, or an open PLAN in the PR's scope
-```
-
-**Note:** The calling orchestrator (`/review_prs` Phase 2, or the user) handles fix application per the Orchestrator Action Protocol.
-
-If reviewing unstaged changes (no PR number), omit PR-specific sections (PR Hygiene title/description, Verdict) and present as a pre-commit code quality report.
-
----
-
-## Phase 5: Regression Gate (PR mode only)
-
-If the PR contains code changes, run the project's regression gate (`change_control` §Gate cadence names it) after the review but before issuing the final verdict. If the gate fails, the verdict MUST be `REVISE` regardless of code review findings.
-
-**Skip this phase when a batch orchestrator invoked you.** It runs the gate once itself; N concurrent PR agents each running it would collide on the single-flight machine slot. Issue the verdict from review findings and note the gate as orchestrator-deferred.
-
-Note: For unstaged changes (pre-commit review mode), the regression gate is the caller's responsibility (e.g., `/commit_push` runs it separately).
-
----
-
-## Constraints
-
-- **Read-only** — this command never modifies code, switches branches, or pushes changes (except the regression gate, which only reads)
-- **No GitHub posting** — output is local terminal only
-- **Load skills first** — Architecture Philosophy and Testing skills are the compliance reference
-- **Search Memory** — domain-specific gotchas inform what to look for
-- **Report honestly** — the reporting filter is [`orchestrator_action_protocol.md`](agents/orchestrator_action_protocol.md) §Reporting Filter.
-- **Cite rules** — every finding must reference the specific CLAUDE.md rule, Architecture Philosophy pattern, or Testing convention it violates
-- **Full file context** — agents read complete files, not just diff hunks, to judge design quality in context
+The report stays in the terminal and the run directory. Nothing is posted to GitHub.
