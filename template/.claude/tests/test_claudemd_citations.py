@@ -201,5 +201,9 @@ def main():
     return 1 if FAILURES else 0
 
 
+def test_proof():
+    assert main() == 0
+
+
 if __name__ == "__main__":
     sys.exit(main())

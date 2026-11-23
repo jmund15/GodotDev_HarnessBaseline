@@ -1,4 +1,7 @@
 """Real hook-payload proofs for session-owned overnight state."""
+import contextlib
+import importlib.util
+import io
 import json
 import os
 import re
@@ -6,11 +9,17 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 HOOK = Path(__file__).resolve().parents[1] / "hooks/overnight_ask_guard.py"
+sys.path.insert(0, str(HOOK.parent))
+_spec = importlib.util.spec_from_file_location("overnight_ask_guard_under_test", HOOK)
+guard = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(guard)
 
 
 class OvernightTests(unittest.TestCase):
@@ -22,11 +31,19 @@ class OvernightTests(unittest.TestCase):
     def call(self, *args, sid="one", payload=None):
         env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.root),
                "CLAUDE_CODE_SESSION_ID": sid, "CLAUDE_SESSION_ID": ""}
-        result = subprocess.run([sys.executable, str(HOOK), *args],
-                                input=json.dumps(payload or {}), text=True, capture_output=True,
-                                env=env, timeout=60)
-        self.assertNotIn("Traceback", result.stderr)
-        return result
+        return self.run_main(args, payload or {}, env)
+
+    @staticmethod
+    def run_main(args, payload, env, real_root=False):
+        """The hook's main() in this process: the decisions are in-process cases (T6); only the entry-point
+        case below spawns the script. An uncaught exception propagates, which the spawned form showed as a Traceback.
+        The checkout-root lookup spawns git, so it is the identity here except in the linked-worktree case,
+        which is its one check (tests/test_checkout_root.py covers the lookup itself)."""
+        out, err = io.StringIO(), io.StringIO()
+        root = guard.checkout_root if real_root else str
+        with mock.patch.dict(os.environ, env), mock.patch.object(sys, "stdin", io.StringIO(json.dumps(payload))),                 mock.patch.object(guard, "checkout_root", root),                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = guard.main([str(HOOK), *args])
+        return types.SimpleNamespace(returncode=rc, stdout=out.getvalue(), stderr=err.getvalue())
 
     def decision(self, sid="one", tool="AskUserQuestion", env_sid="one"):
         result = self.call(sid=env_sid, payload={"tool_name": tool, "session_id": sid, "cwd": str(self.root)})
@@ -674,14 +691,32 @@ class OvernightTests(unittest.TestCase):
             subprocess.run(["git", *args], cwd=main, env=git_env, check=True, capture_output=True)
         env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PROJECT_DIR"}
         env.update({"CLAUDE_CODE_SESSION_ID": "one", "CLAUDE_SESSION_ID": ""})
-        arm = subprocess.run([sys.executable, str(HOOK), "--arm", "finish"], cwd=linked, env=env,
-                             capture_output=True, text=True, timeout=60)
+        with mock.patch.dict(os.environ, env, clear=True):
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            cwd = os.getcwd()
+            os.chdir(linked)
+            try:
+                arm = self.run_main(["--arm", "finish"], {}, os.environ.copy(), real_root=True)
+                status = self.run_main(["--status"], {}, os.environ.copy(), real_root=True)
+            finally:
+                os.chdir(cwd)
         self.assertEqual(0, arm.returncode, arm.stderr)
         self.assertTrue((main / ".claude/scratch/overnight/active-one.json").exists())
         self.assertFalse((linked / ".claude/scratch/overnight/active-one.json").exists())
-        status = subprocess.run([sys.executable, str(HOOK), "--status"], cwd=linked, env=env,
-                                capture_output=True, text=True, timeout=60)
         self.assertTrue(json.loads(status.stdout)["armed"])
+
+    def test_the_spawned_script_arms_and_denies_an_ask(self):
+        """The one spawned case: the script as the harness runs it, argv for --arm and a stdin payload for the hook."""
+        env = {**os.environ, "CLAUDE_PROJECT_DIR": str(self.root), "CLAUDE_CODE_SESSION_ID": "one",
+               "CLAUDE_SESSION_ID": ""}
+        arm = subprocess.run([sys.executable, str(HOOK), "--arm", "finish"], text=True, capture_output=True,
+                             env=env, timeout=60)
+        self.assertEqual(0, arm.returncode, arm.stderr)
+        ask = subprocess.run([sys.executable, str(HOOK)], input=json.dumps(
+            {"tool_name": "AskUserQuestion", "session_id": "one", "cwd": str(self.root)}),
+            text=True, capture_output=True, env=env, timeout=60)
+        self.assertEqual(0, ask.returncode, ask.stderr)
+        self.assertEqual("deny", json.loads(ask.stdout)["hookSpecificOutput"]["permissionDecision"])
 
     def test_malformed_hook_input_fails_open(self):
         result = self.call(payload=["not an object"])

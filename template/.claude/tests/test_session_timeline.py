@@ -9,7 +9,6 @@ and asserts the one bucket rule it names. Absent and unreadable inputs stay dist
 """
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -140,29 +139,18 @@ class PartitionTests(unittest.TestCase):
         self.assertEqual(got["commit_secs"], [40.0])
         self.assertEqual(got["big_results"], {"n": 1, "chars": 20001})
 
-    def test_foreground_test_budget_is_the_runners_constant(self):
-        sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
-        try:
-            import harness_tests
-        finally:
-            sys.path.pop(0)
+    def test_foreground_test_budget_is_the_modules_constant(self):
         rows = [owner(1, "go"),
                 assistant(2, "a", [tool_use("t1", "Bash", command="bash .claude/tests/test_z.sh")]),
                 result(52, "t1")]
-        saved = harness_tests.COMMIT_BUDGET_S
-        harness_tests.COMMIT_BUDGET_S = 60
+        saved = session_timeline.FG_TEST_BUDGET_S
         try:
+            session_timeline.FG_TEST_BUDGET_S = 60
             self.assertEqual(self.part(rows)["fg_test_over_budget"], {"n": 0, "secs": 0.0})
-            harness_tests.COMMIT_BUDGET_S = 45
+            session_timeline.FG_TEST_BUDGET_S = 45
             self.assertEqual(self.part(rows)["fg_test_over_budget"], {"n": 1, "secs": 50.0})
         finally:
-            harness_tests.COMMIT_BUDGET_S = saved
-
-    def test_runner_import_leaves_scripts_off_the_search_path(self):
-        probe = ("import os, sys; sys.path.insert(0, %r); import session_timeline; session_timeline.runner(); "
-                 "print(any(os.path.basename(p) == 'scripts' for p in sys.path))" % os.path.join(HERE, "..", "tools"))
-        got = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
-        self.assertEqual(got.stdout.strip(), "False")
+            session_timeline.FG_TEST_BUDGET_S = saved
 
     def test_bookkeeping_messages_name_no_runner_and_tool_messages_count(self):
         rows = [owner(0),

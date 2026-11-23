@@ -45,13 +45,12 @@ def grant_errors(texts):
             continue  # a profile lane ships only its own commands; an absent command is not this proof's subject
         head, _, body = texts.get(rel, '').partition('\n---\n')
         grant = re.search(r'^allowed-tools:(.*)$', head, re.M)
-        if not grant:
+        called = [t for t in LEDGER_TOOLS if re.search(r'python3 \.claude/tools/%s\.py' % t, body)]
+        if called and not grant:  # a command that no longer runs a ledger tool owes no grant line
             errors.append('%s has no allowed-tools line' % rel)
             continue
-        for tool in LEDGER_TOOLS:
-            called = re.search(r'python3 \.claude/tools/%s\.py' % tool, body)
-            covered = 'Bash(python3 .claude/tools/%s.py:*)' % tool in grant.group(1) or 'Bash(python3:*)' in grant.group(1)
-            if called and not covered:
+        for tool in called:
+            if 'Bash(python3 .claude/tools/%s.py:*)' % tool not in grant.group(1) and 'Bash(python3:*)' not in grant.group(1):
                 errors.append('%s calls %s.py without a grant' % (rel, tool))
     for name in SNAPSHOT_COMMANDS:
         rel = 'commands/%s.md' % name
