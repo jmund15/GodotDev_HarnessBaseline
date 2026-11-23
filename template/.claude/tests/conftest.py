@@ -9,6 +9,12 @@ capture already points at its own files, so the child's output still lands in th
 import os
 import subprocess
 
+# Fixture repos are copied while their template's git may still be writing: `git commit` detaches `maintenance run --auto`
+# (an `objects/maintenance.lock`, then packs), and a `copytree` racing it raises `shutil.Error`. No test wants background
+# git work, so every git a test spawns (also the floor's own, and `git init` templates) starts with it off.
+os.environ.update(GIT_CONFIG_COUNT="2", GIT_CONFIG_KEY_0="gc.auto", GIT_CONFIG_VALUE_0="0",
+                  GIT_CONFIG_KEY_1="maintenance.auto", GIT_CONFIG_VALUE_1="false")
+
 if os.name == "nt":
     _popen_init = subprocess.Popen.__init__
 
