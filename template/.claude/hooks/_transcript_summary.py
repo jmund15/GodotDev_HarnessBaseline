@@ -451,185 +451,6 @@ class ErrorTracker:
 # Main Summary Builder
 # =============================================================================
 
-class ContextCensus:
-    """Observed main-transcript usage and payload sizes, never an estimate of live context."""
-
-    USAGE_FIELDS = ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens')
-
-    def __init__(self):
-        self.coverage = dict(malformed_rows=0, invalid_rows=0, excluded_sidechain_rows=0,
-                             assistant_rows_without_message_id=0, tool_results_without_id=0,
-                             attachments_without_id=0, processing_errors=0)
-        self.messages = {}
-        self.tool_names = {}
-        self.results = {}
-        self.attachments = {}
-        self.boundaries = {}
-        self.pending = []
-        self.row_number = 0
-
-    @staticmethod
-    def _tokens(value):
-        return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
-
-    @staticmethod
-    def _bytes(value):
-        return len(json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
-
-    @staticmethod
-    def _text_bytes(value):
-        if isinstance(value, str):
-            return len(value.encode('utf-8'))
-        if isinstance(value, list):
-            parts = [b.get('text') for b in value if isinstance(b, dict) and isinstance(b.get('text'), str)]
-            return sum(len(p.encode('utf-8')) for p in parts) if parts or not value else None
-        return None
-
-    def observe(self, entry):
-        self.row_number += 1
-        if not isinstance(entry, dict):
-            self.coverage['invalid_rows'] += 1
-            return
-        if entry.get('isSidechain'):
-            self.coverage['excluded_sidechain_rows'] += 1
-            return
-        row_id = entry.get('uuid') or f'row:{self.row_number}'
-        if entry.get('subtype') == 'compact_boundary':
-            if row_id not in self.boundaries:
-                metadata = entry.get('compactMetadata') or entry.get('compact_metadata') or entry.get('metadata') or {}
-                if not isinstance(metadata, dict):
-                    metadata = {}
-                self.boundaries[row_id] = dict(
-                    id=row_id, timestamp=entry.get('timestamp'), trigger=metadata.get('trigger'),
-                    pre_tokens=self._tokens(metadata.get('preTokens')),
-                    post_tokens=self._tokens(metadata.get('postTokens')),
-                    duration_ms=self._tokens(metadata.get('durationMs')),
-                    next_assistant_id=None, attachment_body_utf8_bytes={})
-                self.pending.append(row_id)
-            return
-
-        message = entry.get('message')
-        message = message if isinstance(message, dict) else {}
-        if entry.get('type') == 'assistant':
-            message_id = message.get('id')
-            if not message_id:
-                self.coverage['assistant_rows_without_message_id'] += 1
-                message_id = row_id
-            if message_id not in self.messages:
-                self.messages[message_id] = dict(message_id=message_id, timestamp=entry.get('timestamp'),
-                                                 model=message.get('model'), usage={k: None for k in self.USAGE_FIELDS})
-                for boundary_id in self.pending:
-                    self.boundaries[boundary_id]['next_assistant_id'] = message_id
-                self.pending.clear()
-            record = self.messages[message_id]
-            usage = message.get('usage')
-            if isinstance(usage, dict):
-                for field in self.USAGE_FIELDS:
-                    value = self._tokens(usage.get(field))
-                    if value is not None:
-                        record['usage'][field] = value
-
-        content = message.get('content', [])
-        for index, block in enumerate(content if isinstance(content, list) else []):
-            if not isinstance(block, dict):
-                continue
-            if block.get('type') == 'tool_use' and entry.get('type') == 'assistant':
-                if block.get('id'):
-                    self.tool_names[block['id']] = block.get('name') or 'unknown'
-            elif block.get('type') == 'tool_result':
-                tool_id = block.get('tool_use_id')
-                if not tool_id:
-                    self.coverage['tool_results_without_id'] += 1
-                key = tool_id or f'{row_id}:{index}'
-                self.results[key] = dict(id=key, tool_id=tool_id,
-                                         text_utf8_bytes=self._text_bytes(block.get('content')),
-                                         payload_utf8_bytes=self._bytes(block))
-
-        if entry.get('type') == 'attachment':
-            item = entry.get('attachment')
-            if not isinstance(item, dict):
-                self.coverage['invalid_rows'] += 1
-                return
-            if not entry.get('uuid'):
-                self.coverage['attachments_without_id'] += 1
-            kind = item.get('type') or 'unknown'
-            body = self._text_bytes(item.get('content', item.get('text')))
-            if kind in ('instructions', 'invoked_skills'):
-                members = item.get('files' if kind == 'instructions' else 'skills')
-                if isinstance(members, list) and all(isinstance(m, dict) and isinstance(m.get('content'), str) for m in members):
-                    body = sum(len(m['content'].encode('utf-8')) for m in members)
-            if row_id not in self.attachments:
-                self.attachments[row_id] = dict(type=kind, body_utf8_bytes=body,
-                                                payload_utf8_bytes=self._bytes(item))
-                if kind != 'prompt_snapshot' and body is not None:
-                    for boundary_id in self.pending:
-                        sizes = self.boundaries[boundary_id]['attachment_body_utf8_bytes']
-                        sizes[kind] = sizes.get(kind, 0) + body
-
-    @staticmethod
-    def _sum_observed(values):
-        measured = [v for v in values if v is not None]
-        return sum(measured) if measured else None
-
-    def _message(self, key):
-        if key is None:
-            return None
-        record = self.messages[key]
-        values = [record['usage'][field] for field in self.USAGE_FIELDS[:3]]
-        return {**record, 'reported_input_sum': sum(values) if all(v is not None for v in values) else None}
-
-    def finalize(self):
-        usage = {}
-        for field in self.USAGE_FIELDS:
-            values = [m['usage'][field] for m in self.messages.values()]
-            measured = sum(v is not None for v in values)
-            usage[field] = dict(observed_total=self._sum_observed(values), measured_messages=measured,
-                                missing_messages=len(values) - measured)
-        by_tool = {}
-        for record in self.results.values():
-            name = self.tool_names.get(record['tool_id'], 'unknown')
-            row = by_tool.setdefault(name, dict(count=0, text_utf8_bytes=0, payload_utf8_bytes=0, missing_text_results=0))
-            row['count'] += 1
-            row['payload_utf8_bytes'] += record['payload_utf8_bytes']
-            if record['text_utf8_bytes'] is None:
-                row['missing_text_results'] += 1
-            else:
-                row['text_utf8_bytes'] += record['text_utf8_bytes']
-        by_type = {}
-        for record in self.attachments.values():
-            row = by_type.setdefault(record['type'], dict(count=0, body_utf8_bytes=0, payload_utf8_bytes=0, missing_body_records=0))
-            row['count'] += 1
-            row['payload_utf8_bytes'] += record['payload_utf8_bytes']
-            if record['body_utf8_bytes'] is None:
-                row['missing_body_records'] += 1
-            else:
-                row['body_utf8_bytes'] += record['body_utf8_bytes']
-        for row in by_tool.values():
-            if row['missing_text_results'] == row['count']:
-                row['text_utf8_bytes'] = None
-        for row in by_type.values():
-            if row['missing_body_records'] == row['count']:
-                row['body_utf8_bytes'] = None
-        boundaries = []
-        for record in self.boundaries.values():
-            row = {k: v for k, v in record.items() if k != 'next_assistant_id'}
-            row['next_assistant'] = self._message(record['next_assistant_id'])
-            boundaries.append(row)
-        return dict(
-            schema_version=1, coverage=self.coverage, assistant_messages=len(self.messages), usage=usage,
-            first_assistant=self._message(next(iter(self.messages), None)), boundaries=boundaries, boundary_count=len(boundaries),
-            tool_results=dict(count=len(self.results), by_tool=by_tool,
-                              missing_text_results=sum(r['text_utf8_bytes'] is None for r in self.results.values()),
-                              text_utf8_bytes=self._sum_observed([r['text_utf8_bytes'] for r in self.results.values()]),
-                              largest=heapq.nlargest(20, self.results.values(),
-                                                     key=lambda r: r['payload_utf8_bytes'])),
-            attachments=dict(by_type=by_type),
-            limits=['Usage is provider-reported, not wire-attested; repeated message IDs are merged.',
-                    'Payload/body UTF-8 bytes are cumulative transcript evidence, not live context tokens.',
-                    'Attachment records do not prove exact rendered prompt bytes; prompt_snapshot is diagnostic.',
-                    'Missing IDs limit deduplication; absent usage is unknown, not zero.'])
-
-
 class TranscriptSummaryBuilder:
     """
     Builds a concise summary from transcript JSONL lines during streaming copy.
@@ -661,7 +482,7 @@ class TranscriptSummaryBuilder:
         self.files_modified: dict[str, int] = {}    # {file_path: edit_count}
 
         self.error_tracker = ErrorTracker()
-        self.context_census = ContextCensus()
+        self.malformed_rows = 0
 
         self.friction: list[dict] = []              # Tool errors/denials + the assistant's next move
         self._tool_inputs: dict[str, tuple] = {}    # tool_use_id -> (tool, input excerpt)
@@ -685,15 +506,11 @@ class TranscriptSummaryBuilder:
                 return
 
             entry = json.loads(line)
-            try:
-                self.context_census.observe(entry)
-            except Exception:
-                self.context_census.coverage['processing_errors'] += 1
             if isinstance(entry, dict):
                 self._process_entry(entry)
 
         except json.JSONDecodeError:
-            self.context_census.coverage['malformed_rows'] += 1
+            self.malformed_rows += 1
         except Exception:
             self.processing_error_rows.append(self.source_line_count)
 
@@ -888,13 +705,10 @@ class TranscriptSummaryBuilder:
             'user_messages': self.user_messages if self.full_evidence else self.user_messages[-400:],
 
             'compactions': {'count': len(self.compaction_markers), 'timestamps': self.compaction_markers},
-            'context_census': self.context_census.finalize(),
             'friction': self.friction if self.full_evidence else self.friction[-200:],
             'evidence_coverage': dict(full_evidence=self.full_evidence,
                 source_lines=self.source_line_count, processing_error_rows=self.processing_error_rows,
-                malformed_rows=self.context_census.coverage['malformed_rows'],
-                invalid_rows=self.context_census.coverage['invalid_rows'],
-                context_processing_errors=self.context_census.coverage['processing_errors'],
+                malformed_rows=self.malformed_rows,
                 omitted_collections={},
                 collected_user_messages=len(self.user_messages), collected_friction_rows=len(self.friction),
                 omitted_user_messages=0 if self.full_evidence else max(0, len(self.user_messages) - 400),
@@ -930,9 +744,7 @@ def _bound_backup_collections(summary):
     """Bound backup collection previews; full digest evidence never uses these caps."""
     caps = {
         'files_modified': 400, 'files_modified_counts': 400,
-        'compactions.timestamps': 20, 'context_census.boundaries': 20,
-        'context_census.tool_results.by_tool': 100,
-        'context_census.attachments.by_type': 100,
+        'compactions.timestamps': 20,
         'tool_summary.by_tool': 100, 'error_resolution_pairs': 50,
         'errors.resolved': 50, 'errors.unresolved': 50,
         'task_state.todo_final_state': 100, 'evidence_coverage.processing_error_rows': 50,

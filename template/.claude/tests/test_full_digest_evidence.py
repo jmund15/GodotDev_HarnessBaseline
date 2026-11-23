@@ -41,16 +41,12 @@ class FullEvidenceTests(unittest.TestCase):
         builder = summary.TranscriptSummaryBuilder('own', 'own.jsonl')
         builder.files_modified = {str(index) + '.py': 1 for index in range(1000)}
         builder.compaction_markers = list(range(100))
-        for index in range(100):
-            builder.context_census.observe({'type': 'system', 'subtype': 'compact_boundary', 'uuid': str(index)})
         result = builder.finalize()
         self.assertLess(len(result['files_modified']), 1000)
         self.assertLess(len(result['files_modified_counts']), 1000)
-        self.assertLess(len(result['context_census']['boundaries']), 100)
         self.assertLess(len(result['compactions']['timestamps']), 100)
         omitted = result['evidence_coverage']['omitted_collections']
         self.assertEqual(1000, len(result['files_modified']) + omitted['files_modified'])
-        self.assertEqual(100, len(result['context_census']['boundaries']) + omitted['context_census.boundaries'])
         self.assertEqual(100, result['compactions']['count'])
 
     def test_more_than_400_full_prompts_are_retained(self):
@@ -102,13 +98,11 @@ class FullEvidenceTests(unittest.TestCase):
         self.assertEqual(400, len(result['user_messages']))
         self.assertEqual(5, result['evidence_coverage']['omitted_user_messages'])
 
-    def test_all_unknown_result_bodies_do_not_become_zero(self):
-        census = summary.ContextCensus()
-        census.observe({'type': 'user', 'message': {'content': [
-            {'type': 'tool_result', 'tool_use_id': 'a', 'content': None}]}})
-        row = census.finalize()['tool_results']['by_tool']['unknown']
-        self.assertIsNone(row['text_utf8_bytes'])
-        self.assertEqual(1, row['missing_text_results'])
+    def test_the_summary_carries_no_context_census(self):
+        # The census had no reader (hooks, tools and commands never read it); a backup keeps only what a reader uses.
+        builder = summary.TranscriptSummaryBuilder('own', 'own.jsonl')
+        builder.process_line(json.dumps({'type': 'system', 'subtype': 'compact_boundary', 'uuid': 'b'}))
+        self.assertNotIn('context_census', builder.finalize())
 
 
 if __name__ == '__main__':

@@ -8,10 +8,10 @@ Rebuilds any session from its transcript (`~/.claude/projects/<project>/<id>.jso
 
 ## Arguments
 
-- The prompt quotes a session's message: write the quote to `.claude/scratch/digest_paste.txt` with a quoted heredoc and run `--match-file`. It prints `MATCH <id>=<score> ...`; digest the best match.
+- The prompt quotes a session's message: write the quote to `.claude/scratch/digest_paste.txt` with a quoted heredoc and run `--match-file`. It digests the session whose assistant wrote the quote and prints `MATCH <id>=<score> ...` (best three) on stderr. A paste under 8 distinctive words, a best score under 60% or a tie exits with the nearest ids: pass one to `--session`.
 - `<id-prefix>`: that session (`--session`). No match: list recent transcripts and pick by first prompt and time, widening N until the target is identifiable.
-- `list [N]`: print the newest N transcripts (id, time, size, first prompt) and stop.
-- `full <id-prefix>`: write the whole session as Markdown (`--full`). Stdout prints only the file path; read the part you need from it.
+- `list [N]`: print the newest N transcripts of this checkout and its linked worktrees (id, time, size, first prompt) and stop.
+- `full <id-prefix>`: write the whole session as Markdown (`--full`) to `.claude/scratch/session_digest_<id8>.full.md`. Stdout prints only the file path; read the part you need from it.
 - `workflow <dir>`: read a fan-out run's journal in that directory (`--workflow-dir`), for `/salvage_fanout`.
 - None and nothing quoted: `--previous`, the transcript written just before this one.
 

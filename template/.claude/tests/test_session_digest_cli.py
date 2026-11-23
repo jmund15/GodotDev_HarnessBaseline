@@ -108,10 +108,23 @@ class Selection(Store):
         self.transcript("activeid", mtime=100)
         self.transcript("peer-id", mtime=200)
         with self.active("activeid"):
-            lines = digest.list_sessions(self.store, 5).splitlines()
+            lines = digest.list_sessions([self.store], 5).splitlines()
         self.assertEqual(2, len(lines))
         self.assertEqual(1, sum("(active session)" in line for line in lines))
         self.assertTrue(next(line for line in lines if line.startswith("activeid")).endswith("(active session)"))
+
+    def test_listing_spans_every_store_of_the_checkout_newest_first(self):
+        other = self.root / "worktree-store"
+        other.mkdir()
+        self.transcript("here", mtime=100)
+        write_rows(other / "there.jsonl", [user_row("A request made in a linked worktree.")])
+        os.utime(other / "there.jsonl", (200, 200))
+        lines = digest.list_sessions([self.store, other], 5).splitlines()
+        self.assertEqual(["there", "here"], [line.split()[0] for line in lines])
+
+    def test_task_anchor_wrappers_are_the_commands_that_exist(self):
+        self.assertIn("/close", digest._TASK_ANCHOR_WRAPPER_COMMANDS)
+        self.assertFalse({"/session_end", "/clean_push"} & digest._TASK_ANCHOR_WRAPPER_COMMANDS)
 
 
 class ExploreJournal(Store):
@@ -184,6 +197,12 @@ class Output(Store):
         text = digest.render_full(digest.digest(path, str(self.root)), path, str(self.root))
         self.assertIn("## User prompts (450)", text)
         self.assertIn("prompt 449", text)
+
+    def test_full_export_lands_under_the_checkouts_scratch_folder(self):
+        path = self.transcript("exported", [user_row("A request.")])
+        out = digest.export_full(digest.digest(path, str(self.root)), path, str(self.root))
+        self.assertEqual(self.root / ".claude" / "scratch" / "session_digest_exported.full.md", out)
+        self.assertIn("## User prompts (1)", out.read_text(encoding="utf-8"))
 
 
 class EntryPoint(unittest.TestCase):
