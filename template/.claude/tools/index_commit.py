@@ -1,18 +1,13 @@
-"""Stage one commit in a private git index, then bring the shared index and the working lock back in line.
+"""Stage one commit in a private git index, then bring the shared index back in line.
 
 Several sessions share one checkout and one `.git/index`. A session that stages there can commit a
 peer's staged files, and a peer's next plain `git commit` publishes whatever this one left behind.
 This tool performs the safe cycle instead:
 
-  stage   build `.git/index-<name>` from HEAD (read once, recorded as the base), force-add the named paths into it, stage the lock
-          blob (HEAD's `baseline.lock.json` plus the rows for this commit's new `.claude/` paths and
-          the working rows of its changed ones, minus the rows of its deleted ones), and print the `git commit` line to run next. A path an
-          earlier commit deleted, named alone, stages only the removal of its leftover row. A submodule path with a
-          checkout stages as a gitlink (160000) at that checkout's HEAD, as `git add <submodule>` does; one without a
-          checkout is refused.
-  resync  after that commit lands, reset the committed paths in the shared index and update the
-          working `baseline.lock.json` so the committed rows equal HEAD's while every other row
-          stays as it was.
+  stage   build `.git/index-<name>` from HEAD (read once, recorded as the base), force-add the named paths into it,
+          and print the `git commit` line to run next. A submodule path with a checkout stages as a gitlink
+          (160000) at that checkout's HEAD, as `git add <submodule>` does; one without a checkout is refused.
+  resync  after that commit lands, reset the committed paths in the shared index.
 
     python3 .claude/tools/index_commit.py stage --name <name> [--blob <path>=<file> ...] [--msg <file>] -- <paths...>
     python3 .claude/tools/index_commit.py resync --name <name>
@@ -33,18 +28,14 @@ accepted. A committed path whose shared-index entry differs from the old, the st
 HEAD blob is a peer's staged change: it is reported and left alone. It prints
 `RESYNC OK` when every committed path is clean, otherwise it names each mismatch and exits non-zero.
 The stage record also names the base HEAD the index was read from, at `<index>.paths.json`;
-`hooks/git_guardrails.py` refuses to commit that index over any other HEAD. Should a commit land over
+`hooks/dangerous_shell_guard.py` refuses to commit that index over any other HEAD. Should a commit land over
 a moved base anyway, the private index still held the old blobs of the paths that intervening commit
 changed, so the commit reverts them: `resync` names each and refuses.
 The private index and its sidecar are deleted on success only.
 
-A new `.claude/` path gets no lock row here: an unjudged path needs none (X2 D1). A row already judged in the
-working lock travels with its path.
-
 Errors, each a printed `error: ...` and a non-zero exit: not inside a git repository; a `--name`
 that is not a plain fragment; a path outside the repo, or unknown to the working tree, HEAD and
-HEAD's lock; a submodule with no checkout; `baseline.lock.json` itself named as a path; a `--blob` argument without `=` or with an unreadable source; an unreadable
-`baseline.lock.json` or one absent from HEAD; and on `resync`, a missing
+HEAD; a submodule with no checkout; a `--blob` argument without `=` or with an unreadable source; and on `resync`, a missing
 sidecar or a commit that did not land. A refused `stage` discards its private index and leaves the
 shared index untouched. Every refusal also prints the shape it accepts and one valid call
 (`accepts:`, `example:`).
@@ -54,7 +45,6 @@ import os
 import posixpath
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -66,10 +56,23 @@ for _d in (HERE.parent / "hooks", HERE):
         sys.path.insert(0, str(_d))
 import _hook_state  # noqa: E402
 import cli_usage  # noqa: E402
-from lock_merge import dump_lock  # noqa: E402
+from _git_run import run as git_run  # noqa: E402
 
 INDEX_LOCK_TIMEOUT = 5.0
-LOCK_RELPATH = ".claude/baseline.lock.json"
+STAGE_RECORD_SUFFIX = ".paths.json"
+
+
+def stage_record_path(index):
+    return Path(str(index) + STAGE_RECORD_SUFFIX)
+
+
+def stage_record_base(record):
+    try:
+        base = _read_record(record, "the stage record").get("base_head")
+    except (IndexCommitError, AttributeError):
+        return None
+    return base if isinstance(base, str) else None
+
 COMMIT_TEMPLATE = "GIT_INDEX_FILE=%s git commit -F %s"
 BASE_NOTE = "base HEAD %s; the commit guard refuses this index once HEAD moves, so rerun stage then"
 
@@ -79,13 +82,9 @@ class IndexCommitError(Exception):
 
 
 def _git(root, args, index=None, check=True, input_bytes=None):
-    env = dict(os.environ)
-    if index is not None:
-        env["GIT_INDEX_FILE"] = str(index)
-    proc = subprocess.run(["git"] + list(args), cwd=str(root), env=env, input=input_bytes,
-                          capture_output=True)
-    out = proc.stdout.decode("utf-8", "replace")
-    err = proc.stderr.decode("utf-8", "replace")
+    env = None if index is None else {"GIT_INDEX_FILE": str(index)}
+    proc = git_run(args, cwd=str(root), env=env, input=input_bytes)
+    out, err = proc.text, proc.err_text
     if check and proc.returncode != 0:
         raise IndexCommitError("git %s failed: %s" % (" ".join(args), (err or out).strip()))
     return proc.returncode, out, err
@@ -160,7 +159,7 @@ def _record_matches(entry, record, side):
     return entry == ((record[side + '_mode'], record[side]) if record.get(side) else None)
 
 
-def _read_lock(path, label):
+def _read_record(path, label):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -168,39 +167,6 @@ def _read_lock(path, label):
     except json.JSONDecodeError as exc:
         raise IndexCommitError("could not parse %s (%s): %s" % (label, path, exc)) from exc
 
-
-def _update_working_lock(path, updater):
-    """Apply `updater` to the working lock under its JSON lock and write it through `dump_lock`, the
-    committed format (X2 D6). A second format would stage the whole lock on the next commit."""
-    handle = _hook_state._acquire_json_lock(str(path))
-    if not handle:
-        raise IndexCommitError("could not lock the working %s" % LOCK_RELPATH)
-    try:
-        work = _read_lock(path, "the working lock")
-        updater(work)
-        fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
-        try:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(dump_lock(work))
-            _hook_state.replace_path(temporary, str(path))
-        except BaseException:
-            try:
-                os.unlink(temporary)
-            except OSError:
-                pass
-            raise
-    finally:
-        _hook_state._release_json_lock(handle)
-
-
-def _head_lock(root, ref="HEAD"):
-    rc, out, _ = _git(root, ["show", "%s:%s" % (ref, LOCK_RELPATH)], check=False)
-    if rc != 0:
-        raise IndexCommitError("HEAD holds no %s; commit one before using this tool" % LOCK_RELPATH)
-    try:
-        return json.loads(out)
-    except json.JSONDecodeError as exc:
-        raise IndexCommitError("could not parse HEAD's %s: %s" % (LOCK_RELPATH, exc)) from exc
 
 
 def _blob_specs(root, specs):
@@ -240,17 +206,13 @@ def _entry_specs(root, specs):
     return entries
 
 
-def _lock_row(work, path):
-    return (work.get("files") or {}).get(path)
-
-
 def cmd_stage(args):
     root, git_dir = _repo()
     name = args.name
     if not name or name.startswith(".") or "/" in name or "\\" in name:
         raise IndexCommitError("--name must be a plain fragment (no leading dot, no separator): %r" % name)
     index = git_dir / ("index-%s" % name)
-    sidecar = git_dir / ("index-%s.paths.json" % name)
+    sidecar = stage_record_path(index)
 
     paths = []
     for raw in args.paths:
@@ -267,26 +229,18 @@ def cmd_stage(args):
     if not paths:
         raise IndexCommitError("stage needs at least one path after `--`")
 
-    if LOCK_RELPATH in paths:
-        raise IndexCommitError("%s is composed here from HEAD's lock plus this commit's rows; name the new or "
-                               "deleted path whose row changes instead" % LOCK_RELPATH)
     base_head = _git(root, ["rev-parse", "HEAD"])[1].strip()
-    head_lock = _head_lock(root, base_head)
-    head_rows = head_lock.get("files") or {}
     for rel in paths:
         if rel in sources or rel in entries or _submodule_head(root, rel):
             continue
-        if (not (root / rel).is_file() and not _tree_blobs(root, base_head, [rel]) and rel not in head_rows):
-            raise IndexCommitError("unknown path: %s (not a file on disk, in HEAD or in HEAD's lock)" % rel)
+        if not (root / rel).is_file() and not _tree_blobs(root, base_head, [rel]):
+            raise IndexCommitError("unknown path: %s (not a file on disk or in HEAD)" % rel)
         if _tree_entries(root, base_head, [rel]).get(rel, ("",))[0] == "160000":
             raise IndexCommitError("%s is a submodule with no checkout here, so its HEAD cannot be staged; "
                                    "initialize it, or commit it by pathspec: git commit -m <msg> -- %s" % (rel, rel))
 
-    lock_path = root / LOCK_RELPATH
-    work_lock = _read_lock(lock_path, "the working lock")
     try:
-        return _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock, base_head,
-                           args.msg, entries)
+        return _stage_into(root, index, sidecar, name, paths, sources, base_head, args.msg, entries)
     except Exception:
         for stale in (index, sidecar):
             try:
@@ -296,7 +250,7 @@ def cmd_stage(args):
         raise
 
 
-def _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock, base_head, msg, entries=None):
+def _stage_into(root, index, sidecar, name, paths, sources, base_head, msg, entries=None):
     entries = entries or {}
     _git(root, ["read-tree", base_head], index=index)
     for rel in paths:
@@ -325,43 +279,11 @@ def _stage_into(root, index, sidecar, name, paths, sources, work_lock, head_lock
                      'after': after.get(rel, (None, None))[1],
                      'after_mode': after.get(rel, (None, None))[0]} for rel in paths}
 
-    blob = json.loads(json.dumps(head_lock))
-    files = blob.setdefault("files", {})
-    head_rows = set(head_lock.get("files") or {})
-    added, removed, changed_rows = [], [], []
-    for rel in paths:
-        if rel not in after:
-            if files.pop(rel, None) is not None or rel in head_rows:
-                removed.append(rel)
-        elif rel.startswith(".claude/") and rel not in head_rows and _lock_row(work_lock, rel) is not None:
-            # A row judged in the working lock travels with its path; an unjudged path has none (X2 D1).
-            files[rel] = _lock_row(work_lock, rel)
-            added.append(rel)
-        elif rel in head_rows and _lock_row(work_lock, rel) not in (None, files.get(rel)):
-            # A row belongs to its path: a pull's new hash or a judge's verdict ships with the path's commit.
-            files[rel] = _lock_row(work_lock, rel)
-            changed_rows.append(rel)
-
-    payload = dump_lock(blob)
-    lock_sha = _git(root, ["hash-object", "-w", "--stdin"], input_bytes=payload)[1].strip()
-    _git(root, ["update-index", "--add", "--cacheinfo", "100644,%s,%s" % (lock_sha, LOCK_RELPATH)], index=index)
-
-    lock_before = _tree_entries(root, base_head, [LOCK_RELPATH]).get(LOCK_RELPATH, (None, None))
-    lock_record = {'before': lock_before[1], 'before_mode': lock_before[0],
-                   'after': lock_sha, 'after_mode': '100644'}
-    sidecar_payload = {"name": name, "base_head": base_head, "index": index.name, "paths": records,
-                       "lock": lock_record}
+    sidecar_payload = {"name": name, "base_head": base_head, "index": index.name, "paths": records}
     if not _hook_state.write_json_atomic(str(sidecar), sidecar_payload, raising=True, pretty=True):
         raise IndexCommitError("could not write the stage record %s" % sidecar)
-
     index_rel = Path(os.path.relpath(index, root)).as_posix()
     print("staged %d path(s) in %s" % (len(paths), index_rel))
-    for rel in added:
-        print("  + lock row %s" % rel)
-    for rel in removed:
-        print("  - lock row %s" % rel)
-    for rel in changed_rows:
-        print("  ~ lock row %s" % rel)
     stat = _git(root, ["diff", "--cached", "--stat"], index=index)[1]
     if stat.strip():
         print(stat.rstrip())
@@ -383,11 +305,9 @@ def _landing_commit(root, base_head, records):
             return rev
     return None
 
-
 def _reverted_by_head(root, base_head, staged_paths, tip="HEAD"):
     """Paths a commit landed after `base_head` changed and `tip` (the private-index commit) sets back
     to their `base_head` blob.
-
     The private index is HEAD at stage time; when another commit lands before the private-index commit,
     that commit's tree still carries the old blobs for every path it did not stage."""
     if base_head and _git(root, ['rev-parse', tip])[1].strip() == base_head:
@@ -402,22 +322,7 @@ def _reverted_by_head(root, base_head, staged_paths, tip="HEAD"):
     at_base = _tree_entries(root, base_head, candidates)
     at_parent = _tree_entries(root, tip + '^', candidates)
     at_head = _tree_entries(root, tip, candidates)
-    reverted = sorted(p for p in candidates if at_head.get(p) == at_base.get(p) and at_parent.get(p) != at_base.get(p))
-    if LOCK_RELPATH in candidates and LOCK_RELPATH not in reverted:
-        rows = [_lock_rows_at(root, ref) for ref in (base_head, tip + "^", tip)]
-        reverted += ["%s row %s" % (LOCK_RELPATH, key) for key in sorted(set(rows[0]) | set(rows[1]))
-                     if key not in staged_paths and rows[0].get(key) != rows[1].get(key)
-                     and rows[2].get(key) == rows[0].get(key)]
-    return reverted
-
-
-def _lock_rows_at(root, ref):
-    rc, out, _ = _git(root, ["show", "%s:%s" % (ref, LOCK_RELPATH)], check=False)
-    try:
-        return (json.loads(out).get("files") or {}) if rc == 0 else {}
-    except (json.JSONDecodeError, AttributeError):
-        return {}
-
+    return sorted(p for p in candidates if at_head.get(p) == at_base.get(p) and at_parent.get(p) != at_base.get(p))
 
 def _reset_shared_index(root, git_dir, entries):
     shared_index = git_dir / "index"
@@ -463,14 +368,13 @@ def _reset_shared_index(root, git_dir, entries):
     except OSError as exc:
         raise IndexCommitError("could not resync shared index %s: %s" % (shared_index, exc)) from exc
 
-
 def cmd_resync(args):
     root, git_dir = _repo()
     index = git_dir / ("index-%s" % args.name)
-    sidecar = git_dir / ("index-%s.paths.json" % args.name)
+    sidecar = stage_record_path(index)
     if not sidecar.exists():
         raise IndexCommitError("no staged cycle recorded for name %r (%s); run stage first" % (args.name, sidecar))
-    record = _read_lock(sidecar, "the stage record")
+    record = _read_record(sidecar, "the stage record")
     records = record.get("paths") or {}
     if not records:
         raise IndexCommitError("the stage record %s lists no paths" % sidecar)
@@ -482,7 +386,6 @@ def cmd_resync(args):
         unlanded = [rel for rel in paths if not _record_matches(head_now.get(rel), records[rel], 'after')]
         raise IndexCommitError("the commit did not land for: %s (no commit since the stage base holds the "
                                "staged tree; commit the private index again, or rebuild it)" % ", ".join(unlanded))
-
     reverted = _reverted_by_head(root, record.get("base_head"), paths, landed)
     if reverted:
         raise IndexCommitError(
@@ -490,11 +393,7 @@ def cmd_resync(args):
             "base %s); restore them with `git checkout HEAD^ -- <paths>` and commit, then rerun resync"
             % (", ".join(reverted), (record.get("base_head") or "?")[:9]))
 
-    # The lock blob changes with every new or deleted .claude/ path; left in the shared index at its
-    # old HEAD blob it reads as a staged revert of those rows.
     entries = dict(records)
-    if record.get("lock"):
-        entries[LOCK_RELPATH] = record["lock"]
     if landed != "HEAD":
         # A later commit moved these paths on; the shared index may already follow its blobs.
         later = _tree_entries(root, 'HEAD', list(entries))
@@ -503,26 +402,9 @@ def cmd_resync(args):
             entries[rel] = dict(entries[rel], head=oid, head_mode=mode)
     peer_left = _reset_shared_index(root, git_dir, entries)
 
-    head_lock = _head_lock(root)
-    head_rows = head_lock.get("files") or {}
-
-    def updater(work):
-        files = work.setdefault("files", {})
-        for rel in paths:
-            if rel in head_rows:
-                files[rel] = head_rows[rel]
-            else:
-                files.pop(rel, None)
-        return True
-
-    _update_working_lock(root / LOCK_RELPATH, updater)
-
-    work_lock = _read_lock(root / LOCK_RELPATH, "the working lock")
-    work_rows = work_lock.get("files") or {}
     _, status, _ = _git(root, ["status", "--short", "--"] + list(entries))
     staged = [line for line in status.splitlines() if line[:1] not in (" ", "?", "")
               and line[3:].strip() not in peer_left]
-    lock_bad = [rel for rel in paths if work_rows.get(rel) != head_rows.get(rel)]
 
     for rel in peer_left:
         print("left (peer-staged in the shared index): %s" % rel)
@@ -530,8 +412,6 @@ def cmd_resync(args):
     if staged:
         mismatches.append("still staged in the shared index: %s" % ", ".join(
             line[3:].strip() or line for line in staged))
-    if lock_bad:
-        mismatches.append("working lock row differs from HEAD: %s" % ", ".join(lock_bad))
     if mismatches:
         for line in mismatches:
             print("MISMATCH %s" % line)
@@ -551,8 +431,7 @@ STAGE_EXAMPLE = "python3 .claude/tools/index_commit.py stage --name lane -- .cla
 RESYNC_ACCEPTS = "resync --name <name>"
 RESYNC_EXAMPLE = "python3 .claude/tools/index_commit.py resync --name lane"
 CYCLE = ("The cycle: `stage` builds the private index and prints the GIT_INDEX_FILE git commit line; "
-         "run that printed line in its own call; then `resync` resets the shared index and the working lock.")
-
+         "run that printed line in its own call; then `resync` resets the shared index.")
 
 def build_parser():
     parser = cli_usage.ShapeParser(prog="index_commit", description=__doc__.splitlines()[0],
@@ -568,13 +447,11 @@ def build_parser():
     stage.add_argument("--msg", default=None, metavar="FILE")
     stage.add_argument("paths", nargs="*")
     stage.set_defaults(run=cmd_stage)
-
-    resync = sub.add_parser("resync", help="reset the shared index and the working lock after the commit")
+    resync = sub.add_parser("resync", help="reset the shared index after the commit")
     resync.accepts, resync.example = RESYNC_ACCEPTS, RESYNC_EXAMPLE
     resync.add_argument("--name", required=True)
     resync.set_defaults(run=cmd_resync)
     return parser
-
 
 def main(argv=None):
     parser = build_parser()
@@ -586,7 +463,6 @@ def main(argv=None):
         print("error: %s" % exc, file=sys.stderr)
         sys.stderr.write(cli_usage.refusal(*shapes[args.subcommand]))
         return 2
-
 
 if __name__ == "__main__":
     sys.exit(main())

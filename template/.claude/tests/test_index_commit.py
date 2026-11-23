@@ -5,19 +5,16 @@ A throwaway git repo under TMP holds the whole fixture: the tool and the two mod
 imports are copied in. Nothing here touches the real checkout's index.
 
 Cases:
-- a new gitignored file under `.claude/tests/` is force-added and gets no lock row (X2 D1); the
-  staged lock blob holds HEAD's rows only, even when the working lock carries
-  an extra planted peer row;
-- a tracked path deleted from the working tree is staged as a deletion and its lock row removed;
+- a new gitignored file under `.claude/tests/` is force-added;
+- a tracked path deleted from the working tree is staged as a deletion;
 - a peer file staged in the shared index is absent from the private index and is still staged
   in the shared index after resync;
-- resync after a real commit leaves no staged change for the committed paths, the working
-  lock equals HEAD for their rows, the planted peer row survives, and it prints RESYNC OK;
+- resync after a real commit leaves no staged change for the committed paths and prints RESYNC OK;
 - resync before any commit refuses with a named error and a non-zero exit;
 - `--blob` stages the given content, not the working file, and leaves the working file alone;
 - the tool's source carries no `commit` argv in any list/tuple literal (planted control first),
   and the printed command is the GIT_INDEX_FILE commit line;
-- usage errors: an unknown path, a path outside the repo, and an unreadable lock each exit
+- usage errors: an unknown path and a path outside the repo each exit
   non-zero with a named error and stage nothing in the shared index;
 - a submodule path with a checkout ahead of its gitlink stages as a gitlink at the checkout's
   HEAD and deletes nothing; a submodule with no checkout is refused and names the pathspec route.
@@ -40,22 +37,9 @@ sys.path.insert(0, str(HERE))
 from _case_pool import _jobs  # noqa: E402
 REPO = HERE.parents[1]
 TOOL = REPO / ".claude" / "tools" / "index_commit.py"
-sys.path.insert(0, str(TOOL.parent))
-import lock_merge  # the lock's one serializer: the committed format every fixture lock must match
-
-
-def lock_text(lock):
-    return lock_merge.dump_lock(lock).decode("utf-8")
 HOOKS = REPO / ".claude" / "hooks"
 
-LOCK = ".claude/baseline.lock.json"
 HEAD_ROWS = {"keep_a.py", "keep_b.py"}
-
-LOCK_SCAFFOLD = {
-    "baseline_repo": "https://example.invalid/baseline.git",
-    "baseline_ref": "main",
-    "files": {name: {"status": "local", "hash": "0" * 64} for name in sorted(HEAD_ROWS)},
-}
 
 failures = []
 
@@ -87,18 +71,16 @@ def git(root, args, env, check_rc=True, **kw):
 
 
 def scene(tmp, name):
-    """A fresh repo: the tool plus its two imports, a lock with HEAD_ROWS, and a peer file."""
+    """A fresh repo: the tool plus its imports, HEAD_ROWS, and a peer file."""
     root = Path(tmp) / name
     (root / ".claude" / "tools").mkdir(parents=True)
     (root / ".claude" / "hooks").mkdir(parents=True)
     (root / ".claude" / "tests").mkdir(parents=True)
     shutil.copy2(TOOL, root / ".claude" / "tools" / "index_commit.py")
-    shutil.copy2(TOOL.parent / "lock_merge.py", root / ".claude" / "tools" / "lock_merge.py")
     shutil.copy2(TOOL.parent / "cli_usage.py", root / ".claude" / "tools" / "cli_usage.py")
-    for module in ("_hook_state.py", "_file_lock.py"):
+    for module in ("_git_run.py", "_hook_state.py", "_file_lock.py"):
         shutil.copy2(HOOKS / module, root / ".claude" / "hooks" / module)
     (root / ".gitignore").write_text(".claude/tests/\n", encoding="utf-8", newline="\n")
-    (root / LOCK).write_text(lock_text(LOCK_SCAFFOLD), encoding="utf-8", newline="\n")
     for relpath in sorted(HEAD_ROWS) + ["gone.py", "peer.py"]:
         (root / relpath).write_text("head %s\n" % relpath, encoding="utf-8", newline="\n")
     env = git_env(root)
@@ -131,11 +113,6 @@ def blob_at(root, env, relpath):
     return git(root, ["cat-file", "-p", listing[1]], env).stdout
 
 
-def lock_at(root, ref, env):
-    """`ref` is "HEAD" or "" for the index env names; returns the parsed lock that ref holds."""
-    if ref == "HEAD":
-        return json.loads(git(root, ["show", "HEAD:" + LOCK], env).stdout)
-    return json.loads(blob_at(root, env, LOCK) or "")
 
 
 def names(root, env, cached):
@@ -152,37 +129,21 @@ def commit_index(root, env, name, message):
 def case_new_gitignored_file(tmp):
     root, env = scene(tmp, "newfile")
     (root / ".claude" / "tests" / "new_proof.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
-    work = json.loads((root / LOCK).read_text(encoding="utf-8"))
-    work["files"]["planted_peer_row.py"] = {"status": "local", "hash": "f" * 64}
-    (root / LOCK).write_text(lock_text(work), encoding="utf-8", newline="\n")
-
     proc = tool(root, env, ["stage", "--name", "newfile", "--", ".claude/tests/new_proof.py"])
     check("new gitignored path: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
     if proc.returncode != 0:
         return
     staged = names(root, idx_env(env, root, "newfile"), cached=True)
-    check("new gitignored path is force-added to the private index; the unchanged lock is not staged",
+    check("new gitignored path is force-added to the private index",
           staged == [".claude/tests/new_proof.py"], staged)
-    private = lock_at(root, "", idx_env(env, root, "newfile"))
-    check("lock blob holds HEAD's rows only: an unjudged new path needs no row",
-          sorted(private["files"]) == sorted(["keep_a.py", "keep_b.py"]),
-          sorted(private["files"]))
-    check("the planted peer row is not in the lock blob",
-          "planted_peer_row.py" not in private["files"], sorted(private["files"]))
-    check("stage writes no row for the unjudged path", ".claude/tests/new_proof.py" not in private["files"],
-          private["files"].get(".claude/tests/new_proof.py"))
-    check("stage reports no lock row for the unjudged path", "+ lock row" not in proc.stdout, proc.stdout)
     check("stage prints the GIT_INDEX_FILE commit line",
           "GIT_INDEX_FILE=.git/index-newfile git commit" in proc.stdout, proc.stdout)
     commit = commit_index(root, env, "newfile", "new proof")
     check("new-file scene: the private-index commit lands", commit.returncode == 0, commit.stderr)
     res = tool(root, env, ["resync", "--name", "newfile"])
     check("new-file scene: resync exits 0", res.returncode == 0, res.stdout + res.stderr)
-    check("a lock the commit changed is not left as a staged revert in the shared index",
+    check("new-file scene: nothing is left staged in the shared index",
           names(root, env, cached=True) == [], names(root, env, cached=True))
-    text = (root / LOCK).read_text(encoding="utf-8")
-    check("resync keeps the working lock in the one-row-per-line format, never one compact line",
-          text == lock_text(json.loads(text)), text[:80])
 
 
 def case_deleted_path(tmp):
@@ -195,63 +156,14 @@ def case_deleted_path(tmp):
     private = idx_env(env, root, "deleted")
     tracked = git(root, ["ls-files", "--", "gone.py"], private).stdout.strip()
     check("deleted path is staged as a deletion in the private index", tracked == "", tracked)
-    lock = lock_at(root, "", private)
-    check("the deleted path's lock row is removed and HEAD's other rows stay",
-          sorted(lock["files"]) == ["keep_a.py", "keep_b.py"], sorted(lock["files"]))
-    check("stage names the removed row", "gone.py" in proc.stdout, proc.stdout)
 
 
-def case_forget_row_of_earlier_deletion(tmp):
-    """A path an earlier commit deleted keeps its lock row; naming it stages only that row's removal."""
-    root, env = scene(tmp, "forget")
-    seeded = json.loads((root / LOCK).read_text(encoding="utf-8"))
-    seeded["files"]["gone.py"] = {"status": "tracked", "hash": "e" * 64}
-    (root / LOCK).write_text(lock_text(seeded), encoding="utf-8", newline="\n")
-    git(root, ["commit", "-q", "-m", "row for gone.py", "--", LOCK], env)
-    git(root, ["rm", "-q", "gone.py"], env)
-    git(root, ["commit", "-q", "-m", "delete gone.py, lock untouched"], env)
-    work = json.loads((root / LOCK).read_text(encoding="utf-8"))
-    work["files"]["planted_peer_row.py"] = {"status": "local", "hash": "f" * 64}
-    (root / LOCK).write_text(lock_text(work), encoding="utf-8", newline="\n")
-    proc = tool(root, env, ["stage", "--name", "forget", "--", "gone.py"])
-    check("forget scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
-    if proc.returncode != 0:
-        return
-    private = idx_env(env, root, "forget")
-    check("forget scene: only the lock is staged", names(root, private, cached=True) == [LOCK],
-          names(root, private, cached=True))
-    check("forget scene: the lock blob drops the row and keeps HEAD's others",
-          sorted(lock_at(root, "", private)["files"]) == ["keep_a.py", "keep_b.py"],
-          sorted(lock_at(root, "", private)["files"]))
-    commit = commit_index(root, env, "forget", "forget row")
-    check("forget scene: the private-index commit lands", commit.returncode == 0, commit.stderr)
-    res = tool(root, env, ["resync", "--name", "forget"])
-    check("forget scene: resync exits 0", res.returncode == 0, res.stdout + res.stderr)
-    work = json.loads((root / LOCK).read_text(encoding="utf-8"))["files"]
-    check("forget scene: the working lock drops the row and keeps the peer row",
-          "gone.py" not in work and "planted_peer_row.py" in work, sorted(work))
 
 
-def case_lock_path_refused(tmp):
-    """The tool composes the lock blob itself, so a lock named as a path is refused, never silently rewritten."""
-    root, env = scene(tmp, "selflock")
-    before = (root / LOCK).read_bytes()
-    replacement = Path(tmp) / "selflock_blob.json"
-    replacement.write_bytes(before)
-    for args in (["--", LOCK], ["--blob", "%s=%s" % (LOCK, replacement), "--", LOCK]):
-        proc = tool(root, env, ["stage", "--name", "selflock"] + args)
-        out = proc.stdout + proc.stderr
-        check("a lock named as a path exits non-zero and names the path to give instead (%s)" % args[0],
-              proc.returncode != 0 and LOCK in out and "deleted" in out, out)
-    check("the refused stage leaves the working lock unchanged", (root / LOCK).read_bytes() == before)
-    check("the refused stage leaves no private index", not (root / ".git" / "index-selflock").exists())
 
 
 def case_peer_and_resync(tmp):
     root, env = scene(tmp, "resync")
-    work = json.loads((root / LOCK).read_text(encoding="utf-8"))
-    work["files"]["planted_peer_row.py"] = {"status": "local", "hash": "f" * 64}
-    (root / LOCK).write_text(lock_text(work), encoding="utf-8", newline="\n")
     (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
     (root / "peer.py").write_text("peer staged\n", encoding="utf-8", newline="\n")
     git(root, ["add", "--", "peer.py"], env)
@@ -276,52 +188,15 @@ def case_peer_and_resync(tmp):
     check("resync prints RESYNC OK", "RESYNC OK" in res.stdout, res.stdout)
     check("the committed path has no staged change left in the shared index",
           "keep_a.py" not in names(root, env, cached=True), names(root, env, cached=True))
-    check("the lock the commit changed is not left as a staged revert in the shared index",
-          LOCK not in names(root, env, cached=True), names(root, env, cached=True))
     check("the peer's file is still staged in the shared index after resync",
           "peer.py" in names(root, env, cached=True), names(root, env, cached=True))
     check("the peer's working copy is untouched",
           (root / "peer.py").read_text(encoding="utf-8") == "peer staged\n")
-    head_lock = lock_at(root, "HEAD", env)
-    work_lock = json.loads((root / LOCK).read_text(encoding="utf-8"))
-    check("the working lock equals HEAD for the committed path's row",
-          work_lock["files"].get("keep_a.py") == head_lock["files"].get("keep_a.py"),
-          (work_lock["files"].get("keep_a.py"), head_lock["files"].get("keep_a.py")))
-    check("the planted peer row survives in the working lock",
-          work_lock["files"].get("planted_peer_row.py") == {"status": "local", "hash": "f" * 64},
-          work_lock["files"].get("planted_peer_row.py"))
     check("resync removes the private index and its sidecar",
           not (root / ".git" / "index-resync").exists()
           and not (root / ".git" / "index-resync.paths.json").exists())
 
 
-def case_changed_row_travels_with_its_path(tmp):
-    """A committed path's existing row that changed in the working lock (a pull's new hash) is committed and kept."""
-    root, env = scene(tmp, "rowchange")
-    work = json.loads((root / LOCK).read_text(encoding="utf-8"))
-    pulled = dict(work["files"]["keep_a.py"], hash="a" * 64)
-    work["files"]["keep_a.py"] = pulled
-    work["files"]["keep_b.py"] = dict(work["files"]["keep_b.py"], hash="b" * 64)
-    (root / LOCK).write_text(lock_text(work), encoding="utf-8", newline="\n")
-    (root / "keep_a.py").write_text("pulled\n", encoding="utf-8", newline="\n")
-    proc = tool(root, env, ["stage", "--name", "rowchange", "--", "keep_a.py"])
-    check("row-change scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
-    if proc.returncode != 0:
-        return
-    private = lock_at(root, "", idx_env(env, root, "rowchange"))["files"]
-    check("the committed path's changed row is in the lock blob", private.get("keep_a.py") == pulled,
-          private.get("keep_a.py"))
-    check("an unnamed path's changed row stays out of the lock blob",
-          private.get("keep_b.py", {}).get("hash") != "b" * 64, private.get("keep_b.py"))
-    commit = commit_index(root, env, "rowchange", "pull")
-    check("row-change scene: the private-index commit lands", commit.returncode == 0, commit.stderr)
-    res = tool(root, env, ["resync", "--name", "rowchange"])
-    check("row-change scene: resync exits 0", res.returncode == 0, res.stdout + res.stderr)
-    after = json.loads((root / LOCK).read_text(encoding="utf-8"))["files"]
-    check("resync keeps the committed row change in the working lock", after.get("keep_a.py") == pulled,
-          after.get("keep_a.py"))
-    check("resync keeps the unnamed row change in the working lock",
-          after.get("keep_b.py", {}).get("hash") == "b" * 64, after.get("keep_b.py"))
 
 
 def case_peer_staged_same_path(tmp):
@@ -424,31 +299,6 @@ def case_seeded_from_recorded_base(tmp):
           listed == "", "private index lists %r" % listed)
 
 
-def case_head_moved_lock_rows(tmp):
-    """A lock-only commit lands between stage and a private-index commit that adds a row; its rows are reverted."""
-    root, env = scene(tmp, "lockmoved")
-    (root / ".claude" / "tests" / "row_proof.py").write_text("x = 1\n", encoding="utf-8", newline="\n")
-    # A judged row in the working lock is what puts the lock into this private-index commit.
-    judged = json.loads((root / LOCK).read_text(encoding="utf-8"))
-    judged["files"][".claude/tests/row_proof.py"] = {"status": "local", "hash": "a" * 64}
-    (root / LOCK).write_text(lock_text(judged), encoding="utf-8", newline="\n")
-    proc = tool(root, env, ["stage", "--name", "lockmoved", "--", ".claude/tests/row_proof.py"])
-    check("lock-moved scene: stage exits 0", proc.returncode == 0, proc.stdout + proc.stderr)
-    if proc.returncode != 0:
-        return
-    peer = json.loads(git(root, ["show", "HEAD:" + LOCK], env).stdout)
-    peer["files"]["keep_b.py"] = {"status": "local", "hash": "e" * 64}
-    work = json.loads((root / LOCK).read_text(encoding="utf-8"))
-    work["files"]["keep_b.py"] = peer["files"]["keep_b.py"]
-    (root / LOCK).write_text(lock_text(peer), encoding="utf-8", newline="\n")
-    git(root, ["add", "--", LOCK], env)
-    git(root, ["commit", "-q", "-m", "peer reclassifies keep_b.py"], env)
-    (root / LOCK).write_text(lock_text(work), encoding="utf-8", newline="\n")
-    commit_index(root, env, "lockmoved", "mine")
-    res = tool(root, env, ["resync", "--name", "lockmoved"])
-    out = res.stdout + res.stderr
-    check("resync after a lock-only commit exits non-zero and names the reverted lock row",
-          res.returncode != 0 and "keep_b.py" in out and "revert" in out, out)
 
 
 def case_resync_before_commit(tmp):
@@ -541,15 +391,6 @@ def case_usage_errors(tmp):
           names(root, env, cached=True) == [],
           names(root, env, cached=True))
 
-    (root / LOCK).write_text("{ not json\n", encoding="utf-8", newline="\n")
-    (root / "keep_a.py").write_text("mine\n", encoding="utf-8", newline="\n")
-    proc = tool(root, env, ["stage", "--name", "u", "--", "keep_a.py"])
-    check("an unreadable lock exits non-zero with a named error",
-          proc.returncode != 0 and "baseline.lock.json" in (proc.stdout + proc.stderr),
-          proc.stdout + proc.stderr)
-    check("nothing is staged in the shared index after the lock error",
-          names(root, env, cached=True) == [], names(root, env, cached=True))
-
 
 def case_entries_keep_modes_and_peer(tmp):
     root, env = scene(tmp, 'entries')
@@ -614,11 +455,6 @@ real = index_commit._index_entries
 
 def peer_then_fail(root, paths, index=None):
     real(root, paths, index=index)
-    lock_path = Path(root) / index_commit.LOCK_RELPATH
-    lock = json.loads(lock_path.read_text(encoding='utf-8'))
-    lock['files']['peer_after_start.py'] = {'status': 'local', 'peer': True}
-    lock['files']['keep_b.py'] = {'status': 'local', 'changed_by_peer': True}
-    lock_path.write_text(json.dumps(lock), encoding='utf-8', newline='\\n')
     raise index_commit.IndexCommitError('planted later stage failure')
 
 index_commit._index_entries = peer_then_fail
@@ -626,17 +462,13 @@ sys.exit(index_commit.main(['stage', '--name', 'failedstage', '--', '.claude/tes
 '''
 
 
-def case_failed_stage_keeps_peer_rows(tmp):
+def case_failed_stage_cleans_only_private_artifacts(tmp):
     root, env = scene(tmp, 'failedstage')
     (root / '.claude/tests/failedstage.py').write_text('x = 1\n', encoding='utf-8')
     run_env = dict(env)
     proc = subprocess.run([sys.executable, '-c', FAILED_STAGE_DRIVER], cwd=root, env=run_env,
                           capture_output=True, text=True)
     check('later stage failure is reported', proc.returncode != 0 and 'planted later stage failure' in proc.stderr, proc.stdout + proc.stderr)
-    rows = json.loads((root / LOCK).read_text(encoding='utf-8'))['files']
-    check('failed stage keeps peer-added lock row', rows.get('peer_after_start.py') == {'status': 'local', 'peer': True}, rows)
-    check('failed stage keeps peer-modified lock row', rows.get('keep_b.py') == {'status': 'local', 'changed_by_peer': True}, rows)
-    check('failed stage writes no row for the unjudged path', '.claude/tests/failedstage.py' not in rows, rows)
     check('failed stage cleans only private artifacts', not (root / '.git/index-failedstage').exists() and not (root / '.git/index-failedstage.paths.json').exists())
     check('failed stage leaves shared index untouched', names(root, env, cached=True) == [])
 
@@ -766,13 +598,12 @@ def main():
     if not TOOL.exists():
         print("FAIL tool missing: %s" % TOOL)
         return 1
-    cases = (case_new_gitignored_file, case_deleted_path, case_forget_row_of_earlier_deletion,
-             case_lock_path_refused, case_peer_and_resync, case_changed_row_travels_with_its_path,
+    cases = (case_new_gitignored_file, case_deleted_path, case_peer_and_resync,
              case_peer_staged_same_path, case_head_moved, case_resync_after_later_commit,
-             case_seeded_from_recorded_base, case_head_moved_lock_rows,
+             case_seeded_from_recorded_base,
              case_resync_before_commit, case_blob, case_blob_keeps_head_mode, case_no_commit_argv,
              case_usage_errors, case_entries_keep_modes_and_peer, case_resync_keeps_same_blob_peer_mode,
-             case_resync_nochange_entry, case_failed_stage_keeps_peer_rows, case_resync_transaction,
+             case_resync_nochange_entry, case_failed_stage_cleans_only_private_artifacts, case_resync_transaction,
              case_submodule_gitlink, case_submodule_without_checkout)
 
     def attempt(case, tmp):
