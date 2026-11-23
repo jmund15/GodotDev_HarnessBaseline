@@ -12,8 +12,6 @@ filesystem, so each key reaches the engine only through this injection:
                   kind or the kind has no engine row.
   __railsText     `guards/rails.md`, whole: one file for every model (rails Q7).
   __repoRoot      the checkout root (git toplevel of the session cwd). Omitted when git cannot answer.
-  __postReturn    true when the project sets `dispatch.post_return` in adaptation.json. The engine then runs
-                  `tools/launch_check.py post_return` after each job. Omitted otherwise.
 
 It runs no capacity, tier, five-hour, citer-coverage, non-thinking or effort check. The caller pins every job's model
 and effort, and the launch checks are `tools/launch_check.py`'s (both routes call it).
@@ -74,6 +72,12 @@ def _profile(kinds, kind):
     return profile
 
 
+def kind_row(kind, claude_dir=CLAUDE_DIR):
+    """The whole `guards/tool_profiles.json` row of `kind`, or {} when it has none (the entry reads `writes` from it)."""
+    row = _kinds(claude_dir).get(kind) if isinstance(kind, str) else None
+    return row or {}
+
+
 def tool_profiles(args, claude_dir=CLAUDE_DIR):
     """One profile per job whose `kind` row serves the engine route, keyed by the job's label (or a lens's key)."""
     kinds = _kinds(claude_dir)
@@ -111,16 +115,6 @@ def repo_root(cwd):
     return root.replace("\\", "/") or None
 
 
-def post_return_set(claude_dir=CLAUDE_DIR):
-    """True when adaptation.json names a `dispatch.post_return` hook."""
-    import sys
-    tools = str(CLAUDE_DIR / "tools")  # adaptation.py is the one reader; the config comes from claude_dir
-    if tools not in sys.path:
-        sys.path.insert(0, tools)
-    import adaptation
-    return bool(adaptation.get(Path(claude_dir), "dispatch.post_return"))
-
-
 def inject(args, cwd=None, claude_dir=CLAUDE_DIR):
     """`args` (a dict) with the injected keys added. Returns a new dict; the input is not changed.
     Raises TransportError when a file the keys come from cannot be read."""
@@ -134,6 +128,4 @@ def inject(args, cwd=None, claude_dir=CLAUDE_DIR):
     root = repo_root(cwd)
     if root:
         out["__repoRoot"] = root
-    if post_return_set(claude_dir):
-        out["__postReturn"] = True
     return out

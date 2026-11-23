@@ -31,6 +31,7 @@ def planted(tmp_path, monkeypatch):
     claude = plant(tmp_path)
     real_inject = wt.inject
     monkeypatch.setattr(wt, "inject", lambda args, cwd=None, claude_dir=claude: real_inject(args, cwd, claude_dir))
+    monkeypatch.setattr(pwd, "CLAUDE_DIR", claude)
     monkeypatch.setattr(pwd.launch_check, "run_hook", lambda key, args, cwd, lookup=None: (0, ""))
     return claude
 
@@ -121,3 +122,58 @@ def test_the_spawned_entry_passes_a_native_payload(tmp_path):
     assert done.returncode == 0, done.stderr
     hso = json.loads(done.stdout)["hookSpecificOutput"]
     assert "permissionDecision" not in hso, hso.get("permissionDecisionReason")
+
+
+SPILL = ".claude/scratch/spill"
+
+
+def job_with_targets(tmp_path, kind, *targets):
+    (tmp_path / "r.md").write_text("task\ntargets:\n" + "".join("- %s\n" % t for t in targets), encoding="utf-8")
+    return {"label": "r", "promptPath": "r.md", "model": "opus", "effort": "low", "kind": kind}
+
+
+def test_a_read_only_job_naming_its_deliverable_passes_and_another_target_is_refused(tmp_path, planted):
+    ok = call(tmp_path, {"script": "dispatch.js", "args": {"spillDir": SPILL, "jobs": [job_with_targets(tmp_path, "reviewer", SPILL + "/r.md")]}})
+    assert "permissionDecision" not in ok
+    bad = call(tmp_path, {"script": "dispatch.js", "args": {"spillDir": SPILL, "jobs": [job_with_targets(tmp_path, "reviewer", "src/x.py")]}})
+    assert bad["permissionDecision"] == "deny" and "src/x.py" in bad["permissionDecisionReason"]
+
+
+def test_a_writing_kind_may_name_any_target(tmp_path, planted):
+    job = job_with_targets(tmp_path, "author", "src/x.py")
+    assert "permissionDecision" not in call(tmp_path, {"script": "dispatch.js", "args": {"spillDir": SPILL, "jobs": [job]}})
+
+
+def post(tmp_path, args):
+    raw = json.dumps({"hook_event_name": "PostToolUse", "tool_name": "Workflow", "cwd": str(tmp_path),
+                      "tool_input": {"script": "dispatch.js", "args": args}, "tool_response": {}})
+    code, out, _err = pwd.dispatch(raw)
+    assert code == 0
+    return json.loads(out) if out else {}
+
+
+def test_pre_launch_and_post_return_see_one_route_name_and_the_deliverable(tmp_path, planted, monkeypatch):
+    seen = []
+    monkeypatch.setattr(pwd.launch_check, "run_hook", lambda key, args, cwd, lookup=None: seen.append((key, args)) or (0, ""))
+    args = {"spillDir": SPILL, "jobs": [job_with_targets(tmp_path, "reviewer")]}
+    call(tmp_path, {"script": "dispatch.js", "args": args})
+    assert post(tmp_path, args) == {}
+    (pre_key, pre_args), (post_key, post_args) = seen
+    assert pre_key == pwd.launch_check.PRE_KEY and post_key == pwd.launch_check.POST_KEY
+    assert pre_args[0] == post_args[0] and pre_args[1:] == post_args[1:] == ["r.md", SPILL + "/r.md", "r"]
+
+
+def test_a_failing_post_return_marks_that_job_failed(tmp_path, planted, monkeypatch):
+    monkeypatch.setattr(pwd.launch_check, "run_hook", lambda key, args, cwd, lookup=None: (1, "answer-rejected\n") if args[3] == "r" else (0, ""))
+    other = dict(job_with_targets(tmp_path, "reviewer"), label="ok")
+    out = post(tmp_path, {"spillDir": SPILL, "jobs": [job_with_targets(tmp_path, "reviewer"), other]})
+    assert out["decision"] == "block" and "r: dispatch.post_return refused: answer-rejected" in out["reason"]
+    assert "ok:" not in out["reason"]
+
+
+def test_the_spawned_entry_is_silent_after_a_workflow_with_no_post_return_hook(tmp_path):
+    payload = {"hook_event_name": "PostToolUse", "tool_name": "Workflow", "cwd": str(tmp_path), "tool_response": {},
+               "tool_input": {"script": "dispatch.js", "args": {"jobs": [job_with_targets(tmp_path, "reviewer")]}}}
+    done = subprocess.run([sys.executable, str(HOOKS / "pre_workflow_dispatch.py")], input=json.dumps(payload),
+                          capture_output=True, text=True, cwd=str(tmp_path), timeout=60)
+    assert done.returncode == 0 and done.stdout == "", done.stderr

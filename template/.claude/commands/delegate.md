@@ -48,7 +48,7 @@ A writing seat starts from inside its own linked worktree (`orchestration` §7).
 | Behaviour | Native | Seat | Why |
 |---|---|---|---|
 | Unresolved inputs; a read-only job naming another target | refused per job at the Workflow entry (`tools/launch_check.py`) | refused before spawn, same module | one check, two callers |
-| Project hooks `dispatch.pre_launch` / `dispatch.post_return` (`adaptation.json`) | before each job at the entry; after each job in the engine | before spawn; after the CLI exits 0, in the job's workdir | same |
+| Project hooks `dispatch.pre_launch` / `dispatch.post_return` (`adaptation.json`) | before each job at the entry; after the Workflow returns, once per job, at the entry's PostToolUse mode (a refusal fails that job) | before spawn; after the CLI exits 0, in the job's workdir | one module and one hook; the route name passed is `native` or the seat, and the out file is `<spillDir>/<label>.md` or the seat's `<out.md>` |
 | Own worktree, `max_concurrent`, login at its exhaust floor | not checked | refused before spawn | they govern a CLI process and its login; the engine queues past its own concurrency cap, and the session's login is judged in step 2 |
 | Workdir in another checkout | never | the only route | the project's launch hooks must run on it |
 | Floor | the session's hooks run in every agent | a writing Claude seat runs the project's settings; a read-only seat returns on stdout and cannot write | the CLI decides what runs inside it |
