@@ -174,7 +174,7 @@ def an_mcp_call_outside_the_read_only_servers_is_a_live_stop():
 
 @case
 def a_kind_gets_only_the_read_only_servers_its_profile_lists():
-    # guards/tool_profiles.json: author lists semantic-search and ai-worker (no git); arm lists semantic-search only.
+    # guards/tool_profiles.json: author lists semantic-search and ai-worker (no git).
     seat = load()
     servers = seat.granted_servers(["semantic-search", "ai-worker"])
     p = seat.settings(["Read", "Write"], servers)["permissions"]

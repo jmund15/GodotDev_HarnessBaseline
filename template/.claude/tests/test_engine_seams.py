@@ -26,7 +26,7 @@ SINGLE_KIND = {"doc_architecture_audit": {"context": "ctx", "docRoot": "docs"},
                "idea_fanout": {"topic": "t"},
                "worklog_relevance": {"scope": "s"},
                "test_skill_pressure": {"skillName": "n", "skillBody": "b"}}
-PINS = {"model": "sonnet", "effort": "low", "tier": "fanout"}
+PINS = {"model": "sonnet", "effort": "low"}
 
 
 def launch(engine, args, reply):

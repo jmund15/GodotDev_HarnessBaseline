@@ -1,116 +1,41 @@
 {
   "version": 1,
-  "requiredReadTools": ["Read", "Glob", "Grep"],
-  "canonicalOrder": ["Read", "Glob", "Grep", "Edit", "Write", "Bash", "TodoWrite"],
-  "repoScopedServers": ["git"],
   "kinds": {
     "scout": {
-      "builtins": ["Read", "Glob", "Grep"],
-      "mcpServers": ["semantic-search", "ai-worker", "git"],
-      "denyTools": ["mcp__ai-worker__write_doc"],
-      "disclosure": "bare",
-      "guard": "survey",
       "agentType": "delegate-survey",
-      "tier": "fanout",
-      "internal": false,
-      "routes": ["launcher", "fanout", "engine", "agent"]
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker", "git"]
     },
     "lens": {
-      "builtins": ["Read", "Glob", "Grep"],
-      "mcpServers": ["semantic-search", "ai-worker", "git"],
-      "denyTools": ["mcp__ai-worker__write_doc"],
-      "disclosure": "pointer",
-      "guard": "survey",
       "agentType": "delegate-survey",
-      "tier": "fanout",
-      "internal": false,
-      "routes": ["launcher", "fanout", "engine", "agent"]
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker", "git"]
     },
     "reviewer": {
-      "builtins": ["Read", "Glob", "Grep"],
-      "mcpServers": ["semantic-search", "ai-worker", "git"],
-      "denyTools": ["mcp__ai-worker__write_doc"],
-      "disclosure": "full",
-      "guard": "review",
       "agentType": "delegate-review",
-      "tier": "executor",
-      "internal": false,
-      "routes": ["launcher", "fanout", "engine", "agent"]
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker", "git"]
     },
     "author": {
+      "agentType": "delegate-author",
       "builtins": ["Read", "Glob", "Grep", "Edit", "Write", "Bash"],
       "mcpServers": ["semantic-search", "ai-worker"],
-      "disclosure": "full",
-      "guard": "author",
-      "agentType": "delegate-author",
-      "tier": "executor",
-      "writes": true,
-      "internal": false,
-      "routes": ["launcher", "fanout", "engine", "agent"]
+      "writes": true
     },
     "judge": {
-      "builtins": ["Read", "Glob", "Grep"],
-      "mcpServers": ["semantic-search", "ai-worker", "git"],
-      "denyTools": ["mcp__ai-worker__write_doc"],
-      "disclosure": "full",
-      "guard": "common",
       "agentType": "delegate-review",
-      "tier": "executor",
-      "internal": false,
-      "routes": ["launcher", "fanout", "engine", "agent"]
+      "builtins": ["Read", "Glob", "Grep"],
+      "mcpServers": ["semantic-search", "ai-worker", "git"]
     },
     "gate": {
-      "builtins": ["Read", "Grep", "Bash"],
-      "mcpServers": [],
-      "disclosure": "full",
-      "guard": "gate",
       "agentType": "delegate-gate",
-      "tier": "fanout",
-      "internal": false,
-      "routes": ["launcher", "fanout", "engine", "agent"]
-    },
-    "arm": {
-      "builtins": null,
-      "mcpServers": ["semantic-search"],
-      "disclosure": null,
-      "guard": "arm",
-      "agentType": null,
-      "tier": null,
-      "writes": true,
-      "internal": true,
-      "routes": ["launcher", "fanout"]
-    },
-    "bench-score": {
-      "builtins": ["Workflow", "Read", "Glob", "Grep"],
-      "mcpServers": [],
-      "disclosure": "pointer",
-      "guard": null,
-      "agentType": null,
-      "tier": null,
-      "writes": true,
-      "internal": true,
-      "routes": ["launcher"]
+      "builtins": ["Read", "Grep", "Bash"],
+      "mcpServers": []
     },
     "verify": {
-      "builtins": ["Read", "Bash"],
-      "mcpServers": [],
-      "disclosure": null,
-      "guard": null,
       "agentType": "delegate-verify",
-      "tier": "fanout",
-      "internal": true,
-      "routes": ["engine"]
-    },
-    "bench-review": {
-      "builtins": ["Read", "Glob", "Grep"],
-      "mcpServers": ["semantic-search", "ai-worker"],
-      "denyTools": ["mcp__ai-worker__write_doc"],
-      "disclosure": "bare",
-      "guard": "review",
-      "agentType": null,
-      "tier": "executor",
-      "internal": true,
-      "routes": ["launcher", "fanout"]
+      "builtins": ["Read", "Bash"],
+      "mcpServers": []
     }
   },
   "variants": [

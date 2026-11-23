@@ -66,7 +66,7 @@ Pin the three audit lenses from `orchestration`'s model table: the row and start
 Workflow({
   scriptPath: ".claude/workflows/doc_architecture_audit.js",
   args: { context: "<the CONTEXT block from 1d>", docRoot: "<absolute path to .../Claude/Documentation>",
-          model: "<native model ID>", effort: "<the row's starting effort>", tier: "fanout", kind: "reviewer" }
+          model: "<native model ID>", effort: "<the row's starting effort>", kind: "reviewer" }
 })
 ```
 

@@ -30,9 +30,9 @@ Call the workflow, passing the assembled input verbatim:
 ```
 Workflow({
   scriptPath: ".claude/workflows/test_skill_pressure.js",
-  args: { kind: "reviewer", skillName: "<arg>", skillContent: "<full SKILL.md text>", claimsToRefuse: "<Claims to Refuse section>", tier: "fanout",
-          subject: { model: "<row>", effort: "<effort>" }, scorer: { model: "<row>", effort: "<effort>", tier: "<its tier>" },
-          validator: { model: "<row>", effort: "<effort>", tier: "<its tier>" } }
+  args: { kind: "reviewer", skillName: "<arg>", skillContent: "<full SKILL.md text>", claimsToRefuse: "<Claims to Refuse section>",
+          subject: { model: "<row>", effort: "<effort>" }, scorer: { model: "<row>", effort: "<effort>" },
+          validator: { model: "<row>", effort: "<effort>" } }
 })
 ```
 

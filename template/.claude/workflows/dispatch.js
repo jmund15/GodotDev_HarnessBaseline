@@ -137,12 +137,11 @@ if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 // Concurrency safety: with more than one lane, the project's test runners, builds and language servers
 // are single-flight (per machine or per checkout). A lane names what it owns outright (`exclusiveResource`);
 // `A.sharedSingleFlight` lists what no lane may touch (the runtime test slots, a language-server wrapper).
-// The text is the delegate rails' own (.claude/guards/), so a job reads the same rule on every route.
 const SHARED = Array.isArray(A.sharedSingleFlight) ? A.sharedSingleFlight : []
 const guardFor = (lane, j) => {
   if (lanes.length < 2 && SHARED.length === 0) return ''
   const lines = ['', '=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===',
-    'Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. A command the project does not list as single-flight in .claude/guards/single_flight.json is not single-flight, so run your brief\'s own checks with it. Python and Node proofs under .claude/tests/ are not single-flight'
+    'Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. Any other command is not single-flight, so run your brief\'s own checks with it. Python and Node proofs under .claude/tests/ are not single-flight'
       + (noShell(j) ? '; you have no shell, so cite a proof by path instead of running it.' : '; run the edited unit\'s own test file (`python -m pytest <file> -q`) before you return (rules/harness_tooling.md).')
       + ' If your task file mandates a single-flight run, STOP and report that it needs a serialized dispatch.']
   if (lanes.length > 1 && lane.exclusiveResource) lines.push('You are the ONLY agent in your own lane (' + lane.exclusiveResource + '), which you own outright for the duration of your task.')
@@ -225,7 +224,7 @@ const spillContract = (j) => spills(j) ? [
 // (orchestration §2 *Later rounds*).
 const choicesContract = (j) => (j.schema || !canWrite(j)) ? '' : [
   '',
-  '=== CHOICES (orchestration/reference/writer_returns.md) ===',
+  '=== CHOICES (orchestration §2) ===',
   'End your deliverable with a fenced block opened by ```choices holding one JSON object per line, {"unit": "<what you wrote>", "why": "<its reason>"}, for each unit whose content your brief or plan does not state. Leave the block empty when there is none.',
 ].join('\n')
 

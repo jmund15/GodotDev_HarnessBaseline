@@ -173,7 +173,7 @@ def queued_owner_prompt(entry):
 
 
 def owner_quote_text(row):
-    """The text a provider guard `owner:` quote is verified against, or None: the projection's last
+    """The text an `owner:` quote is verified against, or None: the projection's last
     column. A statement about routing is the owner speaking: a prompt, a mid-turn queued prompt, or
     a prompt behind a leading injection block. Meta, sidechain, envelope (cross-session and agent
     messages), command and tool-result rows are plumbing, a peer, or a recorded action -- a quote
@@ -244,7 +244,7 @@ def owner_turns(path):
     (`owner_command_text`). None when the file cannot be read.
 
     An unreadable transcript must not read like one that carries nothing: both deny, but a reader of
-    this proof has to be able to tell the two apart. The provider guard reads `owner_quote_rows`, which drops answers and command arguments.
+    this proof has to be able to tell the two apart. The owner-quote check reads `owner_quote_rows`, which drops answers and command arguments.
     """
     return _turns(path, owner_turn_text)
 
@@ -286,7 +286,7 @@ def classify(entry, index, raw=None):
     queued = queued_owner_prompt(entry)
     if queued is not None:
         # Its own kind, so each consumer declares a cell rather than inheriting the `prompt` one:
-        # a mid-turn message carries owner text (digest, provider guard) but does NOT start a turn.
+        # a mid-turn message carries owner text (digest, owner-quote check) but does NOT start a turn.
         # The runtime queues its own events the same way (a background task's notification carries
         # `commandMode: task-notification`); those are envelopes, never the owner speaking.
         attachment = entry.get("attachment") or {}

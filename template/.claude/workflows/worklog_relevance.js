@@ -5,7 +5,7 @@ export const meta = {
   phases: [{ title: 'Relevance', detail: 'one agent judges backlog overlap against the stated scope' }],
 }
 // Titles and provenance close against canonical evidence before consumption.
-// Args: {scope, model, effort, tier, kind, domains?, promptPath?, justification?}. model and effort
+// Args: {scope, model, effort, kind, domains?, promptPath?, justification?}. model and effort
 // pin the relevance agent and are required. No engine supplies a default pin.
 
 // Platform contract: args may arrive as a JSON string or an already-parsed value. A bare non-JSON
@@ -26,11 +26,15 @@ try {
 // hooks/workflow_transport.py resolves that row of guards/tool_profiles.json into args.__kindProfile. Each
 // child runs as the row's generated agent type, whose `tools` frontmatter is the whole inventory, so a recorded
 // entry is `agent-type`; the runtime restricts no per-child MCP server, so effectiveMcp is the row's list.
+// ENGINE-BLOCK-BEGIN KP
 const KP = (A.__kindProfile && typeof A.__kindProfile === 'object') ? A.__kindProfile : null
+// ENGINE-BLOCK-END KP
 if (typeof A.kind !== 'string' || !A.kind.trim() || !KP || KP.kind !== A.kind || !KP.agentType) {
   return { error: 'worklog-relevance: args.kind is required (scout|lens|reviewer|author|judge|gate), resolved by hooks/workflow_transport.py into args.__kindProfile. The relevance delegate runs as that kind.' }
 }
+// ENGINE-BLOCK-BEGIN KP_RECORD
 const KP_RECORD = Object.assign({}, KP, { enforcement: 'agent-type', effectiveMcp: (KP.mcpServers || []).join(', ') })
+// ENGINE-BLOCK-END KP_RECORD
 // EVIDENCE-SSOT-BEGIN
 const EVIDENCE_SCHEMA = {
   "description": "The evidence contract's machine twin (tools/quote_check.py owns the semantics and is its one executable implementation). A claim's `evidence` is a list of items, each exactly one of two kinds, one item per source: never several sources joined in one string, never a re-rendered structure, never a `memory:` prefix. Every key here is a standard JSON Schema keyword, so the CLI's strict validator accepts it.",
@@ -93,8 +97,12 @@ const TRANSPORT = A.__transport
 const validStringList = (value) => Array.isArray(value) && value.length > 0
   && value.every(item => typeof item === 'string' && item.trim())
 // ENGINE-BLOCK-END validStringList
-if (!TRANSPORT || typeof TRANSPORT !== 'object' || !validStringList(TRANSPORT.ids)
-  || (TRANSPORT.efforts !== undefined && !validStringList(TRANSPORT.efforts))) {
+// ENGINE-BLOCK-BEGIN transportValid
+const transportValid = TRANSPORT && typeof TRANSPORT === 'object' && !Array.isArray(TRANSPORT)
+  && validStringList(TRANSPORT.ids)
+  && (TRANSPORT.efforts === undefined || validStringList(TRANSPORT.efforts))
+// ENGINE-BLOCK-END transportValid
+if (!transportValid) {
   return { error: 'worklog-relevance: args.__transport is missing or malformed. hooks/workflow_transport.py injects the endpoint\'s model vocabulary ({name, ids, efforts?}); without it this engine has no legal pins and refuses to guess.' }
 }
 // ENGINE-BLOCK-BEGIN PIN
@@ -104,8 +112,7 @@ const PIN = (m) => m
 const EFF = (e) => e
 // ENGINE-BLOCK-END EFF
 
-// Pins are the CALLER's decision (provider choice is budget-posture, and the ladder in
-// reference/model_ladder_evidence.md is the only role→model surface).
+// Pins are the CALLER's decision.
 const VALID_MODELS = TRANSPORT.ids
 const VALID_EFFORTS = TRANSPORT.efforts
 const pinVocab = 'model in [' + VALID_MODELS.join('|') + ']' + (VALID_EFFORTS ? ' and effort in [' + VALID_EFFORTS.join('|') + ']' : '')
@@ -118,14 +125,14 @@ const promptPath = (typeof A.promptPath === 'string' && A.promptPath.trim())
 
 if (!scope) {
   return {
-    error: 'args needs {scope, model, effort, tier} with a non-empty scope, tier the one model serves (the provider guard checks it). Optional: domains[] to narrow the index scan, promptPath to override the shared mandate.',
+    error: 'args needs {scope, model, effort, kind} with a non-empty scope. Optional: domains[] to narrow the index scan, promptPath to override the shared mandate.',
   }
 }
 if (!VALID_MODELS.includes(A.model) || (VALID_EFFORTS !== undefined && !VALID_EFFORTS.includes(A.effort))) {
   return { error: 'worklog-relevance: pin model and effort on every job (orchestration §5). Unpinned or illegal: worklog:relevance (args.model, args.effort). Each job needs ' + pinVocab + '.' }
 }
 
-log('PINS ' + JSON.stringify({ 'worklog:relevance': PIN(A.model) + '/' + EFF(A.effort) + ' tier:' + A.tier }))
+log('PINS ' + JSON.stringify({ 'worklog:relevance': PIN(A.model) + '/' + EFF(A.effort) }))
 if (A.justification) log('EFFORT-JUSTIFICATION: ' + A.justification)
 
 // Parity-checked against worklog_relevance.schema.json (the sidecar path's -S file) by

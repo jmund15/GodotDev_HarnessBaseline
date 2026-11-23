@@ -25,7 +25,7 @@ async function run(args, reply) {
   const calls = []
   const agent = async (prompt, opts) => { calls.push({ prompt, opts }); return reply(prompt, opts) }
   const parallel = async thunks => Promise.all(thunks.map(fn => fn()))
-  const result = await engine(engineRun.withHost({ context: 'CONTEXT', docRoot: 'D:/vault', model: 'm-one', effort: 'low', tier: 'fanout', kind: 'reviewer', checker: { model: 'm-one', effort: 'low' }, ...args }, HOST_TRANSPORT),
+  const result = await engine(engineRun.withHost({ context: 'CONTEXT', docRoot: 'D:/vault', model: 'm-one', effort: 'low', kind: 'reviewer', checker: { model: 'm-one', effort: 'low' }, ...args }, HOST_TRANSPORT),
     agent, parallel, () => {}, () => {})
   return { result, calls }
 }

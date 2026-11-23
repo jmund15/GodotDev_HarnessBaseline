@@ -1,7 +1,0 @@
-{
-  "header": "=== ORCHESTRATION GUARD (you are one of several agents running CONCURRENTLY) ===",
-  "rule": "Do NOT run a single-flight tool: one that allows only one process per machine or per checkout, such as a game engine or a language server. A command the project does not list as single-flight in .claude/guards/single_flight.json is not single-flight, so run your brief's own checks with it. Python and Node proofs under .claude/tests/ are not single-flight",
-  "withShell": "; run the edited unit's own test file (`python -m pytest <file> -q`) before you return (rules/harness_tooling.md).",
-  "noShell": "; you have no shell, so cite a proof by path instead of running it.",
-  "stop": " If your task file mandates a single-flight run, STOP and report that it needs a serialized dispatch."
-}
