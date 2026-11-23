@@ -29,7 +29,7 @@ Do not create codes for short simple answers.
 - A project rule may add to shared loss, quality and brief rules, never weaken them; the shared rule wins, and `/review` checks.
 
 ## Fixes and Redesigns
-A fix to a file in the top 5% by fix commits since its last redesign commit, or to a shared contract (floor module, shared command, tool or skill), is planned as a redesign through `/plan` and `/review`: patching much-fixed files is how the harness grew. `git log --format=@%s --name-only | awk '/^@/{s=$0;next}NF&&!d[$0]{if(tolower(s)~"redesign")d[$0]=1;else if(s~"^@fix")c[$0]++}END{for(f in c)print c[f],f}' | sort -rn | awk '{a[NR]=$0}END{for(i=1;i<=(NR+19)/20;i++)print a[i]}'` lists them. A fix restoring a broken floor (a guard denying every call, a red main) lands first; its plan follows. A repeated fix to one decision across files runs `/codify`.
+A fix to a file in the top 5% by fix commits since its last redesign commit, or to a shared contract (floor module, shared command, tool or skill), is planned as a redesign through `/plan` and `/review`: patching much-fixed files is how the harness grew. `/codify` Step 2 holds the query that lists them. A fix restoring a broken floor (a guard denying every call, a red main) lands first; its plan follows. A repeated fix to one decision across files runs `/codify`.
 
 ## Memory
 Search `.claude/auto-memory/` by concept on a domain change or surprising result; retire what the result disproves. New learning is cold: a hot pointer is paid every call.
