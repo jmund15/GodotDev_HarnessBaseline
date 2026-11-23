@@ -13,6 +13,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 CLAUDE = Path(__file__).resolve().parents[1]
 BASH = shutil.which("bash")  # Git Bash: a bare `bash` from Python is WSL on Windows
 FILES = ("scripts/seat.sh", "scripts/seat_claude.sh", "scripts/seat_agy.sh", "tools/launch_check.py",
@@ -41,8 +43,10 @@ def _git(cwd, *args):
                    capture_output=True, stdin=subprocess.DEVNULL)
 
 
-def _checkout(tmp_path):
-    repo = tmp_path / "repo"
+@pytest.fixture(scope="module")
+def _template(tmp_path_factory):
+    """One committed checkout per module; each case copies it, so no case pays `git init` and `git commit`."""
+    repo = tmp_path_factory.mktemp("seat_template") / "repo"
     (repo / ".claude").mkdir(parents=True)
     for rel in FILES:
         target = repo / ".claude" / rel
@@ -54,6 +58,15 @@ def _checkout(tmp_path):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "init")
     return repo
+
+
+@pytest.fixture(autouse=True)
+def _checkout_of(_template, tmp_path, monkeypatch):
+    shutil.copytree(_template, tmp_path / "repo")
+
+
+def _checkout(tmp_path):
+    return tmp_path / "repo"
 
 
 def _stub(path, text):
