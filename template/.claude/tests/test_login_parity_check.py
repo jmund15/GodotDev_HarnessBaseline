@@ -216,7 +216,7 @@ def main():
     hung.write_text("import subprocess, sys, time\nsubprocess.Popen([sys.executable, %s])\ntime.sleep(30)\n"
                     % json.dumps(str(grandchild)), encoding="utf-8", newline="\n")
     module.CHECK_ARGV = [sys.executable, str(hung)]
-    module.CHECK_TIMEOUT = 2
+    module.CHECK_TIMEOUT = 1
     module.LOGS = root / "logs"
     spawned = []
     module.spawn = lambda argv, log: spawned.append(list(argv))
@@ -226,9 +226,9 @@ def main():
     elapsed = time.time() - start
     if saved_sidecar is not None:
         os.environ["CLAUDE_CODE_SIDECAR"] = saved_sidecar
-    time.sleep(max(0.0, 8 - (time.time() - start)))
+    time.sleep(max(0.0, 2.8 - (time.time() - start)))   # past the moment a surviving grandchild would write
     case("a hung check ends at its deadline with the processes it started: the timeout line, no grandchild left",
-         "ran past 2 s" in (line or "") and elapsed < 5 and not marker.exists() and not spawned,
+         "ran past 1 s" in (line or "") and elapsed < 2.5 and not marker.exists() and not spawned,
          repr((line, round(elapsed, 1), marker.exists(), spawned)))
 
     root = new_root()

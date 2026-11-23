@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-runnable proof that the `stamp-inputs:` list in the workstation setup command parses.
+"""Proof that the `stamp-inputs:` list in the workstation setup command parses.
 
 `tools/workstation_profile.py` reads `stamp-inputs:` from the command's frontmatter to decide whether a
 machine's setup stamp is current, and the shared user-scope tool, manifest and templates must be listed there.
@@ -8,34 +8,15 @@ A copy that drops a template, or misspells the key, must read as short or undecl
     python -m pytest .claude/tests/test_setup_docs.py -q
 """
 import importlib.util
-import sys
-import tempfile
+import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CLAUDE = HERE.parent
-REPO = CLAUDE.parent
-
-DOCS = {"setup": ".claude/commands/workstation_setup.md"}
-
-FAILURES = []
+REPO = HERE.parents[1]
+SETUP_DOC = ".claude/commands/workstation_setup.md"
 
 
-def case(label, fn):
-    try:
-        ok, detail = fn()
-    except Exception as exc:  # noqa: BLE001 - a proof reports, it does not stop
-        ok, detail = False, "%s: %s" % (type(exc).__name__, exc)
-    print("%-4s %s" % ("ok" if ok else "FAIL", label))
-    if not ok:
-        FAILURES.append("%s%s" % (label, (" -- " + str(detail)[:220]) if detail else ""))
-
-
-def read(key, root=REPO):
-    return (Path(root) / DOCS[key]).read_text(encoding="utf-8")
-
-
-def _profile_tool():
+def profile_tool():
     """`tools/workstation_profile.py` from this checkout, loaded by path so either cwd works."""
     spec = importlib.util.spec_from_file_location(
         "docs_workstation_profile", REPO / ".claude" / "tools" / "workstation_profile.py")
@@ -44,78 +25,43 @@ def _profile_tool():
     return module
 
 
-def declared_inputs_parse(root=REPO):
-    """The tool's own reader returns the declared list from the real command doc.
-
-    A malformed `stamp-inputs:` reads as UNAUDITED on every machine forever, which no other case in
-    any proof would show.
-    """
-    declared = _profile_tool().stamp_inputs(root)
-    return bool(declared) and ".mcp.json" in declared, "declared=%r" % (declared,)
+def doc_copy(tmp_path, old=None, new=""):
+    """A root holding the setup doc, with the first `old` replaced by `new`."""
+    text = (REPO / SETUP_DOC).read_text(encoding="utf-8")
+    if old is not None:
+        assert old in text, "the planted edit did not apply: %r" % old
+        text = text.replace(old, new, 1)
+    (tmp_path / ".claude" / "commands").mkdir(parents=True)
+    (tmp_path / SETUP_DOC).write_text(text, encoding="utf-8")
+    return tmp_path
 
 
 def shared_user_scope_paths():
     """The tool and every path the shared manifest names, as repo-relative stamp inputs."""
-    import json
     manifest = json.loads((REPO / ".claude/user_scope/manifest.json").read_text(encoding="utf-8"))
-    paths = [".claude/tools/user_scope.py", ".claude/user_scope/manifest.json"]
-    paths += [".claude/user_scope/" + item["src"] for item in manifest["items"] if "src" in item]
-    return paths
+    return ([".claude/tools/user_scope.py", ".claude/user_scope/manifest.json"]
+            + [".claude/user_scope/" + item["src"] for item in manifest["items"] if "src" in item])
 
 
-def user_scope_inputs_declared(root=REPO):
-    """Every shared user-scope path is a declared stamp input, so a template change flags the machine STALE."""
-    declared = _profile_tool().stamp_inputs(root) or []
-    missing = [path for path in shared_user_scope_paths() if path not in declared]
-    return not missing, "undeclared: %r" % (missing,)
+def undeclared(root):
+    declared = profile_tool().stamp_inputs(root) or []
+    return [path for path in shared_user_scope_paths() if path not in declared]
 
 
-def user_scope_inputs_declared_plant():
-    """The same case on a doc copy that drops one declared template must fail."""
-    with tempfile.TemporaryDirectory(prefix="docs_") as tmp:
-        root = Path(tmp)
-        (root / ".claude" / "commands").mkdir(parents=True)
-        text = read("setup").replace('  - ".claude/user_scope/statusline.py"\n', "", 1)
-        (root / DOCS["setup"]).write_text(text, encoding="utf-8")
-        ok, detail = user_scope_inputs_declared(root)
-    return not ok, detail
+def test_the_shared_user_scope_tool_manifest_and_templates_are_declared_stamp_inputs():
+    assert undeclared(REPO) == []
 
 
-def declared_inputs_parse_plant():
-    """The same reader on a copy whose key is misspelled must return None, not a list."""
-    with tempfile.TemporaryDirectory(prefix="docs_") as tmp:
-        root = Path(tmp)
-        (root / ".claude" / "commands").mkdir(parents=True)
-        text = read("setup").replace("stamp-inputs:", "stamp-input:", 1)
-        target = root / DOCS["setup"]
-        target.write_text(text, encoding="utf-8")
-        declared = _profile_tool().stamp_inputs(root)
-    return declared is None, "declared=%r" % (declared,)
+def test_a_dropped_template_leaves_the_stamp_inputs_short(tmp_path):
+    root = doc_copy(tmp_path, '  - ".claude/user_scope/statusline.py"\n')
+    assert undeclared(root) == [".claude/user_scope/statusline.py"]
 
 
-def main():
-    case("green: the shared user-scope tool, manifest and templates are declared stamp inputs",
-         user_scope_inputs_declared)
-    case("RED on a planted copy: a dropped template leaves the stamp inputs short",
-         user_scope_inputs_declared_plant)
-    case("green: the real command doc's `stamp-inputs:` parses", declared_inputs_parse)
-    case("RED on a planted copy: a misspelled `stamp-inputs:` reads as no declaration",
-         declared_inputs_parse_plant)
-
-    if FAILURES:
-        print("\nFAILED:\n  " + "\n  ".join(FAILURES))
-        sys.exit(1)
-    print("all ok")
+def test_the_real_command_docs_stamp_inputs_parse():
+    """A malformed `stamp-inputs:` reads as UNAUDITED on every machine forever, which no other case would show."""
+    declared = profile_tool().stamp_inputs(REPO)
+    assert declared and ".mcp.json" in declared
 
 
-def test_proof():
-    """File-level bridge for pytest: the proof's own entry, run in process. A SystemExit of 0 or None passes."""
-    try:
-        code = main()
-    except SystemExit as exc:
-        code = exc.code
-    assert code in (None, 0), code
-
-
-if __name__ == "__main__":
-    main()
+def test_a_misspelled_stamp_inputs_reads_as_no_declaration(tmp_path):
+    assert profile_tool().stamp_inputs(doc_copy(tmp_path, "stamp-inputs:", "stamp-input:")) is None
