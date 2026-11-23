@@ -10,7 +10,7 @@ import json
 import os
 import subprocess
 import sys
-import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 
@@ -405,12 +405,14 @@ def test_a_real_stop_of_a_child_this_session_started(tmp_path, monkeypatch):
     """The child's own environment names the session (no ancestry: CLAUDE_PID is unset), so the stop reads the
     live table, the child's native environment block and kills it through taskkill."""
     token = "reap-proof-%d" % os.getpid()
-    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
-                             env=dict(os.environ, CLAUDE_CODE_SESSION_ID=token))
+    # The child says when it runs. For a few ms after CreateProcess its PEB's process parameters read as a partial
+    # copy (measured: ~1 child in 40 flaps readable, unreadable, readable), so "the block is nonempty" is not
+    # "the block is stable"; a read before the child's own first line can fail on the very next call.
+    child = subprocess.Popen([sys.executable, "-c", "import time; print('ready', flush=True); time.sleep(60)"],
+                             env=dict(os.environ, CLAUDE_CODE_SESSION_ID=token), stdout=subprocess.PIPE)
     try:
-        deadline = time.time() + 10
-        while time.time() < deadline and reap.native_environ(child.pid) == b"":
-            time.sleep(0.1)
+        with ThreadPoolExecutor(1) as reader:
+            assert reader.submit(child.stdout.readline).result(timeout=60).strip() == b"ready"
         assert reap._env_value(reap.environ_of(child.pid), reap.SID_ENV) == token
         assert reap.native_environ(4) == b""  # the System process: access denied yields b'', never a partial block
         monkeypatch.setattr(reap, "LEDGER", tmp_path / "reap_ledger.jsonl")
@@ -423,6 +425,7 @@ def test_a_real_stop_of_a_child_this_session_started(tmp_path, monkeypatch):
         if child.poll() is None:
             child.kill()
             child.wait()
+        child.stdout.close()
 
 
 def test_the_entry_point_runs_and_refuses_a_retired_flag():
