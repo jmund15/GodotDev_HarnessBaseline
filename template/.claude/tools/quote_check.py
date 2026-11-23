@@ -11,8 +11,8 @@ evidence items, one source per item:
   {"file": "<path>[:N[-M]]", "quote": "<text>"}      the quote is in that file. A relative path is taken from
                                                      --root. Whitespace runs collapse; everything else must match
                                                      exactly, with no `...` gaps. The line range is not checked.
-  {"file": "<transcript>.jsonl", "quote": "<words>"}  an owner quote: the words are in one record the owner typed
-                                                     (a user-role text record), after each line is JSON-decoded.
+  {"file": "<session-uuid>.jsonl", "quote": "<words>"} an owner quote: the words are in one owner turn (_owner_text)
+                                                     (a prompt, an AskUserQuestion answer, command args). Any other .jsonl is a file.
   {"command": "<git ...>", "output": "<text>"}       the text is in the stdout of a read-only git command run
                                                      under --root. Only commands on GIT_SPECS run: no shell
                                                      syntax, no flag outside the table. An empty output needs
@@ -33,11 +33,13 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import _git_run  # noqa: E402
+import _owner_text  # noqa: E402
 
 COMMAND_TIMEOUT = 8
 HEADING = re.compile(r"^## (.*)$", re.M)
 FENCE = re.compile(r"```json[ \t]*\r?\n(.*?)```", re.S)
 LOCATION = re.compile(r"^(.*?):(\d+)(?:-(\d+))?$")
+SESSION_FILE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl", re.I)
 SHELL = re.compile(r"[|;&<>$`\n]")
 BINARY_PROBE = 8000
 
@@ -46,7 +48,8 @@ class Spec(NamedTuple):
     """One allow-listed git subcommand: its boolean and value-taking options, and which positional words are paths.
 
     `paths`: "dashdash" none outside `--`; "all" every positional; "rest" every positional after the first (a
-    tree-ish); "grep" every positional after the pattern, or all with `-e`; "none" no positional.
+    tree-ish); "grep" every positional after the pattern, or all with `-e`; "none" no positional; "list" none, and a
+    positional is refused unless `--list` is given (`git branch <name>` creates a branch).
     """
     short: str = ""
     short_value: str = ""
@@ -78,7 +81,7 @@ GIT_SPECS = {
                  long=("--stat", "--name-only", "--name-status", "--oneline", "--no-patch", "--no-color", "--patch",
                        "--abbrev-commit"),
                  long_value=("--format", "--pretty")),
-    "branch": Spec(short="arv", paths="none", long=("--list", "--all", "--remotes", "--show-current", "--verbose"),
+    "branch": Spec(short="arv", paths="list", long=("--list", "--all", "--remotes", "--show-current", "--verbose"),
                    long_value=("--contains", "--merged", "--no-merged", "--points-at")),
     "check-ignore": Spec(short="vnq", paths="all", long=("--verbose", "--non-matching", "--quiet", "--no-index")),
     "cat-file": Spec(short="ptse", paths="none"),
@@ -130,7 +133,9 @@ def parse_git(sub, spec, words):
                     return None
         else:
             positional.append(word)
-    named = {"dashdash": [], "all": positional, "rest": positional[1:], "none": [],
+    if spec.paths == "list" and positional and "--list" not in seen:
+        return None
+    named = {"dashdash": [], "all": positional, "rest": positional[1:], "none": [], "list": [],
              "grep": positional if "-e" in seen else positional[1:]}[spec.paths]
     return after + named
 
@@ -190,26 +195,15 @@ def check_command(command, output, root):
     return None
 
 
-def _typed_text(record):
-    """The text the owner typed in a user-role record: tool results, assistant turns and other records give ''."""
-    if not isinstance(record, dict):
-        return ""
-    message = record.get("message") if isinstance(record.get("message"), dict) else {}
-    if record.get("type") != "user" and message.get("role") != "user":
-        return ""
-    content = message.get("content")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(str(b.get("text") or "") for b in content
-                         if isinstance(b, dict) and b.get("type") == "text")
-    return ""
+def _stem(cited):
+    """The path of a `path[:N[-M]]` citation."""
+    found = LOCATION.match(cited)
+    return found.group(1) if found else cited
 
 
 def _source(cited, root):
     """(path, error): the file a `path[:N[-M]]` citation names, relative to root; error when it is not a file."""
-    found = LOCATION.match(cited)
-    path = Path(found.group(1) if found else cited)
+    path = Path(_stem(cited))
     if not path.is_absolute():
         path = root / path
     return (path, None) if path.is_file() else (path, "no such file")
@@ -237,14 +231,9 @@ def check_owner(cited, quote, root):
     if error:
         return "no such transcript"
     needle = squash(quote)
-    with open(path, encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            if needle in squash(_typed_text(record)):
-                return None
+    turns = _owner_text.owner_turns(path) or []
+    if any(needle in squash(text) for _, text in turns):
+        return None
     return "words not in any owner turn"
 
 
@@ -255,7 +244,7 @@ def check_item(item, root):
         return check_command(item["command"], item["output"], root)
     if not isinstance(item.get("file"), str) or not isinstance(item.get("quote"), str):
         return "malformed: a file item needs file and quote strings"
-    if item["file"].endswith(".jsonl"):
+    if SESSION_FILE.fullmatch(Path(_stem(item["file"])).name):
         return check_owner(item["file"], item["quote"], root)
     return check_file(item["file"], item["quote"], root)
 
@@ -281,20 +270,23 @@ def claims_items(data, found=None):
 
 
 def findings_items(text):
-    """[(heading, items)] for every fenced json block under a `##` heading. ValueError when a block is not a
-    JSON list of objects."""
+    """[(heading, items)] for every fenced json block under a `##` heading that is evidence: a list of objects each
+    carrying `file` or `command`. A block that is not (an example, a schema) is skipped with a warning on stderr.
+    ValueError when a block is not JSON at all."""
     marks = list(HEADING.finditer(text))
     sections = []
     for index, mark in enumerate(marks):
         end = marks[index + 1].start() if index + 1 < len(marks) else len(text)
+        heading = mark.group(1).strip()
         for block in FENCE.findall(text[mark.end():end]):
             try:
                 items = json.loads(block)
             except ValueError as exc:
-                raise ValueError("%s: json block is not JSON (%s)" % (mark.group(1).strip(), exc))
-            if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
-                raise ValueError("%s: json block is not a list of evidence items" % mark.group(1).strip())
-            sections.append((mark.group(1).strip(), items))
+                raise ValueError("%s: json block is not JSON (%s)" % (heading, exc))
+            if not (isinstance(items, list) and items and all(isinstance(i, dict) and ("file" in i or "command" in i) for i in items)):
+                print("quote_check: skipped a json block under %r: not a list of evidence items" % heading, file=sys.stderr)
+                continue
+            sections.append((heading, items))
     return sections
 
 
