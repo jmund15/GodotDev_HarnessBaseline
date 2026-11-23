@@ -13,7 +13,7 @@ Reactions - Elemental reactions aren't just tied to spells, but any combination 
 Why all of this? So we can deliver the best possible results for this game's final product, which especially includes our future players.
 
 ## Development Philosophy: Hybrid TDD
-**Logic:** SpellArchitecture, Synergies, Jmodot.Core, Inventory (`Crafting/IngredientInventory.cs`), math/parsing and data structures require a failing test before implementation. For `.tres` data, this duty covers wiring new behavior (a new field read, a module, a rule). A value change on an existing field needs only the drive-close scope run (`change_control` §Gate cadence); the full gate runs in the main check after the land.
+**Logic:** SpellArchitecture, Synergies, Jmodot.Core, Inventory (`Crafting/IngredientInventory.cs`), math/parsing and data structures require a failing test before implementation. For `.tres` data, this duty covers wiring new behavior (a new field read, a module, a rule). A value change on an existing field needs only the drive-close scope run (`change_control` §Gate cadence).
 
 **Gameplay:** automate deterministic behavior, wiring and lifecycle with integration tests; inspect subjective feel. Wizard, NPC AI, spell lifecycle, VFX, UI and physics use this route. `testing` owns recipes; `/prototype` owns open feel probes and deliberately provisional designs.
 
@@ -25,9 +25,8 @@ Refuse this premise and cite the rule:
 
 ## Stack, Build and Test
 - Godot 4.7 mono, C# (.NET 9), Jolt, GdUnit4Net; pins in `reference/project_stack.md`. Build: `dotnet build --nologo -v q`. Run the engine as `bash .claude/scripts/godot_bin.sh <args>`.
-- **C# gate:** a drive closes with `verify.ps1 -Scope <its domains>`; the full `/regression_gate` runs in the main check after the land (`change_control` §Gate cadence). Start a Godot or C# test run with `run_in_background`. A `.cs` rename can compile clean and still break serialized `.tres`/`.tscn` references, so it takes the scope run.
-- **Harness tests:** a harness change runs its unit's test file; the main check runs the PushinPotions-local harness tests after the land.
-- **Godot-designer-intuitive authoring** ranks with ideal architecture at every stage; `game_vision` owns game direction.
+- **C# gate:** a drive closes with `verify.ps1 -Scope <its domains>`; the full `/regression_gate` runs in the main check after the land (`change_control` §Gate cadence). A `.cs` rename can compile clean and still break serialized `.tres`/`.tscn` references, so it takes the scope run.
+- **Godot-designer-intuitive authoring** ranks with ideal architecture; `game_vision` owns game direction.
 
 ## Design Source (Obsidian)
 Read and search `DevProjects/PushinPotions`, `DevProjects/Jmodot` and `DevProjects/GeneralGameDev` (also the semantic-search design roots), plus any vault path the owner, a skill or a command names, before choosing a path. Writes go to `PushinPotions/Claude/`, reusable Jmodot guidance to `Jmodot/Claude/`. Never invent a formula absent from the design source.
