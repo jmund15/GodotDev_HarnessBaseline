@@ -1,6 +1,6 @@
 # Worklog Titles
 <!--
-Auto-generated mirror of `DevProjects/{{PROJECT_NAME}}/Claude/TODO/Worklog.md` (Obsidian).
+Auto-generated mirror of the project's Obsidian `Claude/TODO/Worklog.md`.
 DO NOT HAND-EDIT — the `/worklog` command patches this file incrementally on every Active-section change (full regeneration happens only via `/worklog show`).
 
 Purpose: lightweight always-loaded view (titles + class + scope) for the SessionStart hook.

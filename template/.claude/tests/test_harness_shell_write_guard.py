@@ -81,6 +81,16 @@ HELPER_WRITE = (
     "rep('.claude/skills/video_frames/SKILL.md', 'x', 'y')\n"
     "EOF"
 )
+HELPER_ALIAS_WRITE = (
+    "python3 - <<'EOF'\n"
+    "from pathlib import Path\n"
+    "def sub(p, pairs):\n"
+    "    f = Path(p); s = f.read_text(encoding='utf-8')\n"
+    "    f.write_text(s, encoding='utf-8')\n"
+    "sub('skills/change_control/SKILL.md', [('a', 'b')])\n"
+    "EOF"
+)
+HELPER_ALIAS_SCRATCH = HELPER_ALIAS_WRITE.replace("skills/change_control/SKILL.md", "scratch/notes.md")
 CODE_TEXT = (
     "python3 - <<'EOF'\n"
     "p = 'tests/test_model_registry.py'\n"
@@ -143,6 +153,8 @@ CASES = [
     ("rebound name writes only its last binding", REBOUND, "Bash", ALLOW),
     ("relative binding written from inside .claude", RELATIVE_BINDING, "Bash", DENY, REPO + "/.claude"),
     ("helper function writes its path parameter", HELPER_WRITE, "Bash", DENY),
+    ("helper writes a local bound to Path(param)", HELPER_ALIAS_WRITE, "Bash", DENY, REPO + "/.claude"),
+    ("same helper writing scratch", HELPER_ALIAS_SCRATCH, "Bash", ALLOW, REPO + "/.claude"),
     ("joined path inside written code text", CODE_TEXT, "Bash", ALLOW, REPO + "/.claude"),
 ]
 

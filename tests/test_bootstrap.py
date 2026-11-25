@@ -501,8 +501,32 @@ def test_hook_smoke_lists_every_crashing_hook() -> None:
         _rmtree_writable(temp_root)
 
 
+def test_doctor_asks_the_owner_to_fill_only_project_owned_seeds() -> None:
+    """A fresh consumer's doctor `seeds: pending` names only seeds the owner fills in, which carry the
+    PROJECT-OWNED marker; a shared doctrine file it names reads as owner work that never clears."""
+    origin = _origin()
+    temp_root = Path(tempfile.mkdtemp(prefix="bootstrap_doctor_"))
+    baseline = None
+    try:
+        baseline, snapshot = _snapshot_checkout(temp_root)
+        target = temp_root / "pure"
+        _bootstrap(baseline, snapshot, origin, target, "pure")
+        result = subprocess.run([sys.executable, ".claude/tools/baseline_sync.py", "doctor", "--json"], cwd=target,
+                                capture_output=True, text=True, timeout=180, encoding="utf-8", errors="replace")
+        seeds = {row["item"]: row for row in json.loads(result.stdout)}["seeds"]
+        named = re.findall(r"(\.claude/\S+) \(\d+\)", seeds["detail"])
+        assert seeds["status"] == "pending" and named, seeds
+        unowned = [rel for rel in named if "PROJECT-OWNED" not in (target / rel).read_text(encoding="utf-8")]
+        assert not unowned, f"doctor asks the owner to fill shared files: {unowned}"
+    finally:
+        if baseline is not None:
+            subprocess.run(["git", "worktree", "remove", "--force", str(baseline)], cwd=ROOT, capture_output=True)
+        _rmtree_writable(temp_root)
+
+
 def main() -> int:
-    cases = [test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean,
+    cases = [test_doctor_asks_the_owner_to_fill_only_project_owned_seeds,
+             test_bootstrap_into_temp_yields_a_v2_lock_that_checks_clean,
              test_each_layer_prefix_installs_only_its_layers_and_imports_their_doctrine,
              test_backslash_paths_normalize_and_a_bad_vault_root_fails_before_any_write,
              test_every_written_file_is_lf,

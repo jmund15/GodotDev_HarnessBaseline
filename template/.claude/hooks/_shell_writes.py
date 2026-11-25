@@ -148,9 +148,14 @@ def _body_targets(body):
     for m in _DEF.finditer(body):
         func, params = m.group(1), [p.split("=")[0].strip() for p in m.group(2).split(",")]
         for index, name in enumerate(params):
-            use = re.compile(r"\b" + re.escape(name) + r"\.write_(?:text|bytes)\(|open\(\s*" + re.escape(name)
+            if not name:
+                continue
+            aliases = [name] + re.findall(r"(?:^|;)[ \t]*(\w+)\s*=\s*(?:Path\(\s*)?" + re.escape(name)
+                                          + r"\s*\)?[ \t]*(?=;|$)", body[m.end():], re.MULTILINE)
+            names = "(?:" + "|".join(re.escape(a) for a in aliases) + ")"
+            use = re.compile(r"\b" + names + r"\.write_(?:text|bytes)\(|open\(\s*" + names
                              + r"\s*,\s*(?:mode\s*=\s*)?['\"][^'\"]*[wax+]")
-            if not name or not use.search(body, m.end()):
+            if not use.search(body, m.end()):
                 continue
             for call in re.finditer(r"(?<![\w.])" + re.escape(func) + r"\(", body[m.end():]):
                 args = body[m.end() + call.end():].split(")", 1)[0].split(",")
