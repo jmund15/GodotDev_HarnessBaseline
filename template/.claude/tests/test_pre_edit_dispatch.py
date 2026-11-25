@@ -43,7 +43,7 @@ ENFORCER = _optional_hooks.present("pattern_enforcer")
 DISPATCH = os.path.join(HOOKS, "pre_edit_dispatch.py")
 SETTINGS = _settings_probe.settings_path(CLAUDE)
 
-SUBHOOKS = ("pattern_enforcer", "running_script_edit_guard")
+SUBHOOKS = ("pattern_enforcer", "harness_edit_skill_reminder", "running_script_edit_guard")
 
 # Assembled, never spelled: pattern_enforcer denies any Write whose content carries it.
 EXPORT_NULL_VIOLATION = "[Export] public Node Thing = " + "null" + "!;"
@@ -219,6 +219,22 @@ def main():
                       rc == 2 and "BLOCKED" in err))
         cases.append(("a blocked call emits no advisory on stdout", out in ("", "{}")))
 
+    # --- harness_edit_skill_reminder: deny, then advisory ------------------
+    harness_md = os.path.join(CLAUDE, "commands", "explore.md")
+    rc, out, err = run(edit(harness_md, "text", session="predeny1"), env)
+    decision, ctx = hook_output(out)
+    cases.append(("harness_edit_skill_reminder denies a harness edit while the skill is not in context",
+                  rc == 0 and decision == "deny" and "instruction_quality" in out))
+
+    subprocess.run([sys.executable, os.path.join(HOOKS, "skill_load_marker.py")],
+                   input=json.dumps({"tool_name": "Skill", "session_id": "preload1",
+                                     "tool_input": {"skill": "instruction_quality"}}),
+                   capture_output=True, text=True, timeout=60, env=env)
+    rc, out, err = run(edit(harness_md, "text", session="preload1"), env)
+    decision, ctx = hook_output(out)
+    cases.append(("with the skill loaded the reminder advises instead of denying",
+                  rc == 0 and decision is None and "instruction_quality" in ctx))
+
     # --- running_script_edit_guard: additionalContext advisory -------------
     script, proc = live_script_instance(tmp)
     try:
@@ -363,6 +379,12 @@ def main():
                   rc == 0 and "advisory-from-noisy" in (ctx or "")
                   and "running_script_edit_guard" in err))
 
+    cases.append(("S7: the harness skill reminder has advisory fault posture",
+                  dict(module.CHAIN)["harness_edit_skill_reminder"] == "advisory"))
+    rc, out, err = module.dispatch(payload, chain=(("harness_edit_skill_reminder", boom), noisy))
+    decision, ctx = hook_output(out)
+    cases.append(("S7: a reminder fault does not deny the edit",
+                  decision is None and "advisory-from-noisy" in ctx))
     rewritten = dict(payload["tool_input"], new_string="fixed")
     seen = []
     rc, out, err = module.dispatch(payload, chain=(

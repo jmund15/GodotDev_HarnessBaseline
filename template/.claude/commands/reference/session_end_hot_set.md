@@ -1,3 +1,7 @@
+---
+disable-model-invocation: true
+---
+
 # Phase 3.7: Hot-set review
 
 Gate: `--only hot_set_review`; a true value lists each over-baseline budget in its `basis.rows`. Before the review run `git status --short -- <those rows' files>`: a file dirty then and absent from the Phase 0 digest's `files_modified_counts` is peer-dirty, and this session's own edits never count. Run the session-audit command with `--hot-set .claude/scratch/session_end/<sid>/predicate_hot_set_review.json`, rule its `held` ids and failed checks per Step 1.5 under Phase 1's disposition rule, then re-measure with `python3 .claude/tools/load_census.py --budgets`. Set a tripwire's baseline to its new measurement by writing `[null, N]` in the project's `tools/load_census.project.json` `budgets` (a fork that has not moved its tripwires out yet writes `(None, N)` in its own `tools/load_census.py` `BUDGETS`), only when all three hold:

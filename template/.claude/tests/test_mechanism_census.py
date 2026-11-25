@@ -563,6 +563,27 @@ def case_top_five_percent_of_fixed_code_files():
     assert set(got) == {".claude/hooks/f00.py", ".claude/hooks/f01.py", ".claude/hooks/f02.py"}, got
 
 
+def case_runtime_files_share_the_redesign_population_but_records_do_not():
+    runtime = (".claude/CLAUDE.core.md", ".claude/commands/codify.md", ".claude/skills/example/SKILL.md",
+               ".claude/rules/example.md", ".claude/reference/example.md", ".claude/agents/example.md",
+               ".claude/settings.project.json", ".claude/tools/example.py", ".claude/tools/config.json",
+               "template/.claude/guards/common.md", ".claude/githooks/pre-commit", ".claude/auto-memory/MEMORY.md",
+               ".claude/auto-memory/archive/feedback_active.md", ".claude/harness-goal.md",
+               ".claude/baseline.lock.json", ".claude/index_composition_baseline.json",
+               ".claude/generated/abstraction_families.md", ".github/workflows/main_check.yml",
+               "publish.sh", "baseline.manifest.json", "tools/layer_entries.json")
+    excluded = (".claude/tests/test_example.py", ".claude/scratch/bench.py", ".claude/records/history.md",
+                ".claude/plans/old.md", ".claude/commands/log.jsonl", ".claude/autolearn_outcomes.jsonl", "src/game.py")
+    repo = _repo()
+    _fixed_history(repo, {p: 2 for p in runtime + excluded})
+    assert _most_fixed(repo) == dict.fromkeys(runtime, 2), _most_fixed(repo)
+    removed = runtime[0]
+    os.unlink(os.path.join(repo, removed))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "chore: retire an old file")
+    assert _most_fixed(repo) == dict.fromkeys(runtime[1:], 2), _most_fixed(repo)
+
+
 def case_single_fix_files_are_never_listed():
     repo = _repo()
     _fixed_history(repo, {".claude/hooks/f%02d.py" % i: 1 for i in range(40)})

@@ -225,6 +225,7 @@ kill_guard = _load('kill_guard')
     'provisional_totality_guard', 'tres_nullstrip_guard', 'tres_script_strip_guard', on_error=_failed_import)
 approving_gates = _load('approving_gates')
 unbounded_scan_guard = _load('unbounded_scan_guard')
+harness_shell_write_guard = _load('harness_shell_write_guard')
 foreground_wait_guard = _optional_hooks.load('foreground_wait_guard', on_error=_failed_import)
 run_call_router = _optional_hooks.load('run_call_router', on_error=_failed_import)
 baseline_classification_guard = _load('baseline_classification_guard')
@@ -265,6 +266,7 @@ HOOKS = (
     (compound_cd_approver, ()),
     (unbounded_scan_guard, ()),
     (bash_length_guard, ()),
+    (harness_shell_write_guard, ()),
     (sidecar_dispatch_context, ()),
     (approving_gates, ()),
     # Last: it rewrites the command through updatedInput, so every deny above must win first.
@@ -278,7 +280,6 @@ UNWIRED = (
     "duplicate_commit_check",
     "gate_cadence_guard",
     "hand_pricing_advisory",
-    "harness_shell_write_guard",
     "routing_audit",
     "rule_number_guard",
     "triage_commit_check",

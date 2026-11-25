@@ -1,3 +1,7 @@
+---
+disable-model-invocation: true
+---
+
 # Phase 3 — Cross-reference against codebase
 
 For every concrete claim in the loaded design surface, verify against current code. **Use the right tool per claim shape** (per CLAUDE.md §9):

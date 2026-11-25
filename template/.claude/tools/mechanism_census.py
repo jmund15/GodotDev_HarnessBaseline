@@ -46,6 +46,9 @@ Definitions:
   those under `.claude/tests/`. A file takes the `areas` row (`adaptation.json`, read through `adaptation.get`) whose
   prefix is longest among those that start its path; a file no row matches is `unassigned`. `size.areas[name].change`
   is the delta against the newest row of `census_readings.jsonl` (`--readings`), or null with no such row.
+- redesign population (`mostFixed`): tracked runtime harness files with a counted fix, including doctrine and the
+  configuration it reads; project files, records, tests and scratch are excluded. `runtime_harness_path` owns the
+  same scope for plan-review evidence. This does not change the historical code-only sampling or line totals.
 - reading: one row per census (`date`, `ref`, `head`, `windowDays`, `totals`, per-area `code` and `tests`).
   `--record <census.json>` appends it to the readings file, or prints `already recorded` when a row has the same
   head and date.
@@ -96,6 +99,41 @@ DENY_RE = re.compile(r"(PreToolUse|PostToolUse|PermissionDenied|\[command hook)"
 CITE_RE = re.compile(r"\[[a-z][a-z0-9-]* [A-Z0-9][A-Za-z0-9]*\]")
 TRAILER_RE = re.compile(r"^(Redesigns|Plan):[ \t]*(\S+)[ \t]*$", re.M)
 TOP_SHARE = 0.05
+HARNESS_ROOTS = (".claude", "template/.claude")
+RUNTIME_OUTSIDE_HARNESS_ROOTS = frozenset({
+    ".github/ruleset-main.json",
+    *(f".github/workflows/{name}.yml" for name in ("baseline", "census", "land", "land-retry", "main_check")),
+    "bootstrap.sh", "publish.sh", "baseline.manifest.json", "tools/audit_baseline.py", "tools/gen_manifest.py",
+    "tools/identity_digests.json", "tools/layer_entries.json",
+})
+RUNTIME_DIRS = frozenset({
+    "agents", "auto-memory", "commands", "generated", "githooks", "guards", "hooks", "output-styles", "reference",
+    "rules", "schemas", "scripts", "skills", "templates", "tools", "user_scope", "workflows",
+})
+NON_RUNTIME_DIRS = frozenset({"logs", "plans", "records", "scratch", "sessions", "tests"})
+RUNTIME_ROOT_FILE = re.compile(r"(?:CLAUDE(?:\.[^/]+)?\.md|settings(?:\.[^/]+)?\.json|"
+                               r"cloud-setup\.sh|gitignore\.harness|searchignore\.harness|prototype_registry\.md|"
+                               r"harness-goal\.md|baseline\.lock\.json|index_composition_baseline\.json)")
+HISTORY_PATHS = (*HARNESS_ROOTS, *sorted(RUNTIME_OUTSIDE_HARNESS_ROOTS))
+
+
+def runtime_harness_path(path: str) -> bool:
+    """Whether this repo-relative path belongs to the authored runtime, not its records or proofs."""
+    if path in RUNTIME_OUTSIDE_HARNESS_ROOTS:
+        return True
+    for root in HARNESS_ROOTS:
+        if path.startswith(root + "/"):
+            relative = path[len(root) + 1:]
+            break
+    else:
+        return False
+    parts = relative.split("/")
+    if re.search(r"[{}*?\[\]]", relative) or any(p in {"", ".", ".."} for p in parts):
+        return False
+    if len(parts) == 1:
+        return RUNTIME_ROOT_FILE.fullmatch(relative) is not None
+    return (parts[0] in RUNTIME_DIRS and not NON_RUNTIME_DIRS.intersection(parts[:-1])
+            and not parts[-1].endswith((".jsonl", ".log")))
 
 
 def _now(args=None):
@@ -379,10 +417,9 @@ def _exists_at(repo, rev, path):
 
 
 def _log_commits(repo, ref, since):
-    """Commits on `ref` since a git --since value, newest first, touching `.claude` or `.github`: sha, date, subject,
-    full message and the paths they touch. Merges excluded."""
+    """Commits on `ref` since a git --since value touching a harness root, newest first, merges excluded."""
     raw = git(repo, "log", ref, "--no-merges", "--since=" + since, "--date=short",
-              "--format=%x1e%H%x09%ad%x1f%B%x1d", "--name-only", "--", ".claude", ".github")
+              "--format=%x1e%H%x09%ad%x1f%B%x1d", "--name-only", "--", *HISTORY_PATHS)
     commits = []
     for block in raw.split("\x1e")[1:]:
         meta, _, files = block.partition("\x1d")
@@ -418,24 +455,32 @@ def counted_fixes(repo, ref, since):
         entry = {"sha": c["sha"][:9], "date": c["date"], "subject": c["subject"],
                  "citesPlan": bool(CITE_RE.search(c["subject"]))}
         for path in c["files"]:
-            if path in restart and i >= restart[path]:
+            if not runtime_harness_path(path) or (path in restart and i >= restart[path]):
                 continue
             fixes.setdefault(path, []).append(entry)
     return fixes, {path: commits[i]["date"] for path, i in restart.items()}
 
 
+def _tracked_harness_files(repo, ref):
+    return {p for p in git(repo, "ls-tree", "-rz", "--name-only", ref, "--", *HISTORY_PATHS).split("\0")
+            if runtime_harness_path(p)}
+
+
 def fix_history(repo, paths, ref, days, reading, date=None):
-    """Per path: `count` (counted fixes in the window), `listed` (the reading lists it; None with no reading), and for a listed path its
-    `listedSince` and `sinceListing` ({fixes, cited}) counted from that date, past the window. The listing date is the
-    reading row's `listedSince` when no redesign is newer than it, else the reading's date (`date` when given). A path
-    that does not resolve at `ref` is {"unresolved": true}, never a count."""
-    fixes, redesigned = counted_fixes(repo, ref, "%d.days" % days)
+    """Counted fix history for runtime harness paths; unresolved paths never get a count."""
+    return _fix_history(repo, paths, ref, reading, date, _tracked_harness_files(repo, ref),
+                        *counted_fixes(repo, ref, "%d.days" % days))
+
+
+def _fix_history(repo, paths, ref, reading, date, tracked, fixes, redesigned):
+    """`count` covers the window; `listed` is unknown without a reading. The listing date starts the
+    separate `sinceListing` count, past the window, unless a newer redesign reset it."""
     listed = {r.get("path"): r for r in (reading or {}).get("mostFixed") or [] if isinstance(r, dict)}
     fallback = date or (reading or {}).get("date")
     since_cache = {}
     out = {}
     for path in paths:
-        if not _exists_at(repo, ref, path):
+        if path not in tracked:
             out[path] = {"unresolved": True}
             continue
         row = {"count": len(fixes.get(path, [])), "listed": None if reading is None else path in listed,
@@ -455,17 +500,18 @@ def fix_history(repo, paths, ref, days, reading, date=None):
 
 
 def most_fixed(repo, ref, days, prior, today):
-    """The top `ceil(TOP_SHARE x population)` of the code files with counted fixes, among files with two or more, ties
-    at the cut included. Population: code files outside tests/ and scratch/ with at least one counted fix."""
-    fixes, _ = counted_fixes(repo, ref, "%d.days" % days)
-    counts = {p: len(v) for p, v in fixes.items() if p.endswith(CODE_EXT) and not re.search(r"/(tests|scratch)/", p)}
+    """Top `ceil(TOP_SHARE x population)` of tracked runtime files with counted fixes; at least two fixes,
+    ties at the cut included."""
+    fixes, redesigned = counted_fixes(repo, ref, "%d.days" % days)
+    tracked = _tracked_harness_files(repo, ref)
+    counts = {p: len(v) for p, v in fixes.items() if p in tracked}
     cut = math.ceil(TOP_SHARE * len(counts))
     eligible = sorted((p for p in counts if counts[p] >= 2), key=lambda p: -counts[p])
     if not eligible or cut == 0:
         return []
     cutoff = counts[eligible[min(cut, len(eligible)) - 1]]
     top = sorted((p for p in eligible if counts[p] >= cutoff), key=lambda p: (-counts[p], p))
-    hist = fix_history(repo, top, ref, days, prior, date=today)
+    hist = _fix_history(repo, top, ref, prior, today, tracked, fixes, redesigned)
     return [{"path": p, "fixes": counts[p], "listedSince": hist[p].get("listedSince") or today,
              "sinceListing": hist[p].get("sinceListing") or {"fixes": 0, "cited": 0}} for p in top]
 

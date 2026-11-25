@@ -39,14 +39,14 @@ skipped or thinned for being reversible.
 > carries that property (the input is prose, free shell text, an owner's wording or model output), the decision fails
 > L4. It becomes text at the decision point, or reported facts, unless the mechanism guards the floor.
 >
-> A fix to a file the census lists as most-fixed is planned as a redesign of that file. The plan states whether the
-> redesign or the patch is the smaller total, and the plan check's smallest-system question rules on it, so a patch
-> passes when the redesign is the larger change. Two cases land first and their redesign plan follows: a fix that
+> A fix to a file the census lists as most-fixed enters the redesign route (`instruction_quality` §3b *A repeat
+> fixes*, including its regression read). The plan states whether the redesign or the patch is the smaller total,
+> and the plan check's smallest-system question rules on it, so a patch passes when the redesign is the larger
+> change. Two cases land first and their redesign plan follows: a fix that
 > restores a broken floor (a red main, a guard denying every call), and a fix to a guard that wrongly denies justified
 > work. A fix to a file whose redesign a roadmap Part plan already owns joins that plan. The commit that lands a
 > redesign carries the trailers `Redesigns: <path>` and `Plan: .claude/plans/<file>.md`; the census restarts the
-> path's fix count at that commit only when the plan file exists there. The Read of a listed file names its facts
-> once per window (`hooks/post_read_dispatch.py`).
+> path's fix count at that commit only when the plan file exists there. Plan check reads the counts in `FIX_HISTORY`.
 
 > **Holds where it runs.** A mechanism, new or fixed, names the values its author's runs held fixed that vary in use,
 > and holds across each. Examples: another session or worktree acting at once, the OS and shell, machine load and

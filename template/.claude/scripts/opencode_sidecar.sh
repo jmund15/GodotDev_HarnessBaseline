@@ -273,7 +273,15 @@ oc_proxy_start() {
     # litellm bridges /v1/messages for openai/* models to /responses unless told otherwise;
     # a chat-only Zen model rejects that with ModelProtocolUnsupported.
     [ "$SC_API_MODE" = "responses" ] || printf '  use_chat_completions_url_for_anthropic_messages: true\n'
+    # OC_COMPACTION_EFFORT / OC_COMPACTION_THINK_BUDGET: the client's compaction requests run at their own
+    # reasoning effort and thinking budget (lib/litellm_compaction_hook.py); every other request is unchanged.
+    if [ -n "${OC_COMPACTION_EFFORT:-}${OC_COMPACTION_THINK_BUDGET:-}" ]; then
+      cp "$SC_LAUNCHER_DIR/lib/litellm_compaction_hook.py" "$(dirname "$cfg")/oc_compaction_hook_$$.py"
+      printf '  callbacks: oc_compaction_hook_%s.proxy_handler_instance\n' "$$"
+    fi
   } > "$cfg"
+  [ -z "${OC_COMPACTION_EFFORT:-}${OC_COMPACTION_THINK_BUDGET:-}" ] ||
+    sc_on_exit 'rm -f "$(dirname "$OC_CFG_PATH")/oc_compaction_hook_$$.py" 2>/dev/null || :'
 
   echo "[opencode-sidecar] starting litellm on :$OC_PORT (model=$SC_MODEL, log: $OC_LOG)" >&2
   local log_start waited=0

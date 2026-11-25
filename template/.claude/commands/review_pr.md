@@ -170,7 +170,7 @@ Follow the **Orchestrator Action Protocol** report format. Present all findings 
 - REVISE: a critical finding, an unresolved ASK, or an open PLAN in the PR's scope
 ```
 
-**Note:** The calling orchestrator (`/review_prs` Phase 2, or the user) handles fix application per the Orchestrator Action Protocol.
+**Note:** The calling orchestrator (`/pr_pipeline` §4, or the user) handles fix application per the Orchestrator Action Protocol.
 
 If reviewing unstaged changes (no PR number), omit PR-specific sections (PR Hygiene title/description, Verdict) and present as a pre-commit code quality report.
 

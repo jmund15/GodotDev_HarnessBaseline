@@ -4386,6 +4386,38 @@ def test_pull_updates_the_running_engine_first_and_reruns_with_it() -> None:
         assert (root / other).read_bytes() == b"new other\n", out
 
 
+def test_engine_pull_leaves_its_proofs_to_the_rest_of_the_pull() -> None:
+    # The engine phase writes only `.claude/tools/*.py` rows, and a pulled tool can need a row the rest of the
+    # pull brings (a tool calling a hook helper's new signature): proving it alone fails on the stale helper.
+    engine_rel, tool, hook = ".claude/tools/baseline_sync.py", ".claude/tools/needs_hook.py", ".claude/hooks/helper.py"
+    old = ENGINE.read_bytes()
+    new = old + b"\n# a newer engine\n"
+    runner = """import sys, pathlib
+with open(pathlib.Path(__file__).with_name('runs.txt'), 'a') as out:
+    out.write(' '.join(sys.argv[2:]) + chr(10))
+"""
+    with _fixture() as path:
+        root, baseline, _r, _c = _v2_fixture(path, {
+            engine_rel: {"upstream": new, "local": old, "hash": _sha(old)},
+            tool: {"upstream": b"t = 2\n", "local": b"t = 1\n", "hash": _sha(b"t = 1\n")},
+            hook: {"upstream": b"h = 2\n", "local": b"h = 1\n", "hash": _sha(b"h = 1\n")},
+        })
+        for module in ENGINE.parent.glob("*.py"):
+            if module.name != "baseline_sync.py":
+                shutil.copy(module, root / ".claude" / "tools" / module.name)
+        for module in (ENGINE.parents[1] / "hooks").glob("_*.py"):
+            shutil.copy(module, root / ".claude" / "hooks" / module.name)
+        _write(root / ".claude" / "scripts" / "harness_tests.py", runner.encode())
+        _commit(root, "engine siblings and a recording runner")
+        result = subprocess.run([sys.executable, str(root / engine_rel), "pull", "--baseline-dir", str(baseline)],
+                                cwd=root, env=_env(root), stdin=subprocess.DEVNULL, capture_output=True)
+        out = _out(result)
+        assert result.returncode == 0, out
+        runs = (root / ".claude" / "scripts" / "runs.txt").read_text(encoding="utf-8").splitlines()
+        assert len(runs) == 1, "the pull proved in %d runs, not one over every row it wrote: %s" % (len(runs), runs)
+        assert {engine_rel, tool, hook} <= set(runs[0].split()), runs
+
+
 def test_pull_stops_when_the_engine_pull_reports_a_conflict() -> None:
     # v2_pull's return code is the engine pull's verdict: a nonzero one must end the bare pull before the
     # re-exec. The stub is the seam's contract (v2_pull with merge=False returns 0 on today's inputs).
@@ -5056,6 +5088,7 @@ def main(part: int = 1) -> int:
         test_pull_settles_a_tracked_row_at_the_copy_it_writes,
         test_pull_merge_refuses_a_diverged_binary_row_and_leaves_it_untouched,
         test_pull_updates_the_running_engine_first_and_reruns_with_it,
+        test_engine_pull_leaves_its_proofs_to_the_rest_of_the_pull,
         test_pull_stops_when_the_engine_pull_reports_a_conflict,
         test_pull_delivers_a_binary_row_byte_for_byte,
         test_unproven_tools_binds_every_tool_in_one_scan,

@@ -3058,8 +3058,9 @@ ENGINE_UPDATED_ENV = "BASELINE_SYNC_ENGINE_UPDATED"
 
 def _pending_engine_rows(root: Path, source: BaselineSource, lock: dict, layers: list[str]) -> list[str]:
     """The `.claude/tools/*.py` rows a bare pull would write, when the running engine is this project's own and
-    one of them is the engine: pulled first, so the rest of the pull runs on the code it brings (a binary row
-    written by an engine that predates binary rows is rewritten as text). Empty on the rerun."""
+    one of them is the engine: pulled first, so the rest of the pull runs on the code it brings and proves them
+    beside the rows they may need (a binary row written by an engine that predates binary rows is rewritten as
+    text). Empty on the rerun."""
     if os.environ.get(ENGINE_UPDATED_ENV) or Path(__file__).resolve() != (root / ENGINE_RELPATH).resolve():
         return []
     files = lock.get("files", {})
@@ -3074,7 +3075,7 @@ def _pending_engine_rows(root: Path, source: BaselineSource, lock: dict, layers:
 
 
 def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: list[str], force: bool,
-            merge: bool = False) -> int:
+            merge: bool = False, prove: bool = True) -> int:
     _validate_relpaths(relpaths)
     manifest_items = _manifest_items_v2(source)
     manifest_layers = {relpath: item.get("layer") for relpath, item in manifest_items.items()}
@@ -3283,6 +3284,13 @@ def v2_pull(root: Path, source: BaselineSource, relpaths: list[str], layers: lis
     written = [] if result is NO_CHANGE else [
         relpath for relpath in result
         if relpath not in retired and relpath not in kept_local and relpath not in kept_seeds]
+    if not prove and _pull_proof and _pull_proof.record_state(root)[0] != _pull_proof.UNREADABLE:
+        # The engine phase: a pulled tool can need a row only the rest of the pull brings, so these go to the
+        # journal as pending and the rest of the pull proves them beside every row it writes.
+        _pull_proof.write(root, {relpath: "pending" for relpath in written if (root / relpath).exists()}, source.sha)
+        hits = local_attr_hits(root, written)
+        _report_local_attr_hits(hits)
+        return 1 if conflicts or hits else 0
     # A path whose proof is still pending or red is proved again, so a rerun of this pull releases its commit.
     unresolved, earlier = [], []
     if _pull_proof:
@@ -4681,7 +4689,7 @@ def main(argv=None) -> int:
                 engine = _pending_engine_rows(root, source, lock, layers) if not args.relpaths else []
                 if not engine:
                     return v2_pull(root, source, args.relpaths, layers, args.force, args.merge)
-                engine_code = v2_pull(root, source, engine, layers, False)
+                engine_code = v2_pull(root, source, engine, layers, False, prove=False)
                 source.close()
                 source = None
                 if engine_code != 0:

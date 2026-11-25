@@ -5,7 +5,7 @@ disable-model-invocation: true
 # Shared Review Agent Templates
 
 <!-- Single source of truth for review subagent definitions. -->
-<!-- Referenced by: /review-pr (Phase 2), /review-prs (Phase 1b), /session_audit (Phase 2) -->
+<!-- Referenced by: /review-pr (Phase 2), /session_audit (Phase 2) -->
 <!-- If you update an agent template here, all commands pick up the change automatically. -->
 
 ## Agent Spawn Rules

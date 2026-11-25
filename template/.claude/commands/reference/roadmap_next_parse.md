@@ -1,3 +1,7 @@
+---
+disable-model-invocation: true
+---
+
 # Phase 2 — Parse Parts tables (bundled)
 
 Per the user `CLAUDE.md` *Local worker* — 3+ files for synthesis → route through `mcp__ai-worker__read_files` (offline fallback: a Haiku subagent per `common.md §3`):

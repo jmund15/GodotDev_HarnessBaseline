@@ -3,7 +3,7 @@ description: Fix a failure in how agents decide at its root, or land a procedure
 disable-model-invocation: false
 ---
 
-Take ONE correction or ONE procedure you keep running by hand, and land it where it will be in context when the decision recurs. It runs on the trigger `CLAUDE.interactive.md` §Corrections and surfaced work names, asked or not, and when a user-invoked workflow's loaded contract names it; the steps below decide whether anything lands. Placement rules are owned by `instruction_quality` §3 and §5; this command orders them into one procedure and adds the duplicate check (Step 0) and the firing proof (Step 7).
+Take ONE correction or ONE procedure you keep running by hand, and land it where it will be in context when the decision recurs. Every fix to a failure in how agents decide or behave (a rule ignored, missing or misleading) runs `/codify`, asked or not (`instruction_quality` H3), because a fix written outside it layers a patch where the root belongs. A defect in harness code is fixed like any code (`rules/harness_tooling.md`) and runs `/codify` too when its cause was a rule or a choice the harness set. A user-invoked workflow whose loaded contract names `/codify` runs `/codify`. Placement rules are owned by `instruction_quality` §3 and §5; this command orders them into one procedure and adds the duplicate check (Step 0) and the firing proof (Step 7).
 
 `/autolearn` detects signals across a whole session and owns the quality gates; this command routes one item you already have.
 
@@ -17,18 +17,18 @@ Take ONE correction or ONE procedure you keep running by hand, and land it where
 ## Independent derivation (an owner's correction)
 
 For an owner's correction, two derivations of Steps 0–5 meet before Step 6. A `/autolearn` packet row skips this: its packet is the owner's review. The skip covers the derivation only; Step 6's review still runs on that row.
-Read [`codify_derivation.md`](reference/codify_derivation.md) at this pass for its steps: brief, seal, dispatch, weigh.
+Read [`codify_derivation.md`](reference/codify_derivation.md) at this pass for its steps: the evidence packet, dispatch, seal, weigh.
 
 ## Step 0 — Does it already exist?
 
 Follow the implementing branch for the failed action (`instruction_quality` §17).
 
-1. **Name the choice that went wrong:** the agent decision that produced every complaint in the correction, not the symptom the correction names. A complaint that traces to a different choice is a separate item (Arguments).
+1. **Name the choice that went wrong** from the owner's own words, every message they sent on the subject read verbatim (`session_digest.py` owner prompts), never the session's paraphrase: the agent decision that produced every complaint in the correction, not the symptom the correction names. A complaint that traces to a different choice is a separate item (Arguments).
 2. **Name the earliest stage that made it** (a design, a board, a plan, a brief, or the edit itself) from the artifact that first records it: a choice a plan or brief fixed is that stage's choice, and the later stages only carried it out.
 3. **Name what made that choice costly:** the limit, default, guard or missing check in the harness that turned it into waste or harm. Fix that first: delete or narrow it where its removal removes the cause (`CLAUDE.core.md` §Core Principles). A rule teaching agents to work around a mechanism the harness can change is a symptom fix. Show from the evidence (error text, transcript, a rerun that varies the suspect) that the cause you name produced this failure; a cause read off an error message is a hypothesis.
 4. **Diagnose execution before redesigning the rule:** did the existing procedure's steps run, does its infrastructure work, and is the failure in the procedure itself? Only a fundamentally flawed procedure gets a rewrite; a skipped step gets emphasis or clarity on that step.
 5. **Search for the rule and its fix history.** Semantic-search `.claude/` for the rule at that choice before writing anything. Read each hit's fix history: `python3 .claude/tools/autolearn_outcomes.py history --target <hit path> [--target <hit path>]...`, and, for fixes older than the ledger, the hit's memory file and the home's `git log`. A fix of the same choice may have landed in another home or outside `/codify`, so also search by the choice: `git log --oneline -i --grep '<the choice's terms>' -- .claude/` and the ledger's signal and reason text (`rg -i '<terms>' .claude/autolearn_outcomes.jsonl`). For a shared-doctrine choice, search the baseline clone too (`baseline_sync.py` `CACHE_CLONE`): `git -C <that clone> log --all -i --grep '<the choice's terms>'`; the publish commit's body carries each row's reason.
-6. **Call a repeat a repeat.** An earlier fix for the same choice makes this a repeat: name what it changed and why it did not hold, and fix that cause (`instruction_quality` §3b *A repeat fixes*). A repeat appended to a memory file is evidence, never the fix. A run of recent fixes to the same home is a repeat too, whatever each one's choice: reread the home whole and rewrite it as one workflow around its idea, and that rewrite is the landing.
+6. **Call a repeat a repeat.** An earlier fix for the same choice makes this a repeat: name what it changed, whether the observation it named ever ran, and why it did not hold, and fix that cause (`instruction_quality` §3b *A repeat fixes*). A repeat appended to a memory file is evidence, never the fix. For a run of recent fixes to the same home, follow the redesign and regression-read principle in `instruction_quality` §3b *A repeat fixes*.
 7. **Read the target file itself** for the same obligation in other words. A hit there is the one owner: strengthen or correct it, and delete any restatement you find (`instruction_quality` §3). When the hit already prescribes the fix, apply that prescription; using it only to pick a home repeats the miss. Owning the rule does not make its file the right home; the reachability row below decides where the owner lives. A rule CLAUDE.md or the system prompt already carries, or a hook already enforces, lands no new prose; a violation of it is a reachability or enforcement fix below.
 
 **Done: the choice that went wrong, the earliest stage that made it with the artifact line recording it, the mechanism that made it costly with the evidence tying it to this failure, the search query and its top hits (`path:section`) appear in your report. The diagnosis's premises, written as the landing commit's `premises` block per [`reference/evidence_contract.md`](../reference/evidence_contract.md), are each VERIFIED before landing by `python3 .claude/tools/verify_claims.py <file> --session <session id>`, the file holding the block's lines as one JSON array; a premise that is not VERIFIED is fixed or dropped.**
@@ -36,8 +36,8 @@ Follow the implementing branch for the failed action (`instruction_quality` §17
 | Finding | Fix | Wrong fix |
 |---|---|---|
 | Exists, wasn't loaded at decision time | reachability — run Step 4 on the rule itself. When its home's trigger does not fire at the decision, move the whole rule to the row Step 4 picks and cut the old home to a pointer. Keep the home only when it loads at the decision, and a pointer only when an earlier surface can hold the rule's full sentence | a new rule; a pointer that carries part of the rule |
-| Exists, was loaded, was misread: the loaded text is ambiguous, a sibling line contradicts it, or its default points the wrong way. A misread that recurs across sessions, not a one-time slip, settles this row | fix that text in its owner, the contradicting sibling and the wrong default included; delete a line that steers the choice wrong in every case it covers | a guard; a reason field the agent fills in |
-| Exists, reads clearly, was loaded, was ignored. First check that the live information at the decision (an injected advisory) pointed to the right action; when it did not, the row above owns it | a first slip with no earlier fix or recorded slip for the choice: record it with Step 6's `autolearn_outcomes.py record` call and land nothing; Steps 1–5 and 7 do not apply, and the report says so. A repeat: the mechanism `instruction_quality` §3's guard sort picks: the acting tool, the decision-point text (or a stronger word per §6's no-op test and §18), or a hook; after text meeting this row's test was ignored again, the acting tool or a hook. The acting tool is the one that makes the choice Step 0 named, never a later tool that meets its result. A judgment that sort gives to no tool or hook takes no mechanism: record the repeat with the measure that would show the next one (Step 6's `--metric`) | restating it louder; a guard over a judgment; a tool that makes the judgment for the agent; a guard whose pass condition the agent writes |
+| Exists, was loaded, was misread: the loaded text is ambiguous, a sibling line contradicts it, or its default points the wrong way. A misread that recurs across sessions, not a one-time slip, settles this row | fix that text in its owner, the contradicting sibling and the wrong default included; delete a line that steers the choice wrong in every case it covers; cut a rule that decided a judgment in advance down to the reason it weighs | a guard; a reason field the agent fills in |
+| Exists, reads clearly, was loaded, was ignored. First check that the live information at the decision (an injected advisory) pointed to the right action; when it did not, the row above owns it | a first slip with no earlier fix or recorded slip for the choice: record it with Step 6's `autolearn_outcomes.py record` call and land nothing; Steps 1–5 and 7 do not apply, and the report says so. A repeat: the mechanism `instruction_quality` §3's guard sort picks: the acting tool, the decision-point text (or a stronger word per §6's no-op test and §18), or a hook. The acting tool is the one that makes the choice Step 0 named, never a later tool that meets its result. A judgment that sort gives to no tool or hook takes no mechanism: record the repeat with the measure that would show the next one (Step 6's `--metric`) | restating it louder; a guard over a judgment; a tool that makes the judgment for the agent; a guard whose pass condition the agent writes |
 | Exists, a guard already enforces it, and its deny names a next step that serves its purpose (`instruction_quality` §3) | no change: the deny is the fix working, and that step is its whole cost | a deny that rewrites the command for the agent; more prose at the decision |
 | Exists on contradicting surfaces | hand to `/rule_consistency`, which reconciles across all surfaces; never adjudicate it here | a third copy |
 | Genuinely absent | a first slip of a judgment a capable model makes unprompted (arithmetic, plain logic, a frame the session itself used elsewhere): record it as the loaded-and-ignored row records a first slip, and land nothing. Otherwise Step 1 | a rule because the owner asked for a codify pass |
@@ -48,6 +48,8 @@ Follow the implementing branch for the failed action (`instruction_quality` §17
 Judgment the agent must apply → **RULE**. A procedure you re-run by hand → **WORKFLOW** (routing prior: `commands/`, plus a `workflows/*.js` script when it fans out).
 
 **WORKFLOW skips Steps 2–5.** It lands as a command per `instruction_quality` §9–§12 (no-op gate, done-condition per step, argument handling, contract integrity) and its proof is one invocation. A correction that yields both a rule and a workflow is two items — split per Arguments.
+
+Before the file, name the way of thinking that failed. When it is a frame the agent read the work in (an example taken as the whole set, a proxy standing in for the goal, a value held fixed that varies in use) or a judgment a rule settled in advance, the fix is the principle the owner's words state with the reason it weighs, never a rule keyed to a surface of the case that failed (a word, a count, a table row). The agent is trusted to judge whether a failure is a frame failure or a judgment a rule settled in advance; the text names no list that decides it for them.
 
 **Done: the classification is stated with the one property that decided it.**
 
@@ -61,32 +63,23 @@ Apply `instruction_quality` §3b's fit test to the rule and its mechanism. Then 
 
 Apply `reference/mechanism_litmus.md` first: a hook, gate lint or tool behavior lands only when L1-L4 hold, and its proof follows `rules/harness_tooling.md` §Every guard has a re-runnable proof. Then check the two surfaces in order, a tool boundary and then a gate over an artifact. Read [`codify_mechanize.md`](reference/codify_mechanize.md) at this step for each surface's test and where it routes.
 
-**Done: the matcher condition or the gate predicate is written out, or one line says why the rule needs judgment neither can supply.**
+**Done: a mechanism lands only where the litmus holds and its predicate is written out here; otherwise one line names the text home that owns the fix. A choice made from a job's shape, size, depth or the owner's intent is judgment: a tool may print the facts it weighs, never make the pick or refuse one the agent made. A tool may refuse on an observed fact (a tier claim, a path, an absent grant), because that is a fact, not a judgment; the grant is the dispatcher's judgment (`instruction_quality` H5).**
 
 ## Step 4 — Route by trigger shape
 
+Place the rule first by the layer model (`instruction_quality` §5): the narrowest layer whose readers all face its decision before a narrower trigger could deliver it. The rows below place it among that layer's triggers.
+
 Work top-down — the order is reach-reliability ÷ passive cost — over the rows that fire at or before the stage Step 0 named. A row that fires at a later stage (a file-path rule for a choice a plan made) is a backstop: it lands only beside a fix at that stage, never as the fix. It routes a new rule and re-routes an existing one from Step 0's reachability row.
 
-| Fires when… | Surface | Owning home | Passive cost | Firing proof |
-|---|---|---|---|---|
-| a file of a **prefix-anchored class** (below the repo root) is touched | `rules/<name>.md` + `paths:` | `instruction_quality` §5 | zero until matched | the glob string is prefix-anchored below the repo root — decidable by reading it, no tooling |
-| an agent **edits** a specific artifact (an editing rule no user of the file needs) | the artifact's maintaining command (`/ladder_ingest`, `/worklog`, `/sync_baseline`, or the project's roadmap command); a judgment rule for the file also takes an `OWNED_NOTES` entry in `hooks/harness_edit_skill_reminder.py` naming the command's `## ` section, which the hook reads into an Edit/Write made outside the command, since the command does not load on a direct edit; with no command, a check that decides it (Step 3), else the `EDIT_NOTES` entry alone; `instruction_quality` only for a rule covering a class of files, never one file | `instruction_quality` §6 | zero until that edit | the rule appears in no file a reader loads to *use* the artifact, and an edit of the artifact receives it |
-| an agent deliberately enters a domain | `auto-memory/archive/` (cold) | `instruction_quality` §5 | zero | the NL paraphrase an agent would search returns it top-ranked |
-| the user types it | `commands/` | `instruction_quality` §5 | zero until invoked | a loaded surface names it at signal-time |
-| a tool call matches a condition | `hooks/` **+ documented home** | `instruction_quality` §3 | one interpreter spawn per matched call | pass → deliberate violation → revert; the home loads before the blocked action |
-| a gate runs over an artifact (diff, plan, PR body, repo state) | lens or lint inside that gate's command (Step 3) | `instruction_quality` §12 | zero until the gate runs | a planted violation yields the finding; a clean input yields none; a lens runs at the pin its gate runs at |
-| a named task-shape begins | skill | `instruction_quality` §5, §7 | description bytes, every session | a fresh agent given only the description picks it |
-| a decision most sessions face, and no trigger exists | CLAUDE.md **or** a MEMORY.md hot topic file | `instruction_quality` §5 | every byte, every session | Step 5 |
-
-A `paths:` rule loads on every read of a matching file, and a harness `.md` is read to be executed, so an editing rule never lands there. `rules/` + `paths:` leads **on a prefix-anchored glob** — the only surface both guaranteed-to-load and genuinely free until matched. On a broad glob (`**/*.cs`, `**/*.tscn`, `**/*.md`) the cost is deferred, not avoided, and the row re-ranks below cold memory; width is about session shape, not file count (`Tests/**/*.cs` stays narrow because a gameplay session never opens `Tests/`). Hooks sit mid-table despite the strongest enforcement: they cost a spawn per matched call and can never stand alone.
+Read [`codify_route.md`](reference/codify_route.md) for the rows: when each fires, its surface, owning home, passive cost and firing proof, and where a `paths:` rule leads.
 
 **Done: the chosen row is named with the stage it fires at, and every row above it has a stated reason it was rejected. A rule no row fits lands nothing: record the pass, and a repeat looks for the trigger it missed.**
 
 ## Step 5 — Always-loaded admission and audit
 
-Applies only when Step 4 lands on CLAUDE.md or a MEMORY.md hot topic file.
+Applies only when Step 4 lands on an always-loaded home for its readers: the CLAUDE chain, `CLAUDE.interactive.md`, or `guards/common.md` and its kind files.
 
-Write a MEMORY.md hook line with no path and no link. The path costs more than the hook it points at.
+A rule lands in its home, and the topic it concerns gets a `MEMORY.md` hook line with no path and no link; the line points at the topic's file and states no rule of its own, because an active rule living only in a recall index reaches no agent before its decision.
 
 The admission standard, the byte measurement, the focused audit and the cap response are `instruction_quality` §5 A1–A5.
 
@@ -108,7 +101,7 @@ Read [`codify_landing.md`](reference/codify_landing.md) at this step for the res
 
 Record the pass, landed or not, unless `/autolearn` records it as a packet row: `python3 .claude/tools/autolearn_outcomes.py record --date <YYYY-MM-DD> --session <id> --target <home path> --signal <the choice that went wrong> --recommended apply --outcome applied|recorded --fix text|reach|tool|hook|remove|none --reason <why this fix; for a repeat, why the earlier one failed> [--metric <key>]`. An approved `/eval_dashboard` move lands through this pass, its `metric` key in `--metric` so the dashboard measures the fix. A `recorded` row prints the target's recent `recorded` and later `applied` rows: that is the repeat check, and you judge same-choice.
 
-**Review the diff before the commit.** Run the registered harness lens's audit (`orchestration` §4) over the uncommitted landing, scoped with `--files <its changed paths>`, and fold or rule each finding before committing. The review compensates the session judging its own landing under the momentum that produced the mistake, and retires when a run of landings reports no finding.
+**Review the diff before the commit,** against the owner's words on the correction and against what the landing removes, sized to the change. Run the registered harness lens's audit (`orchestration` §4) over the uncommitted landing, scoped with `--files <its changed paths>`, and fold or rule each finding before committing. The review compensates the session judging its own landing under the momentum that produced the mistake, and retires when a run of landings reports no finding.
 
 **Done: the diff is applied or the queue entry written, the pass is recorded, any justified retirement trigger is recorded (or the lifecycle row omitted when none is justified), the baseline status of every touched path is stated, and the review's findings are folded or ruled.**
 
@@ -131,5 +124,6 @@ Surface delta: added <rules, files, checks, steps> / removed <same>
 Landed: <path> (<±bytes>) | queued: <entry>   [baseline: tracked | untracked]
 Lifecycle: retire-when: <trigger> | basis: <marker> | review-by: <date>   (omit this row when no marker was recorded)
 Proof:  <check run> → <result>
+Held-if: <the observation in later real sessions that shows the fix held, and the step or tool that reads it>
 Review: <N> findings, each folded or ruled: <one clause each>  (<audit output path>)
 ```
