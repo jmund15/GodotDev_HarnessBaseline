@@ -1526,10 +1526,21 @@ def _v2_state(root: Path, source: BaselineSource | Path, lock: dict,
     return "diverged"
 
 
+def _manifest_layers_at(repo: Path, commit: str) -> dict[str, str]:
+    """Each manifest path's layer at `commit`; empty when that commit holds no readable manifest."""
+    shown = _git(repo, ["show", f"{commit}:baseline.manifest.json"], check=False)
+    try:
+        return {item["path"]: item.get("layer") for item in json.loads(shown.stdout).get("files", [])
+                if isinstance(item, dict) and "path" in item} if shown.returncode == 0 else {}
+    except (ValueError, AttributeError):
+        return {}
+
+
 def move_pin(lock: dict, source: BaselineSource | Path, new_pin: str, taken: set[str]) -> None:
     """Move the lock's pin to `new_pin`. A row upstream changed between the old pin and the new one,
     that this move did not take (`taken`), records `base: <old pin>`: its reconcile point stays where
-    its local copy last matched upstream. Every other row reconciles at the new pin."""
+    its local copy last matched upstream. Every other row reconciles at the new pin. A shipped row whose
+    layer is the old pin's takes the new pin's layer (an upstream relayer); one relayered here keeps its own."""
     old = lock.get("synced_commit")
     files = lock.get("files") or {}
     if old and old != new_pin:
@@ -1546,6 +1557,12 @@ def move_pin(lock: dict, source: BaselineSource | Path, new_pin: str, taken: set
             elif relpath in changed and "base" not in entry:
                 # A recorded unknown base (None) stays unknown: the move is no reconcile point.
                 entry["base"] = old
+        before, after = _manifest_layers_at(repo, old), _manifest_layers_at(repo, new_pin)
+        for relpath, entry in files.items():
+            was, now = before.get(relpath), after.get(relpath)
+            if (_entry_status(entry) in ("tracked", "forked") and was and now and now != was
+                    and entry.get("layer") == was):
+                entry["layer"] = now
     else:
         for relpath in taken:
             entry = files.get(relpath)
@@ -1741,8 +1758,8 @@ def layer_closure_findings(root: Path, lock: dict, source: BaselineSource | Path
 
 
 def layer_drift(lock: dict, source: BaselineSource | Path) -> list[tuple[str, str, str]]:
-    """Shipped rows whose lock layer differs from the manifest's: a pull never rewrites an existing row's
-    layer, so an upstream relayer leaves it stale, and a local relayer stays unpublished until a publish."""
+    """Shipped rows whose lock layer differs from the manifest's: a local relayer, unpublished until a publish
+    (a pull follows an upstream relayer only where the lock held the old pin's layer)."""
     manifest = _manifest_layers_v2(source, None)
     return [(rel, entry.get("layer"), manifest[rel]) for rel, entry in sorted(lock.get("files", {}).items())
             if _entry_status(entry) in ("tracked", "forked") and manifest.get(rel)
