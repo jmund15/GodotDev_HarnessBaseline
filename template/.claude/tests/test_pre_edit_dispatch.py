@@ -43,7 +43,8 @@ ENFORCER = _optional_hooks.present("pattern_enforcer")
 DISPATCH = os.path.join(HOOKS, "pre_edit_dispatch.py")
 SETTINGS = _settings_probe.settings_path(CLAUDE)
 
-SUBHOOKS = ("pattern_enforcer", "harness_edit_skill_reminder", "running_script_edit_guard")
+SUBHOOKS = ("pattern_enforcer", "harness_edit_skill_reminder", "model_name_guard", "provenance_label_guard",
+            "running_script_edit_guard")
 
 # Assembled, never spelled: pattern_enforcer denies any Write whose content carries it.
 EXPORT_NULL_VIOLATION = "[Export] public Node Thing = " + "null" + "!;"
@@ -234,6 +235,35 @@ def main():
     decision, ctx = hook_output(out)
     cases.append(("with the skill loaded the reminder advises instead of denying",
                   rc == 0 and decision is None and "instruction_quality" in ctx))
+
+    # --- model_name_guard: a registry name added to a mechanism file denies; no registry stays silent ----
+    registry = os.path.join(tmp, "registry.json")
+    with open(registry, "w", encoding="utf-8") as fh:
+        json.dump({"models": [{"id": "alpha", "alias": "alpha"}]}, fh)
+    skill_md = os.path.join(CLAUDE, "skills", "x", "SKILL.md")
+    rc, out, err = run(edit(skill_md, "Dispatch it on `alpha`.", session="preload1"),
+                       dict(env, HARNESS_MODEL_REGISTRY=registry))
+    decision, ctx = hook_output(out)
+    cases.append(("model_name_guard denies a registry name added to a skill through the dispatcher",
+                  rc == 0 and decision == "deny" and "alpha" in out))
+    rc, out, err = run(edit(skill_md, "Dispatch it on `alpha`.", session="preload1"),
+                       dict(env, HARNESS_MODEL_REGISTRY=os.path.join(tmp, "absent.json")))
+    cases.append(("with no model registry the same edit draws no model-name output",
+                  rc == 0 and "model-name" not in out + err))
+    rc, out, err = run(edit(skill_md, "Dispatch it on the fanout tier.", session="preload1"),
+                       dict(env, HARNESS_MODEL_REGISTRY=registry))
+    cases.append(("an edit adding no registry name passes model_name_guard", rc == 0 and "model-name" not in out + err))
+
+    # --- provenance_label_guard: an owner-decision label in loaded guidance blocks, exit 2 + stderr ---------
+    label = "Standing authorization (owner decision): a pinned Workflow needs no opt-in."
+    rc, out, err = run(edit(skill_md, label, session="preload1"), env)
+    cases.append(("provenance_label_guard blocks an added (owner decision) label in a skill through the dispatcher",
+                  rc == 2 and "instruction_quality" in err))
+    rc, out, err = run(edit(skill_md, "A pinned Workflow needs no opt-in.", session="preload1"), env)
+    cases.append(("a skill edit without a provenance label passes provenance_label_guard",
+                  rc == 0 and "provenance" not in out + err))
+    rc, out, err = run(edit(os.path.join(CLAUDE, "plans", "p.md"), label, session="preload1"), env)
+    cases.append(("a plan may carry the label", rc == 0 and "provenance" not in out + err))
 
     # --- running_script_edit_guard: additionalContext advisory -------------
     script, proc = live_script_instance(tmp)

@@ -7,8 +7,8 @@ Blocks, each judged on the resolved target and never on the command's wording:
   -Recurse and its aliases) and drive format commands. Allowed: a target that is a regenerable cache inside the
   project, a path below the system temp directory (any repository in it included, never the protected checkout or
   a worktree registered to it) or below `~/.claude/plugins/cache/` holding no git repository, this session's own
-  `.claude/scratch/<session id>` output, a pushed regenerable clone, a scratch folder holding no git repository and
-  no registered worktree, a folder a proof planted under `.claude/tmp`, a retired worktree (`_delete_rule`: nothing
+  `.claude/scratch/<session id>` output, a pushed regenerable clone, a scratch folder (the project's or a registered
+  worktree's) holding no git repository and no registered worktree, a folder a proof planted under `.claude/tmp`, a retired worktree (`_delete_rule`: nothing
   outside the regenerable entries, every commit pushed or landed, no open PR), a `NAME=$(mktemp -d)`
   variable the same command owns, or a folder a flagless `mkdir` of this session created, holding no git
   repository. A chained second delete, a glob in a directory part, `~`, `%`, an unresolvable target, a target a
@@ -339,27 +339,12 @@ def _removable_scratch_entry(token: str, target: str, cwd: str | None, transcrip
     return True
 
 
-def _scratch_bases(root: str, cwd: str | None) -> list[str]:
-    """The checkouts whose `.claude/scratch` this delete may judge: the project root, plus the git toplevel
-    of `cwd` when that toplevel is a registered linked worktree (its `.git` is a file) of this repository
-    (a delegate removing its own scratch). An unreadable toplevel or an unregistered checkout adds nothing. A
-    toplevel that is the project root is already the first base, so the registered-worktree list (a git process that
-    stats every registered worktree) is read only for a different one."""
-    bases = [root]
-    if cwd and os.path.isdir(cwd):
-        top = _git_commit.cached(('toplevel', cwd), lambda: _git_toplevel(cwd))
-        if top and _norm(top) != _norm(root) and os.path.isfile(os.path.join(top, '.git')) \
-                and _norm(top) in _registered_worktrees():
-            bases.append(top)
-    return bases
-
-
-def _git_toplevel(cwd: str) -> str:
-    try:
-        out = _git_run.run(['-C', cwd, 'rev-parse', '--show-toplevel'], timeout=20)
-    except OSError:
-        return ''
-    return out.text.strip() if out.returncode == 0 else ''
+def _scratch_bases() -> list[str]:
+    """The checkouts whose `.claude/scratch` this delete may judge: the project root and every worktree registered
+    to it, whichever checkout the call runs in (a session retiring a lane's scratch from the root, or a delegate
+    removing its own). An unregistered checkout adds nothing. A live session working in the target, another
+    session's id folder and a repository inside it are judged per target, so a base widens no loss."""
+    return [_project_root(), *_registered_worktrees()]
 
 
 def _under_a_scratch_folder(path: str) -> bool:
@@ -388,7 +373,7 @@ def _is_regenerable_target(token: str, cwd: str | None, transcript_path: str | N
         return True
     if _under_a_scratch_folder(_norm(target)) and any(
             _strictly_under(_norm(target), _norm(os.path.join(base, '.claude', 'scratch')))
-            for base in _scratch_bases(root, cwd)):
+            for base in _scratch_bases()):
         if empty_leftover(_norm(target)):
             return True
         if _UNSAFE_PATH_CHARS.search(token):
@@ -732,6 +717,26 @@ def _delete_reason(raw: str, cwd: str | None, transcript_path: str | None) -> st
         elif os.path.isfile(os.path.join(target, '.git')) \
                 and not _is_regenerable_target(value, here, transcript_path, reasons):
             return ' %s is not removable: %s.' % (value, '; '.join(dict.fromkeys(reasons)))
+    return _unproved_reason(raw, cwd, transcript_path)
+
+
+def _unproved_reason(raw: str, cwd: str | None, transcript_path: str | None) -> str:
+    """The first delete target no exemption admits and no per-class reason above named, or '': an unresolvable
+    path, else one in no exemption. A deny always names which exemption failed."""
+    targets = _delete_targets(raw, cwd)
+    if targets is None:
+        return (' The guard cannot read this delete down to literal targets (it sits inside a loop, `$(...)`, a '
+                'launcher body or behind sudo/xargs): run each delete as its own plain command.')
+    for token, value, here in targets:
+        var = _VAR_TOKEN_RE.match(token)
+        if var and _is_mktemp_owned(var.group(1), raw):
+            continue
+        if value is None or _UNSAFE_PATH_CHARS.search(token):
+            return (' %s is not a literal path the guard can resolve (a variable, `~`, `%%` or a glob): '
+                    'spell the path out.' % token)
+        if not _deletable_by_fact(value, here, transcript_path):
+            return (' %s is outside every exemption: only this project\'s caches and scratch, retired worktrees '
+                    'and the system temp directory go without the owner.' % token)
     return ''
 
 

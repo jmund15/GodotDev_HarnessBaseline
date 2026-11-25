@@ -14,7 +14,7 @@ What it does:
 - Fires only on a .cs file_path whose written text matches one of three narrow
   regexes (see SHAPES). Emits at most 3 lines of additionalContext.
 - One fire per file per session (shared ~/.claude/.routing_state/<sid>.json,
-  same convention as plan_memory_reminder).
+  same convention as critical_analysis_reminder / plan_memory_reminder).
 
 Boundaries:
 - Advisory only. Never blocks, never exits 2, fails open on any internal error.

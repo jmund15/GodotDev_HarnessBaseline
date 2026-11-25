@@ -226,10 +226,12 @@ kill_guard = _load('kill_guard')
 approving_gates = _load('approving_gates')
 unbounded_scan_guard = _load('unbounded_scan_guard')
 harness_shell_write_guard = _load('harness_shell_write_guard')
+rule_number_guard = _load('rule_number_guard')
 foreground_wait_guard = _optional_hooks.load('foreground_wait_guard', on_error=_failed_import)
 run_call_router = _optional_hooks.load('run_call_router', on_error=_failed_import)
 baseline_classification_guard = _load('baseline_classification_guard')
 bash_length_guard = _load('bash_length_guard')
+correction_record_guard = _load('correction_record_guard')
 _APPROVING_GATES_IMPORT_ERROR = _IMPORT_ERRORS.get('approving_gates')
 _BASELINE_GUARD_IMPORT_ERROR = _IMPORT_ERRORS.get('baseline_classification_guard')
 
@@ -263,9 +265,11 @@ HOOKS = (
     (kill_guard, ()),
     (editor_live_build_guard, ()),
     *_JUDGES,
+    (rule_number_guard, ()),
     (compound_cd_approver, ()),
     (unbounded_scan_guard, ()),
     (bash_length_guard, ()),
+    (correction_record_guard, ()),
     (harness_shell_write_guard, ()),
     (sidecar_dispatch_context, ()),
     (approving_gates, ()),
@@ -281,7 +285,6 @@ UNWIRED = (
     "gate_cadence_guard",
     "hand_pricing_advisory",
     "routing_audit",
-    "rule_number_guard",
     "triage_commit_check",
     "wide_test_guard",
 )

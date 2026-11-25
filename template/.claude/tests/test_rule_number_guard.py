@@ -181,6 +181,12 @@ def main():
     finally:
         _rm(tmp)
 
+    import pre_bash_dispatch
+    cases.append(("the Bash dispatcher runs the guard",
+                  "rule_number_guard" in [getattr(m, "__name__", "") for m, _ in pre_bash_dispatch.HOOKS]))
+    cases.append(("the dispatcher never fails closed on it",
+                  not getattr(pre_bash_dispatch.rule_number_guard, "FAIL_CLOSED", False)))
+
     failed = [label for label, ok in cases if not ok]
     for label, ok in cases:
         print(("PASS " if ok else "FAIL ") + label)

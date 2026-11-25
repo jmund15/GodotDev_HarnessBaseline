@@ -3,22 +3,26 @@
 """
 Hook: PreToolUse dispatcher for the read/search tool family.
 
-One settings entry runs one check:
+One settings entry runs these checks in order:
+  indexed_reference_guard.process — indexed whole-file Read → advise the main session, block a delegate
   semantic_search_scope_guard.process — a scope its values settle → corrected via `updatedInput`;
      one that leaves the project → block
+  video_read_hint.advisory — a Read of a video or GIF → advisory naming the contact-sheet tool
 
-The check ships in the coding layer and runs only where its file exists.
+Each check ships in the coding layer and runs only where its file exists. A delegate is not exempt from
+either: per-agent input spend multiplies across a fan-out, and an out-of-root searchDir costs the same
+index rebuild whoever calls it.
 
 Output contract:
 - A block writes stderr and exits 2.
 - A rewrite emits `hookSpecificOutput.updatedInput` and exits 0, with its note as `additionalContext`.
-- The sub-hook self-gates on `tool_name`.
+- Each sub-hook self-gates on `tool_name`.
 - A fault stays fail-open. A present member's import fault names the lost check and repair in
   `additionalContext`; an absent optional member is silent.
 
 Wired in: settings.json hooks.PreToolUse with matcher
 "Read|Grep|Glob|Write|WebFetch|WebSearch|mcp__plugin_semantic-search_semantic-search__search".
-The sub-hook keeps its own `main()` for standalone proofs.
+The sub-hooks keep their own `main()` for standalone proofs.
 """
 
 import json
@@ -37,15 +41,14 @@ def _failed_import(name, exc):
     return None
 
 
-semantic_search_scope_guard = _optional_hooks.load('semantic_search_scope_guard', on_error=_failed_import)
+indexed_reference_guard, semantic_search_scope_guard, video_read_hint = _optional_hooks.load(
+    'indexed_reference_guard', 'semantic_search_scope_guard', 'video_read_hint', on_error=_failed_import)
 
 # Hooks the v1 M1 cut unwired from this dispatcher. Their files stay until the cutover deletes them; naming them here
 # keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
 UNWIRED = (
     "file_size_preblock",
-    "indexed_reference_guard",
     "tool_routing_nudge",
-    "video_read_hint",
 )
 
 
@@ -54,6 +57,20 @@ def main() -> None:
         input_data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
+
+    # Index-served references: advise the main session, block a delegate (a discarded context recovers no input).
+    index_advisory = None
+    try:
+        result = indexed_reference_guard.process(input_data) if indexed_reference_guard else None
+        if result and result.get("block"):
+            sys.stderr.write(str(result["block"]) + "\n")
+            sys.exit(2)
+        if result:
+            index_advisory = result.get("advisory")
+    except SystemExit:
+        raise
+    except Exception:
+        pass
 
     # Semantic-search scope guard: an out-of-root searchDir costs the same index rebuild whoever calls it.
     rewrite, rewrite_note = None, None
@@ -69,9 +86,15 @@ def main() -> None:
     except Exception:
         pass
 
+    video = None
+    try:
+        video = video_read_hint.advisory(input_data) if video_read_hint else None
+    except Exception:
+        pass
+
     faults = ['%s failed to import (%s); its checks do not run. Repair hooks/%s.py.' % (name, error, name)
               for name, error in _IMPORT_ERRORS.items()]
-    context = "\n".join(c for c in (*faults, rewrite_note) if c)
+    context = "\n".join(c for c in (*faults, index_advisory, rewrite_note, video) if c)
     if rewrite or context:
         output = {"hookEventName": "PreToolUse"}
         if rewrite:

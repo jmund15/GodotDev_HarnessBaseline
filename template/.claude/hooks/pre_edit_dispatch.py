@@ -11,9 +11,12 @@ Order (the first block wins; advisories emit after all checks):
   1. pattern_enforcer.process            — .cs computed attributes; GD.Print in C# → block
      tres_format_guard.process           — scene and resource file normalization and unresolved-reference advice
   2. composed_output_guard.process       — direct edit of composed or generated text → exit 2 + stderr
-  3. harness_edit_skill_reminder.process — harness edit → deny until instruction_quality is in context,
+  3. provenance_label_guard.process      — provenance label added to loaded guidance → exit 2
+     model_name_guard.process            — registry model name added to a mechanism-layer file → deny;
+                                           silent where the machine has no model registry
+  4. harness_edit_skill_reminder.process — harness edit → deny until instruction_quality is in context,
                                            then a once-per-compaction advisory
-  4. running_script_edit_guard.process   — live script instance → advisory
+  5. running_script_edit_guard.process   — live script instance → advisory
 
 Sub-hook contract: `process(payload)` returns one of
   {"block": <message>}   hard block — stderr + exit 2, the tool call is aborted
@@ -48,6 +51,8 @@ CHAIN = (
     ("pattern_enforcer", "enforcement"),
     ("tres_format_guard", "advisory"),
     ("composed_output_guard", "enforcement"),
+    ("provenance_label_guard", "enforcement"),
+    ("model_name_guard", "advisory"),
     ("harness_edit_skill_reminder", "advisory"),
     ("running_script_edit_guard", "advisory"),
 )
@@ -57,7 +62,7 @@ CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did
 # keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
 UNWIRED = (
     "plan_job_map_guard",
-    "provenance_label_guard",
+    "rail_probe_guard",
     "readonly_lens_write_guard",
 )
 

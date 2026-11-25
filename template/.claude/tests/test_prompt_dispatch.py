@@ -40,13 +40,23 @@ sys.path.insert(0, HERE)
 import _settings_probe  # noqa: E402
 
 EXPECTED_CHAIN = (
+    ("prompt_memory_loader", 30),
+    ("critical_analysis_reminder", 30),
     ("prompt_git_state_delta", 15),
+    ("shell_census", 25),
     ("sidecar_watch_rearm", 5),
+    ("budget_posture", 15),
+    ("activity_registry", 15),
     ("overnight_ask_guard", 5),
+    ("skill_load_marker", 5),
 )
 
 # Members with no reachable positive control: why each one is proven by `ok` status alone.
-KNOWN_SILENT = {}
+KNOWN_SILENT = {
+    "shell_census": "its text comes from a live machine process table that main() lists itself; "
+                    "no env seam plants one, and its emission logic is proven with injected process "
+                    "lists in test_shell_census.py",
+}
 
 SYNTHESIS = """Compare the existing hook files and summarize how routing decisions flow across
 multiple modules. I need the exact source evidence preserved, the current contract checked, and a
@@ -189,6 +199,25 @@ def statuses(record):
     return {name: entry.get("status") for name, entry in (record or {}).get("hooks", {}).items()}
 
 
+def suggestion_reminder_emitted(out):
+    return "Suggestion-shape prompt" in out
+
+
+def write_capture(tmp, session, used_pct):
+    """The rate_limits snapshot statusline.py writes every turn (half the window elapsed)."""
+    now = time.time()
+    write_file(os.path.join(tmp, "cc-cachestat-%s.json" % session), json.dumps({"rate_limits": {
+        "captured_at": now,
+        "seven_day": {"used_percentage": used_pct, "resets_at": now + 7 * 24 * 3600 / 2}}}))
+
+
+def write_registry_record(tmp, pid, label):
+    """A registry record of the shape regression_gate.ps1 writes."""
+    write_file(os.path.join(tmp, "harness-activity", "gate-%d.json" % pid), json.dumps({
+        "pid": pid, "kind": "gate", "checkout": "C:/other/checkout", "sessionId": None, "label": label,
+        "startedAt": time.time(), "heartbeatAt": time.time(), "expectedSec": 300}))
+
+
 def machine_env(state, project, tmp, timing):
     env = dict(os.environ, HARNESS_HOOK_STATE_DIR=state, CLAUDE_PROJECT_DIR=project, TMP=tmp, TEMP=tmp, TMPDIR=tmp,
                HARNESS_PROMPT_DISPATCH_TIMING=timing, PYTHONUTF8="1",
@@ -295,6 +324,33 @@ def main():
             record = (read_records(timing) or [None])[-1]
             return record is not None and all(s == "ok" for s in statuses(record).values())
 
+        _, out, _ = run_dispatcher(env, payload_for("crit0001", "I think we should split this hook, right?"),
+                                   plain)
+        controls["critical_analysis_reminder"] = suggestion_reminder_emitted(out) and last_ok()
+        case("case 2: the reminder control rejects a hook tag that carries no reminder token",
+             not suggestion_reminder_emitted("<user-prompt-submit-hook>\nHIGH-RISK TASK\n</user-prompt-submit-hook>"))
+
+        _, out, _ = run_dispatcher(env, payload_for("pml00001", "Debug why the freeze effect is not working on critters"),
+                                   plain)
+        controls["prompt_memory_loader"] = "HIGH-RISK TASK" in out and last_ok()
+
+        write_capture(tmp, "bpc00001", 40.0)
+        _, out, _ = run_dispatcher(env, payload_for("bpc00001", "next slice"), plain)
+        case("case 2: spendable telemetry speaks at the first prompt, before any dispatch",
+             "[budget-posture]" in out and last_ok())
+        write_capture(tmp, "bpc00002", 100.0)
+        _, out, _ = run_dispatcher(env, payload_for("bpc00002", "next slice"), plain)
+        controls["budget_posture"] = "[budget-posture]" in out and "Exhausted" in out and last_ok()
+
+        peer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        try:
+            write_registry_record(tmp, peer.pid, "gate: final")
+            _, out, _ = run_dispatcher(env, payload_for("arc00001", "next slice", cwd="C:/repo"), plain)
+            controls["activity_registry"] = "[activity]" in out and "peer gate live" in out and last_ok()
+        finally:
+            peer.terminate()
+            peer.wait(timeout=30)
+
         night = os.path.join(root, "night")
         marker = os.path.join(night, ".claude", "scratch", "overnight", "active-ovn00001.json")
         write_file(marker, json.dumps({"session_id": "ovn00001", "goal": "finish", "armed_at": time.time()}))
@@ -327,6 +383,10 @@ def main():
             "wat00001", "<task-notification><status>killed</status></task-notification>"), plain)
         controls["sidecar_watch_rearm"] = ("python3 .claude/tools/watch_records.py" in watch_out
                                              and watch_record in watch_out and last_ok())
+
+        # a typed /orchestration is a load: the member names the role ladder, as a Skill call does
+        _, load_out, _ = run_dispatcher(env, payload_for("skl00001", "/orchestration go"), plain)
+        controls["skill_load_marker"] = "[role ladder" in load_out and last_ok()
 
         for name, _budget in pd.CHAIN:
             if not pd._optional_hooks.present(name):
@@ -376,7 +436,7 @@ def main():
         record = (read_records(fault_timing) or [None])[-1]
         case("case 4: a swallowing member keeps its printed output and is still recorded as a fault",
              out == "kept-partial\ngood-output" and statuses(record).get("pd_swallow") == "fault")
-        case("case 4: no real CHAIN member swallows in its __main__ block", saved_swallow == frozenset())
+        case("case 4: the real swallowing members are the ones whose __main__ block swallows", saved_swallow == frozenset({"budget_posture", "activity_registry"}))
         case("case 4: streams are restored after a faulting chain",
              (sys.stdin, sys.stdout, sys.stderr, list(sys.argv)) == real_streams)
 
@@ -752,7 +812,7 @@ def main():
         # ---- 9. registration and CHAIN contract ----------------------------------------------
         literal = chain_source()
         case("case 9: CHAIN is a plain literal that ast.literal_eval reads", literal == pd.CHAIN)
-        case("case 9: CHAIN names exactly the three expected members with their budgets",
+        case("case 9: CHAIN names exactly the expected members with their budgets",
              literal == EXPECTED_CHAIN)
         # A lower-layer dispatcher runs the higher-layer guards its consumer adopted, and
         # `_optional_hooks` skips a member this lane does not install (`_optional_hooks.py` docstring).

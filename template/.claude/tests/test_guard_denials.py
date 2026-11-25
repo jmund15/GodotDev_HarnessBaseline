@@ -223,6 +223,102 @@ def test_project_roots_keep_this_projects_directories():
     S.check(found == expected, 'test_project_roots_keep_this_projects_directories', repr(found))
 
 
+def plant_hooks(folder, files):
+    """A hooks folder holding `files` ({module name: source}), for `emitted_signatures` to read."""
+    os.makedirs(folder, exist_ok=True)
+    for name, source in files.items():
+        with open(os.path.join(folder, name + '.py'), 'w', encoding='utf-8', newline='\n') as handle:
+            handle.write(source)
+    return folder
+
+
+def plant_transcript(root, session, calls):
+    """root/projects/<session>.jsonl from `calls`: (timestamp, tool, input, result text, is_error) rows."""
+    folder = os.path.join(root, 'projects')
+    os.makedirs(folder, exist_ok=True)
+    rows = []
+    for index, (stamp, tool, tool_input, text, is_error) in enumerate(calls):
+        rows.append({'type': 'assistant', 'sessionId': session, 'timestamp': stamp,
+                     'message': {'content': [{'type': 'tool_use', 'id': '%s-%d' % (session, index), 'name': tool,
+                                              'input': tool_input}]}})
+        rows.append({'type': 'user', 'sessionId': session, 'timestamp': stamp,
+                     'message': {'content': [{'type': 'tool_result', 'tool_use_id': '%s-%d' % (session, index),
+                                              'is_error': is_error, 'content': text}]}})
+    with open(os.path.join(folder, session + '.jsonl'), 'w', encoding='utf-8', newline='\n') as handle:
+        handle.writelines(json.dumps(row) + '\n' for row in rows)
+    return folder
+
+
+DISPATCHED = 'PreToolUse:Bash hook error: [python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/pre_bash_dispatch.py"]: '
+WIDGET_GUARD = 'DENY = "BLOCKED widget %s (rules/x.md): put it down"\n'
+WIDGET_DENY = DISPATCHED + 'BLOCKED widget a1 (rules/x.md): put it down'
+
+
+def test_a_denial_is_attributed_to_the_hook_whose_source_emits_it():
+    with tempfile.TemporaryDirectory() as tmp:
+        hooks = plant_hooks(os.path.join(tmp, 'hooks'), {'widget_guard': WIDGET_GUARD,
+                                                         'other_guard': 'DENY = "BLOCKED gadget %s (rules/y.md): no"\n'})
+        plant_transcript(tmp, 's1', [('2026-11-20T10:00:00Z', 'Bash', {'command': 'x'}, WIDGET_DENY, True),
+                                     ('2026-11-20T10:00:01Z', 'Bash', {'command': 'y'}, 'Exit code 1 BLOCKED widget', True)])
+        found = gd.scan([os.path.join(tmp, 'projects')], hooks_dir=hooks)
+    S.check([(row['hook'], row['tool']) for row in found['guards']] == [('widget_guard', 'Bash')],
+            'test_a_denial_is_attributed_to_the_hook_whose_source_emits_it: one hook row, a plain error is none',
+            repr(found['guards']))
+    S.check(found['denials'] == [], 'test_a_denial_is_attributed_to_the_hook_whose_source_emits_it: no category row')
+
+
+def test_a_reworded_deny_reclassifies_from_the_cache_without_a_reread():
+    with tempfile.TemporaryDirectory() as tmp:
+        old = plant_hooks(os.path.join(tmp, 'old'), {'widget_guard': WIDGET_GUARD})
+        new = plant_hooks(os.path.join(tmp, 'new'), {'widget_guard': 'DENY = "BLOCKED sprocket %s (rules/x.md): no"\n',
+                                                    'sprocket_guard': WIDGET_GUARD})
+        plant_transcript(tmp, 's1', [('2026-11-20T10:00:00Z', 'Bash', {'command': 'x'}, WIDGET_DENY, True)])
+        roots, cache = [os.path.join(tmp, 'projects')], os.path.join(tmp, 'cache.json')
+        first = gd.scan(roots, cache_path=cache, hooks_dir=old)
+        second = gd.scan(roots, cache_path=cache, hooks_dir=new)
+    S.check([r['hook'] for r in first['guards']] == ['widget_guard'] and [r['hook'] for r in second['guards']] == ['sprocket_guard']
+            and second['coverage']['read'] == 0 and second['coverage']['cached'] == 1,
+            'test_a_reworded_deny_reclassifies_from_the_cache_without_a_reread', repr((first['guards'], second['guards'])))
+
+
+def test_an_unknown_wording_is_unattributed_and_a_named_script_is_its_hook():
+    with tempfile.TemporaryDirectory() as tmp:
+        signatures = gd.emitted_signatures(plant_hooks(os.path.join(tmp, 'hooks'), {'widget_guard': WIDGET_GUARD}))
+    named = 'PreToolUse:Bash hook error: [python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/pattern_enforcer.py"]: BLOCKED: gone'
+    S.check(gd.attribute(DISPATCHED + 'a wording no hook source holds', signatures) == 'unattributed'
+            and gd.attribute(named, signatures) == 'pattern_enforcer'
+            and gd.attribute('Exit code 1 plain failure', signatures) is None,
+            'test_an_unknown_wording_is_unattributed_and_a_named_script_is_its_hook')
+
+
+def test_repeat_and_identical_count_later_denials_of_a_hook_in_a_session():
+    with tempfile.TemporaryDirectory() as tmp:
+        hooks = plant_hooks(os.path.join(tmp, 'hooks'), {'widget_guard': WIDGET_GUARD})
+        plant_transcript(tmp, 'sA', [('2026-11-20T10:00:00Z', 'Bash', {'command': 'one'}, WIDGET_DENY, True),
+                                     ('2026-11-20T10:00:05Z', 'Bash', {'command': 'one'}, WIDGET_DENY, True),
+                                     ('2026-11-20T10:00:09Z', 'Bash', {'command': 'two'}, WIDGET_DENY, True)])
+        plant_transcript(tmp, 'sB', [('2026-11-21T10:00:00Z', 'Bash', {'command': 'one'}, WIDGET_DENY, True)])
+        found = gd.scan([os.path.join(tmp, 'projects')], hooks_dir=hooks)
+    report = gd.hook_report(found['guards'])
+    S.check(report == [{'hook': 'widget_guard', 'tool': 'Bash', 'denials': 4, 'sessions': 2, 'repeat': 2, 'identical': 1}],
+            'test_repeat_and_identical_count_later_denials_of_a_hook_in_a_session', repr(report))
+
+
+def test_the_window_keeps_only_the_last_days():
+    rows = [{'hook': 'h', 'tool': 'Bash', 'day': day, 'session': 's', 'ts': day, 'fp': 'f'}
+            for day in ('2026-10-01', '2026-10-26', '2026-11-25')]
+    since = gd.window_start(30, gd.datetime(2026, 11, 25, 12, 0, tzinfo=gd.timezone.utc))
+    S.check(since == '2026-10-27' and gd.hook_report(rows, since)[0]['denials'] == 1 and gd.window_start(None) is None,
+            'test_the_window_keeps_only_the_last_days', repr(since))
+
+
+def test_a_captured_recursive_delete_deny_belongs_to_the_loss_floor_source():
+    captured = ('PreToolUse:Bash hook error: [command hook 4]: BLOCKED: Dangerous recursive delete (rm -r / -R / -rf) '
+                "(CLAUDE.core.md §Shell Discipline: the owner's explicit go-ahead first). Allowed: caches, temp dirs.")
+    S.check(gd.attribute(captured, gd.emitted_signatures()) == 'dangerous_shell_guard',
+            'test_a_captured_recursive_delete_deny_belongs_to_the_loss_floor_source')
+
+
 def _cli(*args):
     return subprocess.run([sys.executable, os.path.join(TOOLS, 'guard_denials.py'), *args], capture_output=True,
                           text=True, encoding='utf-8', errors='replace')

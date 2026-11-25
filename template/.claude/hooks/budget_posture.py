@@ -29,6 +29,9 @@ per plan per provider_capacity.CACHE_TTL_SECONDS, and prints `<transport> warmin
 HARNESS_CAPACITY_WARM=0 starts nothing (proofs set it). Each plan entry shows quota left and time
 left for its worst-band window, and both windows when their bands differ.
 
+With no external seat (`has_external_seats`: no model registry, or one naming only the host route) the line is the
+host plan's pace alone: no provider row, warm, unidentified-seat warning, routing advice or spend-lean offer.
+
 Never delegated at ANY pressure: orchestration itself, the ideal-design verdict,
 gate decisions, cross-system seams. No quota reading moves the reserved set.
 One band gate is enforced rather than advisory: agent-initiated SIDECAR dispatch of a
@@ -523,6 +526,14 @@ def registered_transports():
         return None
 
 
+def has_external_seats():
+    """True when the model registry names a transport beyond the host's. Without one (no registry on this
+    machine, or only the host route) there is no other plan to route to, so the line is the host plan's pace
+    alone: no provider row, no unidentified-seat warning, no advice to route elsewhere, no spend-lean offer."""
+    names = registered_transports()
+    return bool(names) and bool(names - {_session_transport.HOST_TRANSPORT})
+
+
 def provider_entry(plan, *, capacity=None, now=None, label=None):
     """`provider_bands.plan_entry` for `plan`, from `capacity` or else the plan's cached reading.
 
@@ -736,14 +747,15 @@ def spend_posture(session_id):
         return {"mode": "normal", "scope": None, "until": None, "expired": False}
 
 
-def spend_line(posture, own_band):
-    """The owner's spend line for a posture, or None when it says nothing. `own_band` is the session's own plan band."""
+def spend_line(posture, own_band, external=True):
+    """The owner's spend line for a posture, or None when it says nothing. `own_band` is the session's own plan band;
+    the lean offer needs `external` seats to spend on."""
     if posture.get("mode") == "lean":
         return ("spend: lean (owner, %s, until %s) — pin rule: orchestration reference spend_lean.md; "
                 "rows: model_registry.py for-role <tier>" % (posture.get("scope"), posture.get("until")))
     if posture.get("expired"):
         return "spend: lean expired %s" % posture.get("until")
-    if own_band in (quota_bands.EXHAUSTED_BAND, "Dispatch floor", "Hot"):
+    if external and own_band in (quota_bands.EXHAUSTED_BAND, "Dispatch floor", "Hot"):
         return "spend: lean available — owner only"
     return None
 
@@ -752,7 +764,7 @@ def emit_spend(session_id, dstate, dpath, own_band):
     """Print the spend line when it changed since the last prompt or the session compacted. Its last value is
     `dstate["spend"]`, so a set, an expiry or a band change re-injects once, with or without rate_limits telemetry;
     a compaction dropped the line from context, so the first prompt after one re-injects it unchanged."""
-    line = spend_line(spend_posture(session_id), own_band)
+    line = spend_line(spend_posture(session_id), own_band, has_external_seats())
     previous = dstate.get("spend")
     compacted = fire_once_since_compaction(session_id, "budget_posture_spend")
     if previous == line and not (line and compacted):
@@ -816,6 +828,7 @@ def main():
             emit_gap_notice(session_id)
         return
 
+    external = has_external_seats()
     p5 = pressure_for(rl.get("five_hour"), FIVE_HOUR_SECONDS, now)
     if p7 is None and p5 is None:
         return
@@ -885,15 +898,16 @@ def main():
             own_windows = provider_bands.display_windows(own_capacity, now)
             own_blocked = bool(own_windows) and own_windows[0]["band"] == quota_bands.EXHAUSTED_BAND
         if own_blocked:
-            bits.append("native Workflow/Agent dispatch is blocked until the reset; route each job to "
-                        "another plan serving its tier (orchestration §5b)")
+            bits.append("native Workflow/Agent dispatch is blocked until the reset"
+                        + ("; route each job to another plan serving its tier (orchestration §5b)"
+                           if external else ""))
         if p5 is not None and p5 > quota_bands.FIVE_HOUR_NARROW_PRESSURE:
-            trigger = ("5h used faster than its time: one native job at a time; the next waits for it or goes to "
-                       "a row on another plan (orchestration §5b)")
+            trigger = ("5h used faster than its time: one native job at a time; the next waits for it"
+                       + (" or goes to a row on another plan (orchestration §5b)" if external else ""))
             if on_provider_seat:
                 trigger += " [cross-hop]"
             bits.append(trigger)
-        if _session_transport.UNKNOWN in (seat, plan):
+        if external and _session_transport.UNKNOWN in (seat, plan):
             bits.append("seat UNIDENTIFIED (the Anthropic band may not be this session's currency)")
         # A capture can reach a hard dispatch floor while the risk band still reads as spendable,
         # and a capture cannot say whether extra credit would cover the job. An exhausted week
@@ -904,7 +918,8 @@ def main():
                         f"{DISPATCH_FLOOR_PERCENT[floor[0]]:g}% dispatch floor ({floor[1]:.1f}% used); "
                         "live capacity preflight decides - the capture cannot prove extra-credit "
                         "availability")
-        bits.append(POLICY)
+        if external:
+            bits.append(POLICY)
         bits.append(age_txt)
         print("[budget-posture] " + " | ".join(bits))
         dstate.update({"band": band, "p7": p7, "seatBand": seat_band, "quota": quota, "pool": pool,

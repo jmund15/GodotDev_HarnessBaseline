@@ -217,16 +217,6 @@
           }
         ],
         "matcher": "AskUserQuestion"
-      },
-      {
-        "hooks": [
-          {
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/rail_probe_guard.py\"",
-            "timeout": 10,
-            "type": "command"
-          }
-        ],
-        "matcher": "LSP|NotebookEdit|EnterWorktree|CronCreate|RemoteTrigger|mcp__ai-worker__.*"
       }
     ],
     "SessionStart": [

@@ -1,6 +1,6 @@
 ---
 disable-model-invocation: true
-allowed-tools: Write, Bash(dotnet build:*), Bash(git ls-files:*), Bash(find:*), Bash(ls:*), Bash(python3 .claude/tools/post_check.py:*), Glob, Grep, Read, Workflow
+allowed-tools: Write, Bash(pwsh -NoProfile -File .claude/scripts/verify.ps1:*), Bash(git ls-files:*), Bash(find:*), Bash(ls:*), Bash(python3 .claude/tools/post_check.py:*), Glob, Grep, Read, Workflow
 description: Audit project layout, ownership, framework boundaries, and resource references.
 ---
 
@@ -113,7 +113,10 @@ Ask once before applying tiers. Then process FIX, ASK, and PLAN in order.
   FIX's `file`, with path FIXes per [`review_fold.md`](agents/review_fold.md) and each FIX's `new` path
   declared in `--new-paths` at the snapshot. The reference search for a moved `.cs`/`.tscn`/`.tres` file
   includes its UID (from the `.cs.uid` or the resource header) beside the old basename.
-- Build once after the approved FIX batch (`dotnet build`, not per fix).
+- After the approved FIX batch, run the drive-close scope run once, not per fix:
+  `.claude/scripts/verify.ps1 -Scope <domains of the moved files>`, the row `change_control` §Gate cadence
+  gives for drive close. `dotnet build` alone is not this check: it passes while a serialized `.tres`/`.tscn`
+  reference is broken.
 - Walk ASK findings one at a time. An answered folder-restructure ASK is applied by a refold over its id,
   the same path-FIX rule.
 - Apply a resolved PLAN from `options[0]` on the tier approval, after the protocol's Step 4 ratification.
