@@ -414,27 +414,34 @@ def _pinned_manifest_layers(cache: Path, baseline_sha: str) -> dict[str, str]:
 
 
 def _source_layers(source: dict) -> dict[str, str]:
-    """A worktree source's own `tools/layer_entries.json` at its commit: the layer of a file only the
-    baseline has, which no consumer lock row can carry. A commit source has none."""
+    """A worktree source's own layers at its commit: the layer of a file only the baseline has, which no
+    consumer lock row can carry. Its generated `baseline.manifest.json` holds every file's layer, the
+    pattern-classified ones included; a `tools/layer_entries.json` entry outranks it, as in
+    gen_manifest. A commit source has none."""
     if source.get("kind") != "worktree":
         return {}
-    text = _git_show(Path(source["repo"]), source["commit"], "/".join(LAYER_ENTRIES))
-    return dict(json.loads(text).get("entries") or {}) if text else {}
+    repo, commit = Path(source["repo"]), source["commit"]
+    manifest = _git_show(repo, commit, "baseline.manifest.json")
+    layers = {entry["path"]: entry.get("layer") for entry in json.loads(manifest).get("files", [])} if manifest else {}
+    entries = _git_show(repo, commit, "/".join(LAYER_ENTRIES))
+    layers.update(json.loads(entries).get("entries") or {} if entries else {})
+    return layers
 
 
 def _new_row_layers(records: list[dict], lock: dict, cache: Path, baseline_sha: str,
                     source_layers: dict[str, str] | None = None) -> dict[str, str]:
     """Template relpath -> layer for each lock row the pinned baseline does not have yet, and for
-    each existing row whose lock layer differs from the pinned manifest's (a layer move). A new
-    row takes the lock's layer, else the source's own layer entry; one with neither refuses:
-    validate's `gen_manifest.py --check` fails on any unclassified file."""
+    each existing row whose layer differs from the pinned manifest's (a layer move). A worktree
+    source's own layers decide (it is the baseline's tree; the lock is one consumer's view), else the
+    lock's; a new row with neither refuses: validate's `gen_manifest.py --check` fails on any
+    unclassified file."""
     layers, missing = {}, []
     pinned = _pinned_manifest_layers(cache, baseline_sha)
     for record in records:
         if record.get("kind") != "lock" or record["op"] == "D":
             continue
-        layer = (lock.get("files", {}).get(record["relpath"]) or {}).get("layer") \
-            or (source_layers or {}).get(record["relpath"])
+        layer = (source_layers or {}).get(record["relpath"]) \
+            or (lock.get("files", {}).get(record["relpath"]) or {}).get("layer")
         exists = _git(cache, ["cat-file", "-e", f"{baseline_sha}:{record['dest_path']}"], check=False)
         if exists.returncode == 0:
             template_rel = record["dest_path"][len("template/"):]
@@ -1225,6 +1232,8 @@ def _find_matching_journal(root: Path, source_commit: str, collected: list[str],
         if data is None:
             continue
         if exclude_id is not None and data.get("id") == exclude_id:
+            continue
+        if data.get("abandoned_at"):  # ended for good: `--resume` refuses it, so it never matches
             continue
         if data.get("source", {}).get("commit") != source_commit:
             continue

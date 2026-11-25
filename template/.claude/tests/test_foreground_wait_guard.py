@@ -198,7 +198,7 @@ note = hso.get("additionalContext", "")
 check("a raised timeout stays in the foreground", rc == 0 and bool(updated) and not updated.get("run_in_background"), detail)
 check("a raised timeout is clamped to the default", updated.get("timeout") == BASH_DEFAULT_MS, detail)
 check("the raised-timeout note cites the rule and promises no wake",
-      "Shell Discipline" in note and "one wake" not in note, detail)
+      "CLAUDE.interactive.md" in note and "one wake" not in note, detail)
 
 rc, hso, detail = raised("python3 x.py", BASH_DEFAULT_MS)
 check("a timeout at the default is left alone", rc == 0 and not hso.get("updatedInput"), detail)

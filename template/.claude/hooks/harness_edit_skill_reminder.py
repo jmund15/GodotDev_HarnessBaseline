@@ -22,10 +22,10 @@ What it does:
 - A fault in this hook reaches the dispatcher, which allows the edit and reports the lost check.
 
 PATH RULES (in .claude/ only):
-- IN:  **/*.md (CLAUDE.md, skills, commands, rules), hooks/*.py, settings*.json
+- IN:  **/*.md (the CLAUDE chain, skills, commands, rules, references, rails, lens files)
 - OUT: auto-memory/** — governed by consolidate-memory / memory_audit, not this
        skill (see instruction_quality "Composition with other tools").
-- OUT: scratch/**, tests/**, __pycache__/**, plans/**, .cache/** — not loaded guidance.
+- OUT: scratch/**, tests/**, __pycache__/**, plans/**, .cache/**, hooks/*.py, settings*.json — not agent-facing text.
 - IN (carve-out): pending_harness_edits.md — queued CLAUDE.md/MEMORY.md
   content awaiting /apply_harness_edits; it IS loaded guidance in transit, and
   authoring errors there land verbatim in the injected files.
@@ -64,7 +64,6 @@ EDIT_NOTES = {
 }
 
 INCLUDED_MD_ANY_DEPTH = ".md"
-INCLUDED_EXACT_DIRS = ("hooks",)          # .claude/hooks/*.py
 # plans/: execution docs owned by plan_file_format, not doctrine. .cache/: mirrors (baseline-repo);
 # a checkout hosted there is rebased first, so its own .claude/ tail stays gated.
 EXCLUDED_DIRS = ("auto-memory", "scratch", "tests", "__pycache__", "plans", ".cache")
@@ -95,10 +94,6 @@ def is_harness_file(file_path: str) -> bool:
     name = parts[-1]
     if name.endswith(INCLUDED_MD_ANY_DEPTH):
         return True
-    if name.startswith("settings") and name.endswith(".json"):
-        return True
-    if name.endswith(".py") and len(parts) > 1 and parts[-2] in INCLUDED_EXACT_DIRS:
-        return True
     return False
 
 
@@ -126,6 +121,12 @@ READ_CLASS_FILES = (
 )
 
 
+PRINCIPLES = (
+    "Before changing agent-facing text, read `skills/instruction_quality/reference/principles.md` "
+    "(H1–H15, the layer table) and the project's harness goal file when it has one."
+)
+
+
 def reference_for(file_path: str) -> str | None:
     """The `reference/` file whose sections govern this path's class, or None when the class is unmapped (the
     caller then names all four). The orchestration check runs before the wider `skills/` one."""
@@ -133,9 +134,7 @@ def reference_for(file_path: str) -> str | None:
     if tail is None or not is_harness_file(file_path):
         return None
     parts = tail.split("/")
-    if parts[0] == "hooks" and parts[-1].endswith(".py"):
-        return "hooks.md"
-    if len(parts) == 1 and parts[0].startswith("settings") and parts[0].endswith(".json"):
+    if parts[0] == "hooks":
         return "hooks.md"
     if parts[0] == "workflows" or parts[:2] == ["skills", "orchestration"]:
         return "orchestration.md"
@@ -167,7 +166,7 @@ def advance_notice(file_path: str) -> str:
     return (f"Harness file `.claude/{name}`: the harness denies any edit of it until `instruction_quality` is "
             "loaded: invoke Skill(skill=\"instruction_quality\"), or with no Skill tool Read "
             "`.claude/skills/instruction_quality/SKILL.md` whole (no offset/limit); "
-            f"read {files}.")
+            f"read {files}. {PRINCIPLES}")
 
 
 def deny_text(file_path: str) -> str:
@@ -180,12 +179,12 @@ def deny_text(file_path: str) -> str:
             "no offset or limit")
     if not target:
         return (f"{head}, then {READ_CLASS_FILES}, then check this edit against the sections you read "
-                "and re-issue it with any change they call for.")
+                f"and re-issue it with any change they call for. {PRINCIPLES}")
     sections = next(s for f, s, _ in REFERENCE_FILES if f == target)
     body = reference_text(target)
     cited = f"`{REFERENCE_DIR}/{target}` ({sections})" + (", included in full below" if body else "")
     deny = (f"{head}, then read {cited}, then check this edit against the sections you read and re-issue it "
-            "with any change they call for.")
+            f"with any change they call for. {PRINCIPLES}")
     return deny + (f"\n\n--- {REFERENCE_DIR}/{target} ---\n{body}" if body else "")
 
 
@@ -195,7 +194,7 @@ def build_reminder(file_path: str) -> str:
         f"Harness edit `.claude/{name}`: apply `instruction_quality`. Most-missed gates: "
         "§3 SSOT (link, don't restate), §4 verify every cited path resolves, "
         "§6 cut non-decision rationale, §7 skill triggers, §13-16 for hooks."
-        + f" {READ_CLASS_FILES}: they hold sections 7-18."
+        + f" {READ_CLASS_FILES}: they hold sections 7-18. {PRINCIPLES}"
     )
 
 

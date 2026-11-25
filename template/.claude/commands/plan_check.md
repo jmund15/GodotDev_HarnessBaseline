@@ -50,9 +50,9 @@ Split plans get one seat map. Classify each plan's shape; use the Mixed row when
 
 Re-rank the order when the panel-yield lines of `/orchestration_metrics` flag a merged mandate or a solo seat with no unique finding.
 
-Add a lens only for a distinct uncovered risk (`orchestration` §0). Judgment needs a qualified review role. Pin each seat to its lenses' `seat_tier` (`lens.py`); a seat whose spec omits its effort gets the rung its lens's reading computes from that row's ladder cell (`orchestration` §5 *Effort*).
+Add a lens only for a distinct uncovered risk (`orchestration` §0). Judgment needs a qualified review role. Pin each seat to its lenses' `seat_tier` (`lens.py`); set each seat's effort in that row's review range from the plan's size, coupling and depth (`orchestration` §5 *Effort*); only a checklist seat's effort is computed, because a rubric scores it.
 
-Before the panel, write the seats and the reviewed plan paths to `<run dir>/spec.json`. The seats are the seat map's keys, each at its lenses' `seat_tier`, with no effort unless the owner named one; an owner-named effort also sets the seat's `"pick": "owner"`, so it runs as named.
+Before the panel, write the seats and the reviewed plan paths to `<run dir>/spec.json`. The seats are the seat map's keys, each at its lenses' `seat_tier` with the effort line 53 sets (a checklist seat may omit it); an owner-named effort also sets the seat's `"pick": "owner"`, so it runs as named.
 
 A first round seats the mandates the ledger returns. A later round's seats come from [`plan_check_detail.md`](reference/plan_check_detail.md) §Phase 3 rounds, and the ledger's list is only their ceiling. A design mandate covered at the unchanged design hash is not re-judged; that plan gets a spot-check instead: `plc-evidence-grounding`, `plc-test-readiness`, `plc-memory-alignment` and `plc-whole-plan` only, sized by what the plan adds beyond the covered design (units the design does not state), per `orchestration` §2 *Later rounds*. Owner-fork answers no reviewer has seen still get the full check.
 

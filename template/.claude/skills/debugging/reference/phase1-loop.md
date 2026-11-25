@@ -6,7 +6,7 @@ Read at Phase 1 of [`../SKILL.md`](../SKILL.md).
 
 ## Memory seed first
 
-Search auto-memory for the high-leverage gotcha buckets before designing the loop: object lifecycle and disposal, pooled-object reset ordering, and orphaned processes or silently skipped tests. `reference/memory_domains.md` supplies the project's seed terms. Then search the **specific** task domain. Recall is semantic search over `.claude/auto-memory/`: query an NL paraphrase of the symptom, facets searched separately (CLAUDE.md §2 *Memory*).
+Search auto-memory for the high-leverage gotcha buckets before designing the loop: object lifecycle and disposal, pooled-object reset ordering, and orphaned processes or silently skipped tests. `reference/memory_domains.md` supplies the project's seed terms. Then search the **specific** task domain. Recall is semantic search over `.claude/auto-memory/`: query an NL paraphrase of the symptom, facets searched separately (`CLAUDE.core.md` *Memory*).
 
 ## Loop options (ranked roughly by leverage)
 

@@ -286,6 +286,10 @@ def main():
     cases.append(("every STOP on a single-flight run names its concurrency condition in the same sentence"
                   + ("" if not unconditioned else ": " + " | ".join(unconditioned)), not unconditioned))
 
+    rc_nq, out_nq, _ = run(TOOL, "survey", "detailed", "vendor-plain-1", env=env)
+    cases.append(("survey detailed output contains the no-questions line",
+                  rc_nq == 0 and "Nobody answers a question in your return." in out_nq))
+
     failures = [label for label, ok in cases if not ok]
     for label, ok in cases:
         print("%-4s %s" % ("ok" if ok else "FAIL", label))

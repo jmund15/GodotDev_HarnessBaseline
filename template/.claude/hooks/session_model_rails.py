@@ -58,6 +58,10 @@ try:
     from guard_text import guard_text
 except Exception:  # advisory hook: a broken import must not brick a delegate child
     guard_text = None
+try:
+    import autolearn_outcomes as _outcomes
+except Exception:  # advisory hook: a broken import must not brick session start
+    _outcomes = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _hook_parts
@@ -146,8 +150,8 @@ PROVIDER_RAILS_HEAD = """\
 - A committed Workflow filename does not choose a provider. Reusable engines take this transport's native model and effort from caller args; measured arms may pin a literal model. Check the script's actual pins: the provider guard denies incompatible literal pins, not the whole file because it is committed. [instruction_quality §12; orchestration §5b]
 - COVERAGE LIMIT of that deny: it reads statically visible pins in args, the Agent `model`, and quoted literals in the script. A pin COMPUTED at runtime can escape that guard; use native IDs in caller args and validate them before spawning, not literal pins in reusable scripts.
 - Reaching ANOTHER transport (including Anthropic itself) goes through its own sidecar launcher — `reference/sidecar_dispatch.md`, roster above. Workflow/Agent never cross transports.
-- You ARE the orchestrator this session. Gate decisions and the ideal-design verdict still warrant an Anthropic session OR an explicit user sign-off — surface them rather than settling them alone. That floor reserves those DECISIONS, not the work shape (orchestration §5b): a SCOPED judgment, review or architecting lens goes to the ladder's row for that shape, by sidecar hop when it is off-transport.
-- ROLE -> MODEL: `python3 .claude/tools/model_registry.py for-role <orchestrator|architect|executor|fanout|scout>` prints one plan-filtered table: each surviving plan's quota left and each row fit for the tier, with its ladder cells. A plan it dropped is out. It picks no model and no effort: choose among the listed rows by the job's priority, and take the effort from the ladder's effort cell for the work shape.{lacked_tiers}
+- You are a top-level session on this transport. Gate decisions and the ideal-design verdict still warrant an Anthropic session OR an explicit user sign-off — surface them rather than settling them alone. That floor reserves those DECISIONS, not the work shape (orchestration §5b): a SCOPED judgment, review or architecting lens goes to the ladder's row for that shape, by sidecar hop when it is off-transport.
+- ROLE -> MODEL: `python3 .claude/tools/model_registry.py for-role <orchestrator|architect|executor|fanout|scout>` prints one plan-filtered table: each surviving plan's quota left and each row fit for the tier, with its ladder cells. A plan it dropped is out. It picks no model and no effort: choose among the listed rows by rule 1's bar, and take the effort from the ladder's effort cell for the work shape.{lacked_tiers}
 - DISPATCH ROUTING: `/delegate` places each job by the ladder's selection line (orchestration §0), and a job placed on this session's plan runs as a Workflow agent. A Workflow fan-out here is NOT band-gated, so state the intended model and cost before dispatching, then check the journal's model column against it.
 - COST SHAPE — bound prompts, use args.spillDir, and prefer FEW LONG agents to many short ones: each agent pays a large cold-start toll, so width multiplies it while depth amortizes it.
 """
@@ -397,7 +401,7 @@ def compaction_lines(payload):
     # line is the earlier surface those denies back up (instruction_quality §3).
     lines.append("[compaction] A skill the client re-attached whole and unchanged on disk is still loaded; a "
                  "truncated or changed copy is not. Invoke that skill again before an action that needs it "
-                 "(editing a `.claude/` file needs instruction_quality).")
+                 "(editing agent-facing harness text needs instruction_quality).")
     if dispatches != 0:
         try:
             import model_ladder_gate
@@ -405,6 +409,20 @@ def compaction_lines(payload):
         except Exception:
             pass
     return lines
+
+
+# The interactive layer: what only a session the owner works with faces (`instruction_quality` §5). A dispatched
+# child (CLAUDE_CODE_SIDECAR, or a native job whose payload carries `agent_id`) never receives it. A project that
+# has not pulled the file prints nothing in its place.
+INTERACTIVE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "CLAUDE.interactive.md")
+
+
+def interactive_text() -> str:
+    try:
+        with open(INTERACTIVE, encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
 
 
 # The commands this hook is registered as in settings.base.json: `--part 1` .. `--part PARTS`. The client caps each
@@ -460,6 +478,17 @@ def build_text(payload: dict, write_tier: bool = True) -> str:
             out.append(ANTHROPIC_RAILS)
         else:
             out.append(provider_rails(transport, source, payload))
+    if not shape and not payload.get("agent_id"):
+        layer = interactive_text()
+        if layer:
+            out.append(layer)
+        if _outcomes is not None:
+            try:
+                sweep = _outcomes.unswept_summary(_outcomes.DEFAULT_FILE)
+                if sweep:
+                    out.append(sweep)
+            except Exception:
+                pass
     return "".join(piece + "\n" for piece in out)
 
 

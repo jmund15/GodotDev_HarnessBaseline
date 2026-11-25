@@ -24,7 +24,7 @@ If any check fails on a worker-written doc, refine the spec with explicit Must-i
 
 Brainstorm-doc reads (`Read`) and saves (`Write`/`Edit`) hit the vault filesystem directly. Full convention: CLAUDE.md §3 / `obsidian_conventions` skill.
 
-**`write_doc` offline:** the substitute executor follows CLAUDE.core.md §9 *Offline fallback* and `orchestration` §5. Author directly with a native `Write` from the calling skill's template; the §2 rationale checks still apply. Provenance and per-machine availability: `environment_bootstrap`.
+**`write_doc` offline:** the substitute executor follows `CLAUDE.core.md` §9 *Search/fetch and every shell read* and `orchestration` §5. Author directly with a native `Write` from the calling skill's template; the §2 rationale checks still apply. Provenance and per-machine availability: `environment_bootstrap`.
 
 ---
 

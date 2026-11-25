@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PreToolUse SendMessage guard: a message reaches a local peer session or subagent only while its cache is warm.
 
-Home: CLAUDE.core.md §Core Principles. The recipient resolves through the runtime's local
+Home: CLAUDE.interactive.md §Peers. The recipient resolves through the runtime's local
 registry in every declared login (`model_registry.login_dirs`; <login>/sessions/<pid>.json: name, sessionId,
 messagingSocketPath, status) by name, `name [ref]` sessionId prefix, or socket path. A single match passes while
 it is `busy` or its transcript's (<login>/projects/*/<sessionId>.jsonl) newest stamped entry is within WARM_SEC; any
@@ -34,13 +34,13 @@ _REF = re.compile(r"^(?P<name>.*?)\s*\[(?P<ref>[0-9a-f]+)\]\s*$")
 REASON = (
     "{name} is {status} and its last turn ended {age}, so its 1h prompt cache is not known warm. A message wakes it "
     "and re-reads its whole context uncached. Leave the fact in the artifact it reads when it next "
-    "acts on the subject (its worklog item, plan file or Close doc). Rule: CLAUDE.core.md §Core Principles."
+    "acts on the subject (its worklog item, plan file or Close doc). Rule: CLAUDE.interactive.md §Peers."
 )
 
 SUBAGENT_REASON = (
     "Subagent {agent} last wrote {age} min ago, so its 5m prompt cache is not known warm. A message resumes it and "
     "re-reads its whole context uncached. Put the follow-up in a fresh job's brief with the evidence "
-    "path. Rule: CLAUDE.core.md §Core Principles."
+    "path. Rule: CLAUDE.interactive.md §Peers."
 )
 
 

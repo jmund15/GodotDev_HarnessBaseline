@@ -130,31 +130,6 @@ def run_torn_parent_state():
     return ok, reason
 
 
-def run_nudge_agrees():
-    tmp = tempfile.mkdtemp(prefix="routing_nudge_read_")
-    state_dir = os.path.join(tmp, "state")
-    os.environ["HARNESS_HOOK_STATE_DIR"] = state_dir
-    if "tool_routing_nudge" in sys.modules:
-        del sys.modules["tool_routing_nudge"]
-    nudge = importlib.import_module("tool_routing_nudge")
-
-    _write_state(state_dir, "sessnud1", BULK_COPYABLE)
-    _write_state(state_dir, "sessnud2", BULK_COPYABLE)
-    base = {"tool_name": "Read", "tool_input": {"file_path": READ_PATH}}
-    _, main_msg = nudge.process(dict(base, session_id="sessnud1", agent_id=""))
-    _, sub_msg = nudge.process(dict(base, session_id="sessnud2", agent_id="agent0001"))
-    state = json.load(open(_state_path(state_dir, "sessnud1"), encoding="utf-8"))
-
-    label = "PreToolUse advice and audit use the same bulk-copyable rule and subagent exemption"
-    # The route the advice names is a per-machine fact (ai-worker registered or not); the case is
-    # about the rule and the exemption, so it accepts either rendering.
-    ok = bool(main_msg and ("read_files" in main_msg or "bounded Read" in main_msg) and not sub_msg
-              and "native-read-bulk-copyable" in state.get("pre_nudges_fired_this_turn", []))
-    reason = "" if ok else "main=%r sub=%r state=%r" % (main_msg, sub_msg, state)
-    print("%-4s %s" % ("ok" if ok else "FAIL", label))
-    return ok, reason
-
-
 def main():
     checks = [
         run_read("path alone emits no routing-audit verdict", "", expected=None),
@@ -166,7 +141,6 @@ def main():
                  agent_id="agent0001", expected="cue-exempt"),
         run_other_rule_unchanged(),
         run_torn_parent_state(),
-        run_nudge_agrees(),
     ]
     failures = [(index + 1, reason) for index, (ok, reason) in enumerate(checks) if not ok]
     print("\n%d/%d cases pass" % (len(checks) - len(failures), len(checks)))

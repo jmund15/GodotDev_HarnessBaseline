@@ -14,7 +14,7 @@ The vault is a normal filesystem path: `{{VAULT_ROOT}}\DevProjects\{{PROJECT_NAM
 
 | Operation | Tool |
 |---|---|
-| Read a vault file | `Read` on the path — synthesis-shaped reads route to `read_files` (CLAUDE.core.md §9) |
+| Read a vault file | `Read` on the path — synthesis-shaped reads route to `read_files` (the user `CLAUDE.md` *Local worker*) |
 | Search the vault | `Grep` (literal) / `semantic-search` (natural language) |
 | List vault files | `Glob` |
 | Write / overwrite / append | `Write` / `Edit` — confirmed safe on a doc open in the Obsidian app (writes propagate, no conflict prompt) |

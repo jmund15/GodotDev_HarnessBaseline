@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""Fetch a YouTube video's captions into a timestamped local transcript for ingestion.
+"""Fetch a YouTube video's spoken and written text into a local cache: timed captions, and with
+`--meta` the description and top-level comments.
 
 Two `uvx` runs, no MCP and no API key: `youtube-transcript-api` for the timed captions and
 `yt-dlp` for the identity header. The transcript lands in a gitignored cache, one file per video
 id, as an identity header plus one `[mm:ss] text` line per caption segment; the stamps are the
-quote anchors a digest cites. A cached file is reused unless `--refresh` asks for a new fetch.
+quote anchors a reader cites. A cached file is reused unless `--refresh` asks for a new fetch.
 
-Missing metadata is not fatal: the header says `unknown` and the slug falls back to the id.
+`--meta` adds one `yt-dlp` run into `<id>_meta/`: `v.description`, and `comments.md` with up to
+`--max-comments` top-level comments, most liked first, one `- [N likes] text` line each.
+
+Missing metadata is not fatal: the header says `unknown` and the slug falls back to the id. A
+failed `--meta` fetch is not fatal either: the summary carries `meta_error` and no extras paths.
 
 Usage:
-    python3 .claude/tools/yt_transcript.py <youtube-url-or-id> [--out DIR] [--refresh]
+    python3 .claude/tools/yt_transcript.py <youtube-url-or-id> [--out DIR] [--refresh] [--meta [--max-comments N]]
 
-stdout: one JSON object {id, url, title, channel, published, duration, slug, path, lines, cached}.
+stdout: one JSON object {id, url, title, channel, published, duration, slug, path, lines, cached};
+with `--meta` also {description, comments, comment_count} or {meta_error}.
 Exit 0 written or reused; 2 the argument is not a YouTube video; 3 the video has no retrievable
 transcript (the library's reason on stderr; nothing is written); 4 `uvx` is not on PATH.
 """
@@ -107,6 +113,38 @@ def render(vid, meta, segments, fetched):
     return "\n".join(head + lines) + "\n"
 
 
+def fetch_extras(vid, out, max_comments, refresh, run):
+    """{description, comments, comment_count} from `<out>/<id>_meta/`, fetching unless cached; else {meta_error}."""
+    meta_dir = os.path.join(out, "%s_meta" % vid)
+    stem = os.path.join(meta_dir, "v")
+    comments_path = os.path.join(meta_dir, "comments.md")
+    if refresh or not os.path.exists(comments_path):
+        os.makedirs(meta_dir, exist_ok=True)
+        for old in (stem + ".info.json", stem + ".description", comments_path):
+            if os.path.exists(old):
+                os.remove(old)
+        got = run(["uvx", "--from", "yt-dlp", "yt-dlp", "--skip-download", "--write-description",
+                   "--write-comments", "--extractor-args",
+                   "youtube:max_comments=%d,all,0,0;comment_sort=top" % max_comments, "-o", stem,
+                   "https://youtu.be/%s" % vid], capture_output=True, text=True, encoding="utf-8")
+        try:
+            with open(stem + ".info.json", encoding="utf-8") as fh:
+                info = json.load(fh)
+        except (OSError, ValueError):
+            reason = ((got.stderr or "").strip().splitlines() or ["no info.json written"])[-1]
+            return {"meta_error": "yt-dlp exit %s: %s" % (got.returncode, reason)}
+        top = [c for c in info.get("comments") or [] if c.get("parent", "root") == "root"]
+        top.sort(key=lambda c: c.get("like_count") or 0, reverse=True)
+        with open(comments_path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.writelines("- [%d likes] %s\n" % (c.get("like_count") or 0, " ".join(str(c.get("text", "")).split()))
+                          for c in top)
+    with open(comments_path, encoding="utf-8") as fh:
+        count = sum(1 for line in fh if line.startswith("- ["))
+    desc = stem + ".description"
+    return {"description": desc if os.path.exists(desc) else None, "comments": comments_path,
+            "comment_count": count}
+
+
 def read_header(path):
     meta = {}
     with open(path, encoding="utf-8") as fh:
@@ -125,6 +163,8 @@ def main(argv=None, run=subprocess.run):
     ap.add_argument("video", help="a YouTube URL or an 11-character video id")
     ap.add_argument("--out", default=DEFAULT_OUT, help="directory for <id>.md (default: .claude/cache/youtube)")
     ap.add_argument("--refresh", action="store_true", help="fetch again even when a cached file exists")
+    ap.add_argument("--meta", action="store_true", help="also fetch the description and top-level comments")
+    ap.add_argument("--max-comments", type=int, default=200, help="comments to fetch with --meta (default 200)")
     args = ap.parse_args(argv)
 
     vid = video_id(args.video)
@@ -157,11 +197,17 @@ def main(argv=None, run=subprocess.run):
         cached = False
 
     title = meta.get("title", "unknown")
-    print(json.dumps({"id": vid, "url": "https://youtu.be/%s" % vid, "title": title,
-                      "channel": meta.get("channel", "unknown"), "published": meta.get("published", "unknown"),
-                      "duration": meta.get("duration", "unknown"),
-                      "slug": slug(title) if title != "unknown" else vid.lower(),
-                      "path": path, "lines": count, "cached": cached}))
+    summary = {"id": vid, "url": "https://youtu.be/%s" % vid, "title": title,
+               "channel": meta.get("channel", "unknown"), "published": meta.get("published", "unknown"),
+               "duration": meta.get("duration", "unknown"),
+               "slug": slug(title) if title != "unknown" else vid.lower(),
+               "path": path, "lines": count, "cached": cached}
+    if args.meta:
+        try:
+            summary.update(fetch_extras(vid, args.out, args.max_comments, args.refresh, run))
+        except FileNotFoundError:
+            summary["meta_error"] = "uvx is not on PATH"
+    print(json.dumps(summary))
     return 0
 
 

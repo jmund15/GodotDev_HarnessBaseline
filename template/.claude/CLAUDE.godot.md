@@ -4,7 +4,7 @@
 
 ## Godot Build & Test
 - **C# commits:** the gate cadence is `change_control` §Gate cadence: a drive closes with `verify.ps1 -Scope <its domains>`, and the full `/regression_gate` runs in the main check after the land. Pure documentation is exempt from the C# gate.
-- A Godot/C# test run is a long job: start it with `run_in_background` (`CLAUDE.core.md` §Shell Discipline).
+- A Godot/C# test run is a long job: start it with `run_in_background` (`CLAUDE.interactive.md` §Waits and wakes; a delegate: `guards/common.godot.md`).
 - Run the game and inspect debug output after substantial scene/resource wiring and before accepting a delegate diff that could clip scene methods or resource references. Every engine invocation, headless import included, may write; resaves can drop failed resources and array references, so inspect the diffs.
 
 ## Godot Docs and C# Navigation

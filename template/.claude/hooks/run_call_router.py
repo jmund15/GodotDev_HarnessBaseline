@@ -133,7 +133,7 @@ def _background_advice(payload):
     if foreground_wait_guard.never_woken(payload):
         return ('[run] Started in the background. Wait per .claude/guards/common.md: '
                 '`until <done-test>; do sleep 30; done` in calls of at most 270000 ms.')
-    return '[run] Its exit wakes you. See CLAUDE.core.md §Shell Discipline.'
+    return '[run] Its exit wakes you. See `CLAUDE.interactive.md` §Waits and wakes.'
 
 
 def route(payload):

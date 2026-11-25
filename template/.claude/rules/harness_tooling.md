@@ -17,9 +17,14 @@ paths:
 
 # Harness Tooling (fires when authoring a hook or a harness script)
 
-Follow the Writing bullet of `CLAUDE.core.md` §9. Code tips in `instruction_quality`: §3 the
-facts-versus-judgment sort for any output an agent acts on, §13 the channel a hook's output reaches, §14 a
-RED-first proof against a planted violation, §16 fail posture and docstring parity.
+Harness code is built like any other code, held to the principles in `instruction_quality`
+(`reference/principles.md`): H5 (a tool computes only what facts settle), H8 (friction only where the agent
+broke a rule it held), H9 (what is deterministic is the tool's), H13 (a test asserts a decision) and H14
+(shared code names no project and carries no owner identity). Plan check and diff review weigh a removal
+under H2 and H4. A string an agent reads (a deny, injected hook context, tool output an agent acts on) is
+agent-facing text: `instruction_quality` §3 (the facts-versus-judgment sort and a deny's next step) and §6
+govern it, and diff review checks it. Code tips in `instruction_quality`: §13 the channel a hook's output
+reaches, §14 a RED-first proof against a planted violation, §16 fail posture and docstring parity.
 
 A Python outline is `python3 .claude/tools/python_outline.py <path>`, never a `grep '^def'` chain.
 
@@ -248,9 +253,9 @@ entry. A contract approves one command in canonical shape (a tracked project too
 with allowlisted flags and in-project paths; anything else falls through to the classifier. Hooks and narrow `permissions.allow` rules decide before the classifier; a `.claude/` write reaches it, and only a user-settings `autoMode.allow` entry changes its verdict. An action that grants
 persistence, spend, detachment or writes becomes a contract only after the owner names that class.
 
-## Paid work stops on an observed fact of waste, never on a cost estimate
+## A tool that owns an outward action prints its full invocation
 
-Facts such as a finished result about to be re-paid, an orphaned, stalled or duplicate job, a balance below its floor, a spent allowance or a provider's usage-limit rejection stop a run. A cap derived from a spend estimate never does: it measures a run's size, not waste, so it stops the largest legitimate run first. Whatever stops a run leaves it resumable: its record keeps the session id.
+A land, a sync, a main check, a launch or a close prints the exact call it made, so an agent reading the result can rerun or report it without reconstructing the call.
 
 ## A launcher script is not edited in place while detached runs execute it
 

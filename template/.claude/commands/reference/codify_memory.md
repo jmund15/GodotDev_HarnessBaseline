@@ -18,7 +18,7 @@ Read at `/codify` §Step 6 when §Step 4 routes an item to auto-memory (`.claude
 - Genuinely new concept → create `<slug>.md` (frontmatter: `name`, `description`, `metadata.type` of user|feedback|project|reference), and cross-link related topic files with `[[other-file-slug]]` wikilinks in the body.
 - **`How to apply:` points at the owner.** When a harness file owns the procedure, the line names that file and section and never restates the procedure: a restated copy drifts from its owner. `/memory_audit` lens 7 checks the pairing.
 
-Admission, tier and placement are `CLAUDE.core.md` §2's and [`/codify`](../codify.md) §Step 4–§Step 5's. **A note an SSOT already states lands nothing.** When `CLAUDE*.md`, a `rules/` file, a skill or command, a hook deny or the system prompt carries the decision in full, write no note. A clause that owner lacks (the non-obvious why, an unreplicated how) folds into the owner, or stays as one cold line when no owner fits; incident narrative alone is commit evidence. The same test deletes an existing note.
+Admission, tier and placement are `CLAUDE.core.md` *Memory*'s, `instruction_quality` §5's and [`/codify`](../codify.md) §Step 4–§Step 5's. **A note an SSOT already states lands nothing.** When `CLAUDE*.md`, a `rules/` file, a skill or command, a hook deny or the system prompt carries the decision in full, write no note. A clause that owner lacks (the non-obvious why, an unreplicated how) folds into the owner, or stays as one cold line when no owner fits; incident narrative alone is commit evidence. The same test deletes an existing note.
 
 Never store a large code block in auto-memory: link to its source.
 
@@ -33,7 +33,7 @@ An entry with no concrete detection signal waits for the next pass, when the pat
 
 ## Brevity budget
 
-The `MEMORY.md` index auto-loads into every session; its 200-line/25KB cap is `CLAUDE.core.md` §2's. Cold `archive/` files are search-only, so length matters far less there. Three litmus tests sit inside the cap:
+The `MEMORY.md` index auto-loads into every session; its 200-line/25KB cap is `CLAUDE.core.md` *Memory*'s. Cold `archive/` files are search-only, so length matters far less there. Three litmus tests sit inside the cap:
 
 - An index line carries one rule; a second comma-label means a second line.
 - A line whose prefix already names the topic takes the rule into that topic file, not a new link. The index hits its byte cap through link count, so a store of individually-compliant entries can still blow it.

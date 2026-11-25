@@ -20,7 +20,6 @@ ALLOWED: dict[str, str] = {
     "hand_pricing_advisory": "unwired by M1 (pre_bash_dispatch UNWIRED); its deletion waits on an origin check",
     "merge_build_check": "splits the configured build command into argv to run it; it judges no tool call",
     "model_ladder_gate": "splits a Bash call at operators to find a dispatch launch (the sidecar dispatch gate)",
-    "model_name_guard": "splits a model-name list in written content at spaces, `|` and commas; not shell text",
     "rail_probe_guard": "splits a Bash call at operators to find a rail probe; a v1 process guard, not a loss check",
     "running_script_edit_guard": "splits process-table rows and their command lines; v2 migrated it (0c57747)",
     "task_brief_facts": "splits a brief's fact line at `;`; not shell text",

@@ -1666,6 +1666,20 @@ def test_abandon_releases_the_worktree_and_resume_refuses_the_journal() -> None:
             raise AssertionError("resume took an abandoned journal")
 
 
+def test_an_abandoned_journal_never_blocks_a_fresh_publication() -> None:
+    # `publish --abandon` ends a journal for good; a fresh publish of the same inputs must start its own
+    # journal, not be sent back to `--resume` the abandoned one (which resume refuses).
+    rel = ".claude/tools/fixture.py"
+    with _fixture() as path:
+        remote, baseline_commit, root = _seed_commit_fixture(path, rel, b"value = 'old'\n", b"value = 'fixture'\n")
+        publish = _load_publish()
+        env = _install_fake_gh(path)
+        dry = _dry_run_journal(publish, root, rel, env)
+        publish.abandon(root, dry["id"])
+        again = _dry_run_journal(publish, root, rel, env)
+        assert again["id"] != dry["id"], again["id"]
+
+
 def test_resume_redoes_steps_after_deleted_worktree() -> None:
     rel = ".claude/tools/fixture.py"
     with _fixture() as path:
@@ -2335,6 +2349,42 @@ def test_worktree_source_takes_a_new_row_layer_its_own_layer_entries_record() ->
         assert entries == {fresh: "godot"}, entries
 
 
+def test_worktree_source_takes_a_new_row_layer_its_manifest_records() -> None:
+    # Most baseline files take their layer from gen_manifest.py's pattern lists, never an entry in
+    # `tools/layer_entries.json`; the worktree's generated `baseline.manifest.json` at the source commit
+    # holds every file's layer, so a pattern-classified new file is not refused as unlayered.
+    with _fixture() as path:
+        root, source, records, lock, cache, baseline_sha, fresh = _worktree_layer_fixture(path, None)
+        _write(root / "baseline.manifest.json", json.dumps(
+            {"version": 1, "files": [{"path": fresh, "layer": "coding", "sync": "auto"}]}).encode("utf-8"))
+        source = {**source, "commit": _commit(root, "worktree manifest")}
+        worktree = path / "publish-worktree"
+        publish = _load_publish()
+        with _patched_env({"GEN_MANIFEST_LOG": str(path / "calls.json")}):
+            publish._materialize(root, source, records, lock, cache, baseline_sha, worktree, "publish/x")
+        entries = json.loads((worktree / "tools" / "layer_entries.json").read_text(encoding="utf-8"))["entries"]
+        assert entries == {fresh: "coding"}, entries
+
+
+def test_worktree_source_layers_outrank_the_consumer_lock() -> None:
+    # A worktree source is the baseline's own tree, so its manifest decides each row's layer; the
+    # publishing consumer's lock row (a composed file's local layer, or a layer the source has since
+    # moved) never re-layers the baseline.
+    with _fixture() as path:
+        root, source, records, lock, cache, baseline_sha, fresh = _layer_fixture(path, "godot", "coding")
+        existing = ".claude/tools/fixture.py"
+        _write(root / "baseline.manifest.json", json.dumps({"version": 1, "files": [
+            {"path": existing, "layer": "coding", "sync": "auto"},
+            {"path": fresh, "layer": "pure", "sync": "auto"}]}).encode("utf-8"))
+        source = {**source, "kind": "worktree", "commit": _commit(root, "worktree manifest")}
+        worktree = path / "publish-worktree"
+        publish = _load_publish()
+        with _patched_env({"GEN_MANIFEST_LOG": str(path / "calls.json")}):
+            publish._materialize(root, source, records, lock, cache, baseline_sha, worktree, "publish/x")
+        entries = json.loads((worktree / "tools" / "layer_entries.json").read_text(encoding="utf-8"))["entries"]
+        assert entries == {fresh: "pure"}, entries
+
+
 def test_publication_commit_carries_a_message_past_the_command_line_limit() -> None:
     # A publication's body lists every row with its `Why:` line; a large one passed with `-m` overran
     # the OS command-line limit (WinError 206 on Windows, one argument's 128 KiB cap on Linux).
@@ -2914,6 +2964,7 @@ def main(part: int = 1) -> int:
         test_a_finished_publish_removes_its_worktree_and_a_dry_run_keeps_it,
         test_sweep_removes_terminal_and_journalless_worktrees_and_keeps_a_live_one,
         test_abandon_releases_the_worktree_and_resume_refuses_the_journal,
+        test_an_abandoned_journal_never_blocks_a_fresh_publication,
         test_the_push_runs_no_local_linux_preview_the_prs_ci_is_the_linux_check,
         test_publish_renames_project_identifiers_without_touching_the_local_file,
         test_journal_and_lock_writes_wait_out_a_reader_holding_the_target,
@@ -2931,6 +2982,8 @@ def main(part: int = 1) -> int:
         test_worktree_source_refuses_a_new_row_without_a_layer_before_creating_the_worktree,
         test_worktree_source_records_a_layered_new_row,
         test_worktree_source_takes_a_new_row_layer_its_own_layer_entries_record,
+        test_worktree_source_takes_a_new_row_layer_its_manifest_records,
+        test_worktree_source_layers_outrank_the_consumer_lock,
         test_publication_commit_carries_a_message_past_the_command_line_limit,
         test_local_merge_refuses_remote_url,
         test_no_ci_refuses_when_workflow_exists,

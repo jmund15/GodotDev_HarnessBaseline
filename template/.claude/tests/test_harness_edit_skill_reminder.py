@@ -132,9 +132,16 @@ def main():
     got, reason = edit(HARNESS, env)
     cases.append(("a harness edit before the skill is in context is denied, naming its one load route and the re-check",
                   got == DENY and "skills/instruction_quality/SKILL.md" in reason
-                  and 'Skill(skill="instruction_quality")' in reason))
+                  and 'Skill(skill="instruction_quality")' in reason
+                  and reason.count("reference/principles.md") == 1))
     got, reason = edit(HOOKPY, env)
-    cases.append(("a hook edit's deny embeds reference/hooks.md in full and names no other class file",
+    cases.append(("a hook .py edit with the skill absent is allowed (harness code is not agent-facing text)",
+                  got == ALLOW))
+    got, reason = edit("C:/repo/.claude/settings.json", env)
+    cases.append(("settings.json with the skill absent is allowed (OF6 O1)",
+                  got == ALLOW))
+    got, reason = edit("C:/repo/.claude/hooks/README.md", env)
+    cases.append(("a hooks/*.md edit's deny embeds reference/hooks.md in full and names no other class file",
                   got == DENY and HOOKS_REF_LINE in reason
                   and all(f not in reason for f in (
                       "skills_and_commands.md", "orchestration.md", "claims_and_wording.md"))))
@@ -281,7 +288,7 @@ def main():
                   got == ALLOW))
 
     mark_skill_loaded(tmp, WT_LOADED)
-    got, reason = edit(WT + "/.claude/hooks/foo.py", env, session=WT_LOADED)
+    got, reason = edit(WT + "/.claude/hooks/README.md", env, session=WT_LOADED)
     cases.append(("that checkout's own .claude/ surface is still gated",
                   got == NUDGE))
 
@@ -291,6 +298,10 @@ def main():
 
     # An owned note falls back to its home line, never a clipped section, when the section cannot reach the agent.
     import harness_edit_skill_reminder as hook  # noqa: E402
+    cases.append(("advance_notice names reference/principles.md",
+                  "reference/principles.md" in hook.advance_notice(HARNESS)))
+    cases.append(("build_reminder names reference/principles.md",
+                  "reference/principles.md" in hook.build_reminder(HARNESS)))
     root = tempfile.mkdtemp(prefix="hesrowner_", dir=tmp)
     os.makedirs(os.path.join(root, "commands"))
     with open(os.path.join(root, "commands", "own.md"), "w", encoding="utf-8", newline="\n") as fh:

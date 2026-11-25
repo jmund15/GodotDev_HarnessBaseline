@@ -22,7 +22,7 @@ Doc topology (Active / Ledger / Future Scope buckets, opaque `Worklog-Archive.md
 
 **The mirror is a discovery index, not a spec.** When planning or scoping a logged item, read its full `Context` / `Where` / `Source` block in `Worklog.md` — the title-only mirror (`worklog-titles.md`) can mislead about scope entirely (a title naming one concept whose Context is about a different subsystem). Plan from the source block, not the mirror line.
 
-**Overlap discovery is a dispatch, not a skim.** The backlog is not in session context; to learn whether an open item overlaps work about to start, run the relevance check that `CLAUDE.core.md` §The Worklog names; `.claude/workflows/worklog_relevance.prompt.md` defines it. Consume its applied `verification` through `commands/agents/orchestrator_action_protocol.md` Step 1.5 before routing an overlap.
+**Overlap discovery is a dispatch, not a skim.** The backlog is not in session context; to learn whether an open item overlaps work about to start, run the relevance check that `CLAUDE.interactive.md` §Corrections and surfaced work names; `.claude/workflows/worklog_relevance.prompt.md` defines it. Consume its applied `verification` through `commands/agents/orchestrator_action_protocol.md` Step 1.5 before routing an overlap.
 
 ## Classification (required on every item)
 
@@ -103,7 +103,7 @@ If an item genuinely doesn't fit, use `Other` — never invent a new domain with
 
 ## Full Trigger Catalog (auto-detect signals)
 
-These signals extend `CLAUDE.core.md` §The Worklog; treat each as a candidate, run the Do-now gate first, and propose `/worklog add` only when a defer reason holds.
+These signals extend `CLAUDE.interactive.md` §Corrections and surfaced work; treat each as a candidate, run the Do-now gate first, and propose `/worklog add` only when a defer reason holds.
 
 ### Do-now gate (runs before any logging)
 
@@ -146,7 +146,7 @@ These signal "ready when X happens". Item stays in Ledger with `[after: X]` suff
 
 ### Future-scope triggers (→ `## Future Scope` section, `When: future`)
 
-**Stronger threshold.** Only fire on these phrases — they signal distant-horizon intent with no defined trigger:
+**Stronger threshold.** Fire only on distant-horizon intent with no defined trigger, as in these phrases:
 
 - **My-side:** "eventually we should...", "long-term we'd want...", "someday this should...", "down the road...", "if/when we ever...", "no urgency on this...", "passive watch — no trigger yet...", "worth revisiting in N months..."
 - **Your-side:** "eventually", "someday", "long-term", "long-haul", "down the road", "if/when we ever", "in the distant future", "way out there", "wishlist"
@@ -160,35 +160,7 @@ If unsure whether something qualifies as Future Scope → **ask, don't auto-rout
 
 **High-confidence threshold.** These trigger items Claude fundamentally cannot tackle — production art, feel-driven tuning, open-ended brainstorms, cross-doc design audits. The propose-line is `Route to User-Tasks: <title> — <domain>?` (note the explicit "User-Tasks" so user knows the item will leave Worklog awareness entirely). User overrides with `y, active not user-tasks` to keep it Claude-tackable.
 
-#### Production art / animation / shader / VFX
-- **My-side:** "needs visuals for X", "needs the X sprite", "needs the rise animation", "art pass on X", "shader work for X", "this scene needs proper visuals"
-- **Your-side:** "I'll handle the visuals for X", "art is on me", "I'll make the sprite"
-- **Litmus:** does the work require an art tool / animation timeline / shader graph? Yes → User-Tasks.
-
-#### Feel-driven tuning / playtest passes
-- **My-side:** "needs a playtest pass to dial in X", "calibrate by playing", "tune by feel", "values feel off but only you can tell"
-- **Your-side:** "I'll playtest this and tune the numbers", "let me feel this out", "I need to play it"
-- **Litmus:** is the missing input "what feels good" rather than "what is correct"? Yes → User-Tasks. (Note: "deterministic stat balance" with measurable criteria stays a `design` worklog item, not User-Tasks.)
-
-#### Open-ended brainstorms without a Claude-anchor
-- **My-side:** "brainstorm combinations between X and Y" *when* the output is a creative direction, not technical alternatives; "design the flavor of X", "decide what the lore around X should be"
-- **Your-side:** "I want to brainstorm X", "let me think on X combinations"
-- **Litmus:** does "brainstorming this with Claude" produce a design Claude can implement? Yes → `design` worklog item, scope 4, paired Plan doc. No (output is *your* preference, not technical) → User-Tasks.
-- **Anti-trigger:** "brainstorm a unified event schema" is technical — Claude can run the project's architecture brainstorm (routed through its idea brainstorm first if greenfield) and produce a design doc. → `design` worklog, NOT User-Tasks.
-
-#### Cross-doc design audits driven by user vision
-- **My-side:** "your game vision changed — your design docs need an audit pass", "the lore and ability docs disagree on X — needs your reconciliation"
-- **Your-side:** "audit my design docs for X", "reconcile my docs against the new vision"
-- **Litmus:** is the missing input *your* intent / *your* taste? Yes → User-Tasks. (Claude can audit *for inconsistencies* — that stays `docs` worklog. But audit *for vision-alignment* requires the user's vision as input.)
-
-#### User-executed Parts (roadmap-resident, distinct from User-Tasks)
-
-Parts on a brainstorm `roadmap.md` whose execution is inherently user-domain (spatial design, manual content authoring, taste-driven tuning) but carry roadmap deps and dependents. Examples: "design 10–15 static prototype floor scenes." Route to roadmap State=`user-owned` (the roadmap pipeline's state vocabulary), NOT `User-Tasks.md` — the Part must stay on the roadmap to preserve the dependency graph.
-
-#### Anti-triggers (do NOT route to User-Tasks on these)
-- Technical tasks that *touch* art (e.g., "wire the visuals component to the new ability") — Claude can do this; the art existing is a prerequisite, not the work.
-- Bug fixes that *block* feel-tuning (e.g., "fix the shake parameter not respecting amplitude") — the fix is Claude's; only the post-fix tuning is yours.
-- Brainstorms with defined technical output ("brainstorm the provider-interface migration order") — Claude tackles those through the project's architecture brainstorm.
+Read [`reference/user_tasks_triggers.md`](reference/user_tasks_triggers.md) to classify a candidate. It holds the signals and litmus for production art, feel-driven tuning, open-ended brainstorms and cross-doc vision audits, the route for user-executed Parts, and the anti-triggers.
 
 **When in doubt → regular Active.** False-routing to User-Tasks is a permanent leak (the doc isn't surveyed by sweep/triage/plan); false-routing to Active just costs one mirror line.
 

@@ -146,7 +146,7 @@ its old value; start a new one after a change.
    unset; `none` installs no local arm, and leaves ai-worker uninstalled unless `models.yaml` has a
    funded cloud alias for its roles.
 4. **An armless ai-worker is a valid end state** → DEGRADED, never BLOCKED-ON-USER. Bulk reads use
-   the CLAUDE.md §Tool Routing offline fallback.
+   `CLAUDE.core.md` §9 *Search/fetch and every shell read*.
 5. **Single-GPU concurrency env — report, don't set.** Each session runs its own ai-worker, and
    nothing queues across them. Report a value other than `1` for `OLLAMA_NUM_PARALLEL` (requests per
    loaded model) or `OLLAMA_MAX_LOADED_MODELS` (default 3× the GPU count).

@@ -19,7 +19,7 @@ command CLIs; each of those files documents itself in its docstring.
    `workflow_script_lf_guard.py`, `dispatch_mechanism_guard.py`, `workflow_provider_guard.py`,
    `readonly_marker_arm.py`; it joins every member's deny into one reason) — each dispatcher
    imports its sub-hooks in-process. Other entry points:
-   `prompt_memory_loader.py`, `critical_analysis_reminder.py`, `prompt_git_state_delta.py`
+   `prompt_memory_loader.py`, `prompt_git_state_delta.py`
    (a project may register these directly, or list them in a prompt dispatcher's `CHAIN`, which
    runs its members concurrently in one process),
    `runaway_scan_reaper.py` (kills orphaned search processes: `check()` runs in-process from the three

@@ -2,7 +2,8 @@
 """
 Hook: PreToolUse (Bash|PowerShell), run by pre_bash_dispatch — owns how a session waits on a job.
 
-Rule homes: CLAUDE.core.md §Shell Discipline (the orchestrator's wait; no repeated status check) and
+Rule homes: `CLAUDE.interactive.md` §Waits and wakes (the orchestrator's wait),
+`CLAUDE.core.md` §Core Principles *What a turn costs* (no repeated status check), and
 guards/common.md (a never-woken delegate's wait recipe). Counts are per caller (the
 orchestrator, or one subagent by payload `agent_id`; `session_id` is shared with the parent). The wait
 a caller should use depends on whether a backgrounded job wakes it:
@@ -60,7 +61,7 @@ a caller should use depends on whether a backgrounded job wakes it:
    the call's exit code is then the job's own, the failure `tail` reported as success. Every other shape is denied
    with the command to run instead. A short read (`grep`, `git status/log/diff`, `cat`,
    `sed`, `find`...) ends with the call and passes, as do `tail -f`, a `tee` stage and a `tail` of a file.
-6. Hand-back (denies, never-woken callers). A subagent or print-mode child's foreground loop waits are clamped to SUBAGENT_WAIT_MS each and their clamped time is totalled since its last non-wait call; past HANDBACK_MS (30 minutes) the next wait is denied with the hand-back text (return the log path, pid, expected end and the steps left), the same hand-back `bench wait` gives (`wait_log.py` HANDBACK_S). Rule home: CLAUDE.core.md §Shell Discipline.
+6. Hand-back (denies, never-woken callers). A subagent or print-mode child's foreground loop waits are clamped to SUBAGENT_WAIT_MS each and their clamped time is totalled since its last non-wait call; past HANDBACK_MS (30 minutes) the next wait is denied with the hand-back text (return the log path, pid, expected end and the steps left), the same hand-back `bench wait` gives (`wait_log.py` HANDBACK_S). Rule home: guards/common.md.
 
 7. Monitor past its cap. A Monitor call whose `timeout_ms` exceeds MONITOR_CAP_MS is denied: the tool ends every watch
    at that ceiling with no wake, so the request cannot do what it says. The deny names the waiter for a detached
@@ -72,7 +73,7 @@ a caller should use depends on whether a backgrounded job wakes it:
    every correct arm waits to take over. Rule home: reference/sidecar_dispatch.md step 6.
 9. Trailing background `&` (advises, never denies). A Bash call without `run_in_background` whose command ends a line
    in a single `&` (not `&&`, `2>&1`, `>&`) draws one advisory naming `run_in_background` (`DETACHED_ADVICE`).
-   Rule home: CLAUDE.core.md §Shell Discipline. Class: process guard, advisory first.
+   Rule home: `CLAUDE.interactive.md` §Waits and wakes. Class: process guard, advisory first.
 10. Covered session-watcher arm (denies, interactive orchestrator only). A `run_in_background` call whose segment
    runs `watch_records.py --session` while the session's hook state (key `sidecar_watchers`) lists a live
    session-wide watcher is denied (`COVERED_REASON`): the redundant arm would only wait to take over. A gone watcher
@@ -167,13 +168,13 @@ MONITOR_REASON = (
     "with Bash run_in_background and a 7200000 ms timeout: the `WAIT-CMD` its launch printed, "
     "or `%s`; each checks in at %d minutes, "
     "inside the one-hour prompt cache. Keep a Monitor for intermediate events "
-    "(CLAUDE.core.md §Shell Discipline), with timeout_ms at most %d."
+    "(`CLAUDE.interactive.md` §Waits and wakes), with timeout_ms at most %d."
 )
 POLL_REASON_MAIN = (
     "BLOCKED repeated status poll: this is the %d%s consecutive run of the same status check, and each "
     "run is a full turn that re-reads your whole context. Run the job with run_in_background: true and "
     "act on its one wake, or use a Monitor filtered to the lines that change your next action "
-    "(CLAUDE.core.md §Shell Discipline)."
+    "(`CLAUDE.core.md` §Core Principles *What a turn costs*)."
 )
 POLL_REASON_AGENT = (
     "BLOCKED repeated status poll: this is the %%d%%s consecutive run of the same status check, and each "
@@ -182,7 +183,7 @@ POLL_REASON_AGENT = (
 )
 DETACHED_LOOP_REASON = (
     "[wait] DENIED: this wait loop ends in a single `&`, so it runs detached: no foreground call and no task "
-    "notification watches it, and the turn can end while it waits (CLAUDE.core.md §Shell Discipline). Re-issue it "
+    "notification watches it, and the turn can end while it waits (`CLAUDE.interactive.md` §Waits and wakes). Re-issue it "
     "without the `&`%s"
 )
 _DETACHED_LOOP_WOKEN = ", with run_in_background: true: its end wakes you."
@@ -210,11 +211,11 @@ COVERED_REASON = (
 BATCH_ADVICE = (
     "[wait] This foreground proof batch is expected to take %s, past this call's %d s timeout. Run it with "
     "run_in_background: true and act on its one wake; a batch that ends inside its call stays in the foreground, "
-    "which costs no wake (CLAUDE.core.md §Shell Discipline)."
+    "which costs no wake (`CLAUDE.interactive.md` §Waits and wakes)."
 )
 RAISED_NOTE = (
     "[wait] Clamped this call's %d ms timeout to the default: a job that ends in time returns this turn with no "
-    "wake, and one that runs over moves to the background by itself (CLAUDE.core.md §Shell Discipline)."
+    "wake, and one that runs over moves to the background by itself (`CLAUDE.interactive.md` §Waits and wakes)."
 )
 EXIT_LINE = 'echo "EXIT $?"'
 CLAMP_NOTE = (
@@ -226,7 +227,7 @@ CLAMP_WAIT = (
     "ends with an `EXIT <code>` line there, so wait in `until grep -q '^EXIT ' <that file>; do sleep 30; done` calls."
 )
 DETACHED_ADVICE = (
-    "[wait] A trailing `&` detaches this job outside the run_in_background wake (CLAUDE.core.md §Shell Discipline). "
+    "[wait] A trailing `&` detaches this job outside the run_in_background wake (`CLAUDE.interactive.md` §Waits and wakes). "
     "Set run_in_background: true on this call instead and act on its one wake."
 )
 _PYTHON = re.compile(r"^(?:python[\d.]*|py)$")
@@ -705,7 +706,7 @@ def _live_writer(payload, command):
 
 WAKE_NOTE = (
     "[wait] Background task %s (%s) is still running and writes %s, so its completion already wakes you and "
-    "this wait is a second wake. Act on that wake (CLAUDE.core.md §Shell Discipline \"act on the one completion wake\")."
+    "this wait is a second wake. Act on that wake (`CLAUDE.interactive.md` §Waits and wakes \"act on its one completion wake\")."
 )
 BENCH_NOTE = (
     "[wait] Rewrote the hand-written loop on bench log %s to the bench's own `wait` subcommand (the rewritten call), "
@@ -805,7 +806,7 @@ def _check_in(payload, command, tool_input, note, bounded=False):
 
 BLIND_REASON = (
     "[wait] DENIED: this backgrounded %s pipes its output into `%s`, which holds every line until the job exits and "
-    "drops the rest (CLAUDE.core.md §Shell Discipline), and this shape is one the guard cannot edit for you. "
+    "drops the rest (`CLAUDE.interactive.md` §Waits and wakes), and this shape is one the guard cannot edit for you. "
     "Re-issue it without `| %s`; after the wake, Read the task's output file for the part you need."
 )
 BLIND_NOTE = (
@@ -1023,7 +1024,7 @@ def main():
                 note = '[wait] Clamped the foreground wait timeout from %d to %d ms (guards/common.md).' % (budget, SUBAGENT_WAIT_MS)
         elif budget > SUBAGENT_WAIT_MS:
             writer = _live_writer(payload, command)
-            notes = ['[wait] Backgrounded the long foreground wait; act on its one wake (CLAUDE.core.md §Shell Discipline).']
+            notes = ['[wait] Backgrounded the long foreground wait; act on its one wake (`CLAUDE.interactive.md` §Waits and wakes).']
             if writer:
                 notes.insert(0, WAKE_NOTE % writer)
             bench = _bench_wait(command)

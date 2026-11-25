@@ -73,8 +73,7 @@ attribution-bearing sounds indistinguishable from CC0 ones at download time.
 Dead ends, not to be re-investigated: ShapeNet, Poly Pizza, BlenderKit, BBC Sound Effects, AMASS.
 
 
-Endpoint and metadata checks go through `.claude/scripts/fetch_source.sh` (CLAUDE.md §4 fetch
-order): a login wall or bot challenge returns a **200 body** that reads as content to anything that
+Endpoint and metadata checks go through `.claude/scripts/fetch_source.sh` (`CLAUDE.core.md` §9 *Search/fetch and every shell read*): a login wall or bot challenge returns a **200 body** that reads as content to anything that
 does not inspect it, and refusing those is the one guarantee this table depends on.
 
 ## Reading the license — match the instrument URL, not the prose

@@ -33,7 +33,7 @@ row's pid and session) is stored per session via
 `subagent_compaction_rail.py` calls `_hook_state.clear_compaction_keys` to re-arm the census: the
 compacted context lost the earlier delivery.
 
-Rule home: CLAUDE.core.md §Shell Discipline (**Watching jobs**); a sidecar silent for `SIDECAR_STALL_SEC` appends a `stalled` journal row from
+Rule home: `CLAUDE.interactive.md` §Waits and wakes (**Watching jobs**); a sidecar silent for `SIDECAR_STALL_SEC` appends a `stalled` journal row from
 lib/sidecar_common.sh `sc_run_watched` and keeps running, so a stall is a `STALLED` wake from the
 session watcher, never a kill.
 

@@ -84,7 +84,7 @@ except ImportError:
 #
 # Memory-recall note (updated 2026-05-31, Memory-MCP retirement): the Memory MCP
 # server is gone — memory recall is now `semantic-search` over .claude/auto-memory
-# (per CLAUDE.md §2/§9). So the memory tests (A2, A3, G1, G2) expect `semantic-search`,
+# (per CLAUDE.core.md *Memory* and §9). So the memory tests (A2, A3, G1, G2) expect `semantic-search`,
 # the SAME canonical label as code-discovery tests (D/E/I/J). The scorer is
 # transcript-only and grades by tool NAME, so it cannot distinguish "searched
 # memory" from "searched code" — the real signal is the `restrictToDir=.claude/auto-memory`

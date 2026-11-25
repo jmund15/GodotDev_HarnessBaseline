@@ -16,7 +16,7 @@ Run when grounding is admitted (`_brainstorm_shared/execution_depth.md` §Admiss
 ## Phase 1: Scope & Seed
 
 ### 1a. State the topic
-Name the capability/files and intended change; a breadth map with no design question is a `/delegate` scout (`CLAUDE.core.md` §9); a design question too vague to set coverage gets a clarifying question. Record actual constraints and exclusions. Facts inherited from another session are claims to check, not ground truth.
+Name the capability/files and intended change; a breadth map with no design question is a `/delegate` scout (`CLAUDE.interactive.md` §When work becomes a job); a design question too vague to set coverage gets a clarifying question. Record actual constraints and exclusions. Facts inherited from another session are claims to check, not ground truth.
 
 ### 1b. Select resources
 Load `orchestration`; choose each lens's row and paying plan by the ladder's selection line. Every lens is `fanout`-tier work (a read-heavy survey); resolve the tier per `orchestration` §5, which owns when to declare it. Use one suitable arm per independently needed lens: `/explore` runs one seat per mandate and never merges (`orchestration` §2 *Sizing the width*), because `explore_result.py` stamps each claim with its seat key. Provider availability does not create more jobs. Explicit comparisons are separate, frozen and budgeted.

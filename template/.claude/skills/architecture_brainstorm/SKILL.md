@@ -110,30 +110,7 @@ Each step names the reference file it reads; read it in full at that step, and a
 
 ### Step 1: Existing-doc check + spawn-placement decision
 
-**[Shared]** See [`_brainstorm_shared/common.md` §1](../_brainstorm_shared/common.md) — the three required asks (existing design doc / memory gotchas / does a family already own it), dispatched as [`/explore`](../../commands/explore.md) lenses. Step 3 below still owns the FULL abstraction inventory; §1's `exp-prior-art` is what surfaces an obvious owner early enough to reshape the topic.
-
-**Architecture-specific consideration:** the digest should ALSO surface any `ideation-complete` idea-bank doc (`ideas.md` in a topic folder) covering the same topic. If one exists, load it — it's the curated candidate pool that Steps 2 and 4 will draw from. If not (and the topic isn't a mature domain), redirect to `/idea_brainstorm` first.
-
-**Cluster-scoped consumption (when upstream `ideas.md` has Per-Cluster Routing):** Scope this invocation to the named cluster only.
-
-- Read the cluster section: survivors (Step 4 sourcing), Findings (priors), Open Questions (Socratic seeds), Routing (timing).
-- Other clusters → SEPARATE invocations producing separate `arch-<cluster>.md` files in the SAME parent topic folder.
-- Cross-cluster hybrids → SEPARATE arch session per hybrid (`arch-<hybrid-slug>.md`, same parent folder).
-- Cross-cluster Open Questions are NOT this session's responsibility.
-- Frontmatter: `derived_from: ../ideas.md`, `cluster: <cluster-slug>`.
-
-**Default (no Per-Cluster Routing):** Whole-doc consumption (mature-domain, user-direct framing, or legacy doc). Output: a fresh topic folder with `arch.md` inside per `common.md §5`.
-
-**Spawn-placement decision (apply if this session is spawning a child OR is itself a child of a parent brainstorm):**
-
-See [`common.md §5.1`](../_brainstorm_shared/common.md) — three placements (same-folder sibling / child subfolder / sibling folder) discriminated by a three-criterion test. Criteria map to outcomes per the §5.1 table (NOT "all three must hold"). Resolve at this step so Step 6's save path is unambiguous.
-
-**Quick decision:**
-- Just an extension paragraph → **same-folder** (no new roadmap).
-- Own brainstorm session + independent maturity, parent-confined audience → **child subfolder** (submap; criterion 3 is *expected* to fail — parent-confined IS the definition).
-- All three pass (multi-parent audience) → **sibling folder**.
-
-**Most common gotcha:** failing a legitimate submap candidate against criterion 3 ("only serves this parent"). Criterion 3 is the submap-vs-sibling distinguisher, NOT a submap gate. See §5.1 *Common gotchas* table.
+Read [`existing_doc_and_placement.md`](reference/existing_doc_and_placement.md) at this step: it holds the step's procedure.
 
 ### Step 2: Ask clarifying questions (Socratic, one at a time)
 
@@ -187,28 +164,7 @@ If you can only think of one approach, that's a signal — either the design is 
 
 ### Step 5: Present the design for review, approve taste-bearing or changed commitments
 
-**Rule:** Do not present the full design as one wall of text. Present each load-bearing commitment in a form the owner can review, keeping related fields together (e.g., Data Model → Lifecycle → BB Keys → Tests → Integration Points). Obtain approval for taste-bearing or changed commitments before design-lock, and propagate any reopened decision to dependent commitments.
-
-**Red-team hook (`--red_team` only):** [`red_team.md`](reference/red_team.md) §Step 5 hook.
-
-**Verbatim port discipline:** when sections are agreed in chat, port them **1:1** into the design doc. Do NOT silently digest the chat-form into a tighter file-form. See `feedback_no_unilateral_condensation.md` — *"chat content IS the spec when the user says 'save to file'."*
-
-If the user pushes back on a commitment, treat it as a decision to make, not a clarification to dismiss. Update it, obtain approval when it changes a taste-bearing commitment, and propagate it to dependent commitments.
-
-**Expect 1-2 substantive upstream reopenings per session.** Late-section content (Sections 4-5 — architecture detail, Parts decomposition) routinely surfaces assumptions baked into early-section (1-3) identity locks. Reopening Sections 1-3 from Section 5 feedback is correct behavior, not failure — the alternative is shipping a self-contradicting design. Update the upstream section, get re-approval, propagate downstream implications. If a session reopens 3+ times on the same Section 1 lock, the locked decision was wrong — escalate to a Socratic re-pass rather than continuing to patch.
-
-**Checkpoint to scratch ledger.** **[Shared]** See [`_brainstorm_shared/common.md §8`](../_brainstorm_shared/common.md) for path, append cadence, format rules, consumption, and lifecycle. Per-section bullet schema for this skill:
-
-   ```markdown
-   ## Section <name>
-   - Approach chosen: <A/B/C — one-line rationale>
-   - Key commitments: <2–4 bullets — concrete decisions made (file paths, class names, lifecycle choices)>
-   - Open follow-ups: <Parts demoted to *-pending or *-rework state, if any>
-   ```
-
-   Append after each design section is approved. Worker reads it as `reference_files` in the final `write_doc` call (Step 6).
-
-**Final mandatory phase: author Parts for the roadmap.** After all design sections are approved, read [`reference/part_authoring.md`](reference/part_authoring.md) and run its sub-procedures in their stated order. Every architectural claim in the design body maps to exactly one of: {a Part on the roadmap, an explicit worklog deferral, abandoned with stated reason}. Get approval on the full Parts list before Step 8.
+Read [`design_review.md`](reference/design_review.md) at this step: it holds the step's procedure.
 
 ### Step 6: Save the design doc
 

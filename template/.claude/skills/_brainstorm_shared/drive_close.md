@@ -32,7 +32,7 @@
 4. Close out dispatch ratings (`/orchestration_metrics` §Incremental rating, *Phase close*) when consumed dispatches
    remain unrated.
 5. Commit per the project's commit rules (`change_control` §Commits). The drive does not push; a later push follows
-   `CLAUDE.core.md` §Git, and one the Owner approval row admits waits for the owner.
+   `CLAUDE.interactive.md` §Landing what you finish, and one the Owner approval row admits waits for the owner.
 6. The adapter's write-back, which its header's owner stop or close clause names: the roadmap flip for a Part, with
    the journey sweep of an MVP the flip makes `🧪 Ready for playtest` (`roadmap_triggers_mvp.md` §6.11 *Status*),
    `/worklog complete` with the commit ref per item in the session it lands, or none.

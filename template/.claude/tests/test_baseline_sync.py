@@ -524,6 +524,20 @@ def test_cli_root_stops_at_the_git_top_level() -> None:
 
 
 
+def test_cli_root_is_never_a_dot_claude_directory() -> None:
+    # Run from inside `.claude/`, a stray `.claude/.claude/` made `.claude/` itself the project root.
+    with _fixture() as path:
+        root = path / "consumer"
+        _init_repo(root)
+        (root / ".claude" / ".claude" / "scratch").mkdir(parents=True)
+        probe = "import sys; sys.path.insert(0, sys.argv[1]); import baseline_sync; print(baseline_sync.project_root())"
+        result = subprocess.run([sys.executable, "-c", probe, str(ENGINE.parent)], cwd=root / ".claude",
+                                env=_env(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        output = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+        assert result.returncode == 0, output
+        assert Path(output.strip()).resolve() == root.resolve(), output
+
+
 PROJECT_PLACEHOLDER = "{{" + "PROJECT_NAME" + "}}"  # assembled so the residual-placeholder check never flags this file
 
 
@@ -5099,6 +5113,7 @@ def main(part: int = 1) -> int:
         test_author_start_cli_creates_reuses_and_refuses,
         test_publish_cli_dispatches_to_baseline_publish,
         test_cli_root_stops_at_the_git_top_level,
+        test_cli_root_is_never_a_dot_claude_directory,
         test_v2_classify_success_refusal_and_repeat,
         test_v2_classify_layer_sets_overrides_from_and_refuses_unknown,
         test_v2_classify_tracked_refuses_planted_home_path,

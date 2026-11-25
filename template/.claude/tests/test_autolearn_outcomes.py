@@ -250,6 +250,25 @@ def main():
         _, out, _ = run(r, "history", "--target", "CLAUDE.core.md")
         cases.append(("history matches the prefixed spelling of a bare target", "core again" in out))
 
+        s = os.path.join(extra, "sweep.jsonl")
+        ex = lambda *a: run(s, *a)
+        cases.append(("unswept on an absent ledger prints nothing", ex("unswept")[:2] == (0, "")))
+        for d, o in (("2026-11-01", "recorded"), ("2026-11-05", "recorded"), ("2026-11-06", "applied")):
+            ex("record", "--date", d, "--session", "s", "--target", "t%s.md" % d, "--signal", "g",
+               "--recommended", "r", "--outcome", o, "--reason", "x")
+        _, out, _ = ex("unswept")
+        cases.append(("unswept prints count and oldest date of unread recorded rows only",
+                      out.strip() == "autolearn: 2 correction row(s) no sweep has read, oldest 2026-11-01"))
+        cases.append(("swept writes the newest recorded date beside the ledger",
+                      ex("swept")[0] == 0 and open(s + ".swept", encoding="utf-8").read().strip() == "2026-11-05"))
+        cases.append(("unswept prints nothing once every row is swept", ex("unswept")[:2] == (0, "")))
+        ex("record", "--date", "2026-11-09", "--session", "s", "--target", "n.md", "--signal", "g",
+           "--recommended", "r", "--outcome", "recorded", "--reason", "x")
+        _, out, _ = ex("unswept")
+        cases.append(("a later recorded row is unswept again", "1 correction row(s)" in out and "oldest 2026-11-09" in out))
+        cases.append(("swept --through bounds the marker to what the sweep read",
+                      ex("swept", "--through", "2026-11-07")[0] == 0 and ex("unswept")[1].startswith("autolearn: 1")))
+
         g = os.path.join(tmp, "cap.jsonl")
         for i in range(7):
             run(g, "record", "--date", "2026-10-0%d" % (i + 1), *ROW[2:], "--cap", "5")

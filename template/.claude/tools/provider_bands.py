@@ -1097,8 +1097,7 @@ def _image_text(row):
     return "%s (%s probe)" % (state, route["row"]) if state == "verified" and route.get("row") else state
 
 
-COMPUTED_EFFORT_READINGS = (("author", "tight"), ("author", "judged"), ("scout", "tight"), ("lens", "checklist"),
-                            ("lens", "review"))
+COMPUTED_EFFORT_READINGS = (("author", "tight"), ("scout", "tight"), ("lens", "checklist"))
 
 
 def _computed_efforts(alias):

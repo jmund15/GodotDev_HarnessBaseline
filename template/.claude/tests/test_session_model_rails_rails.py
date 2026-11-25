@@ -216,15 +216,18 @@ def _overflow_with_one_part():
 
 
 def _later_parts_are_empty_and_write_no_tier():
-    """A fitting session prints in part 1 only, and only part 1 caches the session tier."""
+    """Only part 1 caches the session tier, and a text that fits part 1 leaves later parts empty."""
+    import _hook_parts
     with tempfile.TemporaryDirectory() as state:
         planted = {"HARNESS_HOOK_STATE_DIR": state}
         extra = {"session_id": "parts0001"}
-        later = [_run_args(["--part", str(n)], None, planted=planted, extra=extra) for n in range(2, smr.PARTS + 1)]
+        for n in range(2, smr.PARTS + 1):
+            _run_args(["--part", str(n)], None, planted=planted, extra=extra)
         wrote_early = os.path.exists(os.path.join(state, "parts000.json"))
         first = _run_args(["--part", "1"], None, planted=planted, extra=extra)
         wrote = os.path.exists(os.path.join(state, "parts000.json"))
-    return all(p == "" for p in later) and not wrote_early and wrote and "[session] Session tier" in first
+    short_p2 = _hook_parts.part_of("short line\n", 2, smr.PARTS)
+    return short_p2 == "" and not wrote_early and wrote and "[session] Session tier" in first
 
 
 def _pack_cases():
@@ -397,8 +400,8 @@ CASES = [
      lambda: "model_ladder_evidence.md" in _session_output("claude-opus-5-5", extra={"source": "compact"})
              and os.path.isabs(next(w.strip("`") for w in _session_output(
                  "claude-opus-5-5", extra={"source": "compact"}).split() if "model_ladder_evidence.md" in w))),
-    ("a fresh start does not name a ladder read",
-     lambda: "model_ladder_evidence.md" not in _session_output("claude-opus-5-5", extra={"source": "startup"})),
+    ("a fresh start does not name a compaction ladder read",
+     lambda: not any(l.startswith("[compaction]") for l in _startup_lines())),
     ("a delegate's compact start does not name a ladder read",
      lambda: "model_ladder_evidence.md" not in _delegate_output_compact("claude-opus-5-5")),
     # The client writes the re-attached skills after SessionStart runs, so the compact start states the gate's rule
@@ -414,7 +417,7 @@ CASES = [
     ("a compaction notice names instruction_quality in the re-attach rule and names no skill cleared",
      lambda: any("instruction_quality" in line for line in _compact_lines())
              and not any("Compaction cleared" in line for line in _compact_lines())
-             and not any("instruction_quality" in line for line in _startup_lines())),
+             and not any(l.startswith("[compaction]") for l in _startup_lines())),
     # The ladder's selection line alone states how a dispatch's row and plan are chosen; the effort line points there.
     ("the effort line points at the selection line for the route and never restates its condition",
      lambda: all("selection line" in line and "session's plan" not in line and "launcher" not in line
@@ -431,7 +434,73 @@ CASES = [
     ("a fitting session prints in part 1 only, and only part 1 caches the session tier",
      _later_parts_are_empty_and_write_no_tier),
     ("the helper packs whole lines by bytes", _pack_cases),
+    # ---- E3: interactive layer in top-level sessions only -------------------------------------------------
+    ("a top-level payload's joined parts contain # Working with the owner",
+     lambda: "# Working with the owner" in "".join(_parts(None))),
+    ("with CLAUDE_CODE_SIDECAR=1 the joined parts do not contain # Working with the owner",
+     lambda: "# Working with the owner" not in "".join(_parts("author"))),
+    ("a payload carrying agent_id does not contain # Working with the owner",
+     lambda: "# Working with the owner" not in "".join(
+         _run_args(args, None, extra={"agent_id": "sub-1"}) for args in _registered_commands())),
+    ("with CLAUDE.interactive.md absent the hook still exits 0",
+     lambda: (lambda saved: (
+         setattr(smr, "INTERACTIVE", os.path.join(REPO, ".claude", "NO_SUCH_INTERACTIVE.md")),
+         len(smr.build_text({"model": "claude-opus-5-5"}, write_tier=False)) > 0,
+         setattr(smr, "INTERACTIVE", saved),
+     )[1])(smr.INTERACTIVE)),
+    ("a top-level start prints the sweep fact line when recorded rows are unswept",
+     lambda: _sweep_text({"model": "claude-opus-5-5"}, swept=None).count("correction row(s) no sweep has read, oldest 2026-11-01") == 1),
+    ("an all-swept ledger and an absent ledger print no sweep line",
+     lambda: "no sweep has read" not in _sweep_text({"model": "claude-opus-5-5"}, swept="2026-11-05")
+     and "no sweep has read" not in _sweep_text({"model": "claude-opus-5-5"}, ledger=False)),
+    ("a payload with agent_id gets no sweep line",
+     lambda: "no sweep has read" not in _sweep_text({"model": "claude-opus-5-5", "agent_id": "a"}, swept=None)),
+    ("with CLAUDE_CODE_SIDECAR set no sweep line prints",
+     lambda: "no sweep has read" not in _sweep_text({"model": "claude-opus-5-5"}, swept=None, sidecar="1")),
+    ("codex with gpt-6.2-sol after compaction fits in two parts with no overflow and keeps the file's last line",
+     lambda: (lambda joined, last_line: (
+         "[rails overflow]" not in joined and bool(last_line) and last_line in joined
+     ))(
+         "".join(_run_args(
+             args, None, model="gpt-6.2-sol",
+             planted={"CLAUDE_CODE_TRANSPORT": "codex"},
+             extra={"source": "compact", "session_id": "codex-compact-1"},
+         ) for args in _registered_commands()),
+         (open(os.path.join(REPO, ".claude", "CLAUDE.interactive.md"), encoding="utf-8").read().strip().splitlines()[-1]
+          if os.path.isfile(os.path.join(REPO, ".claude", "CLAUDE.interactive.md")) else ""),
+     )),
+    ("ROLE -> MODEL names rule 1's bar and not the job's priority",
+     lambda: "rule 1's bar" in CODEX and "job's priority" not in CODEX),
 ]
+
+
+def _sweep_text(payload, swept=None, ledger=True, sidecar=None):
+    """build_text with the ledger pointed at a fixture: two recorded rows (2026-11-01, 2026-11-05), optional marker."""
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "autolearn_outcomes.jsonl")
+    if ledger:
+        with open(path, "w", encoding="utf-8") as fh:
+            for day in ("2026-11-01", "2026-11-05"):
+                fh.write(json.dumps({"date": day, "session": "s", "target": "t", "signal": "g", "recommended": "r",
+                                     "outcome": "recorded", "reason": "x"}) + "\n")
+    if swept:
+        with open(path + ".swept", "w", encoding="utf-8") as fh:
+            fh.write(swept + "\n")
+    saved = smr._outcomes.DEFAULT_FILE
+    prev_sidecar = os.environ.get("CLAUDE_CODE_SIDECAR")
+    smr._outcomes.DEFAULT_FILE = path
+    if sidecar is None:
+        os.environ.pop("CLAUDE_CODE_SIDECAR", None)
+    else:
+        os.environ["CLAUDE_CODE_SIDECAR"] = sidecar
+    try:
+        return smr.build_text(payload, write_tier=False)
+    finally:
+        smr._outcomes.DEFAULT_FILE = saved
+        if prev_sidecar is None:
+            os.environ.pop("CLAUDE_CODE_SIDECAR", None)
+        else:
+            os.environ["CLAUDE_CODE_SIDECAR"] = prev_sidecar
 
 
 def _compact_lines():
