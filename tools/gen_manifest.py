@@ -40,7 +40,6 @@ SEED_PATTERNS = [
     ".claude/skills/project_subsystems/adaptation.json",
     ".claude/skills/project_subsystems/adaptation.coding.json",
     ".claude/skills/project_subsystems/adaptation.godot.json",
-    ".claude/commands/checklists/known_failure_modes.md",
     ".claude/reference/known_failure_modes_entries.md",
     ".claude/prototype_registry.md",
     ".claude/reference/project_stack.md",

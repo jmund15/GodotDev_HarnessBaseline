@@ -1019,7 +1019,7 @@
     {
       "path": ".claude/commands/checklists/known_failure_modes.md",
       "layer": "pure",
-      "sync": "seed"
+      "sync": "auto"
     },
     {
       "path": ".claude/commands/checklists/parity.md",

@@ -36,12 +36,12 @@ MOVES = {
     "Self-Modification": "the classifier reads the user's messages and CLAUDE.md, not your findings. If this "
                          "edit does what the user asked, the user's answer to a question naming the exact change "
                          "clears it. Otherwise drop consent or provenance text and keep ask-the-user steps.",
-    "Security Test Removal": "running or editing a proof is ordinary test work; ask the user one question that "
+    "Security Test Removal": "running or editing a proof is ordinary test work; ask the user one AskUserQuestion that "
                              "names the command and says it is a proof run.",
     "Irreversible Local Destruction": "name the exact path, or copy it aside first; never a glob or variable.",
-    "Auto-Mode Bypass": "do not retry it another way: drop it, or ask the user one question naming the action.",
+    "Auto-Mode Bypass": "do not retry it another way: drop it, or ask the user one AskUserQuestion naming the action.",
 }
-GENERIC = ("if the owner asked for this action, ask them one question naming it and re-issue it on their yes; "
+GENERIC = ("if the owner asked for this action, ask them one AskUserQuestion naming it and re-issue it on their yes; "
            "otherwise drop it (CLAUDE.core.md §Shell Discipline, Processes and permissions).")
 OVERNIGHT = ("/overnight is armed, so no one can answer: follow commands/overnight.md §Step 2 "
              "to decide or park with the actual blocker and default; the classifier denial still "
