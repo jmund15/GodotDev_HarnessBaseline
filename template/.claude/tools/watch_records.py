@@ -34,7 +34,7 @@ within `DISCOVERED_RUN_SECONDS`: the launch hook's entry can land after the arm)
 a run's end wakes nobody. A session watcher exits `NONE` once nothing it watches is live: it has no work left, and an idle one still ends at its Bash timeout, waking a cold cache. It also ends when nothing can receive its wake: the shell that carries its output (its parent) or the session host that owns that shell is gone (`HOST GONE: <reason>`, read from the client's session registry; `WATCH_RECORDS_HOST_SEC` sets the check interval), which also ends a duplicate still waiting to take over. A running
 seat that compacts (a `compact_boundary` row in its transcript: a Workflow agent's `agent-<id>.jsonl`, a Claude sidecar's
 `<record>.stream`, a live roster's running bench cell's `<cell>.progress.jsonl`) adds `<label> compacted <n> (<m> min compacting)` to its check-in line, and one that compacted again after
-re-reading a file it had read before the previous compaction, with no file written since that compaction (the cycle: a seat
+re-reading a file it had read before the previous compaction, with no new file read and no file written since that compaction (the cycle: a seat
 that loses what it gathered, refills its window and compacts again), wakes the session with
 `COMPACTING [workflow <runId>] <label> compacted <n>, re-read <file>`, once per new compaction count. A seat that wrote
 its findings before compacting lost nothing, so its compaction stays a check-in clause. A running Workflow seat whose `agent-<id>.jsonl` has not grown for `WORKFLOW_STALL_SECONDS`
@@ -1167,8 +1167,10 @@ def agent_compaction(path):
     """One agent transcript (a Workflow `agent-<id>.jsonl` or a sidecar `<record>.stream`):
     {'count': compact_boundary rows, 'minutes': their summed duration or None when no row carries one,
     'reread': basename of a file read after the previous boundary that an earlier segment also read, taken from
-    the segment the LAST boundary closed, else None, 'saved': whether that same segment wrote a file}. A non-None
-    'reread' is the compaction cycle: the seat lost its subject and fetched it again. A cycle with 'saved' kept what
+    the segment the LAST boundary closed, when that segment read no file an earlier one had not, else None, 'saved':
+    whether that same segment wrote a file}. A non-None 'reread' is the compaction cycle: the seat lost its subject
+    and fetched it again without reaching new ground. A segment that also read a new file is advancing: a read-only
+    seat re-reads its input after each compaction and still progresses. A cycle with 'saved' kept what
     it found in a file before compacting, so the compaction lost nothing. Unparseable lines (a partly written last
     line) are skipped; a missing file is zero compactions. Cached per (size, mtime): a poll re-reads only a
     transcript that grew."""
@@ -1199,7 +1201,7 @@ def agent_compaction(path):
                     if isinstance(ms, (int, float)):
                         duration = (duration or 0) + ms
                     out["count"] += 1
-                    out["reread"] = again
+                    out["reread"] = again if segment <= earlier else None
                     out["saved"] = wrote
                     earlier |= segment
                     segment, again, wrote = set(), None, False

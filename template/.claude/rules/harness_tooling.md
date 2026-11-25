@@ -21,7 +21,7 @@ Harness code is built like any other code, held to the principles in `instructio
 (`reference/principles.md`): H5 (a tool computes only what facts settle), H8 (friction only where the agent
 broke a rule it held), H9 (what is deterministic is the tool's), H13 (a test asserts a decision) and H14
 (shared code names no project and carries no owner identity). Plan check and diff review weigh a removal
-under H2 and H4. A string an agent reads (a deny, injected hook context, tool output an agent acts on) is
+under H2. A string an agent reads (a deny, injected hook context, tool output an agent acts on) is
 agent-facing text: `instruction_quality` §3 (the facts-versus-judgment sort and a deny's next step) and §6
 govern it, and diff review checks it. Code tips in `instruction_quality`: §13 the channel a hook's output
 reaches, §14 a RED-first proof against a planted violation, §16 fail posture and docstring parity.
