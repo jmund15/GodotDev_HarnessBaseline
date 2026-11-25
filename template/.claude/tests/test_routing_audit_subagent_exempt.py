@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Re-runnable proof for prompt-aware Read verdicts in hooks/routing_audit.py."""
+"""Re-runnable proof for prompt-aware Read verdicts in hooks/routing_audit.py.
+
+The verdicts come from hooks/routing_classifier.py, which the coding layer ships. A pure-only install has no
+classifier, so the audit logs nothing and must not fail; there the proof checks that contract and skips the
+verdict cases, which run wherever the classifier is installed."""
 import importlib
 import json
 import os
@@ -130,7 +134,21 @@ def run_torn_parent_state():
     return ok, reason
 
 
+def classifier_installed():
+    tmp = tempfile.mkdtemp(prefix="routing_audit_probe_")
+    module = _fresh_routing_audit(os.path.join(tmp, "state"), os.path.join(tmp, "routing_audit.jsonl"))
+    return module.classify_call is not None
+
+
 def main():
+    if not classifier_installed():
+        print("SKIP the verdict cases: the coding layer ships routing_classifier.py and this install has none")
+        checks = [
+            run_read("without the classifier a bulk-copyable Read writes no row", BULK_COPYABLE, expected=None),
+            run_read("without the classifier a subagent Read writes no row", BULK_COPYABLE,
+                     agent_id="agent0001", expected=None),
+        ]
+        return _report(checks)
     checks = [
         run_read("path alone emits no routing-audit verdict", "", expected=None),
         run_read("focused Read emits no worker-routing verdict", FOCUSED, expected=None),
@@ -142,6 +160,10 @@ def main():
         run_other_rule_unchanged(),
         run_torn_parent_state(),
     ]
+    return _report(checks)
+
+
+def _report(checks):
     failures = [(index + 1, reason) for index, (ok, reason) in enumerate(checks) if not ok]
     print("\n%d/%d cases pass" % (len(checks) - len(failures), len(checks)))
     for index, reason in failures:

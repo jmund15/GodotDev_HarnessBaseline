@@ -1080,8 +1080,8 @@ def test_check_strict_counts_a_proof_above_its_tools_layer_as_no_proof() -> None
 
 
 def test_check_strict_names_a_shipped_row_whose_layer_differs_from_the_manifest() -> None:
-    """A pull never rewrites an existing row's layer, so an upstream relayer leaves the lock stale; the
-    layer-closure and unproven checks then read the stale layer."""
+    """A row relayered here differs from the manifest until a publish; the layer-closure and unproven checks
+    read the lock's layer, so check names the drift."""
     drifted, kept = ".claude/commands/drifted.md", ".claude/commands/kept.md"
     with _fixture() as path:
         root, baseline, _remote_path, _commit_sha = _v2_fixture(
@@ -4960,6 +4960,31 @@ def test_migration_drops_a_settled_push_verdict_and_keeps_an_open_one() -> None:
         assert lock["files"][open_rel]["judged"]["verdict"] == "push", lock["files"][open_rel]
 
 
+def test_move_pin_follows_an_upstream_relayer_and_keeps_a_local_one() -> None:
+    # A row whose lock layer is the old pin's manifest layer takes the new pin's layer, as a pull takes
+    # upstream's bytes; a row relayered here (its layer differs from the old pin's) keeps its layer.
+    followed, kept = ".claude/skills/s/reference/followed.md", ".claude/skills/s/reference/kept.md"
+    engine = _load_engine()
+    with _fixture() as path:
+        baseline = path / "baseline"
+        _init_repo(baseline)
+        pins = []
+        for layer in ("coding", "pure"):
+            for rel in (followed, kept):
+                _write(baseline / "template" / rel, f"{layer}\n".encode())
+            manifest = {"version": 2, "files": [{"path": rel, "layer": layer, "sync": "auto"} for rel in (followed, kept)]}
+            _write(baseline / "baseline.manifest.json", (json.dumps(manifest, indent=2) + "\n").encode())
+            _commit(baseline, "layer " + layer)
+            pins.append(_git(baseline, "rev-parse", "HEAD").decode().strip())
+        lock = {"schema": 2, "synced_commit": pins[0], "files": {
+            followed: {"status": "tracked", "layer": "coding"},
+            kept: {"status": "tracked", "layer": "godot"},
+        }}
+        engine.move_pin(lock, baseline, pins[1], set())
+        assert lock["files"][followed]["layer"] == "pure", lock["files"][followed]
+        assert lock["files"][kept]["layer"] == "godot", lock["files"][kept]
+
+
 def test_foreign_publish_is_not_overwritten_and_move_pin_records_base() -> None:
     """Spec proof: a baseline with two pins (our lock's pin, then a foreign publish) and a
     planted foreign change. Publishing here must not overwrite it; the row it changed must
@@ -5274,6 +5299,7 @@ def main(part: int = 1) -> int:
         test_legacy_lock_migrates_on_load_and_never_guesses_a_base,
         test_base_unknown_is_listed_and_rejudged_by_keep_local_or_pull,
         test_migration_drops_a_settled_push_verdict_and_keeps_an_open_one,
+        test_move_pin_follows_an_upstream_relayer_and_keeps_a_local_one,
         test_foreign_publish_is_not_overwritten_and_move_pin_records_base,
         test_pull_runs_for_on_what_it_wrote_and_fails_on_red,
         test_pull_records_each_proof_result_and_the_commit_guard_holds_a_red_one,
