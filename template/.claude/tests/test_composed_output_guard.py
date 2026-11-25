@@ -173,6 +173,9 @@ with tempfile.TemporaryDirectory() as raw:
                   "block" in (guard.process(ed(os.path.join(composing, ".claude", *rel.split("/")), "a", "{}", tool)) or {}))
     check("settings.json in a checkout whose composer does not list it passes",
           not guard.process(ed(os.path.join(unlisting, ".claude", "settings.json"), "a")))
+    os.makedirs(os.path.join(composing, ".claude", ".claude", "scratch"), exist_ok=True)
+    check("a stray .claude/.claude/ does not stand in for the checkout",
+          "block" in (guard.process(ed(os.path.join(composing, ".claude", "settings.json"), "a")) or {}))
 
 print("\n%d failure(s)" % len(FAILURES) if FAILURES else "\nall ok")
 for f in FAILURES:

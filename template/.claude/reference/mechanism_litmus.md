@@ -7,7 +7,7 @@ keep a mechanism only when all four hold.
 - **L1. Real.** The failure it targets has happened (a red, an incident, a deny that saved work), or it is a floor: an
   irreversible loss of peer work, owner authority, data, or a destructive operation's target. A spec test's RED-first
   run is a red that happened.
-- **L2. Not removable.** Correcting or deleting the cause (`CLAUDE.core.md` §Core Principles, *One rule, one owner*)
+- **L2. Not removable.** Correcting or deleting the cause (`CLAUDE.core.md` §Core Principles, *Fit the work to its scope*)
   does not end the failure.
 - **L3. Would escape.** Nothing cheaper already catches it. A silent failure escapes (a stale cached pass, a guard
   that fails open, a skipped step); a loud one (a crash, a red, a visible error) is caught by use. Cost counts the

@@ -61,7 +61,7 @@ Every topic folder owns a `decisions.md` beside its design docs — the durable 
 
 ## §9. Interview mechanic — frontier rounds
 
-Present the unblocked judgment forks together. Carry unanswered or dependent forks forward only until their prerequisites settle. Number them; each is a packet (`CLAUDE.core.md` §Preferences), and each option states its consequence in one line.
+Present the unblocked judgment forks together. Carry unanswered or dependent forks forward only until their prerequisites settle. Number them; each is a packet (`CLAUDE.interactive.md` §Answering and asking the owner), and each option states its consequence in one line.
 
 **Delivery:** forks with enumerable options → `AskUserQuestion`, ≤4 per call, only the live options (two when two are live), recommended first. Each question defines its concept and what each option buys; an undefined term hides a premise the user may reject. An answer resting on a wrong premise gets a one-line correction and a re-ask of that fork. A fork without enumerable options goes in a numbered prose round.
 

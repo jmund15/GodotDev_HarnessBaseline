@@ -8,6 +8,8 @@ Usage:
                                  [--row ID] [--metric KEY] [--cap N] [--file PATH]
     autolearn_outcomes.py lookup --target T [--file PATH]
     autolearn_outcomes.py history --target T [--target T ...] [--file PATH]
+    autolearn_outcomes.py unswept [--file PATH]
+    autolearn_outcomes.py swept [--through YYYY-MM-DD] [--file PATH]
 
 `record` validates the row shape, appends it and keeps only the newest `--cap` rows (default 500).
 `recorded` counts a slip that landed nothing. A `recorded` row whose target shares a path with a `recorded` row from the
@@ -197,6 +199,68 @@ def cmd_history(args):
     return 0
 
 
+def read_swept(path):
+    """Return the newest YYYY-MM-DD date marked swept beside `path`, or ''."""
+    try:
+        with open(path + ".swept", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def unswept_summary(path=DEFAULT_FILE):
+    """Return the SessionStart fact line for unread `recorded` rows, or ''."""
+    rows, _ = read_rows(path)
+    if not rows:
+        return ""
+    marker = read_swept(path)
+    unread = [r for r in rows if r.get("outcome") == "recorded" and str(r.get("date") or "") > marker]
+    if not unread:
+        return ""
+    oldest = min(str(r.get("date")) for r in unread)
+    return "autolearn: %d correction row(s) no sweep has read, oldest %s" % (len(unread), oldest)
+
+
+def cmd_unswept(args):
+    line = unswept_summary(args.file)
+    if line:
+        print(line)
+    return 0
+
+
+def cmd_swept(args):
+    through = (args.through or "").strip()
+    if through:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", through):
+            print("autolearn_outcomes: --through must be YYYY-MM-DD, got %r" % through, file=sys.stderr)
+            return 1
+    else:
+        rows, _ = read_rows(args.file)
+        dates = [str(r.get("date")) for r in rows if r.get("outcome") == "recorded" and r.get("date")]
+        if not dates:
+            return 0
+        through = max(dates)
+    temp = None
+    marker_path = os.path.abspath(args.file) + ".swept"
+    directory = os.path.dirname(marker_path)
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with locked(args.file + ".lock", LOCK_TIMEOUT):
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
+                                             dir=directory, delete=False) as fh:
+                temp = fh.name
+                fh.write(through + "\n")
+            replace_path(temp, marker_path)
+            temp = None
+    except (TimeoutError, OSError) as exc:
+        print("autolearn_outcomes: could not write swept marker %s: %s" % (marker_path, exc), file=sys.stderr)
+        return 1
+    finally:
+        if temp is not None:
+            os.unlink(temp)
+    return 0
+
+
 def build_parser():
     ap = cli_usage.ShapeParser(prog="autolearn_outcomes.py", description=__doc__.split("\n")[0])
     ap.accepts, ap.example = RECORD_ACCEPTS, RECORD_EXAMPLE
@@ -225,6 +289,13 @@ def build_parser():
     hist.add_argument("--target", action="append", required=True)
     hist.add_argument("--file", default=DEFAULT_FILE)
     hist.set_defaults(fn=cmd_history)
+    unsw = sub.add_parser("unswept")
+    unsw.add_argument("--file", default=DEFAULT_FILE)
+    unsw.set_defaults(fn=cmd_unswept)
+    sw = sub.add_parser("swept")
+    sw.add_argument("--through", default="")
+    sw.add_argument("--file", default=DEFAULT_FILE)
+    sw.set_defaults(fn=cmd_swept)
     return ap
 
 

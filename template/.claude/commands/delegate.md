@@ -43,7 +43,7 @@ Namespace labels `<runKey>-<label>` and reject duplicates. State model, effort, 
 The parent performs this preparation. The engines consume the prepared jobs. Return one state:
 - `PROCEED`: scope, inputs, route, eligibility, pins and currency are established.
 - `HOLD`: a required fact or owner decision is missing.
-- `ABORT`: the route, authorization or availability forbids the job, or the task belongs to a command with its own coverage contract: design grounding, plan drafting or plan review. Lookup shape follows `CLAUDE.core.md` §9.
+- `ABORT`: the route, authorization or availability forbids the job, or the task belongs to a command with its own coverage contract: design grounding, plan drafting or plan review. A chain of reads follows `CLAUDE.interactive.md` §When work becomes a job.
 
 Do not silently change a pin, role, provider or currency to get past a failure.
 
@@ -63,7 +63,7 @@ One jobs file, `{jobs:[...],contextPath,spillDir}` or `{chains:[{name,jobs:[...]
 
 Run `python3 .claude/tools/dispatch_size.py <file>` on the jobs file, or on the Workflow args saved as JSON, before launching it. Native engines are under `.claude/workflows/`; the fan-out CLI, which hands the session-plan jobs to the printed Workflow call and launches the rest, is `python3 .claude/tools/sidecar_fanout.py <jobs.json> --out-dir <record-dir> --detach`. `kind` supplies the sidecar `-G`; never pass `route` as `-G` or derive one from the other. Split transports without changing job identity. Workflow/Agent do not cross endpoints; a bare Agent call cannot supply an exact effort pin.
 
-Keep full evidence in a run-specific `.claude/scratch/` artifact (`orchestration` §4) and recover before repaying (`orchestration` §8). Waiting on completion events follows `CLAUDE.core.md` §Shell Discipline. Select a profile that can produce the promised artifact.
+Keep full evidence in a run-specific `.claude/scratch/` artifact (`orchestration` §4) and recover before repaying (`orchestration` §8). Waiting on completion events follows `CLAUDE.interactive.md` §Waits and wakes. Select a profile that can produce the promised artifact.
 
 ## 4. Consume and finalize
 

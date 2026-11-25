@@ -97,10 +97,20 @@ Only propose changes that pass questions 1–4, and 5 when the entry asserts a m
 
 ## Review packet
 
-Proposals reach the owner as one packet (`CLAUDE.core.md` §Preferences), retirements included. Each row names its target file and section, the change (a memory entry's text; a skill's current and proposed text), the signal quote, its confidence and recommendation; recommended rows come first. It also carries `/codify`'s §Step 0 verdict with the target's quoted text and its §Step 2 model scope. It prices the trade: what each occurrence cost and how often it recurs, against the edit's cost in loaded bytes, new code, its proof and any state its guard would need recorded. Recommend a row only when that benefit is larger (`feedback_price_the_tradeoff_before_recommending_it`). The packet ends with the reconciled prompt, friction and `fix` counts. Ask once: apply the recommended rows, choose rows, or apply none. Under an armed `/overnight`, each row becomes a `Q` row parked `owner-domain` in its Close doc, and `/overnight_review` applies the answers.
+Proposals reach the owner as one packet (`CLAUDE.interactive.md` §Answering and asking the owner), retirements included. Each row names its target file and section, the change (a memory entry's text; a skill's current and proposed text), the signal quote, its confidence and recommendation; recommended rows come first. It also carries `/codify`'s §Step 0 verdict with the target's quoted text and its §Step 2 model scope. It prices the trade: what each occurrence cost and how often it recurs, against the edit's cost in loaded bytes, new code, its proof and any state its guard would need recorded. Recommend a row only when that benefit is larger (`feedback_price_the_tradeoff_before_recommending_it`). The packet ends with the reconciled prompt, friction and `fix` counts. Ask once: apply the recommended rows, choose rows, or apply none. Under an armed `/overnight`, each row becomes a `Q` row parked `owner-domain` in its Close doc, and `/overnight_review` applies the answers.
 
 ## Applying changes
 
 Run each approved row's named executor (§Step 0). A `/codify` row runs its §Steps 6–7, satisfying its [Step 0 self-check](codify.md#step-0--does-it-already-exist) before landing, which lands the change and proves it fires. Commit as `chore(autolearn): <brief description>` and report what changed.
 
 Then record each packet row with `python3 .claude/tools/autolearn_outcomes.py record --date <YYYY-MM-DD> --session <id> --row <R#> --target <target> --signal <signal> --recommended <apply|choose> --outcome applied|declined --reason <text>`, with the owner's stated reason or `none given`. The tool rejects a malformed row and caps the file.
+
+## Cross-session sweep
+
+When session start reports unread correction rows (`autolearn: N correction row(s) no sweep has read, oldest YYYY-MM-DD`), dispatch `/autolearn` across those unread `recorded` rows and their sessions as a background job through `/delegate` on a cheap `fanout` row (`python3 .claude/tools/model_registry.py for-role fanout`). Dispatching through `/delegate` records the job's cost where `/orchestration_metrics` reads and archives it. Return the findings as one review packet (`## Review packet`) for the owner to rule on, then mark the swept rows read at the end of the sweep:
+
+```bash
+python3 .claude/tools/autolearn_outcomes.py swept
+```
+
+Pass `--through <YYYY-MM-DD>` when the sweep stopped before the newest `recorded` row.

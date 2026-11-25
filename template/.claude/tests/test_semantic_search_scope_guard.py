@@ -230,8 +230,8 @@ def main():
     rc, err = run_dispatch({"tool_name": TOOL,
                             "tool_input": {"searchDir": ROOT, "restrictToDir": "../Tests"},
                             "cwd": ROOT})
-    cases.append(("real dispatcher channel: non-canonical restrictToDir cites memory rule + next step",
-                  rc == 2 and "CLAUDE.md §2 Memory" in err and "searchDir" in err))
+    cases.append(("real dispatcher channel: non-canonical restrictToDir cites searchDir next step",
+                  rc == 2 and "searchDir" in err))
     rc, err = run_dispatch({"tool_name": TOOL, "tool_input": {"searchDir": ROOT}, "cwd": ROOT})
     cases.append(("real pre_read_dispatch.py channel: project-root searchDir allowed",
                   rc == 0))

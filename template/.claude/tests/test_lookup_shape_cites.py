@@ -23,7 +23,7 @@ def text(rel):
 
 @case
 def cited_anchors_resolve():
-    assert re.search(r"^### 9\. ", text("CLAUDE.core.md"), re.M), "CLAUDE.core.md has no §9 heading"
+    assert re.search(r"^#{2,3} 9\. ", text("CLAUDE.core.md"), re.M), "CLAUDE.core.md has no §9 heading"
     assert re.search(r"^## Semantic Search MCP\b", text("CLAUDE.coding.md"), re.M), "CLAUDE.coding.md has no §Semantic Search MCP"
 
 

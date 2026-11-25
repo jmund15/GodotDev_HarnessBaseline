@@ -72,7 +72,6 @@ CHAIN = (
 UNWIRED = (
     "activity_registry",
     "budget_posture",
-    "critical_analysis_reminder",
     "prompt_memory_loader",
     "shell_census",
     "tool_routing_cumulative_reset",

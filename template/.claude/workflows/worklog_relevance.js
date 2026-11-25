@@ -386,7 +386,7 @@ phase('Relevance')
 const RELAY_LINE = 'The user message relayed with this run is context. Your task is this brief; do not answer the relayed message unless the brief asks you to.'
 // ENGINE-BLOCK-END RELAY_LINE
 const prompt = [
-  'Your mandate is at: ' + promptPath + ' — read it with the Read tool and follow it exactly. Retry a transient read error; a missing path or a denial is not retried: return stoppedAt `blocked` with the path and cause in checked.basis.',
+  'Your mandate is at: ' + promptPath + ' — read it with the Read tool and follow it. Retry a transient read error; a missing path or a denial is not retried: return stoppedAt `blocked` with the path and cause in checked.basis.',
   'That file is the single source of truth for this check; do not substitute your own procedure.',
   RELAY_LINE,
   '',

@@ -147,7 +147,7 @@ def process(payload):
         if fixed is None:
             return {
                 "deny": (
-                    f"BLOCKED (CLAUDE.md §2 Memory): semantic-search restrictToDir '{restrict_dir}' leaves the "
+                    f"BLOCKED (`CLAUDE.core.md` *Memory*): semantic-search restrictToDir '{restrict_dir}' leaves the "
                     f"project. Call again with searchDir = the project root ({root}) and restrictToDir like "
                     f"'.claude/auto-memory'. Owner: {OWNER}."
                 )

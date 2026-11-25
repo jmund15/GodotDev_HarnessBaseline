@@ -8,8 +8,8 @@ where `/rule_consistency` can see it. `memory_domains.md` is composed from `memo
 
 **Load this when** you need the seed for a domain you are entering and the hook has not fired — it
 fires only on a `.claude/plans/*.md` write. Routine recall does not need this file: search
-`.claude/auto-memory/` semantically with a paraphrase of what you are about to do (CLAUDE.md §2
-*Recall*), and the hot-tier index surfaces passively at SessionStart.
+`.claude/auto-memory/` semantically with a paraphrase of what you are about to do (`CLAUDE.core.md`
+*Memory*), and the hot-tier index surfaces passively at SessionStart.
 
 ## Seeds
 

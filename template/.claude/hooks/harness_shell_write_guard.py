@@ -2,7 +2,7 @@
 """
 Hook: PreToolUse on Bash|PowerShell — deny a shell command that writes a governed harness file.
 
-Rule home: `CLAUDE.core.md` §9 Writing (`.claude/` harness files use direct Edit/Write). The Write|Edit
+Rule home: `CLAUDE.core.md` §9 Writing (agent-facing harness text uses direct Edit/Write). The Write|Edit
 route carries the `instruction_quality` load gate and each file's edit notes
 (`harness_edit_skill_reminder.py`); a shell write skips both, so it is denied before it runs and the deny
 names the Edit/Write route.
@@ -57,7 +57,7 @@ def written_harness_paths(command, tool, cwd=""):
 
 def deny_reason(paths):
     shown = ", ".join("`%s`" % p for p in paths)
-    return ("Shell write to harness file %s DENIED: harness files are authored with the Edit or Write tool "
+    return ("Shell write to harness file %s DENIED: agent-facing harness text is authored with the Edit or Write tool "
             "(CLAUDE.core.md §9 Writing), where the instruction_quality gate and the file's edit notes run. "
             "Make this change with Edit or Write." % shown)
 

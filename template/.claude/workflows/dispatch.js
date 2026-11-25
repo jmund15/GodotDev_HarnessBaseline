@@ -409,7 +409,7 @@ const results = await parallel(jobs.map(j => () => {
     .join('')
   const prompt = ctx
     + 'Evidence: ' + EVIDENCE_RULES + '\n'
-    + 'Your full task brief is at: ' + j.promptPath + ' — read it with the Read tool and execute it exactly (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it). Your final message is the deliverable: return the result the brief asks for, self-contained, no meta-commentary.'
+    + 'Your full task brief is at: ' + j.promptPath + ' — read it with the Read tool and execute it (retry a transient read error; report a missing path or a denial as couldNotSatisfy, do not retry it). Your final message is the deliverable: return the result the brief asks for, self-contained, no meta-commentary.'
     + '\n' + RELAY_LINE
     + (j.kind === 'author' ? '\n' + AMEND_LINE(rootedPath(A, j.promptPath)) : '')
     + shellWriteGuard(j)

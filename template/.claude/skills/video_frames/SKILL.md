@@ -10,6 +10,7 @@ description: >-
 
 ## Procedure
 
+0. **Spoken or written content: text first.** For what a YouTube video says (a talk, a review, a how-to), run `python3 .claude/tools/yt_transcript.py <URL> --meta` and Read the printed `path` (timed captions), `description` and `comments` (most liked first), quoting `[mm:ss]` stamps. Use the result in the current work and stop there. Frames (steps 1–4) are for what is on screen; `/ingest_conversation` is only for a durable digest the owner asks for. Exit 3 (no captions) → step 5's `--whisper`.
 1. **Overview first.** Run it with no flags and Read the sheet. Cells carry timestamps; the `times:` line lists them row by row.
 2. **Pick the mode by what you need.**
    - Something changes on screen (a recording, an animation, a GIF, a bug that appears): the default scene mode picks the biggest changes.

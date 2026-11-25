@@ -21,8 +21,9 @@ DECOY_KEY="sk-ant-fake-decoy-0987654321"
 
 NATIVE="$(python3 - "$ROOT/.claude" <<'PY'
 import datetime, json, os, sys, tempfile
-sys.path.insert(0, os.path.join(sys.argv[1], "tools"))
+sys.path[:0] = [os.path.join(sys.argv[1], part) for part in ("tools", "tests")]
 import model_registry
+from _capacity_fixtures import write_capacity_cache
 tmp = tempfile.mkdtemp(prefix="anthropic_console_creds_")
 data = model_registry.load()
 home = os.path.join(tmp, "home")
@@ -43,6 +44,8 @@ with open(os.path.join(tmp, "external_models.json"), "w", encoding="utf-8", newl
     json.dump(data, fh)
 with open(os.path.join(tmp, "cycles.json"), "w", encoding="utf-8", newline="\n") as fh:
     json.dump({name: cycle["cycleEnd"] for name, cycle in cycles.items()}, fh)
+# Preflight reads the declared parent seat as well as the launch seat, so plant all probe rows.
+write_capacity_cache(os.path.join(tmp, "cache.json"), data)
 print(tmp.replace("\\", "/"))
 PY
 )"
@@ -66,22 +69,6 @@ export CLAUDE_BIN="$STUB_DIR/claude"
 export SC_MEMORY_CHECKED=1
 export STUB_ENV_OUT="$NATIVE/child.json"
 unset CLAUDE_CODE_TRANSPORT CLAUDE_CODE_SIDECAR ANTHROPIC_BASE_URL SC_PLAN CLAUDE_CONFIG_DIR SC_LAUNCHER_DIR
-
-python3 - "$PROVIDER_CAPACITY_CACHE" <<'PY'
-import json, sys, time
-now = time.time()
-def reading(plan):
-    win = {"name": "seven_day", "usedPercent": 20.0, "resetsAt": now + 3 * 86400, "windowDurationMins": 10080,
-           "pressure": 1.0, "band": "Surplus", "runoutRatio": None}
-    return {"schemaVersion": 1, "transport": plan, "costModel": "plan-quota", "sourceKind": "live",
-            "observedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), "status": "available",
-            "error": None, "liveFailure": None, "balance": None,
-            "quota": {"windows": [win], "dispatchBand": "Surplus", "routingBand": "Surplus",
-                      "routingWindow": "seven_day", "bindingWindow": "seven_day", "credits": None,
-                      "scopes": []}}
-json.dump({"anthropic": reading("anthropic"), "anthropic-console": reading("anthropic-console"),
-           "anthropic-console-secondary": reading("anthropic-console-secondary")}, open(sys.argv[1], "w"))
-PY
 
 # The CLI shim records its own argv and its WHOLE environment (names and values).
 cat > "$CLAUDE_BIN" <<'STUB'
@@ -212,7 +199,7 @@ rm -f "$RECORD" "$LEDGER" "$SHIM_LOG" "$STUB_ENV_OUT"
 launch "$CONSOLE" "$RECORD"
 rc=$?
 [ "$rc" = 0 ]
-check "a Console launch completes through the planted shim" $? "rc=$rc $(tail -3 "$NATIVE/launch.err")"
+check "a Console launch completes through the planted shim" $? "rc=$rc $(< "$NATIVE/launch.err")"
 run_scan "primary" "$RECORD" "$KEY_PRIMARY" "$KEY_SECONDARY"
 
 # R1's negative control: a clean child result must mark nothing. Without this case, a launcher that
@@ -235,7 +222,7 @@ rm -f "$RECORD" "$LEDGER" "$SHIM_LOG" "$STUB_ENV_OUT"
 launch "$CONSOLE_SECOND" "$RECORD"
 rc=$?
 [ "$rc" = 0 ]
-check "the second Console plan's launch completes through the planted shim" $? "rc=$rc $(tail -3 "$NATIVE/launch.err")"
+check "the second Console plan's launch completes through the planted shim" $? "rc=$rc $(< "$NATIVE/launch.err")"
 run_scan "secondary" "$RECORD" "$KEY_SECONDARY" "$KEY_PRIMARY"
 
 # ---- R1: the child result is wired to the credit-exhausted marker ---------------------------

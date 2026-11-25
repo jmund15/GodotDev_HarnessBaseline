@@ -27,4 +27,4 @@ CLAUDE.md and a `rules/` file may carry one file-level `review-by` comment cover
 
 ## Baseline status
 
-Target's `baseline.lock.json` row has `status: tracked` → it is shared doctrine (CLAUDE.md §10). Flag for `/sync_baseline` classification, and check whether a companion new file must upstream in the same operation — a cite pushed without its target dangles in every consuming project. A memory cite is exempt: it is an evidence pointer, consumers adopt memories only by offer, and the citing rule states its load-bearing sentence itself.
+Target's `baseline.lock.json` row has `status: tracked` → it is shared doctrine (`instruction_quality` H14 and `/sync_baseline`). Flag for `/sync_baseline` classification, and check whether a companion new file must upstream in the same operation — a cite pushed without its target dangles in every consuming project. A memory cite is exempt: it is an evidence pointer, consumers adopt memories only by offer, and the citing rule states its load-bearing sentence itself.

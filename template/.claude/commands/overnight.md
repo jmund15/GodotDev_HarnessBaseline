@@ -18,7 +18,7 @@ Pair it with `/goal <same text>` so the Stop hook blocks an early exit. This com
 
 ## Step 1 — Arm
 
-**Departure sweep.** Before arming, list the forks the run can already foresee: decisions the goal text or its plan leaves open, and each goal step whose triage reversibility class is none (a force-push, an external publish, a push of another branch). Skip a step that Step 2 already decides: one an owner prompt in this session authorized by action class, with its gate green. With none, arm now. Otherwise ask them as packets (`CLAUDE.core.md` §Preferences) in one batch of `AskUserQuestion` calls, at most four questions per call (the tool's capacity), then arm. The answers join the run's scope (Step 2). A fork found after arming goes to Step 2.
+**Departure sweep.** Before arming, list the forks the run can already foresee: decisions the goal text or its plan leaves open, and each goal step whose triage reversibility class is none (a force-push, an external publish, a push of another branch). Skip a step that Step 2 already decides: one an owner prompt in this session authorized by action class, with its gate green. With none, arm now. Otherwise ask them as packets (`CLAUDE.interactive.md` §Answering and asking the owner) in one batch of `AskUserQuestion` calls, at most four questions per call (the tool's capacity), then arm. The answers join the run's scope (Step 2). A fork found after arming goes to Step 2.
 
 ```bash
 python3 .claude/hooks/overnight_ask_guard.py --arm "<goal>"
@@ -54,7 +54,7 @@ An unknown the session's tools can settle (who made a file, whether a process's 
 
 A merge parks only on a failing Park test its evidence names (a red gate, a peer on the same files, an owner-domain fork); the word "merge" is not one.
 
-The optional `Reversibility: <clean|residue|none>` segment (the recommended option's class) goes between Recommendation and Default when `CLAUDE.core.md` §Preferences' recovery-consequence condition holds. Default is required independently and is the state the run leaves while the owner has not answered, such as "nothing merged; the branch stays".
+The optional `Reversibility: <clean|residue|none>` segment (the recommended option's class) goes between Recommendation and Default when `CLAUDE.interactive.md` §Answering and asking the owner's recovery-consequence condition holds. Default is required independently and is the state the run leaves while the owner has not answered, such as "nothing merged; the branch stays".
 
 **A `Q` row whose Park evidence does not hold is a Decide row that was not applied.** Before writing a `Q` row, re-check every open `Q` row against the Park tests and apply each one that fails none.
 
@@ -71,7 +71,7 @@ The optional `Reversibility: <clean|residue|none>` segment (the recommended opti
 
 ## Step 4 — Close
 
-Close runs after every goal step, including a `/session_end` the goal names: a named closeout never replaces a runnable step. Before Close, judge each requirement of the goal per `orchestration` §10 with its current evidence line; an unmet requirement whose work can run, or a plan step whose dependencies have landed, runs now, and only work a `Q` row blocks may stay undone. A completed step sequence is not a completion claim. First close out dispatch ratings: `/orchestration_metrics` §Incremental rating, *Phase close*. A `Q` row stands in for the owner's answer while the run is armed, however many messages the owner has sent. Once the run has ended (**Owner stop**), ask each open fork as a live question packet (`CLAUDE.core.md` §Preferences), and a Close doc written after that records only what was delivered.
+Close runs after every goal step, including a `/session_end` the goal names: a named closeout never replaces a runnable step. Before Close, judge each requirement of the goal per `orchestration` §10 with its current evidence line; an unmet requirement whose work can run, or a plan step whose dependencies have landed, runs now, and only work a `Q` row blocks may stay undone. A completed step sequence is not a completion claim. First close out dispatch ratings: `/orchestration_metrics` §Incremental rating, *Phase close*. A `Q` row stands in for the owner's answer while the run is armed, however many messages the owner has sent. Once the run has ended (**Owner stop**), ask each open fork as a live question packet (`CLAUDE.interactive.md` §Answering and asking the owner), and a Close doc written after that records only what was delivered.
 
 Close doc: `DevProjects/{{PROJECT_NAME}}/Claude/TODO/Overnight/<YYYY-MM-DD>-<session-id>.md` (vault; direct `Write`). Use the full session id from `--status`; inspect an existing target first and never overwrite another session's report. Sections: **Outcome**, optional **Decisions made**, **Decisions for you**, **Left undone**. Omit empty Decisions made; write the other three even when empty.
 

@@ -6,7 +6,7 @@ Read ONLY the section your dispatch names; if none is named, read `## detailed`.
 
 - Run the runner your brief names once, in the foreground, and wait for it. This kind exists so the wide run every other kind is refused has one caller: the gate row in `guards/tool_profiles.json` `kinds` (`orchestration` §4, `guards/author.md`).
 - Report each failure with the command that produced it and the log path holding its lines. A pass is the count of cases the run reported, never "it worked": a run that printed no case count is an incomplete result, not a clean one. [reference/claim_confidence.md]
-- A red run is a result. Report its first failing line and the file that line names, and never retry a flaky row or loosen an assertion to turn it green. [CLAUDE.coding.md §Development Philosophy]
+- A red run is a result. Report its first failing line and the file that line names, and never retry a flaky row or loosen an assertion to turn it green. [CLAUDE.md §Development Philosophy]
 - You have no Edit and no Write. A failure is fixed by the job that owns the fix, dispatched with this log as its evidence. [orchestration §2]
 
 ## condensed

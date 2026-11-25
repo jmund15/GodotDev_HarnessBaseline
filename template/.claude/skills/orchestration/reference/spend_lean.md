@@ -1,6 +1,6 @@
 # Lean spend
 
-Lean is an owner-set condition beside rigor. While it holds, the bar that picks a row is cost: each dispatch of a tier pins the cheapest row the floor admits for that tier on the plan the ladder's selection line picks, at the lowest effort level that row's cell names for the work shape. It changes pins only, never triage fields, admission, width, mandates or the cross-family requirement.
+Lean is an owner-set condition beside rigor, and it moves the cells jobs run on, never the verification width rigor sets. While it holds, each dispatch takes the cheapest (model, effort) cell that does the job reliably, even at slightly lower quality than the cell the job's bar picks outside lean. A cell is not reliable for a job when its `±` clause names a failure on that shape at that depth; a gap the clause names as a margin is the quality lean gives up. Fresh cross-system design stays on the rows the ladder names for it; scoped design, surveys and execution go cheaper. It changes pins only, never triage fields, admission, width, mandates or the cross-family requirement.
 
 ## Setting it
 
@@ -9,8 +9,8 @@ Only the owner sets lean, from an owner turn that holds the literal token `--lea
 ## Picking a row under lean
 
 1. List the claimants in registry order: `python3 .claude/tools/model_registry.py for-role <tier>`. No tool names a head.
-2. Take the cheapest claimant whose `±` cell does not bar the work shape (a review seat, a lone seat on a broad review, a judged slice), compared within one route: quota on two plans is not one currency, so the ladder's selection line (rule 2) picks among plans. A row listed with `supplementary` standing fills only an added review seat beside a qualified one, never a lone seat or authoring.
-3. A check-scored job takes its computed effort (§5 *Effort*). Other work starts at the lowest effort level the row's effort cell names for the shape, a floor the cell states included, and raises effort only on §5 *Effort*'s under-resolution evidence.
+2. Take the cheapest claimant whose cell does the job reliably (§ above), compared within one route: quota on two plans is not one currency, so the ladder's selection line (rule 2) picks among plans. A row listed with `supplementary` standing fills only an added review seat beside a qualified one, never a lone seat or authoring.
+3. A check-scored job takes its computed effort (§5 *Effort*). Other work takes the lowest effort in the row's range that does the job reliably at its depth, a floor the cell states included, and raises effort on §5 *Effort*'s under-resolution evidence.
 4. A pricier pin states its reason per the §Pre-Dispatch Checklist. At launch, the `cheaper claimants:` line names each cheaper claimant with its cost and `±` cell in every spend mode.
 
 ## What lean never does

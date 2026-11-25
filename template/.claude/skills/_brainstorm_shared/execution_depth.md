@@ -39,7 +39,7 @@ Judge reversibility at land time.
 - **none:** a merge or push to a primary branch, a publish (baseline publication included), a force-push, deleting
   untracked or vault content, and an outward or out-of-repo edit with no restorable copy.
 
-Owner approval for none follows `CLAUDE.core.md` §Git's authority list.
+Owner approval for none follows `CLAUDE.interactive.md` §Landing what you finish's authority list.
 
 Add a recovery mechanism only when concrete loss or dependent repair avoided justifies its implementation and
 verification cost. Re-classify from the resulting state, not the mechanism's presence. Recovery never waives the

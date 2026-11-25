@@ -28,7 +28,7 @@ For each `open` and `malformed` row, check the premise it cites against live sta
 
 ## Step 3 — Ask
 
-Ask the remaining rows in batched `AskUserQuestion` calls, 4 per call, one question per row. Each question states the fork and what each option buys as a packet per `CLAUDE.core.md` §Preferences.
+Ask the remaining rows in batched `AskUserQuestion` calls, 4 per call, one question per row. Each question states the fork and what each option buys as a packet per `CLAUDE.interactive.md` §Answering and asking the owner.
 
 - Options come from the row's `Options:` text. Split on `O<n>` or `(a)` markers, else on ` / ` or `;`.
 - More than 4 options: quote the full row and offer its first 4.

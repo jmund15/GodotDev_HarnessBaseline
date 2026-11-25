@@ -54,7 +54,6 @@ CHAIN = _optional_hooks.adopted(CHAIN)  # a sub-hook of a layer this project did
 # keeps `tools/layer_closure.py`'s registration check seeing each as reached. Nothing loads or runs them.
 UNWIRED = (
     "harness_edit_skill_reminder",
-    "model_name_guard",
     "plan_job_map_guard",
     "provenance_label_guard",
     "readonly_lens_write_guard",
